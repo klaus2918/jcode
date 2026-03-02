@@ -2209,6 +2209,28 @@ impl Agent {
                 None
             };
 
+            // If stop_reason indicates truncation (e.g. max_tokens), discard tool calls
+            // with null/empty inputs since they were likely truncated mid-generation.
+            // This prevents executing broken tool calls and instead requests a continuation.
+            if Self::should_continue_after_stop_reason(stop_reason.as_deref().unwrap_or("")) {
+                let before = tool_calls.len();
+                tool_calls.retain(|tc| !tc.input.is_null());
+                let discarded = before - tool_calls.len();
+                if discarded > 0 && tool_calls.is_empty() {
+                    logging::warn(&format!(
+                        "Discarded {} tool call(s) with null input (truncated by {}); requesting continuation",
+                        discarded,
+                        stop_reason.as_deref().unwrap_or("unknown")
+                    ));
+                    // Remove the broken ToolUse blocks from the stored assistant message
+                    // so the provider doesn't see ToolUse without matching ToolResult.
+                    if let Some(ref msg_id) = assistant_message_id {
+                        self.session.remove_tool_use_blocks(msg_id);
+                        let _ = self.session.save();
+                    }
+                }
+            }
+
             // If no tool calls, we're done
             if tool_calls.is_empty() {
                 if self.maybe_continue_incomplete_response(
@@ -2912,6 +2934,25 @@ impl Agent {
                 None
             };
 
+            // If stop_reason indicates truncation (e.g. max_tokens), discard tool calls
+            // with null/empty inputs since they were likely truncated mid-generation.
+            if Self::should_continue_after_stop_reason(stop_reason.as_deref().unwrap_or("")) {
+                let before = tool_calls.len();
+                tool_calls.retain(|tc| !tc.input.is_null());
+                let discarded = before - tool_calls.len();
+                if discarded > 0 && tool_calls.is_empty() {
+                    logging::warn(&format!(
+                        "Discarded {} tool call(s) with null input (truncated by {}); requesting continuation",
+                        discarded,
+                        stop_reason.as_deref().unwrap_or("unknown")
+                    ));
+                    if let Some(ref msg_id) = assistant_message_id {
+                        self.session.remove_tool_use_blocks(msg_id);
+                        let _ = self.session.save();
+                    }
+                }
+            }
+
             // If no tool calls, check for soft interrupt or exit
             // NOTE: We only inject here (Point B) when there are no tools.
             // Injecting before tool_results would break the API requirement that
@@ -3599,6 +3640,25 @@ impl Agent {
             } else {
                 None
             };
+
+            // If stop_reason indicates truncation (e.g. max_tokens), discard tool calls
+            // with null/empty inputs since they were likely truncated mid-generation.
+            if Self::should_continue_after_stop_reason(stop_reason.as_deref().unwrap_or("")) {
+                let before = tool_calls.len();
+                tool_calls.retain(|tc| !tc.input.is_null());
+                let discarded = before - tool_calls.len();
+                if discarded > 0 && tool_calls.is_empty() {
+                    logging::warn(&format!(
+                        "Discarded {} tool call(s) with null input (truncated by {}); requesting continuation",
+                        discarded,
+                        stop_reason.as_deref().unwrap_or("unknown")
+                    ));
+                    if let Some(ref msg_id) = assistant_message_id {
+                        self.session.remove_tool_use_blocks(msg_id);
+                        let _ = self.session.save();
+                    }
+                }
+            }
 
             // If no tool calls, check for soft interrupt or exit
             // NOTE: We only inject here (Point B) when there are no tools.

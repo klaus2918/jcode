@@ -454,6 +454,18 @@ impl Session {
     pub fn messages_for_provider(&self) -> Vec<Message> {
         self.messages.iter().map(|msg| msg.to_message()).collect()
     }
+
+    /// Remove all ToolUse content blocks from a specific message.
+    /// Used when tool calls are discarded (e.g. due to truncated output / max_tokens).
+    pub fn remove_tool_use_blocks(&mut self, message_id: &str) {
+        for msg in &mut self.messages {
+            if msg.id == *message_id {
+                msg.content
+                    .retain(|block| !matches!(block, ContentBlock::ToolUse { .. }));
+                break;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
