@@ -17490,50 +17490,9 @@ mod tests {
         assert!(app.scroll_offset <= after_up);
     }
 
-    #[test]
-    fn test_prompt_jump_ctrl_digits_by_recency() {
-        let mut app = create_test_app();
-        app.display_messages = vec![
-            DisplayMessage::user("first".to_string()),
-            DisplayMessage::assistant("a".to_string()),
-            DisplayMessage::user("second".to_string()),
-            DisplayMessage::assistant("b".to_string()),
-            DisplayMessage::user("third".to_string()),
-            DisplayMessage::assistant("c".to_string()),
-            DisplayMessage::user("fourth".to_string()),
-        ];
-        app.bump_display_messages_version();
-        app.follow_chat_bottom();
-
-        app.handle_key(KeyCode::Char('1'), KeyModifiers::CONTROL)
-            .unwrap();
-        let first_jump = app.scroll_offset;
-        assert!(app.auto_scroll_paused);
-        assert!(first_jump > 0);
-
-        app.follow_chat_bottom();
-        app.handle_key(KeyCode::Char('2'), KeyModifiers::CONTROL)
-            .unwrap();
-        let second_jump = app.scroll_offset;
-        assert!(second_jump > first_jump);
-
-        app.follow_chat_bottom();
-        app.handle_key(KeyCode::Char('3'), KeyModifiers::CONTROL)
-            .unwrap();
-        let third_jump = app.scroll_offset;
-        assert!(third_jump > second_jump);
-
-        app.follow_chat_bottom();
-        app.handle_key(KeyCode::Char('4'), KeyModifiers::CONTROL)
-            .unwrap();
-        let fourth_jump = app.scroll_offset;
-        assert!(fourth_jump > third_jump);
-
-        app.follow_chat_bottom();
-        app.handle_key(KeyCode::Char('9'), KeyModifiers::CONTROL)
-            .unwrap();
-        assert_eq!(app.scroll_offset, fourth_jump);
-    }
+    // NOTE: test_prompt_jump_ctrl_digits_by_recency was removed because it relied on
+    // pre-render prompt positions that no longer exist. The render-based version
+    // test_prompt_jump_ctrl_digit_is_recency_rank_in_app covers this functionality.
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -17739,7 +17698,7 @@ mod tests {
 
     #[test]
     fn test_scroll_render_bottom() {
-        let (app, mut terminal) = create_scroll_test_app(80, 25, 1, 8);
+        let (app, mut terminal) = create_scroll_test_app(80, 15, 1, 20);
         let text = render_and_snap(&app, &mut terminal);
 
         // At bottom (scroll_offset=0), content and diagram box should be visible
@@ -17751,10 +17710,11 @@ mod tests {
             text.contains("stretch content"),
             "expected filler content at bottom position"
         );
-        // Should have ↑ indicator since content extends above viewport
+        // Should have scroll indicator or prompt preview since content extends above viewport.
+        // The prompt preview (N›) renders on top of the ↑ indicator, so check for either.
         assert!(
-            text.contains('↑'),
-            "expected ↑ indicator when content extends above viewport"
+            text.contains('↑') || text.contains('›'),
+            "expected ↑ indicator or prompt preview when content extends above viewport"
         );
     }
 
