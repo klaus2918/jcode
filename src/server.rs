@@ -380,6 +380,36 @@ fn is_selfdev_env() -> bool {
         .unwrap_or(false)
 }
 
+/// Reload signal payload sent via in-process channel (replaces filesystem-based rebuild-signal)
+#[derive(Clone, Debug)]
+pub struct ReloadSignal {
+    pub hash: String,
+    pub triggering_session: Option<String>,
+}
+
+/// Global reload signal channel. The selfdev tool and debug commands fire this;
+/// the server awaits it instead of polling the filesystem.
+static RELOAD_SIGNAL: std::sync::OnceLock<(
+    tokio::sync::watch::Sender<Option<ReloadSignal>>,
+    tokio::sync::watch::Receiver<Option<ReloadSignal>>,
+)> = std::sync::OnceLock::new();
+
+fn reload_signal() -> &'static (
+    tokio::sync::watch::Sender<Option<ReloadSignal>>,
+    tokio::sync::watch::Receiver<Option<ReloadSignal>>,
+) {
+    RELOAD_SIGNAL.get_or_init(|| tokio::sync::watch::channel(None))
+}
+
+/// Send a reload signal to the server (called by selfdev tool / debug commands).
+pub fn send_reload_signal(hash: String, triggering_session: Option<String>) {
+    let (tx, _) = reload_signal();
+    let _ = tx.send(Some(ReloadSignal {
+        hash,
+        triggering_session,
+    }));
+}
+
 fn is_jcode_repo_or_parent(path: &std::path::Path) -> bool {
     let mut current = Some(path);
     while let Some(dir) = current {
@@ -589,7 +619,7 @@ pub struct Server {
     mcp_pool: Arc<crate::mcp::SharedMcpPool>,
     /// Graceful shutdown signals by session_id (stored outside agent mutex so they
     /// can be signaled without locking the agent during active tool execution)
-    shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::GracefulShutdownSignal>>>,
+    shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
 }
 
 impl Server {
@@ -996,15 +1026,15 @@ impl Server {
             }
         });
 
-        // Spawn selfdev signal monitor (checks for reload signal)
+        // Spawn selfdev reload monitor (event-driven via in-process channel)
         // Only run on selfdev servers to avoid non-selfdev servers picking up
-        // rebuild-signal and exec'ing, which would kill all their client connections
+        // reload signals, which would kill all their client connections
         if is_selfdev_env() {
             let signal_sessions = Arc::clone(&self.sessions);
             let signal_swarm_members = Arc::clone(&self.swarm_members);
             let signal_shutdown_signals = Arc::clone(&self.shutdown_signals);
             tokio::spawn(async move {
-                monitor_selfdev_signals(
+                await_reload_signal(
                     signal_sessions,
                     signal_swarm_members,
                     signal_shutdown_signals,
@@ -1496,7 +1526,7 @@ async fn handle_client(
     server_name: String,
     server_icon: String,
     mcp_pool: Arc<crate::mcp::SharedMcpPool>,
-    shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::GracefulShutdownSignal>>>,
+    shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
 ) -> Result<()> {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -1933,7 +1963,7 @@ async fn handle_client(
                     }
                     // Signal graceful shutdown so the agent checkpoints partial content
                     // before exiting, then wait briefly for it to finish.
-                    cancel_signal.store(true, std::sync::atomic::Ordering::SeqCst);
+                    cancel_signal.fire();
                     match tokio::time::timeout(std::time::Duration::from_millis(500), &mut handle)
                         .await
                     {
@@ -1964,7 +1994,7 @@ async fn handle_client(
                         }
                     }
                     // Reset the signal for future turns
-                    cancel_signal.store(false, std::sync::atomic::Ordering::SeqCst);
+                    cancel_signal.reset();
                     processing_task = None;
                     client_is_processing = false;
                     if let Some(session_id) = processing_session_id.take() {
@@ -2010,7 +2040,7 @@ async fn handle_client(
 
             Request::BackgroundTool { id } => {
                 // Signal the agent to move the currently executing tool to background
-                background_tool_signal.store(true, std::sync::atomic::Ordering::SeqCst);
+                background_tool_signal.fire();
                 let _ = client_event_tx.send(ServerEvent::Ack { id });
             }
 
@@ -6342,12 +6372,11 @@ async fn execute_debug_command(
         let info_path = jcode_dir.join("reload-info");
         std::fs::write(&info_path, format!("reload:{}", hash))?;
 
-        // Write signal file to trigger server restart
-        let signal_path = jcode_dir.join("rebuild-signal");
-        std::fs::write(&signal_path, &hash)?;
+        // Signal reload via in-process channel
+        send_reload_signal(hash.clone(), None);
 
         return Ok(format!(
-            "Reload signal written for build {}. Server will restart.",
+            "Reload signal sent for build {}. Server will restart.",
             hash
         ));
     }
@@ -9377,79 +9406,69 @@ fn normalize_model_arg(model: String) -> Option<String> {
     }
 }
 
-/// Monitor for selfdev signal files and exec into new binary.
+/// Await reload signal via in-process channel and exec into new binary.
 /// Before exec'ing, gracefully stops all active generations so partial
 /// responses are checkpointed to disk and can be resumed.
 /// NOTE: This should only be called on selfdev servers (guarded at call site)
-async fn monitor_selfdev_signals(
+async fn await_reload_signal(
     sessions: Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
     swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
-    shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::GracefulShutdownSignal>>>,
+    shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
 ) {
     use std::process::Command as ProcessCommand;
-    use tokio::time::{interval, Duration};
 
     // Double-check: only run on selfdev servers
     if !is_selfdev_env() {
         return;
     }
 
-    let mut check_interval = interval(Duration::from_millis(100));
+    let mut rx = reload_signal().1.clone();
 
+    // Wait for a reload signal
     loop {
-        check_interval.tick().await;
+        if rx.changed().await.is_err() {
+            return;
+        }
 
-        let jcode_dir = match crate::storage::jcode_dir() {
-            Ok(dir) => dir,
-            Err(_) => continue,
+        let signal = match rx.borrow_and_update().clone() {
+            Some(s) => s,
+            None => continue,
         };
 
-        // Check for rebuild signal (reload with new canary)
-        let rebuild_path = jcode_dir.join("rebuild-signal");
-        if rebuild_path.exists() {
-            if let Ok(signal_content) = std::fs::read_to_string(&rebuild_path) {
-                let _ = std::fs::remove_file(&rebuild_path);
-                crate::logging::info("Server: reload signal received");
+        crate::logging::info("Server: reload signal received via channel");
 
-                // Parse signal: "hash:session_id" or just "hash"
-                let triggering_session = signal_content
-                    .split_once(':')
-                    .map(|(_, sid)| sid.to_string());
+        // Gracefully stop all active generations except the triggering session
+        // (it's just sleeping in the selfdev tool, no point waiting for it)
+        graceful_shutdown_sessions(
+            &sessions,
+            &swarm_members,
+            &shutdown_signals,
+            signal.triggering_session.as_deref(),
+        )
+        .await;
 
-                // Gracefully stop all active generations except the triggering session
-                // (it's just sleeping in the selfdev tool, no point waiting for it)
-                graceful_shutdown_sessions(
-                    &sessions,
-                    &swarm_members,
-                    &shutdown_signals,
-                    triggering_session.as_deref(),
-                )
-                .await;
+        // Get canary binary path
+        if let Ok(binary) = crate::build::canary_binary_path() {
+            if binary.exists() {
+                crate::logging::info(&format!(
+                    "Server: exec'ing into canary binary {:?}",
+                    binary
+                ));
 
-                // Get canary binary path
-                if let Ok(binary) = crate::build::canary_binary_path() {
-                    if binary.exists() {
-                        crate::logging::info(&format!(
-                            "Server: exec'ing into canary binary {:?}",
-                            binary
-                        ));
+                // Exec into the new binary with serve mode
+                let err = crate::platform::replace_process(
+                    ProcessCommand::new(&binary).arg("serve"),
+                );
 
-                        // Exec into the new binary with serve mode
-                        let err = crate::platform::replace_process(
-                            ProcessCommand::new(&binary).arg("serve"),
-                        );
-
-                        // If we get here, exec failed
-                        crate::logging::error(&format!(
-                            "Failed to exec into canary {:?}: {}",
-                            binary, err
-                        ));
-                    }
-                }
-                // Fallback: just exit and let something else restart us
-                std::process::exit(42);
+                // If we get here, exec failed
+                crate::logging::error(&format!(
+                    "Failed to exec into canary {:?}: {}",
+                    binary, err
+                ));
             }
         }
+        // Fallback: just exit and let something else restart us
+        std::process::exit(42);
     }
 }
 
@@ -9462,7 +9481,7 @@ async fn monitor_selfdev_signals(
 async fn graceful_shutdown_sessions(
     _sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    shutdown_signals: &Arc<RwLock<HashMap<String, crate::agent::GracefulShutdownSignal>>>,
+    shutdown_signals: &Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
     skip_session: Option<&str>,
 ) {
     // Find sessions that are actively processing (status == "running").
@@ -9499,7 +9518,7 @@ async fn graceful_shutdown_sessions(
         let signals = shutdown_signals.read().await;
         for session_id in &actively_generating {
             if let Some(signal) = signals.get(session_id) {
-                signal.store(true, std::sync::atomic::Ordering::SeqCst);
+                signal.fire();
                 crate::logging::info(&format!(
                     "Server: sent graceful shutdown signal to session {}",
                     session_id

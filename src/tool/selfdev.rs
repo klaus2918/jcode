@@ -209,10 +209,8 @@ impl SelfDevTool {
         let info = format!("reload:{}", hash);
         std::fs::write(&info_path, &info)?;
 
-        // Write signal file for server/TUI to pick up
-        // Include session_id so the monitor can skip waiting for this session
-        let signal_path = crate::storage::jcode_dir()?.join("rebuild-signal");
-        std::fs::write(&signal_path, format!("{}:{}", hash, session_id))?;
+        // Signal the server via in-process channel (replaces filesystem-based rebuild-signal)
+        server::send_reload_signal(hash.clone(), Some(session_id.to_string()));
 
         // Block until the server picks up the signal and triggers graceful shutdown.
         // The agent's tool execution loop will abort this task when the shutdown

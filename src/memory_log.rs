@@ -369,26 +369,4 @@ pub fn log_candidate_filter(
     );
 }
 
-/// Clean up old memory event logs (keep last 14 days).
-pub fn cleanup_old_logs() {
-    let Some(dir) = log_dir() else { return };
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return;
-    };
-    let cutoff = Local::now() - chrono::Duration::days(14);
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with("memory-events-") || !name.ends_with(".jsonl") {
-            continue;
-        }
-        if let Ok(metadata) = entry.metadata() {
-            if let Ok(modified) = metadata.modified() {
-                let modified: chrono::DateTime<Local> = modified.into();
-                if modified < cutoff {
-                    let _ = fs::remove_file(entry.path());
-                }
-            }
-        }
-    }
-}
+

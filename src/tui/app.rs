@@ -3968,34 +3968,6 @@ impl App {
         Ok(format!("injected {:?} with {:?}", key_code, modifiers))
     }
 
-    /// Check for selfdev signal files (rebuild-signal)
-    /// These are written by the selfdev tool to trigger restarts
-    fn check_selfdev_signals(&mut self) {
-        // Only check in canary sessions
-        if !self.session.is_canary {
-            return;
-        }
-
-        let jcode_dir = match crate::storage::jcode_dir() {
-            Ok(dir) => dir,
-            Err(_) => return,
-        };
-
-        // Check for rebuild signal
-        let rebuild_path = jcode_dir.join("rebuild-signal");
-        if rebuild_path.exists() {
-            if let Ok(_hash) = std::fs::read_to_string(&rebuild_path) {
-                // Remove signal file
-                let _ = std::fs::remove_file(&rebuild_path);
-                // Save session and trigger exit with code 42 (reload requested)
-                self.session.provider_session_id = self.provider_session_id.clone();
-                let _ = self.session.save();
-                self.requested_exit_code = Some(42);
-                self.should_quit = true;
-            }
-        }
-    }
-
     /// Run the TUI application
     /// Returns Some(session_id) if hot-reload was requested
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<RunResult> {
@@ -4038,8 +4010,6 @@ impl App {
                         self.poll_compaction_completion();
                         // Check for debug commands
                         self.check_debug_command();
-                        // Check for selfdev signals (rebuild)
-                        self.check_selfdev_signals();
                         // Check for new stable version (auto-migration)
                         self.check_stable_version();
                         // Execute pending migration if ready

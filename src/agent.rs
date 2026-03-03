@@ -81,6 +81,49 @@ pub type SoftInterruptQueue = Arc<std::sync::Mutex<Vec<SoftInterruptMessage>>>;
 pub type BackgroundToolSignal = Arc<std::sync::atomic::AtomicBool>;
 pub type GracefulShutdownSignal = Arc<std::sync::atomic::AtomicBool>;
 
+/// Async-aware interrupt signal that combines AtomicBool (sync read) with
+/// tokio::Notify (async wake). Eliminates spin-loops during tool execution.
+#[derive(Clone)]
+pub struct InterruptSignal {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl InterruptSignal {
+    pub fn new() -> Self {
+        Self {
+            flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    pub fn fire(&self) {
+        self.flag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn reset(&self) {
+        self.flag
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub async fn notified(&self) {
+        if self.is_set() {
+            return;
+        }
+        self.notify.notified().await;
+    }
+
+    pub fn as_atomic(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.flag)
+    }
+}
+
 /// Token usage from the last API request
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct TokenUsage {
@@ -109,9 +152,9 @@ pub struct Agent {
     /// Uses std::sync::Mutex so it can be accessed without async, even while agent is processing
     soft_interrupt_queue: SoftInterruptQueue,
     /// Signal from client to move the currently executing tool to background
-    background_tool_signal: BackgroundToolSignal,
+    background_tool_signal: InterruptSignal,
     /// Signal to gracefully stop generation (checkpoint partial response and exit)
-    graceful_shutdown: GracefulShutdownSignal,
+    graceful_shutdown: InterruptSignal,
     /// Client-side cache tracking for detecting append-only violations
     cache_tracker: CacheTracker,
     /// Last token usage from API request (for debug socket queries)
@@ -211,8 +254,8 @@ impl Agent {
             last_connection_type: None,
             pending_alerts: Vec::new(),
             soft_interrupt_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
-            background_tool_signal: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            graceful_shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            background_tool_signal: InterruptSignal::new(),
+            graceful_shutdown: InterruptSignal::new(),
             cache_tracker: CacheTracker::new(),
             last_usage: TokenUsage::default(),
             locked_tools: None,
@@ -245,8 +288,8 @@ impl Agent {
             last_connection_type: None,
             pending_alerts: Vec::new(),
             soft_interrupt_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
-            background_tool_signal: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            graceful_shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            background_tool_signal: InterruptSignal::new(),
+            graceful_shutdown: InterruptSignal::new(),
             cache_tracker: CacheTracker::new(),
             last_usage: TokenUsage::default(),
             locked_tools: None,
@@ -514,22 +557,20 @@ impl Agent {
 
     /// Get a handle to the background tool signal.
     /// The server can use this to signal "move tool to background" without holding the agent lock.
-    pub fn background_tool_signal(&self) -> BackgroundToolSignal {
-        Arc::clone(&self.background_tool_signal)
+    pub fn background_tool_signal(&self) -> InterruptSignal {
+        self.background_tool_signal.clone()
     }
 
-    pub fn graceful_shutdown_signal(&self) -> GracefulShutdownSignal {
-        Arc::clone(&self.graceful_shutdown)
+    pub fn graceful_shutdown_signal(&self) -> InterruptSignal {
+        self.graceful_shutdown.clone()
     }
 
     pub fn request_graceful_shutdown(&self) {
-        self.graceful_shutdown
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.graceful_shutdown.fire();
     }
 
     fn is_graceful_shutdown(&self) -> bool {
-        self.graceful_shutdown
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.graceful_shutdown.is_set()
     }
 
     /// Check if there are pending soft interrupts
@@ -3842,13 +3883,12 @@ impl Agent {
                 });
 
                 // Reset background signal before waiting
-                self.background_tool_signal
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                self.background_tool_signal.reset();
 
                 // Wait for tool completion OR background signal from user (Alt+B)
                 // OR graceful shutdown signal from server reload
-                let bg_signal = Arc::clone(&self.background_tool_signal);
-                let shutdown_signal = Arc::clone(&self.graceful_shutdown);
+                let bg_signal = self.background_tool_signal.clone();
+                let shutdown_signal = self.graceful_shutdown.clone();
                 let tool_result;
                 let mut tool_handle = tool_handle;
                 tokio::select! {
@@ -3860,13 +3900,9 @@ impl Agent {
                         });
                     }
                     _ = async {
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                            if bg_signal.load(std::sync::atomic::Ordering::SeqCst)
-                                || shutdown_signal.load(std::sync::atomic::Ordering::SeqCst)
-                            {
-                                break;
-                            }
+                        tokio::select! {
+                            _ = bg_signal.notified() => {}
+                            _ = shutdown_signal.notified() => {}
                         }
                     } => {
                         tool_result = None;
@@ -4016,8 +4052,7 @@ impl Agent {
                     );
                     self.session.save()?;
 
-                    self.background_tool_signal
-                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    self.background_tool_signal.reset();
                 }
 
                 // NOTE: We do NOT inject between tools (non-urgent) because that would
