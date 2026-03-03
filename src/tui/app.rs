@@ -650,6 +650,8 @@ pub struct App {
     current_message_id: Option<u64>,
     // Whether running in remote mode
     is_remote: bool,
+    // Server was just spawned - allow initial connection retries in run_remote
+    server_spawning: bool,
     // Whether running in replay mode (readonly playback of a saved session)
     pub is_replay: bool,
     /// Override for elapsed time during headless video replay.
@@ -1009,6 +1011,7 @@ impl App {
             remote_server_icon: None,
             current_message_id: None,
             is_remote: false,
+            server_spawning: false,
             is_replay: false,
             replay_elapsed_override: None,
             replay_processing_started_ms: None,
@@ -1127,6 +1130,12 @@ impl App {
 
         app.resume_session_id = resume_session;
         app
+    }
+
+    /// Mark that a server was just spawned - run_remote will retry initial connection
+    /// instead of failing fatally, allowing the TUI to show while the server starts.
+    pub fn set_server_spawning(&mut self) {
+        self.server_spawning = true;
     }
 
     /// Create an App instance for replay mode (playing back a saved session)
@@ -1992,19 +2001,8 @@ impl App {
     }
 
     fn mouse_scroll_amount(&mut self) -> usize {
-        let now = Instant::now();
-        let amount = if let Some(last) = self.last_mouse_scroll {
-            let gap = now.duration_since(last);
-            if gap.as_millis() < 50 {
-                1
-            } else {
-                3
-            }
-        } else {
-            3
-        };
-        self.last_mouse_scroll = Some(now);
-        amount
+        self.last_mouse_scroll = Some(Instant::now());
+        3
     }
 
     fn scroll_up(&mut self, amount: usize) {
@@ -4174,11 +4172,18 @@ impl App {
                     r
                 }
                 Err(e) => {
-                    if reconnect_attempts == 0 {
+                    if reconnect_attempts == 0 && !self.server_spawning {
                         return Err(anyhow::anyhow!(
                             "Failed to connect to server. Is `jcode serve` running? Error: {}",
                             e
                         ));
+                    }
+                    // When server_spawning, treat the first failure as a reconnect
+                    // so the TUI shows while we wait for the server to start
+                    let is_initial_server_start = self.server_spawning && reconnect_attempts == 0;
+                    if self.server_spawning && reconnect_attempts == 0 {
+                        reconnect_attempts = 1;
+                        self.server_spawning = false;
                     }
                     reconnect_attempts += 1;
 
@@ -4206,10 +4211,14 @@ impl App {
                         String::new()
                     };
 
-                    let msg_content = format!(
-                        "⚡ Connection lost — retrying ({})\n  {}\n{}",
-                        elapsed_str, e, resume_hint,
-                    );
+                    let msg_content = if is_initial_server_start {
+                        "⏳ Starting server...".to_string()
+                    } else {
+                        format!(
+                            "⚡ Connection lost — retrying ({})\n  {}\n{}",
+                            elapsed_str, e, resume_hint,
+                        )
+                    };
 
                     if let Some(idx) = disconnect_msg_idx {
                         if idx < self.display_messages.len() {
