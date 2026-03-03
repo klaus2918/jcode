@@ -146,6 +146,7 @@ pub fn take_pending_memory(session_id: &str) -> Option<PendingMemory> {
         let map = guard.get_or_insert_with(HashMap::new);
         if let Some(pending) = map.remove(session_id) {
             if !pending.is_fresh() {
+                crate::memory_log::log_pending_discarded(session_id, "stale (>120s)");
                 return None;
             }
 
@@ -156,6 +157,7 @@ pub fn take_pending_memory(session_id: &str) -> Option<PendingMemory> {
                     if *last_sig == sig
                         && last_at.elapsed().as_secs() < MEMORY_REPEAT_SUPPRESSION_SECS
                     {
+                        crate::memory_log::log_pending_discarded(session_id, "duplicate suppressed");
                         return None;
                     }
                 }
@@ -165,6 +167,13 @@ pub fn take_pending_memory(session_id: &str) -> Option<PendingMemory> {
             if !pending.memory_ids.is_empty() {
                 mark_memories_injected(session_id, &pending.memory_ids);
             }
+
+            crate::memory_log::log_pending_consumed(
+                session_id,
+                pending.count,
+                pending.computed_at.elapsed().as_millis() as u64,
+                pending.prompt.chars().count(),
+            );
 
             return Some(pending);
         }
@@ -184,6 +193,8 @@ pub fn set_pending_memory_with_ids(
     count: usize,
     memory_ids: Vec<String>,
 ) {
+    crate::memory_log::log_pending_prepared(session_id, &prompt, count, &memory_ids);
+
     if let Ok(mut guard) = PENDING_MEMORY.lock() {
         let map = guard.get_or_insert_with(HashMap::new);
         map.insert(
@@ -200,6 +211,8 @@ pub fn set_pending_memory_with_ids(
 
 /// Mark memory IDs as already injected for a session (prevents re-injection on future turns)
 pub fn mark_memories_injected(session_id: &str, ids: &[String]) {
+    crate::memory_log::log_marked_injected(session_id, ids);
+
     if let Ok(mut guard) = INJECTED_MEMORY_IDS.lock() {
         let outer = guard.get_or_insert_with(HashMap::new);
         let set = outer
@@ -345,6 +358,8 @@ pub fn set_state(state: MemoryState) {
 
 /// Add an event to the activity log
 pub fn add_event(kind: MemoryEventKind) {
+    crate::memory_log::log_event(&kind);
+
     if let Ok(mut guard) = MEMORY_ACTIVITY.lock() {
         let event = MemoryEvent {
             kind,

@@ -273,6 +273,11 @@ impl MemoryAgent {
                         "[{}] Topic change detected (sim={:.2}), resetting session memory state",
                         session_id, similarity
                     ));
+                    crate::memory_log::log_topic_change(
+                        session_id,
+                        &format!("sim={:.2}", similarity),
+                        "new topic detected",
+                    );
 
                     // Extract memories from the PREVIOUS topic before moving on
                     if ss.turns_since_extraction >= MIN_TURNS_FOR_EXTRACTION {
@@ -342,6 +347,7 @@ impl MemoryAgent {
         }
 
         // Filter out already-surfaced memories (per-session + global injection tracking)
+        let total_before_filter = candidates.len();
         let new_candidates: Vec<_> = {
             let ss = self.session_state(session_id);
             candidates
@@ -352,6 +358,13 @@ impl MemoryAgent {
                 })
                 .collect()
         };
+
+        crate::memory_log::log_candidate_filter(
+            session_id,
+            total_before_filter,
+            new_candidates.len(),
+            &context,
+        );
 
         if new_candidates.is_empty() {
             memory::set_state(MemoryState::Idle);
@@ -1482,6 +1495,8 @@ pub fn trigger_final_extraction(transcript: String, session_id: String) {
     if transcript.len() < 200 {
         return;
     }
+
+    crate::memory_log::log_final_extraction(&session_id, transcript.len());
 
     tokio::spawn(async move {
         crate::logging::info(&format!(

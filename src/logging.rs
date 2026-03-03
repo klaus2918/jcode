@@ -269,6 +269,14 @@ pub fn crash(error: &str, context: &str) {
     }
 }
 
+/// Get the session ID from the current logging context (thread-local or task-local).
+pub fn current_session() -> Option<String> {
+    if let Some(ctx) = task_context_snapshot() {
+        return ctx.session;
+    }
+    LOG_CONTEXT.with(|c| c.borrow().session.clone())
+}
+
 /// Get path to today's log file
 pub fn log_path() -> Option<PathBuf> {
     let log_dir = dirs::home_dir()?.join(".jcode").join("logs");
