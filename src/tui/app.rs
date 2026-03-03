@@ -11214,9 +11214,7 @@ impl App {
             }
             OverlayAction::Selected(super::session_picker::PickerResult::RestoreAllCrashed) => {
                 self.session_picker_overlay = None;
-                self.push_display_message(DisplayMessage::system(
-                    "Batch crash restore is only available from `jcode --resume`.".to_string(),
-                ));
+                self.handle_batch_crash_restore();
             }
         }
         Ok(())
@@ -13433,9 +13431,17 @@ impl App {
             transcript.push('\n');
         }
 
-        // Extract memories using sidecar
+        // Extract memories using sidecar (with existing context for dedup)
+        let manager = crate::memory::MemoryManager::new();
+        let existing: Vec<String> = manager
+            .list_all()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.active)
+            .map(|e| e.content)
+            .collect();
         let sidecar = crate::sidecar::Sidecar::new();
-        match sidecar.extract_memories(&transcript).await {
+        match sidecar.extract_memories_with_existing(&transcript, &existing).await {
             Ok(extracted) if !extracted.is_empty() => {
                 let manager = crate::memory::MemoryManager::new();
                 let mut stored_count = 0;

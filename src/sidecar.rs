@@ -312,24 +312,32 @@ Categorization rules:
 - If it describes what the USER WANTS or HOW THEY LIKE THINGS, it is "preference", not "fact"
 - If it describes a BUG FIX or MISTAKE, it is "correction", not "fact"
 - "fact" is for objective technical information about code/systems, not user behavior
-- Do NOT extract transient debugging details, compile errors, or intermediate steps
+
+IMPORTANT - Do NOT extract:
+- Transient debugging details, compile errors, or intermediate build steps
+- Specific commit hashes, git operations, or "changes were committed/pushed" details
+- Line-by-line code changes like "X was updated to Y in file Z" - these belong in git history, not memory
+- Self-evident project context (e.g., the project name, repo URL, language) that is already in the system prompt
+- Redundant variations of information already known (check the "Already known" list carefully)
+
+Quality bar: Only extract information that would ACTUALLY BE USEFUL if recalled in a future session on a different topic. Ask: "Would a developer benefit from knowing this weeks from now?"
 
 For each memory, output in this format (one per line):
 CATEGORY|CONTENT|TRUST
 
 Where:
 - CATEGORY is one of: fact, preference, correction, entity
-- CONTENT is a concise statement (1-2 sentences max)
+- CONTENT is a concise statement (1-2 sentences max, under 200 characters preferred)
 - TRUST is one of: high (user stated), medium (observed), low (inferred)
 
 Output ONLY the formatted lines, no other text. If no NEW memories worth extracting, output nothing."#,
         );
 
         if !existing.is_empty() {
-            system.push_str("\n\nAlready known (do NOT re-extract these):\n");
-            for mem in existing.iter().take(40) {
+            system.push_str("\n\nAlready known (do NOT re-extract these or close paraphrases):\n");
+            for mem in existing.iter().take(80) {
                 system.push_str("- ");
-                system.push_str(mem);
+                system.push_str(&mem[..mem.len().min(150)]);
                 system.push('\n');
             }
         }

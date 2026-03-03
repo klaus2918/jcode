@@ -1229,12 +1229,43 @@ impl MemoryManager {
         storage::write_json(&path, store)
     }
 
+    /// Similarity threshold for storage-layer dedup.
+    /// Memories above this threshold are considered duplicates and reinforced instead.
+    const STORAGE_DEDUP_THRESHOLD: f32 = 0.85;
+
     pub fn remember_project(&self, entry: MemoryEntry) -> Result<String> {
         let mut entry = entry;
-        // Generate embedding for new memory (non-blocking - if it fails, we store without embedding)
         entry.ensure_embedding();
 
         let mut graph = self.load_project_graph()?;
+
+        if let Some(ref emb) = entry.embedding {
+            if let Some(existing_id) = Self::find_duplicate_in_graph(&graph, emb, Self::STORAGE_DEDUP_THRESHOLD) {
+                if let Some(existing) = graph.get_memory_mut(&existing_id) {
+                    existing.reinforce(
+                        entry.source.as_deref().unwrap_or("dedup"),
+                        0,
+                    );
+                    self.save_project_graph(&graph)?;
+                    return Ok(existing_id);
+                }
+            }
+
+            // Cross-store dedup: also check global graph
+            if let Ok(mut global_graph) = self.load_global_graph() {
+                if let Some(existing_id) = Self::find_duplicate_in_graph(&global_graph, emb, Self::STORAGE_DEDUP_THRESHOLD) {
+                    if let Some(existing) = global_graph.get_memory_mut(&existing_id) {
+                        existing.reinforce(
+                            entry.source.as_deref().unwrap_or("cross-dedup"),
+                            0,
+                        );
+                        self.save_global_graph(&global_graph)?;
+                        return Ok(existing_id);
+                    }
+                }
+            }
+        }
+
         let id = graph.add_memory(entry);
         self.save_project_graph(&graph)?;
         Ok(id)
@@ -1242,13 +1273,59 @@ impl MemoryManager {
 
     pub fn remember_global(&self, entry: MemoryEntry) -> Result<String> {
         let mut entry = entry;
-        // Generate embedding for new memory
         entry.ensure_embedding();
 
         let mut graph = self.load_global_graph()?;
+
+        if let Some(ref emb) = entry.embedding {
+            if let Some(existing_id) = Self::find_duplicate_in_graph(&graph, emb, Self::STORAGE_DEDUP_THRESHOLD) {
+                if let Some(existing) = graph.get_memory_mut(&existing_id) {
+                    existing.reinforce(
+                        entry.source.as_deref().unwrap_or("dedup"),
+                        0,
+                    );
+                    self.save_global_graph(&graph)?;
+                    return Ok(existing_id);
+                }
+            }
+
+            // Cross-store dedup: also check project graph
+            if let Ok(mut project_graph) = self.load_project_graph() {
+                if let Some(existing_id) = Self::find_duplicate_in_graph(&project_graph, emb, Self::STORAGE_DEDUP_THRESHOLD) {
+                    if let Some(existing) = project_graph.get_memory_mut(&existing_id) {
+                        existing.reinforce(
+                            entry.source.as_deref().unwrap_or("cross-dedup"),
+                            0,
+                        );
+                        self.save_project_graph(&project_graph)?;
+                        return Ok(existing_id);
+                    }
+                }
+            }
+        }
+
         let id = graph.add_memory(entry);
         self.save_global_graph(&graph)?;
         Ok(id)
+    }
+
+    fn find_duplicate_in_graph(
+        graph: &crate::memory_graph::MemoryGraph,
+        query_emb: &[f32],
+        threshold: f32,
+    ) -> Option<String> {
+        let mut best: Option<(String, f32)> = None;
+        for entry in graph.active_memories() {
+            if let Some(ref emb) = entry.embedding {
+                let sim = crate::embedding::cosine_similarity(query_emb, emb);
+                if sim >= threshold {
+                    if best.as_ref().map(|(_, s)| sim > *s).unwrap_or(true) {
+                        best = Some((entry.id.clone(), sim));
+                    }
+                }
+            }
+        }
+        best.map(|(id, _)| id)
     }
 
     /// Find memories similar to the given text using embedding search
@@ -2455,9 +2532,9 @@ mod tests {
         with_temp_home(|_dir| {
             let manager = MemoryManager::new();
             let entry_project =
-                MemoryEntry::new(MemoryCategory::Fact, "Project memory").with_embedding(vec![0.0]);
+                MemoryEntry::new(MemoryCategory::Fact, "Project memory").with_embedding(vec![1.0, 0.0, 0.0]);
             let entry_global = MemoryEntry::new(MemoryCategory::Preference, "Global memory")
-                .with_embedding(vec![0.0]);
+                .with_embedding(vec![0.0, 1.0, 0.0]);
 
             let project_id = manager
                 .remember_project(entry_project)
@@ -2487,8 +2564,8 @@ mod tests {
             let manager = MemoryManager::new();
 
             // Create two memories
-            let entry1 = MemoryEntry::new(MemoryCategory::Fact, "Rust is a systems language");
-            let entry2 = MemoryEntry::new(MemoryCategory::Fact, "Cargo is Rust's package manager");
+            let entry1 = MemoryEntry::new(MemoryCategory::Fact, "The capital of France is Paris, a city known for the Eiffel Tower");
+            let entry2 = MemoryEntry::new(MemoryCategory::Fact, "Photosynthesis converts carbon dioxide and water into glucose using sunlight energy");
 
             let id1 = manager.remember_project(entry1).expect("remember 1");
             let id2 = manager.remember_project(entry2).expect("remember 2");

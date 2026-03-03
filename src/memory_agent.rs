@@ -485,17 +485,82 @@ impl MemoryAgent {
         Ok(relevant)
     }
 
-    /// Search past sessions for more context (tool for memory agent)
-    #[allow(dead_code)]
+    /// Search past sessions for more context
     async fn search_sessions(&self, query: &str) -> Result<Vec<SessionSearchResult>> {
-        // This will use the session_search tool
-        // For now, return empty - will implement with tool integration
-        crate::logging::info(&format!("Memory agent searching sessions: {}", query));
-        Ok(Vec::new())
+        let sessions_dir = crate::storage::jcode_dir()?.join("sessions");
+        if !sessions_dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let query_lower = query.to_lowercase();
+        let limit = 5;
+
+        let mut results = Vec::new();
+        let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+
+        for entry in std::fs::read_dir(&sessions_dir)?.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                let mtime = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                files.push((path, mtime));
+            }
+        }
+        files.sort_by(|a, b| b.1.cmp(&a.1));
+        files.truncate(50);
+
+        for (path, _) in &files {
+            if results.len() >= limit {
+                break;
+            }
+            let raw = match std::fs::read(path) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let raw_lower = String::from_utf8_lossy(&raw).to_lowercase();
+            if !raw_lower.contains(&query_lower) {
+                continue;
+            }
+
+            let session: crate::session::Session = match serde_json::from_slice(&raw) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            for msg in &session.messages {
+                for block in &msg.content {
+                    let text = match block {
+                        crate::message::ContentBlock::Text { text, .. } => text,
+                        crate::message::ContentBlock::ToolResult { content, .. } => content,
+                        _ => continue,
+                    };
+                    let text_lower = text.to_lowercase();
+                    if let Some(pos) = text_lower.find(&query_lower) {
+                        let start = pos.saturating_sub(80);
+                        let end = (pos + query_lower.len() + 80).min(text.len());
+                        let snippet = text[start..end].to_string();
+                        results.push(SessionSearchResult {
+                            session_id: session.id.clone(),
+                            snippet,
+                            relevance: 1.0,
+                        });
+                        if results.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+                if results.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        Ok(results)
     }
 
-    /// Read the source that caused an embedding hit (tool for memory agent)
-    #[allow(dead_code)]
+    /// Read the source that caused an embedding hit
     async fn read_source(&self, memory_id: &str) -> Result<Option<SourceContext>> {
         // Get the memory entry
         let all = self.memory_manager.list_all()?;
@@ -558,6 +623,7 @@ impl MemoryAgent {
             {
                 Ok(extracted) if !extracted.is_empty() => {
                     let mut stored_count = 0;
+                    let mut stored_ids: Vec<String> = Vec::new();
                     let mut reinforced_count = 0;
                     let mut superseded_count = 0;
 
@@ -663,25 +729,47 @@ impl MemoryAgent {
                         match memory_manager.remember_project(entry) {
                             Ok(new_id) => {
                                 stored_count += 1;
+                                stored_ids.push(new_id.clone());
 
-                                // If contradiction found, supersede the old memory
+                                // If contradiction found, supersede the old memory and add Contradicts edge
                                 if let Some(old_id) = contradiction_found {
                                     if let Ok(mut graph) = memory_manager.load_project_graph() {
+                                        graph.mark_contradiction(&new_id, &old_id);
                                         if let Some(old_entry) = graph.get_memory_mut(&old_id) {
                                             old_entry.supersede(&new_id);
-                                            if memory_manager.save_project_graph(&graph).is_ok() {
-                                                superseded_count += 1;
-                                                crate::logging::info(&format!(
-                                                    "Superseded memory {} with {}",
-                                                    old_id, new_id
-                                                ));
-                                            }
+                                        }
+                                        if memory_manager.save_project_graph(&graph).is_ok() {
+                                            superseded_count += 1;
+                                            crate::logging::info(&format!(
+                                                "Superseded memory {} with {} (Contradicts edge added)",
+                                                old_id, new_id
+                                            ));
                                         }
                                     }
                                 }
                             }
                             Err(e) => {
                                 crate::logging::info(&format!("Failed to store memory: {}", e));
+                            }
+                        }
+                    }
+
+                    // Create DerivedFrom edges between co-extracted memories
+                    if stored_ids.len() >= 2 {
+                        if let Ok(mut graph) = memory_manager.load_project_graph() {
+                            let mut linked = false;
+                            for i in 0..stored_ids.len() {
+                                for j in (i + 1)..stored_ids.len() {
+                                    graph.add_edge(
+                                        &stored_ids[i],
+                                        &stored_ids[j],
+                                        crate::memory_graph::EdgeKind::DerivedFrom,
+                                    );
+                                    linked = true;
+                                }
+                            }
+                            if linked {
+                                let _ = memory_manager.save_project_graph(&graph);
                             }
                         }
                     }
@@ -793,7 +881,7 @@ impl MemoryAgent {
             // 5. Periodic cluster refinement
             let tick = MAINTENANCE_TICK.fetch_add(1, Ordering::Relaxed) + 1;
             if tick % CLUSTER_REFINEMENT_INTERVAL == 0 && ctx.verified_ids.len() >= 2 {
-                match refine_clusters(&memory_manager, &ctx.verified_ids) {
+                match refine_clusters(&memory_manager, &ctx.verified_ids).await {
                     Ok(stats) => {
                         if stats.clusters_touched > 0 {
                             memory::add_event(MemoryEventKind::MaintenanceCluster {
@@ -821,6 +909,17 @@ impl MemoryAgent {
                 }
             }
 
+            // 7. Periodic garbage collection: prune low-confidence memories
+            let mut pruned = 0usize;
+            if tick % (CLUSTER_REFINEMENT_INTERVAL * 5) == 0 {
+                match prune_low_confidence(&memory_manager) {
+                    Ok(count) => pruned = count,
+                    Err(e) => {
+                        crate::logging::info(&format!("Memory pruning failed: {}", e));
+                    }
+                }
+            }
+
             let latency_ms = started.elapsed().as_millis() as u64;
             record_maintenance_stat(latency_ms);
             memory::add_event(MemoryEventKind::MaintenanceComplete { latency_ms });
@@ -828,7 +927,7 @@ impl MemoryAgent {
                 use crate::tui::info_widget::{StepResult, StepStatus};
                 p.maintain = StepStatus::Done;
                 p.maintain_result = Some(StepResult {
-                    summary: format!("{}L {}↑ {}↓", links, boosted, decayed),
+                    summary: format!("{}L {}↑ {}↓ {}P", links, boosted, decayed, pruned),
                     latency_ms,
                 });
             });
@@ -845,9 +944,10 @@ impl MemoryAgent {
 struct ClusterRefinementStats {
     clusters_touched: usize,
     member_links: usize,
+    cluster_id: Option<String>,
 }
 
-fn refine_clusters(
+async fn refine_clusters(
     manager: &MemoryManager,
     verified_ids: &[String],
 ) -> Result<ClusterRefinementStats> {
@@ -880,6 +980,27 @@ fn refine_clusters(
             out.clusters_touched += stats.clusters_touched;
             out.member_links += stats.member_links;
             project_changed = true;
+
+            if let Some(cluster_id) = stats.cluster_id.as_ref() {
+                if project_graph
+                    .clusters
+                    .get(cluster_id)
+                    .and_then(|c| c.name.as_deref())
+                    .map(|n| n.ends_with("co-relevance"))
+                    .unwrap_or(false)
+                {
+                    let member_contents: Vec<String> = project_ids
+                        .iter()
+                        .filter_map(|id| project_graph.get_memory(id))
+                        .map(|m| m.content[..m.content.len().min(80)].to_string())
+                        .collect();
+                    if let Ok(name) = name_cluster_with_sidecar(&member_contents).await {
+                        if let Some(cluster) = project_graph.clusters.get_mut(cluster_id) {
+                            cluster.name = Some(name);
+                        }
+                    }
+                }
+            }
         }
     }
     if global_ids.len() >= 2 {
@@ -899,6 +1020,25 @@ fn refine_clusters(
     }
 
     Ok(out)
+}
+
+async fn name_cluster_with_sidecar(member_contents: &[String]) -> Result<String> {
+    let sidecar = Sidecar::new();
+    let mut prompt = String::from("These memories were retrieved together. Give this cluster a short descriptive name (2-4 words, no quotes):\n");
+    for (i, content) in member_contents.iter().enumerate() {
+        prompt.push_str(&format!("{}. {}\n", i + 1, content));
+    }
+    let name = sidecar
+        .complete(
+            "You name memory clusters. Reply with ONLY the cluster name, 2-4 words, no quotes or punctuation.",
+            &prompt,
+        )
+        .await?;
+    let name = name.trim().to_string();
+    if name.is_empty() || name.len() > 60 {
+        anyhow::bail!("Invalid cluster name");
+    }
+    Ok(name)
 }
 
 fn apply_cluster_assignment(
@@ -949,7 +1089,60 @@ fn apply_cluster_assignment(
     ClusterRefinementStats {
         clusters_touched: 1,
         member_links: linked,
+        cluster_id: Some(cluster_id),
     }
+}
+
+fn prune_low_confidence(manager: &MemoryManager) -> Result<usize> {
+    let min_confidence = 0.15;
+    let min_age_hours = 24;
+    let now = Utc::now();
+    let mut pruned = 0usize;
+
+    for scope in &["project", "global"] {
+        let mut graph = if *scope == "project" {
+            manager.load_project_graph()?
+        } else {
+            manager.load_global_graph()?
+        };
+
+        let ids_to_prune: Vec<String> = graph
+            .memories
+            .iter()
+            .filter(|(_, entry)| {
+                let age_hours = (now - entry.created_at).num_hours();
+                age_hours >= min_age_hours && entry.confidence < min_confidence
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        if ids_to_prune.is_empty() {
+            continue;
+        }
+
+        for id in &ids_to_prune {
+            graph.remove_memory(id);
+            pruned += 1;
+        }
+
+        if *scope == "project" {
+            manager.save_project_graph(&graph)?;
+        } else {
+            manager.save_global_graph(&graph)?;
+        }
+
+        if !ids_to_prune.is_empty() {
+            crate::logging::info(&format!(
+                "Pruned {} low-confidence {} memories (conf < {}, age >= {}h)",
+                ids_to_prune.len(),
+                scope,
+                min_confidence,
+                min_age_hours
+            ));
+        }
+    }
+
+    Ok(pruned)
 }
 
 fn stable_hash(values: &[String]) -> u64 {
@@ -1284,11 +1477,22 @@ pub fn trigger_final_extraction(transcript: String, session_id: String) {
         ));
 
         let sidecar = crate::sidecar::Sidecar::new();
-        let result = sidecar.extract_memories(&transcript).await;
+        let manager = crate::memory::MemoryManager::new();
+
+        let existing: Vec<String> = manager
+            .list_all()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.active)
+            .map(|e| e.content)
+            .collect();
+
+        let result = sidecar
+            .extract_memories_with_existing(&transcript, &existing)
+            .await;
 
         match result {
             Ok(extracted) if !extracted.is_empty() => {
-                let manager = crate::memory::MemoryManager::new();
                 let mut stored_count = 0;
 
                 for mem in &extracted {
