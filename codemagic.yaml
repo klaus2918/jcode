@@ -6,6 +6,8 @@ workflows:
     integrations:
       app_store_connect: codemagic
     environment:
+      groups:
+        - code-signing
       vars:
         BUNDLE_ID: com.jcode.mobile
         SCHEME: JCodeMobile
