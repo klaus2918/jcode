@@ -80,18 +80,10 @@ fn tokens_path() -> std::path::PathBuf {
 
 pub fn load_credentials() -> Result<GoogleCredentials> {
     let path = credentials_path();
-    let data = std::fs::read_to_string(&path).map_err(|_| {
-        anyhow::anyhow!(
-            "No Google credentials found at {}.\n\
-             To set up Gmail integration:\n\
-             1. Go to https://console.cloud.google.com/\n\
-             2. Create a project and enable the Gmail API\n\
-             3. Create OAuth 2.0 credentials (Desktop application)\n\
-             4. Save the JSON to {}",
-            path.display(),
-            path.display()
-        )
-    })?;
+    let data = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(_) => return Err(anyhow::anyhow!("no_credentials")),
+    };
 
     if let Ok(creds) = serde_json::from_str::<GoogleCredentials>(&data) {
         return Ok(creds);
@@ -118,6 +110,16 @@ pub fn load_credentials() -> Result<GoogleCredentials> {
         client_id: inner.client_id,
         client_secret: inner.client_secret,
     })
+}
+
+pub fn save_credentials(creds: &GoogleCredentials) -> Result<()> {
+    let path = credentials_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let data = serde_json::to_string_pretty(creds)?;
+    std::fs::write(&path, data)?;
+    Ok(())
 }
 
 pub fn load_tokens() -> Result<GoogleTokens> {
