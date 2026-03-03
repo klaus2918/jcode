@@ -2049,10 +2049,9 @@ pub fn render_image_widget(
     }
 
     // Render failed - clear the area to avoid showing stale content
-    use ratatui::widgets::Clear;
-    let clear_area = area.intersection(buf_area);
-    if clear_area.width > 0 && clear_area.height > 0 {
-        Clear.render(clear_area, buf);
+    let clr_area = area.intersection(buf_area);
+    if clr_area.width > 0 && clr_area.height > 0 {
+        super::color_support::clear_buf(clr_area, buf);
     }
 
     0
@@ -2222,10 +2221,9 @@ fn render_image_widget_fit_inner(
         }
     }
 
-    use ratatui::widgets::Clear;
-    let clear_area = area.intersection(buf_area);
-    if clear_area.width > 0 && clear_area.height > 0 {
-        Clear.render(clear_area, buf);
+    let clr_area = area.intersection(buf_area);
+    if clr_area.width > 0 && clr_area.height > 0 {
+        super::color_support::clear_buf(clr_area, buf);
     }
 
     0
@@ -2412,13 +2410,11 @@ pub fn clear_image_area(area: Rect, buf: &mut Buffer) {
         return;
     }
 
-    // Use ratatui's Clear widget
-    use ratatui::widgets::Clear;
     let clamped = area.intersection(*buf.area());
     if clamped.width == 0 || clamped.height == 0 {
         return;
     }
-    Clear.render(clamped, buf);
+    super::color_support::clear_buf(clamped, buf);
 }
 
 /// Invalidate last render state for a hash (call when content changes)

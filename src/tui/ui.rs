@@ -10,7 +10,7 @@ use super::{is_unexpected_cache_miss, DisplayMessage, ProcessingStatus, TuiState
 use crate::message::ToolCall;
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -59,6 +59,10 @@ fn update_user_prompt_positions(positions: &[usize]) {
 }
 
 use super::color_support::rgb;
+
+fn clear_area(frame: &mut Frame, area: Rect) {
+    super::color_support::clear_buf(area, frame.buffer_mut());
+}
 
 fn user_color() -> Color { rgb(138, 180, 248) }
 fn ai_color() -> Color { rgb(129, 199, 132) }
@@ -2342,7 +2346,7 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
             if area.width == 0 || area.height == 0 {
                 return;
             }
-            frame.render_widget(Clear, area);
+            clear_area(frame, area);
             let lines = vec![
                 Line::from(Span::styled(
                     "rendering error recovered",
@@ -2447,7 +2451,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // This is critical on macOS terminals where ratatui's diff-based updates
     // can leave outdated content when layout dimensions change between frames
     // (e.g., diagram pane toggling, streaming text clearing, tool calls finishing).
-    frame.render_widget(Clear, area);
+    // Uses clear_area() which sets an explicit dark bg on non-truecolor terminals
+    // to prevent white block artifacts on light-theme Terminal.app.
+    clear_area(frame, area);
 
     if let Some(scroll) = app.changelog_scroll() {
         draw_changelog_overlay(frame, area, scroll);
@@ -4725,9 +4731,9 @@ fn rect_within_bounds(rect: Rect, bounds: Rect) -> bool {
 }
 
 fn draw_changelog_overlay(frame: &mut Frame, area: Rect, scroll: usize) {
-    use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+    use ratatui::widgets::{Block, Borders, Paragraph};
 
-    frame.render_widget(Clear, area);
+    clear_area(frame, area);
 
     let groups = get_grouped_changelog();
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -4947,7 +4953,7 @@ fn draw_pinned_diagram(
     pane_position: crate::config::DiagramPanePosition,
     pane_animating: bool,
 ) {
-    use ratatui::widgets::{BorderType, Clear, Paragraph, Wrap};
+    use ratatui::widgets::{BorderType, Paragraph, Wrap};
 
     if area.width < 5 || area.height < 3 {
         return;
@@ -5025,7 +5031,7 @@ fn draw_pinned_diagram(
     if inner.width > 0 && inner.height > 0 {
         let mut rendered = 0u16;
         if pane_animating {
-            frame.render_widget(Clear, inner);
+            clear_area(frame, inner);
             let placeholder =
                 super::mermaid::diagram_placeholder_lines(diagram.width, diagram.height);
             let paragraph = Paragraph::new(placeholder).wrap(Wrap { trim: true });
@@ -5056,7 +5062,7 @@ fn draw_pinned_diagram(
         if rendered > 0 && super::mermaid::is_video_export_mode() {
             super::mermaid::write_video_export_marker(diagram.hash, inner, frame.buffer_mut());
         } else if rendered == 0 {
-            frame.render_widget(Clear, inner);
+            clear_area(frame, inner);
             let placeholder =
                 super::mermaid::diagram_placeholder_lines(diagram.width, diagram.height);
             let paragraph = Paragraph::new(placeholder).wrap(Wrap { trim: true });
@@ -5150,7 +5156,7 @@ fn draw_messages(
 
     // Clear message pane before repainting to prevent stale glyph artifacts
     // during streaming/incremental markdown updates.
-    frame.render_widget(Clear, area);
+    clear_area(frame, area);
 
     // Render text first
     if let Some(anim) = active_prompt_anim {
@@ -5367,7 +5373,7 @@ fn draw_messages(
                         width: area.width.saturating_sub(1),
                         height: line_count,
                     };
-                    frame.render_widget(Clear, preview_area);
+                    clear_area(frame, preview_area);
                     frame.render_widget(
                         Paragraph::new(preview_lines),
                         preview_area,
