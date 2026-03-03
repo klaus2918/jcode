@@ -12,10 +12,10 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph},
 };
-use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Last known max scroll value from the renderer. Updated each frame.
@@ -2187,6 +2187,31 @@ fn body_cache() -> &'static Mutex<BodyCacheState> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FullPrepCacheKey {
+    width: u16,
+    height: u16,
+    diff_mode: crate::config::DiffDisplayMode,
+    messages_version: u64,
+    diagram_mode: crate::config::DiagramDisplayMode,
+    centered: bool,
+    is_processing: bool,
+    streaming_text_len: usize,
+    startup_active: bool,
+}
+
+#[derive(Default)]
+struct FullPrepCacheState {
+    key: Option<FullPrepCacheKey>,
+    prepared: Option<Arc<PreparedMessages>>,
+}
+
+static FULL_PREP_CACHE: OnceLock<Mutex<FullPrepCacheState>> = OnceLock::new();
+
+fn full_prep_cache() -> &'static Mutex<FullPrepCacheState> {
+    FULL_PREP_CACHE.get_or_init(|| Mutex::new(FullPrepCacheState::default()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct MessageCacheKey {
     width: u16,
     diff_mode: crate::config::DiffDisplayMode,
@@ -2581,13 +2606,18 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let diff_mode = app.diff_mode();
     let pin_images = app.pin_images();
     let collect_diffs = diff_mode.is_pinned();
-    let pinned_content = if collect_diffs || pin_images {
-        collect_pinned_content(app.display_messages(), collect_diffs, pin_images)
+    let has_pinned_content = if collect_diffs || pin_images {
+        collect_pinned_content_cached(
+            app.display_messages(),
+            collect_diffs,
+            pin_images,
+            app.display_messages_version(),
+        )
     } else {
-        Vec::new()
+        false
     };
 
-    let (chat_area, diff_pane_area) = if !pinned_content.is_empty() {
+    let (chat_area, diff_pane_area) = if has_pinned_content {
         const MIN_DIFF_WIDTH: u16 = 30;
         const MIN_CHAT_WIDTH: u16 = 20;
         let max_diff = chat_area.width.saturating_sub(MIN_CHAT_WIDTH);
@@ -2806,14 +2836,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     if let Some(diff_area) = diff_pane_area {
-        if !pinned_content.is_empty() {
+        if has_pinned_content {
             if let Some(ref mut capture) = debug_capture {
                 capture.render_order.push("draw_pinned_content".to_string());
             }
-            draw_pinned_content(
+            draw_pinned_content_cached(
                 frame,
                 diff_area,
-                &pinned_content,
                 app.diff_pane_scroll(),
                 app.diff_line_wrap(),
                 app.diff_pane_focus(),
@@ -2954,13 +2983,56 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 }
 
-fn prepare_messages(app: &dyn TuiState, width: u16, height: u16) -> PreparedMessages {
+fn prepare_messages(app: &dyn TuiState, width: u16, height: u16) -> Arc<PreparedMessages> {
+    let startup_active = super::startup_animation_active(app);
+
+    let key = FullPrepCacheKey {
+        width,
+        height,
+        diff_mode: app.diff_mode(),
+        messages_version: app.display_messages_version(),
+        diagram_mode: app.diagram_mode(),
+        centered: app.centered_mode(),
+        is_processing: app.is_processing(),
+        streaming_text_len: app.streaming_text().len(),
+        startup_active,
+    };
+
+    {
+        let mut cache = match full_prep_cache().lock() {
+            Ok(c) => c,
+            Err(poisoned) => {
+                let mut c = poisoned.into_inner();
+                c.key = None;
+                c.prepared = None;
+                c
+            }
+        };
+        if cache.key.as_ref() == Some(&key) {
+            if let Some(prepared) = cache.prepared.clone() {
+                return prepared;
+            }
+        }
+    }
+
+    let prepared = Arc::new(prepare_messages_inner(app, width, height, startup_active));
+
+    {
+        if let Ok(mut cache) = full_prep_cache().lock() {
+            cache.key = Some(key);
+            cache.prepared = Some(prepared.clone());
+        }
+    }
+
+    prepared
+}
+
+fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_active: bool) -> PreparedMessages {
     // Build the top header (chroma animated name/model/badges)
     let mut all_header_lines = build_persistent_header(app, width);
     // Add the rest of the header (model ID, changelog, MCPs, etc.)
     all_header_lines.extend(build_header_lines(app, width));
     let header_prepared = wrap_lines(all_header_lines, &[], width);
-    let startup_active = super::startup_animation_active(app);
     let startup_prepared = if startup_active {
         wrap_lines(build_startup_animation_lines(app, width), &[], width)
     } else {
@@ -4579,12 +4651,12 @@ fn compute_visible_margins(
     centered: bool,
 ) -> info_widget::Margins {
     let visible_height = area.height as usize;
-    let mut mask = vec![false; lines.len()];
-    for &idx in user_line_indices {
-        if idx < mask.len() {
-            mask[idx] = true;
-        }
-    }
+    let visible_end = scroll + visible_height;
+    let user_set: HashSet<usize> = user_line_indices
+        .iter()
+        .copied()
+        .filter(|&idx| idx >= scroll && idx < visible_end)
+        .collect();
 
     let mut right_widths = Vec::with_capacity(visible_height);
     let mut left_widths = Vec::with_capacity(visible_height);
@@ -4593,7 +4665,7 @@ fn compute_visible_margins(
         let line_idx = scroll + row;
         if line_idx < lines.len() {
             let mut used = lines[line_idx].width().min(area.width as usize) as u16;
-            if mask[line_idx] && area.width > 0 {
+            if user_set.contains(&line_idx) && area.width > 0 {
                 // User lines have a bar on the right, so add 1 to used width
                 used = used.saturating_add(1).min(area.width);
             }
@@ -8575,6 +8647,77 @@ enum PinnedContentEntry {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PinnedCacheKey {
+    messages_version: u64,
+    collect_diffs: bool,
+    collect_images: bool,
+}
+
+struct PinnedCacheState {
+    key: Option<PinnedCacheKey>,
+    entries: Vec<PinnedContentEntry>,
+    rendered_lines: Option<PinnedRenderedCache>,
+}
+
+struct PinnedRenderedCache {
+    inner_width: u16,
+    line_wrap: bool,
+    lines: Vec<Line<'static>>,
+    image_placements: Vec<PinnedImagePlacement>,
+}
+
+struct PinnedImagePlacement {
+    after_text_line: usize,
+    hash: u64,
+    rows: u16,
+}
+
+impl Default for PinnedCacheState {
+    fn default() -> Self {
+        Self {
+            key: None,
+            entries: Vec::new(),
+            rendered_lines: None,
+        }
+    }
+}
+
+static PINNED_CACHE: OnceLock<Mutex<PinnedCacheState>> = OnceLock::new();
+
+fn pinned_cache() -> &'static Mutex<PinnedCacheState> {
+    PINNED_CACHE.get_or_init(|| Mutex::new(PinnedCacheState::default()))
+}
+
+fn collect_pinned_content_cached(
+    messages: &[DisplayMessage],
+    collect_diffs: bool,
+    collect_images: bool,
+    messages_version: u64,
+) -> bool {
+    let key = PinnedCacheKey {
+        messages_version,
+        collect_diffs,
+        collect_images,
+    };
+
+    let mut cache = match pinned_cache().lock() {
+        Ok(c) => c,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    if cache.key.as_ref() == Some(&key) {
+        return !cache.entries.is_empty();
+    }
+
+    let entries = collect_pinned_content(messages, collect_diffs, collect_images);
+    let has_entries = !entries.is_empty();
+    cache.key = Some(key);
+    cache.entries = entries;
+    cache.rendered_lines = None;
+    has_entries
+}
+
 fn collect_pinned_content(
     messages: &[DisplayMessage],
     collect_diffs: bool,
@@ -8727,6 +8870,287 @@ fn get_image_dimensions_from_path(path: &std::path::Path) -> Option<(u32, u32)> 
         return Some((w, h));
     }
     None
+}
+
+fn draw_pinned_content_cached(
+    frame: &mut Frame,
+    area: Rect,
+    scroll: usize,
+    line_wrap: bool,
+    focused: bool,
+) {
+    use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+
+    if area.width < 10 || area.height < 3 {
+        return;
+    }
+
+    let mut cache = match pinned_cache().lock() {
+        Ok(c) => c,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    if cache.entries.is_empty() {
+        return;
+    }
+
+    let entries = &cache.entries;
+
+    let total_diffs = entries
+        .iter()
+        .filter(|e| matches!(e, PinnedContentEntry::Diff { .. }))
+        .count();
+    let total_images = entries
+        .iter()
+        .filter(|e| matches!(e, PinnedContentEntry::Image { .. }))
+        .count();
+    let total_additions: usize = entries
+        .iter()
+        .map(|e| match e {
+            PinnedContentEntry::Diff { additions, .. } => *additions,
+            _ => 0,
+        })
+        .sum();
+    let total_deletions: usize = entries
+        .iter()
+        .map(|e| match e {
+            PinnedContentEntry::Diff { deletions, .. } => *deletions,
+            _ => 0,
+        })
+        .sum();
+
+    let mut title_parts = vec![Span::styled(" pinned ", Style::default().fg(tool_color()))];
+    if total_diffs > 0 {
+        title_parts.push(Span::styled(
+            format!("+{}", total_additions),
+            Style::default().fg(diff_add_color()),
+        ));
+        title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
+        title_parts.push(Span::styled(
+            format!("-{}", total_deletions),
+            Style::default().fg(diff_del_color()),
+        ));
+        title_parts.push(Span::styled(
+            format!(" {}f", total_diffs),
+            Style::default().fg(dim_color()),
+        ));
+    }
+    if total_images > 0 {
+        if total_diffs > 0 {
+            title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
+        }
+        title_parts.push(Span::styled(
+            format!("📷{}", total_images),
+            Style::default().fg(dim_color()),
+        ));
+    }
+    title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
+
+    let border_color = if focused { tool_color() } else { dim_color() };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(Line::from(title_parts));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let needs_rebuild = match &cache.rendered_lines {
+        Some(rendered) => rendered.inner_width != inner.width || rendered.line_wrap != line_wrap,
+        None => true,
+    };
+
+    if needs_rebuild {
+        let has_protocol = super::mermaid::protocol_type().is_some();
+        let mut text_lines: Vec<Line<'static>> = Vec::new();
+        let mut image_placements: Vec<PinnedImagePlacement> = Vec::new();
+
+        for (i, entry) in entries.iter().enumerate() {
+            if i > 0 {
+                text_lines.push(Line::from(""));
+            }
+
+            match entry {
+                PinnedContentEntry::Diff {
+                    file_path,
+                    lines: diff_lines,
+                    additions,
+                    deletions,
+                } => {
+                    let short_path = file_path
+                        .rsplit('/')
+                        .take(2)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("/");
+
+                    let file_ext = std::path::Path::new(file_path)
+                        .extension()
+                        .and_then(|e| e.to_str());
+
+                    text_lines.push(Line::from(vec![
+                        Span::styled("── ", Style::default().fg(dim_color())),
+                        Span::styled(
+                            short_path,
+                            Style::default()
+                                .fg(rgb(180, 200, 255))
+                                .add_modifier(ratatui::style::Modifier::BOLD),
+                        ),
+                        Span::styled(" (", Style::default().fg(dim_color())),
+                        Span::styled(
+                            format!("+{}", additions),
+                            Style::default().fg(diff_add_color()),
+                        ),
+                        Span::styled(" ", Style::default().fg(dim_color())),
+                        Span::styled(
+                            format!("-{}", deletions),
+                            Style::default().fg(diff_del_color()),
+                        ),
+                        Span::styled(")", Style::default().fg(dim_color())),
+                    ]));
+
+                    for line in diff_lines {
+                        let base_color = if line.kind == DiffLineKind::Add {
+                            diff_add_color()
+                        } else {
+                            diff_del_color()
+                        };
+
+                        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+                            line.prefix.clone(),
+                            Style::default().fg(base_color),
+                        )];
+
+                        if !line.content.is_empty() {
+                            let highlighted =
+                                markdown::highlight_line(line.content.as_str(), file_ext);
+                            for span in highlighted {
+                                let tinted = tint_span_with_diff_color(span, base_color);
+                                spans.push(tinted);
+                            }
+                        }
+
+                        text_lines.push(Line::from(spans));
+                    }
+                }
+                PinnedContentEntry::Image {
+                    file_path,
+                    hash,
+                    width: img_w,
+                    height: img_h,
+                } => {
+                    let short_path = file_path
+                        .rsplit('/')
+                        .take(2)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("/");
+
+                    text_lines.push(Line::from(vec![
+                        Span::styled("── 📷 ", Style::default().fg(dim_color())),
+                        Span::styled(
+                            short_path,
+                            Style::default()
+                                .fg(rgb(180, 200, 255))
+                                .add_modifier(ratatui::style::Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(" {}×{}", img_w, img_h),
+                            Style::default().fg(dim_color()),
+                        ),
+                    ]));
+
+                    if has_protocol {
+                        let img_rows = inner.height.min(12).max(4);
+                        image_placements.push(PinnedImagePlacement {
+                            after_text_line: text_lines.len(),
+                            hash: *hash,
+                            rows: img_rows,
+                        });
+                        for _ in 0..img_rows {
+                            text_lines.push(Line::from(""));
+                        }
+                    }
+                }
+            }
+        }
+
+        if text_lines.is_empty() {
+            text_lines.push(Line::from(Span::styled(
+                "No content yet",
+                Style::default().fg(dim_color()),
+            )));
+        }
+
+        cache.rendered_lines = Some(PinnedRenderedCache {
+            inner_width: inner.width,
+            line_wrap,
+            lines: text_lines,
+            image_placements,
+        });
+    }
+
+    let rendered = cache.rendered_lines.as_ref().unwrap();
+    let total_lines = rendered.lines.len();
+    PINNED_PANE_TOTAL_LINES.store(total_lines, Ordering::Relaxed);
+
+    let max_scroll = total_lines.saturating_sub(inner.height as usize);
+    let clamped_scroll = scroll.min(max_scroll);
+
+    let visible_lines: Vec<Line<'static>> = rendered
+        .lines
+        .iter()
+        .skip(clamped_scroll)
+        .take(inner.height as usize)
+        .cloned()
+        .collect();
+
+    let paragraph = if line_wrap {
+        Paragraph::new(visible_lines).wrap(Wrap { trim: false })
+    } else {
+        Paragraph::new(visible_lines)
+    };
+    frame.render_widget(paragraph, inner);
+
+    let has_protocol = super::mermaid::protocol_type().is_some();
+    if has_protocol {
+        for placement in &rendered.image_placements {
+            let text_y = placement.after_text_line as u16;
+            if text_y < clamped_scroll as u16 {
+                continue;
+            }
+            let y_in_inner = text_y.saturating_sub(clamped_scroll as u16);
+            if y_in_inner >= inner.height {
+                continue;
+            }
+            let avail_rows = inner.height.saturating_sub(y_in_inner).min(placement.rows);
+            if avail_rows < 2 {
+                continue;
+            }
+            let img_area = Rect {
+                x: inner.x,
+                y: inner.y + y_in_inner,
+                width: inner.width,
+                height: avail_rows,
+            };
+            super::mermaid::render_image_widget_fit(
+                placement.hash,
+                img_area,
+                frame.buffer_mut(),
+                false,
+                false,
+            );
+        }
+    }
 }
 
 fn draw_pinned_content(

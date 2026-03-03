@@ -607,6 +607,25 @@ impl ClientApp {
                 self.next_request_id += 1;
                 let json = serde_json::to_string(&request)? + "\n";
                 w.write_all(json.as_bytes()).await?;
+
+                // Wait for the History event before entering the main draw loop so the
+                // first frame shows real provider/model rather than "unknown".
+                let wait_deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+                while !self.has_loaded_history {
+                    let remaining = wait_deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    match tokio::time::timeout(remaining, reader.read_line(&mut server_line)).await {
+                        Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                        Ok(Ok(_)) => {
+                            if let Ok(event) = serde_json::from_str::<ServerEvent>(&server_line) {
+                                self.handle_server_event(event);
+                            }
+                            server_line.clear();
+                        }
+                    }
+                }
             }
 
             // Main event loop
