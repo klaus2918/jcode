@@ -505,7 +505,7 @@ impl CopilotApiProvider {
             .collect()
     }
 
-    /// Send a streaming request to Copilot API
+    /// Send a streaming request to Copilot API with retry logic
     async fn stream_request(
         &self,
         messages: Vec<Value>,
@@ -513,18 +513,43 @@ impl CopilotApiProvider {
         is_user_initiated: bool,
         tx: mpsc::Sender<Result<StreamEvent>>,
     ) {
+        use crate::message::ConnectionPhase;
+
         self.wait_for_init().await;
         let model = self.model.read().unwrap().clone();
         let max_tokens: u32 = 16_384;
         let initiator = if is_user_initiated { "user" } else { "agent" };
 
-        crate::logging::info(&format!(
-            "Copilot request: X-Initiator={} model={}",
-            initiator, model
-        ));
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_BASE_DELAY_MS: u64 = 1000;
+        let mut last_error: Option<anyhow::Error> = None;
+        let mut attempted_auth_refresh = false;
 
-        // Try up to 2 times (initial + one retry after token refresh)
-        for attempt in 0..2 {
+        for attempt in 0..MAX_RETRIES {
+            if attempt > 0 {
+                let delay = RETRY_BASE_DELAY_MS * (1 << (attempt - 1));
+                crate::logging::info(&format!(
+                    "Retrying Copilot API request (attempt {}/{}) after {}ms",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    delay
+                ));
+                let _ = tx
+                    .send(Ok(StreamEvent::ConnectionPhase {
+                        phase: ConnectionPhase::Retrying {
+                            attempt: attempt + 1,
+                            max: MAX_RETRIES,
+                        },
+                    }))
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+
+            crate::logging::info(&format!(
+                "Copilot request: X-Initiator={} model={}",
+                initiator, model
+            ));
+
             let bearer_token = match self.get_bearer_token().await {
                 Ok(t) => t,
                 Err(e) => {
@@ -574,6 +599,12 @@ impl CopilotApiProvider {
             let resp = match resp {
                 Ok(r) => r,
                 Err(e) => {
+                    let error_str = e.to_string().to_lowercase();
+                    if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES {
+                        crate::logging::info(&format!("Transient Copilot error, will retry: {}", e));
+                        last_error = Some(anyhow::anyhow!("Copilot API request failed: {}", e));
+                        continue;
+                    }
                     let _ = tx
                         .send(Err(anyhow::anyhow!("Copilot API request failed: {}", e)))
                         .await;
@@ -583,20 +614,28 @@ impl CopilotApiProvider {
 
             let status = resp.status();
 
-            // On auth error, invalidate token and retry
-            if Self::is_auth_error(status) && attempt == 0 {
+            // On auth error, invalidate token and retry once
+            if Self::is_auth_error(status) && !attempted_auth_refresh {
+                attempted_auth_refresh = true;
                 *self.bearer_token.write().await = None;
                 crate::logging::info("Copilot bearer token expired, refreshing...");
+                last_error = Some(anyhow::anyhow!("Copilot auth error (HTTP {})", status));
                 continue;
             }
 
             if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
+                let body_text = resp.text().await.unwrap_or_default();
+                let error_str = format!("Copilot API error (HTTP {}): {}", status, body_text).to_lowercase();
+                if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES {
+                    crate::logging::info(&format!("Retryable Copilot HTTP error: {}", error_str));
+                    last_error = Some(anyhow::anyhow!("Copilot API error (HTTP {}): {}", status, body_text));
+                    continue;
+                }
                 let _ = tx
                     .send(Err(anyhow::anyhow!(
                         "Copilot API error (HTTP {}): {}",
                         status,
-                        body
+                        body_text
                     )))
                     .await;
                 return;
@@ -609,9 +648,34 @@ impl CopilotApiProvider {
                 }))
                 .await;
 
-            // Process SSE stream
-            self.process_sse_stream(resp, tx).await;
-            return;
+            // Process SSE stream - returns Err on timeout/stream errors
+            match self.process_sse_stream(resp, tx.clone()).await {
+                Ok(()) => return,
+                Err(e) => {
+                    let error_str = e.to_string().to_lowercase();
+                    if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES {
+                        crate::logging::info(&format!(
+                            "Copilot stream failed (attempt {}/{}), will retry: {}",
+                            attempt + 1, MAX_RETRIES, e
+                        ));
+                        last_error = Some(e);
+                        continue;
+                    }
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+            }
+        }
+
+        // All retries exhausted
+        if let Some(e) = last_error {
+            let _ = tx
+                .send(Err(anyhow::anyhow!(
+                    "Copilot: failed after {} retries: {}",
+                    MAX_RETRIES,
+                    e
+                )))
+                .await;
         }
     }
 
@@ -619,7 +683,7 @@ impl CopilotApiProvider {
         &self,
         resp: reqwest::Response,
         tx: mpsc::Sender<Result<StreamEvent>>,
-    ) {
+    ) -> Result<()> {
         use futures::StreamExt;
 
         const SSE_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
@@ -631,23 +695,28 @@ impl CopilotApiProvider {
         let mut current_tool_args = String::new();
         let mut input_tokens: u64 = 0;
         let mut output_tokens: u64 = 0;
+        let mut saw_any_data = false;
 
         loop {
             let chunk = match tokio::time::timeout(SSE_CHUNK_TIMEOUT, stream.next()).await {
                 Ok(Some(Ok(c))) => c,
                 Ok(Some(Err(e))) => {
-                    let _ = tx.send(Err(anyhow::anyhow!("Stream error: {}", e))).await;
-                    return;
+                    anyhow::bail!("Stream error: {}", e);
                 }
                 Ok(None) => break, // stream ended normally
                 Err(_) => {
-                    crate::logging::warn("Copilot SSE stream timed out (no data for 180s)");
-                    let _ = tx.send(Err(anyhow::anyhow!(
-                        "Stream read timeout: no data received for 180 seconds"
-                    ))).await;
-                    return;
+                    crate::logging::warn(&format!(
+                        "Copilot SSE stream timed out (no data for {}s, saw_data={})",
+                        SSE_CHUNK_TIMEOUT.as_secs(),
+                        saw_any_data
+                    ));
+                    anyhow::bail!(
+                        "Stream read timeout: no data received for {} seconds",
+                        SSE_CHUNK_TIMEOUT.as_secs()
+                    );
                 }
             };
+            saw_any_data = true;
 
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -677,7 +746,7 @@ impl CopilotApiProvider {
                         let _ = tx
                             .send(Ok(StreamEvent::MessageEnd { stop_reason: None }))
                             .await;
-                        return;
+                        return Ok(());
                     }
 
                     let parsed: Value = match serde_json::from_str(data) {
@@ -790,7 +859,31 @@ impl CopilotApiProvider {
         let _ = tx
             .send(Ok(StreamEvent::MessageEnd { stop_reason: None }))
             .await;
+        Ok(())
     }
+}
+
+fn is_retryable_error(error_str: &str) -> bool {
+    error_str.contains("connection reset")
+        || error_str.contains("connection closed")
+        || error_str.contains("connection refused")
+        || error_str.contains("broken pipe")
+        || error_str.contains("timed out")
+        || error_str.contains("timeout")
+        || error_str.contains("error decoding")
+        || error_str.contains("error reading")
+        || error_str.contains("unexpected eof")
+        || error_str.contains("incomplete message")
+        || error_str.contains("500 internal server error")
+        || error_str.contains("502 bad gateway")
+        || error_str.contains("503 service unavailable")
+        || error_str.contains("504 gateway timeout")
+        || error_str.contains("overloaded")
+        || error_str.contains("429 too many requests")
+        || error_str.contains("rate limit")
+        || error_str.contains("rate_limit")
+        || error_str.contains("stream error")
+        || error_str.contains("stream read timeout")
 }
 
 #[async_trait]
