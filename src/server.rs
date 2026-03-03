@@ -7029,9 +7029,16 @@ async fn handle_debug_client(
                             // Return full session metadata
                             let sessions_guard = sessions.read().await;
                             let members = swarm_members.read().await;
+                            let connections = client_connections.read().await;
+                            let connected_sessions: std::collections::HashSet<String> =
+                                connections.values().map(|c| c.session_id.clone()).collect();
                             let mut out: Vec<serde_json::Value> = Vec::new();
                             for (sid, agent_arc) in sessions_guard.iter() {
+                                if !connected_sessions.contains(sid) {
+                                    continue;
+                                }
                                 let member_info = members.get(sid);
+                                let member_status = member_info.map(|m| m.status.as_str());
                                 let (provider, model, is_processing, working_dir_str, token_usage): (
                                     Option<String>,
                                     Option<String>,
@@ -7043,7 +7050,7 @@ async fn handle_debug_client(
                                     (
                                         Some(agent.provider_name()),
                                         Some(agent.provider_model()),
-                                        false, // Not processing if we can lock
+                                        member_status == Some("running"),
                                         agent.working_dir().map(|p| p.to_string()),
                                         Some(serde_json::json!({
                                             "input": usage.input_tokens,
@@ -7053,7 +7060,7 @@ async fn handle_debug_client(
                                         })),
                                     )
                                 } else {
-                                    (None, None, true, None, None) // Processing if locked
+                                    (None, None, member_status == Some("running"), None, None)
                                 };
                                 let final_working_dir: Option<String> =
                                     working_dir_str.or_else(|| {
@@ -7795,7 +7802,9 @@ async fn handle_debug_client(
                                         None
                                     };
 
-                                    let is_locked = agent_state.is_none();
+                                    let is_processing = member_info
+                                        .map(|m| m.status == "running")
+                                        .unwrap_or(agent_state.is_none());
 
                                     Ok(serde_json::json!({
                                         "session_id": target_session,
@@ -7805,7 +7814,7 @@ async fn handle_debug_client(
                                         "detail": member_info.and_then(|m| m.detail.clone()),
                                         "joined_secs_ago": member_info.map(|m| m.joined_at.elapsed().as_secs()),
                                         "status_changed_secs_ago": member_info.map(|m| m.last_status_change.elapsed().as_secs()),
-                                        "is_processing": is_locked,
+                                        "is_processing": is_processing,
                                         "agent_state": agent_state,
                                     }).to_string())
                                 } else {
