@@ -4124,6 +4124,9 @@ impl App {
                             Ok(BusEvent::UpdateStatus(status)) => {
                                 self.handle_update_status(status);
                             }
+                            Ok(BusEvent::CompactionFinished) => {
+                                self.poll_compaction_completion();
+                            }
                             _ => {}
                         }
                     }
@@ -9154,9 +9157,10 @@ impl App {
             return false;
         }
 
-        // Wait for compaction to finish (up to 60s)
+        // Wait for compaction to finish (up to 60s), reacting to Bus event
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         self.status = ProcessingStatus::RunningTool("compacting context...".to_string());
+        let mut bus_rx = Bus::global().subscribe();
 
         loop {
             if std::time::Instant::now() >= deadline {
@@ -9185,7 +9189,12 @@ impl App {
                 break;
             }
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Wait for Bus notification or timeout (instead of sleep-polling)
+            let timeout = tokio::time::sleep(Duration::from_secs(1));
+            tokio::select! {
+                _ = bus_rx.recv() => {}
+                _ = timeout => {}
+            }
         }
 
         self.push_display_message(DisplayMessage::system(

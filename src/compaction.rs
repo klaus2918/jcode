@@ -294,7 +294,7 @@ impl CompactionManager {
 
         self.pending_cutoff = cutoff;
 
-        // Spawn background task
+        // Spawn background task that notifies via Bus when done
         self.pending_task = Some(tokio::spawn(async move {
             let start = std::time::Instant::now();
             let result = generate_summary(provider, messages_to_summarize, existing_summary).await;
@@ -303,6 +303,7 @@ impl CompactionManager {
                 start.elapsed().as_secs_f64(),
                 msg_count,
             ));
+            crate::bus::Bus::global().publish(crate::bus::BusEvent::CompactionFinished);
             result
         }));
     }
@@ -412,6 +413,7 @@ impl CompactionManager {
                 start.elapsed().as_secs_f64(),
                 msg_count,
             ));
+            crate::bus::Bus::global().publish(crate::bus::BusEvent::CompactionFinished);
             result
         }));
 

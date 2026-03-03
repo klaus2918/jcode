@@ -143,6 +143,8 @@ pub enum BusEvent {
     LoginCompleted(LoginCompleted),
     /// Update check status from background thread
     UpdateStatus(UpdateStatus),
+    /// Background compaction task finished (check_and_apply should be called)
+    CompactionFinished,
 }
 
 pub struct Bus {
