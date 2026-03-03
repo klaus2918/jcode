@@ -1,0 +1,68 @@
+workflows:
+  ios-testflight:
+    name: iOS TestFlight
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: codemagic
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.jcode.mobile
+      vars:
+        BUNDLE_ID: com.jcode.mobile
+        SCHEME: JCodeMobile
+        XCODE_VERSION: "16.2"
+      xcode: 16.2
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: master
+          include: true
+      path_patterns:
+        - pattern: "ios/**"
+          include: true
+    scripts:
+      - name: Install XcodeGen
+        script: brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          cd ios
+          xcodegen generate
+      - name: Set build number
+        script: |
+          BUILD_NUMBER=$((PROJECT_BUILD_NUMBER))
+          cd ios
+          agvtool new-version -all $BUILD_NUMBER || true
+          echo "Build number: $BUILD_NUMBER"
+      - name: Build and archive
+        script: |
+          cd ios
+          xcodebuild archive \
+            -project JCodeMobile.xcodeproj \
+            -scheme $SCHEME \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/JCodeMobile.xcarchive \
+            -allowProvisioningUpdates \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM=TAS6ARKDN7 \
+            CURRENT_PROJECT_VERSION=$BUILD_NUMBER
+      - name: Export IPA
+        script: |
+          cd ios
+          xcodebuild -exportArchive \
+            -archivePath build/JCodeMobile.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath build/export \
+            -allowProvisioningUpdates
+    artifacts:
+      - ios/build/export/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        beta_groups:
+          - "App Store Connect Users"
