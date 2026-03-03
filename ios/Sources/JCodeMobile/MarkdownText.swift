@@ -4,49 +4,65 @@ struct MarkdownText: View {
     let text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: JC.Spacing.sm) {
             ForEach(Array(parse(text).enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .paragraph(let text):
                     Text(inlineMarkdown(text))
+                        .font(JC.Fonts.body)
+                        .foregroundStyle(JC.Colors.textPrimary)
                         .textSelection(.enabled)
 
                 case .code(let language, let code):
                     VStack(alignment: .leading, spacing: 0) {
                         if !language.isEmpty {
-                            Text(language)
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 10)
-                                .padding(.top, 6)
-                                .padding(.bottom, 2)
+                            HStack {
+                                Text(language)
+                                    .font(JC.Fonts.monoCaption)
+                                    .foregroundStyle(JC.Colors.textTertiary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, JC.Spacing.md)
+                            .padding(.top, JC.Spacing.sm)
+                            .padding(.bottom, JC.Spacing.xs)
                         }
                         ScrollView(.horizontal, showsIndicators: false) {
                             Text(code)
-                                .font(.system(.caption, design: .monospaced))
+                                .font(JC.Fonts.mono)
+                                .foregroundStyle(JC.Colors.textPrimary)
                                 .textSelection(.enabled)
-                                .padding(10)
+                                .padding(.horizontal, JC.Spacing.md)
+                                .padding(.vertical, JC.Spacing.sm)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.codeBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(JC.Colors.codeBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: JC.Radius.sm, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: JC.Radius.sm, style: .continuous)
+                            .stroke(JC.Colors.codeBorder, lineWidth: 1)
+                    )
 
                 case .heading(let level, let text):
                     Text(inlineMarkdown(text))
                         .font(headingFont(level))
+                        .foregroundStyle(JC.Colors.textPrimary)
                         .textSelection(.enabled)
 
                 case .listItem(let text):
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("•")
-                            .foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: JC.Spacing.sm) {
+                        Text("\u{2022}")
+                            .font(JC.Fonts.body)
+                            .foregroundStyle(JC.Colors.accent)
                         Text(inlineMarkdown(text))
+                            .font(JC.Fonts.body)
+                            .foregroundStyle(JC.Colors.textPrimary)
                             .textSelection(.enabled)
                     }
 
                 case .divider:
                     Divider()
+                        .overlay(JC.Colors.border)
                 }
             }
         }
@@ -54,10 +70,10 @@ struct MarkdownText: View {
 
     private func headingFont(_ level: Int) -> Font {
         switch level {
-        case 1: .title3.weight(.bold)
-        case 2: .headline
-        case 3: .subheadline.weight(.semibold)
-        default: .subheadline.weight(.medium)
+        case 1: JC.Fonts.title2
+        case 2: JC.Fonts.headline
+        case 3: .system(size: 15, weight: .semibold)
+        default: .system(size: 14, weight: .medium)
         }
     }
 
@@ -150,14 +166,4 @@ private func parse(_ text: String) -> [Block] {
     }
 
     return blocks
-}
-
-private extension Color {
-    static var codeBackground: Color {
-        #if canImport(UIKit)
-        Color(uiColor: .tertiarySystemBackground)
-        #else
-        Color.gray.opacity(0.1)
-        #endif
-    }
 }

@@ -53,7 +53,8 @@ struct PhotoPickerButton: View {
     var body: some View {
         PhotosPicker(selection: $selectedItems, maxSelectionCount: 4, matching: .images) {
             Image(systemName: "photo.on.rectangle")
-                .font(.title3)
+                .font(.system(size: 18))
+                .foregroundStyle(JC.Colors.textTertiary)
         }
         .onChange(of: selectedItems) {
             Task {
@@ -80,7 +81,8 @@ struct CameraButton: View {
             showCamera = true
         } label: {
             Image(systemName: "camera")
-                .font(.title3)
+                .font(.system(size: 18))
+                .foregroundStyle(JC.Colors.textTertiary)
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPickerView { image in
@@ -97,30 +99,36 @@ struct AttachmentStrip: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: JC.Spacing.sm) {
                 ForEach(attachments) { attachment in
                     ZStack(alignment: .topTrailing) {
                         Image(uiImage: attachment.image)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
-                            .frame(width: 60, height: 60)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .frame(width: 56, height: 56)
+                            .clipShape(RoundedRectangle(cornerRadius: JC.Radius.sm))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: JC.Radius.sm)
+                                    .stroke(JC.Colors.border, lineWidth: 1)
+                            )
 
                         Button {
-                            attachments.removeAll { $0.id == attachment.id }
+                            withAnimation(JC.Animation.quick) {
+                                attachments.removeAll { $0.id == attachment.id }
+                            }
                         } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .font(.caption)
+                                .font(.system(size: 16))
                                 .foregroundStyle(.white)
-                                .background(Circle().fill(.black.opacity(0.6)))
+                                .background(Circle().fill(Color.black.opacity(0.7)))
                         }
                         .offset(x: 4, y: -4)
                     }
                 }
             }
-            .padding(.horizontal, 4)
+            .padding(.horizontal, JC.Spacing.xs)
         }
-        .frame(height: 68)
+        .frame(height: 64)
     }
 }
 

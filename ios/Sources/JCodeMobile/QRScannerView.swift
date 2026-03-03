@@ -13,7 +13,9 @@ struct QRScannerView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
+            ZStack {
+                JC.Colors.background.ignoresSafeArea()
+
                 if cameraPermissionGranted {
                     QRCameraView { uri in
                         if let parsed = parseJCodeURI(uri) {
@@ -23,21 +25,41 @@ struct QRScannerView: View {
                     }
                     .ignoresSafeArea()
                     .overlay(alignment: .bottom) {
-                        Text("Point at the QR code from **jcode pair**")
-                            .font(.subheadline)
-                            .padding(12)
-                            .background(.ultraThinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                            .padding(.bottom, 40)
+                        VStack(spacing: JC.Spacing.sm) {
+                            Image(systemName: "viewfinder")
+                                .font(.system(size: 24))
+                                .foregroundStyle(JC.Colors.accent)
+                            Text("Point at the QR code from **jcode pair**")
+                                .font(JC.Fonts.callout)
+                                .foregroundStyle(JC.Colors.textPrimary)
+                        }
+                        .padding(JC.Spacing.lg)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: JC.Radius.md))
+                        .padding(.bottom, 40)
                     }
                 } else if showPermissionDenied {
-                    ContentUnavailableView(
-                        "Camera Access Required",
-                        systemImage: "camera.fill",
-                        description: Text("Grant camera access in Settings to scan QR codes.")
-                    )
+                    VStack(spacing: JC.Spacing.lg) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 40))
+                            .foregroundStyle(JC.Colors.textTertiary)
+                        Text("Camera Access Required")
+                            .font(JC.Fonts.title2)
+                            .foregroundStyle(JC.Colors.textPrimary)
+                        Text("Grant camera access in Settings to scan QR codes.")
+                            .font(JC.Fonts.callout)
+                            .foregroundStyle(JC.Colors.textSecondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(JC.Spacing.xxl)
                 } else {
-                    ProgressView("Requesting camera access...")
+                    VStack(spacing: JC.Spacing.md) {
+                        ProgressView()
+                            .tint(JC.Colors.accent)
+                        Text("Requesting camera access...")
+                            .font(JC.Fonts.callout)
+                            .foregroundStyle(JC.Colors.textSecondary)
+                    }
                 }
             }
             .navigationTitle("Scan QR Code")
@@ -45,9 +67,11 @@ struct QRScannerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { isPresented = false }
+                        .foregroundStyle(JC.Colors.textSecondary)
                 }
             }
         }
+        .presentationBackground(JC.Colors.background)
         .task {
             await requestCameraAccess()
         }
