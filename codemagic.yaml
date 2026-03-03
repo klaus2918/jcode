@@ -6,13 +6,10 @@ workflows:
     integrations:
       app_store_connect: codemagic
     environment:
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.jcode.mobile
       vars:
         BUNDLE_ID: com.jcode.mobile
         SCHEME: JCodeMobile
-        XCODE_VERSION: "16.2"
+        TEAM_ID: TAS6ARKDN7
       xcode: 16.2
     triggering:
       events:
@@ -27,15 +24,29 @@ workflows:
         script: |
           cd ios
           xcodegen generate
+      - name: Set up code signing
+        script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+          keychain add-certificates
+          xcode-project use-profiles
       - name: Set build number
         script: |
-          BUILD_NUMBER=$((PROJECT_BUILD_NUMBER))
+          BUILD_NUMBER=$PROJECT_BUILD_NUMBER
           cd ios
           agvtool new-version -all $BUILD_NUMBER || true
           echo "Build number: $BUILD_NUMBER"
-      - name: Build and archive
+      - name: Build
         script: |
           cd ios
+          xcodebuild build-for-testing \
+            -project JCodeMobile.xcodeproj \
+            -scheme $SCHEME \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            || true
           xcodebuild archive \
             -project JCodeMobile.xcodeproj \
             -scheme $SCHEME \
@@ -43,20 +54,18 @@ workflows:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -archivePath build/JCodeMobile.xcarchive \
-            -allowProvisioningUpdates \
-            CODE_SIGN_STYLE=Automatic \
-            DEVELOPMENT_TEAM=TAS6ARKDN7 \
-            CURRENT_PROJECT_VERSION=$BUILD_NUMBER
+            CURRENT_PROJECT_VERSION=$PROJECT_BUILD_NUMBER \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM=$TEAM_ID
       - name: Export IPA
         script: |
           cd ios
-          xcodebuild -exportArchive \
-            -archivePath build/JCodeMobile.xcarchive \
-            -exportOptionsPlist ExportOptions.plist \
-            -exportPath build/export \
-            -allowProvisioningUpdates
+          xcode-project build-ipa \
+            --archive-path build/JCodeMobile.xcarchive \
+            --export-options-plist ExportOptions.plist
     artifacts:
-      - ios/build/export/*.ipa
+      - ios/build/ios/ipa/*.ipa
+      - ios/build/JCodeMobile.xcarchive
     publishing:
       app_store_connect:
         auth: integration
