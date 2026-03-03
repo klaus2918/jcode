@@ -420,6 +420,7 @@ pub fn populate_account_models(slugs: Vec<String>) {
         if let Ok(mut unavailable) = ACCOUNT_RUNTIME_UNAVAILABLE_MODELS.write() {
             unavailable.retain(|model, _| !normalized.contains(model));
         }
+        crate::bus::Bus::global().publish(crate::bus::BusEvent::ModelsUpdated);
     }
 }
 

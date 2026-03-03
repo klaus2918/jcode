@@ -145,6 +145,8 @@ pub enum BusEvent {
     UpdateStatus(UpdateStatus),
     /// Background compaction task finished (check_and_apply should be called)
     CompactionFinished,
+    /// Provider's available models list may have changed
+    ModelsUpdated,
 }
 
 pub struct Bus {
