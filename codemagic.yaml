@@ -31,7 +31,7 @@ workflows:
             --type IOS_APP_STORE \
             --create
           keychain add-certificates
-          xcode-project use-profiles
+          xcode-project use-profiles --project ios/JCodeMobile.xcodeproj
       - name: Set build number
         script: |
           echo "Build number: $PROJECT_BUILD_NUMBER"
