@@ -30,6 +30,27 @@ fn show_diffs_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// Resolve a file path for client-side diff generation.
+/// Expands `~` to home directory and resolves relative paths against cwd.
+fn resolve_diff_path(raw: &str) -> std::path::PathBuf {
+    let expanded = if raw.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            home.join(&raw[2..])
+        } else {
+            std::path::PathBuf::from(raw)
+        }
+    } else {
+        std::path::PathBuf::from(raw)
+    };
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(expanded)
+    }
+}
+
 /// Tracks a pending file edit for diff generation
 struct PendingFileDiff {
     file_path: String,
@@ -793,17 +814,20 @@ impl ClientApp {
                     self.streaming_tps_elapsed += start.elapsed();
                 }
                 // Tool is about to execute - if it's edit/write, cache the file content
-                if show_diffs_enabled() && (name == "edit" || name == "write") {
+                if show_diffs_enabled()
+                    && matches!(name.as_str(), "edit" | "write" | "multiedit")
+                {
                     if let Ok(input) =
                         serde_json::from_str::<serde_json::Value>(&self.current_tool_input)
                     {
                         if let Some(file_path) = input.get("file_path").and_then(|v| v.as_str()) {
-                            // Read current file content (sync is fine here, it's quick)
-                            let original = std::fs::read_to_string(file_path).unwrap_or_default();
+                            let resolved = resolve_diff_path(file_path);
+                            let original =
+                                std::fs::read_to_string(&resolved).unwrap_or_default();
                             self.pending_diffs.insert(
                                 id.clone(),
                                 PendingFileDiff {
-                                    file_path: file_path.to_string(),
+                                    file_path: resolved.to_string_lossy().to_string(),
                                     original_content: original,
                                 },
                             );
