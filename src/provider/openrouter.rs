@@ -2096,15 +2096,15 @@ async fn stream_response(
         provider_pin,
     );
 
-    const SSE_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+    const SSE_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
     loop {
         let event = match tokio::time::timeout(SSE_CHUNK_TIMEOUT, stream.next()).await {
             Ok(Some(event)) => event,
             Ok(None) => break, // stream ended normally
             Err(_) => {
-                crate::logging::warn("OpenRouter SSE stream timed out (no data for 90s)");
-                anyhow::bail!("Stream read timeout: no data received for 90 seconds");
+                crate::logging::warn("OpenRouter SSE stream timed out (no data for 180s)");
+                anyhow::bail!("Stream read timeout: no data received for 180 seconds");
             }
         };
         if tx.send(event).await.is_err() {

@@ -622,7 +622,7 @@ impl CopilotApiProvider {
     ) {
         use futures::StreamExt;
 
-        const SSE_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+        const SSE_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
@@ -641,9 +641,9 @@ impl CopilotApiProvider {
                 }
                 Ok(None) => break, // stream ended normally
                 Err(_) => {
-                    crate::logging::warn("Copilot SSE stream timed out (no data for 90s)");
+                    crate::logging::warn("Copilot SSE stream timed out (no data for 180s)");
                     let _ = tx.send(Err(anyhow::anyhow!(
-                        "Stream read timeout: no data received for 90 seconds"
+                        "Stream read timeout: no data received for 180 seconds"
                     ))).await;
                     return;
                 }
