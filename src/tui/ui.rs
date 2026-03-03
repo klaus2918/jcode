@@ -2451,8 +2451,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // This is critical on macOS terminals where ratatui's diff-based updates
     // can leave outdated content when layout dimensions change between frames
     // (e.g., diagram pane toggling, streaming text clearing, tool calls finishing).
-    // Uses clear_area() which sets an explicit dark bg on non-truecolor terminals
-    // to prevent white block artifacts on light-theme Terminal.app.
+    // Uses Color::Reset (terminal default bg) so text selection highlighting works
+    // natively in all terminal emulators.
     clear_area(frame, area);
 
     if let Some(scroll) = app.changelog_scroll() {

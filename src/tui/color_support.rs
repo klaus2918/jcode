@@ -64,22 +64,13 @@ pub fn has_truecolor() -> bool {
 }
 
 pub fn clear_bg() -> Color {
-    if has_truecolor() {
-        Color::Reset
-    } else {
-        Color::Black
-    }
+    Color::Reset
 }
 
 pub fn clear_buf(area: Rect, buf: &mut Buffer) {
-    let bg = clear_bg();
     for x in area.left()..area.right() {
         for y in area.top()..area.bottom() {
-            let cell = &mut buf[(x, y)];
-            cell.reset();
-            if bg != Color::Reset {
-                cell.set_bg(bg);
-            }
+            buf[(x, y)].reset();
         }
     }
 }

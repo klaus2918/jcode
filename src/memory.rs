@@ -1358,10 +1358,14 @@ impl MemoryManager {
         threshold: f32,
         limit: usize,
     ) -> Result<Vec<(MemoryEntry, f32)>> {
-        // Collect all memories with embeddings
-        let mut entries_with_emb: Vec<MemoryEntry> = Vec::new();
+        let entries_with_emb = self.collect_all_memories_with_embeddings()?;
+        Self::score_and_filter(entries_with_emb, query_embedding, threshold, limit)
+    }
+
+    fn collect_all_memories_with_embeddings(&self) -> Result<Vec<MemoryEntry>> {
+        let mut entries: Vec<MemoryEntry> = Vec::new();
         if let Ok(project) = self.load_project_graph() {
-            entries_with_emb.extend(
+            entries.extend(
                 project
                     .active_memories()
                     .filter(|m| m.embedding.is_some())
@@ -1369,36 +1373,74 @@ impl MemoryManager {
             );
         }
         if let Ok(global) = self.load_global_graph() {
-            entries_with_emb.extend(
+            entries.extend(
                 global
                     .active_memories()
                     .filter(|m| m.embedding.is_some())
                     .cloned(),
             );
         }
+        Ok(entries)
+    }
 
-        if entries_with_emb.is_empty() {
+    fn score_and_filter(
+        entries: Vec<MemoryEntry>,
+        query_embedding: &[f32],
+        threshold: f32,
+        limit: usize,
+    ) -> Result<Vec<(MemoryEntry, f32)>> {
+        if entries.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Batch cosine similarity: single vectorized pass over all embeddings
-        let emb_refs: Vec<&[f32]> = entries_with_emb
+        let emb_refs: Vec<&[f32]> = entries
             .iter()
             .map(|e| e.embedding.as_ref().unwrap().as_slice())
             .collect();
         let scores = crate::embedding::batch_cosine_similarity(query_embedding, &emb_refs);
 
-        // Filter by threshold and sort
-        let mut scored: Vec<(MemoryEntry, f32)> = entries_with_emb
+        let mut scored: Vec<(MemoryEntry, f32)> = entries
             .into_iter()
             .zip(scores)
             .filter(|(_, sim)| *sim >= threshold)
             .collect();
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit);
+
+        let scored = Self::apply_gap_filter(scored);
+        let scored: Vec<_> = scored.into_iter().take(limit).collect();
 
         Ok(scored)
+    }
+
+    /// Drop trailing low-relevance results by detecting natural gaps in the
+    /// score distribution. If the top hit is 0.85 and the next cluster is
+    /// 0.40-0.42, the 0.15+ gap tells us those lower results are noise.
+    ///
+    /// Algorithm: walk the sorted scores and cut when the drop from one score
+    /// to the next exceeds `GAP_FACTOR` of the range (top - floor_threshold).
+    fn apply_gap_filter(scored: Vec<(MemoryEntry, f32)>) -> Vec<(MemoryEntry, f32)> {
+        if scored.len() <= 1 {
+            return scored;
+        }
+
+        const GAP_FACTOR: f32 = 0.25;
+        const MIN_KEEP: usize = 1;
+
+        let top_score = scored[0].1;
+        let range = (top_score - EMBEDDING_SIMILARITY_THRESHOLD).max(0.01);
+        let max_gap = range * GAP_FACTOR;
+
+        let mut keep = scored.len();
+        for i in 1..scored.len() {
+            let drop = scored[i - 1].1 - scored[i].1;
+            if drop > max_gap && i >= MIN_KEEP {
+                keep = i;
+                break;
+            }
+        }
+
+        scored.into_iter().take(keep).collect()
     }
 
     /// Ensure all memories have embeddings (backfill for existing memories)
