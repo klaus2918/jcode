@@ -601,16 +601,28 @@ impl MemoryAgent {
         let memory_manager = self.memory_manager.clone();
         let context_owned = context.to_string();
 
-        // Gather existing memories to give the sidecar context on what's already known
-        let existing: Vec<String> = self
-            .memory_manager
-            .list_all()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|e| e.active)
-            .take(40)
-            .map(|e| e.content)
-            .collect();
+        let existing: Vec<String> = {
+            let context_summary = if context_owned.len() > 2000 {
+                &context_owned[context_owned.len() - 2000..]
+            } else {
+                &context_owned
+            };
+            match self.memory_manager.find_similar(context_summary, 0.25, 80) {
+                Ok(similar) if !similar.is_empty() => {
+                    similar.into_iter().map(|(entry, _score)| entry.content).collect()
+                }
+                _ => {
+                    self.memory_manager
+                        .list_all()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|e| e.active)
+                        .take(40)
+                        .map(|e| e.content)
+                        .collect()
+                }
+            }
+        };
 
         // Similarity threshold for duplicate detection
         const DUPLICATE_THRESHOLD: f32 = 0.90;
