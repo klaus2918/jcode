@@ -326,19 +326,19 @@ impl IncrementalMarkdownRenderer {
 }
 
 // Colors matching ui.rs palette
-const CODE_BG: Color = Color::Rgb(45, 45, 45);
-const CODE_FG: Color = Color::Rgb(180, 180, 180);
-const MATH_FG: Color = Color::Rgb(130, 210, 235);
-const LINK_FG: Color = Color::Rgb(120, 180, 240);
-const HTML_FG: Color = Color::Rgb(140, 140, 150);
-const TEXT_COLOR: Color = Color::Rgb(200, 200, 195); // Soft warm white for AI text
-const BOLD_COLOR: Color = Color::Rgb(240, 240, 235); // Slightly brighter for bold
-                                                     // Heading colors - warm gold/amber gradient by level
-const HEADING_H1_COLOR: Color = Color::Rgb(255, 215, 100); // Bright gold for # H1
-const HEADING_H2_COLOR: Color = Color::Rgb(240, 190, 90); // Gold for ## H2
-const HEADING_H3_COLOR: Color = Color::Rgb(220, 170, 80); // Amber for ### H3
-const HEADING_COLOR: Color = Color::Rgb(200, 155, 75); // Darker amber for #### and below
-const DIM_COLOR: Color = Color::Rgb(100, 100, 100);
+use super::color_support::rgb;
+fn code_bg() -> Color { rgb(45, 45, 45) }
+fn code_fg() -> Color { rgb(180, 180, 180) }
+fn math_fg() -> Color { rgb(130, 210, 235) }
+fn link_fg() -> Color { rgb(120, 180, 240) }
+fn html_fg() -> Color { rgb(140, 140, 150) }
+fn text_color() -> Color { rgb(200, 200, 195) }
+fn bold_color() -> Color { rgb(240, 240, 235) }
+fn heading_h1_color() -> Color { rgb(255, 215, 100) }
+fn heading_h2_color() -> Color { rgb(240, 190, 90) }
+fn heading_h3_color() -> Color { rgb(220, 170, 80) }
+fn heading_color() -> Color { rgb(200, 155, 75) }
+fn md_dim_color() -> Color { rgb(100, 100, 100) }
 const RULE_LEN: usize = 24;
 
 #[derive(Debug, Clone, Copy)]
@@ -354,7 +354,7 @@ fn diagram_side_only() -> bool {
 fn mermaid_sidebar_placeholder(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
-        Style::default().fg(DIM_COLOR),
+        Style::default().fg(md_dim_color()),
     ))
 }
 
@@ -363,7 +363,7 @@ fn apply_inline_decorations(mut style: Style, strike: bool, in_link: bool) -> St
         style = style.crossed_out();
     }
     if in_link {
-        style = style.fg(LINK_FG).underlined();
+        style = style.fg(link_fg()).underlined();
     }
     style
 }
@@ -373,7 +373,7 @@ fn ensure_blockquote_prefix(current_spans: &mut Vec<Span<'static>>, blockquote_d
         return;
     }
     let prefix = "│ ".repeat(blockquote_depth);
-    current_spans.push(Span::styled(prefix, Style::default().fg(DIM_COLOR)));
+    current_spans.push(Span::styled(prefix, Style::default().fg(md_dim_color())));
 }
 
 fn with_blockquote_prefix(line: Line<'static>, blockquote_depth: usize) -> Line<'static> {
@@ -382,7 +382,7 @@ fn with_blockquote_prefix(line: Line<'static>, blockquote_depth: usize) -> Line<
     }
     let mut spans = vec![Span::styled(
         "│ ".repeat(blockquote_depth),
-        Style::default().fg(DIM_COLOR),
+        Style::default().fg(md_dim_color()),
     )];
     spans.extend(line.spans);
     Line::from(spans)
@@ -450,29 +450,29 @@ fn count_unescaped_double_dollar(line: &str) -> usize {
 }
 
 fn math_inline_span(math: &str) -> Span<'static> {
-    Span::styled(format!("${}$", math), Style::default().fg(MATH_FG))
+    Span::styled(format!("${}$", math), Style::default().fg(math_fg()))
 }
 
 fn math_display_lines(math: &str) -> Vec<Line<'static>> {
     let mut out = Vec::new();
-    let dim = Style::default().fg(DIM_COLOR);
+    let dim = Style::default().fg(md_dim_color());
     out.push(Line::from(Span::styled("┌─ math ", dim)));
     for line in math.lines() {
         out.push(Line::from(vec![
             Span::styled("│ ", dim),
-            Span::styled(line.to_string(), Style::default().fg(MATH_FG)),
+            Span::styled(line.to_string(), Style::default().fg(math_fg())),
         ]));
     }
     if math.is_empty() {
         out.push(Line::from(vec![
             Span::styled("│ ", dim),
-            Span::styled("", Style::default().fg(MATH_FG)),
+            Span::styled("", Style::default().fg(math_fg())),
         ]));
     }
     out.push(Line::from(Span::styled("└─", dim)));
     out
 }
-const TABLE_COLOR: Color = Color::Rgb(150, 150, 150); // Table borders/separators
+fn table_color() -> Color { rgb(150, 150, 150) }
 
 /// Render markdown text to styled ratatui Lines
 pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
@@ -687,10 +687,10 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 if !current_spans.is_empty() {
                     // Choose color based on heading level
                     let color = match heading_level {
-                        Some(1) => HEADING_H1_COLOR,
-                        Some(2) => HEADING_H2_COLOR,
-                        Some(3) => HEADING_H3_COLOR,
-                        _ => HEADING_COLOR,
+                        Some(1) => heading_h1_color(),
+                        Some(2) => heading_h2_color(),
+                        Some(3) => heading_h3_color(),
+                        _ => heading_color(),
                     };
 
                     let heading_spans: Vec<Span<'static>> = current_spans
@@ -744,7 +744,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     if !url.is_empty() {
                         current_spans.push(Span::styled(
                             format!(" ({})", url),
-                            Style::default().fg(DIM_COLOR),
+                            Style::default().fg(md_dim_color()),
                         ));
                     }
                 }
@@ -770,7 +770,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     current_cell.push_str(&label);
                 } else {
                     ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
-                    current_spans.push(Span::styled(label, Style::default().fg(DIM_COLOR)));
+                    current_spans.push(Span::styled(label, Style::default().fg(md_dim_color())));
                 }
                 in_image = false;
                 image_alt.clear();
@@ -781,7 +781,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 current_spans.push(Span::styled(
                     format!("[^{}]: ", label),
-                    Style::default().fg(DIM_COLOR),
+                    Style::default().fg(md_dim_color()),
                 ));
             }
             Event::End(TagEnd::FootnoteDefinition) => {
@@ -798,7 +798,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             Event::Start(Tag::DefinitionListTitle) => {
                 flush_current_line(&mut lines, &mut current_spans);
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
-                current_spans.push(Span::styled("• ", Style::default().fg(DIM_COLOR)));
+                current_spans.push(Span::styled("• ", Style::default().fg(md_dim_color())));
             }
             Event::End(TagEnd::DefinitionListTitle) => {
                 flush_current_line(&mut lines, &mut current_spans);
@@ -806,7 +806,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             Event::Start(Tag::DefinitionListDefinition) => {
                 flush_current_line(&mut lines, &mut current_spans);
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
-                current_spans.push(Span::styled("  -> ", Style::default().fg(DIM_COLOR)));
+                current_spans.push(Span::styled("  -> ", Style::default().fg(md_dim_color())));
                 in_definition_item = true;
             }
             Event::End(TagEnd::DefinitionListDefinition) => {
@@ -904,7 +904,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     lines.push(
                         Line::from(Span::styled(
                             format!("{}┌─ {} ", pad_str, lang_label),
-                            Style::default().fg(DIM_COLOR),
+                            Style::default().fg(md_dim_color()),
                         ))
                         .left_aligned(),
                     );
@@ -913,7 +913,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     for hl_line in highlighted {
                         let mut spans = vec![Span::styled(
                             format!("{}│ ", pad_str),
-                            Style::default().fg(DIM_COLOR),
+                            Style::default().fg(md_dim_color()),
                         )];
                         spans.extend(hl_line.spans);
                         lines.push(Line::from(spans).left_aligned());
@@ -923,7 +923,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     lines.push(
                         Line::from(Span::styled(
                             format!("{}└─", pad_str),
-                            Style::default().fg(DIM_COLOR),
+                            Style::default().fg(md_dim_color()),
                         ))
                         .left_aligned(),
                     );
@@ -946,7 +946,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     current_spans.push(Span::styled(
                         code.to_string(),
                         apply_inline_decorations(
-                            Style::default().fg(CODE_FG).bg(CODE_BG),
+                            Style::default().fg(code_fg()).bg(code_bg()),
                             strike,
                             !link_targets.is_empty(),
                         ),
@@ -1002,13 +1002,13 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     let is_thinking_duration =
                         text.starts_with("Thought for ") && text.ends_with('s');
                     let mut style = if is_thinking_duration {
-                        Style::default().fg(DIM_COLOR).italic()
+                        Style::default().fg(md_dim_color()).italic()
                     } else {
                         match (bold, italic) {
-                            (true, true) => Style::default().fg(BOLD_COLOR).bold().italic(),
-                            (true, false) => Style::default().fg(BOLD_COLOR).bold(),
-                            (false, true) => Style::default().fg(TEXT_COLOR).italic(),
-                            (false, false) => Style::default().fg(TEXT_COLOR),
+                            (true, true) => Style::default().fg(bold_color()).bold().italic(),
+                            (true, false) => Style::default().fg(bold_color()).bold(),
+                            (false, true) => Style::default().fg(text_color()).italic(),
+                            (false, false) => Style::default().fg(text_color()),
                         }
                     };
                     style = apply_inline_decorations(style, strike, !link_targets.is_empty());
@@ -1034,14 +1034,14 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
 
             Event::Rule => {
                 flush_current_line(&mut lines, &mut current_spans);
-                let rule = Span::styled("─".repeat(RULE_LEN), Style::default().fg(DIM_COLOR));
+                let rule = Span::styled("─".repeat(RULE_LEN), Style::default().fg(md_dim_color()));
                 lines.push(with_blockquote_prefix(Line::from(rule), blockquote_depth));
             }
 
             Event::Html(html) => {
                 flush_current_line(&mut lines, &mut current_spans);
                 for raw in html.lines() {
-                    let span = Span::styled(raw.to_string(), Style::default().fg(HTML_FG).italic());
+                    let span = Span::styled(raw.to_string(), Style::default().fg(html_fg()).italic());
                     lines.push(with_blockquote_prefix(Line::from(span), blockquote_depth));
                 }
             }
@@ -1055,7 +1055,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                     current_spans.push(Span::styled(
                         html.to_string(),
-                        Style::default().fg(HTML_FG).italic(),
+                        Style::default().fg(html_fg()).italic(),
                     ));
                 }
             }
@@ -1069,7 +1069,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                     current_spans.push(Span::styled(
                         format!("[^{}]", label),
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(md_dim_color()),
                     ));
                 }
             }
@@ -1081,7 +1081,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                     current_spans.push(Span::styled(
                         if checked { "[x] " } else { "[ ] " },
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(md_dim_color()),
                     ));
                 }
             }
@@ -1089,7 +1089,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             Event::Start(Tag::Paragraph) => {
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 if in_definition_item && current_spans.is_empty() {
-                    current_spans.push(Span::styled("  ", Style::default().fg(DIM_COLOR)));
+                    current_spans.push(Span::styled("  ", Style::default().fg(md_dim_color())));
                 }
             }
             Event::End(TagEnd::Paragraph) => {
@@ -1115,7 +1115,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 } else {
                     "• ".to_string()
                 };
-                current_spans.push(Span::styled(marker, Style::default().fg(DIM_COLOR)));
+                current_spans.push(Span::styled(marker, Style::default().fg(md_dim_color())));
             }
             Event::End(TagEnd::Item) => {
                 flush_current_line(&mut lines, &mut current_spans);
@@ -1194,13 +1194,13 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 ));
             } else {
                 // For mermaid, show "rendering..." placeholder while streaming
-                let dim = Style::default().fg(DIM_COLOR);
+                let dim = Style::default().fg(md_dim_color());
                 lines.push(Line::from(Span::styled("┌─ mermaid (streaming...) ", dim)));
                 // Show first few lines of the diagram source
                 for source_line in code_block_content.lines().take(5) {
                     lines.push(Line::from(vec![
                         Span::styled("│ ", dim),
-                        Span::styled(source_line.to_string(), Style::default().fg(CODE_FG)),
+                        Span::styled(source_line.to_string(), Style::default().fg(code_fg())),
                     ]));
                 }
                 if code_block_content.lines().count() > 5 {
@@ -1221,24 +1221,24 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             );
             lines.push(Line::from(Span::styled(
                 header,
-                Style::default().fg(DIM_COLOR),
+                Style::default().fg(md_dim_color()),
             )));
 
             // Render code with syntax highlighting
             let highlighted = highlight_code(&code_block_content, code_block_lang.as_deref());
             for line in highlighted {
-                let mut prefixed = vec![Span::styled("│ ", Style::default().fg(DIM_COLOR))];
+                let mut prefixed = vec![Span::styled("│ ", Style::default().fg(md_dim_color()))];
                 prefixed.extend(line.spans);
                 lines.push(Line::from(prefixed));
             }
             // Show cursor to indicate more content coming
             lines.push(Line::from(Span::styled(
                 "│ ▌",
-                Style::default().fg(DIM_COLOR),
+                Style::default().fg(md_dim_color()),
             )));
             lines.push(Line::from(Span::styled(
                 "└─",
-                Style::default().fg(DIM_COLOR),
+                Style::default().fg(md_dim_color()),
             )));
         }
     }
@@ -1324,13 +1324,13 @@ fn render_table(rows: &[Vec<String>], max_width: Option<usize>) -> Vec<Line<'sta
 
             // Header row gets bold styling
             let style = if row_idx == 0 {
-                Style::default().fg(BOLD_COLOR).bold()
+                Style::default().fg(bold_color()).bold()
             } else {
-                Style::default().fg(TEXT_COLOR)
+                Style::default().fg(text_color())
             };
 
             if i > 0 {
-                spans.push(Span::styled(" │ ", Style::default().fg(TABLE_COLOR)));
+                spans.push(Span::styled(" │ ", Style::default().fg(table_color())));
             }
             spans.push(Span::styled(padded, style));
         }
@@ -1346,7 +1346,7 @@ fn render_table(rows: &[Vec<String>], max_width: Option<usize>) -> Vec<Line<'sta
                 .join("─┼─");
             lines.push(Line::from(Span::styled(
                 separator,
-                Style::default().fg(TABLE_COLOR),
+                Style::default().fg(table_color()),
             )));
         }
     }
@@ -1418,7 +1418,7 @@ fn highlight_code(code: &str, lang: Option<&str>) -> Vec<Line<'static>> {
                 // Fallback to plain text
                 lines.push(Line::from(Span::styled(
                     line.to_string(),
-                    Style::default().fg(CODE_FG),
+                    Style::default().fg(code_fg()),
                 )));
             }
         }
@@ -1429,7 +1429,7 @@ fn highlight_code(code: &str, lang: Option<&str>) -> Vec<Line<'static>> {
 
 /// Convert syntect style to ratatui style
 fn syntect_to_ratatui_style(style: SynStyle) -> Style {
-    let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+    let fg = rgb(style.foreground.r, style.foreground.g, style.foreground.b);
     Style::default().fg(fg)
 }
 
@@ -1501,7 +1501,7 @@ fn placeholder_code_block(code: &str, lang: Option<&str>) -> Vec<Line<'static>> 
     // Return placeholder lines that will be replaced when visible
     vec![Line::from(Span::styled(
         format!("  [{} block: {} lines]", lang_str, line_count),
-        Style::default().fg(DIM_COLOR).italic(),
+        Style::default().fg(md_dim_color()).italic(),
     ))]
 }
 
@@ -1571,10 +1571,10 @@ pub fn render_markdown_lazy(
             Event::End(TagEnd::Heading(_)) => {
                 if !current_spans.is_empty() {
                     let color = match heading_level {
-                        Some(1) => HEADING_H1_COLOR,
-                        Some(2) => HEADING_H2_COLOR,
-                        Some(3) => HEADING_H3_COLOR,
-                        _ => HEADING_COLOR,
+                        Some(1) => heading_h1_color(),
+                        Some(2) => heading_h2_color(),
+                        Some(3) => heading_h3_color(),
+                        _ => heading_color(),
                     };
 
                     let heading_spans: Vec<Span<'static>> = current_spans
@@ -1627,7 +1627,7 @@ pub fn render_markdown_lazy(
                     if !url.is_empty() {
                         current_spans.push(Span::styled(
                             format!(" ({})", url),
-                            Style::default().fg(DIM_COLOR),
+                            Style::default().fg(md_dim_color()),
                         ));
                     }
                 }
@@ -1653,7 +1653,7 @@ pub fn render_markdown_lazy(
                     current_cell.push_str(&label);
                 } else {
                     ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
-                    current_spans.push(Span::styled(label, Style::default().fg(DIM_COLOR)));
+                    current_spans.push(Span::styled(label, Style::default().fg(md_dim_color())));
                 }
                 in_image = false;
                 image_alt.clear();
@@ -1664,7 +1664,7 @@ pub fn render_markdown_lazy(
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 current_spans.push(Span::styled(
                     format!("[^{}]: ", label),
-                    Style::default().fg(DIM_COLOR),
+                    Style::default().fg(md_dim_color()),
                 ));
             }
             Event::End(TagEnd::FootnoteDefinition) => {
@@ -1681,7 +1681,7 @@ pub fn render_markdown_lazy(
             Event::Start(Tag::DefinitionListTitle) => {
                 flush_current_line(&mut lines, &mut current_spans);
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
-                current_spans.push(Span::styled("• ", Style::default().fg(DIM_COLOR)));
+                current_spans.push(Span::styled("• ", Style::default().fg(md_dim_color())));
             }
             Event::End(TagEnd::DefinitionListTitle) => {
                 flush_current_line(&mut lines, &mut current_spans);
@@ -1689,7 +1689,7 @@ pub fn render_markdown_lazy(
             Event::Start(Tag::DefinitionListDefinition) => {
                 flush_current_line(&mut lines, &mut current_spans);
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
-                current_spans.push(Span::styled("  -> ", Style::default().fg(DIM_COLOR)));
+                current_spans.push(Span::styled("  -> ", Style::default().fg(md_dim_color())));
                 in_definition_item = true;
             }
             Event::End(TagEnd::DefinitionListDefinition) => {
@@ -1784,7 +1784,7 @@ pub fn render_markdown_lazy(
                     lines.push(
                         Line::from(Span::styled(
                             format!("{}┌─ {} ", pad_str, lang_label),
-                            Style::default().fg(DIM_COLOR),
+                            Style::default().fg(md_dim_color()),
                         ))
                         .left_aligned(),
                     );
@@ -1794,7 +1794,7 @@ pub fn render_markdown_lazy(
                         for hl_line in hl_lines {
                             let mut spans = vec![Span::styled(
                                 format!("{}│ ", pad_str),
-                                Style::default().fg(DIM_COLOR),
+                                Style::default().fg(md_dim_color()),
                             )];
                             spans.extend(hl_line.spans);
                             lines.push(Line::from(spans).left_aligned());
@@ -1806,7 +1806,7 @@ pub fn render_markdown_lazy(
                         for pl_line in placeholder {
                             let mut spans = vec![Span::styled(
                                 format!("{}│ ", pad_str),
-                                Style::default().fg(DIM_COLOR),
+                                Style::default().fg(md_dim_color()),
                             )];
                             spans.extend(pl_line.spans);
                             lines.push(Line::from(spans).left_aligned());
@@ -1817,7 +1817,7 @@ pub fn render_markdown_lazy(
                     lines.push(
                         Line::from(Span::styled(
                             format!("{}└─", pad_str),
-                            Style::default().fg(DIM_COLOR),
+                            Style::default().fg(md_dim_color()),
                         ))
                         .left_aligned(),
                     );
@@ -1840,7 +1840,7 @@ pub fn render_markdown_lazy(
                     current_spans.push(Span::styled(
                         code.to_string(),
                         apply_inline_decorations(
-                            Style::default().fg(CODE_FG).bg(CODE_BG),
+                            Style::default().fg(code_fg()).bg(code_bg()),
                             strike,
                             !link_targets.is_empty(),
                         ),
@@ -1895,13 +1895,13 @@ pub fn render_markdown_lazy(
                     let is_thinking_duration =
                         text.starts_with("Thought for ") && text.ends_with('s');
                     let mut style = if is_thinking_duration {
-                        Style::default().fg(DIM_COLOR).italic()
+                        Style::default().fg(md_dim_color()).italic()
                     } else {
                         match (bold, italic) {
-                            (true, true) => Style::default().fg(BOLD_COLOR).bold().italic(),
-                            (true, false) => Style::default().fg(BOLD_COLOR).bold(),
-                            (false, true) => Style::default().fg(TEXT_COLOR).italic(),
-                            (false, false) => Style::default().fg(TEXT_COLOR),
+                            (true, true) => Style::default().fg(bold_color()).bold().italic(),
+                            (true, false) => Style::default().fg(bold_color()).bold(),
+                            (false, true) => Style::default().fg(text_color()).italic(),
+                            (false, false) => Style::default().fg(text_color()),
                         }
                     };
                     style = apply_inline_decorations(style, strike, !link_targets.is_empty());
@@ -1927,14 +1927,14 @@ pub fn render_markdown_lazy(
 
             Event::Rule => {
                 flush_current_line(&mut lines, &mut current_spans);
-                let rule = Span::styled("─".repeat(RULE_LEN), Style::default().fg(DIM_COLOR));
+                let rule = Span::styled("─".repeat(RULE_LEN), Style::default().fg(md_dim_color()));
                 lines.push(with_blockquote_prefix(Line::from(rule), blockquote_depth));
             }
 
             Event::Html(html) => {
                 flush_current_line(&mut lines, &mut current_spans);
                 for raw in html.lines() {
-                    let span = Span::styled(raw.to_string(), Style::default().fg(HTML_FG).italic());
+                    let span = Span::styled(raw.to_string(), Style::default().fg(html_fg()).italic());
                     lines.push(with_blockquote_prefix(Line::from(span), blockquote_depth));
                 }
             }
@@ -1948,7 +1948,7 @@ pub fn render_markdown_lazy(
                     ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                     current_spans.push(Span::styled(
                         html.to_string(),
-                        Style::default().fg(HTML_FG).italic(),
+                        Style::default().fg(html_fg()).italic(),
                     ));
                 }
             }
@@ -1962,7 +1962,7 @@ pub fn render_markdown_lazy(
                     ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                     current_spans.push(Span::styled(
                         format!("[^{}]", label),
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(md_dim_color()),
                     ));
                 }
             }
@@ -1974,7 +1974,7 @@ pub fn render_markdown_lazy(
                     ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                     current_spans.push(Span::styled(
                         if checked { "[x] " } else { "[ ] " },
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(md_dim_color()),
                     ));
                 }
             }
@@ -1982,7 +1982,7 @@ pub fn render_markdown_lazy(
             Event::Start(Tag::Paragraph) => {
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 if in_definition_item && current_spans.is_empty() {
-                    current_spans.push(Span::styled("  ", Style::default().fg(DIM_COLOR)));
+                    current_spans.push(Span::styled("  ", Style::default().fg(md_dim_color())));
                 }
             }
             Event::End(TagEnd::Paragraph) => {
@@ -2006,7 +2006,7 @@ pub fn render_markdown_lazy(
                 } else {
                     "• ".to_string()
                 };
-                current_spans.push(Span::styled(marker, Style::default().fg(DIM_COLOR)));
+                current_spans.push(Span::styled(marker, Style::default().fg(md_dim_color())));
             }
             Event::End(TagEnd::Item) => {
                 flush_current_line(&mut lines, &mut current_spans);
@@ -2223,7 +2223,7 @@ pub fn progress_line(label: &str, progress: f32, width: usize) -> Line<'static> 
     Line::from(vec![
         Span::styled(label.to_string(), Style::default().dim()),
         Span::raw(" "),
-        Span::styled(bar, Style::default().fg(Color::Rgb(129, 199, 132))),
+        Span::styled(bar, Style::default().fg(rgb(129, 199, 132))),
         Span::styled(format!(" {}%", pct), Style::default().dim()),
     ])
 }

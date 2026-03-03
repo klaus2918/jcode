@@ -1,5 +1,6 @@
 mod app;
 pub mod backend;
+pub(crate) mod color_support;
 mod core;
 pub mod image;
 pub mod info_widget;

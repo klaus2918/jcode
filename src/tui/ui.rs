@@ -58,21 +58,22 @@ fn update_user_prompt_positions(positions: &[usize]) {
     }
 }
 
-// Minimal color palette
-const USER_COLOR: Color = Color::Rgb(138, 180, 248); // Soft blue (caret)
-const AI_COLOR: Color = Color::Rgb(129, 199, 132); // Soft green (unused)
-const TOOL_COLOR: Color = Color::Rgb(120, 120, 120); // Gray
-const DIM_COLOR: Color = Color::Rgb(80, 80, 80); // Dimmer gray
-const ACCENT_COLOR: Color = Color::Rgb(186, 139, 255); // Purple accent
-const QUEUED_COLOR: Color = Color::Rgb(255, 193, 7); // Amber/yellow for queued
-const ASAP_COLOR: Color = Color::Rgb(110, 210, 255); // Cyan for immediate send
-const PENDING_COLOR: Color = Color::Rgb(140, 140, 140); // Gray for sent/awaiting injection
-const USER_TEXT: Color = Color::Rgb(245, 245, 255); // Bright cool white (user messages)
-const USER_BG: Color = Color::Rgb(35, 40, 50); // Subtle dark blue background for user
-const AI_TEXT: Color = Color::Rgb(220, 220, 215); // Softer warm white (AI messages)
-const HEADER_ICON_COLOR: Color = Color::Rgb(120, 210, 230); // Teal for session icon
-const HEADER_NAME_COLOR: Color = Color::Rgb(190, 210, 235); // Soft blue-gray for JCode label
-const HEADER_SESSION_COLOR: Color = Color::Rgb(255, 255, 255); // White for session name
+use super::color_support::rgb;
+
+fn user_color() -> Color { rgb(138, 180, 248) }
+fn ai_color() -> Color { rgb(129, 199, 132) }
+fn tool_color() -> Color { rgb(120, 120, 120) }
+fn dim_color() -> Color { rgb(80, 80, 80) }
+fn accent_color() -> Color { rgb(186, 139, 255) }
+fn queued_color() -> Color { rgb(255, 193, 7) }
+fn asap_color() -> Color { rgb(110, 210, 255) }
+fn pending_color() -> Color { rgb(140, 140, 140) }
+fn user_text() -> Color { rgb(245, 245, 255) }
+fn user_bg() -> Color { rgb(35, 40, 50) }
+fn ai_text() -> Color { rgb(220, 220, 215) }
+fn header_icon_color() -> Color { rgb(120, 210, 230) }
+fn header_name_color() -> Color { rgb(190, 210, 235) }
+fn header_session_color() -> Color { rgb(255, 255, 255) }
 
 // Spinner frames for animated status
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -734,7 +735,7 @@ fn chroma_color(pos: f32, elapsed: f32, saturation: f32, lightness: f32) -> Colo
     // Creates a wave that flows across the text
     let hue = ((pos * 60.0) + (elapsed * CHROMA_SPEED * 360.0)) % 360.0;
     let (r, g, b) = hsl_to_rgb(hue, saturation, lightness);
-    Color::Rgb(r, g, b)
+    rgb(r, g, b)
 }
 
 /// Calculate chroma color with fade-in from dim during startup
@@ -759,22 +760,27 @@ fn header_fade_t(elapsed: f32, offset: f32) -> f32 {
 }
 
 fn header_fade_color(target: Color, elapsed: f32, offset: f32) -> Color {
-    blend_color(DIM_COLOR, target, header_fade_t(elapsed, offset))
+    blend_color(dim_color(), target, header_fade_t(elapsed, offset))
+}
+
+fn color_to_floats(c: Color, fallback: (f32, f32, f32)) -> (f32, f32, f32) {
+    match c {
+        Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
+        Color::Indexed(n) => {
+            let (r, g, b) = super::color_support::indexed_to_rgb(n);
+            (r as f32, g as f32, b as f32)
+        }
+        _ => fallback,
+    }
 }
 
 fn blend_color(from: Color, to: Color, t: f32) -> Color {
-    let (fr, fg, fb) = match from {
-        Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
-        _ => (80.0, 80.0, 80.0),
-    };
-    let (tr, tg, tb) = match to {
-        Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
-        _ => (200.0, 200.0, 200.0),
-    };
+    let (fr, fg, fb) = color_to_floats(from, (80.0, 80.0, 80.0));
+    let (tr, tg, tb) = color_to_floats(to, (200.0, 200.0, 200.0));
     let r = fr + (tr - fr) * t;
     let g = fg + (tg - fg) * t;
     let b = fb + (tb - fb) * t;
-    Color::Rgb(
+    rgb(
         r.clamp(0.0, 255.0) as u8,
         g.clamp(0.0, 255.0) as u8,
         b.clamp(0.0, 255.0) as u8,
@@ -783,8 +789,8 @@ fn blend_color(from: Color, to: Color, t: f32) -> Color {
 
 /// Chrome-style sweep highlight across header text.
 fn header_chrome_color(base: Color, pos: f32, elapsed: f32, intensity: f32) -> Color {
-    const HIGHLIGHT: Color = Color::Rgb(235, 245, 255);
-    const SHADOW: Color = Color::Rgb(70, 80, 95);
+    let highlight_c: Color = rgb(235, 245, 255);
+    let shadow_c: Color = rgb(70, 80, 95);
     const SPEED: f32 = 0.12;
     const WIDTH: f32 = 0.22;
 
@@ -799,10 +805,10 @@ fn header_chrome_color(base: Color, pos: f32, elapsed: f32, intensity: f32) -> C
     let shadow_center = (center + 0.5) % 1.0;
     let mut shadow_dist = (pos - shadow_center).abs();
     shadow_dist = shadow_dist.min(1.0 - shadow_dist);
-    let shadow = (1.0 - (shadow_dist / (WIDTH * 1.2)).clamp(0.0, 1.0)).powf(2.0) * 0.16 * intensity;
+    let shadow_t = (1.0 - (shadow_dist / (WIDTH * 1.2)).clamp(0.0, 1.0)).powf(2.0) * 0.16 * intensity;
 
-    let darkened = blend_color(base, SHADOW, shadow);
-    blend_color(darkened, HIGHLIGHT, shimmer)
+    let darkened = blend_color(base, shadow_c, shadow_t);
+    blend_color(darkened, highlight_c, shimmer)
 }
 
 /// Set alignment on a line only if it doesn't already have one set.
@@ -885,31 +891,31 @@ fn pill_badge(label: &str, color: Color) -> Vec<Span<'static>> {
 fn multi_status_badge(items: &[(&str, Color)]) -> Vec<Span<'static>> {
     let mut spans = vec![
         Span::styled(" ", Style::default()),
-        Span::styled("⟨", Style::default().fg(DIM_COLOR)),
+        Span::styled("⟨", Style::default().fg(dim_color())),
     ];
 
     for (i, (label, color)) in items.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled("·", Style::default().fg(DIM_COLOR)));
+            spans.push(Span::styled("·", Style::default().fg(dim_color())));
         }
         spans.push(Span::styled(label.to_string(), Style::default().fg(*color)));
     }
 
-    spans.push(Span::styled("⟩", Style::default().fg(DIM_COLOR)));
+    spans.push(Span::styled("⟩", Style::default().fg(dim_color())));
     spans
 }
 
 /// Create multi-color spans for the header line
 fn header_spans(icon: &str, session: &str, model: &str, elapsed: f32) -> Vec<Span<'static>> {
     let segments = [
-        (format!("{} ", icon), HEADER_ICON_COLOR, 0.00),
-        ("JCode ".to_string(), HEADER_NAME_COLOR, 0.06),
+        (format!("{} ", icon), header_icon_color(), 0.00),
+        ("JCode ".to_string(), header_name_color(), 0.06),
         (
             format!("{} ", capitalize(session)),
-            HEADER_SESSION_COLOR,
+            header_session_color(),
             0.12,
         ),
-        ("· ".to_string(), DIM_COLOR, 0.18),
+        ("· ".to_string(), dim_color(), 0.18),
         (model.to_string(), header_animation_color(elapsed), 0.12),
     ];
 
@@ -997,15 +1003,11 @@ fn format_gpt_name(short: &str) -> String {
 fn build_auth_status_line(auth: &crate::auth::AuthStatus, max_width: usize) -> Line<'static> {
     use crate::auth::AuthState;
 
-    const GREEN: Color = Color::Rgb(100, 200, 100); // Available
-    const YELLOW: Color = Color::Rgb(255, 200, 100); // Expired (may work)
-    const GRAY: Color = Color::Rgb(80, 80, 80); // Not configured
-
     fn dot_color(state: AuthState) -> Color {
         match state {
-            AuthState::Available => GREEN,
-            AuthState::Expired => YELLOW,
-            AuthState::NotConfigured => GRAY,
+            AuthState::Available => rgb(100, 200, 100),
+            AuthState::Expired => rgb(255, 200, 100),
+            AuthState::NotConfigured => rgb(80, 80, 80),
         }
     }
 
@@ -1097,7 +1099,7 @@ fn build_auth_status_line(auth: &crate::auth::AuthStatus, max_width: usize) -> L
     let mut spans = Vec::new();
     for (i, (label, state)) in provider_specs.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(" ", Style::default().fg(DIM_COLOR)));
+            spans.push(Span::styled(" ", Style::default().fg(dim_color())));
         }
 
         spans.push(Span::styled(
@@ -1106,7 +1108,7 @@ fn build_auth_status_line(auth: &crate::auth::AuthStatus, max_width: usize) -> L
         ));
         spans.push(Span::styled(
             format!(" {} ", label),
-            Style::default().fg(DIM_COLOR),
+            Style::default().fg(dim_color()),
         ));
     }
 
@@ -1120,13 +1122,13 @@ fn render_context_bar(
     max_width: usize,
     context_limit: usize,
 ) -> Vec<Line<'static>> {
-    const SYS_COLOR: Color = Color::Rgb(100, 140, 200);
-    const DOCS_COLOR: Color = Color::Rgb(200, 160, 100);
-    const TOOLS_COLOR: Color = Color::Rgb(100, 200, 200);
-    const MSGS_COLOR: Color = Color::Rgb(138, 180, 248);
-    const TOOL_IO_COLOR: Color = Color::Rgb(255, 183, 77);
-    const OTHER_COLOR: Color = Color::Rgb(150, 150, 150);
-    const EMPTY_COLOR: Color = Color::Rgb(50, 50, 50);
+    let sys_c: Color = rgb(100, 140, 200);
+    let docs_c: Color = rgb(200, 160, 100);
+    let tools_c: Color = rgb(100, 200, 200);
+    let msgs_c: Color = rgb(138, 180, 248);
+    let tool_io_c: Color = rgb(255, 183, 77);
+    let other_c: Color = rgb(150, 150, 150);
+    let empty_c: Color = rgb(50, 50, 50);
 
     const THRESHOLD: f64 = 5.0;
     let limit = context_limit.max(1);
@@ -1136,7 +1138,7 @@ fn render_context_bar(
 
     let sys = info.system_prompt_chars / 4;
     if sys > 0 {
-        raw.push(("⚙", "system".into(), sys, SYS_COLOR, "system"));
+        raw.push(("⚙", "system".into(), sys, sys_c, "system"));
     }
 
     if info.has_project_agents_md {
@@ -1144,7 +1146,7 @@ fn render_context_bar(
             "📋",
             "AGENTS.md".into(),
             info.project_agents_md_chars / 4,
-            DOCS_COLOR,
+            docs_c,
             "docs",
         ));
     }
@@ -1153,7 +1155,7 @@ fn render_context_bar(
             "📝",
             "CLAUDE.md".into(),
             info.project_claude_md_chars / 4,
-            DOCS_COLOR,
+            docs_c,
             "docs",
         ));
     }
@@ -1162,7 +1164,7 @@ fn render_context_bar(
             "📋",
             "~/.AGENTS".into(),
             info.global_agents_md_chars / 4,
-            DOCS_COLOR,
+            docs_c,
             "docs",
         ));
     }
@@ -1171,7 +1173,7 @@ fn render_context_bar(
             "📝",
             "~/.CLAUDE".into(),
             info.global_claude_md_chars / 4,
-            DOCS_COLOR,
+            docs_c,
             "docs",
         ));
     }
@@ -1181,7 +1183,7 @@ fn render_context_bar(
             "🌍",
             "env".into(),
             info.env_context_chars / 4,
-            OTHER_COLOR,
+            other_c,
             "other",
         ));
     }
@@ -1190,7 +1192,7 @@ fn render_context_bar(
             "🔧",
             "skills".into(),
             info.skills_chars / 4,
-            OTHER_COLOR,
+            other_c,
             "other",
         ));
     }
@@ -1199,7 +1201,7 @@ fn render_context_bar(
             "🛠",
             "selfdev".into(),
             info.selfdev_chars / 4,
-            OTHER_COLOR,
+            other_c,
             "other",
         ));
     }
@@ -1210,7 +1212,7 @@ fn render_context_bar(
         } else {
             "tools".into()
         };
-        raw.push(("🔨", lbl, info.tool_defs_chars / 4, TOOLS_COLOR, "tools"));
+        raw.push(("🔨", lbl, info.tool_defs_chars / 4, tools_c, "tools"));
     }
     if info.user_messages_chars > 0 {
         let lbl = if info.user_messages_count > 0 {
@@ -1218,7 +1220,7 @@ fn render_context_bar(
         } else {
             "user".into()
         };
-        raw.push(("👤", lbl, info.user_messages_chars / 4, MSGS_COLOR, "msgs"));
+        raw.push(("👤", lbl, info.user_messages_chars / 4, msgs_c, "msgs"));
     }
     if info.assistant_messages_chars > 0 {
         let lbl = if info.assistant_messages_count > 0 {
@@ -1230,7 +1232,7 @@ fn render_context_bar(
             "🤖",
             lbl,
             info.assistant_messages_chars / 4,
-            MSGS_COLOR,
+            msgs_c,
             "msgs",
         ));
     }
@@ -1244,7 +1246,7 @@ fn render_context_bar(
             "⚡",
             lbl,
             info.tool_calls_chars / 4,
-            TOOL_IO_COLOR,
+            tool_io_c,
             "tool_io",
         ));
     }
@@ -1258,7 +1260,7 @@ fn render_context_bar(
             "📤",
             lbl,
             info.tool_results_chars / 4,
-            TOOL_IO_COLOR,
+            tool_io_c,
             "tool_io",
         ));
     }
@@ -1280,11 +1282,11 @@ fn render_context_bar(
     }
 
     for (cat, icon, color) in [
-        ("docs", "📄", DOCS_COLOR),
-        ("msgs", "💬", MSGS_COLOR),
-        ("tools", "🔨", TOOLS_COLOR),
-        ("tool_io", "⚡", TOOL_IO_COLOR),
-        ("other", "📦", OTHER_COLOR),
+        ("docs", "📄", docs_c),
+        ("msgs", "💬", msgs_c),
+        ("tools", "🔨", tools_c),
+        ("tool_io", "⚡", tool_io_c),
+        ("other", "📦", other_c),
     ] {
         if let Some((tokens, items)) = grouped.get(cat) {
             if *tokens > 0 {
@@ -1325,7 +1327,7 @@ fn render_context_bar(
         .min(sum_w as f64) as usize;
     let empty_w = sum_w.saturating_sub(used_w);
 
-    let mut bar: Vec<Span<'static>> = vec![Span::styled("[", Style::default().fg(DIM_COLOR))];
+    let mut bar: Vec<Span<'static>> = vec![Span::styled("[", Style::default().fg(dim_color()))];
     let mut rem = used_w;
     for (_, _, t, c) in &final_segs {
         if rem == 0 || total == 0 {
@@ -1348,11 +1350,11 @@ fn render_context_bar(
     if empty_w > 0 {
         bar.push(Span::styled(
             "░".repeat(empty_w),
-            Style::default().fg(EMPTY_COLOR),
+            Style::default().fg(empty_c),
         ));
     }
-    bar.push(Span::styled("] ", Style::default().fg(DIM_COLOR)));
-    bar.push(Span::styled(tail, Style::default().fg(DIM_COLOR)));
+    bar.push(Span::styled("] ", Style::default().fg(dim_color())));
+    bar.push(Span::styled(tail, Style::default().fg(dim_color())));
     lines.push(Line::from(bar));
 
     // Detail list with dot leaders
@@ -1385,10 +1387,10 @@ fn render_context_bar(
         }
         spans.push(Span::styled(
             "·".repeat(dots),
-            Style::default().fg(DIM_COLOR),
+            Style::default().fg(dim_color()),
         ));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(tail, Style::default().fg(DIM_COLOR)));
+        spans.push(Span::styled(tail, Style::default().fg(dim_color())));
         lines.push(Line::from(spans));
     }
 
@@ -1738,7 +1740,7 @@ fn rainbow_prompt_color(distance: usize) -> Color {
         (180, 100, 255), // Violet
     ];
 
-    // Gray target (DIM_COLOR)
+    // Gray target (dim_color())
     const GRAY: (u8, u8, u8) = (80, 80, 80);
 
     // Exponential decay factor - how quickly we fade to gray
@@ -1755,11 +1757,11 @@ fn rainbow_prompt_color(distance: usize) -> Color {
         (rainbow as f32 * decay + gray as f32 * (1.0 - decay)) as u8
     };
 
-    Color::Rgb(blend(r, GRAY.0), blend(g, GRAY.1), blend(b, GRAY.2))
+    rgb(blend(r, GRAY.0), blend(g, GRAY.1), blend(b, GRAY.2))
 }
 
 fn prompt_entry_color(base: Color, t: f32) -> Color {
-    let peak = Color::Rgb(255, 230, 120);
+    let peak = rgb(255, 230, 120);
     // Quick pulse in/out over the animation window.
     let phase = if t < 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 };
     blend_color(base, peak, phase.clamp(0.0, 1.0) * 0.7)
@@ -1775,7 +1777,7 @@ fn animated_tool_color(elapsed: f32) -> Color {
     let g = (200.0 - t * 61.0) as u8; // 200 -> 139
     let b = (220.0 + t * 35.0) as u8; // 220 -> 255
 
-    Color::Rgb(r, g, b)
+    rgb(r, g, b)
 }
 
 /// Format seconds as a human-readable age string
@@ -2348,7 +2350,7 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
                 )),
                 Line::from(Span::styled(
                     "continuing with a safe fallback frame",
-                    Style::default().fg(DIM_COLOR),
+                    Style::default().fg(dim_color()),
                 )),
             ];
             frame.render_widget(Paragraph::new(lines), area);
@@ -3051,23 +3053,23 @@ fn prepare_messages(app: &dyn TuiState, width: u16, height: u16) -> PreparedMess
                             Span::styled(
                                 format!("{}{} ", pad, label),
                                 Style::default()
-                                    .fg(Color::Rgb(138, 180, 248))
+                                    .fg(rgb(138, 180, 248))
                                     .add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(
                                 format!("(type {})", _prompt),
-                                Style::default().fg(DIM_COLOR),
+                                Style::default().fg(dim_color()),
                             ),
                         ]
                     } else {
                         vec![
                             Span::styled(
                                 format!("{}[{}] ", pad, i + 1),
-                                Style::default().fg(Color::Rgb(138, 180, 248)),
+                                Style::default().fg(rgb(138, 180, 248)),
                             ),
                             Span::styled(
                                 label.clone(),
-                                Style::default().fg(Color::Rgb(200, 200, 200)),
+                                Style::default().fg(rgb(200, 200, 200)),
                             ),
                         ]
                     };
@@ -3082,7 +3084,7 @@ fn prepare_messages(app: &dyn TuiState, width: u16, height: u16) -> PreparedMess
                             } else {
                                 "  Press 1-3 or type anything to start"
                             },
-                            Style::default().fg(DIM_COLOR),
+                            Style::default().fg(dim_color()),
                         ))
                         .alignment(suggestion_align),
                     );
@@ -3254,11 +3256,12 @@ fn morph_lines_to_header(
             } else {
                 let fade = (1.0 - blend / flip_threshold.max(0.01)).clamp(0.0, 1.0);
                 let mut s = anim_style;
-                if let Some(Color::Rgb(r, g, b)) = s.fg {
-                    s.fg = Some(Color::Rgb(
-                        (r as f32 * fade) as u8,
-                        (g as f32 * fade) as u8,
-                        (b as f32 * fade) as u8,
+                if let Some(fg) = s.fg {
+                    let (r, g, b) = color_to_floats(fg, (80.0, 80.0, 80.0));
+                    s.fg = Some(rgb(
+                        (r * fade) as u8,
+                        (g * fade) as u8,
+                        (b * fade) as u8,
                     ));
                 }
                 (anim_ch, s)
@@ -3281,24 +3284,32 @@ fn morph_lines_to_header(
 
 fn lerp_style(from: Style, to: Style, t: f32) -> Style {
     let fg = match (from.fg, to.fg) {
-        (Some(Color::Rgb(r1, g1, b1)), Some(Color::Rgb(r2, g2, b2))) => Some(Color::Rgb(
-            (r1 as f32 + (r2 as f32 - r1 as f32) * t) as u8,
-            (g1 as f32 + (g2 as f32 - g1 as f32) * t) as u8,
-            (b1 as f32 + (b2 as f32 - b1 as f32) * t) as u8,
-        )),
-        (Some(Color::Rgb(r, g, b)), _) => {
-            let dim = 1.0 - t;
-            Some(Color::Rgb(
-                (r as f32 * dim) as u8,
-                (g as f32 * dim) as u8,
-                (b as f32 * dim) as u8,
+        (Some(f), Some(toc)) => {
+            let (r1, g1, b1) = color_to_floats(f, (80.0, 80.0, 80.0));
+            let (r2, g2, b2) = color_to_floats(toc, (200.0, 200.0, 200.0));
+            Some(rgb(
+                (r1 + (r2 - r1) * t).clamp(0.0, 255.0) as u8,
+                (g1 + (g2 - g1) * t).clamp(0.0, 255.0) as u8,
+                (b1 + (b2 - b1) * t).clamp(0.0, 255.0) as u8,
             ))
         }
-        (_, Some(Color::Rgb(r, g, b))) => Some(Color::Rgb(
-            (r as f32 * t) as u8,
-            (g as f32 * t) as u8,
-            (b as f32 * t) as u8,
-        )),
+        (Some(f), _) => {
+            let (r, g, b) = color_to_floats(f, (80.0, 80.0, 80.0));
+            let dim = 1.0 - t;
+            Some(rgb(
+                (r * dim) as u8,
+                (g * dim) as u8,
+                (b * dim) as u8,
+            ))
+        }
+        (_, Some(toc)) => {
+            let (r, g, b) = color_to_floats(toc, (200.0, 200.0, 200.0));
+            Some(rgb(
+                (r * t) as u8,
+                (g * t) as u8,
+                (b * t) as u8,
+            ))
+        }
         (_, to_fg) => to_fg,
     };
     let mut s = to;
@@ -3328,7 +3339,7 @@ fn build_startup_animation_lines(app: &dyn TuiState, term_width: u16) -> Vec<Lin
     let envelope = fade_in.min(fade_out);
     let boost = (envelope * 120.0) as u8;
     let base = 80u8.saturating_add(boost);
-    let art_color = Color::Rgb(base, base.saturating_add(16), base.saturating_add(30));
+    let art_color = rgb(base, base.saturating_add(16), base.saturating_add(30));
     let centered = app.centered_mode();
     let align = if centered {
         ratatui::layout::Alignment::Center
@@ -3352,11 +3363,11 @@ fn build_startup_animation_lines(app: &dyn TuiState, term_width: u16) -> Vec<Lin
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("{} booting jcode interface...", status_spinner),
-        Style::default().fg(DIM_COLOR),
+        Style::default().fg(dim_color()),
     )));
     lines.push(Line::from(Span::styled(
         "waiting for your first prompt",
-        Style::default().fg(DIM_COLOR),
+        Style::default().fg(dim_color()),
     )));
 
     lines
@@ -3428,7 +3439,7 @@ fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Line<'static>>
     if !status_items.is_empty() {
         let badge_text = format!("⟨{}⟩", status_items.join("·"));
         lines.push(
-            Line::from(Span::styled(badge_text, Style::default().fg(DIM_COLOR))).alignment(align),
+            Line::from(Span::styled(badge_text, Style::default().fg(dim_color()))).alignment(align),
         );
     } else if centered {
         lines.push(Line::from("")); // Empty line if no badges (only in centered mode)
@@ -3450,7 +3461,7 @@ fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Line<'static>>
         lines.push(
             Line::from(Span::styled(
                 full_name,
-                Style::default().fg(HEADER_NAME_COLOR),
+                Style::default().fg(header_name_color()),
             ))
             .alignment(align),
         );
@@ -3462,7 +3473,7 @@ fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Line<'static>>
         lines.push(
             Line::from(Span::styled(
                 title_prefix,
-                Style::default().fg(HEADER_NAME_COLOR),
+                Style::default().fg(header_name_color()),
             ))
             .alignment(align),
         );
@@ -3472,7 +3483,7 @@ fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Line<'static>>
     lines.push(
         Line::from(Span::styled(
             nice_model,
-            Style::default().fg(HEADER_SESSION_COLOR),
+            Style::default().fg(header_session_color()),
         ))
         .alignment(align),
     );
@@ -3505,13 +3516,13 @@ fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Line<'static>>
         }
     };
     let version_line =
-        Line::from(Span::styled(version_text, Style::default().fg(DIM_COLOR))).alignment(align);
+        Line::from(Span::styled(version_text, Style::default().fg(dim_color()))).alignment(align);
     lines.push(version_line);
 
     if let Some(dir) = app.working_dir() {
         let display_dir = abbreviate_home(&dir);
         lines.push(
-            Line::from(Span::styled(display_dir, Style::default().fg(DIM_COLOR))).alignment(align),
+            Line::from(Span::styled(display_dir, Style::default().fg(dim_color()))).alignment(align),
         );
     }
 
@@ -3520,16 +3531,16 @@ fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Line<'static>>
 
 /// Badge without leading space (for centered display)
 fn multi_status_badge_no_leading_space(items: &[(&str, Color)]) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::styled("⟨", Style::default().fg(DIM_COLOR))];
+    let mut spans = vec![Span::styled("⟨", Style::default().fg(dim_color()))];
 
     for (i, (label, color)) in items.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled("·", Style::default().fg(DIM_COLOR)));
+            spans.push(Span::styled("·", Style::default().fg(dim_color())));
         }
         spans.push(Span::styled(label.to_string(), Style::default().fg(*color)));
     }
 
-    spans.push(Span::styled("⟩", Style::default().fg(DIM_COLOR)));
+    spans.push(Span::styled("⟩", Style::default().fg(dim_color())));
     spans
 }
 
@@ -3615,7 +3626,7 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
         }
     };
     lines.push(
-        Line::from(Span::styled(model_info, Style::default().fg(DIM_COLOR))).alignment(align),
+        Line::from(Span::styled(model_info, Style::default().fg(dim_color()))).alignment(align),
     );
 
     // Line: Auth status indicators (colored dots for each provider)
@@ -3639,7 +3650,7 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
             content.push(
                 Line::from(Span::styled(
                     format!("• {}", entry),
-                    Style::default().fg(DIM_COLOR),
+                    Style::default().fg(dim_color()),
                 ))
                 .alignment(align),
             );
@@ -3651,7 +3662,7 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
                         "  …{} more · /changelog to see all",
                         new_entries.len() - MAX_LINES
                     ),
-                    Style::default().fg(DIM_COLOR),
+                    Style::default().fg(dim_color()),
                 ))
                 .alignment(align),
             );
@@ -3661,7 +3672,7 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
             "Updates",
             content,
             available_width,
-            Style::default().fg(DIM_COLOR),
+            Style::default().fg(dim_color()),
         );
         for line in boxed {
             lines.push(line.alignment(align));
@@ -3707,7 +3718,7 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
             }
         }
     };
-    lines.push(Line::from(Span::styled(mcp_text, Style::default().fg(DIM_COLOR))).alignment(align));
+    lines.push(Line::from(Span::styled(mcp_text, Style::default().fg(dim_color()))).alignment(align));
 
     // Line 4: Skills (if any)
     let skills = app.available_skills();
@@ -3726,7 +3737,7 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
             format!("skills: {} loaded", skills.len())
         };
         lines.push(
-            Line::from(Span::styled(skills_text, Style::default().fg(DIM_COLOR))).alignment(align),
+            Line::from(Span::styled(skills_text, Style::default().fg(dim_color()))).alignment(align),
         );
     }
 
@@ -3748,7 +3759,7 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
         lines.push(
             Line::from(Span::styled(
                 format!("server: {}", parts.join(", ")),
-                Style::default().fg(DIM_COLOR),
+                Style::default().fg(dim_color()),
             ))
             .alignment(align),
         );
@@ -3767,7 +3778,7 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
     //             "Context",
     //             context_lines,
     //             width as usize,
-    //             Style::default().fg(DIM_COLOR),
+    //             Style::default().fg(dim_color()),
     //         );
     //         for line in boxed {
     //             lines.push(line.alignment(align));
@@ -3892,8 +3903,8 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 lines.push(
                     Line::from(vec![
                         Span::styled(format!("{}", prompt_num), Style::default().fg(num_color)),
-                        Span::styled("› ", Style::default().fg(USER_COLOR)),
-                        Span::styled(msg.content.clone(), Style::default().fg(USER_TEXT)),
+                        Span::styled("› ", Style::default().fg(user_color())),
+                        Span::styled(msg.content.clone(), Style::default().fg(user_text())),
                     ])
                     .alignment(align),
                 );
@@ -3916,7 +3927,7 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 lines.push(
                     Line::from(vec![
                         Span::raw(if centered { "" } else { "  " }),
-                        Span::styled(msg.content.clone(), Style::default().fg(DIM_COLOR)),
+                        Span::styled(msg.content.clone(), Style::default().fg(dim_color())),
                     ])
                     .alignment(align),
                 );
@@ -3947,7 +3958,7 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                             Span::styled(if centered { "" } else { "  " }, Style::default()),
                             Span::styled(
                                 msg.content.clone(),
-                                Style::default().fg(ACCENT_COLOR).italic(),
+                                Style::default().fg(accent_color()).italic(),
                             ),
                         ])
                         .alignment(align),
@@ -3955,8 +3966,8 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 }
             }
             "memory" => {
-                let border_style = Style::default().fg(Color::Rgb(130, 140, 180));
-                let text_style = Style::default().fg(DIM_COLOR);
+                let border_style = Style::default().fg(rgb(130, 140, 180));
+                let text_style = Style::default().fg(dim_color());
 
                 let mut entries: Vec<(String, String)> = Vec::new();
                 let mut current_category = String::new();
@@ -4019,7 +4030,7 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 lines.push(
                     Line::from(vec![
                         Span::styled(if centered { "" } else { "  " }, Style::default()),
-                        Span::styled(msg.content.clone(), Style::default().fg(DIM_COLOR)),
+                        Span::styled(msg.content.clone(), Style::default().fg(dim_color())),
                     ])
                     .alignment(align),
                 );
@@ -4102,7 +4113,7 @@ pub(crate) fn render_assistant_message(
             Span::raw("  "),
             Span::styled(
                 msg.tool_calls.join(" "),
-                Style::default().fg(ACCENT_COLOR).dim(),
+                Style::default().fg(accent_color()).dim(),
             ),
         ]));
     }
@@ -4135,8 +4146,8 @@ pub(crate) fn render_tool_message(
             .or_else(|| tc.input.get("tag").and_then(|v| v.as_str()))
             .unwrap_or("fact");
         let title = format!("🧠 saved ({})", category);
-        let border_style = Style::default().fg(Color::Rgb(255, 200, 100));
-        let text_style = Style::default().fg(DIM_COLOR);
+        let border_style = Style::default().fg(rgb(255, 200, 100));
+        let text_style = Style::default().fg(dim_color());
         let max_box = (width.saturating_sub(4) as usize).min(72);
         let inner_width = max_box.saturating_sub(4);
 
@@ -4159,8 +4170,8 @@ pub(crate) fn render_tool_message(
 
     // Special rendering for memory recall actions
     if is_memory_recall_tool(tc) && !msg.content.starts_with("Error:") {
-        let border_style = Style::default().fg(Color::Rgb(150, 180, 255));
-        let text_style = Style::default().fg(DIM_COLOR);
+        let border_style = Style::default().fg(rgb(150, 180, 255));
+        let text_style = Style::default().fg(dim_color());
 
         let mut entries: Vec<(String, String)> = Vec::new();
         for line in msg.content.lines() {
@@ -4209,9 +4220,9 @@ pub(crate) fn render_tool_message(
         || msg.content.starts_with("Failed:");
 
     let (icon, icon_color) = if is_error {
-        ("✗", Color::Rgb(220, 100, 100)) // Red for errors
+        ("✗", rgb(220, 100, 100)) // Red for errors
     } else {
-        ("✓", Color::Rgb(100, 180, 100)) // Green for success
+        ("✓", rgb(100, 180, 100)) // Green for success
     };
 
     // For edit tools, count line changes
@@ -4227,21 +4238,21 @@ pub(crate) fn render_tool_message(
 
     let mut tool_line = vec![
         Span::styled(format!("  {} ", icon), Style::default().fg(icon_color)),
-        Span::styled(tc.name.clone(), Style::default().fg(TOOL_COLOR)),
-        Span::styled(format!(" {}", summary), Style::default().fg(DIM_COLOR)),
+        Span::styled(tc.name.clone(), Style::default().fg(tool_color())),
+        Span::styled(format!(" {}", summary), Style::default().fg(dim_color())),
     ];
     if is_edit_tool {
-        tool_line.push(Span::styled(" (", Style::default().fg(DIM_COLOR)));
+        tool_line.push(Span::styled(" (", Style::default().fg(dim_color())));
         tool_line.push(Span::styled(
             format!("+{}", additions),
-            Style::default().fg(DIFF_ADD_COLOR),
+            Style::default().fg(diff_add_color()),
         ));
-        tool_line.push(Span::styled(" ", Style::default().fg(DIM_COLOR)));
+        tool_line.push(Span::styled(" ", Style::default().fg(dim_color())));
         tool_line.push(Span::styled(
             format!("-{}", deletions),
-            Style::default().fg(DIFF_DEL_COLOR),
+            Style::default().fg(diff_del_color()),
         ));
-        tool_line.push(Span::styled(")", Style::default().fg(DIM_COLOR)));
+        tool_line.push(Span::styled(")", Style::default().fg(dim_color())));
     }
 
     lines.push(Line::from(tool_line));
@@ -4271,9 +4282,9 @@ pub(crate) fn render_tool_message(
 
                 let sub_errored = sub_results.get(i).copied().unwrap_or(false);
                 let (sub_icon, sub_icon_color) = if sub_errored {
-                    ("✗", Color::Rgb(220, 100, 100))
+                    ("✗", rgb(220, 100, 100))
                 } else {
-                    ("✓", Color::Rgb(100, 180, 100))
+                    ("✓", rgb(100, 180, 100))
                 };
 
                 lines.push(Line::from(vec![
@@ -4281,8 +4292,8 @@ pub(crate) fn render_tool_message(
                         format!("    {} ", sub_icon),
                         Style::default().fg(sub_icon_color),
                     ),
-                    Span::styled(display_name.to_string(), Style::default().fg(TOOL_COLOR)),
-                    Span::styled(format!(" {}", sub_summary), Style::default().fg(DIM_COLOR)),
+                    Span::styled(display_name.to_string(), Style::default().fg(tool_color())),
+                    Span::styled(format!(" {}", sub_summary), Style::default().fg(dim_color())),
                 ]));
             }
         }
@@ -4356,7 +4367,7 @@ pub(crate) fn render_tool_message(
         lines.push(
             Line::from(Span::styled(
                 format!("{}┌─ diff", pad_str),
-                Style::default().fg(DIM_COLOR),
+                Style::default().fg(dim_color()),
             ))
             .alignment(ratatui::layout::Alignment::Left),
         );
@@ -4375,7 +4386,7 @@ pub(crate) fn render_tool_message(
                 lines.push(
                     Line::from(Span::styled(
                         format!("{}│ ... {} more changes ...", pad_str, skipped),
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(dim_color()),
                     ))
                     .alignment(ratatui::layout::Alignment::Left),
                 );
@@ -4383,9 +4394,9 @@ pub(crate) fn render_tool_message(
             }
 
             let base_color = if line.kind == DiffLineKind::Add {
-                DIFF_ADD_COLOR
+                diff_add_color()
             } else {
-                DIFF_DEL_COLOR
+                diff_del_color()
             };
 
             // Build the line with syntax-highlighted content
@@ -4396,7 +4407,7 @@ pub(crate) fn render_tool_message(
             let max_content_width = (width as usize).saturating_sub(prefix_visual_width + 1);
 
             let mut spans: Vec<Span<'static>> = vec![
-                Span::styled(border_prefix, Style::default().fg(DIM_COLOR)),
+                Span::styled(border_prefix, Style::default().fg(dim_color())),
                 Span::styled(line.prefix.clone(), Style::default().fg(base_color)),
             ];
 
@@ -4421,7 +4432,7 @@ pub(crate) fn render_tool_message(
                     for span in highlighted {
                         spans.push(tint_span_with_diff_color(span, base_color));
                     }
-                    spans.push(Span::styled("…", Style::default().fg(DIM_COLOR)));
+                    spans.push(Span::styled("…", Style::default().fg(dim_color())));
                 } else {
                     let highlighted = markdown::highlight_line(content.as_str(), file_ext);
                     for span in highlighted {
@@ -4440,7 +4451,7 @@ pub(crate) fn render_tool_message(
             format!("{}└─", pad_str)
         };
         lines.push(
-            Line::from(Span::styled(footer, Style::default().fg(DIM_COLOR)))
+            Line::from(Span::styled(footer, Style::default().fg(dim_color())))
                 .alignment(ratatui::layout::Alignment::Left),
         );
     }
@@ -4724,23 +4735,23 @@ fn draw_changelog_overlay(frame: &mut Frame, area: Rect, scroll: usize) {
     if groups.is_empty() {
         lines.push(Line::from(Span::styled(
             "No changelog entries available.",
-            Style::default().fg(DIM_COLOR),
+            Style::default().fg(dim_color()),
         )));
     } else {
         for group in &groups {
             lines.push(Line::from(Span::styled(
                 format!("  {}", group.version),
                 Style::default()
-                    .fg(Color::Rgb(200, 200, 220))
+                    .fg(rgb(200, 200, 220))
                     .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(""));
             for entry in &group.entries {
                 lines.push(Line::from(vec![
-                    Span::styled("    • ", Style::default().fg(DIM_COLOR)),
+                    Span::styled("    • ", Style::default().fg(dim_color())),
                     Span::styled(
                         entry.clone(),
-                        Style::default().fg(Color::Rgb(170, 170, 185)),
+                        Style::default().fg(rgb(170, 170, 185)),
                     ),
                 ]));
             }
@@ -4769,15 +4780,15 @@ fn draw_changelog_overlay(frame: &mut Frame, area: Rect, scroll: usize) {
         .title(Span::styled(
             title,
             Style::default()
-                .fg(Color::Rgb(200, 200, 220))
+                .fg(rgb(200, 200, 220))
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Line::from(Span::styled(
             " Esc to close · j/k scroll · Space/PageUp page ",
-            Style::default().fg(DIM_COLOR),
+            Style::default().fg(dim_color()),
         )))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(DIM_COLOR));
+        .border_style(Style::default().fg(dim_color()));
 
     let paragraph = Paragraph::new(lines)
         .block(block)
@@ -4822,26 +4833,30 @@ fn render_overlay_box(frame: &mut Frame, area: Rect, title: &str, color: Color) 
 
 fn debug_palette_json() -> Option<serde_json::Value> {
     Some(serde_json::json!({
-        "USER_COLOR": color_to_rgb(USER_COLOR),
-        "AI_COLOR": color_to_rgb(AI_COLOR),
-        "TOOL_COLOR": color_to_rgb(TOOL_COLOR),
-        "DIM_COLOR": color_to_rgb(DIM_COLOR),
-        "ACCENT_COLOR": color_to_rgb(ACCENT_COLOR),
-        "QUEUED_COLOR": color_to_rgb(QUEUED_COLOR),
-        "ASAP_COLOR": color_to_rgb(ASAP_COLOR),
-        "PENDING_COLOR": color_to_rgb(PENDING_COLOR),
-        "USER_TEXT": color_to_rgb(USER_TEXT),
-        "USER_BG": color_to_rgb(USER_BG),
-        "AI_TEXT": color_to_rgb(AI_TEXT),
-        "HEADER_ICON_COLOR": color_to_rgb(HEADER_ICON_COLOR),
-        "HEADER_NAME_COLOR": color_to_rgb(HEADER_NAME_COLOR),
-        "HEADER_SESSION_COLOR": color_to_rgb(HEADER_SESSION_COLOR),
+        "user_color": color_to_rgb(user_color()),
+        "ai_color": color_to_rgb(ai_color()),
+        "tool_color": color_to_rgb(tool_color()),
+        "dim_color": color_to_rgb(dim_color()),
+        "accent_color": color_to_rgb(accent_color()),
+        "queued_color": color_to_rgb(queued_color()),
+        "asap_color": color_to_rgb(asap_color()),
+        "pending_color": color_to_rgb(pending_color()),
+        "user_text": color_to_rgb(user_text()),
+        "user_bg": color_to_rgb(user_bg()),
+        "ai_text": color_to_rgb(ai_text()),
+        "header_icon_color": color_to_rgb(header_icon_color()),
+        "header_name_color": color_to_rgb(header_name_color()),
+        "header_session_color": color_to_rgb(header_session_color()),
     }))
 }
 
 fn color_to_rgb(color: Color) -> Option<[u8; 3]> {
     match color {
         Color::Rgb(r, g, b) => Some([r, g, b]),
+        Color::Indexed(n) if n >= 16 => {
+            let (r, g, b) = super::color_support::indexed_to_rgb(n);
+            Some([r, g, b])
+        }
         _ => None,
     }
 }
@@ -4938,35 +4953,35 @@ fn draw_pinned_diagram(
         return;
     }
 
-    let border_color = if focused { ACCENT_COLOR } else { DIM_COLOR };
-    let mut title_parts = vec![Span::styled(" pinned ", Style::default().fg(TOOL_COLOR))];
+    let border_color = if focused { accent_color() } else { dim_color() };
+    let mut title_parts = vec![Span::styled(" pinned ", Style::default().fg(tool_color()))];
     if total > 0 {
         title_parts.push(Span::styled(
             format!("{}/{}", index + 1, total),
-            Style::default().fg(TOOL_COLOR),
+            Style::default().fg(tool_color()),
         ));
     }
     let mode_label = if focused { " pan " } else { " fit " };
     title_parts.push(Span::styled(
         mode_label,
-        Style::default().fg(if focused { ACCENT_COLOR } else { DIM_COLOR }),
+        Style::default().fg(if focused { accent_color() } else { dim_color() }),
     ));
     if focused || zoom_percent != 100 {
         title_parts.push(Span::styled(
             format!(" zoom {}%", zoom_percent),
-            Style::default().fg(if focused { ACCENT_COLOR } else { DIM_COLOR }),
+            Style::default().fg(if focused { accent_color() } else { dim_color() }),
         ));
     }
     if total > 1 {
-        title_parts.push(Span::styled(" Ctrl+←/→", Style::default().fg(DIM_COLOR)));
+        title_parts.push(Span::styled(" Ctrl+←/→", Style::default().fg(dim_color())));
     }
     title_parts.push(Span::styled(
         " Ctrl+H/L focus",
-        Style::default().fg(DIM_COLOR),
+        Style::default().fg(dim_color()),
     ));
     title_parts.push(Span::styled(
         " Alt+M toggle",
-        Style::default().fg(DIM_COLOR),
+        Style::default().fg(dim_color()),
     ));
 
     let poor_fit = is_diagram_poor_fit(diagram, area, pane_position);
@@ -4978,20 +4993,20 @@ fn draw_pinned_diagram(
         title_parts.push(Span::styled(
             hint,
             Style::default()
-                .fg(ACCENT_COLOR)
+                .fg(accent_color())
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
     if focused {
         title_parts.push(Span::styled(
             " o open",
-            Style::default().fg(if poor_fit { ACCENT_COLOR } else { DIM_COLOR }),
+            Style::default().fg(if poor_fit { accent_color() } else { dim_color() }),
         ));
     } else if poor_fit {
         title_parts.push(Span::styled(
             " focus+o open",
             Style::default()
-                .fg(ACCENT_COLOR)
+                .fg(accent_color())
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
@@ -5163,7 +5178,7 @@ fn draw_messages(
                             if !span.content.is_empty() {
                                 let base = match span.style.fg {
                                     Some(c) => c,
-                                    None => USER_TEXT,
+                                    None => user_text(),
                                 };
                                 span.style = span.style.fg(prompt_entry_color(base, t));
                             }
@@ -5216,7 +5231,7 @@ fn draw_messages(
                             frame.render_widget(
                                 Paragraph::new(Line::from(Span::styled(
                                     "↗ mermaid diagram unavailable",
-                                    Style::default().fg(DIM_COLOR),
+                                    Style::default().fg(dim_color()),
                                 ))),
                                 image_area,
                             );
@@ -5261,7 +5276,7 @@ fn draw_messages(
                 width: 1,
                 height: 1,
             };
-            let bar = Paragraph::new(Span::styled("│", Style::default().fg(USER_COLOR)));
+            let bar = Paragraph::new(Span::styled("│", Style::default().fg(user_color())));
             frame.render_widget(bar, bar_area);
         }
     }
@@ -5277,7 +5292,7 @@ fn draw_messages(
         };
         let indicator_widget = Paragraph::new(Line::from(vec![Span::styled(
             indicator,
-            Style::default().fg(DIM_COLOR),
+            Style::default().fg(dim_color()),
         )]));
         frame.render_widget(indicator_widget, indicator_area);
     }
@@ -5317,9 +5332,9 @@ fn draw_messages(
 
                     let preview_lines: Vec<Line<'static>> = if !is_long {
                         vec![Line::from(vec![
-                            Span::styled(num_str.clone(), dim_style.fg(DIM_COLOR)),
-                            Span::styled("› ", dim_style.fg(USER_COLOR)),
-                            Span::styled(text_flat, dim_style.fg(USER_TEXT)),
+                            Span::styled(num_str.clone(), dim_style.fg(dim_color())),
+                            Span::styled("› ", dim_style.fg(user_color())),
+                            Span::styled(text_flat, dim_style.fg(user_text())),
                         ])
                         .alignment(align)]
                     } else {
@@ -5329,16 +5344,16 @@ fn draw_messages(
                         let tail: String = text_chars[tail_start..].iter().collect();
 
                         let first = Line::from(vec![
-                            Span::styled(num_str.clone(), dim_style.fg(DIM_COLOR)),
-                            Span::styled("› ", dim_style.fg(USER_COLOR)),
-                            Span::styled(format!("{} ...", head.trim_end()), dim_style.fg(USER_TEXT)),
+                            Span::styled(num_str.clone(), dim_style.fg(dim_color())),
+                            Span::styled("› ", dim_style.fg(user_color())),
+                            Span::styled(format!("{} ...", head.trim_end()), dim_style.fg(user_text())),
                         ])
                         .alignment(align);
 
                         let padding: String = " ".repeat(prefix_len);
                         let second = Line::from(vec![
                             Span::styled(padding, dim_style),
-                            Span::styled(format!("... {}", tail.trim_start()), dim_style.fg(USER_TEXT)),
+                            Span::styled(format!("... {}", tail.trim_start()), dim_style.fg(user_text())),
                         ])
                         .alignment(align);
 
@@ -5373,7 +5388,7 @@ fn draw_messages(
         };
         let indicator_widget = Paragraph::new(Line::from(vec![Span::styled(
             indicator,
-            Style::default().fg(QUEUED_COLOR),
+            Style::default().fg(queued_color()),
         )]));
         frame.render_widget(indicator_widget, indicator_area);
     }
@@ -5528,7 +5543,7 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
     let is_preview = picker.preview;
 
     let col_focus_style = Style::default().fg(Color::White).bold().underlined();
-    let col_dim_style = Style::default().fg(DIM_COLOR);
+    let col_dim_style = Style::default().fg(dim_color());
 
     // Marker takes 3 chars (" ▸ "), gaps between columns are 1 char each (leading space on col text)
     let marker_width = 3usize;
@@ -5633,21 +5648,21 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
         format!(" ({}/{})", filtered_count, total)
     };
     meta_parts.push_str(&count_str);
-    header_spans.push(Span::styled(meta_parts, Style::default().fg(DIM_COLOR)));
+    header_spans.push(Span::styled(meta_parts, Style::default().fg(dim_color())));
 
     if is_preview {
         header_spans.push(Span::styled(
             "  ↵ open",
-            Style::default().fg(Color::Rgb(60, 60, 80)).italic(),
+            Style::default().fg(rgb(60, 60, 80)).italic(),
         ));
     } else {
         header_spans.push(Span::styled(
             "  ↑↓ ←→ ↵ Esc",
-            Style::default().fg(Color::Rgb(60, 60, 80)),
+            Style::default().fg(rgb(60, 60, 80)),
         ));
         header_spans.push(Span::styled(
             "  ^D=default",
-            Style::default().fg(Color::Rgb(60, 60, 80)).italic(),
+            Style::default().fg(rgb(60, 60, 80)).italic(),
         ));
     }
 
@@ -5658,7 +5673,7 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
     if picker.filtered.is_empty() {
         lines.push(Line::from(Span::styled(
             "   no matches",
-            Style::default().fg(DIM_COLOR).italic(),
+            Style::default().fg(dim_color()).italic(),
         )));
         let paragraph = Paragraph::new(lines);
         frame.render_widget(paragraph, area);
@@ -5698,7 +5713,7 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
             if is_row_selected {
                 Style::default().fg(Color::White).bold()
             } else {
-                Style::default().fg(DIM_COLOR)
+                Style::default().fg(dim_color())
             },
         ));
 
@@ -5735,20 +5750,20 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
             }
         };
         let model_style = if unavailable {
-            Style::default().fg(Color::Rgb(80, 80, 80))
+            Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 0 {
             Style::default()
                 .fg(Color::White)
-                .bg(Color::Rgb(60, 60, 80))
+                .bg(rgb(60, 60, 80))
                 .bold()
         } else if entry.is_current {
-            Style::default().fg(ACCENT_COLOR)
+            Style::default().fg(accent_color())
         } else if entry.recommended {
-            Style::default().fg(Color::Rgb(255, 220, 120))
+            Style::default().fg(rgb(255, 220, 120))
         } else if entry.old {
-            Style::default().fg(Color::Rgb(120, 120, 130))
+            Style::default().fg(rgb(120, 120, 130))
         } else {
-            Style::default().fg(Color::Rgb(200, 200, 220))
+            Style::default().fg(rgb(200, 200, 220))
         };
 
         let match_positions = if !picker.filter.is_empty() {
@@ -5813,14 +5828,14 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
             }
         };
         let provider_style = if unavailable {
-            Style::default().fg(Color::Rgb(80, 80, 80))
+            Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 1 {
             Style::default()
                 .fg(Color::White)
-                .bg(Color::Rgb(60, 60, 80))
+                .bg(rgb(60, 60, 80))
                 .bold()
         } else {
-            Style::default().fg(Color::Rgb(140, 180, 255))
+            Style::default().fg(rgb(140, 180, 255))
         };
 
         // -- Build via column --
@@ -5836,14 +5851,14 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
             }
         };
         let via_style = if unavailable {
-            Style::default().fg(Color::Rgb(80, 80, 80))
+            Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 2 {
             Style::default()
                 .fg(Color::White)
-                .bg(Color::Rgb(60, 60, 80))
+                .bg(rgb(60, 60, 80))
                 .bold()
         } else {
-            Style::default().fg(Color::Rgb(220, 190, 120))
+            Style::default().fg(rgb(220, 190, 120))
         };
 
         // Emit columns in display order
@@ -5863,9 +5878,9 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
                 spans.push(Span::styled(
                     format!("  {}", route.detail),
                     if unavailable {
-                        Style::default().fg(Color::Rgb(80, 80, 80))
+                        Style::default().fg(rgb(80, 80, 80))
                     } else {
-                        Style::default().fg(DIM_COLOR)
+                        Style::default().fg(dim_color())
                     },
                 ));
             }
@@ -5904,10 +5919,10 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
         let spinner_idx = (elapsed * 12.5) as usize % SPINNER_FRAMES.len();
         let spinner = SPINNER_FRAMES[spinner_idx];
         Line::from(vec![
-            Span::styled(spinner, Style::default().fg(Color::Rgb(255, 193, 7))),
+            Span::styled(spinner, Style::default().fg(rgb(255, 193, 7))),
             Span::styled(
                 format!(" {}", build_progress),
-                Style::default().fg(Color::Rgb(255, 193, 7)),
+                Style::default().fg(rgb(255, 193, 7)),
             ),
         ])
     } else if let Some(remaining) = app.rate_limit_remaining() {
@@ -5928,13 +5943,13 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
             format!("{}s", secs)
         };
         Line::from(vec![
-            Span::styled(spinner, Style::default().fg(Color::Rgb(255, 193, 7))),
+            Span::styled(spinner, Style::default().fg(rgb(255, 193, 7))),
             Span::styled(
                 format!(
                     " Rate limited. Auto-retry in {}...{}",
                     time_str, queued_suffix
                 ),
-                Style::default().fg(Color::Rgb(255, 193, 7)),
+                Style::default().fg(rgb(255, 193, 7)),
             ),
         ])
     } else if app.is_processing() {
@@ -5946,16 +5961,16 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
             ProcessingStatus::Idle => Line::from(""),
             ProcessingStatus::Sending => {
                 let mut spans = vec![
-                    Span::styled(spinner, Style::default().fg(AI_COLOR)),
+                    Span::styled(spinner, Style::default().fg(ai_color())),
                     Span::styled(
                         format!(" sending… {}", format_elapsed(elapsed)),
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(dim_color()),
                     ),
                 ];
                 if !queued_suffix.is_empty() {
                     spans.push(Span::styled(
                         queued_suffix.clone(),
-                        Style::default().fg(QUEUED_COLOR),
+                        Style::default().fg(queued_color()),
                     ));
                 }
                 Line::from(spans)
@@ -5963,18 +5978,18 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
             ProcessingStatus::Connecting(ref phase) => {
                 let label = format!(" {}… {}", phase, format_elapsed(elapsed));
                 let label_color = if elapsed > 15.0 {
-                    Color::Rgb(255, 193, 7)
+                    rgb(255, 193, 7)
                 } else {
-                    DIM_COLOR
+                    dim_color()
                 };
                 let mut spans = vec![
-                    Span::styled(spinner, Style::default().fg(AI_COLOR)),
+                    Span::styled(spinner, Style::default().fg(ai_color())),
                     Span::styled(label, Style::default().fg(label_color)),
                 ];
                 if !queued_suffix.is_empty() {
                     spans.push(Span::styled(
                         queued_suffix.clone(),
-                        Style::default().fg(QUEUED_COLOR),
+                        Style::default().fg(queued_color()),
                     ));
                 }
                 Line::from(spans)
@@ -5982,16 +5997,16 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
             ProcessingStatus::Thinking(_start) => {
                 let thinking_elapsed = elapsed;
                 let mut spans = vec![
-                    Span::styled(spinner, Style::default().fg(AI_COLOR)),
+                    Span::styled(spinner, Style::default().fg(ai_color())),
                     Span::styled(
                         format!(" thinking… {:.1}s", thinking_elapsed),
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(dim_color()),
                     ),
                 ];
                 if !queued_suffix.is_empty() {
                     spans.push(Span::styled(
                         queued_suffix.clone(),
-                        Style::default().fg(QUEUED_COLOR),
+                        Style::default().fg(queued_color()),
                     ));
                 }
                 Line::from(spans)
@@ -6018,20 +6033,20 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
                     status_text = format!("⚠ {} cache miss · {}", miss_str, status_text);
                 }
                 let mut spans = vec![
-                    Span::styled(spinner, Style::default().fg(AI_COLOR)),
+                    Span::styled(spinner, Style::default().fg(ai_color())),
                     Span::styled(
                         format!(" {}", status_text),
                         Style::default().fg(if unexpected_cache_miss {
-                            Color::Rgb(255, 193, 7)
+                            rgb(255, 193, 7)
                         } else {
-                            DIM_COLOR
+                            dim_color()
                         }),
                     ),
                 ];
                 if !queued_suffix.is_empty() {
                     spans.push(Span::styled(
                         queued_suffix.clone(),
-                        Style::default().fg(QUEUED_COLOR),
+                        Style::default().fg(queued_color()),
                     ));
                 }
                 Line::from(spans)
@@ -6078,20 +6093,20 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
                 if let Some(detail) = tool_detail {
                     spans.push(Span::styled(
                         format!(" · {}", detail),
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(dim_color()),
                     ));
                 }
 
                 if let Some(status) = subagent {
                     spans.push(Span::styled(
                         format!(" ({})", status),
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(dim_color()),
                     ));
                 }
 
                 spans.push(Span::styled(
                     format!(" · {}", format_elapsed(elapsed)),
-                    Style::default().fg(DIM_COLOR),
+                    Style::default().fg(dim_color()),
                 ));
 
                 if unexpected_cache_miss {
@@ -6103,19 +6118,19 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
                     };
                     spans.push(Span::styled(
                         format!(" · ⚠ {} cache miss", miss_str),
-                        Style::default().fg(Color::Rgb(255, 193, 7)),
+                        Style::default().fg(rgb(255, 193, 7)),
                     ));
                 }
 
                 spans.push(Span::styled(
                     " · Alt+B bg",
-                    Style::default().fg(Color::Rgb(100, 100, 100)),
+                    Style::default().fg(rgb(100, 100, 100)),
                 ));
 
                 if !queued_suffix.is_empty() {
                     spans.push(Span::styled(
                         queued_suffix.clone(),
-                        Style::default().fg(QUEUED_COLOR),
+                        Style::default().fg(queued_color()),
                     ));
                 }
 
@@ -6129,9 +6144,9 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
             if total > 100_000 {
                 // High usage warning (>100k tokens)
                 let warning_color = if total > 150_000 {
-                    Color::Rgb(255, 100, 100) // Red for very high
+                    rgb(255, 100, 100) // Red for very high
                 } else {
-                    Color::Rgb(255, 193, 7) // Amber for high
+                    rgb(255, 193, 7) // Amber for high
                 };
                 Line::from(vec![
                     Span::styled("⚠ ", Style::default().fg(warning_color)),
@@ -6141,7 +6156,7 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
                     ),
                     Span::styled(
                         "(consider /clear for fresh context)",
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(dim_color()),
                     ),
                 ])
             } else {
@@ -6169,11 +6184,11 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
                     .unwrap_or_default();
                 if !line.spans.is_empty() {
                     line.spans
-                        .push(Span::styled(" · ", Style::default().fg(DIM_COLOR)));
+                        .push(Span::styled(" · ", Style::default().fg(dim_color())));
                 }
                 line.spans.push(Span::styled(
                     format!("🧊 cache cold{}", tokens_str),
-                    Style::default().fg(Color::Rgb(140, 180, 255)),
+                    Style::default().fg(rgb(140, 180, 255)),
                 ));
             } else if cache_info.remaining_secs <= 60 {
                 let tokens_str = cache_info
@@ -6188,11 +6203,11 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
                     .unwrap_or_default();
                 if !line.spans.is_empty() {
                     line.spans
-                        .push(Span::styled(" · ", Style::default().fg(DIM_COLOR)));
+                        .push(Span::styled(" · ", Style::default().fg(dim_color())));
                 }
                 line.spans.push(Span::styled(
                     format!("⏳ cache {}s{}", cache_info.remaining_secs, tokens_str),
-                    Style::default().fg(Color::Rgb(255, 193, 7)),
+                    Style::default().fg(rgb(255, 193, 7)),
                 ));
             }
         }
@@ -6201,20 +6216,20 @@ fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count:
     if let Some(notice) = app.status_notice() {
         if !line.spans.is_empty() {
             line.spans
-                .push(Span::styled(" · ", Style::default().fg(DIM_COLOR)));
+                .push(Span::styled(" · ", Style::default().fg(dim_color())));
         }
         line.spans
-            .push(Span::styled(notice, Style::default().fg(ACCENT_COLOR)));
+            .push(Span::styled(notice, Style::default().fg(accent_color())));
     }
 
     if app.has_stashed_input() {
         if !line.spans.is_empty() {
             line.spans
-                .push(Span::styled(" · ", Style::default().fg(DIM_COLOR)));
+                .push(Span::styled(" · ", Style::default().fg(dim_color())));
         }
         line.spans.push(Span::styled(
             "📋 stash",
-            Style::default().fg(Color::Rgb(255, 193, 7)),
+            Style::default().fg(rgb(255, 193, 7)),
         ));
     }
 
@@ -6285,9 +6300,9 @@ fn format_cache_status(
 
 fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {
     if app.queue_mode() {
-        ("⏳", QUEUED_COLOR)
+        ("⏳", queued_color())
     } else {
-        ("⚡", ASAP_COLOR)
+        ("⚡", asap_color())
     }
 }
 
@@ -6390,9 +6405,9 @@ fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, start_num: usi
             let distance = pending_count.saturating_sub(i);
             let num_color = rainbow_prompt_color(distance);
             let (indicator, indicator_color, msg_color, dim) = match msg_type {
-                QueuedMsgType::Pending => ("↻", PENDING_COLOR, PENDING_COLOR, false),
-                QueuedMsgType::Interleave => ("⚡", ASAP_COLOR, ASAP_COLOR, false),
-                QueuedMsgType::Queued => ("⏳", QUEUED_COLOR, QUEUED_COLOR, true),
+                QueuedMsgType::Pending => ("↻", pending_color(), pending_color(), false),
+                QueuedMsgType::Interleave => ("⚡", asap_color(), asap_color(), false),
+                QueuedMsgType::Queued => ("⏳", queued_color(), queued_color(), true),
             };
             let mut msg_style = Style::default().fg(msg_color);
             if dim {
@@ -6548,7 +6563,7 @@ fn draw_idle_animation(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
                             let sat = 0.5 + t * 0.4;
                             let val = (0.10 + t * t * 0.90) * (0.55 + coverage * 0.45);
                             let (r, g, b) = hsv_to_rgb(hue, sat, val);
-                            Span::styled(String::from(ch), Style::default().fg(Color::Rgb(r, g, b)))
+                            Span::styled(String::from(ch), Style::default().fg(rgb(r, g, b)))
                         }
                     })
                     .collect();
@@ -7225,11 +7240,11 @@ fn draw_input(
 
     // Build prompt parts: number (dim) + caret (colored) + space
     let (prompt_char, caret_color) = if app.is_processing() {
-        ("… ", QUEUED_COLOR)
+        ("… ", queued_color())
     } else if app.active_skill().is_some() {
-        ("» ", ACCENT_COLOR)
+        ("» ", accent_color())
     } else {
-        ("> ", USER_COLOR)
+        ("> ", user_color())
     };
     let num_str = format!("{}", next_prompt);
     // Use char count, not byte count (ellipsis is 3 bytes but 1 char)
@@ -7265,17 +7280,17 @@ fn draw_input(
             // Single match or exact match: show command + description
             let (cmd, desc) = exact_match.unwrap_or(&suggestions[0]);
             let mut spans = vec![
-                Span::styled("  ", Style::default().fg(DIM_COLOR)),
+                Span::styled("  ", Style::default().fg(dim_color())),
                 Span::styled(
                     cmd.to_string(),
-                    Style::default().fg(Color::Rgb(138, 180, 248)),
+                    Style::default().fg(rgb(138, 180, 248)),
                 ),
-                Span::styled(format!(" - {}", desc), Style::default().fg(DIM_COLOR)),
+                Span::styled(format!(" - {}", desc), Style::default().fg(dim_color())),
             ];
             if suggestions.len() > 1 {
                 spans.push(Span::styled(
                     format!("  Tab: +{} more", suggestions.len() - 1),
-                    Style::default().fg(DIM_COLOR),
+                    Style::default().fg(dim_color()),
                 ));
             }
             lines.push(Line::from(spans));
@@ -7285,27 +7300,27 @@ fn draw_input(
             let limited: Vec<_> = suggestions.iter().take(max_suggestions).collect();
             let more_count = suggestions.len().saturating_sub(max_suggestions);
 
-            let mut spans = vec![Span::styled("  Tab: ", Style::default().fg(DIM_COLOR))];
+            let mut spans = vec![Span::styled("  Tab: ", Style::default().fg(dim_color()))];
             for (i, (cmd, desc)) in limited.iter().enumerate() {
                 if i > 0 {
-                    spans.push(Span::styled(" │ ", Style::default().fg(DIM_COLOR)));
+                    spans.push(Span::styled(" │ ", Style::default().fg(dim_color())));
                 }
                 spans.push(Span::styled(
                     cmd.to_string(),
-                    Style::default().fg(Color::Rgb(138, 180, 248)),
+                    Style::default().fg(rgb(138, 180, 248)),
                 ));
                 // Show description for first suggestion only (space is limited)
                 if i == 0 {
                     spans.push(Span::styled(
                         format!(" ({})", desc),
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(dim_color()),
                     ));
                 }
             }
             if more_count > 0 {
                 spans.push(Span::styled(
                     format!(" (+{})", more_count),
-                    Style::default().fg(DIM_COLOR),
+                    Style::default().fg(dim_color()),
                 ));
             }
             lines.push(Line::from(spans));
@@ -7321,7 +7336,7 @@ fn draw_input(
         hint_line = Some(hint.trim().to_string());
         lines.push(Line::from(Span::styled(
             hint,
-            Style::default().fg(DIM_COLOR),
+            Style::default().fg(dim_color()),
         )));
     }
 
@@ -7570,10 +7585,10 @@ fn wrap_input_text<'a>(
 }
 
 // Colors for diff display (classic green/red)
-const DIFF_ADD_COLOR: Color = Color::Rgb(100, 200, 100); // Green for additions
-const DIFF_DEL_COLOR: Color = Color::Rgb(200, 100, 100); // Red for deletions
-const DIFF_HIGHLIGHT_ADD: Color = Color::Rgb(150, 255, 150); // Brighter green highlight
-const DIFF_HIGHLIGHT_DEL: Color = Color::Rgb(255, 130, 130); // Brighter red highlight
+fn diff_add_color() -> Color { rgb(100, 200, 100) }
+fn diff_del_color() -> Color { rgb(200, 100, 100) }
+fn diff_highlight_add() -> Color { rgb(150, 255, 150) }
+fn diff_highlight_del() -> Color { rgb(255, 130, 130) }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DiffLineKind {
@@ -7908,22 +7923,23 @@ fn extract_diff_prefix_and_content(line: &str) -> (&str, &str) {
 fn tint_span_with_diff_color(span: Span<'static>, diff_color: Color) -> Span<'static> {
     let (dr, dg, db) = match diff_color {
         Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(n) => super::color_support::indexed_to_rgb(n),
         _ => return span,
     };
 
-    // Get the span's foreground color
     let fg = span.style.fg.unwrap_or(Color::White);
     let (sr, sg, sb) = match fg {
         Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(n) => super::color_support::indexed_to_rgb(n),
         Color::White => (255, 255, 255),
         Color::Black => (0, 0, 0),
-        _ => return span, // Can't tint indexed colors easily
+        _ => return span,
     };
 
     // Blend: 70% syntax color + 30% diff color
     let blend = |s: u8, d: u8| -> u8 { ((s as u16 * 70 + d as u16 * 30) / 100) as u8 };
 
-    let tinted = Color::Rgb(blend(sr, dr), blend(sg, dg), blend(sb, db));
+    let tinted = rgb(blend(sr, dr), blend(sg, dg), blend(sb, db));
     Span::styled(span.content, span.style.fg(tinted))
 }
 
@@ -7937,9 +7953,9 @@ fn render_diff_line_with_highlights(
     use similar::{ChangeTag, TextDiff};
 
     let (base_color, highlight_color) = if is_deletion {
-        (DIFF_DEL_COLOR, DIFF_HIGHLIGHT_DEL)
+        (diff_del_color(), diff_highlight_del())
     } else {
-        (DIFF_ADD_COLOR, DIFF_HIGHLIGHT_ADD)
+        (diff_add_color(), diff_highlight_add())
     };
 
     // Get prefix (line number and +/-)
@@ -8744,34 +8760,34 @@ fn draw_pinned_content(
         })
         .sum();
 
-    let mut title_parts = vec![Span::styled(" pinned ", Style::default().fg(TOOL_COLOR))];
+    let mut title_parts = vec![Span::styled(" pinned ", Style::default().fg(tool_color()))];
     if total_diffs > 0 {
         title_parts.push(Span::styled(
             format!("+{}", total_additions),
-            Style::default().fg(DIFF_ADD_COLOR),
+            Style::default().fg(diff_add_color()),
         ));
-        title_parts.push(Span::styled(" ", Style::default().fg(DIM_COLOR)));
+        title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
         title_parts.push(Span::styled(
             format!("-{}", total_deletions),
-            Style::default().fg(DIFF_DEL_COLOR),
+            Style::default().fg(diff_del_color()),
         ));
         title_parts.push(Span::styled(
             format!(" {}f", total_diffs),
-            Style::default().fg(DIM_COLOR),
+            Style::default().fg(dim_color()),
         ));
     }
     if total_images > 0 {
         if total_diffs > 0 {
-            title_parts.push(Span::styled(" ", Style::default().fg(DIM_COLOR)));
+            title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
         }
         title_parts.push(Span::styled(
             format!("📷{}", total_images),
-            Style::default().fg(DIM_COLOR),
+            Style::default().fg(dim_color()),
         ));
     }
-    title_parts.push(Span::styled(" ", Style::default().fg(DIM_COLOR)));
+    title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
 
-    let border_color = if focused { TOOL_COLOR } else { DIM_COLOR };
+    let border_color = if focused { tool_color() } else { dim_color() };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -8822,31 +8838,31 @@ fn draw_pinned_content(
                     .and_then(|e| e.to_str());
 
                 text_lines.push(Line::from(vec![
-                    Span::styled("── ", Style::default().fg(DIM_COLOR)),
+                    Span::styled("── ", Style::default().fg(dim_color())),
                     Span::styled(
                         short_path,
                         Style::default()
-                            .fg(Color::Rgb(180, 200, 255))
+                            .fg(rgb(180, 200, 255))
                             .add_modifier(ratatui::style::Modifier::BOLD),
                     ),
-                    Span::styled(" (", Style::default().fg(DIM_COLOR)),
+                    Span::styled(" (", Style::default().fg(dim_color())),
                     Span::styled(
                         format!("+{}", additions),
-                        Style::default().fg(DIFF_ADD_COLOR),
+                        Style::default().fg(diff_add_color()),
                     ),
-                    Span::styled(" ", Style::default().fg(DIM_COLOR)),
+                    Span::styled(" ", Style::default().fg(dim_color())),
                     Span::styled(
                         format!("-{}", deletions),
-                        Style::default().fg(DIFF_DEL_COLOR),
+                        Style::default().fg(diff_del_color()),
                     ),
-                    Span::styled(")", Style::default().fg(DIM_COLOR)),
+                    Span::styled(")", Style::default().fg(dim_color())),
                 ]));
 
                 for line in diff_lines {
                     let base_color = if line.kind == DiffLineKind::Add {
-                        DIFF_ADD_COLOR
+                        diff_add_color()
                     } else {
-                        DIFF_DEL_COLOR
+                        diff_del_color()
                     };
 
                     let mut spans: Vec<Span<'static>> = vec![Span::styled(
@@ -8881,16 +8897,16 @@ fn draw_pinned_content(
                     .join("/");
 
                 text_lines.push(Line::from(vec![
-                    Span::styled("── 📷 ", Style::default().fg(DIM_COLOR)),
+                    Span::styled("── 📷 ", Style::default().fg(dim_color())),
                     Span::styled(
                         short_path,
                         Style::default()
-                            .fg(Color::Rgb(180, 200, 255))
+                            .fg(rgb(180, 200, 255))
                             .add_modifier(ratatui::style::Modifier::BOLD),
                     ),
                     Span::styled(
                         format!(" {}×{}", img_w, img_h),
-                        Style::default().fg(DIM_COLOR),
+                        Style::default().fg(dim_color()),
                     ),
                 ]));
 
@@ -8912,7 +8928,7 @@ fn draw_pinned_content(
     if text_lines.is_empty() {
         text_lines.push(Line::from(Span::styled(
             "No content yet",
-            Style::default().fg(DIM_COLOR),
+            Style::default().fg(dim_color()),
         )));
     }
 
@@ -9044,7 +9060,7 @@ mod tests {
 
     #[test]
     fn test_wrap_input_text_empty() {
-        let (lines, cursor_line, cursor_col) = wrap_input_text("", 0, 80, "1", "> ", USER_COLOR, 3);
+        let (lines, cursor_line, cursor_col) = wrap_input_text("", 0, 80, "1", "> ", user_color(), 3);
         assert_eq!(lines.len(), 1);
         assert_eq!(cursor_line, 0);
         assert_eq!(cursor_col, 0);
@@ -9053,7 +9069,7 @@ mod tests {
     #[test]
     fn test_wrap_input_text_simple() {
         let (lines, cursor_line, cursor_col) =
-            wrap_input_text("hello", 5, 80, "1", "> ", USER_COLOR, 3);
+            wrap_input_text("hello", 5, 80, "1", "> ", user_color(), 3);
         assert_eq!(lines.len(), 1);
         assert_eq!(cursor_line, 0);
         assert_eq!(cursor_col, 5); // cursor at end
@@ -9062,7 +9078,7 @@ mod tests {
     #[test]
     fn test_wrap_input_text_cursor_middle() {
         let (lines, cursor_line, cursor_col) =
-            wrap_input_text("hello world", 6, 80, "1", "> ", USER_COLOR, 3);
+            wrap_input_text("hello world", 6, 80, "1", "> ", user_color(), 3);
         assert_eq!(lines.len(), 1);
         assert_eq!(cursor_line, 0);
         assert_eq!(cursor_col, 6); // cursor at 'w'
@@ -9072,7 +9088,7 @@ mod tests {
     fn test_wrap_input_text_wrapping() {
         // 10 chars with width 5 = 2 lines
         let (lines, cursor_line, cursor_col) =
-            wrap_input_text("aaaaaaaaaa", 7, 5, "1", "> ", USER_COLOR, 3);
+            wrap_input_text("aaaaaaaaaa", 7, 5, "1", "> ", user_color(), 3);
         assert_eq!(lines.len(), 2);
         assert_eq!(cursor_line, 1); // second line
         assert_eq!(cursor_col, 2); // 7 - 5 = 2
@@ -9081,7 +9097,7 @@ mod tests {
     #[test]
     fn test_wrap_input_text_with_newlines() {
         let (lines, cursor_line, cursor_col) =
-            wrap_input_text("hello\nworld", 6, 80, "1", "> ", USER_COLOR, 3);
+            wrap_input_text("hello\nworld", 6, 80, "1", "> ", user_color(), 3);
         assert_eq!(lines.len(), 2);
         assert_eq!(cursor_line, 1); // second line (after newline)
         assert_eq!(cursor_col, 0); // at start of 'world'
@@ -9091,7 +9107,7 @@ mod tests {
     fn test_wrap_input_text_cursor_at_end_of_wrapped() {
         // 10 chars with width 5, cursor at position 10 (end)
         let (lines, cursor_line, cursor_col) =
-            wrap_input_text("aaaaaaaaaa", 10, 5, "1", "> ", USER_COLOR, 3);
+            wrap_input_text("aaaaaaaaaa", 10, 5, "1", "> ", user_color(), 3);
         assert_eq!(lines.len(), 2);
         assert_eq!(cursor_line, 1);
         assert_eq!(cursor_col, 5);
@@ -9102,7 +9118,7 @@ mod tests {
         // Create text that spans 15 lines when wrapped to width 10
         let text = "a".repeat(150);
         let (lines, cursor_line, cursor_col) =
-            wrap_input_text(&text, 145, 10, "1", "> ", USER_COLOR, 3);
+            wrap_input_text(&text, 145, 10, "1", "> ", user_color(), 3);
         assert_eq!(lines.len(), 15);
         assert_eq!(cursor_line, 14); // last line
         assert_eq!(cursor_col, 5); // 145 % 10 = 5
@@ -9111,7 +9127,7 @@ mod tests {
     #[test]
     fn test_wrap_input_text_multiple_newlines() {
         let (lines, cursor_line, cursor_col) =
-            wrap_input_text("a\nb\nc\nd", 6, 80, "1", "> ", USER_COLOR, 3);
+            wrap_input_text("a\nb\nc\nd", 6, 80, "1", "> ", user_color(), 3);
         assert_eq!(lines.len(), 4);
         assert_eq!(cursor_line, 3); // on 'd' line
         assert_eq!(cursor_col, 0);
