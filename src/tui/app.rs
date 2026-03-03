@@ -4513,8 +4513,14 @@ impl App {
                         // cancel and reset so the user isn't stuck forever.
                         // Provider-level SSE timeouts (90s) should catch most stalls first;
                         // this is a secondary safety net.
+                        //
+                        // Skip stall detection while a tool is executing - tools like
+                        // `cargo build` can legitimately run for many minutes with no
+                        // server events. The tool's own timeout (bash default: 2min,
+                        // background: unlimited) handles runaway commands.
                         const STALL_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-                        if self.is_processing {
+                        let is_running_tool = matches!(self.status, ProcessingStatus::RunningTool(_));
+                        if self.is_processing && !is_running_tool {
                             let stalled = self.last_stream_activity
                                 .map(|t| t.elapsed() > STALL_TIMEOUT)
                                 .unwrap_or_else(|| {
