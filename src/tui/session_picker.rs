@@ -159,6 +159,24 @@ fn session_sort_key(stem: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// Check if a session file has no messages by reading the first ~300 bytes.
+/// Empty sessions contain `"messages":[]` near the start of the file.
+/// This is much cheaper than parsing the entire JSON.
+fn is_empty_session_file(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return true;
+    };
+    let mut buf = [0u8; 300];
+    use std::io::Read;
+    let n = match file.take(300).read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return true,
+    };
+    let head = &buf[..n];
+    // Look for "messages":[] pattern - indicates no messages
+    head.windows(13).any(|w| w == b"\"messages\":[]")
+}
+
 fn collect_recent_session_stems(sessions_dir: &Path, scan_limit: usize) -> Result<Vec<String>> {
     let mut top_k: BinaryHeap<Reverse<(u64, String)>> = BinaryHeap::new();
 
@@ -171,6 +189,10 @@ fn collect_recent_session_stems(sessions_dir: &Path, scan_limit: usize) -> Resul
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
+
+        if is_empty_session_file(&path) {
+            continue;
+        }
 
         let candidate = (session_sort_key(stem), stem.to_string());
         if top_k.len() < scan_limit {

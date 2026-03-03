@@ -839,12 +839,16 @@ impl Agent {
     /// Mark this agent session as closed and persist it.
     pub fn mark_closed(&mut self) {
         self.session.mark_closed();
-        let _ = self.session.save();
+        if !self.session.messages.is_empty() {
+            let _ = self.session.save();
+        }
     }
 
     pub fn mark_crashed(&mut self, message: Option<String>) {
         self.session.mark_crashed(message);
-        let _ = self.session.save();
+        if !self.session.messages.is_empty() {
+            let _ = self.session.save();
+        }
     }
 
     /// Get the last token usage from the most recent API request
@@ -862,7 +866,9 @@ impl Agent {
     fn log_env_snapshot(&mut self, reason: &str) {
         let snapshot = self.build_env_snapshot(reason);
         self.session.record_env_snapshot(snapshot.clone());
-        let _ = self.session.save();
+        if !self.session.messages.is_empty() {
+            let _ = self.session.save();
+        }
         if let Ok(json) = serde_json::to_string(&snapshot) {
             logging::info(&format!("ENV_SNAPSHOT {}", json));
         } else {
