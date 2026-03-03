@@ -203,6 +203,7 @@ struct ViewportState {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResizeMode {
     Fit,
+    Scale,
     Crop,
     Viewport,
 }
@@ -786,6 +787,7 @@ pub fn debug_image_state() -> Vec<ImageStateInfo> {
                 hash: format!("{:016x}", hash),
                 resize_mode: match img_state.resize_mode {
                     ResizeMode::Fit => "Fit".to_string(),
+                    ResizeMode::Scale => "Scale".to_string(),
                     ResizeMode::Crop => "Crop".to_string(),
                     ResizeMode::Viewport => "Viewport".to_string(),
                 },
@@ -850,6 +852,7 @@ pub fn debug_render(content: &str) -> TestRenderResult {
             let resize_mode = if let Ok(state) = IMAGE_STATE.lock() {
                 state.get(&hash).map(|s| match s.resize_mode {
                     ResizeMode::Fit => "Fit".to_string(),
+                    ResizeMode::Scale => "Scale".to_string(),
                     ResizeMode::Crop => "Crop".to_string(),
                     ResizeMode::Viewport => "Viewport".to_string(),
                 })
@@ -921,6 +924,7 @@ pub fn debug_test_resize_stability(hash: u64) -> serde_json::Value {
         let mode = if let Ok(state) = IMAGE_STATE.lock() {
             state.get(&hash).map(|s| match s.resize_mode {
                 ResizeMode::Fit => "Fit",
+                ResizeMode::Scale => "Scale",
                 ResizeMode::Crop => "Crop",
                 ResizeMode::Viewport => "Viewport",
             })
@@ -1070,6 +1074,7 @@ pub fn debug_test_scroll(content: Option<&str>) -> ScrollTestResult {
                 if let Some(img_state) = state.get(&hash) {
                     let mode = match img_state.resize_mode {
                         ResizeMode::Fit => "Fit",
+                        ResizeMode::Scale => "Scale",
                         ResizeMode::Crop => "Crop",
                         ResizeMode::Viewport => "Viewport",
                     };
@@ -2061,6 +2066,26 @@ pub fn render_image_widget_fit(
     centered: bool,
     draw_border: bool,
 ) -> u16 {
+    render_image_widget_fit_inner(hash, area, buf, centered, draw_border, false)
+}
+
+pub fn render_image_widget_scale(
+    hash: u64,
+    area: Rect,
+    buf: &mut Buffer,
+    draw_border: bool,
+) -> u16 {
+    render_image_widget_fit_inner(hash, area, buf, false, draw_border, true)
+}
+
+fn render_image_widget_fit_inner(
+    hash: u64,
+    area: Rect,
+    buf: &mut Buffer,
+    centered: bool,
+    draw_border: bool,
+    scale_up: bool,
+) -> u16 {
     if VIDEO_EXPORT_MODE.load(Ordering::Relaxed) {
         return area.height;
     }
@@ -2092,10 +2117,14 @@ pub fn render_image_widget_fit(
         return area.height;
     }
 
-    let min_cached_width = PICKER
-        .get()
-        .and_then(|p| p.as_ref())
-        .map(|picker| image_area.width as u32 * picker.font_size().0 as u32);
+    let min_cached_width = if scale_up {
+        None
+    } else {
+        PICKER
+            .get()
+            .and_then(|p| p.as_ref())
+            .map(|picker| image_area.width as u32 * picker.font_size().0 as u32)
+    };
     let cached = get_cached_diagram(hash, min_cached_width);
     let (img_width, path) = if let Some(cached) = cached {
         (cached.width, Some(cached.path))
@@ -2124,10 +2153,12 @@ pub fn render_image_widget_fit(
 
     {
         let mut state = IMAGE_STATE.lock().unwrap();
+        let target_mode = if scale_up { ResizeMode::Scale } else { ResizeMode::Fit };
+        let resize = if scale_up { Resize::Scale(None) } else { Resize::Fit(None) };
         let needs_reset = state
             .get(&hash)
             .map(|s| {
-                s.resize_mode != ResizeMode::Fit
+                s.resize_mode != target_mode
                     || path
                         .as_ref()
                         .map(|p| s.source_path.as_path() != p.as_path())
@@ -2138,14 +2169,14 @@ pub fn render_image_widget_fit(
             state.remove(&hash);
         }
         if let Some(img_state) = state.get_mut(hash) {
-            img_state.resize_mode = ResizeMode::Fit;
+            img_state.resize_mode = target_mode;
             img_state.last_viewport = None;
             if !render_stateful_image_safe(
                 hash,
                 render_area,
                 buf,
                 &mut img_state.protocol,
-                Resize::Fit(None),
+                resize,
             ) {
                 return 0;
             }
@@ -2157,6 +2188,8 @@ pub fn render_image_widget_fit(
     if let Some(path) = path {
         if let Some(Some(picker)) = PICKER.get() {
             if let Ok(img) = image::open(&path) {
+                let target_mode = if scale_up { ResizeMode::Scale } else { ResizeMode::Fit };
+                let resize = if scale_up { Resize::Scale(None) } else { Resize::Fit(None) };
                 let protocol = picker.new_resize_protocol(img);
 
                 let mut state = IMAGE_STATE.lock().unwrap();
@@ -2166,7 +2199,7 @@ pub fn render_image_widget_fit(
                         protocol,
                         source_path: path.clone(),
                         last_area: Some(render_area),
-                        resize_mode: ResizeMode::Fit,
+                        resize_mode: target_mode,
                         last_crop_top: false,
                         last_viewport: None,
                     },
@@ -2178,7 +2211,7 @@ pub fn render_image_widget_fit(
                         render_area,
                         buf,
                         &mut img_state.protocol,
-                        Resize::Fit(None),
+                        resize,
                     ) {
                         return 0;
                     }

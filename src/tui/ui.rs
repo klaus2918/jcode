@@ -3994,7 +3994,9 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 let count = entries.len();
                 let tiles = group_into_tiles(entries);
 
-                let header_text = if count == 1 {
+                let header_text = if let Some(title) = &msg.title {
+                    title.clone()
+                } else if count == 1 {
                     "🧠 1 memory".to_string()
                 } else {
                     format!("🧠 {} memories", count)
@@ -5027,11 +5029,10 @@ fn draw_pinned_diagram(
                 );
             } else {
                 let render_area = vcenter_fitted_image(inner, diagram.width, diagram.height);
-                rendered = super::mermaid::render_image_widget_fit(
+                rendered = super::mermaid::render_image_widget_scale(
                     diagram.hash,
                     render_area,
                     frame.buffer_mut(),
-                    false,
                     false,
                 );
             }
