@@ -2796,30 +2796,29 @@ async fn handle_client(
                 let agent_clone = agent.clone();
                 tokio::spawn(async move {
                     provider_clone.on_auth_changed();
-                    let initial_models = {
-                        let agent_guard = agent_clone.lock().await;
-                        agent_guard.available_models_display()
-                    };
-                    for _ in 0..20 {
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        let current_models = {
-                            let agent_guard = agent_clone.lock().await;
-                            agent_guard.available_models_display()
-                        };
-                        if current_models != initial_models {
-                            let _ =
-                                client_event_tx_clone.send(ServerEvent::AvailableModelsUpdated {
-                                    available_models: current_models,
-                                });
-                            return;
+                    // Wait for models to update via Bus event (with 10s timeout)
+                    let mut bus_rx = crate::bus::Bus::global().subscribe();
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                    loop {
+                        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        tokio::select! {
+                            event = bus_rx.recv() => {
+                                if matches!(event, Ok(crate::bus::BusEvent::ModelsUpdated)) {
+                                    break;
+                                }
+                            }
+                            _ = tokio::time::sleep(remaining) => break,
                         }
                     }
-                    let final_models = {
+                    let models = {
                         let agent_guard = agent_clone.lock().await;
                         agent_guard.available_models_display()
                     };
                     let _ = client_event_tx_clone.send(ServerEvent::AvailableModelsUpdated {
-                        available_models: final_models,
+                        available_models: models,
                     });
                 });
                 let _ = client_event_tx.send(ServerEvent::Done { id });

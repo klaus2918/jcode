@@ -289,6 +289,7 @@ impl CopilotApiProvider {
         self.init_done
             .store(true, std::sync::atomic::Ordering::Release);
         self.init_ready.notify_waiters();
+        crate::bus::Bus::global().publish(crate::bus::BusEvent::ModelsUpdated);
     }
 
     async fn wait_for_init(&self) {
