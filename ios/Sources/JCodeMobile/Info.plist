@@ -48,5 +48,7 @@
     <string>jcode uses the camera to scan QR codes and capture images to send to the AI assistant.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>jcode can attach photos from your library to send to the AI assistant for analysis.</string>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
 </dict>
 </plist>
