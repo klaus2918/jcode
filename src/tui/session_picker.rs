@@ -685,6 +685,8 @@ pub struct SessionPicker {
     last_preview_area: Option<Rect>,
     /// Whether to show debug/test/canary sessions
     show_test_sessions: bool,
+    /// Whether to show only saved/bookmarked sessions
+    show_saved_only: bool,
     /// Search query for filtering sessions
     search_query: String,
     /// Whether we're in search input mode
@@ -725,6 +727,7 @@ impl SessionPicker {
             last_list_area: None,
             last_preview_area: None,
             show_test_sessions: false,
+            show_saved_only: false,
             search_query: String::new(),
             search_active: false,
             total_session_count,
@@ -784,6 +787,7 @@ impl SessionPicker {
             last_list_area: None,
             last_preview_area: None,
             show_test_sessions: false,
+            show_saved_only: false,
             search_query: String::new(),
             search_active: false,
             total_session_count,
@@ -977,18 +981,63 @@ impl SessionPicker {
         session.search_index.contains(&q)
     }
 
-    /// Rebuild the items list based on current filters (show_test_sessions, search_query)
+    /// Rebuild the items list based on current filters (show_test_sessions, search_query, show_saved_only)
     fn rebuild_items(&mut self) {
         let show_test = self.show_test_sessions;
+        let show_saved_only = self.show_saved_only;
         let query = self.search_query.clone();
 
         let session_visible = |s: &SessionInfo| -> bool {
-            (show_test || !s.is_debug) && Self::session_matches_search(s, &query)
+            (show_test || !s.is_debug)
+                && Self::session_matches_search(s, &query)
+                && (!show_saved_only || s.saved)
         };
 
         self.items.clear();
         self.sessions.clear();
         self.item_to_session.clear();
+
+        // In saved-only mode, show a flat list of saved sessions (no headers/grouping)
+        if show_saved_only {
+            let mut saved: Vec<SessionInfo> = Vec::new();
+
+            if !self.all_server_groups.is_empty() {
+                for group in &self.all_server_groups {
+                    for s in &group.sessions {
+                        if session_visible(s) {
+                            saved.push(s.clone());
+                        }
+                    }
+                }
+                for s in &self.all_orphan_sessions {
+                    if session_visible(s) {
+                        saved.push(s.clone());
+                    }
+                }
+            } else {
+                for s in &self.all_sessions {
+                    if session_visible(s) {
+                        saved.push(s.clone());
+                    }
+                }
+            }
+
+            saved.sort_by(|a, b| b.last_message_time.cmp(&a.last_message_time));
+
+            for session in saved {
+                let session_idx = self.sessions.len();
+                self.sessions.push(session.clone());
+                self.items.push(PickerItem::Session(session));
+                self.item_to_session.push(Some(session_idx));
+            }
+
+            self.hidden_test_count = 0;
+            let first = self.item_to_session.iter().position(|x| x.is_some());
+            self.list_state.select(first);
+            self.scroll_offset = 0;
+            self.auto_scroll_preview = true;
+            return;
+        }
 
         // Collect all saved sessions across all sources and show them first
         let mut saved_sessions: Vec<SessionInfo> = Vec::new();
@@ -1121,6 +1170,12 @@ impl SessionPicker {
         self.rebuild_items();
     }
 
+    /// Toggle saved-only filter
+    fn toggle_saved_only(&mut self) {
+        self.show_saved_only = !self.show_saved_only;
+        self.rebuild_items();
+    }
+
     /// Handle a key event when used as an overlay inside the main TUI.
     /// Returns:
     /// - `Some(PickerResult::Selected(id))` if user selected a session
@@ -1197,6 +1252,9 @@ impl SessionPicker {
             }
             KeyCode::Char('d') => {
                 self.toggle_test_sessions();
+            }
+            KeyCode::Char('s') => {
+                self.toggle_saved_only();
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 self.focus = PaneFocus::Sessions;
@@ -1515,6 +1573,13 @@ impl SessionPicker {
             Style::default().fg(rgb(120, 120, 120)),
         ));
 
+        if self.show_saved_only {
+            title_parts.push(Span::styled(
+                "  📌 saved only",
+                Style::default().fg(rgb(255, 180, 100)),
+            ));
+        }
+
         if self.hidden_test_count > 0 {
             title_parts.push(Span::styled(
                 format!(" (+{} hidden)", self.hidden_test_count),
@@ -1534,8 +1599,10 @@ impl SessionPicker {
         // Help text on the right
         let help = if self.search_active {
             " type to filter, Esc cancel "
+        } else if self.show_saved_only {
+            " s all · / search · d show all · h/l focus · ↑↓ · Enter · q "
         } else {
-            " / search · d show all · h/l focus · ↑↓ · Enter · q "
+            " s saved · / search · d show all · h/l focus · ↑↓ · Enter · q "
         };
 
         let BORDER_DIM: Color = rgb(70, 70, 70);
@@ -2176,6 +2243,9 @@ impl SessionPicker {
                             }
                             KeyCode::Char('d') => {
                                 self.toggle_test_sessions();
+                            }
+                            KeyCode::Char('s') => {
+                                self.toggle_saved_only();
                             }
                             KeyCode::Char('h') | KeyCode::Left => {
                                 self.focus = PaneFocus::Sessions;
