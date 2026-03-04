@@ -32,151 +32,54 @@ struct RootView: View {
 
 struct OnboardingView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var step: OnboardingStep = .welcome
     @State private var showQRScanner = false
-
-    enum OnboardingStep: CaseIterable {
-        case welcome
-        case connect
-    }
+    @State private var showManualEntry = false
 
     var body: some View {
         ZStack {
             JC.Colors.background.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                switch step {
-                case .welcome:
-                    welcomeStep
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .leading).combined(with: .opacity)
-                        ))
-                case .connect:
-                    connectStep
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .leading).combined(with: .opacity)
-                        ))
-                }
-            }
-            .animation(JC.Animation.smooth, value: step)
-        }
-        .sheet(isPresented: $showQRScanner) {
-            QRScannerView(isPresented: $showQRScanner) { host, port, code in
-                model.hostInput = host
-                model.portInput = String(port)
-                model.pairCodeInput = code
-                Task { await model.pairAndSave() }
-            }
-        }
-    }
-
-    private var welcomeStep: some View {
-        VStack(spacing: JC.Spacing.xxl) {
-            Spacer()
-
-            VStack(spacing: JC.Spacing.lg) {
-                TerminalPrompt()
-                    .frame(width: 80, height: 80)
-
-                Text("jcode")
-                    .font(JC.Fonts.largeTitle)
-                    .foregroundStyle(JC.Colors.textPrimary)
-
-                Text("Your AI coding assistant,\nright in your pocket.")
-                    .font(JC.Fonts.body)
-                    .foregroundStyle(JC.Colors.textSecondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            Spacer()
-
-            VStack(spacing: JC.Spacing.md) {
-                Button {
-                    withAnimation(JC.Animation.smooth) {
-                        step = .connect
-                    }
-                } label: {
-                    HStack(spacing: JC.Spacing.sm) {
-                        Text("Get Started")
-                        Image(systemName: "arrow.right")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(AccentButton())
-
-                Button("I have a QR code") {
-                    showQRScanner = true
-                }
-                .buttonStyle(GhostButton())
-            }
-            .padding(.horizontal, JC.Spacing.xxl)
-            .padding(.bottom, JC.Spacing.xxxl)
-        }
-    }
-
-    private var connectStep: some View {
-        VStack(spacing: JC.Spacing.xl) {
-            HStack {
-                Button {
-                    withAnimation(JC.Animation.smooth) {
-                        step = .welcome
-                    }
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(JC.Fonts.headline)
-                        .foregroundStyle(JC.Colors.textSecondary)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, JC.Spacing.lg)
-            .padding(.top, JC.Spacing.lg)
-
             ScrollView {
-                VStack(spacing: JC.Spacing.xl) {
-                    VStack(spacing: JC.Spacing.sm) {
-                        Text("Connect to jcode")
-                            .font(JC.Fonts.title)
+                VStack(spacing: JC.Spacing.xxl) {
+                    Spacer().frame(height: 60)
+
+                    VStack(spacing: JC.Spacing.lg) {
+                        TerminalPrompt()
+                            .frame(width: 80, height: 80)
+
+                        Text("jcode")
+                            .font(JC.Fonts.largeTitle)
                             .foregroundStyle(JC.Colors.textPrimary)
 
-                        Text("Run `jcode serve` on your machine,\nthen enter the details below.")
-                            .font(JC.Fonts.callout)
+                        Text("Your AI coding assistant,\nright in your pocket.")
+                            .font(JC.Fonts.body)
                             .foregroundStyle(JC.Colors.textSecondary)
                             .multilineTextAlignment(.center)
                     }
 
-                    VStack(spacing: JC.Spacing.md) {
-                        JCTextField(
-                            label: "Host",
-                            placeholder: "e.g. my-macbook",
-                            text: $model.hostInput,
-                            icon: "server.rack"
-                        )
+                    Spacer().frame(height: 20)
 
-                        JCTextField(
-                            label: "Port",
-                            placeholder: "7643",
-                            text: $model.portInput,
-                            icon: "number",
-                            keyboardType: .numberPad
-                        )
+                    VStack(spacing: JC.Spacing.lg) {
+                        Button {
+                            showQRScanner = true
+                        } label: {
+                            HStack(spacing: JC.Spacing.md) {
+                                Image(systemName: "qrcode.viewfinder")
+                                    .font(.system(size: 24))
+                                Text("Scan QR Code")
+                                    .font(JC.Fonts.headline)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, JC.Spacing.xl)
+                        }
+                        .buttonStyle(AccentButton())
 
-                        JCTextField(
-                            label: "Pair Code",
-                            placeholder: "6-digit code from jcode pair",
-                            text: $model.pairCodeInput,
-                            icon: "key.fill"
-                        )
-
-                        JCTextField(
-                            label: "Device Name",
-                            placeholder: "My iPhone",
-                            text: $model.deviceNameInput,
-                            icon: "iphone"
-                        )
+                        Text("Run **jcode pair** on your computer\nto generate a QR code.")
+                            .font(JC.Fonts.callout)
+                            .foregroundStyle(JC.Colors.textSecondary)
+                            .multilineTextAlignment(.center)
                     }
-                    .padding(.horizontal, JC.Spacing.lg)
+                    .padding(.horizontal, JC.Spacing.xxl)
 
                     if let error = model.errorMessage {
                         HStack(spacing: JC.Spacing.sm) {
@@ -186,7 +89,7 @@ struct OnboardingView: View {
                                 .font(JC.Fonts.caption)
                         }
                         .foregroundStyle(JC.Colors.destructive)
-                        .padding(.horizontal, JC.Spacing.lg)
+                        .padding(.horizontal, JC.Spacing.xxl)
                     }
 
                     if let status = model.statusMessage {
@@ -197,48 +100,92 @@ struct OnboardingView: View {
                                 .font(JC.Fonts.caption)
                         }
                         .foregroundStyle(JC.Colors.accent)
-                        .padding(.horizontal, JC.Spacing.lg)
+                        .padding(.horizontal, JC.Spacing.xxl)
                     }
+
+                    Spacer().frame(height: 20)
 
                     VStack(spacing: JC.Spacing.md) {
                         Button {
-                            Task { await model.pairAndSave() }
+                            withAnimation(JC.Animation.smooth) {
+                                showManualEntry.toggle()
+                            }
                         } label: {
-                            HStack(spacing: JC.Spacing.sm) {
-                                Image(systemName: "link")
-                                Text("Pair & Connect")
+                            HStack(spacing: JC.Spacing.xs) {
+                                Text("Connect manually")
+                                    .font(JC.Fonts.caption)
+                                Image(systemName: showManualEntry ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 10, weight: .semibold))
                             }
-                            .frame(maxWidth: .infinity)
+                            .foregroundStyle(JC.Colors.textTertiary)
                         }
-                        .buttonStyle(AccentButton())
+                        .buttonStyle(.plain)
 
-                        HStack(spacing: JC.Spacing.md) {
-                            Button {
-                                Task { await model.probeServer() }
-                            } label: {
-                                HStack(spacing: JC.Spacing.xs) {
-                                    Image(systemName: "antenna.radiowaves.left.and.right")
-                                    Text("Check Health")
-                                }
-                            }
-                            .buttonStyle(GhostButton())
-
-                            Button {
-                                showQRScanner = true
-                            } label: {
-                                HStack(spacing: JC.Spacing.xs) {
-                                    Image(systemName: "qrcode.viewfinder")
-                                    Text("Scan QR")
-                                }
-                            }
-                            .buttonStyle(GhostButton())
+                        if showManualEntry {
+                            ManualEntryFields()
+                                .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     }
                     .padding(.horizontal, JC.Spacing.xxl)
+                    .padding(.bottom, JC.Spacing.xxxl)
                 }
-                .padding(.top, JC.Spacing.lg)
-                .padding(.bottom, JC.Spacing.xxxl)
             }
+        }
+        .sheet(isPresented: $showQRScanner) {
+            QRScannerView(isPresented: $showQRScanner) { host, port, code in
+                model.hostInput = host
+                model.portInput = String(port)
+                model.pairCodeInput = code
+                Task { await model.pairAndSave() }
+            }
+        }
+    }
+}
+
+struct ManualEntryFields: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(spacing: JC.Spacing.md) {
+            JCTextField(
+                label: "Host",
+                placeholder: "e.g. my-macbook",
+                text: $model.hostInput,
+                icon: "server.rack"
+            )
+
+            JCTextField(
+                label: "Port",
+                placeholder: "7643",
+                text: $model.portInput,
+                icon: "number",
+                keyboardType: .numberPad
+            )
+
+            JCTextField(
+                label: "Pair Code",
+                placeholder: "6-digit code from jcode pair",
+                text: $model.pairCodeInput,
+                icon: "key.fill"
+            )
+
+            JCTextField(
+                label: "Device Name",
+                placeholder: "My iPhone",
+                text: $model.deviceNameInput,
+                icon: "iphone"
+            )
+
+            Button {
+                Task { await model.pairAndSave() }
+            } label: {
+                HStack(spacing: JC.Spacing.sm) {
+                    Image(systemName: "link")
+                    Text("Pair & Connect")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(AccentButton())
         }
     }
 }

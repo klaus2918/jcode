@@ -2116,6 +2116,7 @@ mod tests {
             server_icon: None,
             server_has_update: None,
             was_interrupted: Some(true),
+            upstream_provider: None,
         });
 
         // Should have display messages: history + system notification
@@ -2160,6 +2161,7 @@ mod tests {
             server_icon: None,
             server_has_update: None,
             was_interrupted: None,
+            upstream_provider: None,
         });
 
         // Should NOT have a continuation message queued
