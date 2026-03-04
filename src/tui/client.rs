@@ -1909,6 +1909,10 @@ impl TuiState for ClientApp {
         None
     }
 
+    fn help_scroll(&self) -> Option<usize> {
+        None
+    }
+
     fn session_picker_overlay(
         &self,
     ) -> Option<&std::cell::RefCell<super::session_picker::SessionPicker>> {

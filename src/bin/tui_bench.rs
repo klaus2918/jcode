@@ -387,6 +387,10 @@ impl TuiState for BenchState {
         None
     }
 
+    fn help_scroll(&self) -> Option<usize> {
+        None
+    }
+
     fn session_picker_overlay(
         &self,
     ) -> Option<&std::cell::RefCell<jcode::tui::session_picker::SessionPicker>> {

@@ -2485,6 +2485,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
+    if let Some(scroll) = app.help_scroll() {
+        draw_help_overlay(frame, area, scroll, app);
+        return;
+    }
+
     if let Some(picker_cell) = app.session_picker_overlay() {
         let mut picker = picker_cell.borrow_mut();
         picker.render(frame);
@@ -4863,6 +4868,209 @@ fn draw_changelog_overlay(frame: &mut Frame, area: Rect, scroll: usize) {
         ))
         .title_bottom(Line::from(Span::styled(
             " Esc to close · j/k scroll · Space/PageUp page ",
+            Style::default().fg(dim_color()),
+        )))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(dim_color()));
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((scroll as u16, 0));
+
+    frame.render_widget(paragraph, area);
+}
+
+fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn super::TuiState) {
+    use ratatui::widgets::{Block, Borders, Paragraph};
+
+    clear_area(frame, area);
+
+    let section_style = Style::default()
+        .fg(accent_color())
+        .add_modifier(Modifier::BOLD);
+    let cmd_style = Style::default().fg(rgb(230, 230, 240));
+    let desc_style = Style::default().fg(rgb(150, 150, 165));
+    let key_style = Style::default().fg(rgb(200, 180, 120));
+    let sep_style = Style::default().fg(rgb(50, 50, 55));
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    let separator = || -> Line<'static> {
+        Line::from(Span::styled(
+            "  ─────────────────────────────────────────────────",
+            sep_style,
+        ))
+    };
+
+    let help_entry = |cmd: &str, desc: &str| -> Line<'static> {
+        Line::from(vec![
+            Span::styled("    ", Style::default()),
+            Span::styled(cmd.to_string(), cmd_style),
+            Span::styled("  ", Style::default()),
+            Span::styled(desc.to_string(), desc_style),
+        ])
+    };
+
+    let key_entry = |key: &str, desc: &str| -> Line<'static> {
+        Line::from(vec![
+            Span::styled("    ", Style::default()),
+            Span::styled(
+                format!("{:<22}", key),
+                key_style,
+            ),
+            Span::styled(desc.to_string(), desc_style),
+        ])
+    };
+
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("  Commands", section_style)));
+    lines.push(Line::from(""));
+    lines.push(help_entry("/help", "Show this help overlay"));
+    lines.push(help_entry("/help <command>", "Show details for one command"));
+    lines.push(help_entry("/model", "List or switch models"));
+    lines.push(help_entry("/model <name>", "Switch to a different model"));
+    lines.push(help_entry("/effort <level>", "Set reasoning effort (none|low|medium|high|xhigh)"));
+    lines.push(help_entry("/config", "Show active configuration"));
+    lines.push(help_entry("/config init", "Create default config file"));
+    lines.push(help_entry("/config edit", "Open config in $EDITOR"));
+    lines.push(help_entry("/info", "Show session info and token usage"));
+    lines.push(help_entry("/usage", "Show subscription usage limits"));
+    lines.push(help_entry("/version", "Show version and build details"));
+    lines.push(help_entry("/changelog", "Show recent changes in this build"));
+
+    lines.push(Line::from(""));
+    lines.push(separator());
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("  Session", section_style)));
+    lines.push(Line::from(""));
+    lines.push(help_entry("/clear", "Clear conversation and start fresh"));
+    lines.push(help_entry("/compact", "Summarize old messages to free context"));
+    lines.push(help_entry("/rewind", "Show numbered history, /rewind N to rewind"));
+    lines.push(help_entry("/fix", "Attempt recovery when model cannot continue"));
+    lines.push(help_entry("/split", "Clone session into a new window"));
+    lines.push(help_entry("/resume", "Browse and resume previous sessions"));
+    lines.push(help_entry("/save [label]", "Bookmark session for /resume"));
+    lines.push(help_entry("/unsave", "Remove bookmark from current session"));
+
+    lines.push(Line::from(""));
+    lines.push(separator());
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("  Memory & Swarm", section_style)));
+    lines.push(Line::from(""));
+    lines.push(help_entry("/memory [on|off]", "Toggle memory features"));
+    lines.push(help_entry("/remember", "Extract memories from conversation"));
+    lines.push(help_entry("/swarm [on|off]", "Toggle swarm features"));
+
+    lines.push(Line::from(""));
+    lines.push(separator());
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("  Auth & Accounts", section_style)));
+    lines.push(Line::from(""));
+    lines.push(help_entry("/auth", "Show authentication status"));
+    lines.push(help_entry("/login [provider]", "Interactive or direct login"));
+    lines.push(help_entry("/account", "Manage Anthropic OAuth accounts"));
+
+    lines.push(Line::from(""));
+    lines.push(separator());
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("  System", section_style)));
+    lines.push(Line::from(""));
+    lines.push(help_entry("/reload", "Reload to newer binary if available"));
+    lines.push(help_entry("/rebuild", "Full update (git pull + build + tests)"));
+    if app.is_remote_mode() {
+        lines.push(help_entry("/client-reload", "Force reload client binary"));
+        lines.push(help_entry("/server-reload", "Force reload server binary"));
+    }
+    lines.push(help_entry("/debug-visual", "Enable visual debugging for TUI issues"));
+    lines.push(help_entry("/quit", "Exit jcode"));
+
+    let skills = app.available_skills();
+    if !skills.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(separator());
+        lines.push(Line::from(""));
+
+        lines.push(Line::from(Span::styled("  Skills", section_style)));
+        lines.push(Line::from(""));
+        for skill in &skills {
+            lines.push(help_entry(&format!("/{}", skill), "Activate skill"));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(separator());
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("  Navigation", section_style)));
+    lines.push(Line::from(""));
+    lines.push(key_entry("PageUp / PageDown", "Scroll history"));
+    lines.push(key_entry("Up / Down", "Scroll history (when input empty)"));
+    lines.push(key_entry("Ctrl+[ / Ctrl+]", "Jump between user prompts"));
+    lines.push(key_entry("Ctrl+1..9", "Jump by recency (1 = most recent)"));
+
+    lines.push(Line::from(""));
+    lines.push(separator());
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("  Diagrams & Diffs", section_style)));
+    lines.push(Line::from(""));
+    lines.push(key_entry("Alt+M", "Toggle diagram pane"));
+    lines.push(key_entry("Alt+T", "Toggle diagram position (side/top)"));
+    lines.push(key_entry("Ctrl+H / Ctrl+L", "Focus chat / diagram / diffs"));
+    lines.push(key_entry("Ctrl+Left / Right", "Cycle diagrams in pane"));
+    lines.push(key_entry("h/j/k/l / arrows", "Pan diagram (when focused)"));
+    lines.push(key_entry("[ / ]", "Zoom diagram (when focused)"));
+    lines.push(key_entry("+ / -", "Resize diagram pane"));
+    lines.push(key_entry("Shift+Tab", "Cycle diff mode (Off/Inline/Pinned)"));
+
+    lines.push(Line::from(""));
+    lines.push(separator());
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("  Input & Editing", section_style)));
+    lines.push(Line::from(""));
+    lines.push(key_entry("Ctrl+C / Ctrl+D", "Quit (press twice to confirm)"));
+    lines.push(key_entry("Ctrl+U", "Clear input line"));
+    lines.push(key_entry("Ctrl+S", "Stash / pop input (save for later)"));
+    lines.push(key_entry("Ctrl+Up", "Retrieve pending message for editing"));
+    lines.push(key_entry("Ctrl+Tab / Ctrl+T", "Toggle queue mode"));
+    lines.push(key_entry("Ctrl+R", "Recover from missing tool outputs"));
+    lines.push(key_entry("Alt+V", "Paste image from clipboard"));
+    lines.push(key_entry("Alt+Left / Right", "Cycle reasoning effort"));
+
+    lines.push(Line::from(""));
+
+    let total_lines = lines.len();
+    let visible_height = area.height.saturating_sub(2) as usize;
+    let max_scroll = total_lines.saturating_sub(visible_height);
+    let scroll = scroll.min(max_scroll);
+
+    let scroll_info = if total_lines > visible_height {
+        let pct = if max_scroll > 0 {
+            (scroll * 100) / max_scroll
+        } else {
+            100
+        };
+        format!(" {}% ", pct)
+    } else {
+        String::new()
+    };
+
+    let title = format!(" Help {} ", scroll_info);
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(rgb(200, 200, 220))
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::from(Span::styled(
+            " Esc to close \u{b7} j/k scroll \u{b7} Space/PageUp page \u{b7} /help <cmd> for details ",
             Style::default().fg(dim_color()),
         )))
         .borders(Borders::ALL)

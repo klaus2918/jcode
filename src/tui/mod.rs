@@ -167,6 +167,8 @@ pub trait TuiState {
     fn picker_state(&self) -> Option<&PickerState>;
     /// Changelog overlay scroll offset (None = not showing)
     fn changelog_scroll(&self) -> Option<usize>;
+    /// Help overlay scroll offset (None = not showing)
+    fn help_scroll(&self) -> Option<usize>;
     /// Session picker overlay for /resume command
     fn session_picker_overlay(
         &self,

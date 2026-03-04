@@ -771,6 +771,7 @@ pub struct App {
     last_mouse_scroll: Option<Instant>,
     /// Scroll offset for changelog overlay (None = not visible)
     changelog_scroll: Option<usize>,
+    help_scroll: Option<usize>,
     /// Session picker overlay (None = not visible)
     session_picker_overlay: Option<RefCell<super::session_picker::SessionPicker>>,
 }
@@ -1077,6 +1078,7 @@ impl App {
             pending_login: None,
             last_mouse_scroll: None,
             changelog_scroll: None,
+            help_scroll: None,
             session_picker_overlay: None,
         };
 
@@ -5794,6 +5796,10 @@ impl App {
             return self.handle_changelog_key(code);
         }
 
+        if self.help_scroll.is_some() {
+            return self.handle_help_key(code);
+        }
+
         if self.session_picker_overlay.is_some() {
             return self.handle_session_picker_key(code, modifiers);
         }
@@ -6141,10 +6147,7 @@ impl App {
                     }
 
                     if trimmed == "/help" || trimmed == "/?" || trimmed == "/commands" {
-                        self.follow_chat_bottom();
-                        self.input = trimmed.to_string();
-                        self.cursor_pos = self.input.len();
-                        self.submit_input();
+                        self.help_scroll = Some(0);
                         return Ok(());
                     }
 
@@ -6713,6 +6716,10 @@ impl App {
 
         if self.changelog_scroll.is_some() {
             return self.handle_changelog_key(code);
+        }
+
+        if self.help_scroll.is_some() {
+            return self.handle_help_key(code);
         }
 
         if self.session_picker_overlay.is_some() {
@@ -7451,106 +7458,7 @@ impl App {
         }
 
         if trimmed == "/help" || trimmed == "/?" || trimmed == "/commands" {
-            let model_next = format!(
-                "• `{}` - Next model (set JCODE_MODEL_SWITCH_KEY)",
-                self.model_switch_keys.next_label
-            );
-            let model_prev = self
-                .model_switch_keys
-                .prev_label
-                .as_ref()
-                .map(|label| {
-                    format!(
-                        "• `{}` - Previous model (set JCODE_MODEL_SWITCH_PREV_KEY)",
-                        label
-                    )
-                })
-                .unwrap_or_default();
-            let remote_reload_help = if self.is_remote {
-                "\n                     • `/client-reload` - Force reload client binary\n\
-                     • `/server-reload` - Force reload server binary"
-            } else {
-                ""
-            };
-            self.push_display_message(DisplayMessage {
-                role: "system".to_string(),
-                content: format!(
-                    "**Commands:**\n\
-                     • `/help` - Show this help\n\
-                     • `/help <command>` - Show details for one command\n\
-                     • `/commands` - Alias for `/help`\n\
-                     • `/config` - Show current configuration\n\
-                     • `/config init` - Create default config file (~/.jcode/config.toml)\n\
-                     • `/config edit` - Open config file in $EDITOR\n\
-                     • `/model` - List available models\n\
-                     • `/model <name>` - Switch to a different model\n\
-                     • `/model <name>@<provider>` - Pin OpenRouter provider (`@auto` clears)\n\
-                     • `/effort` - Show current reasoning effort level\n\
-                     • `/effort <level>` - Set effort (none|low|medium|high|xhigh)\n\
-                     • `/usage` - Show subscription usage limits for all connected providers\n\
-                     • `/memory [on|off|status]` - Toggle memory features for this session\n\
-                     • `/swarm [on|off|status]` - Toggle swarm features for this session\n\
-                     • `/reload` - Smart reload (client/server if newer binary exists)\n\
-                     • `/rebuild` - Full rebuild (git pull + cargo build + tests){}\n\
-                     • `/changelog` - Show recent changes in this build\n\
-                     • `/resume` - Open session picker (browse and resume previous sessions)\n\
-                     • `/save` - Bookmark session (appears at top of `/resume`)\n\
-                     • `/save <label>` - Bookmark with a custom label\n\
-                     • `/unsave` - Remove bookmark from current session\n\
-                     • `/split` - Split session into a new window (clones conversation)\n\
-                     • `/clear` - Clear conversation\n\
-                     • `/rewind` - Show history with numbers, `/rewind N` to rewind\n\
-                     • `/compact` - Manually compact context (summarize old messages)\n\
-                     • `/fix` - Attempt session recovery (context/tool/session issues)\n\
-                     • `/auth` - Show auth status, `/login` for interactive login, `/login <provider>` for direct login\n\
-                     • `/account` - Manage Anthropic accounts (list/add/switch/remove)\n\
-                     • `/debug-visual` - Enable visual debugging for TUI issues\n\
-                     • `/<skill>` - Activate a skill\n\n\
-                     **Available skills:** {}\n\n\
-                     **Keyboard shortcuts:**\n\
-                     • `Ctrl+C` / `Ctrl+D` - Quit (press twice to confirm)\n\
-                     • `Ctrl+H` / `Ctrl+L` - Focus chat/diagram/diffs (pinned mode)\n\
-                     • `Ctrl+Left/Right` - Cycle diagrams in side pane\n\
-                     • `h/j/k/l` or arrow keys - Pan diagram (when focused)\n\
-                     • `[` / `]` - Zoom diagram (when focused)\n\
-                     • `+` / `-` - Resize diagram pane (when focused)\n\
-                     • `Alt+M` - Toggle diagram pane\n\
-                     • `Alt+T` - Toggle diagram pane position (side/top)\n\
-                     • `{}` - Toggle centered/left-aligned layout\n\
-                     • `Shift+Tab` - Cycle diff mode (Off → Inline → Pinned)\n\
-                     • `Alt+V` - Paste image from clipboard\n\
-                     • `Ctrl+R` - Recover from missing tool outputs\n\
-                     • `PageUp/Down` or `Up/Down` - Scroll history\n\
-                     • `{}`/`{}` - Scroll up/down (see `/config`)\n\
-                     • `{}`/`{}` - Page up/down (see `/config`)\n\
-                     • `Ctrl+[` / `Ctrl+]` - Jump between user prompts\n\
-                     • `Ctrl+1..9` - Jump by recency (1 = most recent)\n\
-                     • `Ctrl+Tab` / `Ctrl+T` - Toggle queue mode (wait vs immediate send)\n\
-                     • `Ctrl+Up` - Retrieve pending message for editing\n\
-                     • `Ctrl+S` - Stash/pop input (save input for later)\n\
-                     • `Ctrl+U` - Clear input line\n\
-                     {}\n\
-                     {}",
-                    remote_reload_help,
-                    self.skills
-                        .list()
-                        .iter()
-                        .map(|s| format!("/{}", s.name))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    self.scroll_keys.up_label,
-                    self.scroll_keys.down_label,
-                    self.scroll_keys.page_up_label,
-                    self.scroll_keys.page_down_label,
-                    self.centered_toggle_keys.toggle_label,
-                    model_next,
-                    model_prev
-                ),
-                tool_calls: vec![],
-                duration_secs: None,
-                title: None,
-                tool_data: None,
-            });
+            self.help_scroll = Some(0);
             return;
         }
 
@@ -14706,6 +14614,35 @@ impl App {
         }
         Ok(())
     }
+
+    fn handle_help_key(&mut self, code: KeyCode) -> Result<()> {
+        let scroll = self.help_scroll.unwrap_or(0);
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.help_scroll = None;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.help_scroll = Some(scroll.saturating_add(1));
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.help_scroll = Some(scroll.saturating_sub(1));
+            }
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                self.help_scroll = Some(scroll.saturating_add(20));
+            }
+            KeyCode::PageUp => {
+                self.help_scroll = Some(scroll.saturating_sub(20));
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.help_scroll = Some(0);
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.help_scroll = Some(usize::MAX);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 impl super::TuiState for App {
@@ -15606,6 +15543,10 @@ impl super::TuiState for App {
         self.changelog_scroll
     }
 
+    fn help_scroll(&self) -> Option<usize> {
+        self.help_scroll
+    }
+
     fn session_picker_overlay(
         &self,
     ) -> Option<&RefCell<super::session_picker::SessionPicker>> {
@@ -16225,12 +16166,10 @@ mod tests {
         app.input = "/commands".to_string();
         app.submit_input();
 
-        let msg = app
-            .display_messages()
-            .last()
-            .expect("missing help response");
-        assert_eq!(msg.role, "system");
-        assert!(msg.content.contains("**Commands:**"));
+        assert!(
+            app.help_scroll.is_some(),
+            "/commands should open help overlay"
+        );
     }
 
     #[test]
