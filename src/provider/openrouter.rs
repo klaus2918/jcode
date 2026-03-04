@@ -769,13 +769,22 @@ impl OpenRouterProvider {
         }
 
         let ranked = {
-            let endpoints = load_endpoints_disk_cache(model)
+            let mut endpoints = load_endpoints_disk_cache(model)
                 .or_else(|| {
                     let cache = self.endpoints_cache.try_read().ok()?;
                     cache.get(model).map(|(_, eps)| eps.clone())
-                })
-                .unwrap_or_default();
-            Self::rank_providers_from_endpoints(&endpoints)
+                });
+
+            // Fetch endpoints from API if no cache available
+            if endpoints.is_none() {
+                if let Ok(fetched) = self.fetch_endpoints(model).await {
+                    if !fetched.is_empty() {
+                        endpoints = Some(fetched);
+                    }
+                }
+            }
+
+            Self::rank_providers_from_endpoints(&endpoints.unwrap_or_default())
         };
         if !ranked.is_empty() {
             let mut routing = base.clone();
@@ -843,9 +852,21 @@ impl OpenRouterProvider {
                 .ok()?
                 .get(&model)
                 .map(|(_, eps)| eps.clone())
-        })?;
-        let ranked = Self::rank_providers_from_endpoints(&endpoints);
-        ranked.into_iter().next()
+        });
+
+        if let Some(ref eps) = endpoints {
+            let ranked = Self::rank_providers_from_endpoints(eps);
+            if let Some(first) = ranked.into_iter().next() {
+                return Some(first);
+            }
+        }
+
+        // For Kimi models, use the hardcoded fallback order
+        if Self::is_kimi_model(&model) {
+            return KIMI_FALLBACK_PROVIDERS.first().map(|s| s.to_string());
+        }
+
+        None
     }
 
     /// Return a list of known/observed providers for a model (for autocomplete).
@@ -1289,7 +1310,7 @@ impl Provider for OpenRouterProvider {
                             if tool_calls_seen.contains(tool_use_id) {
                                 api_messages.push(serde_json::json!({
                                     "role": "tool",
-                                    "tool_call_id": tool_use_id,
+                                    "tool_call_id": crate::message::sanitize_tool_id(tool_use_id),
                                     "content": output
                                 }));
                                 used_tool_results.insert(tool_use_id.clone());
@@ -1321,7 +1342,7 @@ impl Provider for OpenRouterProvider {
                                     "{}".to_string()
                                 };
                                 tool_calls.push(serde_json::json!({
-                                    "id": id,
+                                    "id": crate::message::sanitize_tool_id(id),
                                     "type": "function",
                                     "function": {
                                         "name": name,
@@ -1380,7 +1401,7 @@ impl Provider for OpenRouterProvider {
                         for (tool_call_id, output) in post_tool_outputs {
                             api_messages.push(serde_json::json!({
                                 "role": "tool",
-                                "tool_call_id": tool_call_id,
+                                "tool_call_id": crate::message::sanitize_tool_id(&tool_call_id),
                                 "content": output
                             }));
                         }
@@ -1390,7 +1411,7 @@ impl Provider for OpenRouterProvider {
                             for missing_id in missing_tool_outputs {
                                 api_messages.push(serde_json::json!({
                                     "role": "tool",
-                                    "tool_call_id": missing_id,
+                                    "tool_call_id": crate::message::sanitize_tool_id(&missing_id),
                                     "content": missing_output.clone()
                                 }));
                             }
@@ -1802,6 +1823,11 @@ impl Provider for OpenRouterProvider {
 
     async fn prefetch_models(&self) -> Result<()> {
         let _ = self.fetch_models().await?;
+        // Also prefetch endpoints for the current model so preferred_provider() works immediately
+        let model = self.model();
+        if load_endpoints_disk_cache(&model).is_none() {
+            let _ = self.fetch_endpoints(&model).await;
+        }
         Ok(())
     }
 
@@ -2410,7 +2436,7 @@ mod tests {
     }
 
     #[test]
-    fn test_kimi_fallback_prefers_fireworks_without_endpoints() {
+    fn test_kimi_routing_uses_endpoints_or_fallback() {
         let provider = OpenRouterProvider {
             client: crate::provider::shared_http_client(),
             model: Arc::new(RwLock::new("moonshotai/kimi-k2.5".to_string())),
@@ -2426,11 +2452,11 @@ mod tests {
             .build()
             .expect("runtime");
         let routing = rt.block_on(provider.effective_routing("moonshotai/kimi-k2.5"));
-        let order = routing.order.expect("provider order");
-        assert_eq!(order.first().map(|s| s.as_str()), Some("Fireworks"));
+        let order = routing.order.expect("provider order should be set");
+        // Should have providers - either from endpoint API or Kimi fallback
         assert!(
-            !routing.allow_fallbacks,
-            "Kimi should disable fallbacks to force provider"
+            !order.is_empty(),
+            "Kimi routing should always produce a provider order"
         );
     }
 

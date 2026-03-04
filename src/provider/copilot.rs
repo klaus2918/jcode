@@ -387,7 +387,7 @@ impl CopilotApiProvider {
                                 if tool_calls_seen.contains(tool_use_id) {
                                     result.push(json!({
                                         "role": "tool",
-                                        "tool_call_id": tool_use_id,
+                                        "tool_call_id": crate::message::sanitize_tool_id(tool_use_id),
                                         "content": output,
                                     }));
                                     used_tool_results.insert(tool_use_id.clone());
@@ -425,7 +425,7 @@ impl CopilotApiProvider {
                                     "{}".to_string()
                                 };
                                 tool_calls.push(json!({
-                                    "id": id,
+                                    "id": crate::message::sanitize_tool_id(id),
                                     "type": "function",
                                     "function": {
                                         "name": name,
@@ -468,7 +468,7 @@ impl CopilotApiProvider {
                         for (tool_call_id, output) in post_tool_outputs {
                             result.push(json!({
                                 "role": "tool",
-                                "tool_call_id": tool_call_id,
+                                "tool_call_id": crate::message::sanitize_tool_id(&tool_call_id),
                                 "content": output,
                             }));
                         }
@@ -476,7 +476,7 @@ impl CopilotApiProvider {
                         for missing_id in missing_tool_outputs {
                             result.push(json!({
                                 "role": "tool",
-                                "tool_call_id": missing_id,
+                                "tool_call_id": crate::message::sanitize_tool_id(&missing_id),
                                 "content": missing_output.clone(),
                             }));
                         }
@@ -1458,5 +1458,100 @@ mod tests {
             ),
         ];
         assert!(!CopilotApiProvider::is_user_initiated_raw(&messages));
+    }
+
+    #[test]
+    fn build_messages_sanitizes_tool_ids_with_dots() {
+        let messages = vec![
+            make_msg(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "hello".into(),
+                    cache_control: None,
+                }],
+            ),
+            make_msg(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "chatcmpl-BF2xX.tool_call.0".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "echo hi"}),
+                }],
+            ),
+            make_msg(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "chatcmpl-BF2xX.tool_call.0".into(),
+                    content: "hi\n".into(),
+                    is_error: None,
+                }],
+            ),
+        ];
+
+        let built = CopilotApiProvider::build_messages("", &messages);
+
+        let sanitized_id = "chatcmpl-BF2xX_tool_call_0";
+        assert_eq!(built[1]["tool_calls"][0]["id"], sanitized_id);
+        assert_eq!(built[2]["tool_call_id"], sanitized_id);
+    }
+
+    #[test]
+    fn build_messages_sanitizes_anthropic_style_ids() {
+        let messages = vec![
+            make_msg(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "test".into(),
+                    cache_control: None,
+                }],
+            ),
+            make_msg(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "toolu_01XFDUDYJgAACzvnptvVer6u".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"file_path": "foo.rs"}),
+                }],
+            ),
+            make_msg(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "toolu_01XFDUDYJgAACzvnptvVer6u".into(),
+                    content: "file content".into(),
+                    is_error: None,
+                }],
+            ),
+        ];
+
+        let built = CopilotApiProvider::build_messages("", &messages);
+
+        assert_eq!(built[1]["tool_calls"][0]["id"], "toolu_01XFDUDYJgAACzvnptvVer6u");
+        assert_eq!(built[2]["tool_call_id"], "toolu_01XFDUDYJgAACzvnptvVer6u");
+    }
+
+    #[test]
+    fn build_messages_sanitizes_missing_tool_output_ids() {
+        let messages = vec![
+            make_msg(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "go".into(),
+                    cache_control: None,
+                }],
+            ),
+            make_msg(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "call.with.dots.orphan".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "crash"}),
+                }],
+            ),
+        ];
+
+        let built = CopilotApiProvider::build_messages("", &messages);
+
+        assert_eq!(built[1]["tool_calls"][0]["id"], "call_with_dots_orphan");
+        assert_eq!(built[2]["tool_call_id"], "call_with_dots_orphan");
     }
 }

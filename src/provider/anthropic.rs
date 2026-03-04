@@ -286,7 +286,7 @@ impl AnthropicProvider {
                     if let ContentBlock::ToolUse { id, .. } = block {
                         if dangling.contains(id) {
                             synthetic_results.push(ApiContentBlock::ToolResult {
-                                tool_use_id: id.clone(),
+                                tool_use_id: crate::message::sanitize_tool_id(id),
                                 content: ToolResultContent::Text(
                                     "[Session interrupted before tool execution completed]"
                                         .to_string(),
@@ -402,7 +402,7 @@ impl AnthropicProvider {
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     result.push(ApiContentBlock::ToolUse {
-                        id: id.clone(),
+                        id: crate::message::sanitize_tool_id(id),
                         name: if is_oauth {
                             map_tool_name_for_oauth(name)
                         } else {
@@ -422,7 +422,7 @@ impl AnthropicProvider {
                     is_error,
                 } => {
                     result.push(ApiContentBlock::ToolResult {
-                        tool_use_id: tool_use_id.clone(),
+                        tool_use_id: crate::message::sanitize_tool_id(tool_use_id),
                         content: ToolResultContent::Text(content.clone()),
                         is_error: is_error.unwrap_or(false),
                     });
@@ -2077,6 +2077,99 @@ mod tests {
                 exchanges,
                 count
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sanitize_tool_ids_with_dots() {
+        let provider = AnthropicProvider::new();
+
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "Hello".to_string(),
+                    cache_control: None,
+                }],
+                timestamp: None,
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "chatcmpl-BF2xX.tool_call.0".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "ls"}),
+                }],
+                timestamp: None,
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "chatcmpl-BF2xX.tool_call.0".to_string(),
+                    content: "file1.txt".to_string(),
+                    is_error: None,
+                }],
+                timestamp: None,
+            },
+        ];
+
+        let formatted = provider.format_messages(&messages, false);
+
+        let sanitized_id = "chatcmpl-BF2xX_tool_call_0";
+        for msg in &formatted {
+            for block in &msg.content {
+                match block {
+                    ApiContentBlock::ToolUse { id, .. } => {
+                        assert_eq!(id, sanitized_id);
+                    }
+                    ApiContentBlock::ToolResult { tool_use_id, .. } => {
+                        assert_eq!(tool_use_id, sanitized_id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sanitize_dangling_tool_ids_with_dots() {
+        let provider = AnthropicProvider::new();
+
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "Hello".to_string(),
+                    cache_control: None,
+                }],
+                timestamp: None,
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call.with.dots".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "crash"}),
+                }],
+                timestamp: None,
+            },
+        ];
+
+        let formatted = provider.format_messages(&messages, false);
+
+        let sanitized_id = "call_with_dots";
+        for msg in &formatted {
+            for block in &msg.content {
+                match block {
+                    ApiContentBlock::ToolUse { id, .. } => {
+                        assert_eq!(id, sanitized_id);
+                    }
+                    ApiContentBlock::ToolResult { tool_use_id, .. } => {
+                        assert_eq!(tool_use_id, sanitized_id);
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }

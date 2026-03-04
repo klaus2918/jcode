@@ -165,6 +165,34 @@ impl Message {
     }
 }
 
+/// Sanitize a tool ID so it matches the pattern `^[a-zA-Z0-9_-]+$`.
+///
+/// Different providers generate tool IDs in different formats. When switching
+/// from one provider to another mid-conversation, the historical tool IDs may
+/// contain characters that the new provider rejects (e.g., dots in Copilot IDs
+/// sent to Anthropic). This function replaces any invalid characters with
+/// underscores.
+pub fn sanitize_tool_id(id: &str) -> String {
+    if id.is_empty() {
+        return "unknown".to_string();
+    }
+    let sanitized: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
+    }
+}
+
 /// Tool definition for the API
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolDefinition {
@@ -274,4 +302,71 @@ pub enum StreamEvent {
         tool_name: String,
         input: serde_json::Value,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_tool_id_alphanumeric_passthrough() {
+        assert_eq!(sanitize_tool_id("toolu_01XFDUDYJgAACzvnptvVer6u"), "toolu_01XFDUDYJgAACzvnptvVer6u");
+        assert_eq!(sanitize_tool_id("call_abc123"), "call_abc123");
+        assert_eq!(sanitize_tool_id("call_1234567890_9876543210"), "call_1234567890_9876543210");
+    }
+
+    #[test]
+    fn sanitize_tool_id_hyphens_passthrough() {
+        assert_eq!(sanitize_tool_id("call-abc-123"), "call-abc-123");
+        assert_eq!(sanitize_tool_id("tool_use-id_with-mixed"), "tool_use-id_with-mixed");
+    }
+
+    #[test]
+    fn sanitize_tool_id_replaces_dots() {
+        assert_eq!(sanitize_tool_id("chatcmpl-abc.def.ghi"), "chatcmpl-abc_def_ghi");
+        assert_eq!(sanitize_tool_id("call.123"), "call_123");
+    }
+
+    #[test]
+    fn sanitize_tool_id_replaces_colons() {
+        assert_eq!(sanitize_tool_id("call:123:456"), "call_123_456");
+    }
+
+    #[test]
+    fn sanitize_tool_id_replaces_special_chars() {
+        assert_eq!(sanitize_tool_id("id@with#special$chars"), "id_with_special_chars");
+        assert_eq!(sanitize_tool_id("id with spaces"), "id_with_spaces");
+    }
+
+    #[test]
+    fn sanitize_tool_id_empty_returns_unknown() {
+        assert_eq!(sanitize_tool_id(""), "unknown");
+    }
+
+    #[test]
+    fn sanitize_tool_id_copilot_to_anthropic() {
+        assert_eq!(
+            sanitize_tool_id("chatcmpl-BF2xX.tool_call.0"),
+            "chatcmpl-BF2xX_tool_call_0"
+        );
+    }
+
+    #[test]
+    fn sanitize_tool_id_already_valid_unchanged() {
+        let valid_ids = [
+            "toolu_01XFDUDYJgAACzvnptvVer6u",
+            "call_abc123",
+            "fallback_text_call_call_1234567890_9876543210",
+            "tool_123",
+            "a",
+            "A",
+            "0",
+            "_",
+            "-",
+            "a-b_c",
+        ];
+        for id in valid_ids {
+            assert_eq!(sanitize_tool_id(id), id, "ID '{}' should be unchanged", id);
+        }
+    }
 }

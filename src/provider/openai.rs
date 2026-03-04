@@ -772,7 +772,7 @@ fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
                             if open_calls.contains(tool_use_id.as_str()) {
                                 items.push(serde_json::json!({
                                     "type": "function_call_output",
-                                    "call_id": tool_use_id,
+                                    "call_id": crate::message::sanitize_tool_id(tool_use_id),
                                     "output": output
                                 }));
                                 open_calls.remove(tool_use_id.as_str());
@@ -815,13 +815,13 @@ fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
                                 "type": "function_call",
                                 "name": name,
                                 "arguments": arguments,
-                                "call_id": id
+                                "call_id": crate::message::sanitize_tool_id(id)
                             }));
 
                             if let Some(output) = pending_outputs.remove(id.as_str()) {
                                 items.push(serde_json::json!({
                                     "type": "function_call_output",
-                                    "call_id": id,
+                                    "call_id": crate::message::sanitize_tool_id(id),
                                     "output": output
                                 }));
                                 used_outputs.insert(id.clone());
@@ -836,7 +836,7 @@ fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
                                     injected_missing += 1;
                                     items.push(serde_json::json!({
                                         "type": "function_call_output",
-                                        "call_id": id,
+                                        "call_id": crate::message::sanitize_tool_id(id),
                                         "output": missing_output.clone()
                                     }));
                                     used_outputs.insert(id.clone());
@@ -858,14 +858,14 @@ fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
         if let Some(output) = pending_outputs.remove(&call_id) {
             items.push(serde_json::json!({
                 "type": "function_call_output",
-                "call_id": call_id,
+                "call_id": crate::message::sanitize_tool_id(&call_id),
                 "output": output
             }));
         } else {
             injected_missing += 1;
             items.push(serde_json::json!({
                 "type": "function_call_output",
-                "call_id": call_id,
+                "call_id": crate::message::sanitize_tool_id(&call_id),
                 "output": missing_output.clone()
             }));
         }
@@ -886,7 +886,7 @@ fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
         for (call_id, output) in pending_entries {
             let orphan_item = serde_json::json!({
                 "type": "function_call_output",
-                "call_id": call_id,
+                "call_id": crate::message::sanitize_tool_id(&call_id),
                 "output": output,
             });
             if let Some(message_item) =
