@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokenizers::Tokenizer;
 use tract_hir::prelude::*;
-use tract_onnx::prelude::*;
 
 use crate::storage::jcode_dir;
 

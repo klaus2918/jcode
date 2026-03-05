@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-#![allow(dead_code)]
 
 use super::{EventStream, Provider};
 use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};

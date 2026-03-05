@@ -6,7 +6,7 @@
 //! - Various edge types (HasTag, RelatesTo, Supersedes, etc.)
 //! - BFS cascade retrieval through the graph
 
-use crate::memory::{MemoryCategory, MemoryEntry, MemoryStore, TrustLevel};
+use crate::memory::{MemoryEntry, MemoryStore};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -593,6 +593,7 @@ impl MemoryGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::MemoryCategory;
 
     fn make_test_memory(content: &str) -> MemoryEntry {
         MemoryEntry::new(MemoryCategory::Fact, content)

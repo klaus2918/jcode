@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-#![allow(dead_code)]
 
 use crate::todo::TodoItem;
 use serde::{Deserialize, Serialize};

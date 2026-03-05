@@ -7,7 +7,7 @@
 use crate::agent::{Agent, SoftInterruptQueue};
 use crate::ambient::{
     self, AmbientCycleResult, AmbientLock, AmbientManager, AmbientState, AmbientStatus,
-    CycleStatus, ResourceBudget,
+    CycleStatus,
 };
 use crate::ambient_scheduler::{AdaptiveScheduler, AmbientSchedulerConfig};
 use crate::config::config;
