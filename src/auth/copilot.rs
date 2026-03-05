@@ -121,6 +121,7 @@ fn copilot_config_dir() -> PathBuf {
 /// Parse a Copilot config JSON file to extract the oauth_token.
 /// Format: { "github.com": { "oauth_token": "gho_xxxx", "user": "..." } }
 fn load_token_from_json(path: &PathBuf) -> Result<String> {
+    crate::storage::harden_secret_file_permissions(path);
     let data = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
 
@@ -128,17 +129,74 @@ fn load_token_from_json(path: &PathBuf) -> Result<String> {
         serde_json::from_str(&data)
             .with_context(|| format!("Failed to parse {}", path.display()))?;
 
-    for (key, value) in &config {
-        if key.contains("github.com") {
-            if let Some(serde_json::Value::String(token)) = value.get("oauth_token") {
-                if !token.is_empty() {
-                    return Ok(token.clone());
-                }
-            }
-        }
+    let token = select_preferred_token(&config)
+        .ok_or_else(|| anyhow::anyhow!("No oauth_token found in {}", path.display()))?;
+
+    return Ok(token.clone());
+}
+
+fn select_preferred_token(
+    config: &HashMap<String, HashMap<String, serde_json::Value>>,
+) -> Option<&String> {
+    config
+        .iter()
+        .filter_map(|(host, value)| {
+            let token = match value.get("oauth_token") {
+                Some(serde_json::Value::String(token)) if !token.is_empty() => token,
+                _ => return None,
+            };
+
+            let normalized_host = normalize_github_host_key(host)?;
+            let raw_host = host.trim().to_ascii_lowercase();
+            Some((
+                github_host_priority(&raw_host, &normalized_host),
+                normalized_host,
+                raw_host,
+                token,
+            ))
+        })
+        .min_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.cmp(&right.2))
+        })
+        .map(|(_, _, _, token)| token)
+}
+
+fn github_host_priority(raw_host: &str, normalized_host: &str) -> u8 {
+    if raw_host == "github.com" {
+        0
+    } else if normalized_host == "github.com" {
+        1
+    } else if raw_host == "api.github.com" {
+        2
+    } else if normalized_host == "api.github.com" {
+        3
+    } else {
+        4
+    }
+}
+
+fn normalize_github_host_key(host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return None;
     }
 
-    anyhow::bail!("No oauth_token found in {}", path.display())
+    let host = host
+        .strip_prefix("https://")
+        .or_else(|| host.strip_prefix("http://"))
+        .unwrap_or(host)
+        .trim_end_matches('/');
+    let host = host.split('/').next().unwrap_or_default().trim();
+    let host = host.to_ascii_lowercase();
+
+    if host == "github.com" || host == "api.github.com" || host.ends_with(".github.com") {
+        Some(host)
+    } else {
+        None
+    }
 }
 
 /// Exchange a GitHub OAuth token for a short-lived Copilot API bearer token.
@@ -254,6 +312,8 @@ pub fn save_github_token(token: &str, username: &str) -> Result<()> {
     let config_dir = copilot_config_dir();
     std::fs::create_dir_all(&config_dir)
         .with_context(|| format!("Failed to create {}", config_dir.display()))?;
+    crate::platform::set_directory_permissions_owner_only(&config_dir)
+        .with_context(|| format!("Failed to secure {}", config_dir.display()))?;
 
     let hosts_path = config_dir.join("hosts.json");
 
@@ -272,6 +332,8 @@ pub fn save_github_token(token: &str, username: &str) -> Result<()> {
     let json = serde_json::to_string_pretty(&config)?;
     std::fs::write(&hosts_path, json)
         .with_context(|| format!("Failed to write {}", hosts_path.display()))?;
+    crate::platform::set_permissions_owner_only(&hosts_path)
+        .with_context(|| format!("Failed to secure {}", hosts_path.display()))?;
 
     Ok(())
 }
@@ -721,18 +783,44 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("hosts.json");
         let data = serde_json::json!({
-            "github.com": {
-                "oauth_token": "gho_first",
+            "api.github.com": {
+                "oauth_token": "gho_api",
                 "user": "user1"
             },
-            "github.enterprise.com": {
-                "oauth_token": "gho_enterprise",
+            "github.com": {
+                "oauth_token": "gho_primary",
                 "user": "user2"
+            },
+            "https://github.com/extra/path": {
+                "oauth_token": "gho_path",
+                "user": "user3"
             }
         });
         std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
 
         let token = load_token_from_json(&path.to_path_buf()).unwrap();
-        assert!(token == "gho_first" || token == "gho_enterprise");
+        assert_eq!(token, "gho_primary");
+    }
+
+    #[test]
+    fn normalize_github_host_key_accepts_common_forms() {
+        assert_eq!(
+            normalize_github_host_key("https://github.com/login"),
+            Some("github.com".to_string())
+        );
+        assert_eq!(
+            normalize_github_host_key("api.github.com"),
+            Some("api.github.com".to_string())
+        );
+        assert_eq!(
+            normalize_github_host_key("sub.github.com/path"),
+            Some("sub.github.com".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_github_host_key_rejects_non_github_hosts() {
+        assert_eq!(normalize_github_host_key("gitlab.com"), None);
+        assert_eq!(normalize_github_host_key(""), None);
     }
 }
