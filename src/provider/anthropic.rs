@@ -1001,8 +1001,6 @@ fn is_oauth_auth_error(error_str: &str) -> bool {
 
 /// Accumulator for tool_use blocks (input comes in chunks)
 struct ToolUseAccumulator {
-    id: String,
-    name: String,
     input_json: String,
 }
 
@@ -1075,8 +1073,6 @@ fn process_sse_event(
                         };
                         // Start accumulating tool use
                         *current_tool_use = Some(ToolUseAccumulator {
-                            id: id.clone(),
-                            name: mapped_name.clone(),
                             input_json: String::new(),
                         });
                         events.push(StreamEvent::ToolUseStart {
@@ -1160,7 +1156,6 @@ struct ApiRequest {
 #[derive(Serialize, Clone)]
 #[serde(untagged)]
 enum ApiSystem {
-    Text(String),
     Blocks(Vec<ApiSystemBlock>),
 }
 
@@ -1442,7 +1437,10 @@ struct ContentBlockStartEvent {
 #[serde(tag = "type")]
 enum ApiContentBlockStart {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        #[serde(rename = "text")]
+        _text: String,
+    },
     #[serde(rename = "tool_use")]
     ToolUse { id: String, name: String },
 }

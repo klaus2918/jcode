@@ -465,23 +465,3 @@ static BACKGROUND_MANAGER: std::sync::OnceLock<BackgroundTaskManager> = std::syn
 pub fn global() -> &'static BackgroundTaskManager {
     BACKGROUND_MANAGER.get_or_init(BackgroundTaskManager::new)
 }
-
-/// Helper to write output to file with streaming support
-pub async fn write_output(path: &PathBuf, content: &str) -> Result<()> {
-    let mut file = File::create(path).await?;
-    file.write_all(content.as_bytes()).await?;
-    file.flush().await?;
-    Ok(())
-}
-
-/// Helper to append output to file (for streaming)
-pub async fn append_output(path: &PathBuf, content: &str) -> Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await?;
-    file.write_all(content.as_bytes()).await?;
-    file.flush().await?;
-    Ok(())
-}

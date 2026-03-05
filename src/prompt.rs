@@ -472,18 +472,6 @@ fn get_git_info() -> Option<String> {
     }
 }
 
-/// Load AGENTS.md and CLAUDE.md files from project and home directory
-/// Order: AGENTS.md (generic) first, then CLAUDE.md (Claude-specific overrides)
-fn load_claude_md_files() -> Option<String> {
-    let (content, _) = load_claude_md_files_with_info();
-    content
-}
-
-/// Load AGENTS.md and CLAUDE.md files with tracking info
-fn load_claude_md_files_with_info() -> (Option<String>, ContextInfo) {
-    load_claude_md_files_from_dir(None)
-}
-
 /// Load AGENTS.md and CLAUDE.md files from a specific working directory
 pub fn load_claude_md_files_from_dir(working_dir: Option<&Path>) -> (Option<String>, ContextInfo) {
     let mut contents = vec![];
