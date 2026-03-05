@@ -957,6 +957,58 @@ enum ActiveProvider {
     OpenRouter,
 }
 
+#[derive(Clone, Copy)]
+enum CompletionMode<'a> {
+    Unified {
+        system: &'a str,
+    },
+    Split {
+        system_static: &'a str,
+        system_dynamic: &'a str,
+    },
+}
+
+impl CompletionMode<'_> {
+    fn log_suffix(self) -> &'static str {
+        match self {
+            CompletionMode::Unified { .. } => "",
+            CompletionMode::Split { .. } => " (split)",
+        }
+    }
+
+    fn switch_log_prefix(self) -> &'static str {
+        match self {
+            CompletionMode::Unified { .. } => "Auto-fallback",
+            CompletionMode::Split { .. } => "Auto-fallback (split)",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailoverDecision {
+    None,
+    RetryNextProvider,
+    RetryAndMarkUnavailable,
+}
+
+impl FailoverDecision {
+    fn should_failover(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    fn should_mark_provider_unavailable(self) -> bool {
+        matches!(self, Self::RetryAndMarkUnavailable)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::RetryNextProvider => "retry-next-provider",
+            Self::RetryAndMarkUnavailable => "retry-and-mark-unavailable",
+        }
+    }
+}
+
 impl MultiProvider {
     fn provider_label(provider: ActiveProvider) -> &'static str {
         match provider {
@@ -1047,26 +1099,65 @@ impl MultiProvider {
             .to_string()
     }
 
-    fn should_failover_on_error(err: &anyhow::Error) -> bool {
+    fn contains_standalone_status_code(haystack: &str, code: &str) -> bool {
+        let haystack_bytes = haystack.as_bytes();
+        let code_len = code.len();
+
+        haystack.match_indices(code).any(|(start, _)| {
+            let before_ok = start == 0 || !haystack_bytes[start - 1].is_ascii_digit();
+            let end = start + code_len;
+            let after_ok = end == haystack_bytes.len() || !haystack_bytes[end].is_ascii_digit();
+            before_ok && after_ok
+        })
+    }
+
+    fn classify_failover_error(err: &anyhow::Error) -> FailoverDecision {
         let lower = err.to_string().to_ascii_lowercase();
+
+        let request_size_or_context = [
+            "context length",
+            "context_length",
+            "context window",
+            "maximum context",
+            "prompt is too long",
+            "input is too long",
+            "too many tokens",
+            "max tokens",
+            "token limit",
+            "token_limit",
+            "request too large",
+            "payload too large",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+            || Self::contains_standalone_status_code(&lower, "413");
+
+        if request_size_or_context {
+            // Request-specific: retry other providers, but do not blacklist this provider.
+            return FailoverDecision::RetryNextProvider;
+        }
 
         let quota_or_limit = [
             "quota",
             "insufficient_quota",
             "rate limit",
             "rate_limit",
+            "rate_limit_exceeded",
             "too many requests",
-            " 429",
-            "(429",
             "billing",
             "credit",
             "payment required",
             "usage exhausted",
-            "token limit",
             "limit reached",
         ]
         .iter()
-        .any(|needle| lower.contains(needle));
+        .any(|needle| lower.contains(needle))
+            || Self::contains_standalone_status_code(&lower, "429")
+            || Self::contains_standalone_status_code(&lower, "402");
+
+        if quota_or_limit {
+            return FailoverDecision::RetryAndMarkUnavailable;
+        }
 
         let auth_or_availability = [
             "credentials not available",
@@ -1074,10 +1165,6 @@ impl MultiProvider {
             "re-authenticate",
             "unauthorized",
             "forbidden",
-            " 401",
-            "(401",
-            " 403",
-            "(403",
             "not available for your account",
             "not accessible by integration",
             "feature_flag_blocked",
@@ -1089,9 +1176,15 @@ impl MultiProvider {
             "permission denied",
         ]
         .iter()
-        .any(|needle| lower.contains(needle));
+        .any(|needle| lower.contains(needle))
+            || Self::contains_standalone_status_code(&lower, "401")
+            || Self::contains_standalone_status_code(&lower, "403");
 
-        quota_or_limit || auth_or_availability
+        if auth_or_availability {
+            return FailoverDecision::RetryAndMarkUnavailable;
+        }
+
+        FailoverDecision::None
     }
 
     fn no_provider_available_error(notes: &[String]) -> anyhow::Error {
@@ -1102,6 +1195,106 @@ impl MultiProvider {
         }
         msg.push_str(" Use `/usage` to check limits and `/login <provider>` to re-authenticate.");
         anyhow::anyhow!(msg)
+    }
+
+    async fn complete_with_failover(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        mode: CompletionMode<'_>,
+        resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        self.spawn_openai_catalog_refresh_if_needed();
+
+        let active = self.active_provider();
+        let sequence = Self::fallback_sequence(active);
+        let mut notes: Vec<String> = Vec::new();
+
+        for candidate in sequence {
+            let label = Self::provider_label(candidate);
+            let key = Self::provider_key(candidate);
+
+            if !self.provider_is_configured(candidate) {
+                notes.push(format!("{}: not configured", label));
+                continue;
+            }
+
+            if let Some(detail) = provider_unavailability_detail_for_account(key) {
+                notes.push(format!("{}: {}", label, detail));
+                continue;
+            }
+
+            if let Some(reason) = self.provider_precheck_unavailable_reason(candidate) {
+                notes.push(format!("{}: {}", label, reason));
+                record_provider_unavailable_for_account(key, &reason);
+                continue;
+            }
+
+            let attempt = match mode {
+                CompletionMode::Unified { system } => {
+                    self.complete_on_provider(candidate, messages, tools, system, resume_session_id)
+                        .await
+                }
+                CompletionMode::Split {
+                    system_static,
+                    system_dynamic,
+                } => {
+                    self.complete_split_on_provider(
+                        candidate,
+                        messages,
+                        tools,
+                        system_static,
+                        system_dynamic,
+                        resume_session_id,
+                    )
+                    .await
+                }
+            };
+
+            match attempt {
+                Ok(stream) => {
+                    clear_provider_unavailable_for_account(key);
+                    if candidate != active {
+                        self.set_active_provider(candidate);
+                        let from_label = Self::provider_label(active);
+                        let to_label = Self::provider_label(candidate);
+                        crate::logging::info(&format!(
+                            "{}: switched from {} to {}",
+                            mode.switch_log_prefix(),
+                            from_label,
+                            to_label
+                        ));
+                        self.startup_notices.write().unwrap().push(format!(
+                            "⚡ Auto-fallback: {} unavailable, switched to {}",
+                            from_label, to_label
+                        ));
+                    }
+                    return Ok(stream);
+                }
+                Err(err) => {
+                    let summary = Self::summarize_error(&err);
+                    let decision = Self::classify_failover_error(&err);
+                    crate::logging::info(&format!(
+                        "Provider {} failed{}: {} (failover={} decision={})",
+                        label,
+                        mode.log_suffix(),
+                        summary,
+                        decision.should_failover(),
+                        decision.as_str()
+                    ));
+                    notes.push(format!("{}: {}", label, summary));
+                    if decision.should_failover() {
+                        if decision.should_mark_provider_unavailable() {
+                            record_provider_unavailable_for_account(key, &summary);
+                        }
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+
+        Err(Self::no_provider_available_error(&notes))
     }
 
     async fn complete_on_provider(
@@ -1597,71 +1790,13 @@ impl Provider for MultiProvider {
         system: &str,
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
-        self.spawn_openai_catalog_refresh_if_needed();
-
-        let active = self.active_provider();
-        let sequence = Self::fallback_sequence(active);
-        let mut notes: Vec<String> = Vec::new();
-
-        for candidate in sequence {
-            let label = Self::provider_label(candidate);
-            let key = Self::provider_key(candidate);
-
-            if !self.provider_is_configured(candidate) {
-                notes.push(format!("{}: not configured", label));
-                continue;
-            }
-
-            if let Some(detail) = provider_unavailability_detail_for_account(key) {
-                notes.push(format!("{}: {}", label, detail));
-                continue;
-            }
-
-            if let Some(reason) = self.provider_precheck_unavailable_reason(candidate) {
-                notes.push(format!("{}: {}", label, reason));
-                record_provider_unavailable_for_account(key, &reason);
-                continue;
-            }
-
-            match self
-                .complete_on_provider(candidate, messages, tools, system, resume_session_id)
-                .await
-            {
-                Ok(stream) => {
-                    clear_provider_unavailable_for_account(key);
-                    if candidate != active {
-                        self.set_active_provider(candidate);
-                        let from_label = Self::provider_label(active);
-                        let to_label = Self::provider_label(candidate);
-                        crate::logging::info(&format!(
-                            "Auto-fallback: switched from {} to {}",
-                            from_label, to_label
-                        ));
-                        self.startup_notices.write().unwrap().push(format!(
-                            "⚡ Auto-fallback: {} unavailable, switched to {}",
-                            from_label, to_label
-                        ));
-                    }
-                    return Ok(stream);
-                }
-                Err(err) => {
-                    let summary = Self::summarize_error(&err);
-                    crate::logging::info(&format!(
-                        "Provider {} failed: {} (failover={})",
-                        label, summary,
-                        Self::should_failover_on_error(&err)
-                    ));
-                    notes.push(format!("{}: {}", label, summary));
-                    if Self::should_failover_on_error(&err) {
-                        record_provider_unavailable_for_account(key, &summary);
-                    } else {
-                        return Err(err);
-                    }
-                }
-            }
-        }
-
-        Err(Self::no_provider_available_error(&notes))
+        self.complete_with_failover(
+            messages,
+            tools,
+            CompletionMode::Unified { system },
+            resume_session_id,
+        )
+        .await
     }
 
     /// Split system prompt completion - delegates to underlying provider for better caching
@@ -1673,78 +1808,16 @@ impl Provider for MultiProvider {
         system_dynamic: &str,
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
-        self.spawn_openai_catalog_refresh_if_needed();
-
-        let active = self.active_provider();
-        let sequence = Self::fallback_sequence(active);
-        let mut notes: Vec<String> = Vec::new();
-
-        for candidate in sequence {
-            let label = Self::provider_label(candidate);
-            let key = Self::provider_key(candidate);
-
-            if !self.provider_is_configured(candidate) {
-                notes.push(format!("{}: not configured", label));
-                continue;
-            }
-
-            if let Some(detail) = provider_unavailability_detail_for_account(key) {
-                notes.push(format!("{}: {}", label, detail));
-                continue;
-            }
-
-            if let Some(reason) = self.provider_precheck_unavailable_reason(candidate) {
-                notes.push(format!("{}: {}", label, reason));
-                record_provider_unavailable_for_account(key, &reason);
-                continue;
-            }
-
-            match self
-                .complete_split_on_provider(
-                    candidate,
-                    messages,
-                    tools,
-                    system_static,
-                    system_dynamic,
-                    resume_session_id,
-                )
-                .await
-            {
-                Ok(stream) => {
-                    clear_provider_unavailable_for_account(key);
-                    if candidate != active {
-                        self.set_active_provider(candidate);
-                        let from_label = Self::provider_label(active);
-                        let to_label = Self::provider_label(candidate);
-                        crate::logging::info(&format!(
-                            "Auto-fallback (split): switched from {} to {}",
-                            from_label, to_label
-                        ));
-                        self.startup_notices.write().unwrap().push(format!(
-                            "⚡ Auto-fallback: {} unavailable, switched to {}",
-                            from_label, to_label
-                        ));
-                    }
-                    return Ok(stream);
-                }
-                Err(err) => {
-                    let summary = Self::summarize_error(&err);
-                    crate::logging::info(&format!(
-                        "Provider {} failed (split): {} (failover={})",
-                        label, summary,
-                        Self::should_failover_on_error(&err)
-                    ));
-                    notes.push(format!("{}: {}", label, summary));
-                    if Self::should_failover_on_error(&err) {
-                        record_provider_unavailable_for_account(key, &summary);
-                    } else {
-                        return Err(err);
-                    }
-                }
-            }
-        }
-
-        Err(Self::no_provider_available_error(&notes))
+        self.complete_with_failover(
+            messages,
+            tools,
+            CompletionMode::Split {
+                system_static,
+                system_dynamic,
+            },
+            resume_session_id,
+        )
+        .await
     }
 
     fn name(&self) -> &str {
@@ -2547,27 +2620,55 @@ mod tests {
 
     #[test]
     fn test_should_failover_on_403_forbidden() {
-        let err = anyhow::anyhow!("Copilot token exchange failed (HTTP 403 Forbidden): not accessible by integration");
-        assert!(MultiProvider::should_failover_on_error(&err));
+        let err = anyhow::anyhow!(
+            "Copilot token exchange failed (HTTP 403 Forbidden): not accessible by integration"
+        );
+        assert!(MultiProvider::classify_failover_error(&err).should_failover());
     }
 
     #[test]
     fn test_should_failover_on_token_exchange_failed() {
         let msg = r#"Copilot token exchange failed (HTTP 403 Forbidden): {"error_details":{"title":"Contact Support"}}"#;
         let err = anyhow::anyhow!("{}", msg);
-        assert!(MultiProvider::should_failover_on_error(&err));
+        assert!(MultiProvider::classify_failover_error(&err).should_failover());
     }
 
     #[test]
     fn test_should_failover_on_access_denied() {
         let err = anyhow::anyhow!("Access denied: account suspended");
-        assert!(MultiProvider::should_failover_on_error(&err));
+        assert!(MultiProvider::classify_failover_error(&err).should_failover());
+    }
+
+    #[test]
+    fn test_should_failover_when_status_code_starts_message() {
+        let err = anyhow::anyhow!("401 unauthorized");
+        assert!(MultiProvider::classify_failover_error(&err).should_failover());
+        assert_eq!(
+            MultiProvider::classify_failover_error(&err),
+            FailoverDecision::RetryAndMarkUnavailable
+        );
+    }
+
+    #[test]
+    fn test_should_not_failover_on_non_standalone_status_digits() {
+        let err = anyhow::anyhow!("backend returned code 14290");
+        assert!(!MultiProvider::classify_failover_error(&err).should_failover());
+    }
+
+    #[test]
+    fn test_context_limit_error_fails_over_without_marking_provider_unavailable() {
+        let err = anyhow::anyhow!("Context length exceeded maximum context window");
+        assert!(MultiProvider::classify_failover_error(&err).should_failover());
+        assert_eq!(
+            MultiProvider::classify_failover_error(&err),
+            FailoverDecision::RetryNextProvider
+        );
     }
 
     #[test]
     fn test_should_not_failover_on_generic_error() {
         let err = anyhow::anyhow!("Connection timed out");
-        assert!(!MultiProvider::should_failover_on_error(&err));
+        assert!(!MultiProvider::classify_failover_error(&err).should_failover());
     }
 
     #[test]
