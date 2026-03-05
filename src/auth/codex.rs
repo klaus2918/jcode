@@ -34,12 +34,39 @@ fn auth_path() -> Result<PathBuf> {
 }
 
 pub fn load_credentials() -> Result<CodexCredentials> {
+    let env_api_key = load_env_api_key();
     let path = auth_path()?;
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("Could not read credentials from {:?}", path))?;
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(err) => {
+            if let Some(api_key) = env_api_key.clone() {
+                return Ok(CodexCredentials {
+                    access_token: api_key,
+                    refresh_token: String::new(),
+                    id_token: None,
+                    account_id: None,
+                    expires_at: None,
+                });
+            }
+            return Err(err).with_context(|| format!("Could not read credentials from {:?}", path));
+        }
+    };
 
-    let file: AuthFile =
-        serde_json::from_str(&content).context("Could not parse Codex credentials")?;
+    let file: AuthFile = match serde_json::from_str(&content) {
+        Ok(file) => file,
+        Err(err) => {
+            if let Some(api_key) = env_api_key.clone() {
+                return Ok(CodexCredentials {
+                    access_token: api_key,
+                    refresh_token: String::new(),
+                    id_token: None,
+                    account_id: None,
+                    expires_at: None,
+                });
+            }
+            return Err(err).context("Could not parse Codex credentials");
+        }
+    };
 
     // Prefer OAuth tokens over API key
     if let Some(tokens) = file.tokens {
@@ -67,7 +94,24 @@ pub fn load_credentials() -> Result<CodexCredentials> {
         });
     }
 
+    if let Some(api_key) = env_api_key {
+        return Ok(CodexCredentials {
+            access_token: api_key,
+            refresh_token: String::new(),
+            id_token: None,
+            account_id: None,
+            expires_at: None,
+        });
+    }
+
     anyhow::bail!("No tokens or API key found in Codex auth file")
+}
+
+fn load_env_api_key() -> Option<String> {
+    std::env::var("OPENAI_API_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn extract_account_id(id_token: &str) -> Option<String> {
@@ -87,6 +131,39 @@ fn decode_jwt_payload(token: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn auth_file_with_oauth_tokens() {
@@ -209,5 +286,19 @@ mod tests {
         assert_eq!(tokens.access_token, "at_test");
         assert_eq!(tokens.refresh_token, "rt_test");
         assert_eq!(tokens.expires_at, Some(5000));
+    }
+
+    #[test]
+    fn load_credentials_falls_back_to_env_api_key() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "sk-env-test");
+
+        let creds = load_credentials().unwrap();
+        assert_eq!(creds.access_token, "sk-env-test");
+        assert!(creds.refresh_token.is_empty());
+        assert!(creds.id_token.is_none());
+        assert!(creds.expires_at.is_none());
     }
 }
