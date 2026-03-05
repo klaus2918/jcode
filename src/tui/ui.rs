@@ -2044,7 +2044,7 @@ fn format_status_for_debug(app: &dyn TuiState) -> String {
 }
 
 /// Pre-computed image region from line scanning
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct ImageRegion {
     /// Absolute line index in wrapped_lines
     abs_line_idx: usize,
@@ -2177,7 +2177,11 @@ struct BodyCacheKey {
 #[derive(Default)]
 struct BodyCacheState {
     key: Option<BodyCacheKey>,
-    prepared: Option<PreparedMessages>,
+    prepared: Option<Arc<PreparedMessages>>,
+    msg_count: usize,
+    prev_key: Option<BodyCacheKey>,
+    prev_prepared: Option<Arc<PreparedMessages>>,
+    prev_msg_count: usize,
 }
 
 static BODY_CACHE: OnceLock<Mutex<BodyCacheState>> = OnceLock::new();
@@ -2223,34 +2227,23 @@ struct MessageCacheKey {
 
 #[derive(Default)]
 struct MessageCacheState {
-    entries: HashMap<MessageCacheKey, Vec<Line<'static>>>,
+    entries: HashMap<MessageCacheKey, Arc<Vec<Line<'static>>>>,
     order: VecDeque<MessageCacheKey>,
 }
 
 impl MessageCacheState {
-    fn touch(&mut self, key: &MessageCacheKey) {
-        if let Some(pos) = self.order.iter().position(|k| k == key) {
-            self.order.remove(pos);
-        }
-        self.order.push_back(key.clone());
-    }
-
-    fn get(&mut self, key: &MessageCacheKey) -> Option<Vec<Line<'static>>> {
-        let lines = self.entries.get(key).cloned();
-        if lines.is_some() {
-            self.touch(key);
-        }
-        lines
+    fn get(&self, key: &MessageCacheKey) -> Option<Vec<Line<'static>>> {
+        self.entries.get(key).map(|arc| arc.as_ref().clone())
     }
 
     fn insert(&mut self, key: MessageCacheKey, lines: Vec<Line<'static>>) {
+        let arc = Arc::new(lines);
         if self.entries.contains_key(&key) {
-            self.entries.insert(key.clone(), lines);
-            self.touch(&key);
+            self.entries.insert(key, arc);
             return;
         }
 
-        self.entries.insert(key.clone(), lines);
+        self.entries.insert(key.clone(), arc);
         self.order.push_back(key);
 
         while self.order.len() > MESSAGE_CACHE_LIMIT {
@@ -2267,7 +2260,7 @@ fn message_cache() -> &'static Mutex<MessageCacheState> {
     MESSAGE_CACHE.get_or_init(|| Mutex::new(MessageCacheState::default()))
 }
 
-const MESSAGE_CACHE_LIMIT: usize = 512;
+const MESSAGE_CACHE_LIMIT: usize = 2048;
 
 #[derive(Default)]
 struct RenderProfile {
@@ -3189,27 +3182,30 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_a
         let header_len = wrapped_lines.len();
         let startup_len = startup_prepared.wrapped_lines.len();
         wrapped_lines.extend(startup_prepared.wrapped_lines);
+        let body_offset = header_len + startup_len;
         let body_len = body_prepared.wrapped_lines.len();
-        wrapped_lines.extend(body_prepared.wrapped_lines);
+        wrapped_lines.extend_from_slice(&body_prepared.wrapped_lines);
         wrapped_lines.extend(streaming_prepared.wrapped_lines);
 
-        wrapped_user_indices = body_prepared.wrapped_user_indices;
-        for idx in &mut wrapped_user_indices {
-            *idx += header_len + startup_len;
-        }
+        wrapped_user_indices = body_prepared.wrapped_user_indices.iter()
+            .map(|idx| idx + body_offset)
+            .collect();
 
-        wrapped_user_prompt_starts = body_prepared.wrapped_user_prompt_starts;
-        for idx in &mut wrapped_user_prompt_starts {
-            *idx += header_len + startup_len;
-        }
+        wrapped_user_prompt_starts = body_prepared.wrapped_user_prompt_starts.iter()
+            .map(|idx| idx + body_offset)
+            .collect();
 
-        image_regions = Vec::new();
-        for mut region in body_prepared.image_regions {
-            region.abs_line_idx += header_len + startup_len;
-            image_regions.push(region);
+        image_regions = Vec::with_capacity(
+            body_prepared.image_regions.len() + streaming_prepared.image_regions.len()
+        );
+        for region in &body_prepared.image_regions {
+            image_regions.push(ImageRegion {
+                abs_line_idx: region.abs_line_idx + body_offset,
+                ..*region
+            });
         }
         for mut region in streaming_prepared.image_regions {
-            region.abs_line_idx += header_len + startup_len + body_len;
+            region.abs_line_idx += body_offset + body_len;
             image_regions.push(region);
         }
     }
@@ -3875,7 +3871,7 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn prepare_body_cached(app: &dyn TuiState, width: u16) -> PreparedMessages {
+fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> {
     let key = BodyCacheKey {
         width,
         diff_mode: app.diff_mode(),
@@ -3883,6 +3879,7 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> PreparedMessages {
         diagram_mode: app.diagram_mode(),
         centered: app.centered_mode(),
     };
+    let msg_count = app.display_messages().len();
 
     let mut cache = match body_cache().lock() {
         Ok(c) => c,
@@ -3890,19 +3887,280 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> PreparedMessages {
             let mut c = poisoned.into_inner();
             c.key = None;
             c.prepared = None;
+            c.prev_key = None;
+            c.prev_prepared = None;
             c
         }
     };
+
     if cache.key.as_ref() == Some(&key) {
         if let Some(prepared) = cache.prepared.clone() {
             return prepared;
         }
     }
 
-    let prepared = prepare_body(app, width, false);
+    let incremental_base = if cache.msg_count > 0
+        && msg_count > cache.msg_count
+        && cache.prepared.is_some()
+        && cache.key.as_ref().map(|k| {
+            k.width == key.width
+                && k.diff_mode == key.diff_mode
+                && k.diagram_mode == key.diagram_mode
+                && k.centered == key.centered
+        }).unwrap_or(false)
+    {
+        Some((cache.prepared.clone().unwrap(), cache.msg_count))
+    } else {
+        None
+    };
+
+    drop(cache);
+
+    let prepared = if let Some((prev, prev_count)) = incremental_base {
+        prepare_body_incremental(app, width, &prev, prev_count)
+    } else {
+        Arc::new(prepare_body(app, width, false))
+    };
+
+    let mut cache = match body_cache().lock() {
+        Ok(c) => c,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    cache.prev_key = cache.key.take();
+    cache.prev_prepared = cache.prepared.take();
+    cache.prev_msg_count = cache.msg_count;
     cache.key = Some(key);
     cache.prepared = Some(prepared.clone());
+    cache.msg_count = msg_count;
     prepared
+}
+
+fn prepare_body_incremental(
+    app: &dyn TuiState,
+    width: u16,
+    prev: &PreparedMessages,
+    prev_msg_count: usize,
+) -> Arc<PreparedMessages> {
+    let messages = app.display_messages();
+    let new_messages = &messages[prev_msg_count..];
+    if new_messages.is_empty() {
+        return Arc::new(prev.clone());
+    }
+
+    let centered = app.centered_mode();
+    markdown::set_center_code_blocks(centered);
+    let align = if centered {
+        ratatui::layout::Alignment::Center
+    } else {
+        ratatui::layout::Alignment::Left
+    };
+
+    let total_prompts = messages.iter().filter(|m| m.role == "user").count();
+    let pending_count = pending_prompt_count(app);
+
+    let mut prompt_num = messages[..prev_msg_count]
+        .iter()
+        .filter(|m| m.role == "user")
+        .count();
+
+    let mut new_lines: Vec<Line> = Vec::new();
+    let mut new_user_line_indices: Vec<usize> = Vec::new();
+
+    let body_has_content = !prev.wrapped_lines.is_empty();
+
+    for msg in new_messages {
+        if (body_has_content || !new_lines.is_empty())
+            && msg.role != "tool"
+            && msg.role != "meta"
+        {
+            new_lines.push(Line::from(""));
+        }
+
+        match msg.role.as_str() {
+            "user" => {
+                prompt_num += 1;
+                new_user_line_indices.push(new_lines.len());
+                let distance = total_prompts + pending_count + 1 - prompt_num;
+                let num_color = rainbow_prompt_color(distance);
+                new_lines.push(
+                    Line::from(vec![
+                        Span::styled(format!("{}", prompt_num), Style::default().fg(num_color)),
+                        Span::styled("› ", Style::default().fg(user_color())),
+                        Span::styled(msg.content.clone(), Style::default().fg(user_text())),
+                    ])
+                    .alignment(align),
+                );
+            }
+            "assistant" => {
+                let content_width = width.saturating_sub(4);
+                let cached = get_cached_message_lines(
+                    msg,
+                    content_width,
+                    app.diff_mode(),
+                    render_assistant_message,
+                );
+                for line in cached {
+                    new_lines.push(align_if_unset(line, align));
+                }
+            }
+            "meta" => {
+                new_lines.push(
+                    Line::from(vec![
+                        Span::raw(if centered { "" } else { "  " }),
+                        Span::styled(msg.content.clone(), Style::default().fg(dim_color())),
+                    ])
+                    .alignment(align),
+                );
+            }
+            "tool" => {
+                let cached =
+                    get_cached_message_lines(msg, width, app.diff_mode(), render_tool_message);
+                for line in cached {
+                    new_lines.push(align_if_unset(line, align));
+                }
+            }
+            "system" => {
+                let should_render_markdown = msg.content.contains('\n')
+                    || msg.content.contains("```")
+                    || msg.content.contains("# ")
+                    || msg.content.contains("- ");
+
+                if should_render_markdown {
+                    let content_width = width.saturating_sub(4) as usize;
+                    let rendered =
+                        markdown::render_markdown_with_width(&msg.content, Some(content_width));
+                    for line in rendered {
+                        new_lines.push(align_if_unset(line, align));
+                    }
+                } else {
+                    new_lines.push(
+                        Line::from(vec![
+                            Span::styled(if centered { "" } else { "  " }, Style::default()),
+                            Span::styled(
+                                msg.content.clone(),
+                                Style::default().fg(accent_color()).italic(),
+                            ),
+                        ])
+                        .alignment(align),
+                    );
+                }
+            }
+            "memory" => {
+                let border_style = Style::default().fg(rgb(130, 140, 180));
+                let text_style = Style::default().fg(dim_color());
+
+                let mut entries: Vec<(String, String)> = Vec::new();
+                let mut current_category = String::new();
+
+                for text_line in msg.content.lines() {
+                    if text_line.starts_with("# ") {
+                        continue;
+                    }
+                    if text_line.starts_with("## ") {
+                        current_category = text_line.trim_start_matches("## ").to_string();
+                        continue;
+                    }
+                    if text_line.trim().is_empty() {
+                        continue;
+                    }
+                    let content = if let Some(dot_pos) = text_line.find(". ") {
+                        let prefix = &text_line[..dot_pos];
+                        if prefix.trim().chars().all(|c| c.is_ascii_digit()) {
+                            text_line[dot_pos + 2..].trim()
+                        } else {
+                            text_line.trim()
+                        }
+                    } else {
+                        text_line.trim()
+                    };
+                    let cat = if current_category.is_empty() {
+                        "memory".to_string()
+                    } else {
+                        current_category.clone()
+                    };
+                    entries.push((cat, content.to_string()));
+                }
+
+                let count = entries.len();
+                let tiles = group_into_tiles(entries);
+
+                let header_text = if let Some(title) = &msg.title {
+                    title.clone()
+                } else if count == 1 {
+                    "🧠 1 memory".to_string()
+                } else {
+                    format!("🧠 {} memories", count)
+                };
+                let header = Line::from(Span::styled(header_text, border_style))
+                    .alignment(align);
+
+                let total_width = if centered {
+                    (width.saturating_sub(4) as usize).min(90)
+                } else {
+                    width.saturating_sub(2) as usize
+                };
+                let tile_lines =
+                    render_memory_tiles(&tiles, total_width, border_style, text_style, Some(header));
+                for line in tile_lines {
+                    new_lines.push(align_if_unset(line, align));
+                }
+            }
+            "usage" => {
+                new_lines.push(
+                    Line::from(vec![
+                        Span::styled(if centered { "" } else { "  " }, Style::default()),
+                        Span::styled(msg.content.clone(), Style::default().fg(dim_color())),
+                    ])
+                    .alignment(align),
+                );
+            }
+            "error" => {
+                new_lines.push(
+                    Line::from(vec![
+                        Span::styled(
+                            if centered { "✗ " } else { "  ✗ " },
+                            Style::default().fg(Color::Red),
+                        ),
+                        Span::styled(msg.content.clone(), Style::default().fg(Color::Red)),
+                    ])
+                    .alignment(align),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let new_wrapped = wrap_lines(new_lines, &new_user_line_indices, width);
+
+    let prev_len = prev.wrapped_lines.len();
+    let mut wrapped_lines = Vec::with_capacity(prev_len + new_wrapped.wrapped_lines.len());
+    wrapped_lines.extend_from_slice(&prev.wrapped_lines);
+    wrapped_lines.extend(new_wrapped.wrapped_lines);
+
+    let mut wrapped_user_indices = prev.wrapped_user_indices.clone();
+    for idx in new_wrapped.wrapped_user_indices {
+        wrapped_user_indices.push(idx + prev_len);
+    }
+
+    let mut wrapped_user_prompt_starts = prev.wrapped_user_prompt_starts.clone();
+    for idx in new_wrapped.wrapped_user_prompt_starts {
+        wrapped_user_prompt_starts.push(idx + prev_len);
+    }
+
+    let mut image_regions = prev.image_regions.clone();
+    for region in new_wrapped.image_regions {
+        image_regions.push(ImageRegion {
+            abs_line_idx: region.abs_line_idx + prev_len,
+            ..region
+        });
+    }
+
+    Arc::new(PreparedMessages {
+        wrapped_lines,
+        wrapped_user_indices,
+        wrapped_user_prompt_starts,
+        image_regions,
+    })
 }
 
 fn prepare_streaming_cached(
@@ -4643,9 +4901,34 @@ fn hash_display_message(msg: &DisplayMessage) -> u64 {
     if let Some(tool) = &msg.tool_data {
         tool.id.hash(&mut hasher);
         tool.name.hash(&mut hasher);
-        tool.input.to_string().hash(&mut hasher);
+        hash_json_value(&tool.input, &mut hasher);
     }
     hasher.finish()
+}
+
+fn hash_json_value(value: &serde_json::Value, hasher: &mut DefaultHasher) {
+    use std::hash::Hash;
+    match value {
+        serde_json::Value::Null => 0u8.hash(hasher),
+        serde_json::Value::Bool(b) => { 1u8.hash(hasher); b.hash(hasher); }
+        serde_json::Value::Number(n) => { 2u8.hash(hasher); n.hash(hasher); }
+        serde_json::Value::String(s) => { 3u8.hash(hasher); s.hash(hasher); }
+        serde_json::Value::Array(arr) => {
+            4u8.hash(hasher);
+            arr.len().hash(hasher);
+            for item in arr {
+                hash_json_value(item, hasher);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            5u8.hash(hasher);
+            map.len().hash(hasher);
+            for (k, v) in map {
+                k.hash(hasher);
+                hash_json_value(v, hasher);
+            }
+        }
+    }
 }
 
 fn compute_visible_margins(
