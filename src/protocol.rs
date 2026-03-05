@@ -544,6 +544,9 @@ pub enum ServerEvent {
         /// Available models for this provider
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         available_models: Vec<String>,
+        /// Route metadata for available models
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        available_model_routes: Vec<crate::provider::ModelRoute>,
         /// Connected MCP server names
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mcp_servers: Vec<String>,
@@ -618,7 +621,11 @@ pub enum ServerEvent {
 
     /// Available models updated (pushed after auth changes)
     #[serde(rename = "available_models_updated")]
-    AvailableModelsUpdated { available_models: Vec<String> },
+    AvailableModelsUpdated {
+        available_models: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        available_model_routes: Vec<crate::provider::ModelRoute>,
+    },
 
     /// Notification from another agent (file conflict, message, shared context)
     #[serde(rename = "notification")]

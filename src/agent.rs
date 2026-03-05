@@ -1069,6 +1069,10 @@ impl Agent {
 
     pub fn available_models_display(&self) -> Vec<String> {
         self.provider.available_models_display()
+    pub fn model_routes(&self) -> Vec<crate::provider::ModelRoute> {
+        self.provider.model_routes()
+    }
+
     }
 
     pub fn registry(&self) -> Registry {

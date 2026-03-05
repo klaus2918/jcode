@@ -641,6 +641,7 @@ pub struct App {
     remote_provider_name: Option<String>,
     remote_provider_model: Option<String>,
     remote_available_models: Vec<String>,
+    remote_model_routes: Vec<crate::provider::ModelRoute>,
     // Remote MCP servers and skills (set from server in remote mode)
     remote_mcp_servers: Vec<String>,
     remote_skills: Vec<String>,
@@ -1013,6 +1014,7 @@ impl App {
             remote_provider_name: None,
             remote_provider_model: None,
             remote_available_models: Vec::new(),
+            remote_model_routes: Vec::new(),
             remote_mcp_servers: Vec::new(),
             remote_skills: Vec::new(),
             remote_total_tokens: None,
@@ -5460,6 +5462,7 @@ impl App {
                 provider_name,
                 provider_model,
                 available_models,
+                available_model_routes,
                 mcp_servers,
                 skills,
                 all_sessions,
@@ -5531,6 +5534,7 @@ impl App {
                     self.upstream_provider = upstream_provider;
                 }
                 self.remote_available_models = available_models;
+                self.remote_model_routes = available_model_routes;
                 // Store session list and client count
                 self.remote_sessions = all_sessions;
                 self.remote_client_count = client_count;
@@ -5675,8 +5679,12 @@ impl App {
                 }
                 false
             }
-            ServerEvent::AvailableModelsUpdated { available_models } => {
+            ServerEvent::AvailableModelsUpdated {
+                available_models,
+                available_model_routes,
+            } => {
                 self.remote_available_models = available_models;
+                self.remote_model_routes = available_model_routes;
                 false
             }
             ServerEvent::SoftInterruptInjected {
@@ -10921,132 +10929,12 @@ impl App {
 
         // Gather routes from provider (local) or build from available info (remote)
         let routes: Vec<crate::provider::ModelRoute> = if self.is_remote {
-            // Remote mode: build routes from available models + auth status
-            let auth = crate::auth::AuthStatus::check();
-            let mut routes = Vec::new();
-            for model in &self.remote_available_models {
-                if model.contains('/') {
-                    // OpenRouter model
-                    let cached =
-                        crate::provider::openrouter::load_endpoints_disk_cache_public(model);
-                    let auto_detail = cached
-                        .as_ref()
-                        .and_then(|(eps, _)| {
-                            eps.first().map(|ep| format!("→ {}", ep.provider_name))
-                        })
-                        .unwrap_or_default();
-                    routes.push(crate::provider::ModelRoute {
-                        model: model.clone(),
-                        provider: "auto".to_string(),
-                        api_method: "openrouter".to_string(),
-                        available: auth.openrouter != crate::auth::AuthState::NotConfigured,
-                        detail: auto_detail,
-                    });
-                    if let Some((endpoints, age)) = cached {
-                        let age_str = if age < 3600 {
-                            format!("{}m ago", age / 60)
-                        } else if age < 86400 {
-                            format!("{}h ago", age / 3600)
-                        } else {
-                            format!("{}d ago", age / 86400)
-                        };
-                        for ep in &endpoints {
-                            routes.push(crate::provider::ModelRoute {
-                                model: model.clone(),
-                                provider: ep.provider_name.clone(),
-                                api_method: "openrouter".to_string(),
-                                available: auth.openrouter != crate::auth::AuthState::NotConfigured,
-                                detail: format!("{} ({})", ep.detail_string(), age_str),
-                            });
-                        }
-                    }
-                    continue;
-                }
-
-                let mut added_any = false;
-
-                if crate::provider::ALL_CLAUDE_MODELS.contains(&model.as_str()) {
-                    if auth.anthropic.has_oauth {
-                        let is_1m = model.ends_with("[1m]");
-                        let is_opus = model.contains("opus");
-                        let is_max = crate::auth::claude::is_max_subscription();
-                        let (available, detail) = if is_1m && !crate::usage::has_extra_usage() {
-                            (false, "requires extra usage".to_string())
-                        } else if is_opus && !is_max {
-                            (false, "requires Max subscription".to_string())
-                        } else {
-                            (true, String::new())
-                        };
-                        routes.push(crate::provider::ModelRoute {
-                            model: model.clone(),
-                            provider: "Anthropic".to_string(),
-                            api_method: "claude-oauth".to_string(),
-                            available,
-                            detail,
-                        });
-                        added_any = true;
-                    }
-                }
-
-                if crate::provider::ALL_OPENAI_MODELS.contains(&model.as_str()) {
-                    let availability = crate::provider::model_availability_for_account(model);
-                    let (available, detail) =
-                        if auth.openai == crate::auth::AuthState::NotConfigured {
-                            (false, "no credentials".to_string())
-                        } else {
-                            match availability.state {
-                                crate::provider::AccountModelAvailabilityState::Available => {
-                                    (true, String::new())
-                                }
-                                crate::provider::AccountModelAvailabilityState::Unavailable => (
-                                    false,
-                                    crate::provider::format_account_model_availability_detail(
-                                        &availability,
-                                    )
-                                    .unwrap_or_else(|| "not available".to_string()),
-                                ),
-                                crate::provider::AccountModelAvailabilityState::Unknown => {
-                                    let detail =
-                                        crate::provider::format_account_model_availability_detail(
-                                            &availability,
-                                        )
-                                        .unwrap_or_else(|| "availability unknown".to_string());
-                                    (true, detail)
-                                }
-                            }
-                        };
-                    routes.push(crate::provider::ModelRoute {
-                        model: model.clone(),
-                        provider: "OpenAI".to_string(),
-                        api_method: "openai-oauth".to_string(),
-                        available,
-                        detail,
-                    });
-                    added_any = true;
-                }
-
-                if auth.copilot == crate::auth::AuthState::Available && !model.contains("[1m]") {
-                    routes.push(crate::provider::ModelRoute {
-                        model: model.clone(),
-                        provider: "Copilot".to_string(),
-                        api_method: "copilot".to_string(),
-                        available: true,
-                        detail: String::new(),
-                    });
-                    added_any = true;
-                }
-
-                if !added_any {
-                    routes.push(crate::provider::ModelRoute {
-                        model: model.clone(),
-                        provider: "unknown".to_string(),
-                        api_method: "unknown".to_string(),
-                        available: false,
-                        detail: String::new(),
-                    });
-                }
+            if !self.remote_model_routes.is_empty() {
+                self.remote_model_routes.clone()
+            } else {
+                // Remote mode: build routes from available models + auth status
+                self.build_remote_model_routes_fallback()
             }
-            routes
         } else {
             self.provider.model_routes()
         };
@@ -11244,6 +11132,141 @@ impl App {
         });
         self.input.clear();
         self.cursor_pos = 0;
+    }
+
+    fn build_remote_model_routes_fallback(&self) -> Vec<crate::provider::ModelRoute> {
+        let auth = crate::auth::AuthStatus::check();
+        let mut routes = Vec::new();
+        for model in &self.remote_available_models {
+            if model.contains('/') {
+                let cached = crate::provider::openrouter::load_endpoints_disk_cache_public(model);
+                let auto_detail = cached
+                    .as_ref()
+                    .and_then(|(eps, _)| eps.first().map(|ep| format!("→ {}", ep.provider_name)))
+                    .unwrap_or_default();
+                routes.push(crate::provider::ModelRoute {
+                    model: model.clone(),
+                    provider: "auto".to_string(),
+                    api_method: "openrouter".to_string(),
+                    available: auth.openrouter != crate::auth::AuthState::NotConfigured,
+                    detail: auto_detail,
+                });
+                if let Some((endpoints, age)) = cached {
+                    let age_str = if age < 3600 {
+                        format!("{}m ago", age / 60)
+                    } else if age < 86400 {
+                        format!("{}h ago", age / 3600)
+                    } else {
+                        format!("{}d ago", age / 86400)
+                    };
+                    for ep in &endpoints {
+                        routes.push(crate::provider::ModelRoute {
+                            model: model.clone(),
+                            provider: ep.provider_name.clone(),
+                            api_method: "openrouter".to_string(),
+                            available: auth.openrouter != crate::auth::AuthState::NotConfigured,
+                            detail: format!("{} ({})", ep.detail_string(), age_str),
+                        });
+                    }
+                }
+                continue;
+            }
+
+            let mut added_any = false;
+
+            if crate::provider::ALL_CLAUDE_MODELS.contains(&model.as_str()) {
+                if auth.anthropic.has_oauth {
+                    let is_1m = model.ends_with("[1m]");
+                    let is_opus = model.contains("opus");
+                    let is_max = crate::auth::claude::is_max_subscription();
+                    let (available, detail) = if is_1m && !crate::usage::has_extra_usage() {
+                        (false, "requires extra usage".to_string())
+                    } else if is_opus && !is_max {
+                        (false, "requires Max subscription".to_string())
+                    } else {
+                        (true, String::new())
+                    };
+                    routes.push(crate::provider::ModelRoute {
+                        model: model.clone(),
+                        provider: "Anthropic".to_string(),
+                        api_method: "claude-oauth".to_string(),
+                        available,
+                        detail,
+                    });
+                    added_any = true;
+                }
+            }
+
+            if crate::provider::ALL_OPENAI_MODELS.contains(&model.as_str()) {
+                let availability = crate::provider::model_availability_for_account(model);
+                let (available, detail) = if auth.openai == crate::auth::AuthState::NotConfigured {
+                    (false, "no credentials".to_string())
+                } else {
+                    match availability.state {
+                        crate::provider::AccountModelAvailabilityState::Available => {
+                            (true, String::new())
+                        }
+                        crate::provider::AccountModelAvailabilityState::Unavailable => (
+                            false,
+                            crate::provider::format_account_model_availability_detail(
+                                &availability,
+                            )
+                            .unwrap_or_else(|| "not available".to_string()),
+                        ),
+                        crate::provider::AccountModelAvailabilityState::Unknown => {
+                            let detail = crate::provider::format_account_model_availability_detail(
+                                &availability,
+                            )
+                            .unwrap_or_else(|| "availability unknown".to_string());
+                            (true, detail)
+                        }
+                    }
+                };
+                routes.push(crate::provider::ModelRoute {
+                    model: model.clone(),
+                    provider: "OpenAI".to_string(),
+                    api_method: "openai-oauth".to_string(),
+                    available,
+                    detail,
+                });
+                added_any = true;
+            }
+
+            if Self::remote_model_should_offer_copilot_route(model) && !model.contains("[1m]") {
+                routes.push(crate::provider::ModelRoute {
+                    model: model.clone(),
+                    provider: "Copilot".to_string(),
+                    api_method: "copilot".to_string(),
+                    available: auth.copilot == crate::auth::AuthState::Available
+                        || Self::remote_model_is_server_copilot_only(model),
+                    detail: String::new(),
+                });
+                added_any = true;
+            }
+
+            if !added_any {
+                routes.push(crate::provider::ModelRoute {
+                    model: model.clone(),
+                    provider: "unknown".to_string(),
+                    api_method: "unknown".to_string(),
+                    available: false,
+                    detail: String::new(),
+                });
+            }
+        }
+        routes
+    }
+
+    fn remote_model_should_offer_copilot_route(model: &str) -> bool {
+        Self::remote_model_is_server_copilot_only(model)
+            || crate::provider::copilot::is_known_display_model(model)
+    }
+
+    fn remote_model_is_server_copilot_only(model: &str) -> bool {
+        !model.is_empty()
+            && !model.contains('/')
+            && !crate::provider::ALL_CLAUDE_MODELS.contains(&model)
+            && !crate::provider::ALL_OPENAI_MODELS.contains(&model)
     }
 
     /// Handle arrow/navigation keys when picker is in preview mode.

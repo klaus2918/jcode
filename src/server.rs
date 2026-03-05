@@ -1768,12 +1768,16 @@ async fn handle_client(
             // (fired when Copilot/OpenAI async init completes after History was already sent)
             bus_event = bus_rx.recv() => {
                 if matches!(bus_event, Ok(BusEvent::ModelsUpdated)) {
-                    let models = {
+                    let (models, model_routes) = {
                         let agent_guard = agent.lock().await;
-                        agent_guard.available_models_display()
+                        (
+                            agent_guard.available_models_display(),
+                            agent_guard.model_routes(),
+                        )
                     };
                     let _ = client_event_tx.send(ServerEvent::AvailableModelsUpdated {
                         available_models: models,
+                        available_model_routes: model_routes,
                     });
                 }
                 continue;
@@ -2349,6 +2353,7 @@ async fn handle_client(
                     provider_name,
                     provider_model,
                     available_models,
+                    available_model_routes,
                     tool_names,
                     upstream_provider,
                 ) = {
@@ -2359,6 +2364,7 @@ async fn handle_client(
                         agent_guard.provider_name(),
                         agent_guard.provider_model(),
                         agent_guard.available_models_display(),
+                        agent_guard.model_routes(),
                         agent_guard.tool_names().await,
                         agent_guard.last_upstream_provider(),
                     )
@@ -2399,6 +2405,7 @@ async fn handle_client(
                     provider_name: Some(provider_name),
                     provider_model: Some(provider_model),
                     available_models,
+                    available_model_routes,
                     mcp_servers,
                     skills,
                     total_tokens: None,
@@ -2608,6 +2615,7 @@ async fn handle_client(
                             provider_name,
                             provider_model,
                             available_models,
+                            available_model_routes,
                             tool_names,
                             upstream_provider,
                         ) = {
@@ -2618,6 +2626,7 @@ async fn handle_client(
                                 agent_guard.provider_name(),
                                 agent_guard.provider_model(),
                                 agent_guard.available_models_display(),
+                                agent_guard.model_routes(),
                                 agent_guard.tool_names().await,
                                 agent_guard.last_upstream_provider(),
                             )
@@ -2656,6 +2665,7 @@ async fn handle_client(
                             provider_name: Some(provider_name),
                             provider_model: Some(provider_model),
                             available_models,
+                            available_model_routes,
                             mcp_servers,
                             skills,
                             total_tokens: None,
@@ -2843,13 +2853,17 @@ async fn handle_client(
                             _ = tokio::time::sleep(remaining) => break,
                         }
                     }
-                    let models = {
+                    let (models, model_routes) = {
                         let agent_guard = agent_clone.lock().await;
-                        agent_guard.available_models_display()
+                        (
+                            agent_guard.available_models_display(),
+                            agent_guard.model_routes(),
+                        )
                     };
                     let _ = client_event_tx_clone.send(ServerEvent::AvailableModelsUpdated {
                         available_models: models,
                     });
+                        available_model_routes: model_routes,
                 });
                 let _ = client_event_tx.send(ServerEvent::Done { id });
             }

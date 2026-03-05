@@ -36,6 +36,10 @@ const FALLBACK_MODELS: &[&str] = &[
     "gpt-4.1",
 ];
 
+pub(crate) fn is_known_display_model(model: &str) -> bool {
+    FALLBACK_MODELS.contains(&model)
+}
+
 /// Context window sizes for Copilot models
 fn copilot_context_window(model: &str) -> usize {
     match model {

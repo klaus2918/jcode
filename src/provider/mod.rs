@@ -20,6 +20,7 @@ use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,7 +34,7 @@ pub use claude::{NativeToolResult, NativeToolResultSender};
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 
 /// A single route to access a model: model + provider + API method
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRoute {
     pub model: String,
     pub provider: String,
