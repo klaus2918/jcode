@@ -116,46 +116,89 @@ impl AuthStatus {
         }
     }
 
-    pub fn method_detail_for_provider(&self, provider: LoginProviderDescriptor) -> String {
-        match provider.auth_state_key {
-            LoginProviderAuthStateKey::Anthropic => {
-                let detail = if self.anthropic.has_oauth && self.anthropic.has_api_key {
-                    "OAuth + API key"
-                } else if self.anthropic.has_oauth {
-                    "OAuth"
-                } else if self.anthropic.has_api_key {
-                    "API key"
+    pub fn state_for_provider(&self, provider: LoginProviderDescriptor) -> AuthState {
+        match provider.target {
+            crate::provider_catalog::LoginProviderTarget::OpenRouter => {
+                if api_key_available("OPENROUTER_API_KEY", "openrouter.env") {
+                    AuthState::Available
                 } else {
-                    "not configured"
-                };
-
-                let accounts = crate::auth::claude::list_accounts().unwrap_or_default();
-                if accounts.len() > 1 {
-                    let active = crate::auth::claude::active_account_label()
-                        .unwrap_or_else(|| "?".to_string());
-                    format!(
-                        "{detail} ({} accounts, active: `{}`)",
-                        accounts.len(),
-                        active
-                    )
-                } else if accounts.len() == 1 {
-                    format!("{detail} (account: `{}`)", accounts[0].label)
-                } else {
-                    detail.to_string()
+                    AuthState::NotConfigured
                 }
             }
-            LoginProviderAuthStateKey::OpenAi => {
-                if self.openai_has_oauth && self.openai_has_api_key {
-                    "OAuth + API key".to_string()
-                } else if self.openai_has_oauth {
-                    "OAuth".to_string()
-                } else if self.openai_has_api_key {
-                    "API key".to_string()
+            crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
+                let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
+                if crate::provider_catalog::load_api_key_from_env_or_config(
+                    &resolved.api_key_env,
+                    &resolved.env_file,
+                )
+                .is_some()
+                {
+                    AuthState::Available
+                } else {
+                    AuthState::NotConfigured
+                }
+            }
+            _ => self.state_for_key(provider.auth_state_key),
+        }
+    }
+
+    pub fn method_detail_for_provider(&self, provider: LoginProviderDescriptor) -> String {
+        match provider.target {
+            crate::provider_catalog::LoginProviderTarget::OpenRouter => {
+                if self.state_for_provider(provider) == AuthState::Available {
+                    "API key (`OPENROUTER_API_KEY`)".to_string()
                 } else {
                     "not configured".to_string()
                 }
             }
-            _ => provider.auth_status_method.to_string(),
+            crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
+                let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
+                if self.state_for_provider(provider) == AuthState::Available {
+                    format!("API key (`{}`)", resolved.api_key_env)
+                } else {
+                    "not configured".to_string()
+                }
+            }
+            _ => match provider.auth_state_key {
+                LoginProviderAuthStateKey::Anthropic => {
+                    let detail = if self.anthropic.has_oauth && self.anthropic.has_api_key {
+                        "OAuth + API key"
+                    } else if self.anthropic.has_oauth {
+                        "OAuth"
+                    } else if self.anthropic.has_api_key {
+                        "API key"
+                    } else {
+                        "not configured"
+                    };
+
+                    let accounts = crate::auth::claude::list_accounts().unwrap_or_default();
+                    if accounts.len() > 1 {
+                        let active = crate::auth::claude::active_account_label()
+                            .unwrap_or_else(|| "?".to_string());
+                        format!(
+                            "{detail} ({} accounts, active: `{}`)",
+                            accounts.len(),
+                            active
+                        )
+                    } else if accounts.len() == 1 {
+                        format!("{detail} (account: `{}`)", accounts[0].label)
+                    } else {
+                        detail.to_string()
+                    }
+                }
+                LoginProviderAuthStateKey::OpenAi => {
+                    if self.openai_has_oauth && self.openai_has_api_key {
+                        "OAuth + API key".to_string()
+                    } else if self.openai_has_oauth {
+                        "OAuth".to_string()
+                    } else if self.openai_has_api_key {
+                        "API key".to_string()
+                    } else {
+                        "not configured".to_string()
+                    }
+                }
+                _ => provider.auth_status_method.to_string(),
+            },
         }
     }
 
@@ -672,6 +715,35 @@ mod tests {
         if status.copilot_has_api_token {
             assert_eq!(status.copilot, AuthState::Available);
         }
+    }
+
+    #[test]
+    fn openrouter_like_status_is_provider_specific() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let prev_chutes = std::env::var_os("CHUTES_API_KEY");
+        let prev_opencode = std::env::var_os("OPENCODE_API_KEY");
+
+        std::env::set_var("CHUTES_API_KEY", "chutes-test-key");
+        std::env::remove_var("OPENCODE_API_KEY");
+        AuthStatus::invalidate_cache();
+
+        let status = AuthStatus::check();
+        assert_eq!(
+            status.state_for_provider(crate::provider_catalog::CHUTES_LOGIN_PROVIDER),
+            AuthState::Available
+        );
+        assert_eq!(
+            status.state_for_provider(crate::provider_catalog::OPENCODE_LOGIN_PROVIDER),
+            AuthState::NotConfigured
+        );
+        assert_eq!(
+            status.method_detail_for_provider(crate::provider_catalog::CHUTES_LOGIN_PROVIDER),
+            "API key (`CHUTES_API_KEY`)".to_string()
+        );
+
+        restore_env_var("CHUTES_API_KEY", prev_chutes);
+        restore_env_var("OPENCODE_API_KEY", prev_opencode);
+        AuthStatus::invalidate_cache();
     }
 
     #[cfg(unix)]

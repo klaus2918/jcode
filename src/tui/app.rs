@@ -9667,7 +9667,7 @@ impl App {
             message.push_str(&format!(
                 "| {} | {} | {} |\n",
                 provider.display_name,
-                icon(status.state_for_key(provider.auth_state_key)),
+                icon(status.state_for_provider(provider)),
                 status.method_detail_for_provider(provider),
             ));
         }
@@ -9691,7 +9691,7 @@ impl App {
             "**Login** - select a provider:\n\n| # | Provider | Auth | Status |\n|---|----------|------|--------|\n",
         );
         for (index, provider) in providers.iter().enumerate() {
-            let state = status.state_for_key(provider.auth_state_key);
+            let state = status.state_for_provider(*provider);
             let _ = writeln!(
                 &mut message,
                 "| {} | {} | {} | {} |",
