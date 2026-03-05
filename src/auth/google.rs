@@ -64,22 +64,16 @@ impl GoogleTokens {
     }
 }
 
-fn credentials_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".jcode")
-        .join("google_credentials.json")
+pub fn credentials_path() -> Result<std::path::PathBuf> {
+    Ok(crate::storage::jcode_dir()?.join("google_credentials.json"))
 }
 
-fn tokens_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".jcode")
-        .join("google_oauth.json")
+pub fn tokens_path() -> Result<std::path::PathBuf> {
+    Ok(crate::storage::jcode_dir()?.join("google_oauth.json"))
 }
 
 pub fn load_credentials() -> Result<GoogleCredentials> {
-    let path = credentials_path();
+    let path = credentials_path()?;
     let data = match std::fs::read_to_string(&path) {
         Ok(d) => d,
         Err(_) => return Err(anyhow::anyhow!("no_credentials")),
@@ -113,7 +107,7 @@ pub fn load_credentials() -> Result<GoogleCredentials> {
 }
 
 pub fn save_credentials(creds: &GoogleCredentials) -> Result<()> {
-    let path = credentials_path();
+    let path = credentials_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         crate::platform::set_directory_permissions_owner_only(parent)?;
@@ -125,7 +119,7 @@ pub fn save_credentials(creds: &GoogleCredentials) -> Result<()> {
 }
 
 pub fn load_tokens() -> Result<GoogleTokens> {
-    let path = tokens_path();
+    let path = tokens_path()?;
     let data = std::fs::read_to_string(&path)
         .map_err(|_| anyhow::anyhow!("No Google tokens found. Run `jcode login google` first."))?;
     let tokens: GoogleTokens = serde_json::from_str(&data)?;
@@ -133,7 +127,7 @@ pub fn load_tokens() -> Result<GoogleTokens> {
 }
 
 pub fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
-    let path = tokens_path();
+    let path = tokens_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         crate::platform::set_directory_permissions_owner_only(parent)?;
@@ -145,7 +139,7 @@ pub fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
 }
 
 pub fn has_tokens() -> bool {
-    tokens_path().exists()
+    tokens_path().map(|path| path.exists()).unwrap_or(false)
 }
 
 pub async fn login(tier: GmailAccessTier) -> Result<GoogleTokens> {

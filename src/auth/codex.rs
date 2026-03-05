@@ -30,8 +30,7 @@ struct Tokens {
 }
 
 fn auth_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not find home directory")?;
-    Ok(home.join(".codex").join("auth.json"))
+    crate::storage::user_home_path(".codex/auth.json")
 }
 
 pub fn load_credentials() -> Result<CodexCredentials> {

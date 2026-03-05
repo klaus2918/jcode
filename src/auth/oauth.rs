@@ -763,10 +763,12 @@ pub async fn refresh_claude_tokens_for_account(
 
 /// Save OpenAI tokens to auth file
 pub fn save_openai_tokens(tokens: &OAuthTokens) -> Result<()> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
-    let creds_dir = home.join(".codex");
-    std::fs::create_dir_all(&creds_dir)?;
-    crate::platform::set_directory_permissions_owner_only(&creds_dir)?;
+    let auth_path = crate::storage::user_home_path(".codex/auth.json")?;
+    let creds_dir = auth_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("OpenAI auth path has no parent directory"))?;
+    std::fs::create_dir_all(creds_dir)?;
+    crate::platform::set_directory_permissions_owner_only(creds_dir)?;
 
     #[derive(Serialize)]
     struct AuthFile {
@@ -792,7 +794,6 @@ pub fn save_openai_tokens(tokens: &OAuthTokens) -> Result<()> {
     };
 
     let json = serde_json::to_string_pretty(&auth)?;
-    let auth_path = creds_dir.join("auth.json");
     std::fs::write(&auth_path, json)?;
     crate::platform::set_permissions_owner_only(&auth_path)?;
 
@@ -1018,6 +1019,33 @@ async fn refresh_tokens_at_url(token_url: &str, refresh_token: &str) -> Result<O
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn pkce_verifier_and_challenge_are_different() {
@@ -1095,6 +1123,35 @@ mod tests {
         assert!(!json.contains("id_token"));
         let parsed: OAuthTokens = serde_json::from_str(&json).unwrap();
         assert!(parsed.id_token.is_none());
+    }
+
+    #[test]
+    fn save_openai_tokens_uses_jcode_home_sandbox() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+
+        let tokens = OAuthTokens {
+            access_token: "at_sandbox".to_string(),
+            refresh_token: "rt_sandbox".to_string(),
+            expires_at: 1234567890,
+            id_token: Some("id_sandbox".to_string()),
+        };
+
+        save_openai_tokens(&tokens).unwrap();
+
+        let auth_path = temp
+            .path()
+            .join("external")
+            .join(".codex")
+            .join("auth.json");
+        assert!(auth_path.exists(), "expected {}", auth_path.display());
+
+        let creds = crate::auth::codex::load_credentials().unwrap();
+        assert_eq!(creds.access_token, "at_sandbox");
+        assert_eq!(creds.refresh_token, "rt_sandbox");
+        assert_eq!(creds.id_token.as_deref(), Some("id_sandbox"));
+        assert_eq!(creds.expires_at, Some(1234567890));
     }
 
     #[test]

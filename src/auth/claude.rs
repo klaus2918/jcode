@@ -97,22 +97,15 @@ struct OpenCodeAnthropicAuth {
 }
 
 fn claude_code_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not find home directory")?;
-    Ok(home.join(".claude").join(".credentials.json"))
+    crate::storage::user_home_path(".claude/.credentials.json")
 }
 
 fn opencode_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not find home directory")?;
-    Ok(home
-        .join(".local")
-        .join("share")
-        .join("opencode")
-        .join("auth.json"))
+    crate::storage::user_home_path(".local/share/opencode/auth.json")
 }
 
 pub fn jcode_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not find home directory")?;
-    Ok(home.join(".jcode").join("auth.json"))
+    Ok(crate::storage::jcode_dir()?.join("auth.json"))
 }
 
 // ---- Multi-account helpers ----
@@ -155,9 +148,12 @@ pub fn load_auth_file() -> Result<JcodeAuthFile> {
 
 /// Write the jcode auth file (multi-account format).
 pub fn save_auth_file(auth: &JcodeAuthFile) -> Result<()> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
-    let creds_dir = home.join(".jcode");
-    std::fs::create_dir_all(&creds_dir)?;
+    let auth_path = jcode_path()?;
+    let creds_dir = auth_path
+        .parent()
+        .context("jcode auth path has no parent directory")?;
+    std::fs::create_dir_all(creds_dir)?;
+    crate::platform::set_directory_permissions_owner_only(creds_dir)?;
 
     let clean = JcodeAuthFile {
         anthropic_accounts: auth.anthropic_accounts.clone(),
@@ -166,7 +162,6 @@ pub fn save_auth_file(auth: &JcodeAuthFile) -> Result<()> {
     };
 
     let json = serde_json::to_string_pretty(&clean)?;
-    let auth_path = creds_dir.join("auth.json");
     std::fs::write(&auth_path, json)?;
     crate::platform::set_permissions_owner_only(&auth_path)?;
     Ok(())
@@ -434,6 +429,33 @@ pub fn load_opencode_credentials() -> Result<ClaudeCredentials> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn jcode_auth_file_default_is_empty() {
@@ -464,6 +486,31 @@ mod tests {
         assert_eq!(parsed.anthropic_accounts[0].label, "work");
         assert_eq!(parsed.anthropic_accounts[0].access, "acc_123");
         assert_eq!(parsed.active_anthropic_account, Some("work".to_string()));
+    }
+
+    #[test]
+    fn jcode_path_respects_jcode_home() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+
+        assert_eq!(jcode_path().unwrap(), temp.path().join("auth.json"));
+        assert_eq!(
+            claude_code_path().unwrap(),
+            temp.path()
+                .join("external")
+                .join(".claude")
+                .join(".credentials.json")
+        );
+        assert_eq!(
+            opencode_path().unwrap(),
+            temp.path()
+                .join("external")
+                .join(".local")
+                .join("share")
+                .join("opencode")
+                .join("auth.json")
+        );
     }
 
     #[test]

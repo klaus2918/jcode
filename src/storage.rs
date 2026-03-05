@@ -1,7 +1,6 @@
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Platform-aware runtime directory for sockets and ephemeral state.
@@ -36,15 +35,145 @@ pub fn jcode_dir() -> Result<PathBuf> {
     Ok(home.join(".jcode"))
 }
 
+/// Resolve a path under the user's home directory, but sandbox it under
+/// `$JCODE_HOME/external/` when `JCODE_HOME` is set.
+///
+/// This keeps external provider auth files isolated during tests and sandboxed
+/// runs without changing default on-disk locations for normal users.
+pub fn user_home_path(relative: impl AsRef<Path>) -> Result<PathBuf> {
+    let relative = relative.as_ref();
+    if relative.is_absolute() {
+        anyhow::bail!(
+            "user_home_path expects a relative path, got {}",
+            relative.display()
+        );
+    }
+
+    if let Ok(path) = std::env::var("JCODE_HOME") {
+        return Ok(PathBuf::from(path).join("external").join(relative));
+    }
+
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
+    Ok(home.join(relative))
+}
+
+/// Best-effort startup hardening for local config dirs that may store credentials.
+///
+/// This intentionally ignores failures so startup does not fail on exotic
+/// filesystems, but it narrows exposure on typical Unix systems.
+pub fn harden_user_config_permissions() {
+    if let Some(config_dir) = dirs::config_dir() {
+        let jcode_config_dir = config_dir.join("jcode");
+        if jcode_config_dir.exists() {
+            let _ = crate::platform::set_directory_permissions_owner_only(&jcode_config_dir);
+        }
+    }
+
+    if let Ok(jcode_home) = jcode_dir() {
+        if jcode_home.exists() {
+            let _ = crate::platform::set_directory_permissions_owner_only(&jcode_home);
+        }
+    }
+}
+
+/// Best-effort hardening for a secret-bearing file and its parent directory.
+///
+/// This is used before reading credential files so legacy permissive modes can
+/// be tightened opportunistically.
+pub fn harden_secret_file_permissions(path: &Path) {
+    if let Some(parent) = path.parent() {
+        let _ = crate::platform::set_directory_permissions_owner_only(parent);
+    }
+    if path.exists() {
+        let _ = crate::platform::set_permissions_owner_only(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(unix)]
+    #[test]
+    fn harden_secret_file_permissions_sets_owner_only_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let secret_dir = dir.path().join("jcode");
+        std::fs::create_dir_all(&secret_dir).expect("create secret dir");
+
+        let secret_file = secret_dir.join("openrouter.env");
+        std::fs::write(&secret_file, "OPENROUTER_API_KEY=sk-or-v1-test\n")
+            .expect("write secret file");
+
+        std::fs::set_permissions(&secret_dir, std::fs::Permissions::from_mode(0o755))
+            .expect("set initial dir perms");
+        std::fs::set_permissions(&secret_file, std::fs::Permissions::from_mode(0o644))
+            .expect("set initial file perms");
+
+        harden_secret_file_permissions(&secret_file);
+
+        let dir_mode = std::fs::metadata(&secret_dir)
+            .expect("stat dir")
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&secret_file)
+            .expect("stat file")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
+    }
+
+    #[test]
+    fn user_home_path_uses_external_dir_under_jcode_home() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = tempfile::TempDir::new().expect("create temp dir");
+        std::env::set_var("JCODE_HOME", temp.path());
+
+        let resolved = user_home_path(".codex/auth.json").expect("resolve user home path");
+        assert_eq!(
+            resolved,
+            temp.path()
+                .join("external")
+                .join(".codex")
+                .join("auth.json")
+        );
+
+        if let Some(prev_home) = prev_home {
+            std::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            std::env::remove_var("JCODE_HOME");
+        }
+    }
+}
+
 pub fn ensure_dir(path: &Path) -> Result<()> {
     if !path.exists() {
         std::fs::create_dir_all(path)?;
+        crate::platform::set_directory_permissions_owner_only(path)?;
     }
     Ok(())
 }
 
 pub fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> {
     write_json_inner(path, value, true)
+}
+
+pub fn write_json_secret<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> {
+    write_json_inner(path, value, true)?;
+    if let Some(parent) = path.parent() {
+        crate::platform::set_directory_permissions_owner_only(parent)?;
+    }
+    crate::platform::set_permissions_owner_only(path)?;
+    Ok(())
 }
 
 /// Fast JSON write: atomic rename but no fsync. Good for frequent saves where
