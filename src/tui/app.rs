@@ -8364,13 +8364,13 @@ impl App {
             .strip_prefix("/login ")
             .or_else(|| trimmed.strip_prefix("/auth "))
         {
-            if let Some(provider) = crate::provider_catalog::resolve_login_selection(
-                provider,
-                crate::provider_catalog::tui_login_providers(),
-            ) {
+            let providers = crate::provider_catalog::tui_login_providers();
+            if let Some(provider) =
+                crate::provider_catalog::resolve_login_selection(provider, &providers)
+            {
                 self.start_login_provider(provider);
             } else {
-                let valid = crate::provider_catalog::tui_login_providers()
+                let valid = providers
                     .iter()
                     .map(|provider| provider.id)
                     .collect::<Vec<_>>()
@@ -9653,73 +9653,22 @@ impl App {
             crate::auth::AuthState::Expired => "⚠ expired",
             crate::auth::AuthState::NotConfigured => "✗",
         };
-
-        let claude_detail = if status.anthropic.has_oauth && status.anthropic.has_api_key {
-            "OAuth + API key"
-        } else if status.anthropic.has_oauth {
-            "OAuth"
-        } else if status.anthropic.has_api_key {
-            "API key"
-        } else {
-            "not configured"
-        };
-
-        let openai_detail = if status.openai_has_oauth && status.openai_has_api_key {
-            "OAuth + API key"
-        } else if status.openai_has_oauth {
-            "OAuth"
-        } else if status.openai_has_api_key {
-            "API key"
-        } else {
-            "not configured"
-        };
-
-        let account_info = {
-            let accounts = crate::auth::claude::list_accounts().unwrap_or_default();
-            if accounts.len() > 1 {
-                let active =
-                    crate::auth::claude::active_account_label().unwrap_or_else(|| "?".to_string());
-                format!(" ({} accounts, active: `{}`)", accounts.len(), active)
-            } else if accounts.len() == 1 {
-                format!(" (account: `{}`)", accounts[0].label)
-            } else {
-                String::new()
-            }
-        };
-
-        self.push_display_message(DisplayMessage::system(format!(
-            "**Authentication Status:**\n\n\
-             | Provider | Status | Method |\n\
-             |----------|--------|--------|\n\
-             | Anthropic | {} | {}{} |\n\
-             | OpenAI | {} | {} |\n\
-             | OpenRouter | {} | API key |\n\
-             | OpenCode Zen | {} | API key |\n\
-             | OpenCode Go | {} | API key |\n\
-             | Z.AI Coding | {} | API key |\n\
-             | Chutes | {} | API key |\n\
-             | Cerebras | {} | API key |\n\
-             | OpenAI-compatible | {} | API key |\n\
-             | Copilot | {} | CLI login |\n\
-             | Antigravity | {} | CLI login |\n\
-             | Cursor | {} | API key / CLI |\n\n\
-             Use `/login <provider>` to authenticate, `/account` to manage Anthropic accounts.",
-            icon(status.anthropic.state),
-            claude_detail,
-            account_info,
-            icon(status.openai),
-            openai_detail,
-            icon(status.openrouter),
-            icon(status.openrouter),
-            icon(status.openrouter),
-            icon(status.openrouter),
-            icon(status.openrouter),
-            icon(status.openrouter),
-            icon(status.openrouter),
-            icon(status.copilot),
-            icon(status.antigravity),
-            icon(status.cursor),
-        )));
+        let providers = crate::provider_catalog::auth_status_login_providers();
+        let mut message = String::from(
+            "**Authentication Status:**\n\n| Provider | Status | Method |\n|----------|--------|--------|\n",
+        );
+        for provider in providers {
+            message.push_str(&format!(
+                "| {} | {} | {} |\n",
+                provider.display_name,
+                icon(status.state_for_key(provider.auth_state_key)),
+                status.method_detail_for_provider(provider),
+            ));
+        }
+        message.push_str(
+            "\nUse `/login <provider>` to authenticate, `/account` to manage Anthropic accounts.",
+        );
+        self.push_display_message(DisplayMessage::system(message));
     }
 
     fn show_interactive_login(&mut self) {
@@ -9736,7 +9685,7 @@ impl App {
             "**Login** - select a provider:\n\n| # | Provider | Auth | Status |\n|---|----------|------|--------|\n",
         );
         for (index, provider) in providers.iter().enumerate() {
-            let state = Self::auth_state_for_login_provider(&status, *provider);
+            let state = status.state_for_key(provider.auth_state_key);
             let _ = writeln!(
                 &mut message,
                 "| {} | {} | {} | {} |",
@@ -9753,24 +9702,6 @@ impl App {
         );
         self.push_display_message(DisplayMessage::system(message));
         self.pending_login = Some(PendingLogin::ProviderSelection);
-    }
-
-    fn auth_state_for_login_provider(
-        status: &crate::auth::AuthStatus,
-        provider: crate::provider_catalog::LoginProviderDescriptor,
-    ) -> crate::auth::AuthState {
-        match provider.target {
-            crate::provider_catalog::LoginProviderTarget::Claude => status.anthropic.state,
-            crate::provider_catalog::LoginProviderTarget::OpenAi => status.openai,
-            crate::provider_catalog::LoginProviderTarget::OpenRouter
-            | crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(_) => {
-                status.openrouter
-            }
-            crate::provider_catalog::LoginProviderTarget::Cursor => status.cursor,
-            crate::provider_catalog::LoginProviderTarget::Copilot => status.copilot,
-            crate::provider_catalog::LoginProviderTarget::Antigravity => status.antigravity,
-            crate::provider_catalog::LoginProviderTarget::Google => status.google,
-        }
     }
 
     fn start_login_provider(&mut self, provider: crate::provider_catalog::LoginProviderDescriptor) {
@@ -10719,7 +10650,7 @@ impl App {
             PendingLogin::ProviderSelection => {
                 let providers = crate::provider_catalog::tui_login_providers();
                 if let Some(provider) =
-                    crate::provider_catalog::resolve_login_selection(&input, providers)
+                    crate::provider_catalog::resolve_login_selection(&input, &providers)
                 {
                     self.start_login_provider(provider);
                 } else {

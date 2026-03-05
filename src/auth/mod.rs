@@ -6,6 +6,8 @@ pub mod google;
 pub mod oauth;
 
 use crate::provider_catalog::openrouter_like_api_key_sources;
+use crate::provider_catalog::LoginProviderAuthStateKey;
+use crate::provider_catalog::LoginProviderDescriptor;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::Instant;
@@ -100,6 +102,61 @@ impl AuthStatus {
             || self.copilot == AuthState::Available
             || self.antigravity == AuthState::Available
             || self.cursor == AuthState::Available
+    }
+
+    pub fn state_for_key(&self, key: LoginProviderAuthStateKey) -> AuthState {
+        match key {
+            LoginProviderAuthStateKey::Anthropic => self.anthropic.state,
+            LoginProviderAuthStateKey::OpenAi => self.openai,
+            LoginProviderAuthStateKey::OpenRouterLike => self.openrouter,
+            LoginProviderAuthStateKey::Copilot => self.copilot,
+            LoginProviderAuthStateKey::Antigravity => self.antigravity,
+            LoginProviderAuthStateKey::Cursor => self.cursor,
+            LoginProviderAuthStateKey::Google => self.google,
+        }
+    }
+
+    pub fn method_detail_for_provider(&self, provider: LoginProviderDescriptor) -> String {
+        match provider.auth_state_key {
+            LoginProviderAuthStateKey::Anthropic => {
+                let detail = if self.anthropic.has_oauth && self.anthropic.has_api_key {
+                    "OAuth + API key"
+                } else if self.anthropic.has_oauth {
+                    "OAuth"
+                } else if self.anthropic.has_api_key {
+                    "API key"
+                } else {
+                    "not configured"
+                };
+
+                let accounts = crate::auth::claude::list_accounts().unwrap_or_default();
+                if accounts.len() > 1 {
+                    let active = crate::auth::claude::active_account_label()
+                        .unwrap_or_else(|| "?".to_string());
+                    format!(
+                        "{detail} ({} accounts, active: `{}`)",
+                        accounts.len(),
+                        active
+                    )
+                } else if accounts.len() == 1 {
+                    format!("{detail} (account: `{}`)", accounts[0].label)
+                } else {
+                    detail.to_string()
+                }
+            }
+            LoginProviderAuthStateKey::OpenAi => {
+                if self.openai_has_oauth && self.openai_has_api_key {
+                    "OAuth + API key".to_string()
+                } else if self.openai_has_oauth {
+                    "OAuth".to_string()
+                } else if self.openai_has_api_key {
+                    "API key".to_string()
+                } else {
+                    "not configured".to_string()
+                }
+            }
+            _ => provider.auth_status_method.to_string(),
+        }
     }
 
     /// Invalidate the cached auth status so the next `check()` does a fresh probe.
