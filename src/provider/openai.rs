@@ -230,47 +230,6 @@ impl OpenAIProvider {
         }
     }
 
-    async fn get_access_token(&self) -> Result<String> {
-        let tokens = self.credentials.read().await;
-        if tokens.access_token.is_empty() {
-            anyhow::bail!("OpenAI access token is empty");
-        }
-
-        if let Some(expires_at) = tokens.expires_at {
-            let now = chrono::Utc::now().timestamp_millis();
-            if expires_at < now + 300_000 && !tokens.refresh_token.is_empty() {
-                drop(tokens);
-                return self.refresh_access_token().await;
-            }
-        }
-
-        Ok(tokens.access_token.clone())
-    }
-
-    async fn refresh_access_token(&self) -> Result<String> {
-        let mut tokens = self.credentials.write().await;
-        if tokens.refresh_token.is_empty() {
-            anyhow::bail!("OpenAI refresh token is missing");
-        }
-
-        let refreshed = oauth::refresh_openai_tokens(&tokens.refresh_token).await?;
-        let id_token = refreshed
-            .id_token
-            .clone()
-            .or_else(|| tokens.id_token.clone());
-        let account_id = tokens.account_id.clone();
-
-        *tokens = CodexCredentials {
-            access_token: refreshed.access_token,
-            refresh_token: refreshed.refresh_token,
-            id_token,
-            account_id,
-            expires_at: Some(refreshed.expires_at),
-        };
-
-        Ok(tokens.access_token.clone())
-    }
-
     fn is_chatgpt_mode(credentials: &CodexCredentials) -> bool {
         !credentials.refresh_token.is_empty() || credentials.id_token.is_some()
     }
@@ -405,28 +364,6 @@ impl OpenAIProvider {
         current
     }
 
-    async fn send_request(&self, request: &Value, access_token: &str) -> Result<reqwest::Response> {
-        let credentials = self.credentials.read().await;
-        let url = Self::responses_url(&credentials);
-        let mut builder = self
-            .client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", access_token))
-            .header("Content-Type", "application/json");
-
-        if Self::is_chatgpt_mode(&credentials) {
-            builder = builder.header("originator", ORIGINATOR);
-            if let Some(account_id) = credentials.account_id.as_ref() {
-                builder = builder.header("chatgpt-account-id", account_id);
-            }
-        }
-
-        builder
-            .json(request)
-            .send()
-            .await
-            .context("Failed to send request to OpenAI API")
-    }
 }
 
 fn extract_selfdev_section(system: &str) -> Option<&str> {
@@ -1399,9 +1336,6 @@ impl OpenAIResponsesStream {
         None
     }
 
-    fn handle_output_item(&mut self, item: Value) -> Option<StreamEvent> {
-        handle_openai_output_item(item, &mut self.saw_text_delta, &mut self.pending)
-    }
 }
 
 fn extract_cached_input_tokens(usage: &Value) -> Option<u64> {
