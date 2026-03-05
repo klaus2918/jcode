@@ -10210,85 +10210,40 @@ impl App {
     }
 
     fn start_opencode_login(&mut self) {
-        self.start_api_key_login(
-            "OpenCode Zen",
-            "https://opencode.ai/docs/providers#opencode-zen",
-            "opencode.env",
-            "OPENCODE_API_KEY",
-            Some("qwen/qwen3-coder-plus"),
-        );
+        self.start_openai_compatible_profile_login(crate::provider_catalog::OPENCODE_PROFILE);
     }
 
     fn start_opencode_go_login(&mut self) {
-        self.start_api_key_login(
-            "OpenCode Go",
-            "https://opencode.ai/docs/providers#opencode-go",
-            "opencode-go.env",
-            "OPENCODE_GO_API_KEY",
-            Some("THUDM/GLM-4.5"),
-        );
+        self.start_openai_compatible_profile_login(crate::provider_catalog::OPENCODE_GO_PROFILE);
     }
 
     fn start_zai_login(&mut self) {
-        self.start_api_key_login(
-            "Z.AI Coding",
-            "https://docs.z.ai/guides/develop/openai/introduction",
-            "zai.env",
-            "ZAI_API_KEY",
-            Some("glm-4.5"),
-        );
+        self.start_openai_compatible_profile_login(crate::provider_catalog::ZAI_PROFILE);
     }
 
     fn start_chutes_login(&mut self) {
-        self.start_api_key_login(
-            "Chutes",
-            "https://chutes.ai",
-            "chutes.env",
-            "CHUTES_API_KEY",
-            Some("Qwen/Qwen3-Coder-480B-A35B-Instruct"),
-        );
+        self.start_openai_compatible_profile_login(crate::provider_catalog::CHUTES_PROFILE);
     }
 
     fn start_cerebras_login(&mut self) {
-        self.start_api_key_login(
-            "Cerebras",
-            "https://inference-docs.cerebras.ai/introduction",
-            "cerebras.env",
-            "CEREBRAS_API_KEY",
-            Some("qwen-3-coder-480b"),
-        );
+        self.start_openai_compatible_profile_login(crate::provider_catalog::CEREBRAS_PROFILE);
     }
 
     fn start_openai_compatible_login(&mut self) {
-        let docs_url = std::env::var("JCODE_OPENAI_COMPAT_SETUP_URL")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| "https://opencode.ai/docs/providers#custom-providers".to_string());
+        self.start_openai_compatible_profile_login(crate::provider_catalog::OPENAI_COMPAT_PROFILE);
+    }
 
-        let key_name = std::env::var("JCODE_OPENAI_COMPAT_API_KEY_NAME")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| Self::is_safe_env_key_name(v))
-            .unwrap_or_else(|| "OPENAI_COMPAT_API_KEY".to_string());
-
-        let env_file = std::env::var("JCODE_OPENAI_COMPAT_ENV_FILE")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| Self::is_safe_env_file_name(v))
-            .unwrap_or_else(|| "openai-compatible.env".to_string());
-
-        let default_model = std::env::var("JCODE_OPENAI_COMPAT_DEFAULT_MODEL")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
-
+    fn start_openai_compatible_profile_login(
+        &mut self,
+        profile: crate::provider_catalog::OpenAiCompatibleProfile,
+    ) {
+        let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
         self.start_api_key_login(
-            "OpenAI-compatible",
-            &docs_url,
-            &env_file,
-            &key_name,
-            default_model.as_deref(),
+            &resolved.display_name,
+            &resolved.setup_url,
+            &resolved.env_file,
+            &resolved.api_key_env,
+            resolved.default_model.as_deref(),
         );
     }
 
@@ -10848,10 +10803,10 @@ impl App {
     }
 
     fn save_named_api_key(env_file: &str, key_name: &str, key: &str) -> anyhow::Result<()> {
-        if !Self::is_safe_env_key_name(key_name) {
+        if !crate::provider_catalog::is_safe_env_key_name(key_name) {
             anyhow::bail!("Invalid API key variable name: {}", key_name);
         }
-        if !Self::is_safe_env_file_name(env_file) {
+        if !crate::provider_catalog::is_safe_env_file_name(env_file) {
             anyhow::bail!("Invalid env file name: {}", env_file);
         }
 
@@ -10869,22 +10824,6 @@ impl App {
 
         std::env::set_var(key_name, key);
         Ok(())
-    }
-
-    fn is_safe_env_key_name(name: &str) -> bool {
-        !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-    }
-
-    fn is_safe_env_file_name(name: &str) -> bool {
-        !name.is_empty()
-            && !name.contains('/')
-            && !name.contains('\\')
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
     }
 
     fn model_picker_preview_filter(input: &str) -> Option<String> {

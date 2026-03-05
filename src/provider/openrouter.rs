@@ -14,6 +14,10 @@ use crate::message::{
     CacheControl, ContentBlock, Message, Role, StreamEvent, ToolDefinition,
     TOOL_OUTPUT_MISSING_TEXT,
 };
+use crate::provider_catalog::{
+    is_safe_env_file_name, is_safe_env_key_name, load_api_key_from_env_or_config,
+    normalize_api_base,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -86,40 +90,13 @@ fn configured_api_base() -> String {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_API_BASE.to_string());
-    let trimmed = raw.trim();
-
-    let parsed = match reqwest::Url::parse(trimmed) {
-        Ok(url) => url,
-        Err(_) => {
-            crate::logging::warn(&format!(
-                "Ignoring invalid JCODE_OPENROUTER_API_BASE '{}'; using {}",
-                raw, DEFAULT_API_BASE
-            ));
-            return DEFAULT_API_BASE.to_string();
-        }
-    };
-
-    let scheme = parsed.scheme();
-    if scheme != "https" && scheme != "http" {
+    normalize_api_base(&raw).unwrap_or_else(|| {
         crate::logging::warn(&format!(
-            "Ignoring invalid JCODE_OPENROUTER_API_BASE '{}'; only http/https are supported",
-            raw
+            "Ignoring invalid JCODE_OPENROUTER_API_BASE '{}'; using {}",
+            raw, DEFAULT_API_BASE
         ));
-        return DEFAULT_API_BASE.to_string();
-    }
-
-    if scheme == "http" {
-        let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-        if host != "localhost" && host != "127.0.0.1" && host != "::1" {
-            crate::logging::warn(&format!(
-                "Ignoring insecure JCODE_OPENROUTER_API_BASE '{}'; http is only allowed for localhost",
-                raw
-            ));
-            return DEFAULT_API_BASE.to_string();
-        }
-    }
-
-    trimmed.trim_end_matches('/').to_string()
+        DEFAULT_API_BASE.to_string()
+    })
 }
 
 fn configured_api_key_name() -> String {
@@ -128,10 +105,7 @@ fn configured_api_key_name() -> String {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_API_KEY_NAME.to_string());
-    if raw
-        .chars()
-        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-    {
+    if is_safe_env_key_name(&raw) {
         raw
     } else {
         crate::logging::warn(&format!(
@@ -148,10 +122,7 @@ fn configured_env_file_name() -> String {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_ENV_FILE.to_string());
-    let safe = raw
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
-    if safe && !raw.contains('/') && !raw.contains('\\') {
+    if is_safe_env_file_name(&raw) {
         raw
     } else {
         crate::logging::warn(&format!(
@@ -1084,32 +1055,8 @@ impl OpenRouterProvider {
     /// Get API key from environment or config file
     fn get_api_key() -> Option<String> {
         let key_name = configured_api_key_name();
-
-        // First check environment variable
-        if let Ok(key) = std::env::var(&key_name) {
-            let key = key.trim();
-            if !key.is_empty() {
-                return Some(key.to_string());
-            }
-        }
-
-        // Fall back to config file
         let env_file = configured_env_file_name();
-        let config_path = dirs::config_dir()?.join("jcode").join(env_file);
-        crate::storage::harden_secret_file_permissions(&config_path);
-        let content = std::fs::read_to_string(config_path).ok()?;
-        let prefix = format!("{}=", key_name);
-
-        for line in content.lines() {
-            if let Some(key) = line.strip_prefix(&prefix) {
-                let key = key.trim().trim_matches('"').trim_matches('\'');
-                if !key.is_empty() {
-                    return Some(key.to_string());
-                }
-            }
-        }
-
-        None
+        load_api_key_from_env_or_config(&key_name, &env_file)
     }
 
     /// Fetch available models from OpenRouter API (with disk caching)
@@ -2554,6 +2501,9 @@ impl Stream for OpenRouterStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_has_credentials() {
@@ -2562,6 +2512,7 @@ mod tests {
 
     #[test]
     fn test_configured_api_base_accepts_https() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("JCODE_OPENROUTER_API_BASE").ok();
         std::env::set_var(
             "JCODE_OPENROUTER_API_BASE",
@@ -2577,6 +2528,7 @@ mod tests {
 
     #[test]
     fn test_configured_api_base_rejects_insecure_http_remote() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("JCODE_OPENROUTER_API_BASE").ok();
         std::env::set_var("JCODE_OPENROUTER_API_BASE", "http://example.com/v1");
         assert_eq!(configured_api_base(), DEFAULT_API_BASE);
