@@ -126,12 +126,20 @@ pub fn update_launcher_symlink_to_stable() -> Result<PathBuf> {
 /// Resolve which client binary should be considered for update checks/reload.
 ///
 /// Order matters and should match `/reload` behavior:
-/// - Self-dev sessions prefer canary
+/// - Self-dev sessions prefer a freshly built repo binary from `target/release`
+/// - Then the self-dev canary channel
 /// - Then launcher path
 /// - Then stable channel path
 /// - Finally currently running executable
 pub fn client_update_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'static str)> {
     if is_selfdev_session {
+        if let Some(repo_dir) = get_repo_dir() {
+            if let Some(dev) = find_dev_binary(&repo_dir) {
+                if dev.exists() {
+                    return Some((dev, "dev"));
+                }
+            }
+        }
         if let Ok(canary) = canary_binary_path() {
             if canary.exists() {
                 return Some((canary, "canary"));
@@ -664,6 +672,23 @@ mod tests {
             BinaryChoice::Current => {}
             _ => panic!("Expected current binary"),
         }
+    }
+
+    #[test]
+    fn test_client_update_candidate_prefers_dev_binary_for_selfdev() {
+        let Some(repo_dir) = get_repo_dir() else {
+            return;
+        };
+        let Some(dev_binary) = find_dev_binary(&repo_dir) else {
+            return;
+        };
+        if !dev_binary.exists() {
+            return;
+        }
+
+        let candidate = client_update_candidate(true).expect("expected selfdev candidate");
+        assert_eq!(candidate.1, "dev");
+        assert_eq!(candidate.0, dev_binary);
     }
 
     #[test]
