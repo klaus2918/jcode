@@ -10,64 +10,50 @@ fn main() {
 
     let build_number = increment_build_number(major, minor);
 
-    // Get git commit hash
-    let output = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .ok();
-
-    let git_hash = output
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
+    let git_hash = env_or_metadata_or_git(
+        "JCODE_BUILD_GIT_HASH",
+        "git_hash",
+        ["rev-parse", "--short", "HEAD"],
+    )
+        .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
 
     // Get git commit date (full datetime with timezone for accurate age calculation)
-    let output = Command::new("git")
-        .args(["log", "-1", "--format=%ci"])
-        .output()
-        .ok();
-
-    let git_date = output
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
+    let git_date = env_or_metadata_or_git(
+        "JCODE_BUILD_GIT_DATE",
+        "git_date",
+        ["log", "-1", "--format=%ci"],
+    )
+        .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
 
-    // Check if working directory is dirty
-    let output = Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .ok();
-
-    let dirty = output.map(|o| !o.stdout.is_empty()).unwrap_or(false);
+    let dirty = match std::env::var("JCODE_BUILD_GIT_DIRTY") {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "dirty"
+        ),
+        Err(_) => metadata_value("git_dirty")
+            .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "dirty"))
+            .or_else(|| git_output(["status", "--porcelain"]).map(|output| !output.is_empty()))
+            .unwrap_or(false),
+    };
 
     // Get git tag (e.g., "v0.1.2" if HEAD is tagged, or "v0.1.2-3-gabc1234" if ahead)
-    let output = Command::new("git")
-        .args(["describe", "--tags", "--always"])
-        .output()
-        .ok();
-
-    let git_tag = output
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| s.trim().to_string())
+    let git_tag = env_or_metadata_or_git(
+        "JCODE_BUILD_GIT_TAG",
+        "git_tag",
+        ["describe", "--tags", "--always"],
+    )
         .unwrap_or_default();
 
     // Get recent commit messages with version tag decorations.
     // Format: "hash|decorations|subject" per line (pipe-delimited to avoid
     // conflict with colons in decorations like "tag: v0.5.0").
     // We grab enough commits to cover several releases so /changelog can group by version.
-    let output = Command::new("git")
-        .args(["log", "--oneline", "-100", "--format=%h|%D|%s"])
-        .output()
-        .ok();
-
-    let raw_log = output
-        .and_then(|o| String::from_utf8(o.stdout).ok())
+    let raw_log = std::env::var("JCODE_BUILD_CHANGELOG_RAW")
+        .ok()
+        .or_else(|| metadata_value("changelog_raw"))
+        .or_else(|| git_output(["log", "--oneline", "-100", "--format=%h|%D|%s"]))
         .unwrap_or_default();
 
     // Normalize to "hash:tag:subject" — extract version tag or leave empty.
@@ -129,6 +115,39 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/index");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=JCODE_RELEASE_BUILD");
+}
+
+fn env_or_metadata_or_git<const N: usize>(
+    env_name: &str,
+    metadata_key: &str,
+    git_args: [&str; N],
+) -> Option<String> {
+    std::env::var(env_name)
+        .ok()
+        .or_else(|| metadata_value(metadata_key))
+        .or_else(|| git_output(git_args))
+        .map(|value| value.trim().to_string())
+}
+
+fn git_output<const N: usize>(args: [&str; N]) -> Option<String> {
+    let output = Command::new("git").args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+fn metadata_value(key: &str) -> Option<String> {
+    let path = std::env::var("JCODE_BUILD_METADATA_FILE").ok()?;
+    let data = fs::read_to_string(path).ok()?;
+    data.lines().find_map(|line| {
+        let (entry_key, entry_value) = line.split_once('=')?;
+        if entry_key == key {
+            Some(entry_value.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 /// Get and increment the build number, scoped to the current major.minor version.
