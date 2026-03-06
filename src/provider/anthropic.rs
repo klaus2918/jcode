@@ -101,6 +101,11 @@ const MAX_RETRIES: u32 = 3;
 /// Base delay for exponential backoff (in milliseconds)
 const RETRY_BASE_DELAY_MS: u64 = 1000;
 
+/// Default max output tokens for Anthropic models.
+/// Set to 32k to avoid truncating long tool calls (e.g. writing large files).
+/// Override with JCODE_ANTHROPIC_MAX_TOKENS env var.
+const DEFAULT_MAX_TOKENS: u32 = 32_768;
+
 /// Available models
 pub const AVAILABLE_MODELS: &[&str] = &[
     "claude-opus-4-6",
@@ -127,6 +132,7 @@ pub struct AnthropicProvider {
     model: Arc<std::sync::RwLock<String>>,
     /// Cached OAuth credentials (None if using API key)
     credentials: Arc<RwLock<Option<CachedCredentials>>>,
+    max_tokens: u32,
 }
 
 impl AnthropicProvider {
@@ -151,10 +157,16 @@ impl AnthropicProvider {
             })
         });
 
+        let max_tokens = std::env::var("JCODE_ANTHROPIC_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(DEFAULT_MAX_TOKENS);
+
         Self {
             client: crate::provider::shared_http_client(),
             model: Arc::new(std::sync::RwLock::new(model)),
             credentials: Arc::new(RwLock::new(None)),
+            max_tokens,
         }
     }
 
@@ -514,7 +526,7 @@ impl Provider for AnthropicProvider {
 
         let request = ApiRequest {
             model: api_model,
-            max_tokens: 16384,
+            max_tokens: self.max_tokens,
             system: build_system_param(system, is_oauth),
             messages: format_messages_with_identity(api_messages, is_oauth),
             tools: if api_tools.is_empty() {
@@ -580,6 +592,7 @@ impl Provider for AnthropicProvider {
             client: self.client.clone(),
             model: Arc::new(std::sync::RwLock::new(self.model.read().unwrap().clone())),
             credentials: Arc::new(RwLock::new(None)),
+            max_tokens: self.max_tokens,
         })
     }
 
@@ -612,7 +625,7 @@ impl Provider for AnthropicProvider {
 
         let request = ApiRequest {
             model: api_model,
-            max_tokens: 16384,
+            max_tokens: self.max_tokens,
             system: build_system_param_split(system_static, system_dynamic, is_oauth),
             messages: format_messages_with_identity(api_messages, is_oauth),
             tools: if api_tools.is_empty() {

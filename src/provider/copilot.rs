@@ -521,7 +521,7 @@ impl CopilotApiProvider {
 
         self.wait_for_init().await;
         let model = self.model.read().unwrap().clone();
-        let max_tokens: u32 = 16_384;
+        let max_tokens: u32 = 32_768;
         let initiator = if is_user_initiated { "user" } else { "agent" };
 
         const MAX_RETRIES: u32 = 3;
