@@ -2085,13 +2085,17 @@ async fn stream_response_websocket(
             "Invalid websocket request payload shape; expected an object"
         )));
     }
-    request_event
-        .as_object_mut()
-        .expect("request_event is object")
-        .insert(
+    {
+        let obj = request_event
+            .as_object_mut()
+            .expect("request_event is object");
+        obj.insert(
             "type".to_string(),
             serde_json::Value::String("response.create".to_string()),
         );
+        obj.remove("stream");
+        obj.remove("background");
+    }
 
     let request_text = serde_json::to_string(&request_event).map_err(|err| {
         OpenAIStreamFailure::Other(anyhow::anyhow!(
@@ -2348,7 +2352,6 @@ async fn try_persistent_ws_continuation(
         continuation_request["include"] = include.clone();
     }
     continuation_request["store"] = serde_json::json!(false);
-    continuation_request["stream"] = serde_json::json!(true);
     continuation_request["parallel_tool_calls"] = serde_json::json!(false);
 
     let request_text = match serde_json::to_string(&continuation_request) {
@@ -2588,13 +2591,17 @@ async fn stream_response_websocket_persistent(
             "Invalid websocket request payload shape; expected an object"
         )));
     }
-    request_event
-        .as_object_mut()
-        .expect("request_event is object")
-        .insert(
+    {
+        let obj = request_event
+            .as_object_mut()
+            .expect("request_event is object");
+        obj.insert(
             "type".to_string(),
             serde_json::Value::String("response.create".to_string()),
         );
+        obj.remove("stream");
+        obj.remove("background");
+    }
 
     let request_text = serde_json::to_string(&request_event).map_err(|err| {
         OpenAIStreamFailure::Other(anyhow::anyhow!(
