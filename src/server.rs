@@ -5139,24 +5139,45 @@ async fn handle_client(
         let mut sessions_guard = sessions.write().await;
         if let Some(agent_arc) = sessions_guard.remove(&client_session_id) {
             drop(sessions_guard);
-            let mut agent = agent_arc.lock().await;
+            // Use try_lock with timeout to avoid deadlocking when agent mutex
+            // is held by a stuck task (e.g., interrupted tool call).
+            let lock_result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                agent_arc.lock(),
+            )
+            .await;
 
-            if disconnected_while_processing {
-                agent.mark_crashed(Some("Client disconnected while processing".to_string()));
-            } else {
-                agent.mark_closed();
-            }
+            match lock_result {
+                Ok(mut agent) => {
+                    if disconnected_while_processing {
+                        agent.mark_crashed(Some(
+                            "Client disconnected while processing".to_string(),
+                        ));
+                    } else {
+                        agent.mark_closed();
+                    }
 
-            let memory_enabled = agent.memory_enabled();
-            let transcript = if memory_enabled {
-                Some(agent.build_transcript_for_extraction())
-            } else {
-                None
-            };
-            let sid = client_session_id.clone();
-            drop(agent);
-            if let Some(transcript) = transcript {
-                crate::memory_agent::trigger_final_extraction(transcript, sid);
+                    let memory_enabled = agent.memory_enabled();
+                    let transcript = if memory_enabled {
+                        Some(agent.build_transcript_for_extraction())
+                    } else {
+                        None
+                    };
+                    let sid = client_session_id.clone();
+                    drop(agent);
+                    if let Some(transcript) = transcript {
+                        crate::memory_agent::trigger_final_extraction(transcript, sid);
+                    }
+                }
+                Err(_) => {
+                    // Agent mutex still held — skip graceful shutdown for this session.
+                    // The agent_arc is dropped here, which will eventually allow the
+                    // mutex holder to finish.
+                    crate::logging::warn(&format!(
+                        "Session {} cleanup timed out waiting for agent lock (stuck task); skipping graceful shutdown",
+                        client_session_id
+                    ));
+                }
             }
         }
     }
