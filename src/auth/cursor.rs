@@ -64,29 +64,26 @@ fn find_cursor_vscdb() -> Result<PathBuf> {
 
 /// Platform-specific candidate paths for Cursor's state.vscdb.
 fn cursor_vscdb_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        #[cfg(target_os = "linux")]
-        {
-            paths.push(home.join(".config/Cursor/User/globalStorage/state.vscdb"));
-            paths.push(home.join(".config/cursor/User/globalStorage/state.vscdb"));
-        }
-        #[cfg(target_os = "macos")]
-        {
-            paths.push(
-                home.join("Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
-            );
-            paths.push(
-                home.join("Library/Application Support/cursor/User/globalStorage/state.vscdb"),
-            );
-        }
-        #[cfg(target_os = "windows")]
-        {
-            paths.push(home.join("AppData/Roaming/Cursor/User/globalStorage/state.vscdb"));
-            paths.push(home.join("AppData/Roaming/cursor/User/globalStorage/state.vscdb"));
-        }
-    }
-    paths
+    #[cfg(target_os = "linux")]
+    let relatives = [
+        ".config/Cursor/User/globalStorage/state.vscdb",
+        ".config/cursor/User/globalStorage/state.vscdb",
+    ];
+    #[cfg(target_os = "macos")]
+    let relatives = [
+        "Library/Application Support/Cursor/User/globalStorage/state.vscdb",
+        "Library/Application Support/cursor/User/globalStorage/state.vscdb",
+    ];
+    #[cfg(target_os = "windows")]
+    let relatives = [
+        "AppData/Roaming/Cursor/User/globalStorage/state.vscdb",
+        "AppData/Roaming/cursor/User/globalStorage/state.vscdb",
+    ];
+
+    relatives
+        .into_iter()
+        .filter_map(|relative| crate::storage::user_home_path(relative).ok())
+        .collect()
 }
 
 /// Read a key from a vscdb file using the sqlite3 CLI.
@@ -199,7 +196,10 @@ fn status_output_indicates_authenticated(success: bool, stdout: &[u8], stderr: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn config_file_path_under_jcode() {
@@ -303,6 +303,26 @@ mod tests {
         match guard {
             Some(v) => std::env::set_var(key, v),
             None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn cursor_vscdb_paths_respect_jcode_home() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = TempDir::new().unwrap();
+        std::env::set_var("JCODE_HOME", temp.path());
+
+        let paths = cursor_vscdb_paths();
+        assert!(!paths.is_empty());
+        for path in paths {
+            assert!(path.starts_with(temp.path().join("external")));
+        }
+
+        if let Some(prev_home) = prev_home {
+            std::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            std::env::remove_var("JCODE_HOME");
         }
     }
 

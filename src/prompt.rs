@@ -511,19 +511,19 @@ pub fn load_claude_md_files_from_dir(working_dir: Option<&Path>) -> (Option<Stri
     }
 
     // Home directory files
-    if let Some(home) = dirs::home_dir() {
-        if let Some((content, size)) = load_file(
-            &home.join("AGENTS.md"),
-            "Global Instructions (~/.AGENTS.md)",
-        ) {
+    if let Ok(global_agents_md) = crate::storage::user_home_path("AGENTS.md") {
+        if let Some((content, size)) =
+            load_file(&global_agents_md, "Global Instructions (~/.AGENTS.md)")
+        {
             info.has_global_agents_md = true;
             info.global_agents_md_chars = size;
             contents.push(content);
         }
-        if let Some((content, size)) = load_file(
-            &home.join("CLAUDE.md"),
-            "Global Instructions (~/.CLAUDE.md)",
-        ) {
+    }
+    if let Ok(global_claude_md) = crate::storage::user_home_path("CLAUDE.md") {
+        if let Some((content, size)) =
+            load_file(&global_claude_md, "Global Instructions (~/.CLAUDE.md)")
+        {
             info.has_global_claude_md = true;
             info.global_claude_md_chars = size;
             contents.push(content);
@@ -540,6 +540,9 @@ pub fn load_claude_md_files_from_dir(working_dir: Option<&Path>) -> (Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Verify the default system prompt does NOT identify as "Claude Code"
     /// It's fine to say "powered by Claude" but not "Claude Code" (Anthropic's product)
@@ -577,5 +580,32 @@ mod tests {
             !default_lower.contains("claude code"),
             "DEFAULT_SYSTEM_PROMPT should NOT identify as 'Claude Code'"
         );
+    }
+
+    #[test]
+    fn test_load_claude_md_files_uses_sandboxed_global_files() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("JCODE_HOME", temp.path());
+
+        std::fs::write(
+            temp.path().join("external/AGENTS.md"),
+            "sandboxed global agents instructions",
+        )
+        .unwrap();
+
+        let project_dir = tempfile::TempDir::new().unwrap();
+        let (content, info) = load_claude_md_files_from_dir(Some(project_dir.path()));
+
+        assert!(info.has_global_agents_md);
+        let content = content.expect("global instructions content");
+        assert!(content.contains("sandboxed global agents instructions"));
+
+        if let Some(prev_home) = prev_home {
+            std::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            std::env::remove_var("JCODE_HOME");
+        }
     }
 }
