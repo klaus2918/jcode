@@ -107,6 +107,8 @@ pub enum DiffDisplayMode {
     Inline,
     /// Show diffs in a dedicated pinned pane
     Pinned,
+    /// Show full file with diff highlights in side panel, synced to scroll position
+    File,
 }
 
 impl DiffDisplayMode {
@@ -123,11 +125,20 @@ impl DiffDisplayMode {
         matches!(self, DiffDisplayMode::Pinned)
     }
 
+    pub fn is_file(&self) -> bool {
+        matches!(self, DiffDisplayMode::File)
+    }
+
+    pub fn has_side_pane(&self) -> bool {
+        matches!(self, DiffDisplayMode::Pinned | DiffDisplayMode::File)
+    }
+
     pub fn cycle(self) -> Self {
         match self {
             DiffDisplayMode::Off => DiffDisplayMode::Inline,
             DiffDisplayMode::Inline => DiffDisplayMode::Pinned,
-            DiffDisplayMode::Pinned => DiffDisplayMode::Off,
+            DiffDisplayMode::Pinned => DiffDisplayMode::File,
+            DiffDisplayMode::File => DiffDisplayMode::Off,
         }
     }
 
@@ -136,6 +147,7 @@ impl DiffDisplayMode {
             DiffDisplayMode::Off => "OFF",
             DiffDisplayMode::Inline => "Inline",
             DiffDisplayMode::Pinned => "Pinned",
+            DiffDisplayMode::File => "File",
         }
     }
 }
@@ -524,6 +536,7 @@ impl Config {
                 "off" | "none" | "0" | "false" => self.display.diff_mode = DiffDisplayMode::Off,
                 "inline" | "on" | "1" | "true" => self.display.diff_mode = DiffDisplayMode::Inline,
                 "pinned" | "pin" => self.display.diff_mode = DiffDisplayMode::Pinned,
+                "file" => self.display.diff_mode = DiffDisplayMode::File,
                 _ => {}
             }
         } else if let Ok(v) = std::env::var("JCODE_SHOW_DIFFS") {

@@ -4,8 +4,8 @@
 //! In centered mode, widgets can appear on both left and right margins.
 //! In left-aligned mode, widgets only appear on the right margin.
 
-use crate::ambient::AmbientStatus;
 use super::color_support::rgb;
+use crate::ambient::AmbientStatus;
 use crate::memory_graph::EdgeKind;
 use crate::prompt::ContextInfo;
 use crate::protocol::SwarmMemberStatus;
@@ -1730,15 +1730,9 @@ fn render_overview_widget(frame: &mut Frame, inner: Rect, data: &InfoWidgetData)
         let mut dots: Vec<Span<'static>> = Vec::new();
         for i in 0..layout.pages.len() {
             if i == page_index {
-                dots.push(Span::styled(
-                    "● ",
-                    Style::default().fg(rgb(170, 170, 180)),
-                ));
+                dots.push(Span::styled("● ", Style::default().fg(rgb(170, 170, 180))));
             } else {
-                dots.push(Span::styled(
-                    "○ ",
-                    Style::default().fg(rgb(100, 100, 110)),
-                ));
+                dots.push(Span::styled("○ ", Style::default().fg(rgb(100, 100, 110))));
             }
         }
         if !dots.is_empty() {
@@ -1958,10 +1952,7 @@ fn render_todos_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
 
     // Header with progress
     lines.push(Line::from(vec![
-        Span::styled(
-            "Todos ",
-            Style::default().fg(rgb(180, 180, 190)).bold(),
-        ),
+        Span::styled("Todos ", Style::default().fg(rgb(180, 180, 190)).bold()),
         Span::styled(
             format!("{}/{}", completed, total),
             Style::default().fg(rgb(140, 140, 150)),
@@ -1975,14 +1966,8 @@ fn render_todos_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
         let empty = bar_width.saturating_sub(filled);
         lines.push(Line::from(vec![
             Span::styled("[", Style::default().fg(rgb(90, 90, 100))),
-            Span::styled(
-                "█".repeat(filled),
-                Style::default().fg(rgb(100, 180, 100)),
-            ),
-            Span::styled(
-                "░".repeat(empty),
-                Style::default().fg(rgb(50, 50, 60)),
-            ),
+            Span::styled("█".repeat(filled), Style::default().fg(rgb(100, 180, 100))),
+            Span::styled("░".repeat(empty), Style::default().fg(rgb(50, 50, 60))),
             Span::styled("]", Style::default().fg(rgb(90, 90, 100))),
         ]));
     }
@@ -2415,10 +2400,8 @@ fn render_swarm_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
     let mut lines: Vec<Line> = Vec::new();
 
     // Stats line
-    let mut stats_parts: Vec<Span> = vec![Span::styled(
-        "🐝 ",
-        Style::default().fg(rgb(255, 200, 100)),
-    )];
+    let mut stats_parts: Vec<Span> =
+        vec![Span::styled("🐝 ", Style::default().fg(rgb(255, 200, 100)))];
 
     if info.session_count > 0 {
         stats_parts.push(Span::styled(
@@ -2428,10 +2411,7 @@ fn render_swarm_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
     }
     if let Some(clients) = info.client_count {
         if info.session_count > 0 {
-            stats_parts.push(Span::styled(
-                " · ",
-                Style::default().fg(rgb(100, 100, 110)),
-            ));
+            stats_parts.push(Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))));
         }
         stats_parts.push(Span::styled(
             format!("{}c", clients),
@@ -2484,10 +2464,7 @@ fn render_background_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'sta
         return Vec::new();
     }
 
-    let mut spans: Vec<Span> = vec![Span::styled(
-        "⏳ ",
-        Style::default().fg(rgb(180, 140, 255)),
-    )];
+    let mut spans: Vec<Span> = vec![Span::styled("⏳ ", Style::default().fg(rgb(180, 140, 255)))];
 
     let mut parts: Vec<String> = Vec::new();
     if info.memory_agent_active {
@@ -2528,11 +2505,9 @@ fn render_ambient_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static
     // Status line with icon
     let (icon, status_text, status_color) = match &info.status {
         AmbientStatus::Idle => ("○", "Idle".to_string(), rgb(120, 120, 130)),
-        AmbientStatus::Running { detail } => (
-            "●",
-            format!("Running: {}", detail),
-            rgb(100, 200, 100),
-        ),
+        AmbientStatus::Running { detail } => {
+            ("●", format!("Running: {}", detail), rgb(100, 200, 100))
+        }
         AmbientStatus::Scheduled { .. } => {
             ("◐", "Waiting for next run".to_string(), rgb(140, 180, 255))
         }
@@ -2622,10 +2597,7 @@ fn render_ambient_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled("█".repeat(filled), Style::default().fg(bar_color)),
-            Span::styled(
-                "░".repeat(empty),
-                Style::default().fg(rgb(50, 50, 60)),
-            ),
+            Span::styled("░".repeat(empty), Style::default().fg(rgb(50, 50, 60))),
             Span::styled(format!(" {}%", pct), Style::default().fg(bar_color)),
         ]));
     }
@@ -2880,10 +2852,7 @@ fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
                 Span::styled(format!("{} ", icon), Style::default().fg(color)),
                 Span::styled(label, Style::default().fg(rgb(140, 140, 150))),
                 Span::styled(" via ", Style::default().fg(rgb(100, 100, 110))),
-                Span::styled(
-                    upstream.clone(),
-                    Style::default().fg(rgb(200, 180, 100)),
-                ),
+                Span::styled(upstream.clone(), Style::default().fg(rgb(200, 180, 100))),
             ]));
         } else {
             lines.push(Line::from(vec![
@@ -3365,10 +3334,7 @@ fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static
 
     // Header with progress
     lines.push(Line::from(vec![
-        Span::styled(
-            "Todos ",
-            Style::default().fg(rgb(180, 180, 190)).bold(),
-        ),
+        Span::styled("Todos ", Style::default().fg(rgb(180, 180, 190)).bold()),
         Span::styled(
             format!("{}/{}", completed, total),
             Style::default().fg(rgb(140, 140, 150)),
@@ -3382,14 +3348,8 @@ fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static
         let empty = bar_width.saturating_sub(filled);
         lines.push(Line::from(vec![
             Span::styled("[", Style::default().fg(rgb(90, 90, 100))),
-            Span::styled(
-                "█".repeat(filled),
-                Style::default().fg(rgb(100, 180, 100)),
-            ),
-            Span::styled(
-                "░".repeat(empty),
-                Style::default().fg(rgb(50, 50, 60)),
-            ),
+            Span::styled("█".repeat(filled), Style::default().fg(rgb(100, 180, 100))),
+            Span::styled("░".repeat(empty), Style::default().fg(rgb(50, 50, 60))),
             Span::styled("]", Style::default().fg(rgb(90, 90, 100))),
         ]));
     }
@@ -3566,7 +3526,7 @@ fn all_tips() -> Vec<Tip> {
         "Ambient cycles can email you a summary and you can reply with directives for the next run",
         "Alt+B moves a long-running tool to the background — the agent continues and can check on it later with the `bg` tool",
         "Most terminals can be configured to copy text on highlight — no Ctrl+C needed. Check your terminal's settings for 'copy on select'",
-        "Shift+Tab cycles diff mode: Off → Inline → Pinned — pinned mode shows all diffs and images in a side pane",
+        "Shift+Tab cycles diff mode: Off, Inline, Pinned, File. Pinned shows all diffs in a side pane. File shows the full file with changes highlighted, synced to your scroll position",
     ]
     .iter()
     .map(|t| Tip {
@@ -3632,10 +3592,7 @@ fn render_git_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
 
     // Branch + stats all on one line:  master ~2 +1 ?3 ↑1 ↓2
     let mut parts: Vec<Span> = Vec::new();
-    parts.push(Span::styled(
-        " ",
-        Style::default().fg(rgb(240, 160, 60)),
-    ));
+    parts.push(Span::styled(" ", Style::default().fg(rgb(240, 160, 60))));
 
     // Calculate how much space stats need so we can truncate branch name
     let mut stats_len = 0usize;
@@ -4149,10 +4106,7 @@ fn render_memory_compact(info: &MemoryInfo) -> Vec<Line<'static>> {
         };
         if let Some((icon_str, color)) = icon {
             if !icon_str.is_empty() {
-                spans.push(Span::styled(
-                    " · ",
-                    Style::default().fg(rgb(100, 100, 110)),
-                ));
+                spans.push(Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))));
                 spans.push(Span::styled(icon_str, Style::default().fg(color)));
             }
         }
@@ -4295,10 +4249,7 @@ fn render_memory_expanded(info: &MemoryInfo, inner: Rect) -> Vec<Line<'static>> 
                             Style::default().fg(rgb(255, 200, 100)),
                         ));
                     } else {
-                        spans.push(Span::styled(
-                            "...",
-                            Style::default().fg(rgb(255, 200, 100)),
-                        ));
+                        spans.push(Span::styled("...", Style::default().fg(rgb(255, 200, 100))));
                     }
                 }
 
@@ -4490,11 +4441,9 @@ fn format_event_for_expanded(
             truncate_with_ellipsis(&format!("{} → {}", from, to), max_width),
             rgb(200, 180, 255),
         ),
-        MemoryEventKind::ToolListed { count } => (
-            "📋",
-            format!("{} memories", count),
-            rgb(140, 140, 150),
-        ),
+        MemoryEventKind::ToolListed { count } => {
+            ("📋", format!("{} memories", count), rgb(140, 140, 150))
+        }
         _ => ("·", String::new(), rgb(100, 100, 110)),
     }
 }
@@ -4520,29 +4469,20 @@ fn render_swarm_compact(info: &SwarmInfo) -> Vec<Line<'static>> {
             Style::default().fg(rgb(180, 180, 190)),
         ));
     } else if let Some(status) = &info.subagent_status {
-        spans.push(Span::styled(
-            "▶ ",
-            Style::default().fg(rgb(255, 200, 100)),
-        ));
+        spans.push(Span::styled("▶ ", Style::default().fg(rgb(255, 200, 100))));
         spans.push(Span::styled(
             truncate_smart(status, 20),
             Style::default().fg(rgb(180, 180, 190)),
         ));
     } else {
         // Show swarm icon (bee for "swarm")
-        spans.push(Span::styled(
-            "🐝 ",
-            Style::default().fg(rgb(255, 200, 100)),
-        ));
+        spans.push(Span::styled("🐝 ", Style::default().fg(rgb(255, 200, 100))));
     }
 
     // Session count if > 1
     if info.session_count > 1 {
         if !spans.is_empty() {
-            spans.push(Span::styled(
-                " · ",
-                Style::default().fg(rgb(100, 100, 110)),
-            ));
+            spans.push(Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))));
         }
         spans.push(Span::styled(
             format!("{}s", info.session_count),
@@ -4553,10 +4493,7 @@ fn render_swarm_compact(info: &SwarmInfo) -> Vec<Line<'static>> {
     // Client count if present
     if let Some(clients) = info.client_count {
         if !spans.is_empty() {
-            spans.push(Span::styled(
-                " · ",
-                Style::default().fg(rgb(100, 100, 110)),
-            ));
+            spans.push(Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))));
         }
         spans.push(Span::styled(
             format!("{}c", clients),
@@ -4594,10 +4531,7 @@ fn render_swarm_expanded(info: &SwarmInfo, inner: Rect) -> Vec<Line<'static>> {
     }
     if let Some(clients) = info.client_count {
         if !stats_parts.is_empty() {
-            stats_parts.push(Span::styled(
-                " · ",
-                Style::default().fg(rgb(100, 100, 110)),
-            ));
+            stats_parts.push(Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))));
         }
         stats_parts.push(Span::styled(
             format!("{} client{}", clients, if clients == 1 { "" } else { "s" }),
@@ -4716,10 +4650,7 @@ fn render_background_compact(info: &BackgroundInfo) -> Vec<Line<'static>> {
     let mut spans: Vec<Span> = Vec::new();
 
     // Show spinner icon for active background work
-    spans.push(Span::styled(
-        "⏳ ",
-        Style::default().fg(rgb(180, 140, 255)),
-    ));
+    spans.push(Span::styled("⏳ ", Style::default().fg(rgb(180, 140, 255))));
 
     let mut parts: Vec<String> = Vec::new();
 
@@ -4820,10 +4751,7 @@ fn render_git_compact(info: &GitInfo, width: u16) -> Vec<Line<'static>> {
     let mut parts: Vec<Span> = Vec::new();
 
     let branch_display = truncate_smart(&info.branch, w.saturating_sub(12).max(6));
-    parts.push(Span::styled(
-        " ",
-        Style::default().fg(rgb(240, 160, 60)),
-    ));
+    parts.push(Span::styled(" ", Style::default().fg(rgb(240, 160, 60))));
     parts.push(Span::styled(
         branch_display,
         Style::default().fg(rgb(160, 160, 170)),
@@ -4998,10 +4926,7 @@ fn render_model_info(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
                 AuthMethod::Unknown => unreachable!(),
             };
             if !detail_spans.is_empty() {
-                detail_spans.push(Span::styled(
-                    " · ",
-                    Style::default().fg(rgb(80, 80, 90)),
-                ));
+                detail_spans.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
             }
             detail_spans.push(Span::styled(
                 format!("{} {}", icon, label),
@@ -5190,10 +5115,7 @@ fn render_usage_bar(used_tokens: usize, limit_tokens: usize, width: u16) -> Line
     }
     let empty_cells = bar_width.saturating_sub(used_cells);
     let mut spans = Vec::new();
-    spans.push(Span::styled(
-        "[",
-        Style::default().fg(rgb(90, 90, 100)),
-    ));
+    spans.push(Span::styled("[", Style::default().fg(rgb(90, 90, 100))));
     spans.push(Span::styled(
         "█".repeat(used_cells),
         Style::default().fg(rgb(120, 200, 180)),
@@ -5204,10 +5126,7 @@ fn render_usage_bar(used_tokens: usize, limit_tokens: usize, width: u16) -> Line
             Style::default().fg(rgb(50, 50, 60)),
         ));
     }
-    spans.push(Span::styled(
-        "]",
-        Style::default().fg(rgb(90, 90, 100)),
-    ));
+    spans.push(Span::styled("]", Style::default().fg(rgb(90, 90, 100))));
     Line::from(spans)
 }
 

@@ -64,20 +64,48 @@ fn clear_area(frame: &mut Frame, area: Rect) {
     super::color_support::clear_buf(area, frame.buffer_mut());
 }
 
-fn user_color() -> Color { rgb(138, 180, 248) }
-fn ai_color() -> Color { rgb(129, 199, 132) }
-fn tool_color() -> Color { rgb(120, 120, 120) }
-fn dim_color() -> Color { rgb(80, 80, 80) }
-fn accent_color() -> Color { rgb(186, 139, 255) }
-fn queued_color() -> Color { rgb(255, 193, 7) }
-fn asap_color() -> Color { rgb(110, 210, 255) }
-fn pending_color() -> Color { rgb(140, 140, 140) }
-fn user_text() -> Color { rgb(245, 245, 255) }
-fn user_bg() -> Color { rgb(35, 40, 50) }
-fn ai_text() -> Color { rgb(220, 220, 215) }
-fn header_icon_color() -> Color { rgb(120, 210, 230) }
-fn header_name_color() -> Color { rgb(190, 210, 235) }
-fn header_session_color() -> Color { rgb(255, 255, 255) }
+fn user_color() -> Color {
+    rgb(138, 180, 248)
+}
+fn ai_color() -> Color {
+    rgb(129, 199, 132)
+}
+fn tool_color() -> Color {
+    rgb(120, 120, 120)
+}
+fn dim_color() -> Color {
+    rgb(80, 80, 80)
+}
+fn accent_color() -> Color {
+    rgb(186, 139, 255)
+}
+fn queued_color() -> Color {
+    rgb(255, 193, 7)
+}
+fn asap_color() -> Color {
+    rgb(110, 210, 255)
+}
+fn pending_color() -> Color {
+    rgb(140, 140, 140)
+}
+fn user_text() -> Color {
+    rgb(245, 245, 255)
+}
+fn user_bg() -> Color {
+    rgb(35, 40, 50)
+}
+fn ai_text() -> Color {
+    rgb(220, 220, 215)
+}
+fn header_icon_color() -> Color {
+    rgb(120, 210, 230)
+}
+fn header_name_color() -> Color {
+    rgb(190, 210, 235)
+}
+fn header_session_color() -> Color {
+    rgb(255, 255, 255)
+}
 
 // Spinner frames for animated status
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -809,7 +837,8 @@ fn header_chrome_color(base: Color, pos: f32, elapsed: f32, intensity: f32) -> C
     let shadow_center = (center + 0.5) % 1.0;
     let mut shadow_dist = (pos - shadow_center).abs();
     shadow_dist = shadow_dist.min(1.0 - shadow_dist);
-    let shadow_t = (1.0 - (shadow_dist / (WIDTH * 1.2)).clamp(0.0, 1.0)).powf(2.0) * 0.16 * intensity;
+    let shadow_t =
+        (1.0 - (shadow_dist / (WIDTH * 1.2)).clamp(0.0, 1.0)).powf(2.0) * 0.16 * intensity;
 
     let darkened = blend_color(base, shadow_c, shadow_t);
     blend_color(darkened, highlight_c, shimmer)
@@ -1232,13 +1261,7 @@ fn render_context_bar(
         } else {
             "assistant".into()
         };
-        raw.push((
-            "🤖",
-            lbl,
-            info.assistant_messages_chars / 4,
-            msgs_c,
-            "msgs",
-        ));
+        raw.push(("🤖", lbl, info.assistant_messages_chars / 4, msgs_c, "msgs"));
     }
     if info.tool_calls_chars > 0 {
         let lbl = if info.tool_calls_count > 0 {
@@ -1246,13 +1269,7 @@ fn render_context_bar(
         } else {
             "calls".into()
         };
-        raw.push((
-            "⚡",
-            lbl,
-            info.tool_calls_chars / 4,
-            tool_io_c,
-            "tool_io",
-        ));
+        raw.push(("⚡", lbl, info.tool_calls_chars / 4, tool_io_c, "tool_io"));
     }
     if info.tool_results_chars > 0 {
         let lbl = if info.tool_results_count > 0 {
@@ -1260,13 +1277,7 @@ fn render_context_bar(
         } else {
             "results".into()
         };
-        raw.push((
-            "📤",
-            lbl,
-            info.tool_results_chars / 4,
-            tool_io_c,
-            "tool_io",
-        ));
+        raw.push(("📤", lbl, info.tool_results_chars / 4, tool_io_c, "tool_io"));
     }
 
     // Smart grouping
@@ -1576,8 +1587,7 @@ fn render_memory_tiles(
                 let text_display_width = unicode_width::UnicodeWidthStr::width(item.as_str());
                 if text_display_width <= item_width {
                     let text = item.to_string();
-                    let padding = inner_width
-                        .saturating_sub(bullet_width + text_display_width);
+                    let padding = inner_width.saturating_sub(bullet_width + text_display_width);
                     let mut spans = vec![
                         Span::styled("│ ", border_style),
                         Span::styled(bullet.to_string(), border_style),
@@ -1604,8 +1614,7 @@ fn render_memory_tiles(
                     for (ci, chunk) in all_chunks.iter().enumerate() {
                         let chunk_width = unicode_width::UnicodeWidthStr::width(chunk.as_str());
                         if ci == 0 {
-                            let padding = inner_width
-                                .saturating_sub(bullet_width + chunk_width);
+                            let padding = inner_width.saturating_sub(bullet_width + chunk_width);
                             let mut spans = vec![
                                 Span::styled("│ ", border_style),
                                 Span::styled(bullet.to_string(), border_style),
@@ -1617,8 +1626,7 @@ fn render_memory_tiles(
                             spans.push(Span::styled(" │", border_style));
                             content_lines.push(Line::from(spans));
                         } else {
-                            let padding = inner_width
-                                .saturating_sub(indent + chunk_width);
+                            let padding = inner_width.saturating_sub(indent + chunk_width);
                             let mut spans = vec![
                                 Span::styled("│ ", border_style),
                                 Span::raw(" ".repeat(indent)),
@@ -1644,10 +1652,7 @@ fn render_memory_tiles(
             max_content_lines = max_content_lines.max(content_lines.len());
 
             let bottom_border = "─".repeat(box_width.saturating_sub(2));
-            let bottom = Line::from(Span::styled(
-                format!("╰{}╯", bottom_border),
-                border_style,
-            ));
+            let bottom = Line::from(Span::styled(format!("╰{}╯", bottom_border), border_style));
 
             let mut col: Vec<Line<'static>> = Vec::new();
             col.push(top);
@@ -2062,6 +2067,17 @@ struct PreparedMessages {
     wrapped_user_prompt_starts: Vec<usize>,
     /// Pre-scanned image regions (computed once, not every frame)
     image_regions: Vec<ImageRegion>,
+    /// Line ranges for edit tool messages: (msg_index, start_line, end_line)
+    /// Used by File diff mode to determine which edit is visible at current scroll
+    edit_tool_ranges: Vec<EditToolRange>,
+}
+
+#[derive(Clone, Debug)]
+struct EditToolRange {
+    msg_index: usize,
+    file_path: String,
+    start_line: usize,
+    end_line: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -2614,8 +2630,19 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     } else {
         false
     };
+    let has_file_diff_edits = diff_mode.is_file() && app.display_messages().iter().any(|m| {
+        m.tool_data
+            .as_ref()
+            .map(|tc| matches!(
+                tc.name.as_str(),
+                "edit" | "Edit" | "write" | "multiedit" | "patch" | "Patch" | "apply_patch" | "ApplyPatch"
+            ))
+            .unwrap_or(false)
+    });
 
-    let (chat_area, diff_pane_area) = if has_pinned_content {
+    let needs_side_pane = has_pinned_content || has_file_diff_edits;
+
+    let (chat_area, diff_pane_area) = if needs_side_pane {
         const MIN_DIFF_WIDTH: u16 = 30;
         const MIN_CHAT_WIDTH: u16 = 20;
         let max_diff = chat_area.width.saturating_sub(MIN_CHAT_WIDTH);
@@ -2834,7 +2861,19 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     if let Some(diff_area) = diff_pane_area {
-        if has_pinned_content {
+        if has_file_diff_edits {
+            if let Some(ref mut capture) = debug_capture {
+                capture.render_order.push("draw_file_diff_view".to_string());
+            }
+            draw_file_diff_view(
+                frame,
+                diff_area,
+                app,
+                &prepared,
+                app.diff_pane_scroll(),
+                app.diff_pane_focus(),
+            );
+        } else if has_pinned_content {
             if let Some(ref mut capture) = debug_capture {
                 capture.render_order.push("draw_pinned_content".to_string());
             }
@@ -3025,7 +3064,12 @@ fn prepare_messages(app: &dyn TuiState, width: u16, height: u16) -> Arc<Prepared
     prepared
 }
 
-fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_active: bool) -> PreparedMessages {
+fn prepare_messages_inner(
+    app: &dyn TuiState,
+    width: u16,
+    height: u16,
+    startup_active: bool,
+) -> PreparedMessages {
     // Build the top header (chroma animated name/model/badges)
     let mut all_header_lines = build_persistent_header(app, width);
     // Add the rest of the header (model ID, changelog, MCPs, etc.)
@@ -3039,6 +3083,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_a
             wrapped_user_indices: Vec::new(),
             wrapped_user_prompt_starts: Vec::new(),
             image_regions: Vec::new(),
+            edit_tool_ranges: Vec::new(),
         }
     };
 
@@ -3053,6 +3098,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_a
             wrapped_user_indices: Vec::new(),
             wrapped_user_prompt_starts: Vec::new(),
             image_regions: Vec::new(),
+            edit_tool_ranges: Vec::new(),
         }
     };
 
@@ -3060,6 +3106,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_a
     let mut wrapped_user_indices;
     let mut wrapped_user_prompt_starts;
     let mut image_regions;
+    let mut edit_tool_ranges;
 
     if startup_active {
         let elapsed = app.animation_elapsed();
@@ -3104,6 +3151,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_a
         wrapped_user_indices = Vec::new();
         wrapped_user_prompt_starts = Vec::new();
         image_regions = Vec::new();
+        edit_tool_ranges = Vec::new();
     } else {
         let is_initial_empty = app.display_messages().is_empty()
             && !app.is_processing()
@@ -3143,10 +3191,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_a
                                 format!("{}[{}] ", pad, i + 1),
                                 Style::default().fg(rgb(138, 180, 248)),
                             ),
-                            Span::styled(
-                                label.clone(),
-                                Style::default().fg(rgb(200, 200, 200)),
-                            ),
+                            Span::styled(label.clone(), Style::default().fg(rgb(200, 200, 200))),
                         ]
                     };
                     wrapped_lines.push(Line::from(spans).alignment(suggestion_align));
@@ -3187,16 +3232,20 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_a
         wrapped_lines.extend_from_slice(&body_prepared.wrapped_lines);
         wrapped_lines.extend(streaming_prepared.wrapped_lines);
 
-        wrapped_user_indices = body_prepared.wrapped_user_indices.iter()
+        wrapped_user_indices = body_prepared
+            .wrapped_user_indices
+            .iter()
             .map(|idx| idx + body_offset)
             .collect();
 
-        wrapped_user_prompt_starts = body_prepared.wrapped_user_prompt_starts.iter()
+        wrapped_user_prompt_starts = body_prepared
+            .wrapped_user_prompt_starts
+            .iter()
             .map(|idx| idx + body_offset)
             .collect();
 
         image_regions = Vec::with_capacity(
-            body_prepared.image_regions.len() + streaming_prepared.image_regions.len()
+            body_prepared.image_regions.len() + streaming_prepared.image_regions.len(),
         );
         for region in &body_prepared.image_regions {
             image_regions.push(ImageRegion {
@@ -3208,6 +3257,17 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_a
             region.abs_line_idx += body_offset + body_len;
             image_regions.push(region);
         }
+
+        edit_tool_ranges = body_prepared
+            .edit_tool_ranges
+            .iter()
+            .map(|r| EditToolRange {
+                msg_index: r.msg_index,
+                file_path: r.file_path.clone(),
+                start_line: r.start_line + body_offset,
+                end_line: r.end_line + body_offset,
+            })
+            .collect();
     }
 
     PreparedMessages {
@@ -3215,6 +3275,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16, startup_a
         wrapped_user_indices,
         wrapped_user_prompt_starts,
         image_regions,
+        edit_tool_ranges,
     }
 }
 
@@ -3337,11 +3398,7 @@ fn morph_lines_to_header(
                 let mut s = anim_style;
                 if let Some(fg) = s.fg {
                     let (r, g, b) = color_to_floats(fg, (80.0, 80.0, 80.0));
-                    s.fg = Some(rgb(
-                        (r * fade) as u8,
-                        (g * fade) as u8,
-                        (b * fade) as u8,
-                    ));
+                    s.fg = Some(rgb((r * fade) as u8, (g * fade) as u8, (b * fade) as u8));
                 }
                 (anim_ch, s)
             };
@@ -3375,19 +3432,11 @@ fn lerp_style(from: Style, to: Style, t: f32) -> Style {
         (Some(f), _) => {
             let (r, g, b) = color_to_floats(f, (80.0, 80.0, 80.0));
             let dim = 1.0 - t;
-            Some(rgb(
-                (r * dim) as u8,
-                (g * dim) as u8,
-                (b * dim) as u8,
-            ))
+            Some(rgb((r * dim) as u8, (g * dim) as u8, (b * dim) as u8))
         }
         (_, Some(toc)) => {
             let (r, g, b) = color_to_floats(toc, (200.0, 200.0, 200.0));
-            Some(rgb(
-                (r * t) as u8,
-                (g * t) as u8,
-                (b * t) as u8,
-            ))
+            Some(rgb((r * t) as u8, (g * t) as u8, (b * t) as u8))
         }
         (_, to_fg) => to_fg,
     };
@@ -3601,7 +3650,8 @@ fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Line<'static>>
     if let Some(dir) = app.working_dir() {
         let display_dir = abbreviate_home(&dir);
         lines.push(
-            Line::from(Span::styled(display_dir, Style::default().fg(dim_color()))).alignment(align),
+            Line::from(Span::styled(display_dir, Style::default().fg(dim_color())))
+                .alignment(align),
         );
     }
 
@@ -3797,7 +3847,9 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
             }
         }
     };
-    lines.push(Line::from(Span::styled(mcp_text, Style::default().fg(dim_color()))).alignment(align));
+    lines.push(
+        Line::from(Span::styled(mcp_text, Style::default().fg(dim_color()))).alignment(align),
+    );
 
     // Line 4: Skills (if any)
     let skills = app.available_skills();
@@ -3816,7 +3868,8 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
             format!("skills: {} loaded", skills.len())
         };
         lines.push(
-            Line::from(Span::styled(skills_text, Style::default().fg(dim_color()))).alignment(align),
+            Line::from(Span::styled(skills_text, Style::default().fg(dim_color())))
+                .alignment(align),
         );
     }
 
@@ -3902,12 +3955,16 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
     let incremental_base = if cache.msg_count > 0
         && msg_count > cache.msg_count
         && cache.prepared.is_some()
-        && cache.key.as_ref().map(|k| {
-            k.width == key.width
-                && k.diff_mode == key.diff_mode
-                && k.diagram_mode == key.diagram_mode
-                && k.centered == key.centered
-        }).unwrap_or(false)
+        && cache
+            .key
+            .as_ref()
+            .map(|k| {
+                k.width == key.width
+                    && k.diff_mode == key.diff_mode
+                    && k.diagram_mode == key.diagram_mode
+                    && k.centered == key.centered
+            })
+            .unwrap_or(false)
     {
         Some((cache.prepared.clone().unwrap(), cache.msg_count))
     } else {
@@ -3969,10 +4026,7 @@ fn prepare_body_incremental(
     let body_has_content = !prev.wrapped_lines.is_empty();
 
     for msg in new_messages {
-        if (body_has_content || !new_lines.is_empty())
-            && msg.role != "tool"
-            && msg.role != "meta"
-        {
+        if (body_has_content || !new_lines.is_empty()) && msg.role != "tool" && msg.role != "meta" {
             new_lines.push(Line::from(""));
         }
 
@@ -4091,16 +4145,20 @@ fn prepare_body_incremental(
                 } else {
                     format!("🧠 {} memories", count)
                 };
-                let header = Line::from(Span::styled(header_text, border_style))
-                    .alignment(align);
+                let header = Line::from(Span::styled(header_text, border_style)).alignment(align);
 
                 let total_width = if centered {
                     (width.saturating_sub(4) as usize).min(90)
                 } else {
                     width.saturating_sub(2) as usize
                 };
-                let tile_lines =
-                    render_memory_tiles(&tiles, total_width, border_style, text_style, Some(header));
+                let tile_lines = render_memory_tiles(
+                    &tiles,
+                    total_width,
+                    border_style,
+                    text_style,
+                    Some(header),
+                );
                 for line in tile_lines {
                     new_lines.push(align_if_unset(line, align));
                 }
@@ -4155,11 +4213,22 @@ fn prepare_body_incremental(
         });
     }
 
+    let mut edit_tool_ranges = prev.edit_tool_ranges.clone();
+    for r in new_wrapped.edit_tool_ranges {
+        edit_tool_ranges.push(EditToolRange {
+            msg_index: r.msg_index,
+            file_path: r.file_path,
+            start_line: r.start_line + prev_len,
+            end_line: r.end_line + prev_len,
+        });
+    }
+
     Arc::new(PreparedMessages {
         wrapped_lines,
         wrapped_user_indices,
         wrapped_user_prompt_starts,
         image_regions,
+        edit_tool_ranges,
     })
 }
 
@@ -4175,6 +4244,7 @@ fn prepare_streaming_cached(
             wrapped_user_indices: Vec::new(),
             wrapped_user_prompt_starts: Vec::new(),
             image_regions: Vec::new(),
+            edit_tool_ranges: Vec::new(),
         };
     }
 
@@ -4206,6 +4276,7 @@ fn prepare_streaming_cached(
 fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> PreparedMessages {
     let mut lines: Vec<Line> = Vec::new();
     let mut user_line_indices: Vec<usize> = Vec::new();
+    let mut edit_tool_line_ranges: Vec<(usize, String, usize, usize)> = Vec::new();
     let centered = app.centered_mode();
     markdown::set_center_code_blocks(centered);
     let align = if centered {
@@ -4215,20 +4286,14 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
     };
 
     let mut prompt_num = 0usize;
-    // Count total user prompts and pending messages for rainbow coloring
-    // The input prompt is distance 0, pending messages are 1..pending_count,
-    // existing messages continue from there
     let total_prompts = app
         .display_messages()
         .iter()
         .filter(|m| m.role == "user")
         .count();
     let pending_count = pending_prompt_count(app);
-    // Input prompt number is total_prompts + pending_count + 1, so distance for
-    // existing prompt N is: (total_prompts + pending_count + 1) - N
 
-    for msg in app.display_messages() {
-        // Add spacing between messages
+    for (msg_idx, msg) in app.display_messages().iter().enumerate() {
         if !lines.is_empty() && msg.role != "tool" && msg.role != "meta" {
             lines.push(Line::from(""));
         }
@@ -4274,10 +4339,38 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 );
             }
             "tool" => {
+                let tool_start_line = lines.len();
                 let cached =
                     get_cached_message_lines(msg, width, app.diff_mode(), render_tool_message);
                 for line in cached {
                     lines.push(align_if_unset(line, align));
+                }
+                if let Some(ref tc) = msg.tool_data {
+                    let is_edit_tool = matches!(
+                        tc.name.as_str(),
+                        "edit" | "Edit" | "write" | "multiedit" | "patch" | "Patch" | "apply_patch" | "ApplyPatch"
+                    );
+                    if is_edit_tool {
+                        let file_path = tc
+                            .input
+                            .get("file_path")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                            .or_else(|| {
+                                tc.input
+                                    .get("patch_text")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|patch_text| match tc.name.as_str() {
+                                        "apply_patch" | "ApplyPatch" => {
+                                            extract_apply_patch_primary_file(patch_text)
+                                        }
+                                        "patch" | "Patch" => extract_unified_patch_primary_file(patch_text),
+                                        _ => None,
+                                    })
+                            })
+                            .unwrap_or_else(|| "unknown".to_string());
+                        edit_tool_line_ranges.push((msg_idx, file_path, tool_start_line, lines.len()));
+                    }
                 }
             }
             "system" => {
@@ -4353,16 +4446,20 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 } else {
                     format!("🧠 {} memories", count)
                 };
-                let header = Line::from(Span::styled(header_text, border_style))
-                    .alignment(align);
+                let header = Line::from(Span::styled(header_text, border_style)).alignment(align);
 
                 let total_width = if centered {
                     (width.saturating_sub(4) as usize).min(90)
                 } else {
                     width.saturating_sub(2) as usize
                 };
-                let tile_lines =
-                    render_memory_tiles(&tiles, total_width, border_style, text_style, Some(header));
+                let tile_lines = render_memory_tiles(
+                    &tiles,
+                    total_width,
+                    border_style,
+                    text_style,
+                    Some(header),
+                );
                 for line in tile_lines {
                     lines.push(align_if_unset(line, align));
                 }
@@ -4408,7 +4505,9 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
         // Tool calls are now shown inline in display_messages
     }
 
-    wrap_lines(lines, &user_line_indices, width)
+    let mut result = wrap_lines_with_map(lines, &user_line_indices, width, &edit_tool_line_ranges);
+
+    result
 }
 
 fn get_cached_message_lines<F>(
@@ -4634,7 +4733,10 @@ pub(crate) fn render_tool_message(
                         Style::default().fg(sub_icon_color),
                     ),
                     Span::styled(display_name.to_string(), Style::default().fg(tool_color())),
-                    Span::styled(format!(" {}", sub_summary), Style::default().fg(dim_color())),
+                    Span::styled(
+                        format!(" {}", sub_summary),
+                        Style::default().fg(dim_color()),
+                    ),
                 ]));
             }
         }
@@ -4889,6 +4991,89 @@ fn wrap_lines(
         wrapped_user_indices,
         wrapped_user_prompt_starts,
         image_regions,
+        edit_tool_ranges: Vec::new(),
+    }
+}
+
+fn wrap_lines_with_map(
+    lines: Vec<Line<'static>>,
+    user_line_indices: &[usize],
+    width: u16,
+    edit_ranges: &[(usize, String, usize, usize)],
+) -> PreparedMessages {
+    let full_width = width.saturating_sub(1) as usize;
+    let user_width = width.saturating_sub(2) as usize;
+    let mut wrapped_user_indices: Vec<usize> = Vec::new();
+    let mut wrapped_user_prompt_starts: Vec<usize> = Vec::new();
+    let mut user_line_mask = vec![false; lines.len()];
+    for &idx in user_line_indices {
+        if idx < user_line_mask.len() {
+            user_line_mask[idx] = true;
+        }
+    }
+    let mut wrapped_idx = 0usize;
+
+    let mut raw_to_wrapped: Vec<usize> = Vec::with_capacity(lines.len() + 1);
+
+    let mut wrapped_lines: Vec<Line> = Vec::new();
+    for (orig_idx, line) in lines.into_iter().enumerate() {
+        raw_to_wrapped.push(wrapped_idx);
+        let is_user_line = user_line_mask.get(orig_idx).copied().unwrap_or(false);
+        let wrap_width = if is_user_line { user_width } else { full_width };
+        let new_lines = markdown::wrap_line(line, wrap_width);
+        let count = new_lines.len();
+
+        if is_user_line {
+            wrapped_user_prompt_starts.push(wrapped_idx);
+            for i in 0..count {
+                wrapped_user_indices.push(wrapped_idx + i);
+            }
+        }
+
+        wrapped_lines.extend(new_lines);
+        wrapped_idx += count;
+    }
+    raw_to_wrapped.push(wrapped_idx);
+
+    let mut image_regions = Vec::new();
+    for (idx, line) in wrapped_lines.iter().enumerate() {
+        if let Some(hash) = super::mermaid::parse_image_placeholder(line) {
+            let mut height = 1u16;
+            for subsequent in wrapped_lines.iter().skip(idx + 1) {
+                if subsequent.spans.is_empty()
+                    || (subsequent.spans.len() == 1 && subsequent.spans[0].content.is_empty())
+                {
+                    height += 1;
+                } else {
+                    break;
+                }
+            }
+            image_regions.push(ImageRegion {
+                abs_line_idx: idx,
+                hash,
+                height,
+            });
+        }
+    }
+
+    let mut edit_tool_ranges = Vec::new();
+    for (msg_idx, file_path, raw_start, raw_end) in edit_ranges {
+        let start_line = raw_to_wrapped.get(*raw_start).copied().unwrap_or(0);
+        let end_line = raw_to_wrapped.get(*raw_end).copied().unwrap_or(wrapped_lines.len());
+        edit_tool_ranges.push(EditToolRange {
+            msg_index: *msg_idx,
+            file_path: file_path.clone(),
+            start_line,
+            end_line,
+        });
+    }
+
+    PreparedMessages {
+        wrapped_lines,
+        wrapped_user_indices,
+        wrapped_user_prompt_starts,
+        image_regions,
+        edit_tool_ranges,
     }
 }
 
@@ -4910,9 +5095,18 @@ fn hash_json_value(value: &serde_json::Value, hasher: &mut DefaultHasher) {
     use std::hash::Hash;
     match value {
         serde_json::Value::Null => 0u8.hash(hasher),
-        serde_json::Value::Bool(b) => { 1u8.hash(hasher); b.hash(hasher); }
-        serde_json::Value::Number(n) => { 2u8.hash(hasher); n.hash(hasher); }
-        serde_json::Value::String(s) => { 3u8.hash(hasher); s.hash(hasher); }
+        serde_json::Value::Bool(b) => {
+            1u8.hash(hasher);
+            b.hash(hasher);
+        }
+        serde_json::Value::Number(n) => {
+            2u8.hash(hasher);
+            n.hash(hasher);
+        }
+        serde_json::Value::String(s) => {
+            3u8.hash(hasher);
+            s.hash(hasher);
+        }
         serde_json::Value::Array(arr) => {
             4u8.hash(hasher);
             arr.len().hash(hasher);
@@ -5115,10 +5309,7 @@ fn draw_changelog_overlay(frame: &mut Frame, area: Rect, scroll: usize) {
             for entry in &group.entries {
                 lines.push(Line::from(vec![
                     Span::styled("    • ", Style::default().fg(dim_color())),
-                    Span::styled(
-                        entry.clone(),
-                        Style::default().fg(rgb(170, 170, 185)),
-                    ),
+                    Span::styled(entry.clone(), Style::default().fg(rgb(170, 170, 185))),
                 ]));
             }
             lines.push(Line::from(""));
@@ -5197,10 +5388,7 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn sup
     let key_entry = |key: &str, desc: &str| -> Line<'static> {
         Line::from(vec![
             Span::styled("    ", Style::default()),
-            Span::styled(
-                format!("{:<22}", key),
-                key_style,
-            ),
+            Span::styled(format!("{:<22}", key), key_style),
             Span::styled(desc.to_string(), desc_style),
         ])
     };
@@ -5210,17 +5398,26 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn sup
     lines.push(Line::from(Span::styled("  Commands", section_style)));
     lines.push(Line::from(""));
     lines.push(help_entry("/help", "Show this help overlay"));
-    lines.push(help_entry("/help <command>", "Show details for one command"));
+    lines.push(help_entry(
+        "/help <command>",
+        "Show details for one command",
+    ));
     lines.push(help_entry("/model", "List or switch models"));
     lines.push(help_entry("/model <name>", "Switch to a different model"));
-    lines.push(help_entry("/effort <level>", "Set reasoning effort (none|low|medium|high|xhigh)"));
+    lines.push(help_entry(
+        "/effort <level>",
+        "Set reasoning effort (none|low|medium|high|xhigh)",
+    ));
     lines.push(help_entry("/config", "Show active configuration"));
     lines.push(help_entry("/config init", "Create default config file"));
     lines.push(help_entry("/config edit", "Open config in $EDITOR"));
     lines.push(help_entry("/info", "Show session info and token usage"));
     lines.push(help_entry("/usage", "Show subscription usage limits"));
     lines.push(help_entry("/version", "Show version and build details"));
-    lines.push(help_entry("/changelog", "Show recent changes in this build"));
+    lines.push(help_entry(
+        "/changelog",
+        "Show recent changes in this build",
+    ));
 
     lines.push(Line::from(""));
     lines.push(separator());
@@ -5229,13 +5426,25 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn sup
     lines.push(Line::from(Span::styled("  Session", section_style)));
     lines.push(Line::from(""));
     lines.push(help_entry("/clear", "Clear conversation and start fresh"));
-    lines.push(help_entry("/compact", "Summarize old messages to free context"));
-    lines.push(help_entry("/rewind", "Show numbered history, /rewind N to rewind"));
-    lines.push(help_entry("/fix", "Attempt recovery when model cannot continue"));
+    lines.push(help_entry(
+        "/compact",
+        "Summarize old messages to free context",
+    ));
+    lines.push(help_entry(
+        "/rewind",
+        "Show numbered history, /rewind N to rewind",
+    ));
+    lines.push(help_entry(
+        "/fix",
+        "Attempt recovery when model cannot continue",
+    ));
     lines.push(help_entry("/split", "Clone session into a new window"));
     lines.push(help_entry("/resume", "Browse and resume previous sessions"));
     lines.push(help_entry("/save [label]", "Bookmark session for /resume"));
-    lines.push(help_entry("/unsave", "Remove bookmark from current session"));
+    lines.push(help_entry(
+        "/unsave",
+        "Remove bookmark from current session",
+    ));
 
     lines.push(Line::from(""));
     lines.push(separator());
@@ -5244,7 +5453,10 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn sup
     lines.push(Line::from(Span::styled("  Memory & Swarm", section_style)));
     lines.push(Line::from(""));
     lines.push(help_entry("/memory [on|off]", "Toggle memory features"));
-    lines.push(help_entry("/remember", "Extract memories from conversation"));
+    lines.push(help_entry(
+        "/remember",
+        "Extract memories from conversation",
+    ));
     lines.push(help_entry("/swarm [on|off]", "Toggle swarm features"));
 
     lines.push(Line::from(""));
@@ -5254,7 +5466,10 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn sup
     lines.push(Line::from(Span::styled("  Auth & Accounts", section_style)));
     lines.push(Line::from(""));
     lines.push(help_entry("/auth", "Show authentication status"));
-    lines.push(help_entry("/login [provider]", "Interactive or direct login"));
+    lines.push(help_entry(
+        "/login [provider]",
+        "Interactive or direct login",
+    ));
     lines.push(help_entry("/account", "Manage Anthropic OAuth accounts"));
 
     lines.push(Line::from(""));
@@ -5264,12 +5479,18 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn sup
     lines.push(Line::from(Span::styled("  System", section_style)));
     lines.push(Line::from(""));
     lines.push(help_entry("/reload", "Reload to newer binary if available"));
-    lines.push(help_entry("/rebuild", "Full update (git pull + build + tests)"));
+    lines.push(help_entry(
+        "/rebuild",
+        "Full update (git pull + build + tests)",
+    ));
     if app.is_remote_mode() {
         lines.push(help_entry("/client-reload", "Force reload client binary"));
         lines.push(help_entry("/server-reload", "Force reload server binary"));
     }
-    lines.push(help_entry("/debug-visual", "Enable visual debugging for TUI issues"));
+    lines.push(help_entry(
+        "/debug-visual",
+        "Enable visual debugging for TUI issues",
+    ));
     lines.push(help_entry("/quit", "Exit jcode"));
 
     let skills = app.available_skills();
@@ -5300,7 +5521,10 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn sup
     lines.push(separator());
     lines.push(Line::from(""));
 
-    lines.push(Line::from(Span::styled("  Diagrams & Diffs", section_style)));
+    lines.push(Line::from(Span::styled(
+        "  Diagrams & Diffs",
+        section_style,
+    )));
     lines.push(Line::from(""));
     lines.push(key_entry("Alt+M", "Toggle diagram pane"));
     lines.push(key_entry("Alt+T", "Toggle diagram position (side/top)"));
@@ -5309,7 +5533,10 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn sup
     lines.push(key_entry("h/j/k/l / arrows", "Pan diagram (when focused)"));
     lines.push(key_entry("[ / ]", "Zoom diagram (when focused)"));
     lines.push(key_entry("+ / -", "Resize diagram pane"));
-    lines.push(key_entry("Shift+Tab", "Cycle diff mode (Off/Inline/Pinned)"));
+    lines.push(key_entry(
+        "Shift+Tab",
+        "Cycle diff mode (Off/Inline/Pinned)",
+    ));
 
     lines.push(Line::from(""));
     lines.push(separator());
@@ -5317,7 +5544,10 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn sup
 
     lines.push(Line::from(Span::styled("  Input & Editing", section_style)));
     lines.push(Line::from(""));
-    lines.push(key_entry("Ctrl+C / Ctrl+D", "Quit (press twice to confirm)"));
+    lines.push(key_entry(
+        "Ctrl+C / Ctrl+D",
+        "Quit (press twice to confirm)",
+    ));
     lines.push(key_entry("Ctrl+U", "Clear input line"));
     lines.push(key_entry("Ctrl+S", "Stash / pop input (save for later)"));
     lines.push(key_entry("Ctrl+Up", "Retrieve pending message for editing"));
@@ -5569,7 +5799,11 @@ fn draw_pinned_diagram(
     if focused {
         title_parts.push(Span::styled(
             " o open",
-            Style::default().fg(if poor_fit { accent_color() } else { dim_color() }),
+            Style::default().fg(if poor_fit {
+                accent_color()
+            } else {
+                dim_color()
+            }),
         ));
     } else if poor_fit {
         title_parts.push(Span::styled(
@@ -5908,21 +6142,28 @@ fn draw_messages(
                         .alignment(align)]
                     } else {
                         let half = content_width.max(4);
-                        let head: String = text_chars[..half.min(text_chars.len())].iter().collect();
+                        let head: String =
+                            text_chars[..half.min(text_chars.len())].iter().collect();
                         let tail_start = text_chars.len().saturating_sub(half);
                         let tail: String = text_chars[tail_start..].iter().collect();
 
                         let first = Line::from(vec![
                             Span::styled(num_str.clone(), dim_style.fg(dim_color())),
                             Span::styled("› ", dim_style.fg(user_color())),
-                            Span::styled(format!("{} ...", head.trim_end()), dim_style.fg(user_text())),
+                            Span::styled(
+                                format!("{} ...", head.trim_end()),
+                                dim_style.fg(user_text()),
+                            ),
                         ])
                         .alignment(align);
 
                         let padding: String = " ".repeat(prefix_len);
                         let second = Line::from(vec![
                             Span::styled(padding, dim_style),
-                            Span::styled(format!("... {}", tail.trim_start()), dim_style.fg(user_text())),
+                            Span::styled(
+                                format!("... {}", tail.trim_start()),
+                                dim_style.fg(user_text()),
+                            ),
                         ])
                         .alignment(align);
 
@@ -5937,10 +6178,7 @@ fn draw_messages(
                         height: line_count,
                     };
                     clear_area(frame, preview_area);
-                    frame.render_widget(
-                        Paragraph::new(preview_lines),
-                        preview_area,
-                    );
+                    frame.render_widget(Paragraph::new(preview_lines), preview_area);
                 }
             }
         }
@@ -5997,7 +6235,11 @@ fn compute_prompt_preview_line_count(
     let content_width = area_width.saturating_sub(prefix_len as u16 + 2) as usize;
     let text_flat = prompt_text.replace('\n', " ");
     let char_count = text_flat.chars().count();
-    if char_count > content_width { 2 } else { 1 }
+    if char_count > content_width {
+        2
+    } else {
+        1
+    }
 }
 
 /// Truncate text to `max_width`, showing the beginning and end with "..." in the middle.
@@ -6321,10 +6563,7 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
         let model_style = if unavailable {
             Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 0 {
-            Style::default()
-                .fg(Color::White)
-                .bg(rgb(60, 60, 80))
-                .bold()
+            Style::default().fg(Color::White).bg(rgb(60, 60, 80)).bold()
         } else if entry.is_current {
             Style::default().fg(accent_color())
         } else if entry.recommended {
@@ -6399,10 +6638,7 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
         let provider_style = if unavailable {
             Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 1 {
-            Style::default()
-                .fg(Color::White)
-                .bg(rgb(60, 60, 80))
-                .bold()
+            Style::default().fg(Color::White).bg(rgb(60, 60, 80)).bold()
         } else {
             Style::default().fg(rgb(140, 180, 255))
         };
@@ -6422,10 +6658,7 @@ fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
         let via_style = if unavailable {
             Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 2 {
-            Style::default()
-                .fg(Color::White)
-                .bg(rgb(60, 60, 80))
-                .bold()
+            Style::default().fg(Color::White).bg(rgb(60, 60, 80)).bold()
         } else {
             Style::default().fg(rgb(220, 190, 120))
         };
@@ -7850,10 +8083,7 @@ fn draw_input(
             let (cmd, desc) = exact_match.unwrap_or(&suggestions[0]);
             let mut spans = vec![
                 Span::styled("  ", Style::default().fg(dim_color())),
-                Span::styled(
-                    cmd.to_string(),
-                    Style::default().fg(rgb(138, 180, 248)),
-                ),
+                Span::styled(cmd.to_string(), Style::default().fg(rgb(138, 180, 248))),
                 Span::styled(format!(" - {}", desc), Style::default().fg(dim_color())),
             ];
             if suggestions.len() > 1 {
@@ -8154,10 +8384,18 @@ fn wrap_input_text<'a>(
 }
 
 // Colors for diff display (classic green/red)
-fn diff_add_color() -> Color { rgb(100, 200, 100) }
-fn diff_del_color() -> Color { rgb(200, 100, 100) }
-fn diff_highlight_add() -> Color { rgb(150, 255, 150) }
-fn diff_highlight_del() -> Color { rgb(255, 130, 130) }
+fn diff_add_color() -> Color {
+    rgb(100, 200, 100)
+}
+fn diff_del_color() -> Color {
+    rgb(200, 100, 100)
+}
+fn diff_highlight_add() -> Color {
+    rgb(150, 255, 150)
+}
+fn diff_highlight_del() -> Color {
+    rgb(255, 130, 130)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DiffLineKind {
@@ -9899,6 +10137,296 @@ fn draw_pinned_content(
     }
 }
 
+/// File diff view state cache - tracks the currently displayed file and its rendered lines
+struct FileDiffViewCache {
+    file_path: String,
+    msg_index: usize,
+    file_lines: Vec<Line<'static>>,
+    change_line_indices: Vec<usize>,
+    first_change_line: usize,
+}
+
+static FILE_DIFF_CACHE: OnceLock<Mutex<Option<FileDiffViewCache>>> = OnceLock::new();
+
+fn file_diff_cache() -> &'static Mutex<Option<FileDiffViewCache>> {
+    FILE_DIFF_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn find_visible_edit_tool<'a>(
+    edit_ranges: &'a [EditToolRange],
+    scroll: usize,
+    visible_height: usize,
+) -> Option<&'a EditToolRange> {
+    if edit_ranges.is_empty() {
+        return None;
+    }
+
+    let visible_start = scroll;
+    let visible_end = scroll + visible_height;
+    let visible_mid = scroll + visible_height / 2;
+
+    let mut best: Option<&EditToolRange> = None;
+    let mut best_overlap = 0usize;
+    let mut best_distance = usize::MAX;
+
+    for range in edit_ranges {
+        let overlap_start = range.start_line.max(visible_start);
+        let overlap_end = range.end_line.min(visible_end);
+        let overlap = if overlap_end > overlap_start {
+            overlap_end - overlap_start
+        } else {
+            0
+        };
+
+        let range_mid = (range.start_line + range.end_line) / 2;
+        let distance = if range_mid > visible_mid {
+            range_mid - visible_mid
+        } else {
+            visible_mid - range_mid
+        };
+
+        if overlap > best_overlap || (overlap == best_overlap && distance < best_distance) {
+            best = Some(range);
+            best_overlap = overlap;
+            best_distance = distance;
+        }
+    }
+
+    best
+}
+
+fn draw_file_diff_view(
+    frame: &mut Frame,
+    area: Rect,
+    app: &dyn TuiState,
+    prepared: &PreparedMessages,
+    pane_scroll: usize,
+    focused: bool,
+) {
+    use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+
+    if area.width < 10 || area.height < 3 {
+        return;
+    }
+
+    let scroll_offset = app.scroll_offset();
+    let visible_height = area.height as usize;
+
+    let scroll = if app.auto_scroll_paused() {
+        scroll_offset
+    } else {
+        prepared.wrapped_lines.len().saturating_sub(visible_height)
+    };
+
+    let active_range = find_visible_edit_tool(&prepared.edit_tool_ranges, scroll, visible_height);
+
+    let Some(range) = active_range else {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(dim_color()))
+            .title(Line::from(vec![
+                Span::styled(" file ", Style::default().fg(tool_color())),
+            ]));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let msg = Paragraph::new(Line::from(Span::styled(
+            "No edits visible",
+            Style::default().fg(dim_color()),
+        )));
+        frame.render_widget(msg, inner);
+        return;
+    };
+
+    let file_path = &range.file_path;
+    let msg_index = range.msg_index;
+
+    let mut cache = match file_diff_cache().lock() {
+        Ok(c) => c,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    let needs_rebuild = match &*cache {
+        Some(cached) => cached.msg_index != msg_index || cached.file_path != *file_path,
+        None => true,
+    };
+
+    if needs_rebuild {
+        let display_messages = app.display_messages();
+        let msg = display_messages.get(msg_index);
+
+        let (diff_lines, file_content) = if let Some(msg) = msg {
+            let tc = msg.tool_data.as_ref();
+            let diffs = if let Some(tc) = tc {
+                let from_content = collect_diff_lines(&msg.content);
+                if !from_content.is_empty() {
+                    from_content
+                } else {
+                    generate_diff_lines_from_tool_input(tc)
+                }
+            } else {
+                Vec::new()
+            };
+
+            let content = std::fs::read_to_string(file_path).unwrap_or_default();
+            (diffs, content)
+        } else {
+            (Vec::new(), String::new())
+        };
+
+        let file_ext = std::path::Path::new(file_path)
+            .extension()
+            .and_then(|e| e.to_str());
+
+        let added_lines: Vec<String> = diff_lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Add)
+            .map(|l| l.content.clone())
+            .collect();
+
+        let mut rendered_lines: Vec<Line<'static>> = Vec::new();
+        let mut change_line_indices: Vec<usize> = Vec::new();
+        let mut first_change_line = usize::MAX;
+
+        let line_num_width = file_content.lines().count().to_string().len().max(3);
+
+        for (i, line_text) in file_content.lines().enumerate() {
+            let line_num = i + 1;
+            let is_changed = added_lines.iter().any(|added| {
+                let trimmed_added = added.trim();
+                let trimmed_line = line_text.trim();
+                !trimmed_added.is_empty() && !trimmed_line.is_empty() && trimmed_line == trimmed_added
+            });
+
+            let num_style = if is_changed {
+                Style::default().fg(diff_add_color())
+            } else {
+                Style::default().fg(dim_color())
+            };
+
+            let mut spans: Vec<Span<'static>> = Vec::new();
+
+            if is_changed {
+                spans.push(Span::styled(
+                    format!("{:>width$} │+", line_num, width = line_num_width),
+                    num_style,
+                ));
+                change_line_indices.push(rendered_lines.len());
+                if first_change_line == usize::MAX {
+                    first_change_line = rendered_lines.len();
+                }
+            } else {
+                spans.push(Span::styled(
+                    format!("{:>width$} │ ", line_num, width = line_num_width),
+                    num_style,
+                ));
+            }
+
+            if is_changed {
+                let highlighted = markdown::highlight_line(line_text, file_ext);
+                for span in highlighted {
+                    let tinted = tint_span_with_diff_color(span, diff_add_color());
+                    spans.push(tinted);
+                }
+            } else {
+                let highlighted = markdown::highlight_line(line_text, file_ext);
+                spans.extend(highlighted);
+            }
+
+            rendered_lines.push(Line::from(spans));
+        }
+
+        if rendered_lines.is_empty() {
+            rendered_lines.push(Line::from(Span::styled(
+                "File not found or empty",
+                Style::default().fg(dim_color()),
+            )));
+        }
+
+        *cache = Some(FileDiffViewCache {
+            file_path: file_path.clone(),
+            msg_index,
+            file_lines: rendered_lines,
+            change_line_indices,
+            first_change_line,
+        });
+    }
+
+    let cached = cache.as_ref().unwrap();
+
+    let short_path = file_path
+        .rsplit('/')
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("/");
+
+    let change_count = cached.change_line_indices.len();
+
+    let mut title_parts = vec![
+        Span::styled(" ", Style::default().fg(dim_color())),
+        Span::styled(
+            short_path,
+            Style::default()
+                .fg(rgb(180, 200, 255))
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+    ];
+    if change_count > 0 {
+        title_parts.push(Span::styled(
+            format!(" +{}", change_count),
+            Style::default().fg(diff_add_color()),
+        ));
+    }
+    title_parts.push(Span::styled(
+        format!(" {}L ", cached.file_lines.len()),
+        Style::default().fg(dim_color()),
+    ));
+
+    let border_color = if focused { tool_color() } else { dim_color() };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(Line::from(title_parts));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let total_lines = cached.file_lines.len();
+    PINNED_PANE_TOTAL_LINES.store(total_lines, Ordering::Relaxed);
+
+    let max_scroll = total_lines.saturating_sub(inner.height as usize);
+
+    let effective_scroll = if pane_scroll == usize::MAX && cached.first_change_line != usize::MAX {
+        let target = cached
+            .first_change_line
+            .saturating_sub(inner.height as usize / 3);
+        target.min(max_scroll)
+    } else if pane_scroll == usize::MAX {
+        max_scroll
+    } else {
+        pane_scroll.min(max_scroll)
+    };
+
+    let visible_lines: Vec<Line<'static>> = cached
+        .file_lines
+        .iter()
+        .skip(effective_scroll)
+        .take(inner.height as usize)
+        .cloned()
+        .collect();
+
+    let paragraph = Paragraph::new(visible_lines);
+    frame.render_widget(paragraph, inner);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9981,7 +10509,8 @@ mod tests {
 
     #[test]
     fn test_wrap_input_text_empty() {
-        let (lines, cursor_line, cursor_col) = wrap_input_text("", 0, 80, "1", "> ", user_color(), 3);
+        let (lines, cursor_line, cursor_col) =
+            wrap_input_text("", 0, 80, "1", "> ", user_color(), 3);
         assert_eq!(lines.len(), 1);
         assert_eq!(cursor_line, 0);
         assert_eq!(cursor_col, 0);
@@ -10347,7 +10876,10 @@ mod tests {
                 i,
                 line.width(),
                 top_width,
-                line.spans.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>()
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>()
             );
         }
     }
@@ -10365,7 +10897,8 @@ mod tests {
         let bottom_width = lines[lines.len() - 1].width();
         assert_eq!(
             top_width, bottom_width,
-            "emoji title: top={}, bottom={}", top_width, bottom_width
+            "emoji title: top={}, bottom={}",
+            top_width, bottom_width
         );
         for (i, line) in lines.iter().enumerate() {
             assert_eq!(
@@ -10384,11 +10917,7 @@ mod tests {
         let line = Line::from(Span::raw("🧠 hello world"));
         let truncated = truncate_line_to_width(&line, 8);
         let w = truncated.width();
-        assert!(
-            w <= 8,
-            "truncated line display width {} should be <= 8",
-            w
-        );
+        assert!(w <= 8, "truncated line display width {} should be <= 8", w);
     }
 
     #[test]
