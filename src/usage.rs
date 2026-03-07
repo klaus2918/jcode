@@ -6,6 +6,7 @@
 use crate::auth;
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,11 +18,14 @@ const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// OpenAI ChatGPT usage endpoint
 const OPENAI_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
-/// Cache duration (refresh every 60 seconds)
-const CACHE_DURATION: Duration = Duration::from_secs(60);
+/// Cache duration (refresh every 5 minutes - usage data is slow-changing)
+const CACHE_DURATION: Duration = Duration::from_secs(300);
 
 /// Error backoff duration (wait 5 minutes before retrying after auth/credential errors)
 const ERROR_BACKOFF: Duration = Duration::from_secs(300);
+
+/// Rate limit backoff duration (wait 15 minutes before retrying after 429 errors)
+const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(900);
 
 fn mask_email(email: &str) -> String {
     let trimmed = email.trim();
@@ -72,7 +76,9 @@ impl UsageData {
     pub fn is_stale(&self) -> bool {
         match self.fetched_at {
             Some(t) => {
-                let ttl = if self.last_error.is_some() {
+                let ttl = if self.is_rate_limited() {
+                    RATE_LIMIT_BACKOFF
+                } else if self.last_error.is_some() {
                     ERROR_BACKOFF
                 } else {
                     CACHE_DURATION
@@ -81,6 +87,14 @@ impl UsageData {
             }
             None => true,
         }
+    }
+
+    /// Check if the last error was a rate limit (429)
+    fn is_rate_limited(&self) -> bool {
+        self.last_error
+            .as_ref()
+            .map(|e| e.contains("429") || e.contains("rate limit") || e.contains("Rate limited"))
+            .unwrap_or(false)
     }
 
     /// Format five-hour usage as percentage string
@@ -154,7 +168,9 @@ impl OpenAIUsageData {
     pub fn is_stale(&self) -> bool {
         match self.fetched_at {
             Some(t) => {
-                let ttl = if self.last_error.is_some() {
+                let ttl = if self.is_rate_limited() {
+                    RATE_LIMIT_BACKOFF
+                } else if self.last_error.is_some() {
                     ERROR_BACKOFF
                 } else {
                     CACHE_DURATION
@@ -165,14 +181,56 @@ impl OpenAIUsageData {
         }
     }
 
+    fn is_rate_limited(&self) -> bool {
+        self.last_error
+            .as_ref()
+            .map(|e| e.contains("429") || e.contains("rate limit") || e.contains("Rate limited"))
+            .unwrap_or(false)
+    }
+
     pub fn has_limits(&self) -> bool {
         self.five_hour.is_some() || self.seven_day.is_some() || self.spark.is_some()
     }
 }
 
+/// Cached provider usage reports (used by /usage command).
+/// Keyed by provider display name.
+static PROVIDER_USAGE_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<String, (Instant, ProviderUsage)>>,
+> = std::sync::OnceLock::new();
+
+/// Minimum interval between /usage command fetches (per provider).
+const PROVIDER_USAGE_CACHE_TTL: Duration = Duration::from_secs(120);
+
 /// Fetch usage from all connected providers with OAuth credentials.
 /// Returns a list of ProviderUsage, one per provider that has credentials.
+/// Results are cached for 2 minutes to avoid hitting rate limits.
 pub async fn fetch_all_provider_usage() -> Vec<ProviderUsage> {
+    let cache = PROVIDER_USAGE_CACHE
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+
+    let now = Instant::now();
+    let all_fresh = if let Ok(map) = cache.lock() {
+        !map.is_empty() && map.values().all(|(fetched_at, report)| {
+            let ttl = if report.error.as_ref().map(|e| {
+                e.contains("429") || e.contains("rate limit") || e.contains("Rate limited")
+            }).unwrap_or(false) {
+                RATE_LIMIT_BACKOFF
+            } else {
+                PROVIDER_USAGE_CACHE_TTL
+            };
+            now.duration_since(*fetched_at) < ttl
+        })
+    } else {
+        false
+    };
+
+    if all_fresh {
+        if let Ok(map) = cache.lock() {
+            return map.values().map(|(_, r)| r.clone()).collect();
+        }
+    }
+
     let mut results = Vec::new();
 
     let (anthropic_results, openai, openrouter, copilot) = tokio::join!(
@@ -191,6 +249,14 @@ pub async fn fetch_all_provider_usage() -> Vec<ProviderUsage> {
     }
     if let Some(r) = copilot {
         results.push(r);
+    }
+
+    if let Ok(mut map) = cache.lock() {
+        map.clear();
+        let now = Instant::now();
+        for r in &results {
+            map.insert(r.provider_name.clone(), (now, r.clone()));
+        }
     }
 
     results
@@ -783,6 +849,7 @@ async fn fetch_openrouter_usage_report() -> Option<ProviderUsage> {
         .ok()
         .or_else(|| {
             let config_path = dirs::config_dir()?.join("jcode").join("openrouter.env");
+            crate::storage::harden_secret_file_permissions(&config_path);
             let content = std::fs::read_to_string(config_path).ok()?;
             content
                 .lines()
@@ -1320,18 +1387,59 @@ pub fn has_extra_usage() -> bool {
 /// Fetch usage data for a specific Anthropic account token (blocking).
 /// Used for account rotation - checks if a particular account is exhausted.
 /// Returns an error if the fetch fails (network, auth, etc.).
+/// Results are cached per-account to avoid hammering the API.
 pub fn fetch_usage_for_account_sync(
     access_token: &str,
     refresh_token: &str,
     expires_at: i64,
 ) -> Result<UsageData> {
-    tokio::task::block_in_place(|| {
+    static ACCOUNT_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, UsageData>>> =
+        std::sync::OnceLock::new();
+    let cache = ACCOUNT_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+
+    let cache_key = if access_token.len() > 20 {
+        access_token[..20].to_string()
+    } else {
+        access_token.to_string()
+    };
+
+    if let Ok(map) = cache.lock() {
+        if let Some(cached) = map.get(&cache_key) {
+            if !cached.is_stale() {
+                return Ok(cached.clone());
+            }
+        }
+    }
+
+    let result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(fetch_usage_for_account(
             access_token.to_string(),
             refresh_token.to_string(),
             expires_at,
         ))
-    })
+    });
+
+    if let Ok(ref data) = result {
+        if let Ok(mut map) = cache.lock() {
+            map.insert(cache_key, data.clone());
+        }
+    } else if let Err(ref e) = result {
+        let err_msg = e.to_string();
+        if err_msg.contains("429") || err_msg.contains("rate limit") {
+            if let Ok(mut map) = cache.lock() {
+                map.insert(
+                    cache_key,
+                    UsageData {
+                        fetched_at: Some(Instant::now()),
+                        last_error: Some(err_msg),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+
+    result
 }
 
 async fn fetch_usage_for_account(
