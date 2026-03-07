@@ -35,6 +35,10 @@ pub fn jcode_dir() -> Result<PathBuf> {
     Ok(home.join(".jcode"))
 }
 
+pub fn logs_dir() -> Result<PathBuf> {
+    Ok(jcode_dir()?.join("logs"))
+}
+
 /// Resolve a path under the user's home directory, but sandbox it under
 /// `$JCODE_HOME/external/` when `JCODE_HOME` is set.
 ///

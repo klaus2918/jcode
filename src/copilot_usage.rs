@@ -11,9 +11,8 @@ use std::sync::Mutex;
 static TRACKER: Mutex<Option<CopilotUsageTracker>> = Mutex::new(None);
 
 fn usage_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".jcode")
+    crate::storage::jcode_dir()
+        .unwrap_or_else(|_| PathBuf::from(".").join(".jcode"))
         .join("copilot_usage.json")
 }
 
@@ -53,20 +52,12 @@ pub struct AllTimeUsage {
 impl CopilotUsageTracker {
     fn load() -> Self {
         let path = usage_path();
-        match std::fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => Self::default(),
-        }
+        crate::storage::read_json(&path).unwrap_or_default()
     }
 
     fn save(&self) {
         let path = usage_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(&path, json);
-        }
+        let _ = crate::storage::write_json(&path, self);
     }
 
     fn roll_if_needed(&mut self) {
@@ -129,4 +120,98 @@ pub fn get_usage() -> CopilotUsageTracker {
     let tracker = guard.get_or_insert_with(CopilotUsageTracker::load);
     tracker.roll_if_needed();
     tracker.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{usage_path, AllTimeUsage, CopilotUsageTracker, DayUsage, MonthUsage, TRACKER};
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        let mutex = ENV_LOCK.get_or_init(|| Mutex::new(()));
+        match mutex.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(prev) = &self.prev {
+                std::env::set_var(self.key, prev);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn clear_tracker() {
+        if let Ok(mut tracker) = TRACKER.lock() {
+            *tracker = None;
+        }
+    }
+
+    #[test]
+    fn usage_path_respects_jcode_home() {
+        let _env_lock = lock_env();
+        clear_tracker();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path().as_os_str());
+
+        assert_eq!(usage_path(), temp.path().join("copilot_usage.json"));
+    }
+
+    #[test]
+    fn save_and_load_roundtrip_under_jcode_home() {
+        let _env_lock = lock_env();
+        clear_tracker();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path().as_os_str());
+
+        let tracker = CopilotUsageTracker {
+            today: DayUsage {
+                date: "2026-03-06".to_string(),
+                requests: 2,
+                premium_requests: 1,
+                input_tokens: 100,
+                output_tokens: 50,
+            },
+            month: MonthUsage {
+                month: "2026-03".to_string(),
+                requests: 2,
+                premium_requests: 1,
+                input_tokens: 100,
+                output_tokens: 50,
+            },
+            all_time: AllTimeUsage {
+                requests: 2,
+                premium_requests: 1,
+                input_tokens: 100,
+                output_tokens: 50,
+            },
+        };
+
+        tracker.save();
+        let loaded = CopilotUsageTracker::load();
+
+        assert_eq!(loaded.today.date, "2026-03-06");
+        assert_eq!(loaded.today.requests, 2);
+        assert_eq!(loaded.all_time.output_tokens, 50);
+    }
 }

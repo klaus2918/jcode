@@ -171,10 +171,14 @@ pub struct Logger {
     path: PathBuf,
 }
 
+fn log_dir() -> Option<PathBuf> {
+    crate::storage::logs_dir().ok()
+}
+
 impl Logger {
     fn new() -> Option<Self> {
-        let log_dir = dirs::home_dir()?.join(".jcode").join("logs");
-        fs::create_dir_all(&log_dir).ok()?;
+        let log_dir = log_dir()?;
+        crate::storage::ensure_dir(&log_dir).ok()?;
 
         // Use date-based log file
         let date = Local::now().format("%Y-%m-%d");
@@ -279,14 +283,14 @@ pub fn current_session() -> Option<String> {
 
 /// Get path to today's log file
 pub fn log_path() -> Option<PathBuf> {
-    let log_dir = dirs::home_dir()?.join(".jcode").join("logs");
+    let log_dir = log_dir()?;
     let date = Local::now().format("%Y-%m-%d");
     Some(log_dir.join(format!("jcode-{}.log", date)))
 }
 
 /// Clean up old logs (keep last 7 days)
 pub fn cleanup_old_logs() {
-    if let Some(log_dir) = dirs::home_dir().map(|h| h.join(".jcode").join("logs")) {
+    if let Some(log_dir) = log_dir() {
         if let Ok(entries) = fs::read_dir(&log_dir) {
             let cutoff = Local::now() - chrono::Duration::days(7);
             for entry in entries.flatten() {
