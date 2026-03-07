@@ -1642,7 +1642,7 @@ impl App {
     }
 
     fn diff_pane_visible(&self) -> bool {
-        self.diff_mode.is_pinned()
+        self.diff_mode.has_side_pane()
     }
 
     fn set_diff_pane_focus(&mut self, focus: bool) {
@@ -5976,10 +5976,10 @@ impl App {
             return Ok(());
         }
 
-        // Shift+Tab: cycle diff mode (Off → Inline → Pinned)
+        // Shift+Tab: cycle diff mode (Off → Inline → Pinned → File)
         if code == KeyCode::BackTab {
             self.diff_mode = self.diff_mode.cycle();
-            if !self.diff_mode.is_pinned() {
+            if !self.diff_mode.has_side_pane() {
                 self.diff_pane_focus = false;
             }
             let status = format!("Diffs: {}", self.diff_mode.label());
@@ -6907,10 +6907,10 @@ impl App {
             return Ok(());
         }
 
-        // Shift+Tab: cycle diff mode (Off → Inline → Pinned)
+        // Shift+Tab: cycle diff mode (Off → Inline → Pinned → File)
         if code == KeyCode::BackTab {
             self.diff_mode = self.diff_mode.cycle();
-            if !self.diff_mode.is_pinned() {
+            if !self.diff_mode.has_side_pane() {
                 self.diff_pane_focus = false;
             }
             let status = format!("Diffs: {}", self.diff_mode.label());
@@ -13827,7 +13827,7 @@ impl App {
         let is_tool = message.role == "tool";
         self.display_messages.push(message);
         self.bump_display_messages_version();
-        if is_tool && self.diff_mode.is_pinned() && self.diff_pane_auto_scroll {
+        if is_tool && self.diff_mode.has_side_pane() && self.diff_pane_auto_scroll {
             self.diff_pane_scroll = usize::MAX;
         }
     }

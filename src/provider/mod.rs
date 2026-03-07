@@ -1025,6 +1025,9 @@ pub struct MultiProvider {
     /// Notifications generated during provider/account auto-selection.
     /// The TUI should drain and display these on session start.
     startup_notices: RwLock<Vec<String>>,
+    /// Optional explicit provider lock set by CLI `--provider`.
+    /// When present, cross-provider fallback is disabled.
+    forced_provider: Option<ActiveProvider>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1088,6 +1091,67 @@ impl FailoverDecision {
 }
 
 impl MultiProvider {
+    fn auto_default_provider(
+        openai: bool,
+        claude: bool,
+        copilot: bool,
+        openrouter: bool,
+        copilot_premium_zero: bool,
+    ) -> ActiveProvider {
+        if copilot_premium_zero && copilot {
+            ActiveProvider::Copilot
+        } else if openai {
+            ActiveProvider::OpenAI
+        } else if claude {
+            ActiveProvider::Claude
+        } else if copilot {
+            ActiveProvider::Copilot
+        } else if openrouter {
+            ActiveProvider::OpenRouter
+        } else {
+            ActiveProvider::Claude
+        }
+    }
+
+    fn parse_provider_hint(value: &str) -> Option<ActiveProvider> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "claude" | "anthropic" => Some(ActiveProvider::Claude),
+            "openai" => Some(ActiveProvider::OpenAI),
+            "copilot" => Some(ActiveProvider::Copilot),
+            "openrouter" => Some(ActiveProvider::OpenRouter),
+            _ => None,
+        }
+    }
+
+    fn forced_provider_from_env() -> Option<ActiveProvider> {
+        let force = std::env::var("JCODE_FORCE_PROVIDER")
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+        if !force {
+            return None;
+        }
+
+        std::env::var("JCODE_ACTIVE_PROVIDER")
+            .ok()
+            .and_then(|value| Self::parse_provider_hint(&value))
+    }
+
+    fn fallback_sequence_for(
+        active: ActiveProvider,
+        forced_provider: Option<ActiveProvider>,
+    ) -> Vec<ActiveProvider> {
+        if let Some(forced) = forced_provider {
+            if active == forced {
+                vec![forced]
+            } else {
+                vec![active, forced]
+            }
+        } else {
+            Self::fallback_sequence(active)
+        }
+    }
+
     fn provider_label(provider: ActiveProvider) -> &'static str {
         match provider {
             ActiveProvider::Claude => "Anthropic",
@@ -1285,7 +1349,7 @@ impl MultiProvider {
         self.spawn_openai_catalog_refresh_if_needed();
 
         let active = self.active_provider();
-        let sequence = Self::fallback_sequence(active);
+        let sequence = Self::fallback_sequence_for(active, self.forced_provider);
         let mut notes: Vec<String> = Vec::new();
 
         for candidate in sequence {
@@ -1623,41 +1687,46 @@ impl MultiProvider {
             std::env::var("JCODE_COPILOT_PREMIUM").ok().as_deref(),
             Some("0")
         );
-        let mut active = if copilot_premium_zero && copilot_api.is_some() {
+        let mut active = Self::auto_default_provider(
+            openai.is_some(),
+            claude.is_some() || anthropic.is_some(),
+            copilot_api.is_some(),
+            openrouter.is_some(),
+            copilot_premium_zero,
+        );
+
+        if copilot_premium_zero && matches!(active, ActiveProvider::Copilot) {
             crate::logging::info(
                 "Copilot premium mode is Zero (free requests) - defaulting to Copilot provider",
             );
-            ActiveProvider::Copilot
-        } else if claude.is_some() || anthropic.is_some() {
-            ActiveProvider::Claude
-        } else if openai.is_some() {
-            ActiveProvider::OpenAI
-        } else if copilot_api.is_some() {
-            ActiveProvider::Copilot
-        } else if openrouter.is_some() {
-            ActiveProvider::OpenRouter
-        } else {
-            // No credentials - default to Claude (will fail on use)
-            ActiveProvider::Claude
-        };
+        }
 
-        // Apply configured default_provider from config/env if the provider is available
+        let forced_provider = Self::forced_provider_from_env();
+
+        // Apply configured default_provider from config/env if the provider is available,
+        // unless CLI/provider lock explicitly forced one via env.
         let cfg = crate::config::config();
-        if let Some(ref pref) = cfg.provider.default_provider {
-            let preferred = match pref.as_str() {
-                "claude" | "anthropic" => Some(ActiveProvider::Claude),
-                "openai" => Some(ActiveProvider::OpenAI),
-                "copilot" => Some(ActiveProvider::Copilot),
-                "openrouter" => Some(ActiveProvider::OpenRouter),
-                _ => {
-                    crate::logging::warn(&format!(
-                        "Unknown default_provider '{}' in config (expected: claude|openai|copilot|openrouter)",
-                        pref
-                    ));
-                    None
-                }
+        if let Some(forced) = forced_provider {
+            active = forced;
+            let is_configured = match forced {
+                ActiveProvider::Claude => claude.is_some() || anthropic.is_some(),
+                ActiveProvider::OpenAI => openai.is_some(),
+                ActiveProvider::Copilot => copilot_api.is_some(),
+                ActiveProvider::OpenRouter => openrouter.is_some(),
             };
-            if let Some(pref_provider) = preferred {
+            if is_configured {
+                crate::logging::info(&format!(
+                    "Using forced provider '{}' from CLI/environment",
+                    Self::provider_key(forced)
+                ));
+            } else {
+                crate::logging::warn(&format!(
+                    "Forced provider '{}' is not configured; requests will fail until credentials are available",
+                    Self::provider_key(forced)
+                ));
+            }
+        } else if let Some(ref pref) = cfg.provider.default_provider {
+            if let Some(pref_provider) = Self::parse_provider_hint(pref) {
                 let is_configured = match pref_provider {
                     ActiveProvider::Claude => claude.is_some() || anthropic.is_some(),
                     ActiveProvider::OpenAI => openai.is_some(),
@@ -1676,6 +1745,11 @@ impl MultiProvider {
                         pref
                     ));
                 }
+            } else {
+                crate::logging::warn(&format!(
+                    "Unknown default_provider '{}' in config (expected: claude|openai|copilot|openrouter)",
+                    pref
+                ));
             }
         }
 
@@ -1691,6 +1765,7 @@ impl MultiProvider {
             has_openrouter_creds,
             use_claude_cli,
             startup_notices: RwLock::new(Vec::new()),
+            forced_provider,
         };
 
         // Apply configured default_model from config/env
@@ -1717,7 +1792,7 @@ impl MultiProvider {
     /// Create with explicit initial provider preference
     pub fn with_preference(prefer_openai: bool) -> Self {
         let provider = Self::new();
-        if prefer_openai && provider.openai.is_some() {
+        if provider.forced_provider.is_none() && prefer_openai && provider.openai.is_some() {
             *provider.active.write().unwrap() = ActiveProvider::OpenAI;
         }
         provider
@@ -1944,6 +2019,23 @@ impl Provider for MultiProvider {
 
         // Handle explicit "copilot:" prefix from model picker
         if let Some(copilot_model) = model.strip_prefix("copilot:") {
+            if let Some(forced) = self.forced_provider {
+                if forced != ActiveProvider::Copilot {
+                    let copilot_guard = self.copilot_api.read().unwrap();
+                    if copilot_guard.is_none() {
+                        anyhow::bail!(
+                            "Model '{}' requires GitHub Copilot but Copilot credentials are not configured. Run `jcode login --provider copilot` first.",
+                            copilot_model
+                        );
+                    }
+                    drop(copilot_guard);
+                    crate::logging::info(&format!(
+                        "Switching from {} to GitHub Copilot for model '{}'",
+                        Self::provider_label(forced),
+                        copilot_model,
+                    ));
+                }
+            }
             let copilot_guard = self.copilot_api.read().unwrap();
             if copilot_guard.is_some() {
                 *self.active.write().unwrap() = ActiveProvider::Copilot;
@@ -1953,6 +2045,11 @@ impl Provider for MultiProvider {
                 return Ok(());
             }
             drop(copilot_guard);
+            if self.forced_provider == Some(ActiveProvider::Copilot) {
+                return Err(anyhow::anyhow!(
+                    "GitHub Copilot is locked by --provider but is not configured. Run `jcode login --provider copilot`."
+                ));
+            }
             // Copilot not available - fall through with the bare model name
             // so we can try routing it to another provider (e.g. claude-opus-4.6
             // can be served by Anthropic as claude-opus-4-6).
@@ -1973,6 +2070,43 @@ impl Provider for MultiProvider {
 
         // Detect which provider this model belongs to
         let target_provider = provider_for_model(model);
+        if let Some(forced) = self.forced_provider {
+            if let Some(target) = target_provider {
+                let target_active = match target {
+                    "claude" => ActiveProvider::Claude,
+                    "openai" => ActiveProvider::OpenAI,
+                    "openrouter" => ActiveProvider::OpenRouter,
+                    _ => forced,
+                };
+                if target_active != forced {
+                    let has_target_creds = match target_active {
+                        ActiveProvider::Claude => {
+                            self.claude.is_some() || self.anthropic.is_some()
+                        }
+                        ActiveProvider::OpenAI => self.openai.is_some(),
+                        ActiveProvider::OpenRouter => self.openrouter.is_some(),
+                        ActiveProvider::Copilot => {
+                            self.copilot_api.read().unwrap().is_some()
+                        }
+                    };
+                    if !has_target_creds {
+                        anyhow::bail!(
+                            "Model '{}' belongs to {} but {} credentials are not configured. Run `jcode login --provider {}` first.",
+                            model,
+                            Self::provider_label(target_active),
+                            Self::provider_label(target_active),
+                            Self::provider_key(target_active),
+                        );
+                    }
+                    crate::logging::info(&format!(
+                        "Switching from {} to {} for model '{}'",
+                        Self::provider_label(forced),
+                        Self::provider_label(target_active),
+                        model,
+                    ));
+                }
+            }
+        }
 
         if target_provider == Some("claude") {
             if self.claude.is_none() && self.anthropic.is_none() {
@@ -2554,6 +2688,7 @@ impl Provider for MultiProvider {
             has_openrouter_creds: self.has_openrouter_creds,
             use_claude_cli: self.use_claude_cli,
             startup_notices: RwLock::new(Vec::new()),
+            forced_provider: self.forced_provider,
         };
 
         provider.spawn_openai_catalog_refresh_if_needed();
@@ -2731,6 +2866,92 @@ mod tests {
                 ActiveProvider::Copilot,
             ]
         );
+    }
+
+    #[test]
+    fn test_parse_provider_hint_supports_known_values() {
+        assert_eq!(
+            MultiProvider::parse_provider_hint("claude"),
+            Some(ActiveProvider::Claude)
+        );
+        assert_eq!(
+            MultiProvider::parse_provider_hint("Anthropic"),
+            Some(ActiveProvider::Claude)
+        );
+        assert_eq!(
+            MultiProvider::parse_provider_hint("openai"),
+            Some(ActiveProvider::OpenAI)
+        );
+        assert_eq!(
+            MultiProvider::parse_provider_hint("copilot"),
+            Some(ActiveProvider::Copilot)
+        );
+        assert_eq!(
+            MultiProvider::parse_provider_hint("openrouter"),
+            Some(ActiveProvider::OpenRouter)
+        );
+        assert_eq!(MultiProvider::parse_provider_hint("cursor"), None);
+    }
+
+    #[test]
+    fn test_forced_provider_disables_cross_provider_fallback_sequence() {
+        assert_eq!(
+            MultiProvider::fallback_sequence_for(
+                ActiveProvider::Claude,
+                Some(ActiveProvider::OpenAI)
+            ),
+            vec![ActiveProvider::Claude, ActiveProvider::OpenAI]
+        );
+        assert_eq!(
+            MultiProvider::fallback_sequence_for(
+                ActiveProvider::OpenAI,
+                Some(ActiveProvider::OpenAI)
+            ),
+            vec![ActiveProvider::OpenAI]
+        );
+        assert_eq!(
+            MultiProvider::fallback_sequence_for(ActiveProvider::Claude, None),
+            MultiProvider::fallback_sequence(ActiveProvider::Claude)
+        );
+    }
+
+    #[test]
+    fn test_set_model_rejects_cross_provider_without_creds() {
+        let provider = MultiProvider {
+            claude: None,
+            anthropic: None,
+            openai: None,
+            copilot_api: RwLock::new(None),
+            openrouter: None,
+            active: RwLock::new(ActiveProvider::OpenAI),
+            has_claude_creds: false,
+            has_openai_creds: false,
+            has_openrouter_creds: false,
+            use_claude_cli: false,
+            startup_notices: RwLock::new(Vec::new()),
+            forced_provider: Some(ActiveProvider::OpenAI),
+        };
+
+        let err = provider
+            .set_model("claude-sonnet-4-6")
+            .expect_err("model routing should reject when target provider has no creds");
+        assert!(
+            err.to_string().contains("credentials are not configured"),
+            "expected credentials error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_auto_default_prefers_openai_over_claude_when_both_available() {
+        let active = MultiProvider::auto_default_provider(true, true, false, false, false);
+        assert_eq!(active, ActiveProvider::OpenAI);
+    }
+
+    #[test]
+    fn test_auto_default_prefers_copilot_when_zero_premium_mode_enabled() {
+        let active = MultiProvider::auto_default_provider(true, true, true, true, true);
+        assert_eq!(active, ActiveProvider::Copilot);
     }
 
     #[test]
