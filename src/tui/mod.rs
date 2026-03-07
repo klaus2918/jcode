@@ -5,6 +5,7 @@ mod core;
 pub mod image;
 pub mod info_widget;
 mod keybind;
+mod layout_utils;
 pub mod markdown;
 pub mod mermaid;
 pub mod permissions;

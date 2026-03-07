@@ -22,7 +22,7 @@ use crossterm::event::{
     MouseEventKind,
 };
 use futures::StreamExt;
-use ratatui::{layout::Rect, DefaultTerminal};
+use ratatui::DefaultTerminal;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -438,46 +438,6 @@ struct ScrollTestState {
     diagram_pane_enabled: bool,
     diagram_pane_position: crate::config::DiagramPanePosition,
     diagram_zoom: u8,
-}
-
-fn rect_from_capture(rect: super::visual_debug::RectCapture) -> Rect {
-    Rect {
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height,
-    }
-}
-
-fn rect_contains(outer: Rect, inner: Rect) -> bool {
-    inner.x >= outer.x
-        && inner.y >= outer.y
-        && inner.x.saturating_add(inner.width) <= outer.x.saturating_add(outer.width)
-        && inner.y.saturating_add(inner.height) <= outer.y.saturating_add(outer.height)
-}
-
-fn point_in_rect(col: u16, row: u16, rect: Rect) -> bool {
-    col >= rect.x
-        && row >= rect.y
-        && col < rect.x.saturating_add(rect.width)
-        && row < rect.y.saturating_add(rect.height)
-}
-
-fn parse_area_spec(spec: &str) -> Option<Rect> {
-    let mut parts = spec.split('+');
-    let size = parts.next()?;
-    let x = parts.next()?;
-    let y = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let (w, h) = size.split_once('x')?;
-    Some(Rect {
-        width: w.parse::<u16>().ok()?,
-        height: h.parse::<u16>().ok()?,
-        x: x.parse::<u16>().ok()?,
-        y: y.parse::<u16>().ok()?,
-    })
 }
 
 fn mask_email(email: &str) -> String {
@@ -1932,10 +1892,12 @@ impl App {
         let mut over_diff_pane = false;
         if let Some(layout) = layout {
             if let Some(diagram_area) = layout.diagram_area {
-                over_diagram = point_in_rect(mouse.column, mouse.row, diagram_area);
+                over_diagram =
+                    super::layout_utils::point_in_rect(mouse.column, mouse.row, diagram_area);
             }
             if let Some(diff_area) = layout.diff_pane_area {
-                over_diff_pane = point_in_rect(mouse.column, mouse.row, diff_area);
+                over_diff_pane =
+                    super::layout_utils::point_in_rect(mouse.column, mouse.row, diff_area);
             }
             if diagram_available && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
                 if over_diagram {
@@ -2204,7 +2166,7 @@ impl App {
             None => (None, false, format!("{:?}", self.diagram_mode)),
         };
 
-        let diagram_area_rect = diagram_area_capture.map(rect_from_capture);
+        let diagram_area_rect = diagram_area_capture.map(super::layout_utils::rect_from_capture);
         let diagram_area_json = diagram_area_capture.map(|rect| {
             serde_json::json!({
                 "x": rect.x,
@@ -2223,9 +2185,9 @@ impl App {
                 let last_area = entry
                     .get("last_area")
                     .and_then(|v| v.as_str())
-                    .and_then(parse_area_spec);
+                    .and_then(super::layout_utils::parse_area_spec);
                 if let Some(render_area) = last_area {
-                    if rect_contains(area, render_area) {
+                    if super::layout_utils::rect_contains(area, render_area) {
                         diagram_rendered_in_pane = true;
                         break;
                     }
@@ -16289,6 +16251,7 @@ fn gather_git_info_inner() -> Option<super::info_widget::GitInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::layout::Rect;
 
     // Mock provider for testing
     struct MockProvider;
