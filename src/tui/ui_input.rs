@@ -1,0 +1,783 @@
+use super::visual_debug::{self, FrameCaptureBuilder};
+use super::{
+    accent_color, ai_color, animated_tool_color, asap_color, dim_color, format_elapsed,
+    get_tool_summary, is_unexpected_cache_miss, pending_color, queued_color, rainbow_prompt_color,
+    user_color, ProcessingStatus, TuiState,
+};
+use crate::tui::color_support::rgb;
+use ratatui::{prelude::*, widgets::Paragraph};
+
+pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
+    let (icon, _) = send_mode_indicator(app);
+    if icon.is_empty() {
+        0
+    } else {
+        2
+    }
+}
+
+pub(super) fn pending_prompt_count(app: &dyn TuiState) -> usize {
+    let pending_count = if app.is_processing() {
+        app.pending_soft_interrupts().len()
+    } else {
+        0
+    };
+    let interleave = app.is_processing()
+        && app
+            .interleave_message()
+            .map(|msg| !msg.is_empty())
+            .unwrap_or(false);
+    app.queued_messages().len() + pending_count + if interleave { 1 } else { 0 }
+}
+
+pub(super) fn pending_queue_preview(app: &dyn TuiState) -> Vec<String> {
+    let mut previews = Vec::new();
+    if app.is_processing() {
+        for msg in app.pending_soft_interrupts() {
+            if !msg.is_empty() {
+                previews.push(format!("↻ {}", msg.chars().take(100).collect::<String>()));
+            }
+        }
+        if let Some(msg) = app.interleave_message() {
+            if !msg.is_empty() {
+                previews.push(format!("⚡ {}", msg.chars().take(100).collect::<String>()));
+            }
+        }
+    }
+    for msg in app.queued_messages() {
+        previews.push(format!("⏳ {}", msg.chars().take(100).collect::<String>()));
+    }
+    previews
+}
+
+pub(super) fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, start_num: usize) {
+    let mut items: Vec<(QueuedMsgType, &str)> = Vec::new();
+    if app.is_processing() {
+        for msg in app.pending_soft_interrupts() {
+            if !msg.is_empty() {
+                items.push((QueuedMsgType::Pending, msg.as_str()));
+            }
+        }
+        if let Some(msg) = app.interleave_message() {
+            if !msg.is_empty() {
+                items.push((QueuedMsgType::Interleave, msg));
+            }
+        }
+    }
+    for msg in app.queued_messages() {
+        items.push((QueuedMsgType::Queued, msg.as_str()));
+    }
+
+    let pending_count = items.len();
+    let lines: Vec<Line> = items
+        .iter()
+        .take(3)
+        .enumerate()
+        .map(|(i, (msg_type, msg))| {
+            let distance = pending_count.saturating_sub(i);
+            let num_color = rainbow_prompt_color(distance);
+            let (indicator, indicator_color, msg_color, dim) = match msg_type {
+                QueuedMsgType::Pending => ("↻", pending_color(), pending_color(), false),
+                QueuedMsgType::Interleave => ("⚡", asap_color(), asap_color(), false),
+                QueuedMsgType::Queued => ("⏳", queued_color(), queued_color(), true),
+            };
+            let mut msg_style = Style::default().fg(msg_color);
+            if dim {
+                msg_style = msg_style.dim();
+            }
+            Line::from(vec![
+                Span::styled(format!("{}", start_num + i), Style::default().fg(num_color)),
+                Span::raw(" "),
+                Span::styled(indicator, Style::default().fg(indicator_color)),
+                Span::raw(" "),
+                Span::styled(*msg, msg_style),
+            ])
+        })
+        .collect();
+
+    let paragraph = if app.centered_mode() {
+        Paragraph::new(
+            lines
+                .iter()
+                .map(|line| line.clone().alignment(Alignment::Center))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        Paragraph::new(lines)
+    };
+    frame.render_widget(paragraph, area);
+}
+
+pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count: usize) {
+    let elapsed = app.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
+    let stale_secs = app.time_since_activity().map(|d| d.as_secs_f32());
+    let (cache_read, cache_creation) = app.streaming_cache_tokens();
+    let user_turn_count = app
+        .display_messages()
+        .iter()
+        .filter(|m| m.role == "user")
+        .count();
+    let unexpected_cache_miss =
+        is_unexpected_cache_miss(user_turn_count, cache_read, cache_creation);
+
+    let queued_suffix = if pending_count > 0 {
+        format!(" · +{} queued", pending_count)
+    } else {
+        String::new()
+    };
+
+    let mut line = if let Some(build_progress) = crate::build::read_build_progress() {
+        let spinner_idx = (elapsed * 12.5) as usize % super::SPINNER_FRAMES.len();
+        let spinner = super::SPINNER_FRAMES[spinner_idx];
+        Line::from(vec![
+            Span::styled(spinner, Style::default().fg(rgb(255, 193, 7))),
+            Span::styled(
+                format!(" {}", build_progress),
+                Style::default().fg(rgb(255, 193, 7)),
+            ),
+        ])
+    } else if let Some(remaining) = app.rate_limit_remaining() {
+        let secs = remaining.as_secs();
+        let spinner_idx = (elapsed * 4.0) as usize % super::SPINNER_FRAMES.len();
+        let spinner = super::SPINNER_FRAMES[spinner_idx];
+        let time_str = if secs >= 3600 {
+            let hours = secs / 3600;
+            let mins = (secs % 3600) / 60;
+            format!("{}h {}m", hours, mins)
+        } else if secs >= 60 {
+            let mins = secs / 60;
+            let s = secs % 60;
+            format!("{}m {}s", mins, s)
+        } else {
+            format!("{}s", secs)
+        };
+        Line::from(vec![
+            Span::styled(spinner, Style::default().fg(rgb(255, 193, 7))),
+            Span::styled(
+                format!(
+                    " Rate limited. Auto-retry in {}...{}",
+                    time_str, queued_suffix
+                ),
+                Style::default().fg(rgb(255, 193, 7)),
+            ),
+        ])
+    } else if app.is_processing() {
+        let spinner_idx = (elapsed * 12.5) as usize % super::SPINNER_FRAMES.len();
+        let spinner = super::SPINNER_FRAMES[spinner_idx];
+
+        match app.status() {
+            ProcessingStatus::Idle => Line::from(""),
+            ProcessingStatus::Sending => {
+                let mut spans = vec![
+                    Span::styled(spinner, Style::default().fg(ai_color())),
+                    Span::styled(
+                        format!(" sending… {}", format_elapsed(elapsed)),
+                        Style::default().fg(dim_color()),
+                    ),
+                ];
+                if !queued_suffix.is_empty() {
+                    spans.push(Span::styled(
+                        queued_suffix.clone(),
+                        Style::default().fg(queued_color()),
+                    ));
+                }
+                Line::from(spans)
+            }
+            ProcessingStatus::Connecting(ref phase) => {
+                let label = format!(" {}… {}", phase, format_elapsed(elapsed));
+                let label_color = if elapsed > 15.0 {
+                    rgb(255, 193, 7)
+                } else {
+                    dim_color()
+                };
+                let mut spans = vec![
+                    Span::styled(spinner, Style::default().fg(ai_color())),
+                    Span::styled(label, Style::default().fg(label_color)),
+                ];
+                if !queued_suffix.is_empty() {
+                    spans.push(Span::styled(
+                        queued_suffix.clone(),
+                        Style::default().fg(queued_color()),
+                    ));
+                }
+                Line::from(spans)
+            }
+            ProcessingStatus::Thinking(_start) => {
+                let mut spans = vec![
+                    Span::styled(spinner, Style::default().fg(ai_color())),
+                    Span::styled(
+                        format!(" thinking… {:.1}s", elapsed),
+                        Style::default().fg(dim_color()),
+                    ),
+                ];
+                if !queued_suffix.is_empty() {
+                    spans.push(Span::styled(
+                        queued_suffix.clone(),
+                        Style::default().fg(queued_color()),
+                    ));
+                }
+                Line::from(spans)
+            }
+            ProcessingStatus::Streaming => {
+                let time_str = format_elapsed(elapsed);
+                let mut status_text = match stale_secs {
+                    Some(s) if s > 10.0 => format!("(stalled {:.0}s) · {}", s, time_str),
+                    Some(s) if s > 2.0 => format!("(no tokens {:.0}s) · {}", s, time_str),
+                    _ => time_str,
+                };
+                if let Some(tps) = app.output_tps() {
+                    status_text = format!("{} · {:.1} tps", status_text, tps);
+                }
+                if unexpected_cache_miss {
+                    let miss_tokens = cache_creation.unwrap_or(0);
+                    let miss_str = if miss_tokens >= 1000 {
+                        format!("{}k", miss_tokens / 1000)
+                    } else {
+                        format!("{}", miss_tokens)
+                    };
+                    status_text = format!("⚠ {} cache miss · {}", miss_str, status_text);
+                }
+                let mut spans = vec![
+                    Span::styled(spinner, Style::default().fg(ai_color())),
+                    Span::styled(
+                        format!(" {}", status_text),
+                        Style::default().fg(if unexpected_cache_miss {
+                            rgb(255, 193, 7)
+                        } else {
+                            dim_color()
+                        }),
+                    ),
+                ];
+                if !queued_suffix.is_empty() {
+                    spans.push(Span::styled(
+                        queued_suffix.clone(),
+                        Style::default().fg(queued_color()),
+                    ));
+                }
+                Line::from(spans)
+            }
+            ProcessingStatus::RunningTool(ref name) => {
+                let half_width = 3;
+                let progress = ((elapsed * 2.0) % 1.0) as f32;
+                let filled_pos = ((progress * half_width as f32) as usize) % half_width;
+                let left_bar: String = (0..half_width)
+                    .map(|i| if i == filled_pos { '●' } else { '·' })
+                    .collect();
+                let right_bar: String = (0..half_width)
+                    .map(|i| {
+                        if i == (half_width - 1 - filled_pos) {
+                            '●'
+                        } else {
+                            '·'
+                        }
+                    })
+                    .collect();
+
+                let anim_color = animated_tool_color(elapsed);
+                let tool_detail = app
+                    .streaming_tool_calls()
+                    .last()
+                    .map(get_tool_summary)
+                    .filter(|s| !s.is_empty());
+                let subagent = app.subagent_status();
+
+                let mut spans = vec![
+                    Span::styled(left_bar, Style::default().fg(anim_color)),
+                    Span::styled(" ", Style::default()),
+                    Span::styled(name.to_string(), Style::default().fg(anim_color).bold()),
+                    Span::styled(" ", Style::default()),
+                    Span::styled(right_bar, Style::default().fg(anim_color)),
+                ];
+
+                if let Some(detail) = tool_detail {
+                    spans.push(Span::styled(
+                        format!(" · {}", detail),
+                        Style::default().fg(dim_color()),
+                    ));
+                }
+                if let Some(status) = subagent {
+                    spans.push(Span::styled(
+                        format!(" ({})", status),
+                        Style::default().fg(dim_color()),
+                    ));
+                }
+                spans.push(Span::styled(
+                    format!(" · {}", format_elapsed(elapsed)),
+                    Style::default().fg(dim_color()),
+                ));
+
+                if unexpected_cache_miss {
+                    let miss_tokens = cache_creation.unwrap_or(0);
+                    let miss_str = if miss_tokens >= 1000 {
+                        format!("{}k", miss_tokens / 1000)
+                    } else {
+                        format!("{}", miss_tokens)
+                    };
+                    spans.push(Span::styled(
+                        format!(" · ⚠ {} cache miss", miss_str),
+                        Style::default().fg(rgb(255, 193, 7)),
+                    ));
+                }
+
+                spans.push(Span::styled(
+                    " · Alt+B bg",
+                    Style::default().fg(rgb(100, 100, 100)),
+                ));
+
+                if !queued_suffix.is_empty() {
+                    spans.push(Span::styled(
+                        queued_suffix.clone(),
+                        Style::default().fg(queued_color()),
+                    ));
+                }
+                Line::from(spans)
+            }
+        }
+    } else if let Some((total_in, total_out)) = app.total_session_tokens() {
+        let total = total_in + total_out;
+        if total > 100_000 {
+            let warning_color = if total > 150_000 {
+                rgb(255, 100, 100)
+            } else {
+                rgb(255, 193, 7)
+            };
+            Line::from(vec![
+                Span::styled("⚠ ", Style::default().fg(warning_color)),
+                Span::styled(
+                    format!("Session: {}k tokens ", total / 1000),
+                    Style::default().fg(warning_color),
+                ),
+                Span::styled(
+                    "(consider /clear for fresh context)",
+                    Style::default().fg(dim_color()),
+                ),
+            ])
+        } else {
+            Line::from("")
+        }
+    } else {
+        Line::from("")
+    };
+
+    if !app.is_processing() {
+        if let Some(cache_info) = app.cache_ttl_status() {
+            if cache_info.is_cold {
+                let tokens_str = cache_info
+                    .cached_tokens
+                    .map(|t| {
+                        if t >= 1_000_000 {
+                            format!(" ({:.1}M tok)", t as f64 / 1_000_000.0)
+                        } else if t >= 1_000 {
+                            format!(" ({}K tok)", t / 1000)
+                        } else {
+                            format!(" ({} tok)", t)
+                        }
+                    })
+                    .unwrap_or_default();
+                if !line.spans.is_empty() {
+                    line.spans
+                        .push(Span::styled(" · ", Style::default().fg(dim_color())));
+                }
+                line.spans.push(Span::styled(
+                    format!("🧊 cache cold{}", tokens_str),
+                    Style::default().fg(rgb(140, 180, 255)),
+                ));
+            } else if cache_info.remaining_secs <= 60 {
+                let tokens_str = cache_info
+                    .cached_tokens
+                    .map(|t| {
+                        if t >= 1_000 {
+                            format!(" {}K", t / 1000)
+                        } else {
+                            format!(" {}", t)
+                        }
+                    })
+                    .unwrap_or_default();
+                if !line.spans.is_empty() {
+                    line.spans
+                        .push(Span::styled(" · ", Style::default().fg(dim_color())));
+                }
+                line.spans.push(Span::styled(
+                    format!("⏳ cache {}s{}", cache_info.remaining_secs, tokens_str),
+                    Style::default().fg(rgb(255, 193, 7)),
+                ));
+            }
+        }
+    }
+
+    if let Some(notice) = app.status_notice() {
+        if !line.spans.is_empty() {
+            line.spans
+                .push(Span::styled(" · ", Style::default().fg(dim_color())));
+        }
+        line.spans
+            .push(Span::styled(notice, Style::default().fg(accent_color())));
+    }
+
+    if app.has_stashed_input() {
+        if !line.spans.is_empty() {
+            line.spans
+                .push(Span::styled(" · ", Style::default().fg(dim_color())));
+        }
+        line.spans.push(Span::styled(
+            "📋 stash",
+            Style::default().fg(rgb(255, 193, 7)),
+        ));
+    }
+
+    crate::memory::check_staleness();
+
+    let aligned_line = if app.centered_mode() {
+        line.alignment(Alignment::Center)
+    } else {
+        line
+    };
+    frame.render_widget(Paragraph::new(aligned_line), area);
+}
+
+pub(super) fn draw_input(
+    frame: &mut Frame,
+    app: &dyn TuiState,
+    area: Rect,
+    next_prompt: usize,
+    debug_capture: &mut Option<FrameCaptureBuilder>,
+) {
+    let input_text = app.input();
+    let cursor_pos = app.cursor_pos();
+
+    let suggestions = app.command_suggestions();
+    let has_slash_input = input_text.trim_start().starts_with('/');
+    let has_suggestions = !suggestions.is_empty() && (has_slash_input || !app.is_processing());
+
+    let (prompt_char, caret_color) = if app.is_processing() {
+        ("… ", queued_color())
+    } else if app.active_skill().is_some() {
+        ("» ", accent_color())
+    } else {
+        ("> ", user_color())
+    };
+    let num_str = format!("{}", next_prompt);
+    let prompt_len = num_str.chars().count() + prompt_char.chars().count();
+    let reserved_width = send_mode_reserved_width(app);
+    let line_width = (area.width as usize).saturating_sub(prompt_len + reserved_width);
+
+    if line_width == 0 {
+        return;
+    }
+
+    let (all_lines, cursor_line, cursor_col) = wrap_input_text(
+        input_text,
+        cursor_pos,
+        line_width,
+        &num_str,
+        prompt_char,
+        caret_color,
+        prompt_len,
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    let mut hint_shown = false;
+    let mut hint_line: Option<String> = None;
+    if has_suggestions {
+        let input_trimmed = input_text.trim();
+        let exact_match = suggestions.iter().find(|(cmd, _)| cmd == input_trimmed);
+
+        if suggestions.len() == 1 || exact_match.is_some() {
+            let (cmd, desc) = exact_match.unwrap_or(&suggestions[0]);
+            let mut spans = vec![
+                Span::styled("  ", Style::default().fg(dim_color())),
+                Span::styled(cmd.to_string(), Style::default().fg(rgb(138, 180, 248))),
+                Span::styled(format!(" - {}", desc), Style::default().fg(dim_color())),
+            ];
+            if suggestions.len() > 1 {
+                spans.push(Span::styled(
+                    format!("  Tab: +{} more", suggestions.len() - 1),
+                    Style::default().fg(dim_color()),
+                ));
+            }
+            lines.push(Line::from(spans));
+        } else {
+            let max_suggestions = 5;
+            let limited: Vec<_> = suggestions.iter().take(max_suggestions).collect();
+            let more_count = suggestions.len().saturating_sub(max_suggestions);
+
+            let mut spans = vec![Span::styled("  Tab: ", Style::default().fg(dim_color()))];
+            for (i, (cmd, desc)) in limited.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled(" │ ", Style::default().fg(dim_color())));
+                }
+                spans.push(Span::styled(
+                    cmd.to_string(),
+                    Style::default().fg(rgb(138, 180, 248)),
+                ));
+                if i == 0 {
+                    spans.push(Span::styled(
+                        format!(" ({})", desc),
+                        Style::default().fg(dim_color()),
+                    ));
+                }
+            }
+            if more_count > 0 {
+                spans.push(Span::styled(
+                    format!(" (+{})", more_count),
+                    Style::default().fg(dim_color()),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+    } else if app.is_processing() && !input_text.is_empty() {
+        hint_shown = true;
+        let hint = if app.queue_mode() {
+            "  Shift+Enter to send now"
+        } else {
+            "  Shift+Enter to queue"
+        };
+        hint_line = Some(hint.trim().to_string());
+        lines.push(Line::from(Span::styled(
+            hint,
+            Style::default().fg(dim_color()),
+        )));
+    }
+
+    if let Some(ref mut capture) = debug_capture {
+        capture.rendered_text.input_area = input_text.to_string();
+        if let Some(hint) = &hint_line {
+            capture.rendered_text.input_hint = Some(hint.clone());
+        }
+        visual_debug::check_shift_enter_anomaly(
+            capture,
+            app.is_processing(),
+            input_text,
+            hint_shown,
+        );
+    }
+
+    let suggestions_offset = lines.len();
+    let total_input_lines = all_lines.len();
+    let visible_height = area.height as usize;
+
+    let scroll_offset = if total_input_lines + suggestions_offset <= visible_height {
+        0
+    } else {
+        let available_for_input = visible_height.saturating_sub(suggestions_offset);
+        if cursor_line < available_for_input {
+            0
+        } else {
+            cursor_line.saturating_sub(available_for_input.saturating_sub(1))
+        }
+    };
+
+    for line in all_lines.into_iter().skip(scroll_offset) {
+        lines.push(line);
+        if lines.len() >= visible_height {
+            break;
+        }
+    }
+
+    let centered = app.centered_mode();
+    let paragraph = if centered {
+        Paragraph::new(
+            lines
+                .iter()
+                .map(|l| l.clone().alignment(Alignment::Center))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        Paragraph::new(lines.clone())
+    };
+    frame.render_widget(paragraph, area);
+
+    let cursor_screen_line = cursor_line.saturating_sub(scroll_offset) + suggestions_offset;
+    let cursor_y = area.y + (cursor_screen_line as u16).min(area.height.saturating_sub(1));
+
+    let cursor_x = if centered {
+        let actual_line_width = lines
+            .get(cursor_screen_line)
+            .map(|l| l.width())
+            .unwrap_or(prompt_len);
+        let center_offset = (area.width as usize).saturating_sub(actual_line_width) / 2;
+        let cursor_offset = if cursor_line == 0 {
+            prompt_len + cursor_col
+        } else {
+            prompt_len + cursor_col
+        };
+        area.x + center_offset as u16 + cursor_offset as u16
+    } else {
+        area.x + prompt_len as u16 + cursor_col as u16
+    };
+
+    frame.set_cursor_position(Position::new(cursor_x, cursor_y));
+    draw_send_mode_indicator(frame, app, area);
+}
+
+pub(crate) fn wrap_input_text<'a>(
+    input: &str,
+    cursor_pos: usize,
+    line_width: usize,
+    num_str: &str,
+    prompt_char: &'a str,
+    caret_color: Color,
+    prompt_len: usize,
+) -> (Vec<Line<'a>>, usize, usize) {
+    use unicode_width::UnicodeWidthChar;
+
+    let cursor_char_pos = crate::tui::core::byte_offset_to_char_index(input, cursor_pos);
+    let mut lines: Vec<Line> = Vec::new();
+    let mut cursor_line = 0;
+    let mut cursor_col = 0;
+    let mut char_count = 0;
+    let mut found_cursor = false;
+
+    let chars: Vec<char> = input.chars().collect();
+
+    if chars.is_empty() {
+        let num_color = rainbow_prompt_color(0);
+        lines.push(Line::from(vec![
+            Span::styled(num_str.to_string(), Style::default().fg(num_color)),
+            Span::styled(prompt_char.to_string(), Style::default().fg(caret_color)),
+        ]));
+        return (lines, 0, 0);
+    }
+
+    let mut pos = 0;
+    while pos <= chars.len() {
+        let newline_pos = chars[pos..].iter().position(|&c| c == '\n');
+        let segment_end = match newline_pos {
+            Some(rel_pos) => pos + rel_pos,
+            None => chars.len(),
+        };
+
+        let segment: Vec<char> = chars[pos..segment_end].to_vec();
+        let mut seg_pos = 0;
+        loop {
+            let mut display_width = 0;
+            let mut end = seg_pos;
+            while end < segment.len() {
+                let cw = segment[end].width().unwrap_or(0);
+                if display_width + cw > line_width {
+                    break;
+                }
+                display_width += cw;
+                end += 1;
+            }
+            if end == seg_pos && seg_pos < segment.len() {
+                end = seg_pos + 1;
+            }
+            let line_text: String = segment[seg_pos..end].iter().collect();
+
+            let line_start_char = char_count;
+            let line_end_char = char_count + (end - seg_pos);
+
+            if !found_cursor
+                && cursor_char_pos >= line_start_char
+                && cursor_char_pos <= line_end_char
+            {
+                cursor_line = lines.len();
+                let chars_before = cursor_char_pos - line_start_char;
+                cursor_col = segment[seg_pos..seg_pos + chars_before]
+                    .iter()
+                    .map(|c| c.width().unwrap_or(0))
+                    .sum();
+                found_cursor = true;
+            }
+            char_count = line_end_char;
+
+            if lines.is_empty() {
+                let num_color = rainbow_prompt_color(0);
+                lines.push(Line::from(vec![
+                    Span::styled(num_str.to_string(), Style::default().fg(num_color)),
+                    Span::styled(prompt_char.to_string(), Style::default().fg(caret_color)),
+                    Span::raw(line_text),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(prompt_len)),
+                    Span::raw(line_text),
+                ]));
+            }
+
+            if end >= segment.len() {
+                break;
+            }
+            seg_pos = end;
+        }
+
+        if newline_pos.is_some() {
+            if !found_cursor && cursor_char_pos == char_count {
+                cursor_line = lines.len().saturating_sub(1);
+                cursor_col = lines
+                    .last()
+                    .map(|l| {
+                        l.spans
+                            .iter()
+                            .skip(1)
+                            .map(|s| {
+                                s.content
+                                    .chars()
+                                    .map(|c| c.width().unwrap_or(0))
+                                    .sum::<usize>()
+                            })
+                            .sum::<usize>()
+                    })
+                    .unwrap_or(0);
+                found_cursor = true;
+            }
+            char_count += 1;
+            pos = segment_end + 1;
+        } else {
+            break;
+        }
+    }
+
+    if !found_cursor {
+        cursor_line = lines.len().saturating_sub(1);
+        cursor_col = lines
+            .last()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .skip(if cursor_line == 0 { 2 } else { 1 })
+                    .map(|s| {
+                        s.content
+                            .chars()
+                            .map(|c| c.width().unwrap_or(0))
+                            .sum::<usize>()
+                    })
+                    .sum::<usize>()
+            })
+            .unwrap_or(0);
+    }
+
+    (lines, cursor_line, cursor_col)
+}
+
+fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {
+    if app.queue_mode() {
+        ("⏳", queued_color())
+    } else {
+        ("⚡", asap_color())
+    }
+}
+
+fn draw_send_mode_indicator(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
+    let (icon, color) = send_mode_indicator(app);
+    if icon.is_empty() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let indicator_area = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(1),
+        width: area.width,
+        height: 1,
+    };
+    let line = Line::from(Span::styled(icon, Style::default().fg(color)));
+    let paragraph = Paragraph::new(line).alignment(Alignment::Right);
+    frame.render_widget(paragraph, indicator_area);
+}
+
+#[derive(Clone, Copy)]
+enum QueuedMsgType {
+    Pending,
+    Interleave,
+    Queued,
+}
