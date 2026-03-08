@@ -2,8 +2,8 @@ use super::client_actions::{
     handle_agent_task, handle_compact, handle_set_feature, handle_split, handle_stdin_response,
 };
 use super::client_comm::{
-    handle_comm_list, handle_comm_read, handle_comm_share, handle_comm_subscribe_channel,
-    handle_comm_unsubscribe_channel,
+    handle_comm_list, handle_comm_message, handle_comm_read, handle_comm_share,
+    handle_comm_subscribe_channel, handle_comm_unsubscribe_channel,
 };
 use super::client_state::{handle_get_history, handle_get_state, send_history};
 use super::comm_control::{
@@ -1276,139 +1276,22 @@ pub(super) async fn handle_client(
                 to_session,
                 channel,
             } => {
-                // Find the swarm id for this session
-                let swarm_id = {
-                    let members = swarm_members.read().await;
-                    members.get(&from_session).and_then(|m| m.swarm_id.clone())
-                };
-
-                if let Some(swarm_id) = swarm_id {
-                    let friendly_name = {
-                        let members = swarm_members.read().await;
-                        members
-                            .get(&from_session)
-                            .and_then(|m| m.friendly_name.clone())
-                    };
-
-                    let swarm_session_ids: Vec<String> = {
-                        let swarms = swarms_by_id.read().await;
-                        swarms
-                            .get(&swarm_id)
-                            .map(|s| s.iter().cloned().collect())
-                            .unwrap_or_default()
-                    };
-
-                    // Validate DM recipient exists in swarm
-                    if let Some(ref target) = to_session {
-                        if !swarm_session_ids.contains(target) {
-                            let _ = client_event_tx.send(ServerEvent::Error {
-                                id,
-                                message: format!("DM failed: session '{}' not in swarm", target),
-                                retry_after_secs: None,
-                            });
-                            continue;
-                        }
-                    }
-
-                    let scope = if to_session.is_some() {
-                        "dm"
-                    } else if channel.is_some() {
-                        "channel"
-                    } else {
-                        "broadcast"
-                    };
-
-                    let members = swarm_members.read().await;
-                    let sessions = sessions.read().await;
-
-                    let target_sessions: Vec<String> = if let Some(target) = to_session.clone() {
-                        vec![target]
-                    } else if let Some(ref ch) = channel {
-                        // Channel message: check subscriptions
-                        let subs = channel_subscriptions.read().await;
-                        if let Some(channel_subs) = subs.get(&swarm_id).and_then(|s| s.get(ch)) {
-                            // Send only to subscribed members (excluding sender)
-                            channel_subs
-                                .iter()
-                                .filter(|sid| *sid != &from_session)
-                                .cloned()
-                                .collect()
-                        } else {
-                            // No subscriptions for this channel: broadcast to all
-                            swarm_session_ids
-                                .iter()
-                                .filter(|sid| *sid != &from_session)
-                                .cloned()
-                                .collect()
-                        }
-                    } else {
-                        swarm_session_ids
-                            .iter()
-                            .filter(|sid| *sid != &from_session)
-                            .cloned()
-                            .collect()
-                    };
-
-                    for sid in &target_sessions {
-                        if !swarm_session_ids.contains(sid) {
-                            continue;
-                        }
-                        if let Some(member) = members.get(sid) {
-                            let from_label = friendly_name
-                                .as_deref()
-                                .unwrap_or(&from_session[..8.min(from_session.len())]);
-                            let scope_label = match (scope, channel.as_deref()) {
-                                ("channel", Some(ch)) => format!("#{}", ch),
-                                ("dm", _) => "DM".to_string(),
-                                _ => "broadcast".to_string(),
-                            };
-                            let notification_msg =
-                                format!("{} from {}: {}", scope_label, from_label, message);
-                            let _ = member.event_tx.send(ServerEvent::Notification {
-                                from_session: from_session.clone(),
-                                from_name: friendly_name.clone(),
-                                notification_type: NotificationType::Message {
-                                    scope: Some(scope.to_string()),
-                                    channel: channel.clone(),
-                                },
-                                message: notification_msg.clone(),
-                            });
-
-                            // Also push to the agent's pending alerts
-                            if let Some(agent) = sessions.get(sid) {
-                                if let Ok(agent) = agent.try_lock() {
-                                    agent.queue_soft_interrupt(notification_msg.clone(), false);
-                                }
-                            }
-                        }
-                    }
-                    let scope_value = if scope == "channel" {
-                        format!("#{}", channel.clone().unwrap_or_default())
-                    } else {
-                        scope.to_string()
-                    };
-                    record_swarm_event(
-                        &event_history,
-                        &event_counter,
-                        &swarm_event_tx,
-                        from_session.clone(),
-                        friendly_name.clone(),
-                        Some(swarm_id.clone()),
-                        SwarmEventType::Notification {
-                            notification_type: scope_value,
-                            message: truncate_detail(&message, 220),
-                        },
-                    )
-                    .await;
-                    let _ = client_event_tx.send(ServerEvent::Done { id });
-                } else {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: "Not in a swarm. Use a git repository to enable swarm features."
-                            .to_string(),
-                        retry_after_secs: None,
-                    });
-                }
+                handle_comm_message(
+                    id,
+                    from_session,
+                    message,
+                    to_session,
+                    channel,
+                    &client_event_tx,
+                    &sessions,
+                    &swarm_members,
+                    &swarms_by_id,
+                    &channel_subscriptions,
+                    &event_history,
+                    &event_counter,
+                    &swarm_event_tx,
+                )
+                .await;
             }
 
             Request::CommList {
