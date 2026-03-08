@@ -443,6 +443,25 @@ impl Session {
         result
     }
 
+    pub fn redacted_for_export(&self) -> Self {
+        let mut redacted = self.clone();
+        for msg in &mut redacted.messages {
+            for block in &mut msg.content {
+                match block {
+                    ContentBlock::Text { text, .. } | ContentBlock::Reasoning { text } => {
+                        *text = crate::message::redact_secrets(text);
+                    }
+                    ContentBlock::ToolResult { content, .. } => {
+                        *content = crate::message::redact_secrets(content);
+                    }
+                    ContentBlock::ToolUse { input, .. } => redact_json_value(input),
+                    ContentBlock::Image { .. } => {}
+                }
+            }
+        }
+        redacted
+    }
+
     pub fn add_message(&mut self, role: Role, content: Vec<ContentBlock>) -> String {
         self.add_message_ext(role, content, None, None)
     }
@@ -489,6 +508,25 @@ impl Session {
                 break;
             }
         }
+    }
+}
+
+fn redact_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            *s = crate::message::redact_secrets(s);
+        }
+        serde_json::Value::Array(values) => {
+            for entry in values {
+                redact_json_value(entry);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for entry in map.values_mut() {
+                redact_json_value(entry);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -711,6 +749,115 @@ mod tests {
 
         let recovered = Session::load(&recovered_ids[0]).expect("load recovered session");
         assert!(recovered.is_debug);
+    }
+
+    #[test]
+    fn test_save_persists_full_session_content() {
+        let _env_lock = lock_env();
+        let temp_home = tempfile::Builder::new()
+            .prefix("jcode-session-save-test-")
+            .tempdir()
+            .expect("create temp JCODE_HOME");
+        let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
+
+        let mut session = Session::create_with_id(
+            "session_save_persist_test".to_string(),
+            None,
+            Some("save fidelity test".to_string()),
+        );
+
+        session.add_message(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "tool_1".to_string(),
+                content: "OPENROUTER_API_KEY=sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"
+                    .to_string(),
+                is_error: None,
+            }],
+        );
+
+        session.add_message(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "tool_2".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({
+                    "command": "echo ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"
+                }),
+            }],
+        );
+
+        session.save().expect("save session");
+
+        let loaded = Session::load("session_save_persist_test").expect("load saved session");
+
+        match &loaded.messages[0].content[0] {
+            ContentBlock::ToolResult { content, .. } => {
+                assert!(content.contains("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"));
+                assert!(!content.contains("[REDACTED_SECRET]"));
+            }
+            _ => panic!("expected tool result block"),
+        }
+
+        match &loaded.messages[1].content[0] {
+            ContentBlock::ToolUse { input, .. } => {
+                let input_str = input.to_string();
+                assert!(input_str.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"));
+                assert!(!input_str.contains("[REDACTED_SECRET]"));
+            }
+            _ => panic!("expected tool use block"),
+        }
+    }
+
+    #[test]
+    fn test_redacted_for_export_redacts_tool_result_and_tool_input() {
+        let mut session = Session::create_with_id(
+            "session_redact_persist_test".to_string(),
+            None,
+            Some("redaction test".to_string()),
+        );
+
+        session.add_message(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "tool_1".to_string(),
+                content: "OPENROUTER_API_KEY=sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"
+                    .to_string(),
+                is_error: None,
+            }],
+        );
+
+        session.add_message(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "tool_2".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({
+                    "command": "echo ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"
+                }),
+            }],
+        );
+
+        let persisted = session.redacted_for_export();
+
+        let first_content = &persisted.messages[0].content[0];
+        match first_content {
+            ContentBlock::ToolResult { content, .. } => {
+                assert!(content.contains("OPENROUTER_API_KEY=[REDACTED_SECRET]"));
+                assert!(!content.contains("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"));
+            }
+            _ => panic!("expected tool result block"),
+        }
+
+        let second_content = &persisted.messages[1].content[0];
+        match second_content {
+            ContentBlock::ToolUse { input, .. } => {
+                let input_str = input.to_string();
+                assert!(input_str.contains("[REDACTED_SECRET]"));
+                assert!(!input_str.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"));
+            }
+            _ => panic!("expected tool use block"),
+        }
     }
 }
 
