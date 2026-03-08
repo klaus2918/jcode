@@ -2,6 +2,10 @@
 
 use super::info_widget;
 use super::markdown;
+use super::ui_diff::{
+    collect_diff_lines, diff_add_color, diff_change_counts_for_tool, diff_del_color,
+    generate_diff_lines_from_tool_input, tint_span_with_diff_color, DiffLineKind, ParsedDiffLine,
+};
 use super::visual_debug::{
     self, FrameCaptureBuilder, ImageRegionCapture, InfoWidgetCapture, InfoWidgetSummary,
     MarginsCapture, MessageCapture, RenderTimingCapture, WidgetPlacementCapture,
@@ -17,6 +21,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+#[path = "ui_overlays.rs"]
+mod overlays;
 
 /// Last known max scroll value from the renderer. Updated each frame.
 /// Scroll handlers use this to clamp scroll_offset and prevent overshoot.
@@ -2506,12 +2513,12 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     clear_area(frame, area);
 
     if let Some(scroll) = app.changelog_scroll() {
-        draw_changelog_overlay(frame, area, scroll);
+        overlays::draw_changelog_overlay(frame, area, scroll);
         return;
     }
 
     if let Some(scroll) = app.help_scroll() {
-        draw_help_overlay(frame, area, scroll, app);
+        overlays::draw_help_overlay(frame, area, scroll, app);
         return;
     }
 
@@ -3018,7 +3025,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         });
     }
     if visual_debug::overlay_enabled() {
-        draw_debug_overlay(frame, &placements, &chunks);
+        overlays::draw_debug_overlay(frame, &placements, &chunks);
     }
 
     // Record the frame capture if enabled
@@ -3036,7 +3043,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         capture.render_timing = Some(render_timing);
         capture.mermaid = crate::tui::mermaid::debug_stats_json();
         capture.markdown = crate::tui::markdown::debug_stats_json();
-        capture.theme = debug_palette_json();
+        capture.theme = overlays::debug_palette_json();
         visual_debug::record_frame(capture.build());
     }
 
@@ -5325,382 +5332,6 @@ fn rect_within_bounds(rect: Rect, bounds: Rect) -> bool {
     let bounds_right = bounds.x.saturating_add(bounds.width);
     let bounds_bottom = bounds.y.saturating_add(bounds.height);
     rect.x >= bounds.x && rect.y >= bounds.y && right <= bounds_right && bottom <= bounds_bottom
-}
-
-fn draw_changelog_overlay(frame: &mut Frame, area: Rect, scroll: usize) {
-    use ratatui::widgets::{Block, Borders, Paragraph};
-
-    clear_area(frame, area);
-
-    let groups = get_grouped_changelog();
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    if groups.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No changelog entries available.",
-            Style::default().fg(dim_color()),
-        )));
-    } else {
-        for group in &groups {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", group.version),
-                Style::default()
-                    .fg(rgb(200, 200, 220))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(""));
-            for entry in &group.entries {
-                lines.push(Line::from(vec![
-                    Span::styled("    • ", Style::default().fg(dim_color())),
-                    Span::styled(entry.clone(), Style::default().fg(rgb(170, 170, 185))),
-                ]));
-            }
-            lines.push(Line::from(""));
-        }
-    }
-
-    let total_lines = lines.len();
-    let visible_height = area.height.saturating_sub(2) as usize;
-    let max_scroll = total_lines.saturating_sub(visible_height);
-    let scroll = scroll.min(max_scroll);
-
-    let scroll_info = if total_lines > visible_height {
-        let pct = if max_scroll > 0 {
-            (scroll * 100) / max_scroll
-        } else {
-            100
-        };
-        format!(" {}% ", pct)
-    } else {
-        String::new()
-    };
-
-    let title = format!(" Changelog {} ", scroll_info);
-    let block = Block::default()
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(rgb(200, 200, 220))
-                .add_modifier(Modifier::BOLD),
-        ))
-        .title_bottom(Line::from(Span::styled(
-            " Esc to close · j/k scroll · Space/PageUp page ",
-            Style::default().fg(dim_color()),
-        )))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(dim_color()));
-
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll as u16, 0));
-
-    frame.render_widget(paragraph, area);
-}
-
-fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn super::TuiState) {
-    use ratatui::widgets::{Block, Borders, Paragraph};
-
-    clear_area(frame, area);
-
-    let section_style = Style::default()
-        .fg(accent_color())
-        .add_modifier(Modifier::BOLD);
-    let cmd_style = Style::default().fg(rgb(230, 230, 240));
-    let desc_style = Style::default().fg(rgb(150, 150, 165));
-    let key_style = Style::default().fg(rgb(200, 180, 120));
-    let sep_style = Style::default().fg(rgb(50, 50, 55));
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    let separator = || -> Line<'static> {
-        Line::from(Span::styled(
-            "  ─────────────────────────────────────────────────",
-            sep_style,
-        ))
-    };
-
-    let help_entry = |cmd: &str, desc: &str| -> Line<'static> {
-        Line::from(vec![
-            Span::styled("    ", Style::default()),
-            Span::styled(cmd.to_string(), cmd_style),
-            Span::styled("  ", Style::default()),
-            Span::styled(desc.to_string(), desc_style),
-        ])
-    };
-
-    let key_entry = |key: &str, desc: &str| -> Line<'static> {
-        Line::from(vec![
-            Span::styled("    ", Style::default()),
-            Span::styled(format!("{:<22}", key), key_style),
-            Span::styled(desc.to_string(), desc_style),
-        ])
-    };
-
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled("  Commands", section_style)));
-    lines.push(Line::from(""));
-    lines.push(help_entry("/help", "Show this help overlay"));
-    lines.push(help_entry(
-        "/help <command>",
-        "Show details for one command",
-    ));
-    lines.push(help_entry("/model", "List or switch models"));
-    lines.push(help_entry("/model <name>", "Switch to a different model"));
-    lines.push(help_entry(
-        "/effort <level>",
-        "Set reasoning effort (none|low|medium|high|xhigh)",
-    ));
-    lines.push(help_entry("/config", "Show active configuration"));
-    lines.push(help_entry("/config init", "Create default config file"));
-    lines.push(help_entry("/config edit", "Open config in $EDITOR"));
-    lines.push(help_entry("/info", "Show session info and token usage"));
-    lines.push(help_entry("/usage", "Show subscription usage limits"));
-    lines.push(help_entry("/version", "Show version and build details"));
-    lines.push(help_entry(
-        "/changelog",
-        "Show recent changes in this build",
-    ));
-
-    lines.push(Line::from(""));
-    lines.push(separator());
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled("  Session", section_style)));
-    lines.push(Line::from(""));
-    lines.push(help_entry("/clear", "Clear conversation and start fresh"));
-    lines.push(help_entry(
-        "/compact",
-        "Summarize old messages to free context",
-    ));
-    lines.push(help_entry(
-        "/rewind",
-        "Show numbered history, /rewind N to rewind",
-    ));
-    lines.push(help_entry(
-        "/fix",
-        "Attempt recovery when model cannot continue",
-    ));
-    lines.push(help_entry("/split", "Clone session into a new window"));
-    lines.push(help_entry("/resume", "Browse and resume previous sessions"));
-    lines.push(help_entry("/save [label]", "Bookmark session for /resume"));
-    lines.push(help_entry(
-        "/unsave",
-        "Remove bookmark from current session",
-    ));
-
-    lines.push(Line::from(""));
-    lines.push(separator());
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled("  Memory & Swarm", section_style)));
-    lines.push(Line::from(""));
-    lines.push(help_entry("/memory [on|off]", "Toggle memory features"));
-    lines.push(help_entry(
-        "/remember",
-        "Extract memories from conversation",
-    ));
-    lines.push(help_entry("/swarm [on|off]", "Toggle swarm features"));
-
-    lines.push(Line::from(""));
-    lines.push(separator());
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled("  Auth & Accounts", section_style)));
-    lines.push(Line::from(""));
-    lines.push(help_entry("/auth", "Show authentication status"));
-    lines.push(help_entry(
-        "/login [provider]",
-        "Interactive or direct login",
-    ));
-    lines.push(help_entry("/account", "Manage Anthropic OAuth accounts"));
-
-    lines.push(Line::from(""));
-    lines.push(separator());
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled("  System", section_style)));
-    lines.push(Line::from(""));
-    lines.push(help_entry("/reload", "Reload to newer binary if available"));
-    lines.push(help_entry(
-        "/rebuild",
-        "Full update (git pull + build + tests)",
-    ));
-    if app.is_remote_mode() {
-        lines.push(help_entry("/client-reload", "Force reload client binary"));
-        lines.push(help_entry("/server-reload", "Force reload server binary"));
-    }
-    lines.push(help_entry(
-        "/debug-visual",
-        "Enable visual debugging for TUI issues",
-    ));
-    lines.push(help_entry("/quit", "Exit jcode"));
-
-    let skills = app.available_skills();
-    if !skills.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(separator());
-        lines.push(Line::from(""));
-
-        lines.push(Line::from(Span::styled("  Skills", section_style)));
-        lines.push(Line::from(""));
-        for skill in &skills {
-            lines.push(help_entry(&format!("/{}", skill), "Activate skill"));
-        }
-    }
-
-    lines.push(Line::from(""));
-    lines.push(separator());
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled("  Navigation", section_style)));
-    lines.push(Line::from(""));
-    lines.push(key_entry("PageUp / PageDown", "Scroll history"));
-    lines.push(key_entry("Up / Down", "Scroll history (when input empty)"));
-    lines.push(key_entry("Ctrl+[ / Ctrl+]", "Jump between user prompts"));
-    lines.push(key_entry("Ctrl+1..9", "Jump by recency (1 = most recent)"));
-
-    lines.push(Line::from(""));
-    lines.push(separator());
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled(
-        "  Diagrams & Diffs",
-        section_style,
-    )));
-    lines.push(Line::from(""));
-    lines.push(key_entry("Alt+M", "Toggle diagram pane"));
-    lines.push(key_entry("Alt+T", "Toggle diagram position (side/top)"));
-    lines.push(key_entry("Ctrl+H / Ctrl+L", "Focus chat / diagram / diffs"));
-    lines.push(key_entry("Ctrl+Left / Right", "Cycle diagrams in pane"));
-    lines.push(key_entry("h/j/k/l / arrows", "Pan diagram (when focused)"));
-    lines.push(key_entry("[ / ]", "Zoom diagram (when focused)"));
-    lines.push(key_entry("+ / -", "Resize diagram pane"));
-    lines.push(key_entry(
-        "Shift+Tab",
-        "Cycle diff mode (Off/Inline/Pinned)",
-    ));
-
-    lines.push(Line::from(""));
-    lines.push(separator());
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(Span::styled("  Input & Editing", section_style)));
-    lines.push(Line::from(""));
-    lines.push(key_entry(
-        "Ctrl+C / Ctrl+D",
-        "Quit (press twice to confirm)",
-    ));
-    lines.push(key_entry("Ctrl+U", "Clear input line"));
-    lines.push(key_entry("Ctrl+S", "Stash / pop input (save for later)"));
-    lines.push(key_entry("Ctrl+Up", "Retrieve pending message for editing"));
-    lines.push(key_entry("Ctrl+Tab / Ctrl+T", "Toggle queue mode"));
-    lines.push(key_entry("Ctrl+R", "Recover from missing tool outputs"));
-    lines.push(key_entry("Alt+V", "Paste image from clipboard"));
-    lines.push(key_entry("Alt+Left / Right", "Cycle reasoning effort"));
-
-    lines.push(Line::from(""));
-
-    let total_lines = lines.len();
-    let visible_height = area.height.saturating_sub(2) as usize;
-    let max_scroll = total_lines.saturating_sub(visible_height);
-    let scroll = scroll.min(max_scroll);
-
-    let scroll_info = if total_lines > visible_height {
-        let pct = if max_scroll > 0 {
-            (scroll * 100) / max_scroll
-        } else {
-            100
-        };
-        format!(" {}% ", pct)
-    } else {
-        String::new()
-    };
-
-    let title = format!(" Help {} ", scroll_info);
-    let block = Block::default()
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(rgb(200, 200, 220))
-                .add_modifier(Modifier::BOLD),
-        ))
-        .title_bottom(Line::from(Span::styled(
-            " Esc to close \u{b7} j/k scroll \u{b7} Space/PageUp page \u{b7} /help <cmd> for details ",
-            Style::default().fg(dim_color()),
-        )))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(dim_color()));
-
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll as u16, 0));
-
-    frame.render_widget(paragraph, area);
-}
-
-fn draw_debug_overlay(
-    frame: &mut Frame,
-    placements: &[info_widget::WidgetPlacement],
-    chunks: &[Rect],
-) {
-    if chunks.len() < 5 {
-        return;
-    }
-    render_overlay_box(frame, chunks[0], "messages", Color::Red);
-    render_overlay_box(frame, chunks[1], "queued", Color::Yellow);
-    render_overlay_box(frame, chunks[2], "status", Color::Cyan);
-    render_overlay_box(frame, chunks[3], "picker", Color::Magenta);
-    render_overlay_box(frame, chunks[4], "input", Color::Green);
-    if chunks.len() > 5 && chunks[5].height > 0 {
-        render_overlay_box(frame, chunks[5], "donut", Color::Blue);
-    }
-
-    for placement in placements {
-        let title = format!("widget:{}", placement.kind.as_str());
-        render_overlay_box(frame, placement.rect, &title, Color::Magenta);
-    }
-}
-
-fn render_overlay_box(frame: &mut Frame, area: Rect, title: &str, color: Color) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color))
-        .title(Span::styled(title.to_string(), Style::default().fg(color)));
-    frame.render_widget(block, area);
-}
-
-fn debug_palette_json() -> Option<serde_json::Value> {
-    Some(serde_json::json!({
-        "user_color": color_to_rgb(user_color()),
-        "ai_color": color_to_rgb(ai_color()),
-        "tool_color": color_to_rgb(tool_color()),
-        "dim_color": color_to_rgb(dim_color()),
-        "accent_color": color_to_rgb(accent_color()),
-        "queued_color": color_to_rgb(queued_color()),
-        "asap_color": color_to_rgb(asap_color()),
-        "pending_color": color_to_rgb(pending_color()),
-        "user_text": color_to_rgb(user_text()),
-        "user_bg": color_to_rgb(user_bg()),
-        "ai_text": color_to_rgb(ai_text()),
-        "header_icon_color": color_to_rgb(header_icon_color()),
-        "header_name_color": color_to_rgb(header_name_color()),
-        "header_session_color": color_to_rgb(header_session_color()),
-    }))
-}
-
-fn color_to_rgb(color: Color) -> Option<[u8; 3]> {
-    match color {
-        Color::Rgb(r, g, b) => Some([r, g, b]),
-        Color::Indexed(n) if n >= 16 => {
-            let (r, g, b) = super::color_support::indexed_to_rgb(n);
-            Some([r, g, b])
-        }
-        _ => None,
-    }
 }
 
 /// Compute a centered sub-area for a fitted image.
@@ -8470,435 +8101,6 @@ fn wrap_input_text<'a>(
     (lines, cursor_line, cursor_col)
 }
 
-// Colors for diff display (classic green/red)
-fn diff_add_color() -> Color {
-    rgb(100, 200, 100)
-}
-fn diff_del_color() -> Color {
-    rgb(200, 100, 100)
-}
-fn diff_highlight_add() -> Color {
-    rgb(150, 255, 150)
-}
-fn diff_highlight_del() -> Color {
-    rgb(255, 130, 130)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DiffLineKind {
-    Add,
-    Del,
-}
-
-#[derive(Clone, Debug)]
-struct ParsedDiffLine {
-    kind: DiffLineKind,
-    prefix: String,
-    content: String,
-}
-
-fn diff_change_counts(content: &str) -> (usize, usize) {
-    let lines = collect_diff_lines(content);
-    let additions = lines
-        .iter()
-        .filter(|line| line.kind == DiffLineKind::Add)
-        .count();
-    let deletions = lines
-        .iter()
-        .filter(|line| line.kind == DiffLineKind::Del)
-        .count();
-    (additions, deletions)
-}
-
-fn diff_change_counts_for_tool(tool: &ToolCall, content: &str) -> (usize, usize) {
-    let (additions, deletions) = diff_change_counts(content);
-    if additions > 0 || deletions > 0 {
-        return (additions, deletions);
-    }
-
-    match tool.name.as_str() {
-        "edit" | "Edit" => {
-            diff_counts_from_input_pair(&tool.input, "old_string", "new_string").unwrap_or((0, 0))
-        }
-        "multiedit" => diff_counts_from_multiedit(&tool.input).unwrap_or((0, 0)),
-        "patch" | "Patch" => diff_counts_from_unified_patch_input(&tool.input).unwrap_or((0, 0)),
-        "apply_patch" | "ApplyPatch" => {
-            diff_counts_from_apply_patch_input(&tool.input).unwrap_or((0, 0))
-        }
-        _ => (additions, deletions),
-    }
-}
-
-fn diff_counts_from_input_pair(
-    input: &serde_json::Value,
-    old_key: &str,
-    new_key: &str,
-) -> Option<(usize, usize)> {
-    let old = input.get(old_key)?.as_str()?;
-    let new = input.get(new_key)?.as_str()?;
-    Some(diff_counts_from_strings(old, new))
-}
-
-fn diff_counts_from_multiedit(input: &serde_json::Value) -> Option<(usize, usize)> {
-    let edits = input.get("edits")?.as_array()?;
-    let mut additions = 0usize;
-    let mut deletions = 0usize;
-
-    for edit in edits {
-        let old = edit
-            .get("old_string")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let new = edit
-            .get("new_string")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if old.is_empty() && new.is_empty() {
-            continue;
-        }
-        let (add, del) = diff_counts_from_strings(old, new);
-        additions += add;
-        deletions += del;
-    }
-
-    Some((additions, deletions))
-}
-
-fn diff_counts_from_unified_patch_input(input: &serde_json::Value) -> Option<(usize, usize)> {
-    let patch_text = input.get("patch_text")?.as_str()?;
-    let mut additions = 0usize;
-    let mut deletions = 0usize;
-
-    for line in patch_text.lines() {
-        if line.starts_with("+++")
-            || line.starts_with("---")
-            || line.starts_with("@@")
-            || line.starts_with("diff --git")
-            || line.starts_with("index ")
-            || line.starts_with("\\ No newline")
-        {
-            continue;
-        }
-        if line.starts_with('+') {
-            additions += 1;
-        } else if line.starts_with('-') {
-            deletions += 1;
-        }
-    }
-
-    Some((additions, deletions))
-}
-
-fn diff_counts_from_apply_patch_input(input: &serde_json::Value) -> Option<(usize, usize)> {
-    let patch_text = input.get("patch_text")?.as_str()?;
-    let mut additions = 0usize;
-    let mut deletions = 0usize;
-
-    for line in patch_text.lines() {
-        let trimmed = line.trim_start();
-
-        if trimmed.starts_with("*** ") || trimmed.starts_with("@@") {
-            continue;
-        }
-
-        if trimmed.starts_with('+') {
-            additions += 1;
-        } else if trimmed.starts_with('-') {
-            deletions += 1;
-        }
-    }
-
-    Some((additions, deletions))
-}
-
-fn diff_counts_from_strings(old: &str, new: &str) -> (usize, usize) {
-    use similar::ChangeTag;
-    let diff = similar::TextDiff::from_lines(old, new);
-    let mut additions = 0usize;
-    let mut deletions = 0usize;
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            ChangeTag::Insert => additions += 1,
-            ChangeTag::Delete => deletions += 1,
-            ChangeTag::Equal => {}
-        }
-    }
-    (additions, deletions)
-}
-
-/// Generate diff lines from tool input (old_string/new_string) when content doesn't have them.
-/// This is needed when the SDK executes tools and returns results in a different format.
-fn generate_diff_lines_from_tool_input(tool: &ToolCall) -> Vec<ParsedDiffLine> {
-    match tool.name.as_str() {
-        "edit" | "Edit" => {
-            let old = tool
-                .input
-                .get("old_string")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let new = tool
-                .input
-                .get("new_string")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            generate_diff_lines_from_strings(old, new)
-        }
-        "multiedit" => {
-            let Some(edits) = tool.input.get("edits").and_then(|v| v.as_array()) else {
-                return Vec::new();
-            };
-            let mut all_lines = Vec::new();
-            for edit in edits {
-                let old = edit
-                    .get("old_string")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let new = edit
-                    .get("new_string")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                all_lines.extend(generate_diff_lines_from_strings(old, new));
-            }
-            all_lines
-        }
-        "write" => {
-            // For write, show the new content as additions
-            let content = tool
-                .input
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            generate_diff_lines_from_strings("", content)
-        }
-        "patch" | "Patch" => {
-            let patch_text = tool
-                .input
-                .get("patch_text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            collect_diff_lines(patch_text)
-        }
-        "apply_patch" | "ApplyPatch" => {
-            let patch_text = tool
-                .input
-                .get("patch_text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            collect_diff_lines(patch_text)
-        }
-        _ => Vec::new(),
-    }
-}
-
-/// Generate ParsedDiffLine entries from old/new strings
-fn generate_diff_lines_from_strings(old: &str, new: &str) -> Vec<ParsedDiffLine> {
-    use similar::ChangeTag;
-
-    let diff = similar::TextDiff::from_lines(old, new);
-    let mut lines = Vec::new();
-    let mut line_num = 1usize;
-
-    for change in diff.iter_all_changes() {
-        let content = change.value().trim();
-        if content.is_empty() {
-            if change.tag() != ChangeTag::Equal {
-                line_num += 1;
-            }
-            continue;
-        }
-
-        match change.tag() {
-            ChangeTag::Delete => {
-                lines.push(ParsedDiffLine {
-                    kind: DiffLineKind::Del,
-                    prefix: format!("{}- ", line_num),
-                    content: content.to_string(),
-                });
-                line_num += 1;
-            }
-            ChangeTag::Insert => {
-                lines.push(ParsedDiffLine {
-                    kind: DiffLineKind::Add,
-                    prefix: format!("{}+ ", line_num),
-                    content: content.to_string(),
-                });
-                line_num += 1;
-            }
-            ChangeTag::Equal => {
-                line_num += 1;
-            }
-        }
-    }
-
-    lines
-}
-
-fn collect_diff_lines(content: &str) -> Vec<ParsedDiffLine> {
-    content.lines().filter_map(parse_diff_line).collect()
-}
-
-fn parse_diff_line(raw_line: &str) -> Option<ParsedDiffLine> {
-    let trimmed = raw_line.trim();
-    if trimmed.is_empty() || trimmed == "..." {
-        return None;
-    }
-    if trimmed.starts_with("diff --git ")
-        || trimmed.starts_with("index ")
-        || trimmed.starts_with("--- ")
-        || trimmed.starts_with("+++ ")
-        || trimmed.starts_with("@@ ")
-        || trimmed.starts_with("\\ No newline")
-    {
-        return None;
-    }
-
-    // Compact diff format: "42- old" / "42+ new"
-    if let Some(pos) = trimmed.find("- ") {
-        let (prefix, content) = trimmed.split_at(pos + 2);
-        if !prefix.is_empty() && prefix[..pos].chars().all(|c| c.is_ascii_digit()) {
-            return Some(ParsedDiffLine {
-                kind: DiffLineKind::Del,
-                prefix: prefix.to_string(),
-                content: trim_diff_content(content),
-            });
-        }
-    }
-    if let Some(pos) = trimmed.find("+ ") {
-        let (prefix, content) = trimmed.split_at(pos + 2);
-        if !prefix.is_empty() && prefix[..pos].chars().all(|c| c.is_ascii_digit()) {
-            return Some(ParsedDiffLine {
-                kind: DiffLineKind::Add,
-                prefix: prefix.to_string(),
-                content: trim_diff_content(content),
-            });
-        }
-    }
-
-    // Unified diff format: "+added" / "-removed"
-    if let Some(rest) = raw_line.strip_prefix('+') {
-        return Some(ParsedDiffLine {
-            kind: DiffLineKind::Add,
-            prefix: "+".to_string(),
-            content: trim_diff_content(rest),
-        });
-    }
-    if let Some(rest) = raw_line.strip_prefix('-') {
-        return Some(ParsedDiffLine {
-            kind: DiffLineKind::Del,
-            prefix: "-".to_string(),
-            content: trim_diff_content(rest),
-        });
-    }
-
-    None
-}
-
-fn trim_diff_content(content: &str) -> String {
-    content
-        .trim_start_matches(|c| c == ' ' || c == '\t')
-        .to_string()
-}
-
-/// Extract prefix (line number + sign) and content from diff line
-/// "42- content" -> ("42- ", "content")
-fn extract_diff_prefix_and_content(line: &str) -> (&str, &str) {
-    // Format is "42- content" or "42+ content"
-    if let Some(pos) = line.find("- ") {
-        (&line[..pos + 2], &line[pos + 2..])
-    } else if let Some(pos) = line.find("+ ") {
-        (&line[..pos + 2], &line[pos + 2..])
-    } else {
-        (line, "")
-    }
-}
-
-/// Tint a syntax-highlighted span with a diff color (green/red)
-/// Blends the syntax color with the diff color for a subtle tint
-fn tint_span_with_diff_color(span: Span<'static>, diff_color: Color) -> Span<'static> {
-    let (dr, dg, db) = match diff_color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Indexed(n) => super::color_support::indexed_to_rgb(n),
-        _ => return span,
-    };
-
-    let fg = span.style.fg.unwrap_or(Color::White);
-    let (sr, sg, sb) = match fg {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Indexed(n) => super::color_support::indexed_to_rgb(n),
-        Color::White => (255, 255, 255),
-        Color::Black => (0, 0, 0),
-        _ => return span,
-    };
-
-    // Blend: 70% syntax color + 30% diff color
-    let blend = |s: u8, d: u8| -> u8 { ((s as u16 * 70 + d as u16 * 30) / 100) as u8 };
-
-    let tinted = rgb(blend(sr, dr), blend(sg, dg), blend(sb, db));
-    Span::styled(span.content, span.style.fg(tinted))
-}
-
-/// Render a diff line with word-level highlighting for changed parts
-fn render_diff_line_with_highlights(
-    full_line: &str,
-    this_content: &str,
-    other_content: &str,
-    is_deletion: bool,
-) -> Line<'static> {
-    use similar::{ChangeTag, TextDiff};
-
-    let (base_color, highlight_color) = if is_deletion {
-        (diff_del_color(), diff_highlight_del())
-    } else {
-        (diff_add_color(), diff_highlight_add())
-    };
-
-    // Get prefix (line number and +/-)
-    let prefix = if let Some(pos) = full_line.find(if is_deletion { "- " } else { "+ " }) {
-        &full_line[..pos + 2]
-    } else {
-        ""
-    };
-
-    // Do word-level diff
-    let diff = TextDiff::from_words(
-        if is_deletion {
-            this_content
-        } else {
-            other_content
-        },
-        if is_deletion {
-            other_content
-        } else {
-            this_content
-        },
-    );
-
-    let mut spans: Vec<Span<'static>> = vec![
-        Span::styled("    ".to_string(), Style::default()),
-        Span::styled(prefix.to_string(), Style::default().fg(base_color)),
-    ];
-
-    // Build spans with highlighting for changed words
-    for change in diff.iter_all_changes() {
-        let text = change.value().to_string();
-        let style = match change.tag() {
-            ChangeTag::Equal => Style::default().fg(base_color),
-            ChangeTag::Insert if !is_deletion => {
-                // This is a new word in the addition - highlight it
-                Style::default().fg(highlight_color).bold()
-            }
-            ChangeTag::Delete if is_deletion => {
-                // This is a removed word in the deletion - highlight it
-                Style::default().fg(highlight_color).bold()
-            }
-            _ => Style::default().fg(base_color),
-        };
-        spans.push(Span::styled(text, style));
-    }
-
-    Line::from(spans)
-}
-
 /// Map provider-side tool names to internal display names.
 /// Mirrors `Registry::resolve_tool_name` so the TUI shows friendly names.
 fn resolve_display_tool_name(name: &str) -> &str {
@@ -11517,10 +10719,7 @@ mod tests {
         // image_h_cells = ceil(1600/16) = 100
         // fit_w_cells = ceil(25*28/100) = 7
         // pane_width = 7 + 2 = 9, but clamped to min 24
-        assert_eq!(
-            width, 24,
-            "tall image should be clamped to minimum width"
-        );
+        assert_eq!(width, 24, "tall image should be clamped to minimum width");
     }
 
     #[test]
@@ -11534,8 +10733,7 @@ mod tests {
         };
         let with_font =
             estimate_pinned_diagram_pane_width_with_font(&diagram, 20, 24, Some((8, 16)));
-        let with_default =
-            estimate_pinned_diagram_pane_width_with_font(&diagram, 20, 24, None);
+        let with_default = estimate_pinned_diagram_pane_width_with_font(&diagram, 20, 24, None);
         assert_eq!(with_font, with_default);
     }
 
@@ -11709,7 +10907,8 @@ mod tests {
             height: area_height.saturating_sub(2),
         };
 
-        let render_area = vcenter_fitted_image_with_font(inner, diagram.width, diagram.height, TEST_FONT);
+        let render_area =
+            vcenter_fitted_image_with_font(inner, diagram.width, diagram.height, TEST_FONT);
 
         let utilization = render_area.width as f64 / inner.width as f64;
         assert!(
@@ -11796,11 +10995,7 @@ mod tests {
             width: 30,
             height: 40,
         };
-        let poor = is_diagram_poor_fit(
-            &diagram,
-            area,
-            crate::config::DiagramPanePosition::Side,
-        );
+        let poor = is_diagram_poor_fit(&diagram, area, crate::config::DiagramPanePosition::Side);
         assert!(
             poor,
             "very wide diagram in narrow side pane should be poor fit"
@@ -11822,11 +11017,7 @@ mod tests {
             width: 80,
             height: 15,
         };
-        let poor = is_diagram_poor_fit(
-            &diagram,
-            area,
-            crate::config::DiagramPanePosition::Top,
-        );
+        let poor = is_diagram_poor_fit(&diagram, area, crate::config::DiagramPanePosition::Top);
         assert!(
             poor,
             "very tall diagram in short top pane should be poor fit"
@@ -11864,11 +11055,7 @@ mod tests {
             height: 20,
         };
         assert!(
-            !is_diagram_poor_fit(
-                &diagram,
-                top_area,
-                crate::config::DiagramPanePosition::Top
-            ),
+            !is_diagram_poor_fit(&diagram, top_area, crate::config::DiagramPanePosition::Top),
             "normal diagram should not be poor fit in top pane"
         );
     }
@@ -11888,11 +11075,7 @@ mod tests {
             height: 40,
         };
         assert!(
-            !is_diagram_poor_fit(
-                &diagram,
-                area,
-                crate::config::DiagramPanePosition::Side
-            ),
+            !is_diagram_poor_fit(&diagram, area, crate::config::DiagramPanePosition::Side),
             "zero-dimension diagram should not crash or be poor fit"
         );
     }
@@ -11912,11 +11095,7 @@ mod tests {
             height: 2,
         };
         assert!(
-            !is_diagram_poor_fit(
-                &diagram,
-                area,
-                crate::config::DiagramPanePosition::Side
-            ),
+            !is_diagram_poor_fit(&diagram, area, crate::config::DiagramPanePosition::Side),
             "tiny area should return false (not crash)"
         );
     }
@@ -11941,8 +11120,7 @@ mod tests {
             height: 600,
             label: None,
         };
-        let w_8x16 =
-            estimate_pinned_diagram_pane_width_with_font(&diagram, 30, 24, Some((8, 16)));
+        let w_8x16 = estimate_pinned_diagram_pane_width_with_font(&diagram, 30, 24, Some((8, 16)));
         let w_10x20 =
             estimate_pinned_diagram_pane_width_with_font(&diagram, 30, 24, Some((10, 20)));
         let w_16x32 =
@@ -12010,7 +11188,8 @@ mod tests {
         };
 
         // Step 3: compute render area
-        let render_area = vcenter_fitted_image_with_font(inner, diagram.width, diagram.height, font);
+        let render_area =
+            vcenter_fitted_image_with_font(inner, diagram.width, diagram.height, font);
 
         // Step 4: verify the render area is reasonable
         assert!(
@@ -12099,7 +11278,8 @@ mod tests {
                 height: th.saturating_sub(2),
             };
 
-            let render_area = vcenter_fitted_image_with_font(inner, diagram.width, diagram.height, TEST_FONT);
+            let render_area =
+                vcenter_fitted_image_with_font(inner, diagram.width, diagram.height, TEST_FONT);
             let w_util = render_area.width as f64 / inner.width as f64;
 
             assert!(
