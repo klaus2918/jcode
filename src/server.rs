@@ -11,6 +11,7 @@ mod comm_session;
 mod comm_sync;
 mod debug;
 mod debug_ambient;
+mod debug_client_commands;
 mod debug_command_exec;
 mod debug_events;
 mod debug_jobs;
