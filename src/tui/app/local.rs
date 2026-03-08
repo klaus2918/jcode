@@ -63,11 +63,14 @@ pub(super) fn handle_terminal_event(
     terminal: &mut DefaultTerminal,
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<()> {
-    apply_terminal_event(app, terminal, event)?;
+    let mut needs_redraw = apply_terminal_event(app, terminal, event)?;
     while crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
         if let Ok(event) = crossterm::event::read() {
-            apply_terminal_event(app, terminal, Some(Ok(event)))?;
+            needs_redraw |= apply_terminal_event(app, terminal, Some(Ok(event)))?;
         }
+    }
+    if needs_redraw {
+        terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
     }
     Ok(())
 }
@@ -97,23 +100,26 @@ fn apply_terminal_event(
     app: &mut App,
     terminal: &mut DefaultTerminal,
     event: Option<std::result::Result<Event, std::io::Error>>,
-) -> Result<()> {
+) -> Result<bool> {
     match event {
         Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
             app.handle_key(key.code, key.modifiers)?;
+            Ok(true)
         }
         Some(Ok(Event::Paste(text))) => {
             app.handle_paste(text);
+            Ok(true)
         }
         Some(Ok(Event::Mouse(mouse))) => {
             app.handle_mouse_event(mouse);
+            Ok(true)
         }
         Some(Ok(Event::Resize(_, _))) => {
             let _ = terminal.clear();
+            Ok(true)
         }
-        _ => {}
+        _ => Ok(false),
     }
-    Ok(())
 }
 
 fn handle_background_task_completed(app: &mut App, task: BackgroundTaskCompleted) {

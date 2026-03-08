@@ -100,6 +100,7 @@ pub(super) async fn handle_terminal_event(
     remote: &mut RemoteConnection,
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<()> {
+    let mut needs_redraw = false;
     match event {
         Some(Ok(Event::Key(key))) => {
             if key.kind == KeyEventKind::Press {
@@ -107,18 +108,25 @@ pub(super) async fn handle_terminal_event(
                 if let Some(spec) = app.pending_model_switch.take() {
                     let _ = remote.set_model(&spec).await;
                 }
+                needs_redraw = true;
             }
         }
         Some(Ok(Event::Paste(text))) => {
             app.handle_paste(text);
+            needs_redraw = true;
         }
         Some(Ok(Event::Mouse(mouse))) => {
             handle_mouse_event(app, mouse);
+            needs_redraw = true;
         }
         Some(Ok(Event::Resize(_, _))) => {
             let _ = terminal.clear();
+            needs_redraw = true;
         }
         _ => {}
+    }
+    if needs_redraw {
+        terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
     }
     Ok(())
 }

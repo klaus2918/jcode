@@ -2732,10 +2732,16 @@ mod tests {
                 key.clone(),
                 FileDiffViewCacheEntry {
                     file_sig: sig.clone(),
-                    file_lines: vec![Line::from("cached")],
+                    rows: vec![file_diff_ui::FileDiffDisplayRow {
+                        prefix: String::new(),
+                        text: "cached".to_string(),
+                        kind: file_diff_ui::FileDiffDisplayRowKind::Placeholder,
+                    }],
+                    rendered_rows: vec![Some(Line::from("cached"))],
                     first_change_line: 0,
                     additions: 1,
                     deletions: 0,
+                    file_ext: None,
                 },
             );
 

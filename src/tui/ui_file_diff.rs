@@ -12,12 +12,29 @@ pub(super) struct FileDiffCacheKey {
     pub(super) msg_index: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum FileDiffDisplayRowKind {
+    Normal,
+    Add,
+    Del,
+    Placeholder,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct FileDiffDisplayRow {
+    pub(super) prefix: String,
+    pub(super) text: String,
+    pub(super) kind: FileDiffDisplayRowKind,
+}
+
 pub(super) struct FileDiffViewCacheEntry {
     pub(super) file_sig: Option<FileContentSignature>,
-    pub(super) file_lines: Vec<Line<'static>>,
+    pub(super) rows: Vec<FileDiffDisplayRow>,
+    pub(super) rendered_rows: Vec<Option<Line<'static>>>,
     pub(super) first_change_line: usize,
     pub(super) additions: usize,
     pub(super) deletions: usize,
+    pub(super) file_ext: Option<String>,
 }
 
 #[derive(Default)]
@@ -55,6 +72,248 @@ pub(super) fn file_content_signature(file_path: &str) -> Option<FileContentSigna
         len_bytes: metadata.len(),
         modified: metadata.modified().ok(),
     })
+}
+
+fn render_file_diff_row(
+    row: &FileDiffDisplayRow,
+    file_ext: Option<&str>,
+) -> Line<'static> {
+    match row.kind {
+        FileDiffDisplayRowKind::Placeholder => Line::from(Span::styled(
+            row.text.clone(),
+            Style::default().fg(dim_color()),
+        )),
+        FileDiffDisplayRowKind::Normal => {
+            let mut spans = vec![Span::styled(
+                row.prefix.clone(),
+                Style::default().fg(dim_color()),
+            )];
+            spans.extend(markdown::highlight_line(&row.text, file_ext));
+            Line::from(spans)
+        }
+        FileDiffDisplayRowKind::Add => {
+            let mut spans = vec![Span::styled(
+                row.prefix.clone(),
+                Style::default().fg(diff_add_color()),
+            )];
+            for span in markdown::highlight_line(&row.text, file_ext) {
+                spans.push(tint_span_with_diff_color(span, diff_add_color()));
+            }
+            Line::from(spans)
+        }
+        FileDiffDisplayRowKind::Del => {
+            let mut spans = vec![Span::styled(
+                row.prefix.clone(),
+                Style::default().fg(diff_del_color()),
+            )];
+            for span in markdown::highlight_line(&row.text, file_ext) {
+                spans.push(tint_span_with_diff_color(span, diff_del_color()));
+            }
+            Line::from(spans)
+        }
+    }
+}
+
+fn materialize_visible_file_diff_lines(
+    cached: &mut FileDiffViewCacheEntry,
+    start: usize,
+    count: usize,
+) -> Vec<Line<'static>> {
+    if cached.rendered_rows.len() != cached.rows.len() {
+        cached.rendered_rows.resize_with(cached.rows.len(), || None);
+    }
+
+    let end = start.saturating_add(count).min(cached.rows.len());
+    let mut visible = Vec::with_capacity(end.saturating_sub(start));
+
+    for idx in start..end {
+        if cached.rendered_rows[idx].is_none() {
+            let rendered = render_file_diff_row(&cached.rows[idx], cached.file_ext.as_deref());
+            cached.rendered_rows[idx] = Some(rendered);
+        }
+        if let Some(line) = cached.rendered_rows[idx].as_ref() {
+            visible.push(line.clone());
+        }
+    }
+
+    visible
+}
+
+fn diff_lines_for_message(msg: Option<&DisplayMessage>) -> Vec<ParsedDiffLine> {
+    let Some(msg) = msg else {
+        return Vec::new();
+    };
+    let Some(tc) = msg.tool_data.as_ref() else {
+        return Vec::new();
+    };
+
+    let from_content = collect_diff_lines(&msg.content);
+    if !from_content.is_empty() {
+        from_content
+    } else {
+        generate_diff_lines_from_tool_input(tc)
+    }
+}
+
+fn build_file_diff_cache_entry(
+    file_path: &str,
+    msg: Option<&DisplayMessage>,
+    file_sig: Option<FileContentSignature>,
+) -> FileDiffViewCacheEntry {
+    let diff_lines = diff_lines_for_message(msg);
+    let file_content = std::fs::read_to_string(file_path).unwrap_or_default();
+    let file_ext = std::path::Path::new(file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_owned);
+
+    struct DiffHunk {
+        dels: Vec<String>,
+        adds: Vec<String>,
+    }
+
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    {
+        let mut current_dels: Vec<String> = Vec::new();
+        let mut current_adds: Vec<String> = Vec::new();
+        for dl in &diff_lines {
+            match dl.kind {
+                DiffLineKind::Del => {
+                    if !current_adds.is_empty() {
+                        hunks.push(DiffHunk {
+                            dels: current_dels,
+                            adds: current_adds,
+                        });
+                        current_dels = Vec::new();
+                        current_adds = Vec::new();
+                    }
+                    current_dels.push(dl.content.clone());
+                }
+                DiffLineKind::Add => {
+                    current_adds.push(dl.content.clone());
+                }
+            }
+        }
+        if !current_dels.is_empty() || !current_adds.is_empty() {
+            hunks.push(DiffHunk {
+                dels: current_dels,
+                adds: current_adds,
+            });
+        }
+    }
+
+    let mut add_to_dels: HashMap<usize, Vec<String>> = HashMap::new();
+    let mut orphan_dels: Vec<String> = Vec::new();
+    let file_lines_vec: Vec<&str> = file_content.lines().collect();
+    let mut used_file_lines: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for hunk in &hunks {
+        if hunk.adds.is_empty() {
+            orphan_dels.extend(hunk.dels.clone());
+            continue;
+        }
+
+        let first_add_trimmed = hunk.adds[0].trim();
+        if first_add_trimmed.is_empty() {
+            orphan_dels.extend(hunk.dels.clone());
+            continue;
+        }
+
+        let mut found_idx = None;
+        for (fi, fl) in file_lines_vec.iter().enumerate() {
+            if !used_file_lines.contains(&fi) && fl.trim() == first_add_trimmed {
+                found_idx = Some(fi);
+                break;
+            }
+        }
+
+        if let Some(idx) = found_idx {
+            for (ai, _) in hunk.adds.iter().enumerate() {
+                used_file_lines.insert(idx + ai);
+            }
+            if !hunk.dels.is_empty() {
+                add_to_dels.insert(idx, hunk.dels.clone());
+            }
+        } else {
+            orphan_dels.extend(hunk.dels.clone());
+        }
+    }
+
+    let mut rows: Vec<FileDiffDisplayRow> = Vec::new();
+    let mut first_change_line = usize::MAX;
+    let mut del_count = 0usize;
+    let mut add_count = 0usize;
+
+    let line_num_width = file_lines_vec.len().to_string().len().max(3);
+    let gutter_pad = " ".repeat(line_num_width);
+
+    for (i, line_text) in file_lines_vec.iter().enumerate() {
+        let line_num = i + 1;
+
+        if let Some(dels) = add_to_dels.get(&i) {
+            for del_text in dels {
+                if first_change_line == usize::MAX {
+                    first_change_line = rows.len();
+                }
+                del_count += 1;
+                rows.push(FileDiffDisplayRow {
+                    prefix: format!("{} │-", gutter_pad),
+                    text: del_text.clone(),
+                    kind: FileDiffDisplayRowKind::Del,
+                });
+            }
+        }
+
+        if used_file_lines.contains(&i) {
+            if first_change_line == usize::MAX {
+                first_change_line = rows.len();
+            }
+            add_count += 1;
+            rows.push(FileDiffDisplayRow {
+                prefix: format!("{:>width$} │+", line_num, width = line_num_width),
+                text: (*line_text).to_string(),
+                kind: FileDiffDisplayRowKind::Add,
+            });
+        } else {
+            rows.push(FileDiffDisplayRow {
+                prefix: format!("{:>width$} │ ", line_num, width = line_num_width),
+                text: (*line_text).to_string(),
+                kind: FileDiffDisplayRowKind::Normal,
+            });
+        }
+    }
+
+    for del_text in &orphan_dels {
+        if first_change_line == usize::MAX {
+            first_change_line = rows.len();
+        }
+        del_count += 1;
+        rows.push(FileDiffDisplayRow {
+            prefix: format!("{} │-", gutter_pad),
+            text: del_text.clone(),
+            kind: FileDiffDisplayRowKind::Del,
+        });
+    }
+
+    if rows.is_empty() {
+        rows.push(FileDiffDisplayRow {
+            prefix: String::new(),
+            text: "File not found or empty".to_string(),
+            kind: FileDiffDisplayRowKind::Placeholder,
+        });
+    }
+
+    let rendered_rows = vec![None; rows.len()];
+
+    FileDiffViewCacheEntry {
+        file_sig,
+        rows,
+        rendered_rows,
+        first_change_line,
+        additions: add_count,
+        deletions: del_count,
+        file_ext,
+    }
 }
 
 fn find_visible_edit_tool<'a>(
@@ -172,216 +431,46 @@ pub(super) fn draw_file_diff_view(
     };
     let file_sig = file_content_signature(file_path);
 
-    let mut cache = match file_diff_cache().lock() {
-        Ok(c) => c,
-        Err(poisoned) => poisoned.into_inner(),
+    let needs_rebuild = {
+        let cache = match file_diff_cache().lock() {
+            Ok(c) => c,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        cache
+            .entries
+            .get(&cache_key)
+            .map(|cached| cached.file_sig != file_sig)
+            .unwrap_or(true)
     };
-
-    let needs_rebuild = cache
-        .entries
-        .get(&cache_key)
-        .map(|cached| cached.file_sig != file_sig)
-        .unwrap_or(true);
 
     if needs_rebuild {
         let display_messages = app.display_messages();
         let msg = display_messages.get(msg_index);
+        let entry = build_file_diff_cache_entry(file_path, msg, file_sig.clone());
 
-        let (diff_lines, file_content) = if let Some(msg) = msg {
-            let tc = msg.tool_data.as_ref();
-            let diffs = if let Some(tc) = tc {
-                let from_content = collect_diff_lines(&msg.content);
-                if !from_content.is_empty() {
-                    from_content
-                } else {
-                    generate_diff_lines_from_tool_input(tc)
-                }
-            } else {
-                Vec::new()
-            };
-
-            let content = std::fs::read_to_string(file_path).unwrap_or_default();
-            (diffs, content)
-        } else {
-            (Vec::new(), String::new())
+        let mut cache = match file_diff_cache().lock() {
+            Ok(c) => c,
+            Err(poisoned) => poisoned.into_inner(),
         };
-
-        let file_ext = std::path::Path::new(file_path)
-            .extension()
-            .and_then(|e| e.to_str());
-
-        struct DiffHunk {
-            dels: Vec<String>,
-            adds: Vec<String>,
-        }
-
-        let mut hunks: Vec<DiffHunk> = Vec::new();
-        {
-            let mut current_dels: Vec<String> = Vec::new();
-            let mut current_adds: Vec<String> = Vec::new();
-            for dl in &diff_lines {
-                match dl.kind {
-                    DiffLineKind::Del => {
-                        if !current_adds.is_empty() {
-                            hunks.push(DiffHunk {
-                                dels: current_dels,
-                                adds: current_adds,
-                            });
-                            current_dels = Vec::new();
-                            current_adds = Vec::new();
-                        }
-                        current_dels.push(dl.content.clone());
-                    }
-                    DiffLineKind::Add => {
-                        current_adds.push(dl.content.clone());
-                    }
-                }
-            }
-            if !current_dels.is_empty() || !current_adds.is_empty() {
-                hunks.push(DiffHunk {
-                    dels: current_dels,
-                    adds: current_adds,
-                });
-            }
-        }
-
-        let mut add_to_dels: std::collections::HashMap<usize, Vec<String>> =
-            std::collections::HashMap::new();
-        let mut orphan_dels: Vec<String> = Vec::new();
-        let file_lines_vec: Vec<&str> = file_content.lines().collect();
-
-        let mut used_file_lines: std::collections::HashSet<usize> =
-            std::collections::HashSet::new();
-
-        for hunk in &hunks {
-            if hunk.adds.is_empty() {
-                orphan_dels.extend(hunk.dels.clone());
-                continue;
-            }
-
-            let first_add_trimmed = hunk.adds[0].trim();
-            if first_add_trimmed.is_empty() {
-                orphan_dels.extend(hunk.dels.clone());
-                continue;
-            }
-            let mut found_idx = None;
-            for (fi, fl) in file_lines_vec.iter().enumerate() {
-                if !used_file_lines.contains(&fi) && fl.trim() == first_add_trimmed {
-                    found_idx = Some(fi);
-                    break;
-                }
-            }
-
-            if let Some(idx) = found_idx {
-                for (ai, _) in hunk.adds.iter().enumerate() {
-                    used_file_lines.insert(idx + ai);
-                }
-                if !hunk.dels.is_empty() {
-                    add_to_dels.insert(idx, hunk.dels.clone());
-                }
-            } else {
-                orphan_dels.extend(hunk.dels.clone());
-            }
-        }
-
-        let mut rendered_lines: Vec<Line<'static>> = Vec::new();
-        let mut first_change_line = usize::MAX;
-        let mut del_count = 0usize;
-        let mut add_count = 0usize;
-
-        let line_num_width = file_lines_vec.len().to_string().len().max(3);
-        let gutter_pad: String = " ".repeat(line_num_width);
-
-        for (i, line_text) in file_lines_vec.iter().enumerate() {
-            let line_num = i + 1;
-
-            if let Some(dels) = add_to_dels.get(&i) {
-                for del_text in dels {
-                    let mut del_spans: Vec<Span<'static>> = vec![Span::styled(
-                        format!("{} │-", gutter_pad),
-                        Style::default().fg(diff_del_color()),
-                    )];
-                    let highlighted = markdown::highlight_line(del_text, file_ext);
-                    for span in highlighted {
-                        let tinted = tint_span_with_diff_color(span, diff_del_color());
-                        del_spans.push(tinted);
-                    }
-                    if first_change_line == usize::MAX {
-                        first_change_line = rendered_lines.len();
-                    }
-                    del_count += 1;
-                    rendered_lines.push(Line::from(del_spans));
-                }
-            }
-
-            let is_added = used_file_lines.contains(&i);
-
-            if is_added {
-                let mut spans: Vec<Span<'static>> = vec![Span::styled(
-                    format!("{:>width$} │+", line_num, width = line_num_width),
-                    Style::default().fg(diff_add_color()),
-                )];
-                let highlighted = markdown::highlight_line(line_text, file_ext);
-                for span in highlighted {
-                    let tinted = tint_span_with_diff_color(span, diff_add_color());
-                    spans.push(tinted);
-                }
-                if first_change_line == usize::MAX {
-                    first_change_line = rendered_lines.len();
-                }
-                add_count += 1;
-                rendered_lines.push(Line::from(spans));
-            } else {
-                let mut spans: Vec<Span<'static>> = vec![Span::styled(
-                    format!("{:>width$} │ ", line_num, width = line_num_width),
-                    Style::default().fg(dim_color()),
-                )];
-                let highlighted = markdown::highlight_line(line_text, file_ext);
-                spans.extend(highlighted);
-                rendered_lines.push(Line::from(spans));
-            }
-        }
-
-        for del_text in &orphan_dels {
-            let mut del_spans: Vec<Span<'static>> = vec![Span::styled(
-                format!("{} │-", gutter_pad),
-                Style::default().fg(diff_del_color()),
-            )];
-            let highlighted = markdown::highlight_line(del_text, file_ext);
-            for span in highlighted {
-                let tinted = tint_span_with_diff_color(span, diff_del_color());
-                del_spans.push(tinted);
-            }
-            if first_change_line == usize::MAX {
-                first_change_line = rendered_lines.len();
-            }
-            del_count += 1;
-            rendered_lines.push(Line::from(del_spans));
-        }
-
-        if rendered_lines.is_empty() {
-            rendered_lines.push(Line::from(Span::styled(
-                "File not found or empty",
-                Style::default().fg(dim_color()),
-            )));
-        }
-
-        cache.insert(
-            cache_key.clone(),
-            FileDiffViewCacheEntry {
-                file_sig: file_sig.clone(),
-                file_lines: rendered_lines,
-                first_change_line,
-                additions: add_count,
-                deletions: del_count,
-            },
-        );
+        cache.insert(cache_key.clone(), entry);
     }
 
-    let cached = cache
-        .entries
-        .get(&cache_key)
-        .expect("file diff cache entry should exist after build");
+    let (additions, deletions, total_lines, first_change_line) = {
+        let cache = match file_diff_cache().lock() {
+            Ok(c) => c,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let cached = cache
+            .entries
+            .get(&cache_key)
+            .expect("file diff cache entry should exist after build");
+        (
+            cached.additions,
+            cached.deletions,
+            cached.rows.len(),
+            cached.first_change_line,
+        )
+    };
 
     let short_path = file_path
         .rsplit('/')
@@ -401,26 +490,26 @@ pub(super) fn draw_file_diff_view(
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
     ];
-    if cached.additions > 0 || cached.deletions > 0 {
+    if additions > 0 || deletions > 0 {
         title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
-        if cached.additions > 0 {
+        if additions > 0 {
             title_parts.push(Span::styled(
-                format!("+{}", cached.additions),
+                format!("+{}", additions),
                 Style::default().fg(diff_add_color()),
             ));
         }
-        if cached.deletions > 0 {
-            if cached.additions > 0 {
+        if deletions > 0 {
+            if additions > 0 {
                 title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
             }
             title_parts.push(Span::styled(
-                format!("-{}", cached.deletions),
+                format!("-{}", deletions),
                 Style::default().fg(diff_del_color()),
             ));
         }
     }
     title_parts.push(Span::styled(
-        format!(" {}L ", cached.file_lines.len()),
+        format!(" {}L ", total_lines),
         Style::default().fg(dim_color()),
     ));
     title_parts.push(Span::styled(
@@ -442,15 +531,12 @@ pub(super) fn draw_file_diff_view(
         return;
     }
 
-    let total_lines = cached.file_lines.len();
     PINNED_PANE_TOTAL_LINES.store(total_lines, Ordering::Relaxed);
 
     let max_scroll = total_lines.saturating_sub(inner.height as usize);
 
-    let effective_scroll = if pane_scroll == usize::MAX && cached.first_change_line != usize::MAX {
-        let target = cached
-            .first_change_line
-            .saturating_sub(inner.height as usize / 3);
+    let effective_scroll = if pane_scroll == usize::MAX && first_change_line != usize::MAX {
+        let target = first_change_line.saturating_sub(inner.height as usize / 3);
         target.min(max_scroll)
     } else if pane_scroll == usize::MAX {
         max_scroll
@@ -459,13 +545,17 @@ pub(super) fn draw_file_diff_view(
     };
     LAST_DIFF_PANE_EFFECTIVE_SCROLL.store(effective_scroll, Ordering::Relaxed);
 
-    let visible_lines: Vec<Line<'static>> = cached
-        .file_lines
-        .iter()
-        .skip(effective_scroll)
-        .take(inner.height as usize)
-        .cloned()
-        .collect();
+    let visible_lines = {
+        let mut cache = match file_diff_cache().lock() {
+            Ok(c) => c,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let cached = cache
+            .entries
+            .get_mut(&cache_key)
+            .expect("file diff cache entry should exist after build");
+        materialize_visible_file_diff_lines(cached, effective_scroll, inner.height as usize)
+    };
 
     let paragraph = Paragraph::new(visible_lines);
     frame.render_widget(paragraph, inner);

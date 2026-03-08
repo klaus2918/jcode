@@ -3657,6 +3657,11 @@ impl App {
         Ok(())
     }
 
+    fn redraw_now(&self, terminal: &mut DefaultTerminal) -> Result<()> {
+        terminal.draw(|frame| crate::tui::ui::draw(frame, self))?;
+        Ok(())
+    }
+
     /// Try to paste an image from the clipboard. Checks native image data first,
     /// then falls back to HTML clipboard for <img> URLs, then arboard text.
     /// Used by both Ctrl+V and Alt+V handlers in both local and remote mode.
@@ -6847,13 +6852,20 @@ impl App {
                                         self.push_display_message(DisplayMessage::system("Interrupted"));
                                         return Ok(());
                                     }
+                                    self.redraw_now(terminal)?;
                                 }
                             }
                             Some(Ok(Event::Paste(text))) => {
                                 self.handle_paste(text);
+                                self.redraw_now(terminal)?;
+                            }
+                            Some(Ok(Event::Mouse(mouse))) => {
+                                self.handle_mouse_event(mouse);
+                                self.redraw_now(terminal)?;
                             }
                             Some(Ok(Event::Resize(_, _))) => {
                                 let _ = terminal.clear();
+                                self.redraw_now(terminal)?;
                             }
                             _ => {}
                         }
@@ -7038,13 +7050,21 @@ impl App {
                                         // Continue to next iteration of outer loop (new API call)
                                         break;
                                     }
+
+                                    self.redraw_now(terminal)?;
                                 }
                             }
                             Some(Ok(Event::Paste(text))) => {
                                 self.handle_paste(text);
+                                self.redraw_now(terminal)?;
+                            }
+                            Some(Ok(Event::Mouse(mouse))) => {
+                                self.handle_mouse_event(mouse);
+                                self.redraw_now(terminal)?;
                             }
                             Some(Ok(Event::Resize(_, _))) => {
                                 let _ = terminal.clear();
+                                self.redraw_now(terminal)?;
                             }
                             _ => {}
                         }
@@ -7559,13 +7579,21 @@ impl App {
                                             self.push_display_message(DisplayMessage::system("Interrupted"));
                                             return Ok(());
                                         }
+
+                                        self.redraw_now(terminal)?;
                                     }
                                 }
                                 Some(Ok(Event::Paste(text))) => {
                                     self.handle_paste(text);
+                                    self.redraw_now(terminal)?;
+                                }
+                                Some(Ok(Event::Mouse(mouse))) => {
+                                    self.handle_mouse_event(mouse);
+                                    self.redraw_now(terminal)?;
                                 }
                                 Some(Ok(Event::Resize(_, _))) => {
                                     let _ = terminal.clear();
+                                    self.redraw_now(terminal)?;
                                 }
                                 _ => {}
                             }
