@@ -4263,129 +4263,17 @@ impl App {
                         }
                     }
                     event = remote.next_event() => {
-                        match event {
-                            None => {
-                                self.rate_limit_pending_message = None;
-                                self.current_message_id = None;
-                                self.last_stream_activity = None;
-                                if let Some(chunk) = self.stream_buffer.flush() {
-                                    self.streaming_text.push_str(&chunk);
-                                }
-                                if !self.streaming_text.is_empty() {
-                                    let content = self.take_streaming_text();
-                                    self.push_display_message(DisplayMessage {
-                                        role: "assistant".to_string(),
-                                        content,
-                                        tool_calls: vec![],
-                                        duration_secs: None,
-                                        title: None,
-                                        tool_data: None,
-                                    });
-                                }
-                                self.clear_streaming_render_state();
-                                self.streaming_tool_calls.clear();
-                                self.thought_line_inserted = false;
-                                self.thinking_prefix_emitted = false;
-                                self.thinking_buffer.clear();
-                                self.streaming_tps_start = None;
-                                self.streaming_tps_elapsed = Duration::ZERO;
-                                self.is_processing = false;
-                                self.status = ProcessingStatus::Idle;
-                                remote_state.disconnect_start = Some(std::time::Instant::now());
-                                self.push_display_message(DisplayMessage {
-                                    role: "system".to_string(),
-                                    content: "⚡ Connection lost — reconnecting…".to_string(),
-                                    tool_calls: Vec::new(),
-                                    duration_secs: None,
-                                    title: None,
-                                    tool_data: None,
-                                });
-                                remote_state.disconnect_msg_idx =
-                                    Some(self.display_messages.len() - 1);
-                                terminal.draw(|frame| crate::tui::ui::draw(frame, &self))?;
-                                remote_state.reconnect_attempts = 1;
-                                continue 'outer;
-                            }
-                            Some(server_event) => {
-                                if let crate::protocol::ServerEvent::ClientDebugRequest {
-                                    id,
-                                    command,
-                                } = server_event
-                                {
-                                    let output =
-                                        self.handle_debug_command_remote(&command, &mut remote).await;
-                                    let _ = remote.send_client_debug_response(id, output).await;
-                                } else {
-                                    let _ = self.handle_server_event(server_event, &mut remote);
-                                }
-
-                                // Auto-reload server if stale binary detected
-                                if self.pending_server_reload && !self.is_processing {
-                                    self.pending_server_reload = false;
-                                    self.append_reload_message("Reloading server with newer binary...");
-                                    let _ = remote.reload().await;
-                                }
-
-                                // Process pending interleave or queued messages
-                                // If processing: send any buffered interleave immediately as soft interrupt
-                                // If not processing: send interleave or queued messages directly
-                                if self.is_processing {
-                                    if self.interleave_message.is_some() {
-                                        // Flush any leftover interleave buffer (e.g. from debug commands)
-                                        if let Some(interleave_msg) = self.interleave_message.take() {
-                                            if !interleave_msg.trim().is_empty() {
-                                                let msg_clone = interleave_msg.clone();
-                                                if let Err(e) = remote.soft_interrupt(interleave_msg, false).await {
-                                                    self.push_display_message(DisplayMessage::error(format!(
-                                                        "Failed to queue soft interrupt: {}", e
-                                                    )));
-                                                } else {
-                                                    self.pending_soft_interrupts.push(msg_clone);
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    // Not processing - send directly
-                                    if let Some(interleave_msg) = self.interleave_message.take() {
-                                        if !interleave_msg.trim().is_empty() {
-                                            self.push_display_message(DisplayMessage {
-                                                role: "user".to_string(),
-                                                content: interleave_msg.clone(),
-                                                tool_calls: vec![],
-                                                duration_secs: None,
-                                                title: None,
-                                                tool_data: None,
-                                            });
-                                            match self
-                                                .begin_remote_send(
-                                                    &mut remote,
-                                                    interleave_msg,
-                                                    vec![],
-                                                    false,
-                                                )
-                                                .await
-                                            {
-                                                Ok(_) => {}
-                                                Err(e) => {
-                                                    self.push_display_message(DisplayMessage::error(format!(
-                                                        "Failed to send message: {}", e
-                                                    )));
-                                                }
-                                            }
-                                        }
-                                    } else if !self.queued_messages.is_empty() {
-                                        let messages = std::mem::take(&mut self.queued_messages);
-                                        let combined = messages.join("\n\n");
-                                        for msg in &messages {
-                                            self.push_display_message(DisplayMessage::user(msg.clone()));
-                                        }
-                                        let _ = self
-                                            .begin_remote_send(&mut remote, combined, vec![], true)
-                                            .await;
-                                    }
-                                }
-                            }
+                        match remote::handle_remote_event(
+                            &mut self,
+                            &mut terminal,
+                            &mut remote,
+                            &mut remote_state,
+                            event,
+                        )
+                        .await?
+                        {
+                            remote::RemoteEventOutcome::Continue => {}
+                            remote::RemoteEventOutcome::Reconnect => continue 'outer,
                         }
                     }
                     event = event_stream.next() => {
