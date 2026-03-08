@@ -256,6 +256,8 @@ pub async fn fetch_all_provider_usage() -> Vec<ProviderUsage> {
         results.push(r);
     }
 
+    sync_cached_usage_from_reports(&results).await;
+
     if let Ok(mut map) = cache.lock() {
         map.clear();
         let now = Instant::now();
@@ -265,6 +267,127 @@ pub async fn fetch_all_provider_usage() -> Vec<ProviderUsage> {
     }
 
     results
+}
+
+async fn sync_cached_usage_from_reports(results: &[ProviderUsage]) {
+    sync_active_anthropic_usage_from_reports(results).await;
+    sync_openai_usage_from_reports(results).await;
+}
+
+async fn sync_active_anthropic_usage_from_reports(results: &[ProviderUsage]) {
+    let report = active_anthropic_usage_report(results);
+    let usage = get_usage().await;
+    let mut cached = usage.write().await;
+
+    match report {
+        Some(report) => {
+            *cached = usage_data_from_provider_report(report);
+            if report.error.is_none() {
+                crate::provider::clear_provider_unavailable_for_account("claude");
+            }
+        }
+        None => {
+            *cached = UsageData {
+                fetched_at: Some(Instant::now()),
+                last_error: Some("No Anthropic OAuth credentials found".to_string()),
+                ..Default::default()
+            };
+        }
+    }
+}
+
+async fn sync_openai_usage_from_reports(results: &[ProviderUsage]) {
+    let report = results
+        .iter()
+        .find(|report| report.provider_name == "OpenAI (ChatGPT)");
+    let usage = get_openai_usage_cell().await;
+    let mut cached = usage.write().await;
+
+    match report {
+        Some(report) => {
+            *cached = openai_usage_data_from_provider_report(report);
+            if report.error.is_none() {
+                crate::provider::clear_provider_unavailable_for_account("openai");
+            }
+        }
+        None => {
+            *cached = OpenAIUsageData {
+                fetched_at: Some(Instant::now()),
+                last_error: Some("No OpenAI/Codex OAuth credentials found".to_string()),
+                ..Default::default()
+            };
+        }
+    }
+}
+
+fn active_anthropic_usage_report(results: &[ProviderUsage]) -> Option<&ProviderUsage> {
+    let mut anthropic_reports = results
+        .iter()
+        .filter(|report| report.provider_name.starts_with("Anthropic"));
+
+    let first = anthropic_reports.next()?;
+    if !first.provider_name.contains(" - ") {
+        return Some(first);
+    }
+
+    results
+        .iter()
+        .find(|report| {
+            report.provider_name.starts_with("Anthropic") && report.provider_name.contains(" ✦")
+        })
+        .or(Some(first))
+}
+
+fn usage_data_from_provider_report(report: &ProviderUsage) -> UsageData {
+    if let Some(error) = &report.error {
+        return UsageData {
+            fetched_at: Some(Instant::now()),
+            last_error: Some(error.clone()),
+            ..Default::default()
+        };
+    }
+
+    let five_hour = report
+        .limits
+        .iter()
+        .find(|limit| limit.name == "5-hour window");
+    let seven_day = report
+        .limits
+        .iter()
+        .find(|limit| limit.name == "7-day window");
+    let seven_day_opus = report
+        .limits
+        .iter()
+        .find(|limit| limit.name == "7-day Opus window");
+    let extra_usage_enabled = report.extra_info.iter().find_map(|(key, value)| {
+        if key == "Extra usage (long context)" {
+            Some(value == "enabled")
+        } else {
+            None
+        }
+    });
+
+    UsageData {
+        five_hour: five_hour
+            .map(|limit| normalize_ratio(limit.usage_percent))
+            .unwrap_or(0.0),
+        five_hour_resets_at: five_hour.and_then(|limit| limit.resets_at.clone()),
+        seven_day: seven_day
+            .map(|limit| normalize_ratio(limit.usage_percent))
+            .unwrap_or(0.0),
+        seven_day_resets_at: seven_day.and_then(|limit| limit.resets_at.clone()),
+        seven_day_opus: seven_day_opus.map(|limit| normalize_ratio(limit.usage_percent)),
+        extra_usage_enabled: extra_usage_enabled.unwrap_or(false),
+        fetched_at: Some(Instant::now()),
+        last_error: None,
+    }
+}
+
+fn openai_usage_data_from_provider_report(report: &ProviderUsage) -> OpenAIUsageData {
+    let mut data = classify_openai_limits(&report.limits);
+    data.fetched_at = Some(Instant::now());
+    data.last_error = report.error.clone();
+    data
 }
 
 fn normalize_ratio(raw: f32) -> f32 {
@@ -1638,5 +1761,81 @@ mod tests {
 
         let percent = parse_usage_percent_from_obj(&obj);
         assert_eq!(percent, Some(25.0));
+    }
+
+    #[test]
+    fn test_active_anthropic_usage_report_prefers_marked_account() {
+        let results = vec![
+            ProviderUsage {
+                provider_name: "Anthropic - work".to_string(),
+                ..Default::default()
+            },
+            ProviderUsage {
+                provider_name: "Anthropic - personal ✦".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let active = active_anthropic_usage_report(&results)
+            .expect("expected active anthropic report to be selected");
+        assert_eq!(active.provider_name, "Anthropic - personal ✦");
+    }
+
+    #[test]
+    fn test_usage_data_from_provider_report_maps_limits_and_extra_usage() {
+        let report = ProviderUsage {
+            provider_name: "Anthropic (Claude)".to_string(),
+            limits: vec![
+                UsageLimit {
+                    name: "5-hour window".to_string(),
+                    usage_percent: 25.0,
+                    resets_at: Some("2026-01-01T00:00:00Z".to_string()),
+                },
+                UsageLimit {
+                    name: "7-day window".to_string(),
+                    usage_percent: 50.0,
+                    resets_at: Some("2026-01-07T00:00:00Z".to_string()),
+                },
+                UsageLimit {
+                    name: "7-day Opus window".to_string(),
+                    usage_percent: 75.0,
+                    resets_at: Some("2026-01-08T00:00:00Z".to_string()),
+                },
+            ],
+            extra_info: vec![(
+                "Extra usage (long context)".to_string(),
+                "enabled".to_string(),
+            )],
+            error: None,
+        };
+
+        let usage = usage_data_from_provider_report(&report);
+
+        assert_eq!(usage.five_hour, 0.25);
+        assert_eq!(usage.seven_day, 0.5);
+        assert_eq!(usage.seven_day_opus, Some(0.75));
+        assert!(usage.extra_usage_enabled);
+        assert_eq!(
+            usage.five_hour_resets_at.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn test_openai_usage_data_from_provider_report_preserves_error() {
+        let report = ProviderUsage {
+            provider_name: "OpenAI (ChatGPT)".to_string(),
+            error: Some("API error (401 Unauthorized)".to_string()),
+            ..Default::default()
+        };
+
+        let usage = openai_usage_data_from_provider_report(&report);
+
+        assert_eq!(
+            usage.last_error.as_deref(),
+            Some("API error (401 Unauthorized)")
+        );
+        assert!(usage.five_hour.is_none());
+        assert!(usage.seven_day.is_none());
     }
 }
