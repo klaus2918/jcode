@@ -5,6 +5,7 @@ use super::client_comm::{
     handle_comm_list, handle_comm_message, handle_comm_read, handle_comm_share,
     handle_comm_subscribe_channel, handle_comm_unsubscribe_channel,
 };
+use super::client_disconnect_cleanup::cleanup_client_connection;
 use super::client_session::{
     handle_clear_session, handle_reload, handle_resume_session, handle_subscribe,
 };
@@ -23,9 +24,9 @@ use super::provider_control::{
     handle_switch_anthropic_account,
 };
 use super::{
-    broadcast_swarm_status, record_swarm_event, remove_session_from_swarm, swarm_id_for_dir,
-    truncate_detail, update_member_status, ClientConnectionInfo, ClientDebugState, FileAccess,
-    SharedContext, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
+    broadcast_swarm_status, record_swarm_event, swarm_id_for_dir, truncate_detail,
+    update_member_status, ClientConnectionInfo, ClientDebugState, FileAccess, SharedContext,
+    SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
 };
 use crate::agent::{Agent, InterruptSignal, SoftInterruptQueue, StreamError};
 use crate::bus::{Bus, BusEvent};
@@ -1106,130 +1107,26 @@ pub(super) async fn handle_client(
         }
     }
 
-    // Clean up: remove this client's session from the map
-    // Mark session status and persist before dropping the agent
-    let disconnected_while_processing = client_is_processing
-        || processing_task
-            .as_ref()
-            .map(|handle| !handle.is_finished())
-            .unwrap_or(false);
-    {
-        let mut sessions_guard = sessions.write().await;
-        if let Some(agent_arc) = sessions_guard.remove(&client_session_id) {
-            drop(sessions_guard);
-            // Use try_lock with timeout to avoid deadlocking when agent mutex
-            // is held by a stuck task (e.g., interrupted tool call).
-            let lock_result =
-                tokio::time::timeout(std::time::Duration::from_secs(2), agent_arc.lock()).await;
-
-            match lock_result {
-                Ok(mut agent) => {
-                    if disconnected_while_processing {
-                        agent
-                            .mark_crashed(Some("Client disconnected while processing".to_string()));
-                    } else {
-                        agent.mark_closed();
-                    }
-
-                    let memory_enabled = agent.memory_enabled();
-                    let transcript = if memory_enabled {
-                        Some(agent.build_transcript_for_extraction())
-                    } else {
-                        None
-                    };
-                    let sid = client_session_id.clone();
-                    drop(agent);
-                    if let Some(transcript) = transcript {
-                        crate::memory_agent::trigger_final_extraction(transcript, sid);
-                    }
-                }
-                Err(_) => {
-                    // Agent mutex still held — skip graceful shutdown for this session.
-                    // The agent_arc is dropped here, which will eventually allow the
-                    // mutex holder to finish.
-                    crate::logging::warn(&format!(
-                        "Session {} cleanup timed out waiting for agent lock (stuck task); skipping graceful shutdown",
-                        client_session_id
-                    ));
-                }
-            }
-        }
-    }
-
-    // Clean up: remove from swarm tracking
-    {
-        let crashed = disconnected_while_processing;
-        let (status, detail) = if crashed {
-            ("crashed", Some("disconnect while running".to_string()))
-        } else {
-            ("stopped", Some("disconnected".to_string()))
-        };
-        update_member_status(
-            &client_session_id,
-            status,
-            detail,
-            &swarm_members,
-            &swarms_by_id,
-            Some(&event_history),
-            Some(&event_counter),
-            Some(&swarm_event_tx),
-        )
-        .await;
-
-        let (swarm_id, removed_name) = {
-            let mut members = swarm_members.write().await;
-            if let Some(member) = members.remove(&client_session_id) {
-                (member.swarm_id, member.friendly_name)
-            } else {
-                (None, None)
-            }
-        };
-
-        if let Some(ref swarm_id) = swarm_id {
-            record_swarm_event(
-                &event_history,
-                &event_counter,
-                &swarm_event_tx,
-                client_session_id.clone(),
-                removed_name.clone(),
-                Some(swarm_id.clone()),
-                SwarmEventType::MemberChange {
-                    action: "left".to_string(),
-                },
-            )
-            .await;
-            remove_session_from_swarm(
-                &client_session_id,
-                swarm_id,
-                &swarm_members,
-                &swarms_by_id,
-                &swarm_coordinators,
-                &swarm_plans,
-            )
-            .await;
-        }
-    }
-
-    // Clean up: remove client debug channel
-    {
-        let mut debug_state = client_debug_state.write().await;
-        debug_state.unregister(&client_debug_id);
-    }
-    {
-        let mut connections = client_connections.write().await;
-        connections.remove(&client_connection_id);
-    }
-    // Clean up shutdown signal for this session
-    {
-        let mut signals = shutdown_signals.write().await;
-        signals.remove(&client_session_id);
-    }
-
-    if let Some(handle) = processing_task.take() {
-        handle.abort();
-    }
-
-    event_handle.abort();
+    cleanup_client_connection(
+        &sessions,
+        &client_session_id,
+        client_is_processing,
+        &mut processing_task,
+        event_handle,
+        &swarm_members,
+        &swarms_by_id,
+        &swarm_coordinators,
+        &swarm_plans,
+        &client_debug_state,
+        &client_debug_id,
+        &client_connections,
+        &client_connection_id,
+        &shutdown_signals,
+        &event_history,
+        &event_counter,
+        &swarm_event_tx,
+    )
+    .await?;
     Ok(())
 }
 

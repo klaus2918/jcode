@@ -2,6 +2,7 @@
 
 mod client_actions;
 mod client_comm;
+mod client_disconnect_cleanup;
 mod client_lifecycle;
 mod client_session;
 mod client_state;
