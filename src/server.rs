@@ -3,12 +3,14 @@
 mod client_actions;
 mod client_comm;
 mod client_lifecycle;
+mod client_session;
 mod client_state;
 mod comm_control;
 mod comm_plan;
 mod comm_session;
 mod comm_sync;
 mod debug;
+mod debug_jobs;
 mod debug_testers;
 mod headless;
 mod provider_control;
@@ -16,7 +18,8 @@ mod reload;
 mod swarm;
 
 use self::client_lifecycle::handle_client;
-use self::debug::{handle_debug_client, ClientConnectionInfo, ClientDebugState, DebugJob};
+use self::debug::{handle_debug_client, ClientConnectionInfo, ClientDebugState};
+use self::debug_jobs::DebugJob;
 use self::headless::create_headless_session;
 use self::reload::await_reload_signal;
 #[allow(unused_imports)]
