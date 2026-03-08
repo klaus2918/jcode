@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(Darwin)
+import Darwin
+#endif
+
 public struct ServerCredential: Codable, Sendable, Hashable {
     public let host: String
     public let port: UInt16
@@ -37,6 +41,7 @@ public actor CredentialStore {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("jcode", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        Self.restrictDirectoryPermissions(at: dir)
         self.fileURL = dir.appendingPathComponent("servers.json")
         self.credentials = Self.load(from: fileURL)
     }
@@ -75,6 +80,7 @@ public actor CredentialStore {
         encoder.outputFormatting = .prettyPrinted
         let data = try encoder.encode(credentials)
         try data.write(to: fileURL, options: .atomic)
+        Self.restrictFilePermissions(at: fileURL)
     }
 
     private static func load(from url: URL) -> [ServerCredential] {
@@ -82,5 +88,21 @@ public actor CredentialStore {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return (try? decoder.decode([ServerCredential].self, from: data)) ?? []
+    }
+
+    private static func restrictDirectoryPermissions(at url: URL) {
+#if canImport(Darwin)
+        _ = chmod(url.path, mode_t(0o700))
+#else
+        _ = url
+#endif
+    }
+
+    private static func restrictFilePermissions(at url: URL) {
+#if canImport(Darwin)
+        _ = chmod(url.path, mode_t(0o600))
+#else
+        _ = url
+#endif
     }
 }
