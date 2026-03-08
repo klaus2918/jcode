@@ -1,4 +1,6 @@
 use super::{App, SendAction};
+use crate::session::Session;
+use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 pub(super) struct PreparedInput {
@@ -348,6 +350,77 @@ pub(super) fn handle_pre_control_shortcuts(
     }
 
     handle_navigation_shortcuts(app, code, modifiers)
+}
+
+pub(super) fn handle_modal_key(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Result<bool> {
+    if app.changelog_scroll.is_some() {
+        app.handle_changelog_key(code)?;
+        return Ok(true);
+    }
+
+    if app.help_scroll.is_some() {
+        app.handle_help_key(code)?;
+        return Ok(true);
+    }
+
+    if app.session_picker_overlay.is_some() {
+        app.handle_session_picker_key(code, modifiers)?;
+        return Ok(true);
+    }
+
+    if let Some(ref picker) = app.picker_state {
+        if !picker.preview {
+            app.handle_picker_key(code, modifiers)?;
+            return Ok(true);
+        }
+    }
+
+    if app.handle_picker_preview_key(&code, modifiers)? {
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+pub(super) fn handle_global_control_shortcuts(
+    app: &mut App,
+    code: KeyCode,
+    diagram_available: bool,
+) -> bool {
+    if app.handle_diagram_ctrl_key(code.clone(), diagram_available) {
+        return true;
+    }
+
+    match code {
+        KeyCode::Char('c') | KeyCode::Char('d') => {
+            app.handle_quit_request();
+            true
+        }
+        KeyCode::Char('r') => {
+            app.recover_session_without_tools();
+            true
+        }
+        KeyCode::Char('l')
+            if !app.is_processing && !diagram_available && !app.diff_pane_visible() =>
+        {
+            app.clear_provider_messages();
+            app.clear_display_messages();
+            app.queued_messages.clear();
+            app.pasted_contents.clear();
+            app.pending_images.clear();
+            app.active_skill = None;
+            let mut session = Session::create(None, None);
+            session.model = Some(app.provider.model());
+            app.session = session;
+            app.provider_session_id = None;
+            true
+        }
+        _ => handle_control_key(app, code),
+    }
 }
 
 pub(super) fn handle_enter(app: &mut App) -> bool {

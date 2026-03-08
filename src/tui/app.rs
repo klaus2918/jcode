@@ -4111,26 +4111,7 @@ impl App {
         let mut modifiers = modifiers;
         ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
 
-        if self.changelog_scroll.is_some() {
-            return self.handle_changelog_key(code);
-        }
-
-        if self.help_scroll.is_some() {
-            return self.handle_help_key(code);
-        }
-
-        if self.session_picker_overlay.is_some() {
-            return self.handle_session_picker_key(code, modifiers);
-        }
-
-        // If picker is active and not in preview mode, handle picker keys first
-        if let Some(ref picker) = self.picker_state {
-            if !picker.preview {
-                return self.handle_picker_key(code, modifiers);
-            }
-        }
-        // Preview-mode picker: arrow keys navigate without leaving preview
-        if self.handle_picker_preview_key(&code, modifiers)? {
+        if input::handle_modal_key(self, code.clone(), modifiers)? {
             return Ok(());
         }
 
@@ -4142,40 +4123,10 @@ impl App {
         let diagram_available = self.diagram_available();
 
         // Handle ctrl combos regardless of processing state
-        if modifiers.contains(KeyModifiers::CONTROL) {
-            if self.handle_diagram_ctrl_key(code.clone(), diagram_available) {
-                return Ok(());
-            }
-            match code {
-                KeyCode::Char('c') | KeyCode::Char('d') => {
-                    self.handle_quit_request();
-                    return Ok(());
-                }
-                KeyCode::Char('r') => {
-                    self.recover_session_without_tools();
-                    return Ok(());
-                }
-                KeyCode::Char('l')
-                    if !self.is_processing && !diagram_available && !self.diff_pane_visible() =>
-                {
-                    self.clear_provider_messages();
-                    self.clear_display_messages();
-                    self.queued_messages.clear();
-                    self.pasted_contents.clear();
-                    self.pending_images.clear();
-                    self.active_skill = None;
-                    let mut session = Session::create(None, None);
-                    session.model = Some(self.provider.model());
-                    self.session = session;
-                    self.provider_session_id = None;
-                    return Ok(());
-                }
-                _ => {
-                    if input::handle_control_key(self, code) {
-                        return Ok(());
-                    }
-                }
-            }
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && input::handle_global_control_shortcuts(self, code, diagram_available)
+        {
+            return Ok(());
         }
 
         // Shift+Enter: does opposite of queue_mode during processing
