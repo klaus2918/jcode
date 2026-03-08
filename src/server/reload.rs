@@ -1,0 +1,330 @@
+use crate::agent::Agent;
+use crate::server::SwarmMember;
+use anyhow::Result;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex, RwLock};
+
+pub(super) fn get_repo_dir() -> Option<PathBuf> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let path = PathBuf::from(manifest_dir);
+    if path.join(".git").exists() {
+        return Some(path);
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(repo) = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+        {
+            if repo.join(".git").exists() {
+                return Some(repo.to_path_buf());
+            }
+        }
+    }
+
+    None
+}
+
+#[allow(dead_code)]
+pub(super) fn do_server_reload() -> Result<()> {
+    let repo_dir =
+        get_repo_dir().ok_or_else(|| anyhow::anyhow!("Could not find jcode repository"))?;
+
+    crate::logging::info("Server hot-reload starting...");
+    crate::logging::info("Pulling latest changes...");
+    if let Err(e) = crate::update::run_git_pull_ff_only(&repo_dir, true) {
+        crate::logging::info(&format!("Warning: {}. Continuing with current code.", e));
+    }
+
+    crate::logging::info("Building...");
+    let build = std::process::Command::new("cargo")
+        .args(["build", "--release"])
+        .current_dir(&repo_dir)
+        .status()?;
+
+    if !build.success() {
+        anyhow::bail!("Build failed");
+    }
+
+    if let Err(e) = crate::build::install_local_release(&repo_dir) {
+        crate::logging::info(&format!("Warning: install failed: {}", e));
+    }
+
+    crate::logging::info("✓ Build complete, restarting server...");
+
+    let exe = crate::build::release_binary_path(&repo_dir);
+    if !exe.exists() {
+        anyhow::bail!("Built executable not found at {:?}", exe);
+    }
+
+    let err = crate::platform::replace_process(std::process::Command::new(&exe).arg("serve"));
+    Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err))
+}
+
+pub(super) async fn do_server_reload_with_progress(
+    tx: mpsc::UnboundedSender<crate::protocol::ServerEvent>,
+    provider_arg: Option<String>,
+    model_arg: Option<String>,
+    socket_arg: String,
+) -> Result<()> {
+    let send_progress =
+        |step: &str, message: &str, success: Option<bool>, output: Option<String>| {
+            let _ = tx.send(crate::protocol::ServerEvent::ReloadProgress {
+                step: step.to_string(),
+                message: message.to_string(),
+                success,
+                output,
+            });
+        };
+
+    send_progress("init", "🔄 Starting hot-reload...", None, None);
+
+    let repo_dir = get_repo_dir();
+    if let Some(repo_dir) = &repo_dir {
+        send_progress(
+            "init",
+            &format!("📁 Repository: {}", repo_dir.display()),
+            Some(true),
+            None,
+        );
+    } else {
+        send_progress("init", "📁 Repository: (not found)", Some(true), None);
+    }
+
+    let (exe, exe_label) = super::server_update_candidate()
+        .ok_or_else(|| anyhow::anyhow!("No reloadable binary found"))?;
+    if !exe.exists() {
+        send_progress("verify", "❌ No reloadable binary found", Some(false), None);
+        send_progress(
+            "verify",
+            "💡 Run 'cargo build --release' first, then use 'selfdev reload'",
+            Some(false),
+            None,
+        );
+        anyhow::bail!("No binary found. Build first with 'cargo build --release'");
+    }
+
+    let metadata = std::fs::metadata(&exe)?;
+    let size_mb = metadata.len() as f64 / (1024.0 * 1024.0);
+    let modified = metadata.modified().ok();
+
+    let age_str = if let Some(mod_time) = modified {
+        if let Ok(elapsed) = mod_time.elapsed() {
+            let secs = elapsed.as_secs();
+            if secs < 60 {
+                format!("{} seconds ago", secs)
+            } else if secs < 3600 {
+                format!("{} minutes ago", secs / 60)
+            } else if secs < 86400 {
+                format!("{} hours ago", secs / 3600)
+            } else {
+                format!("{} days ago", secs / 86400)
+            }
+        } else {
+            "unknown".to_string()
+        }
+    } else {
+        "unknown".to_string()
+    };
+
+    send_progress(
+        "verify",
+        &format!(
+            "✓ Binary ({}): {:.1} MB, built {}",
+            exe_label, size_mb, age_str
+        ),
+        Some(true),
+        None,
+    );
+
+    if let Some(repo_dir) = &repo_dir {
+        let head_output = std::process::Command::new("git")
+            .args(["log", "--oneline", "-1"])
+            .current_dir(repo_dir)
+            .output();
+
+        if let Ok(output) = head_output {
+            let head_str = String::from_utf8_lossy(&output.stdout);
+            send_progress(
+                "git",
+                &format!("📍 HEAD: {}", head_str.trim()),
+                Some(true),
+                None,
+            );
+        }
+    }
+
+    send_progress(
+        "exec",
+        "🚀 Restarting server with existing binary...",
+        None,
+        None,
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    crate::logging::info(&format!("Exec'ing into binary: {:?}", exe));
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("serve").arg("--socket").arg(socket_arg);
+    if let Some(provider) = provider_arg {
+        cmd.arg("--provider").arg(provider);
+    }
+    if let Some(model) = model_arg {
+        cmd.arg("--model").arg(model);
+    }
+    let err = crate::platform::replace_process(&mut cmd);
+
+    Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err))
+}
+
+pub(super) fn provider_cli_arg(provider_name: &str) -> Option<String> {
+    let lowered = provider_name.trim().to_lowercase();
+    match lowered.as_str() {
+        "openai" => Some("openai".to_string()),
+        "claude" => Some("claude".to_string()),
+        "cursor" => Some("cursor".to_string()),
+        "copilot" => Some("copilot".to_string()),
+        "antigravity" => Some("antigravity".to_string()),
+        _ => None,
+    }
+}
+
+pub(super) fn normalize_model_arg(model: String) -> Option<String> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("unknown") {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+pub(super) async fn await_reload_signal(
+    sessions: Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+    shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
+) {
+    use std::process::Command as ProcessCommand;
+
+    if !super::is_selfdev_env() {
+        return;
+    }
+
+    let mut rx = super::reload_signal().1.clone();
+
+    loop {
+        if rx.changed().await.is_err() {
+            return;
+        }
+
+        let signal = match rx.borrow_and_update().clone() {
+            Some(s) => s,
+            None => continue,
+        };
+
+        crate::logging::info("Server: reload signal received via channel");
+
+        graceful_shutdown_sessions(
+            &sessions,
+            &swarm_members,
+            &shutdown_signals,
+            signal.triggering_session.as_deref(),
+        )
+        .await;
+
+        if let Ok(binary) = crate::build::canary_binary_path() {
+            if binary.exists() {
+                crate::logging::info(&format!("Server: exec'ing into canary binary {:?}", binary));
+                let err =
+                    crate::platform::replace_process(ProcessCommand::new(&binary).arg("serve"));
+                crate::logging::error(&format!("Failed to exec into canary {:?}: {}", binary, err));
+            }
+        }
+        std::process::exit(42);
+    }
+}
+
+pub(super) async fn graceful_shutdown_sessions(
+    _sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    shutdown_signals: &Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
+    skip_session: Option<&str>,
+) {
+    let actively_generating: Vec<String> = {
+        let members = swarm_members.read().await;
+        members
+            .iter()
+            .filter(|(id, m)| {
+                m.status == "running" && skip_session.map_or(true, |skip| !id.starts_with(skip))
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+
+    if actively_generating.is_empty() {
+        crate::logging::info(
+            "Server: no sessions actively generating, proceeding with reload immediately",
+        );
+        return;
+    }
+
+    crate::logging::info(&format!(
+        "Server: signaling {} actively generating session(s) to checkpoint: {:?}",
+        actively_generating.len(),
+        actively_generating
+    ));
+
+    {
+        let signals = shutdown_signals.read().await;
+        for session_id in &actively_generating {
+            if let Some(signal) = signals.get(session_id) {
+                signal.fire();
+                crate::logging::info(&format!(
+                    "Server: sent graceful shutdown signal to session {}",
+                    session_id
+                ));
+            } else {
+                crate::logging::warn(&format!(
+                    "Server: no shutdown signal registered for session {} (may have already disconnected)",
+                    session_id
+                ));
+            }
+        }
+    }
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    let mut poll_interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
+
+    loop {
+        poll_interval.tick().await;
+
+        let still_running: usize = {
+            let members = swarm_members.read().await;
+            actively_generating
+                .iter()
+                .filter(|id| {
+                    members
+                        .get(*id)
+                        .map(|m| m.status == "running")
+                        .unwrap_or(false)
+                })
+                .count()
+        };
+
+        if still_running == 0 {
+            crate::logging::info("Server: all sessions checkpointed, proceeding with reload");
+            break;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            crate::logging::warn(&format!(
+                "Server: {} session(s) still generating after 2s timeout, proceeding with reload anyway",
+                still_running
+            ));
+            break;
+        }
+    }
+}
