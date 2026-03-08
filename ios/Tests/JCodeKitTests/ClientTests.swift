@@ -101,6 +101,18 @@ func runClientTests() {
     }
 
     do {
+        print("  JCodeConnection URL/auth header wiring...")
+        let connection = JCodeConnection(host: "example.com", port: 7643, authToken: "abc123")
+        let mirror = Mirror(reflecting: connection)
+        let serverURL = mirror.children.first { $0.label == "serverURL" }?.value as? URL
+        let authToken = mirror.children.first { $0.label == "authToken" }?.value as? String
+
+        assertEqual2(serverURL?.absoluteString, "ws://example.com:7643/ws")
+        assertEqual2(serverURL?.query, nil)
+        assertEqual2(authToken, "abc123")
+    }
+
+    do {
         print("  HistoryMessage with tool data...")
         let json = """
         {"role":"assistant","content":"Let me check.",

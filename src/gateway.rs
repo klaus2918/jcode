@@ -279,44 +279,44 @@ async fn handle_ws_connection(
     registry: Arc<tokio::sync::RwLock<DeviceRegistry>>,
     client_tx: tokio::sync::mpsc::UnboundedSender<GatewayClient>,
 ) -> Result<()> {
-    // Perform WebSocket handshake with a callback to inspect headers
-    let auth_token = Arc::new(tokio::sync::Mutex::new(None::<String>));
-    let auth_token_cb = Arc::clone(&auth_token);
+    // Perform WebSocket handshake with a callback to inspect headers.
+    // Prefer Authorization headers, but continue accepting ?token= for browser clients.
+    let auth = Arc::new(tokio::sync::Mutex::new(None::<WsAuth>));
+    let auth_cb = Arc::clone(&auth);
 
     let ws_stream = tokio_tungstenite::accept_hdr_async(
         tcp_stream,
         |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
          response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-            // Extract Bearer token from Authorization header or query param
-            if let Some(auth) = request.headers().get("authorization") {
-                if let Ok(auth_str) = auth.to_str() {
-                    if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                        *auth_token_cb.blocking_lock() = Some(token.to_string());
-                    }
-                }
+            if request.uri().path() != "/ws" {
+                return Err(ws_error_response(
+                    404,
+                    "Not Found",
+                    "WebSocket endpoint not found",
+                ));
             }
-            // Also check ?token= query parameter
-            if auth_token_cb.blocking_lock().is_none() {
-                let uri = request.uri().to_string();
-                if let Some(query) = uri.split('?').nth(1) {
-                    for param in query.split('&') {
-                        if let Some(token) = param.strip_prefix("token=") {
-                            *auth_token_cb.blocking_lock() = Some(token.to_string());
-                        }
-                    }
-                }
-            }
+
+            let ws_auth = extract_ws_auth(request)?;
+            *auth_cb.blocking_lock() = Some(ws_auth);
             Ok(response)
         },
     )
     .await?;
 
     // Validate auth token
-    let token = auth_token
+    let auth = auth
         .lock()
         .await
         .take()
         .ok_or_else(|| anyhow::anyhow!("No auth token provided"))?;
+    let token = auth.token;
+
+    if auth.source == WsAuthSource::Query {
+        logging::info(&format!(
+            "Gateway: {} connected with deprecated query token auth",
+            peer_addr
+        ));
+    }
 
     let (device_name, device_id) = {
         let mut reg = registry.write().await;
@@ -425,6 +425,119 @@ async fn handle_ws_connection(
 
     logging::info(&format!("Gateway: {} disconnected", device_name));
     Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WsAuth {
+    token: String,
+    source: WsAuthSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WsAuthSource {
+    Header,
+    Query,
+}
+
+fn extract_ws_auth(
+    request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+) -> std::result::Result<WsAuth, tokio_tungstenite::tungstenite::handshake::server::ErrorResponse> {
+    let header_token = match request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+    {
+        Some(auth) => Some(parse_bearer_token(auth).ok_or_else(|| {
+            ws_error_response(
+                401,
+                "Unauthorized",
+                "Authorization must be 'Bearer <token>'",
+            )
+        })?),
+        None => None,
+    };
+    let query_token = request.uri().query().and_then(parse_query_token);
+
+    let (token, source) = match (header_token, query_token) {
+        (Some(header), Some(query)) if header != query => {
+            return Err(ws_error_response(
+                401,
+                "Unauthorized",
+                "Conflicting auth token sources",
+            ));
+        }
+        (Some(header), _) => (header, WsAuthSource::Header),
+        (None, Some(query)) => (query, WsAuthSource::Query),
+        (None, None) => {
+            return Err(ws_error_response(
+                401,
+                "Unauthorized",
+                "Missing Authorization header or token query parameter",
+            ));
+        }
+    };
+
+    if !is_valid_hex_token(token) {
+        return Err(ws_error_response(
+            401,
+            "Unauthorized",
+            "Malformed auth token",
+        ));
+    }
+
+    Ok(WsAuth {
+        token: token.to_string(),
+        source,
+    })
+}
+
+fn parse_bearer_token(header_value: &str) -> Option<&str> {
+    let mut parts = header_value.split_whitespace();
+    let scheme = parts.next()?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if token.is_empty() {
+        return None;
+    }
+    Some(token)
+}
+
+fn parse_query_token(query: &str) -> Option<&str> {
+    for param in query.split('&') {
+        if let Some(token) = param.strip_prefix("token=") {
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+fn is_valid_hex_token(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn ws_error_response(
+    status: u16,
+    reason: &str,
+    body: &str,
+) -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
+    tokio_tungstenite::tungstenite::http::Response::builder()
+        .status(status)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .header("Connection", "close")
+        .body(Some(format!("{}\n", body)))
+        .unwrap_or_else(|_| {
+            tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(500)
+                .body(Some(format!("{}\n", reason)))
+                .expect("build fallback websocket error response")
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -576,6 +689,7 @@ async fn handle_pair_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_tungstenite::tungstenite::handshake::server::Request;
 
     #[test]
     fn test_device_registry_pairing() {
@@ -631,5 +745,70 @@ mod tests {
         assert!(registry.validate_token(&token1).is_none());
         // New token should be valid
         assert!(registry.validate_token(&token2).is_some());
+    }
+
+    #[test]
+    fn test_parse_bearer_token() {
+        assert_eq!(parse_bearer_token("Bearer abc"), Some("abc"));
+        assert_eq!(parse_bearer_token("bearer abc"), Some("abc"));
+        assert_eq!(parse_bearer_token("BEARER abc"), Some("abc"));
+        assert_eq!(parse_bearer_token("Bearer"), None);
+        assert_eq!(parse_bearer_token("Basic abc"), None);
+        assert_eq!(parse_bearer_token("Bearer abc def"), None);
+    }
+
+    #[test]
+    fn test_parse_query_token() {
+        assert_eq!(parse_query_token("token=abc"), Some("abc"));
+        assert_eq!(parse_query_token("foo=bar&token=abc123"), Some("abc123"));
+        assert_eq!(parse_query_token("token="), None);
+        assert_eq!(parse_query_token("foo=bar"), None);
+    }
+
+    #[test]
+    fn test_hex_token_validation() {
+        assert!(is_valid_hex_token(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!is_valid_hex_token("abc"));
+        assert!(!is_valid_hex_token(
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        ));
+    }
+
+    #[test]
+    fn test_extract_ws_auth_prefers_header_and_falls_back_to_query() {
+        let token_a = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let token_b = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        let header_request = Request::builder()
+            .uri("ws://example.com/ws")
+            .header("authorization", format!("Bearer {token_a}"))
+            .body(())
+            .expect("request");
+        let header_auth = extract_ws_auth(&header_request).expect("header auth");
+        assert_eq!(header_auth.token, token_a);
+        assert_eq!(header_auth.source, WsAuthSource::Header);
+
+        let query_request = Request::builder()
+            .uri(format!("ws://example.com/ws?token={token_b}"))
+            .body(())
+            .expect("request");
+        let query_auth = extract_ws_auth(&query_request).expect("query auth");
+        assert_eq!(query_auth.token, token_b);
+        assert_eq!(query_auth.source, WsAuthSource::Query);
+    }
+
+    #[test]
+    fn test_extract_ws_auth_rejects_conflicting_sources() {
+        let token_a = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let token_b = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        let request = Request::builder()
+            .uri(format!("ws://example.com/ws?token={token_b}"))
+            .header("authorization", format!("Bearer {token_a}"))
+            .body(())
+            .expect("request");
+        assert!(extract_ws_auth(&request).is_err());
     }
 }

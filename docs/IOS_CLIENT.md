@@ -190,7 +190,7 @@ Pairing Flow:
      → Token stored in iOS Keychain                      
                                                          
   3. All subsequent connections use Bearer token          
-     → Token included in WebSocket upgrade request       
+     → Token included in `Authorization: Bearer <token>` on WebSocket upgrade request       
      → Server validates against stored device list        
 
   Config: ~/.jcode/devices.json

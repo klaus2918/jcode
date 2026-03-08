@@ -29,7 +29,6 @@ public actor JCodeConnection {
         components.host = host
         components.port = Int(port)
         components.path = "/ws"
-        components.queryItems = [URLQueryItem(name: "token", value: authToken)]
         self.serverURL = components.url!
         self.authToken = authToken
     }
@@ -46,7 +45,9 @@ public actor JCodeConnection {
         let session = URLSession(configuration: .default)
         self.urlSession = session
 
-        let task = session.webSocketTask(with: serverURL)
+        var request = URLRequest(url: serverURL)
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        let task = session.webSocketTask(with: request)
         self.webSocket = task
         task.resume()
 
