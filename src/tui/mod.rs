@@ -19,10 +19,6 @@ pub mod test_harness;
 mod ui;
 pub mod visual_debug;
 
-// ClientApp is deprecated - use App::new_for_remote().run_remote() instead
-#[deprecated(note = "Use App::new_for_remote().run_remote() instead")]
-pub mod client;
-
 pub use app::{App, DisplayMessage, ProcessingStatus, RunResult};
 pub use backend::{DebugEvent, DebugMessage, RemoteConnection};
 pub use core::TuiCore;
@@ -56,8 +52,7 @@ pub fn disable_keyboard_enhancement() {
     );
 }
 
-/// Trait for TUI state - implemented by both App and ClientApp
-/// This allows sharing the UI rendering code between standalone and client modes
+/// Trait for TUI state consumed by the shared renderer.
 pub trait TuiState {
     fn display_messages(&self) -> &[DisplayMessage];
     /// Version counter for display_messages (monotonic, increments on mutation)

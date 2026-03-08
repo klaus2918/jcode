@@ -1,4 +1,4 @@
-//! Shared TUI state and logic between standalone App and ClientApp
+//! Shared TUI state and logic used across TUI runtime paths.
 //!
 //! This module contains the common display state, input handling,
 //! and helper methods used by both local and remote TUI modes.
@@ -40,10 +40,7 @@ pub fn byte_offset_to_char_index(s: &str, byte_offset: usize) -> usize {
     s[..byte_offset.min(s.len())].chars().count()
 }
 
-/// Shared TUI state for display and input handling
-///
-/// This struct contains all the fields that are identical between
-/// the standalone App and the remote ClientApp.
+/// Shared TUI state for display and input handling.
 pub struct TuiCore {
     // Display state
     pub display_messages: Vec<DisplayMessage>,

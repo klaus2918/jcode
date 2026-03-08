@@ -15337,6 +15337,45 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_server_event_token_usage_uses_per_call_deltas() {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.handle_server_event(
+            crate::protocol::ServerEvent::TokenUsage {
+                input: 100,
+                output: 10,
+                cache_read_input: None,
+                cache_creation_input: None,
+            },
+            &mut remote,
+        );
+        app.handle_server_event(
+            crate::protocol::ServerEvent::TokenUsage {
+                input: 100,
+                output: 30,
+                cache_read_input: None,
+                cache_creation_input: None,
+            },
+            &mut remote,
+        );
+        app.handle_server_event(
+            crate::protocol::ServerEvent::TokenUsage {
+                input: 100,
+                output: 30,
+                cache_read_input: None,
+                cache_creation_input: None,
+            },
+            &mut remote,
+        );
+
+        assert_eq!(app.streaming_output_tokens, 30);
+        assert_eq!(app.streaming_total_output_tokens, 30);
+    }
+
+    #[test]
     fn test_handle_server_event_interrupted_clears_stream_state_and_sets_idle() {
         let mut app = create_test_app();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -15379,6 +15418,139 @@ mod tests {
             .expect("missing interrupted message");
         assert_eq!(last.role, "system");
         assert_eq!(last.content, "Interrupted");
+    }
+
+    #[test]
+    fn test_handle_remote_disconnect_flushes_streaming_text_and_sets_reconnect_state() {
+        let mut app = create_test_app();
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        app.current_message_id = Some(7);
+        app.rate_limit_pending_message = Some(PendingRemoteMessage {
+            content: "retry me".to_string(),
+            images: vec![],
+            is_system: false,
+        });
+        app.streaming_text = "partial response being streamed".to_string();
+
+        let mut state = remote::RemoteRunState::default();
+        remote::handle_disconnect(&mut app, &mut state);
+
+        assert!(!app.is_processing);
+        assert!(matches!(app.status, ProcessingStatus::Idle));
+        assert!(app.current_message_id.is_none());
+        assert!(app.rate_limit_pending_message.is_none());
+        assert!(app.streaming_text.is_empty());
+        assert_eq!(state.disconnect_msg_idx, Some(1));
+        assert_eq!(state.reconnect_attempts, 1);
+        assert!(state.disconnect_start.is_some());
+
+        let assistant = app
+            .display_messages()
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("streaming text should have been saved as assistant message");
+        assert_eq!(assistant.content, "partial response being streamed");
+
+        let last = app
+            .display_messages()
+            .last()
+            .expect("missing reconnect status message");
+        assert_eq!(last.role, "system");
+        assert_eq!(last.content, "⚡ Connection lost — reconnecting…");
+    }
+
+    #[test]
+    fn test_handle_server_event_history_with_interruption_queues_continuation() {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.handle_server_event(
+            crate::protocol::ServerEvent::History {
+                id: 1,
+                session_id: "ses_test_123".to_string(),
+                messages: vec![crate::protocol::HistoryMessage {
+                    role: "assistant".to_string(),
+                    content: "I was working on something".to_string(),
+                    tool_calls: None,
+                    tool_data: None,
+                }],
+                provider_name: Some("claude".to_string()),
+                provider_model: Some("claude-sonnet-4-20250514".to_string()),
+                available_models: vec![],
+                available_model_routes: vec![],
+                mcp_servers: vec![],
+                skills: vec![],
+                total_tokens: None,
+                all_sessions: vec![],
+                client_count: None,
+                is_canary: None,
+                server_version: None,
+                server_name: None,
+                server_icon: None,
+                server_has_update: None,
+                was_interrupted: Some(true),
+                upstream_provider: None,
+            },
+            &mut remote,
+        );
+
+        assert!(app.display_messages().len() >= 2);
+        let system_msg = app
+            .display_messages()
+            .iter()
+            .find(|m| m.role == "system" && m.content.contains("interrupted"))
+            .expect("should have a system message about interruption");
+        assert!(system_msg.content.contains("interrupted mid-generation"));
+
+        assert_eq!(app.queued_messages().len(), 1);
+        assert!(app.queued_messages()[0].contains("interrupted by a server reload"));
+    }
+
+    #[test]
+    fn test_handle_server_event_history_without_interruption_does_not_queue() {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.handle_server_event(
+            crate::protocol::ServerEvent::History {
+                id: 1,
+                session_id: "ses_test_456".to_string(),
+                messages: vec![crate::protocol::HistoryMessage {
+                    role: "assistant".to_string(),
+                    content: "Normal response".to_string(),
+                    tool_calls: None,
+                    tool_data: None,
+                }],
+                provider_name: Some("claude".to_string()),
+                provider_model: Some("claude-sonnet-4-20250514".to_string()),
+                available_models: vec![],
+                available_model_routes: vec![],
+                mcp_servers: vec![],
+                skills: vec![],
+                total_tokens: None,
+                all_sessions: vec![],
+                client_count: None,
+                is_canary: None,
+                server_version: None,
+                server_name: None,
+                server_icon: None,
+                server_has_update: None,
+                was_interrupted: None,
+                upstream_provider: None,
+            },
+            &mut remote,
+        );
+
+        assert!(app.queued_messages().is_empty());
+        assert!(!app
+            .display_messages()
+            .iter()
+            .any(|m| m.content.contains("interrupted")));
     }
 
     #[test]
