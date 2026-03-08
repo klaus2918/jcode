@@ -1,0 +1,517 @@
+use super::*;
+
+impl App {
+    pub(super) fn scroll_max_estimate(&self) -> usize {
+        let renderer_max = super::super::ui::last_max_scroll();
+        if renderer_max > 0 {
+            renderer_max
+        } else {
+            self.display_messages
+                .len()
+                .saturating_mul(100)
+                .saturating_add(self.streaming_text.len())
+        }
+    }
+
+    pub(super) fn diagram_available(&self) -> bool {
+        self.diagram_mode == crate::config::DiagramDisplayMode::Pinned
+            && self.diagram_pane_enabled
+            && !crate::tui::mermaid::get_active_diagrams().is_empty()
+    }
+
+    pub(super) fn normalize_diagram_state(&mut self) {
+        if self.diagram_mode != crate::config::DiagramDisplayMode::Pinned {
+            self.diagram_focus = false;
+            self.diagram_index = 0;
+            self.diagram_scroll_x = 0;
+            self.diagram_scroll_y = 0;
+            return;
+        }
+        if !self.diagram_pane_enabled {
+            self.diagram_focus = false;
+        }
+
+        let diagram_count = crate::tui::mermaid::get_active_diagrams().len();
+        if diagram_count == 0 {
+            self.diagram_focus = false;
+            self.diagram_index = 0;
+            self.diagram_scroll_x = 0;
+            self.diagram_scroll_y = 0;
+            return;
+        }
+
+        if self.diagram_index >= diagram_count {
+            self.diagram_index = 0;
+            self.diagram_scroll_x = 0;
+            self.diagram_scroll_y = 0;
+        }
+    }
+
+    pub(super) fn set_diagram_focus(&mut self, focus: bool) {
+        if self.diagram_focus == focus {
+            return;
+        }
+        self.diagram_focus = focus;
+        self.diff_pane_focus = false;
+        if focus {
+            self.set_status_notice("Focus: diagram (hjkl pan, [/] zoom, +/- resize)");
+        } else {
+            self.set_status_notice("Focus: chat");
+        }
+    }
+
+    pub(super) fn diff_pane_visible(&self) -> bool {
+        self.diff_mode.has_side_pane()
+    }
+
+    pub(super) fn set_diff_pane_focus(&mut self, focus: bool) {
+        if self.diff_pane_focus == focus {
+            return;
+        }
+        self.diff_pane_focus = focus;
+        self.diagram_focus = false;
+        if focus {
+            self.set_status_notice("Focus: diffs (j/k scroll, Esc to return)");
+        } else {
+            self.set_status_notice("Focus: chat");
+        }
+    }
+
+    pub(super) fn handle_diff_pane_focus_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> bool {
+        if !self.diff_pane_focus || modifiers.contains(KeyModifiers::CONTROL) {
+            return false;
+        }
+
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.diff_pane_scroll = self.diff_pane_scroll.saturating_add(3);
+                self.diff_pane_auto_scroll = false;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.diff_pane_scroll = self.diff_pane_scroll.saturating_sub(3);
+                self.diff_pane_auto_scroll = false;
+            }
+            KeyCode::Char('d') | KeyCode::PageDown => {
+                self.diff_pane_scroll = self.diff_pane_scroll.saturating_add(20);
+                self.diff_pane_auto_scroll = false;
+            }
+            KeyCode::Char('u') | KeyCode::PageUp => {
+                self.diff_pane_scroll = self.diff_pane_scroll.saturating_sub(20);
+                self.diff_pane_auto_scroll = false;
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.diff_pane_scroll = 0;
+                self.diff_pane_auto_scroll = false;
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                self.diff_pane_scroll = usize::MAX;
+                self.diff_pane_auto_scroll = true;
+            }
+            KeyCode::Esc => {
+                self.set_diff_pane_focus(false);
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    pub(super) fn cycle_diagram(&mut self, direction: i32) {
+        let diagrams = crate::tui::mermaid::get_active_diagrams();
+        let count = diagrams.len();
+        if count == 0 {
+            return;
+        }
+        let current = self.diagram_index.min(count - 1);
+        let next = if direction < 0 {
+            if current == 0 {
+                count - 1
+            } else {
+                current - 1
+            }
+        } else if current + 1 >= count {
+            0
+        } else {
+            current + 1
+        };
+        self.diagram_index = next;
+        self.diagram_scroll_x = 0;
+        self.diagram_scroll_y = 0;
+        self.set_status_notice(format!("Diagram {}/{}", next + 1, count));
+    }
+
+    pub(super) fn pan_diagram(&mut self, dx: i32, dy: i32) {
+        self.diagram_scroll_x = (self.diagram_scroll_x + dx).max(0);
+        self.diagram_scroll_y = (self.diagram_scroll_y + dy).max(0);
+    }
+
+    pub(super) const DIAGRAM_PANE_ANIM_DURATION: f32 = 0.15;
+
+    pub(super) fn animated_diagram_pane_ratio(&self) -> u8 {
+        let Some(start) = self.diagram_pane_anim_start else {
+            return self.diagram_pane_ratio_target;
+        };
+        let elapsed = start.elapsed().as_secs_f32();
+        let t = (elapsed / Self::DIAGRAM_PANE_ANIM_DURATION).clamp(0.0, 1.0);
+        let t = t * t * (3.0 - 2.0 * t);
+        let from = self.diagram_pane_ratio_from as f32;
+        let to = self.diagram_pane_ratio_target as f32;
+        (from + (to - from) * t).round() as u8
+    }
+
+    pub(super) fn adjust_diagram_pane_ratio(&mut self, delta: i8) {
+        let (min_ratio, max_ratio) = match self.diagram_pane_position {
+            crate::config::DiagramPanePosition::Side => (25i16, 70i16),
+            crate::config::DiagramPanePosition::Top => (20i16, 60i16),
+        };
+        let current_target = self.diagram_pane_ratio_target;
+        let next = (current_target as i16 + delta as i16).clamp(min_ratio, max_ratio) as u8;
+        if next != current_target {
+            self.diagram_pane_ratio_from = self.animated_diagram_pane_ratio();
+            self.diagram_pane_ratio_target = next;
+            self.diagram_pane_anim_start = Some(Instant::now());
+            self.set_status_notice(format!("Diagram pane: {}%", next));
+        }
+    }
+
+    pub(super) fn adjust_diagram_zoom(&mut self, delta: i8) {
+        let next = (self.diagram_zoom as i16 + delta as i16).clamp(50, 200) as u8;
+        if next != self.diagram_zoom {
+            self.diagram_zoom = next;
+            self.set_status_notice(format!("Diagram zoom: {}%", next));
+        }
+    }
+
+    pub(super) fn toggle_diagram_pane(&mut self) {
+        if self.diagram_mode != crate::config::DiagramDisplayMode::Pinned {
+            self.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+        }
+        super::super::markdown::set_diagram_mode_override(Some(self.diagram_mode));
+        self.diagram_pane_enabled = !self.diagram_pane_enabled;
+        if !self.diagram_pane_enabled {
+            self.diagram_focus = false;
+        }
+        let status = if self.diagram_pane_enabled {
+            "Diagram pane: ON"
+        } else {
+            "Diagram pane: OFF"
+        };
+        self.set_status_notice(status);
+    }
+
+    pub(super) fn toggle_diagram_pane_position(&mut self) {
+        use crate::config::DiagramPanePosition;
+        self.diagram_pane_position = match self.diagram_pane_position {
+            DiagramPanePosition::Side => DiagramPanePosition::Top,
+            DiagramPanePosition::Top => DiagramPanePosition::Side,
+        };
+        let (min_ratio, max_ratio) = match self.diagram_pane_position {
+            DiagramPanePosition::Side => (25u8, 70u8),
+            DiagramPanePosition::Top => (20u8, 60u8),
+        };
+        self.diagram_pane_ratio_target = self.diagram_pane_ratio_target.clamp(min_ratio, max_ratio);
+        self.diagram_pane_anim_start = None;
+        let label = match self.diagram_pane_position {
+            DiagramPanePosition::Side => "side",
+            DiagramPanePosition::Top => "top",
+        };
+        self.set_status_notice(format!("Diagram pane: {}", label));
+    }
+
+    pub(super) fn pop_out_diagram(&mut self) {
+        let diagrams = super::super::mermaid::get_active_diagrams();
+        let total = diagrams.len();
+        if total == 0 {
+            self.set_status_notice("No diagrams to open");
+            return;
+        }
+        let index = self.diagram_index.min(total - 1);
+        let diagram = &diagrams[index];
+        if let Some(path) = super::super::mermaid::get_cached_path(diagram.hash) {
+            if path.exists() {
+                match open::that_detached(&path) {
+                    Ok(_) => self.set_status_notice(format!(
+                        "Opened diagram {}/{} in viewer",
+                        index + 1,
+                        total
+                    )),
+                    Err(e) => self.set_status_notice(format!("Failed to open: {}", e)),
+                }
+            } else {
+                self.set_status_notice("Diagram image not found on disk");
+            }
+        } else {
+            self.set_status_notice("Diagram not cached");
+        }
+    }
+
+    pub(super) fn handle_diagram_ctrl_key(
+        &mut self,
+        code: KeyCode,
+        diagram_available: bool,
+    ) -> bool {
+        if diagram_available {
+            match code {
+                KeyCode::Left => {
+                    self.cycle_diagram(-1);
+                    return true;
+                }
+                KeyCode::Right => {
+                    self.cycle_diagram(1);
+                    return true;
+                }
+                KeyCode::Char('h') => {
+                    self.set_diagram_focus(false);
+                    return true;
+                }
+                KeyCode::Char('l') => {
+                    self.set_diagram_focus(true);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        if self.diff_pane_visible() {
+            match code {
+                KeyCode::Char('l') => {
+                    self.set_diff_pane_focus(true);
+                    return true;
+                }
+                KeyCode::Char('h') => {
+                    self.set_diff_pane_focus(false);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    pub(super) fn ctrl_prompt_rank(code: &KeyCode, modifiers: KeyModifiers) -> Option<usize> {
+        if !modifiers.contains(KeyModifiers::CONTROL)
+            || modifiers.contains(KeyModifiers::ALT)
+            || modifiers.contains(KeyModifiers::SHIFT)
+        {
+            return None;
+        }
+        match code {
+            KeyCode::Char(c) if c.is_ascii_digit() && *c != '0' => Some((*c as u8 - b'0') as usize),
+            _ => None,
+        }
+    }
+
+    pub(super) fn jump_diagram(&mut self, index: usize) {
+        let total = crate::tui::mermaid::get_active_diagrams().len();
+        if total == 0 {
+            return;
+        }
+        let target = index.min(total - 1);
+        self.diagram_index = target;
+        self.diagram_scroll_x = 0;
+        self.diagram_scroll_y = 0;
+        self.set_status_notice(format!("Pinned {}/{}", target + 1, total));
+    }
+
+    pub(super) fn handle_diagram_focus_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        diagram_available: bool,
+    ) -> bool {
+        if !diagram_available || !self.diagram_focus || modifiers.contains(KeyModifiers::CONTROL) {
+            return false;
+        }
+
+        match code {
+            KeyCode::Char('h') | KeyCode::Left => self.pan_diagram(-4, 0),
+            KeyCode::Char('l') | KeyCode::Right => self.pan_diagram(4, 0),
+            KeyCode::Char('k') | KeyCode::Up => self.pan_diagram(0, -3),
+            KeyCode::Char('j') | KeyCode::Down => self.pan_diagram(0, 3),
+            KeyCode::Char('+') | KeyCode::Char('=') => self.adjust_diagram_pane_ratio(5),
+            KeyCode::Char('-') | KeyCode::Char('_') => self.adjust_diagram_pane_ratio(-5),
+            KeyCode::Char(']') => self.adjust_diagram_zoom(10),
+            KeyCode::Char('[') => self.adjust_diagram_zoom(-10),
+            KeyCode::Char('o') => self.pop_out_diagram(),
+            KeyCode::Esc => {
+                self.set_diagram_focus(false);
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    pub(super) fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        if let Some(ref picker_cell) = self.session_picker_overlay {
+            picker_cell.borrow_mut().handle_overlay_mouse(mouse);
+            return;
+        }
+        self.normalize_diagram_state();
+        let diagram_available = self.diagram_available();
+        let layout = super::super::ui::last_layout_snapshot();
+        let mut over_diagram = false;
+        let mut over_diff_pane = false;
+        if let Some(layout) = layout {
+            if let Some(diagram_area) = layout.diagram_area {
+                over_diagram = super::super::layout_utils::point_in_rect(
+                    mouse.column,
+                    mouse.row,
+                    diagram_area,
+                );
+            }
+            if let Some(diff_area) = layout.diff_pane_area {
+                over_diff_pane =
+                    super::super::layout_utils::point_in_rect(mouse.column, mouse.row, diff_area);
+            }
+            if diagram_available && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                if over_diagram {
+                    self.set_diagram_focus(true);
+                } else {
+                    self.set_diagram_focus(false);
+                }
+            }
+        }
+
+        let mut handled_scroll = false;
+        if diagram_available
+            && over_diagram
+            && matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp
+                    | MouseEventKind::ScrollDown
+                    | MouseEventKind::ScrollLeft
+                    | MouseEventKind::ScrollRight
+            )
+        {
+            if mouse.modifiers.contains(KeyModifiers::CONTROL) {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => self.adjust_diagram_zoom(10),
+                    MouseEventKind::ScrollDown => self.adjust_diagram_zoom(-10),
+                    _ => {}
+                }
+                self.set_diagram_focus(true);
+                handled_scroll = true;
+            } else if self.diagram_focus {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => self.pan_diagram(0, -1),
+                    MouseEventKind::ScrollDown => self.pan_diagram(0, 1),
+                    MouseEventKind::ScrollLeft => self.pan_diagram(-1, 0),
+                    MouseEventKind::ScrollRight => self.pan_diagram(1, 0),
+                    _ => {}
+                }
+                handled_scroll = true;
+            }
+        }
+
+        if !handled_scroll
+            && over_diff_pane
+            && self.diff_pane_visible()
+            && matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+        {
+            let amt = self.mouse_scroll_amount();
+            self.set_diff_pane_focus(true);
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    let current = if self.diff_pane_scroll == usize::MAX {
+                        super::super::ui::last_diff_pane_effective_scroll()
+                    } else {
+                        self.diff_pane_scroll
+                    };
+                    self.diff_pane_scroll = current.saturating_sub(amt);
+                    self.diff_pane_auto_scroll = false;
+                }
+                MouseEventKind::ScrollDown => {
+                    if self.diff_pane_scroll == usize::MAX {
+                        self.diff_pane_scroll = super::super::ui::last_diff_pane_effective_scroll();
+                    }
+                    self.diff_pane_scroll = self.diff_pane_scroll.saturating_add(amt);
+                    self.diff_pane_auto_scroll = false;
+                }
+                _ => {}
+            }
+            handled_scroll = true;
+        }
+
+        if handled_scroll {
+            return;
+        }
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                let amt = self.mouse_scroll_amount();
+                self.scroll_up(amt);
+            }
+            MouseEventKind::ScrollDown => {
+                let amt = self.mouse_scroll_amount();
+                self.scroll_down(amt);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn mouse_scroll_amount(&mut self) -> usize {
+        self.last_mouse_scroll = Some(Instant::now());
+        3
+    }
+
+    pub(super) fn scroll_up(&mut self, amount: usize) {
+        let max_scroll = super::super::ui::last_max_scroll();
+        let max = if max_scroll > 0 {
+            max_scroll
+        } else {
+            self.scroll_max_estimate()
+        };
+        if !self.auto_scroll_paused {
+            let current_abs = max.saturating_sub(self.scroll_offset);
+            self.scroll_offset = current_abs.saturating_sub(amount);
+        } else {
+            self.scroll_offset = self.scroll_offset.saturating_sub(amount);
+        }
+        self.auto_scroll_paused = true;
+    }
+
+    pub(super) fn scroll_down(&mut self, amount: usize) {
+        if !self.auto_scroll_paused {
+            return;
+        }
+        let max_scroll = super::super::ui::last_max_scroll();
+        let max = if max_scroll > 0 {
+            max_scroll
+        } else {
+            self.scroll_max_estimate()
+        };
+        self.scroll_offset = (self.scroll_offset + amount).min(max);
+        if self.scroll_offset >= max {
+            self.follow_chat_bottom();
+        }
+    }
+
+    pub(super) fn follow_chat_bottom(&mut self) {
+        self.scroll_offset = 0;
+        self.auto_scroll_paused = false;
+    }
+
+    pub(super) fn debug_scroll_up(&mut self, amount: usize) {
+        self.scroll_up(amount);
+    }
+
+    pub(super) fn debug_scroll_down(&mut self, amount: usize) {
+        self.scroll_down(amount);
+    }
+
+    pub(super) fn debug_scroll_top(&mut self) {
+        self.scroll_offset = 0;
+        self.auto_scroll_paused = true;
+    }
+
+    pub(super) fn debug_scroll_bottom(&mut self) {
+        self.follow_chat_bottom();
+    }
+}
