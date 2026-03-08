@@ -1,8 +1,9 @@
+use super::tools_ui::get_tool_summary;
 use super::visual_debug::{self, FrameCaptureBuilder};
 use super::{
     accent_color, ai_color, animated_tool_color, asap_color, dim_color, format_elapsed,
-    get_tool_summary, is_unexpected_cache_miss, pending_color, queued_color, rainbow_prompt_color,
-    user_color, ProcessingStatus, TuiState,
+    is_unexpected_cache_miss, pending_color, queued_color, rainbow_prompt_color, user_color,
+    ProcessingStatus, TuiState,
 };
 use crate::tui::color_support::rgb;
 use ratatui::{prelude::*, widgets::Paragraph};
