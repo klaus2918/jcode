@@ -5,6 +5,9 @@ use jcode::prompt::ContextInfo;
 use jcode::tui::{info_widget::InfoWidgetData, DisplayMessage, ProcessingStatus, TuiState};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use serde_json::json;
+use std::fs;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 #[derive(Parser, Debug)]
@@ -52,6 +55,7 @@ struct Args {
 enum BenchMode {
     Idle,
     Streaming,
+    FileDiff,
 }
 
 struct BenchState {
@@ -71,11 +75,15 @@ struct BenchState {
     provider_name: String,
     provider_model: String,
     started_at: Instant,
+    diff_pane_scroll: usize,
+    diff_pane_focus: bool,
+    bench_file_paths: Vec<PathBuf>,
 }
 
 impl BenchState {
     fn new(turns: usize, user_len: usize, assistant_len: usize, mode: BenchMode) -> Self {
         let mut messages = Vec::with_capacity(turns * 2);
+        let mut bench_file_paths = Vec::new();
         for idx in 0..turns {
             let user_text = make_text(user_len);
             messages.push(DisplayMessage::user(user_text));
@@ -91,6 +99,27 @@ impl BenchState {
                     .push_str("\n\n| col | val |\n| --- | --- |\n| a   | 1   |\n| b   | 2   |\n");
             }
             messages.push(DisplayMessage::assistant(assistant));
+
+            if matches!(mode, BenchMode::FileDiff) {
+                let file_path = make_bench_file(idx, assistant_len.max(240));
+                let file_path_str = file_path.to_string_lossy().to_string();
+                bench_file_paths.push(file_path.clone());
+                let tool = ToolCall {
+                    id: format!("bench_edit_{idx}"),
+                    name: "edit".to_string(),
+                    input: json!({
+                        "file_path": file_path_str,
+                        "old_string": format!("target line {}", idx),
+                        "new_string": format!("target line {} updated", idx),
+                    }),
+                    intent: None,
+                };
+                let tool_output = format!(
+                    "{line}- target line {idx}\n{line}+ target line {idx} updated",
+                    line = idx + 1,
+                );
+                messages.push(DisplayMessage::tool(tool_output, tool));
+            }
         }
 
         let is_processing = matches!(mode, BenchMode::Streaming);
@@ -117,8 +146,41 @@ impl BenchState {
             provider_name: "bench".to_string(),
             provider_model: "gpt-5.2-codex".to_string(),
             started_at: Instant::now(),
+            diff_pane_scroll: usize::MAX,
+            diff_pane_focus: matches!(mode, BenchMode::FileDiff),
+            bench_file_paths,
         }
     }
+}
+
+impl Drop for BenchState {
+    fn drop(&mut self) {
+        for path in &self.bench_file_paths {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn make_bench_file(idx: usize, approx_len: usize) -> PathBuf {
+    let base_dir = std::env::temp_dir().join("jcode_tui_bench");
+    let _ = fs::create_dir_all(&base_dir);
+    let file_path = base_dir.join(format!("file_diff_{idx}.rs"));
+
+    let mut content = String::from("fn bench_file() {\n");
+    let repeated = make_text(approx_len);
+    for line_idx in 0..120 {
+        if line_idx == idx % 120 {
+            content.push_str(&format!(
+                "    let line_{line_idx} = \"target line {idx}\";\n"
+            ));
+        } else {
+            content.push_str(&format!("    let line_{line_idx} = \"{}\";\n", repeated));
+        }
+    }
+    content.push_str("}\n");
+
+    fs::write(&file_path, content).expect("write bench file");
+    file_path
 }
 
 impl TuiState for BenchState {
@@ -368,10 +430,10 @@ impl TuiState for BenchState {
         100
     }
     fn diff_pane_scroll(&self) -> usize {
-        0
+        self.diff_pane_scroll
     }
     fn diff_pane_focus(&self) -> bool {
-        false
+        self.diff_pane_focus
     }
     fn pin_images(&self) -> bool {
         false
@@ -436,6 +498,10 @@ fn main() -> Result<()> {
     let mut state = BenchState::new(args.turns, args.user_len, args.assistant_len, args.mode);
     let stream_text = make_text(args.assistant_len.max(args.stream_chunk));
 
+    if matches!(args.mode, BenchMode::FileDiff) {
+        state.diff_mode = jcode::config::DiffDisplayMode::File;
+    }
+
     let backend = TestBackend::new(args.width, args.height);
     let mut terminal = Terminal::new(backend)?;
 
@@ -443,6 +509,9 @@ fn main() -> Result<()> {
     for frame in 0..args.frames {
         if args.scroll_cycle > 0 {
             state.scroll_offset = frame % args.scroll_cycle;
+            if matches!(args.mode, BenchMode::FileDiff) {
+                state.diff_pane_scroll = (frame * 3) % args.scroll_cycle.max(1);
+            }
         }
         if matches!(args.mode, BenchMode::Streaming) {
             let chunk_len = ((frame + 1) * args.stream_chunk).min(stream_text.len());
