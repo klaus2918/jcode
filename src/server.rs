@@ -5,6 +5,7 @@ mod client_comm;
 mod client_lifecycle;
 mod client_state;
 mod comm_plan;
+mod comm_sync;
 mod debug;
 mod headless;
 mod provider_control;

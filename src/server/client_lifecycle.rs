@@ -9,6 +9,7 @@ use super::client_state::{handle_get_history, handle_get_state, send_history};
 use super::comm_plan::{
     handle_comm_approve_plan, handle_comm_propose_plan, handle_comm_reject_plan,
 };
+use super::comm_sync::{handle_comm_read_context, handle_comm_resync_plan, handle_comm_summary};
 use super::provider_control::{
     handle_cycle_model, handle_notify_auth_changed, handle_set_model, handle_set_premium_mode,
     handle_switch_anthropic_account,
@@ -1928,46 +1929,7 @@ pub(super) async fn handle_client(
                 target_session,
                 limit,
             } => {
-                let limit = limit.unwrap_or(10);
-                let agent_sessions = sessions.read().await;
-                if let Some(agent) = agent_sessions.get(&target_session) {
-                    let tool_calls = if let Ok(agent) = agent.try_lock() {
-                        let history = agent.get_history();
-                        let mut calls: Vec<crate::protocol::ToolCallSummary> = Vec::new();
-                        for msg in history.iter().rev() {
-                            if calls.len() >= limit {
-                                break;
-                            }
-                            if let Some(tool_names) = &msg.tool_calls {
-                                for name in tool_names {
-                                    calls.push(crate::protocol::ToolCallSummary {
-                                        tool_name: name.clone(),
-                                        brief_output: truncate_detail(&msg.content, 200),
-                                        timestamp_secs: None,
-                                    });
-                                    if calls.len() >= limit {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        calls.reverse();
-                        calls
-                    } else {
-                        Vec::new()
-                    };
-                    let _ = client_event_tx.send(ServerEvent::CommSummaryResponse {
-                        id,
-                        session_id: target_session,
-                        tool_calls,
-                    });
-                } else {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: format!("Unknown session '{}'", target_session),
-                        retry_after_secs: None,
-                    });
-                }
+                handle_comm_summary(id, target_session, limit, &sessions, &client_event_tx).await;
             }
 
             Request::CommReadContext {
@@ -1975,97 +1937,25 @@ pub(super) async fn handle_client(
                 session_id: _req_session_id,
                 target_session,
             } => {
-                let agent_sessions = sessions.read().await;
-                if let Some(agent) = agent_sessions.get(&target_session) {
-                    let messages = if let Ok(agent) = agent.try_lock() {
-                        agent.get_history()
-                    } else {
-                        Vec::new()
-                    };
-                    let _ = client_event_tx.send(ServerEvent::CommContextHistory {
-                        id,
-                        session_id: target_session,
-                        messages,
-                    });
-                } else {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: format!("Unknown session '{}'", target_session),
-                        retry_after_secs: None,
-                    });
-                }
+                handle_comm_read_context(id, target_session, &sessions, &client_event_tx).await;
             }
 
             Request::CommResyncPlan {
                 id,
                 session_id: req_session_id,
             } => {
-                let swarm_id = {
-                    let members = swarm_members.read().await;
-                    members
-                        .get(&req_session_id)
-                        .and_then(|m| m.swarm_id.clone())
-                };
-
-                if let Some(swarm_id) = swarm_id {
-                    let plan_state = {
-                        let mut plans = swarm_plans.write().await;
-                        plans.get_mut(&swarm_id).map(|vp| {
-                            vp.participants.insert(req_session_id.clone());
-                            (vp.version, vp.items.len())
-                        })
-                    };
-                    if let Some((version, item_count)) = plan_state {
-                        if let Some(member) = swarm_members.read().await.get(&req_session_id) {
-                            let _ = member.event_tx.send(ServerEvent::Notification {
-                                from_session: req_session_id.clone(),
-                                from_name: member.friendly_name.clone(),
-                                notification_type: NotificationType::Message {
-                                    scope: Some("plan".to_string()),
-                                    channel: None,
-                                },
-                                message: format!(
-                                    "Plan attached to this session (v{}, {} items).",
-                                    version, item_count
-                                ),
-                            });
-                        }
-                        broadcast_swarm_plan(
-                            &swarm_id,
-                            Some("resync".to_string()),
-                            &swarm_plans,
-                            &swarm_members,
-                            &swarms_by_id,
-                        )
-                        .await;
-                        record_swarm_event(
-                            &event_history,
-                            &event_counter,
-                            &swarm_event_tx,
-                            req_session_id.clone(),
-                            None,
-                            Some(swarm_id.clone()),
-                            SwarmEventType::PlanUpdate {
-                                swarm_id: swarm_id.clone(),
-                                item_count,
-                            },
-                        )
-                        .await;
-                        let _ = client_event_tx.send(ServerEvent::Done { id });
-                    } else {
-                        let _ = client_event_tx.send(ServerEvent::Error {
-                            id,
-                            message: "No swarm plan exists for this swarm.".to_string(),
-                            retry_after_secs: None,
-                        });
-                    }
-                } else {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: "Not in a swarm.".to_string(),
-                        retry_after_secs: None,
-                    });
-                }
+                handle_comm_resync_plan(
+                    id,
+                    req_session_id,
+                    &client_event_tx,
+                    &swarm_members,
+                    &swarms_by_id,
+                    &swarm_plans,
+                    &event_history,
+                    &event_counter,
+                    &swarm_event_tx,
+                )
+                .await;
             }
 
             Request::CommAssignTask {
