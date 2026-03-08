@@ -4,6 +4,7 @@ mod client_actions;
 mod client_comm;
 mod client_lifecycle;
 mod client_state;
+mod comm_control;
 mod comm_plan;
 mod comm_session;
 mod comm_sync;

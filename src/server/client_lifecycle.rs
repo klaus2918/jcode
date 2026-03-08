@@ -6,6 +6,10 @@ use super::client_comm::{
     handle_comm_unsubscribe_channel,
 };
 use super::client_state::{handle_get_history, handle_get_state, send_history};
+use super::comm_control::{
+    handle_client_debug_command, handle_client_debug_response, handle_comm_assign_role,
+    handle_comm_assign_task, handle_comm_await_members,
+};
 use super::comm_plan::{
     handle_comm_approve_plan, handle_comm_propose_plan, handle_comm_reject_plan,
 };
@@ -17,11 +21,11 @@ use super::provider_control::{
 };
 use super::reload::{do_server_reload_with_progress, normalize_model_arg, provider_cli_arg};
 use super::{
-    broadcast_swarm_plan, broadcast_swarm_status, is_jcode_repo_or_parent, is_selfdev_env,
-    record_swarm_event, remove_plan_participant, remove_session_from_swarm,
-    rename_plan_participant, socket_path, swarm_id_for_dir, truncate_detail, update_member_status,
-    ClientConnectionInfo, ClientDebugState, FileAccess, SharedContext, SwarmEvent, SwarmEventType,
-    SwarmMember, VersionedPlan,
+    broadcast_swarm_status, is_jcode_repo_or_parent, is_selfdev_env, record_swarm_event,
+    remove_plan_participant, remove_session_from_swarm, rename_plan_participant, socket_path,
+    swarm_id_for_dir, truncate_detail, update_member_status, ClientConnectionInfo,
+    ClientDebugState, FileAccess, SharedContext, SwarmEvent, SwarmEventType, SwarmMember,
+    VersionedPlan,
 };
 use crate::agent::{Agent, StreamError};
 use crate::bus::{Bus, BusEvent};
@@ -1546,123 +1550,21 @@ pub(super) async fn handle_client(
                 target_session,
                 role,
             } => {
-                // Verify the requester is the coordinator.
-                // Exception: a session may self-promote to coordinator if the current
-                // coordinator has no active agent session (disconnected/stale).
-                let (swarm_id, is_coordinator) = {
-                    let members = swarm_members.read().await;
-                    let swarm_id = members
-                        .get(&req_session_id)
-                        .and_then(|m| m.swarm_id.clone());
-
-                    let is_coordinator = if let Some(ref sid) = swarm_id {
-                        let coordinators = swarm_coordinators.read().await;
-                        let current_coordinator = coordinators.get(sid).cloned();
-                        drop(coordinators);
-
-                        crate::logging::info(&format!(
-                            "[CommAssignRole] req={} target={} role={} swarm={} current_coord={:?}",
-                            req_session_id, target_session, role, sid, current_coordinator
-                        ));
-
-                        if current_coordinator.as_deref() == Some(req_session_id.as_str()) {
-                            // Already the coordinator
-                            true
-                        } else if role == "coordinator" && target_session == req_session_id {
-                            // Self-promotion: allowed if current coordinator's event channel
-                            // is closed (zombie from a previous server instance), has no
-                            // active agent session, or is a headless (spawned) session.
-                            drop(members);
-                            let coordinator_is_zombie = if let Some(ref coord_id) =
-                                current_coordinator
-                            {
-                                let (channel_closed, coord_is_headless) = {
-                                    let m = swarm_members.read().await;
-                                    m.get(coord_id)
-                                        .map(|mb| (mb.event_tx.is_closed(), mb.is_headless))
-                                        .unwrap_or((true, false))
-                                };
-                                let not_in_sessions = !sessions.read().await.contains_key(coord_id);
-                                channel_closed || not_in_sessions || coord_is_headless
-                            } else {
-                                true
-                            };
-                            coordinator_is_zombie
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-                    (swarm_id, is_coordinator)
-                };
-
-                if !is_coordinator {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: "Only the coordinator can assign roles. (Tip: if the coordinator has disconnected, use assign_role with target_session set to your own session ID to self-promote.)".to_string(),
-                        retry_after_secs: None,
-                    });
-                    continue;
-                }
-
-                let swarm_id = match swarm_id {
-                    Some(sid) => sid,
-                    None => {
-                        let _ = client_event_tx.send(ServerEvent::Error {
-                            id,
-                            message: "Not in a swarm.".to_string(),
-                            retry_after_secs: None,
-                        });
-                        continue;
-                    }
-                };
-
-                // Update role on target member
-                {
-                    let mut members = swarm_members.write().await;
-                    if let Some(m) = members.get_mut(&target_session) {
-                        m.role = role.clone();
-                    } else {
-                        let _ = client_event_tx.send(ServerEvent::Error {
-                            id,
-                            message: format!("Unknown session '{}'", target_session),
-                            retry_after_secs: None,
-                        });
-                        continue;
-                    }
-                }
-
-                // If assigning coordinator, update swarm_coordinators
-                if role == "coordinator" {
-                    {
-                        let mut coordinators = swarm_coordinators.write().await;
-                        coordinators.insert(swarm_id.clone(), target_session.clone());
-                    }
-                    // Demote the old coordinator to agent (separate scope to avoid nested lock)
-                    let mut members = swarm_members.write().await;
-                    if let Some(m) = members.get_mut(&req_session_id) {
-                        if m.session_id != target_session {
-                            m.role = "agent".to_string();
-                        }
-                    }
-                }
-
-                broadcast_swarm_status(&swarm_id, &swarm_members, &swarms_by_id).await;
-                record_swarm_event(
+                handle_comm_assign_role(
+                    id,
+                    req_session_id,
+                    target_session,
+                    role,
+                    &client_event_tx,
+                    &sessions,
+                    &swarm_members,
+                    &swarms_by_id,
+                    &swarm_coordinators,
                     &event_history,
                     &event_counter,
                     &swarm_event_tx,
-                    req_session_id.clone(),
-                    None,
-                    Some(swarm_id.clone()),
-                    SwarmEventType::Notification {
-                        notification_type: "role_assignment".to_string(),
-                        message: format!("{} -> {}", target_session, role),
-                    },
                 )
                 .await;
-                let _ = client_event_tx.send(ServerEvent::Done { id });
             }
 
             Request::CommSummary {
@@ -1707,299 +1609,24 @@ pub(super) async fn handle_client(
                 task_id,
                 message,
             } => {
-                // Verify the requester is the coordinator
-                let (swarm_id, is_coordinator) = {
-                    let members = swarm_members.read().await;
-                    let swarm_id = members
-                        .get(&req_session_id)
-                        .and_then(|m| m.swarm_id.clone());
-                    let is_coordinator = if let Some(ref sid) = swarm_id {
-                        let coordinators = swarm_coordinators.read().await;
-                        coordinators
-                            .get(sid)
-                            .map(|c| c == &req_session_id)
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
-                    (swarm_id, is_coordinator)
-                };
-
-                if !is_coordinator {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: "Only the coordinator can assign tasks.".to_string(),
-                        retry_after_secs: None,
-                    });
-                    continue;
-                }
-
-                let swarm_id = match swarm_id {
-                    Some(sid) => sid,
-                    None => {
-                        let _ = client_event_tx.send(ServerEvent::Error {
-                            id,
-                            message: "Not in a swarm.".to_string(),
-                            retry_after_secs: None,
-                        });
-                        continue;
-                    }
-                };
-
-                // Find and update the plan item
-                let (task_content, participant_ids, plan_item_count) = {
-                    let mut plans = swarm_plans.write().await;
-                    let vp = plans
-                        .entry(swarm_id.clone())
-                        .or_insert_with(VersionedPlan::new);
-                    let found = vp.items.iter_mut().find(|t| t.id == task_id);
-                    if let Some(item) = found {
-                        item.assigned_to = Some(target_session.clone());
-                        item.status = "queued".to_string();
-                        vp.version += 1;
-                        vp.participants.insert(req_session_id.clone());
-                        vp.participants.insert(target_session.clone());
-                        (
-                            Some(item.content.clone()),
-                            vp.participants.clone(),
-                            vp.items.len(),
-                        )
-                    } else {
-                        (None, HashSet::new(), 0)
-                    }
-                };
-
-                match task_content {
-                    Some(content) => {
-                        broadcast_swarm_plan(
-                            &swarm_id,
-                            Some("task_assigned".to_string()),
-                            &swarm_plans,
-                            &swarm_members,
-                            &swarms_by_id,
-                        )
-                        .await;
-                        record_swarm_event(
-                            &event_history,
-                            &event_counter,
-                            &swarm_event_tx,
-                            req_session_id.clone(),
-                            None,
-                            Some(swarm_id.clone()),
-                            SwarmEventType::PlanUpdate {
-                                swarm_id: swarm_id.clone(),
-                                item_count: plan_item_count,
-                            },
-                        )
-                        .await;
-
-                        // Notify target via soft interrupt
-                        let coordinator_name = {
-                            let members = swarm_members.read().await;
-                            members
-                                .get(&req_session_id)
-                                .and_then(|m| m.friendly_name.clone())
-                        };
-                        let msg = if let Some(ref extra) = message {
-                            format!(
-                                "Task assigned to you by coordinator: {} — {}",
-                                content, extra
-                            )
-                        } else {
-                            format!("Task assigned to you by coordinator: {}", content)
-                        };
-
-                        let target_agent = {
-                            let agent_sessions = sessions.read().await;
-                            agent_sessions.get(&target_session).cloned()
-                        };
-                        if let Some(agent) = target_agent.as_ref() {
-                            if let Ok(agent) = agent.try_lock() {
-                                agent.queue_soft_interrupt(msg.clone(), false);
-                            }
-                        }
-                        if let Some(member) = swarm_members.read().await.get(&target_session) {
-                            let _ = member.event_tx.send(ServerEvent::Notification {
-                                from_session: req_session_id.clone(),
-                                from_name: coordinator_name.clone(),
-                                notification_type: NotificationType::Message {
-                                    scope: Some("dm".to_string()),
-                                    channel: None,
-                                },
-                                message: msg,
-                            });
-                        }
-
-                        // Headless sessions do not have a request loop to consume queued
-                        // interrupts, so run assigned work immediately when no client owns it.
-                        let target_has_client = {
-                            let conns = client_connections.read().await;
-                            conns.values().any(|c| c.session_id == target_session)
-                        };
-                        if !target_has_client {
-                            if let Some(agent_arc) = target_agent {
-                                let target_session_for_run = target_session.clone();
-                                let swarm_members_for_run = Arc::clone(&swarm_members);
-                                let swarms_for_run = Arc::clone(&swarms_by_id);
-                                let swarm_plans_for_run = Arc::clone(&swarm_plans);
-                                let swarm_id_for_run = swarm_id.clone();
-                                let task_id_for_run = task_id.clone();
-                                let event_history_for_run = Arc::clone(&event_history);
-                                let event_counter_for_run = Arc::clone(&event_counter);
-                                let swarm_event_tx_for_run = swarm_event_tx.clone();
-                                let assignment_text = if let Some(extra) = message.clone() {
-                                    format!(
-                                        "{}\n\nAdditional coordinator instructions:\n{}",
-                                        content, extra
-                                    )
-                                } else {
-                                    content.clone()
-                                };
-                                tokio::spawn(async move {
-                                    {
-                                        let mut plans = swarm_plans_for_run.write().await;
-                                        if let Some(vp) = plans.get_mut(&swarm_id_for_run) {
-                                            if let Some(item) = vp
-                                                .items
-                                                .iter_mut()
-                                                .find(|t| t.id == task_id_for_run)
-                                            {
-                                                item.status = "running".to_string();
-                                                vp.version += 1;
-                                            }
-                                        }
-                                    }
-                                    broadcast_swarm_plan(
-                                        &swarm_id_for_run,
-                                        Some("task_running".to_string()),
-                                        &swarm_plans_for_run,
-                                        &swarm_members_for_run,
-                                        &swarms_for_run,
-                                    )
-                                    .await;
-                                    update_member_status(
-                                        &target_session_for_run,
-                                        "running",
-                                        Some(truncate_detail(&assignment_text, 120)),
-                                        &swarm_members_for_run,
-                                        &swarms_for_run,
-                                        Some(&event_history_for_run),
-                                        Some(&event_counter_for_run),
-                                        Some(&swarm_event_tx_for_run),
-                                    )
-                                    .await;
-
-                                    let result = {
-                                        let mut agent = agent_arc.lock().await;
-                                        agent.run_once_capture(&assignment_text).await
-                                    };
-
-                                    match result {
-                                        Ok(_) => {
-                                            {
-                                                let mut plans = swarm_plans_for_run.write().await;
-                                                if let Some(vp) = plans.get_mut(&swarm_id_for_run) {
-                                                    if let Some(item) = vp
-                                                        .items
-                                                        .iter_mut()
-                                                        .find(|t| t.id == task_id_for_run)
-                                                    {
-                                                        item.status = "done".to_string();
-                                                        vp.version += 1;
-                                                    }
-                                                }
-                                            }
-                                            broadcast_swarm_plan(
-                                                &swarm_id_for_run,
-                                                Some("task_completed".to_string()),
-                                                &swarm_plans_for_run,
-                                                &swarm_members_for_run,
-                                                &swarms_for_run,
-                                            )
-                                            .await;
-                                            update_member_status(
-                                                &target_session_for_run,
-                                                "completed",
-                                                None,
-                                                &swarm_members_for_run,
-                                                &swarms_for_run,
-                                                Some(&event_history_for_run),
-                                                Some(&event_counter_for_run),
-                                                Some(&swarm_event_tx_for_run),
-                                            )
-                                            .await;
-                                        }
-                                        Err(e) => {
-                                            {
-                                                let mut plans = swarm_plans_for_run.write().await;
-                                                if let Some(vp) = plans.get_mut(&swarm_id_for_run) {
-                                                    if let Some(item) = vp
-                                                        .items
-                                                        .iter_mut()
-                                                        .find(|t| t.id == task_id_for_run)
-                                                    {
-                                                        item.status = "failed".to_string();
-                                                        vp.version += 1;
-                                                    }
-                                                }
-                                            }
-                                            broadcast_swarm_plan(
-                                                &swarm_id_for_run,
-                                                Some("task_failed".to_string()),
-                                                &swarm_plans_for_run,
-                                                &swarm_members_for_run,
-                                                &swarms_for_run,
-                                            )
-                                            .await;
-                                            update_member_status(
-                                                &target_session_for_run,
-                                                "failed",
-                                                Some(truncate_detail(&e.to_string(), 120)),
-                                                &swarm_members_for_run,
-                                                &swarms_for_run,
-                                                Some(&event_history_for_run),
-                                                Some(&event_counter_for_run),
-                                                Some(&swarm_event_tx_for_run),
-                                            )
-                                            .await;
-                                        }
-                                    }
-                                });
-                            }
-                        }
-
-                        let plan_msg = format!(
-                            "Plan updated: task '{}' assigned to {}.",
-                            task_id, target_session
-                        );
-                        let members = swarm_members.read().await;
-                        for sid in participant_ids {
-                            if sid == target_session || sid == req_session_id {
-                                continue;
-                            }
-                            if let Some(member) = members.get(&sid) {
-                                let _ = member.event_tx.send(ServerEvent::Notification {
-                                    from_session: req_session_id.clone(),
-                                    from_name: coordinator_name.clone(),
-                                    notification_type: NotificationType::Message {
-                                        scope: Some("plan".to_string()),
-                                        channel: None,
-                                    },
-                                    message: plan_msg.clone(),
-                                });
-                            }
-                        }
-
-                        let _ = client_event_tx.send(ServerEvent::Done { id });
-                    }
-                    None => {
-                        let _ = client_event_tx.send(ServerEvent::Error {
-                            id,
-                            message: format!("Task '{}' not found in swarm plan", task_id),
-                            retry_after_secs: None,
-                        });
-                    }
-                }
+                handle_comm_assign_task(
+                    id,
+                    req_session_id,
+                    target_session,
+                    task_id,
+                    message,
+                    &client_event_tx,
+                    &sessions,
+                    &client_connections,
+                    &swarm_members,
+                    &swarms_by_id,
+                    &swarm_plans,
+                    &swarm_coordinators,
+                    &event_history,
+                    &event_counter,
+                    &swarm_event_tx,
+                )
+                .await;
             }
 
             Request::CommSubscribeChannel {
@@ -2047,194 +1674,26 @@ pub(super) async fn handle_client(
                 session_ids: requested_ids,
                 timeout_secs,
             } => {
-                let swarm_id = {
-                    let members = swarm_members.read().await;
-                    members
-                        .get(&req_session_id)
-                        .and_then(|m| m.swarm_id.clone())
-                };
-
-                if let Some(swarm_id) = swarm_id {
-                    // Determine which sessions to watch
-                    let watch_ids: Vec<String> = if requested_ids.is_empty() {
-                        // Watch all non-self members in the swarm
-                        let swarms = swarms_by_id.read().await;
-                        swarms
-                            .get(&swarm_id)
-                            .map(|s| {
-                                s.iter()
-                                    .filter(|sid| *sid != &req_session_id)
-                                    .cloned()
-                                    .collect()
-                            })
-                            .unwrap_or_default()
-                    } else {
-                        requested_ids
-                    };
-
-                    if watch_ids.is_empty() {
-                        let _ = client_event_tx.send(ServerEvent::CommAwaitMembersResponse {
-                            id,
-                            completed: true,
-                            members: vec![],
-                            summary: "No other members in swarm to wait for.".to_string(),
-                        });
-                    } else {
-                        let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(3600));
-                        let swarm_members_clone = swarm_members.clone();
-                        let mut event_rx = swarm_event_tx.subscribe();
-                        let client_tx = client_event_tx.clone();
-
-                        // Spawn a task that watches for status changes
-                        tokio::spawn(async move {
-                            let deadline = tokio::time::Instant::now() + timeout;
-
-                            loop {
-                                // Check current state
-                                let (all_done, member_statuses) = {
-                                    let members = swarm_members_clone.read().await;
-                                    let statuses: Vec<crate::protocol::AwaitedMemberStatus> =
-                                        watch_ids
-                                            .iter()
-                                            .map(|sid| {
-                                                let (name, status) = members
-                                                    .get(sid)
-                                                    .map(|m| {
-                                                        (m.friendly_name.clone(), m.status.clone())
-                                                    })
-                                                    .unwrap_or((None, "unknown".to_string()));
-                                                let done = target_status.contains(&status)
-                                                    || (status == "unknown"
-                                                        && (target_status
-                                                            .contains(&"stopped".to_string())
-                                                            || target_status.contains(
-                                                                &"completed".to_string(),
-                                                            )));
-                                                crate::protocol::AwaitedMemberStatus {
-                                                    session_id: sid.clone(),
-                                                    friendly_name: name,
-                                                    status,
-                                                    done,
-                                                }
-                                            })
-                                            .collect();
-                                    let all = statuses.iter().all(|s| s.done);
-                                    (all, statuses)
-                                };
-
-                                if all_done {
-                                    let done_names: Vec<String> = member_statuses
-                                        .iter()
-                                        .map(|m| {
-                                            m.friendly_name.clone().unwrap_or_else(|| {
-                                                m.session_id[..8.min(m.session_id.len())]
-                                                    .to_string()
-                                            })
-                                        })
-                                        .collect();
-                                    let _ = client_tx.send(ServerEvent::CommAwaitMembersResponse {
-                                        id,
-                                        completed: true,
-                                        members: member_statuses,
-                                        summary: format!(
-                                            "All {} members are done: {}",
-                                            done_names.len(),
-                                            done_names.join(", ")
-                                        ),
-                                    });
-                                    return;
-                                }
-
-                                // Wait for next status change event or timeout
-                                let remaining =
-                                    deadline.saturating_duration_since(tokio::time::Instant::now());
-                                if remaining.is_zero() {
-                                    let pending: Vec<String> = member_statuses
-                                        .iter()
-                                        .filter(|m| !m.done)
-                                        .map(|m| {
-                                            let name =
-                                                m.friendly_name.clone().unwrap_or_else(|| {
-                                                    m.session_id[..8.min(m.session_id.len())]
-                                                        .to_string()
-                                                });
-                                            format!("{} ({})", name, m.status)
-                                        })
-                                        .collect();
-                                    let _ = client_tx.send(ServerEvent::CommAwaitMembersResponse {
-                                        id,
-                                        completed: false,
-                                        members: member_statuses,
-                                        summary: format!(
-                                            "Timed out. Still waiting on: {}",
-                                            pending.join(", ")
-                                        ),
-                                    });
-                                    return;
-                                }
-
-                                // Wait for a relevant status_change event
-                                match tokio::time::timeout(remaining, event_rx.recv()).await {
-                                    Ok(Ok(event)) => {
-                                        // Only recheck on status changes for watched sessions
-                                        if let SwarmEventType::StatusChange { .. } = &event.event {
-                                            if watch_ids.contains(&event.session_id) {
-                                                continue; // Recheck at top of loop
-                                            }
-                                        }
-                                        // Also recheck on member leave events
-                                        if let SwarmEventType::MemberChange { action } =
-                                            &event.event
-                                        {
-                                            if action == "left"
-                                                && watch_ids.contains(&event.session_id)
-                                            {
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                    Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
-                                        // Missed events, recheck state immediately
-                                        continue;
-                                    }
-                                    Ok(Err(broadcast::error::RecvError::Closed)) => {
-                                        let _ =
-                                            client_tx.send(ServerEvent::CommAwaitMembersResponse {
-                                                id,
-                                                completed: false,
-                                                members: member_statuses,
-                                                summary: "Server shutting down.".to_string(),
-                                            });
-                                        return;
-                                    }
-                                    Err(_) => {
-                                        // Timeout
-                                        continue; // Will hit the timeout check at top
-                                    }
-                                }
-                            }
-                        });
-                    }
-                } else {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: "Not in a swarm. Use a git repository to enable swarm features."
-                            .to_string(),
-                        retry_after_secs: None,
-                    });
-                }
+                handle_comm_await_members(
+                    id,
+                    req_session_id,
+                    target_status,
+                    requested_ids,
+                    timeout_secs,
+                    &client_event_tx,
+                    &swarm_members,
+                    &swarms_by_id,
+                    &swarm_event_tx,
+                )
+                .await;
             }
 
             // These are handled via channels, not direct requests from TUI
             Request::ClientDebugCommand { id, .. } => {
-                let _ = client_event_tx.send(ServerEvent::Error {
-                    id,
-                    message: "ClientDebugCommand is for internal use only".to_string(),
-                    retry_after_secs: None,
-                });
+                handle_client_debug_command(id, &client_event_tx).await;
             }
             Request::ClientDebugResponse { id, output } => {
-                let _ = client_debug_response_tx.send((id, output));
+                handle_client_debug_response(id, output, &client_debug_response_tx);
             }
         }
     }
