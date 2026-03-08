@@ -1,3 +1,4 @@
+use super::debug_ambient::maybe_handle_ambient_command;
 use super::debug_events::{
     maybe_handle_event_query_command, maybe_handle_event_subscription_command,
 };
@@ -2414,145 +2415,10 @@ pub(super) async fn handle_debug_client(
                             // Placeholder (duplicates removed — swarm:roles, swarm:channels,
                             // swarm:plan_version are handled earlier in the chain)
                             Ok("unreachable".to_string())
-                        } else if cmd == "ambient:status" {
-                            // Get ambient mode status
-                            if let Some(ref runner) = ambient_runner {
-                                Ok(runner.status_json().await)
-                            } else {
-                                Ok(serde_json::json!({
-                                    "enabled": false,
-                                    "status": "disabled",
-                                    "message": "Ambient mode is not enabled in config"
-                                })
-                                .to_string())
-                            }
-                        } else if cmd == "ambient:queue" {
-                            if let Some(ref runner) = ambient_runner {
-                                Ok(runner.queue_json().await)
-                            } else {
-                                Ok("[]".to_string())
-                            }
-                        } else if cmd == "ambient:trigger" {
-                            if let Some(ref runner) = ambient_runner {
-                                runner.trigger().await;
-                                Ok("Ambient cycle triggered".to_string())
-                            } else {
-                                Err(anyhow::anyhow!("Ambient mode is not enabled"))
-                            }
-                        } else if cmd == "ambient:log" {
-                            if let Some(ref runner) = ambient_runner {
-                                Ok(runner.log_json().await)
-                            } else {
-                                Ok("[]".to_string())
-                            }
-                        } else if cmd == "ambient:permissions" {
-                            if let Some(ref runner) = ambient_runner {
-                                let _ = runner
-                                    .safety()
-                                    .expire_dead_session_requests("debug_socket_gc");
-                                let pending = runner.safety().pending_requests();
-                                let items: Vec<serde_json::Value> = pending
-                                    .iter()
-                                    .map(|r| {
-                                        let review_summary = r
-                                            .context
-                                            .as_ref()
-                                            .and_then(|ctx| ctx.get("review"))
-                                            .and_then(|review| review.get("summary"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or(&r.description);
-                                        let review_why = r
-                                            .context
-                                            .as_ref()
-                                            .and_then(|ctx| ctx.get("review"))
-                                            .and_then(|review| review.get("why_permission_needed"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or(&r.rationale);
-                                        serde_json::json!({
-                                            "id": r.id,
-                                            "action": r.action,
-                                            "description": r.description,
-                                            "rationale": r.rationale,
-                                            "summary": review_summary,
-                                            "why_permission_needed": review_why,
-                                            "urgency": format!("{:?}", r.urgency),
-                                            "wait": r.wait,
-                                            "created_at": r.created_at.to_rfc3339(),
-                                            "context": r.context,
-                                        })
-                                    })
-                                    .collect();
-                                Ok(serde_json::to_string_pretty(&items)
-                                    .unwrap_or_else(|_| "[]".to_string()))
-                            } else {
-                                Ok("[]".to_string())
-                            }
-                        } else if cmd.starts_with("ambient:approve:") {
-                            let request_id =
-                                cmd.strip_prefix("ambient:approve:").unwrap_or("").trim();
-                            if request_id.is_empty() {
-                                Err(anyhow::anyhow!("Usage: ambient:approve:<request_id>"))
-                            } else if let Some(ref runner) = ambient_runner {
-                                runner.safety().record_decision(
-                                    request_id,
-                                    true,
-                                    "debug_socket",
-                                    None,
-                                )?;
-                                Ok(format!("Approved: {}", request_id))
-                            } else {
-                                Err(anyhow::anyhow!("Ambient mode is not enabled"))
-                            }
-                        } else if cmd.starts_with("ambient:deny:") {
-                            let rest = cmd.strip_prefix("ambient:deny:").unwrap_or("").trim();
-                            if rest.is_empty() {
-                                Err(anyhow::anyhow!("Usage: ambient:deny:<request_id> [reason]"))
-                            } else if let Some(ref runner) = ambient_runner {
-                                let mut parts = rest.splitn(2, char::is_whitespace);
-                                let request_id = parts.next().unwrap_or("").trim();
-                                let message = parts
-                                    .next()
-                                    .map(|s| s.trim().to_string())
-                                    .filter(|s| !s.is_empty());
-                                runner.safety().record_decision(
-                                    request_id,
-                                    false,
-                                    "debug_socket",
-                                    message,
-                                )?;
-                                Ok(format!("Denied: {}", request_id))
-                            } else {
-                                Err(anyhow::anyhow!("Ambient mode is not enabled"))
-                            }
-                        } else if cmd == "ambient:stop" {
-                            if let Some(ref runner) = ambient_runner {
-                                runner.stop().await;
-                                Ok("Ambient mode stopped".to_string())
-                            } else {
-                                Err(anyhow::anyhow!("Ambient mode is not enabled"))
-                            }
-                        } else if cmd == "ambient:start" {
-                            if let Some(ref runner) = ambient_runner {
-                                if runner.start(Arc::clone(&provider)).await {
-                                    Ok("Ambient mode started".to_string())
-                                } else {
-                                    Ok("Ambient mode is already running".to_string())
-                                }
-                            } else {
-                                Err(anyhow::anyhow!("Ambient mode is not enabled in config"))
-                            }
-                        } else if cmd == "ambient:help" {
-                            Ok(r#"Ambient mode debug commands (ambient: prefix):
-  ambient:status              - Current ambient state, cycle count, last run
-  ambient:queue               - Scheduled queue contents
-  ambient:trigger             - Manually trigger an ambient cycle
-  ambient:log                 - Recent transcript summaries
-  ambient:permissions         - List pending permission requests
-  ambient:approve:<id>        - Approve a permission request
-  ambient:deny:<id> [reason]  - Deny a permission request (optional reason)
-  ambient:start               - Start/restart ambient mode
-  ambient:stop                - Stop ambient mode"#
-                                .to_string())
+                        } else if let Some(output) =
+                            maybe_handle_ambient_command(cmd, &ambient_runner, &provider).await?
+                        {
+                            Ok(output)
                         } else if maybe_handle_event_subscription_command(
                             id,
                             cmd,
