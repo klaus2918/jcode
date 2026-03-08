@@ -2,6 +2,7 @@ use super::client_comm::{
     handle_comm_list, handle_comm_read, handle_comm_share, handle_comm_subscribe_channel,
     handle_comm_unsubscribe_channel,
 };
+use super::client_state::{handle_get_history, handle_get_state, send_history};
 use super::provider_control::{
     handle_cycle_model, handle_notify_auth_changed, handle_set_model, handle_set_premium_mode,
     handle_switch_anthropic_account,
@@ -10,10 +11,10 @@ use super::reload::{do_server_reload_with_progress, normalize_model_arg, provide
 use super::{
     broadcast_swarm_plan, broadcast_swarm_status, create_headless_session, is_jcode_repo_or_parent,
     is_selfdev_env, record_swarm_event, record_swarm_event_for_session, remove_plan_participant,
-    remove_session_from_swarm, rename_plan_participant, server_has_newer_binary, socket_path,
-    summarize_plan_items, swarm_id_for_dir, truncate_detail, update_member_status,
-    ClientConnectionInfo, ClientDebugState, FileAccess, SharedContext, SwarmEvent, SwarmEventType,
-    SwarmMember, VersionedPlan,
+    remove_session_from_swarm, rename_plan_participant, socket_path, summarize_plan_items,
+    swarm_id_for_dir, truncate_detail, update_member_status, ClientConnectionInfo,
+    ClientDebugState, FileAccess, SharedContext, SwarmEvent, SwarmEventType, SwarmMember,
+    VersionedPlan,
 };
 use crate::agent::{Agent, StreamError};
 use crate::bus::{Bus, BusEvent};
@@ -724,20 +725,16 @@ pub(super) async fn handle_client(
             }
 
             Request::GetState { id } => {
-                let sessions_guard = sessions.read().await;
-                let all_sessions: Vec<String> = sessions_guard.keys().cloned().collect();
-                let session_count = all_sessions.len();
-                drop(sessions_guard);
-
-                let event = ServerEvent::State {
+                if handle_get_state(
                     id,
-                    session_id: client_session_id.clone(),
-                    message_count: session_count,
-                    is_processing: client_is_processing,
-                };
-                let json = encode_event(&event);
-                let mut w = writer.lock().await;
-                if w.write_all(json.as_bytes()).await.is_err() {
+                    &client_session_id,
+                    client_is_processing,
+                    &sessions,
+                    &writer,
+                )
+                .await
+                .is_err()
+                {
                     break;
                 }
             }
@@ -903,82 +900,20 @@ pub(super) async fn handle_client(
             }
 
             Request::GetHistory { id } => {
-                let _ = provider.prefetch_models().await;
-                let (
-                    messages,
-                    is_canary,
-                    provider_name,
-                    provider_model,
-                    available_models,
-                    available_model_routes,
-                    tool_names,
-                    upstream_provider,
-                ) = {
-                    let agent_guard = agent.lock().await;
-                    (
-                        agent_guard.get_history(),
-                        agent_guard.is_canary(),
-                        agent_guard.provider_name(),
-                        agent_guard.provider_model(),
-                        agent_guard.available_models_display(),
-                        agent_guard.model_routes(),
-                        agent_guard.tool_names().await,
-                        agent_guard.last_upstream_provider(),
-                    )
-                };
-
-                // Build MCP server list with tool counts from registered tool names
-                let mut mcp_map: std::collections::BTreeMap<String, usize> =
-                    std::collections::BTreeMap::new();
-                for name in &tool_names {
-                    if let Some(rest) = name.strip_prefix("mcp__") {
-                        if let Some((server, _tool)) = rest.split_once("__") {
-                            *mcp_map.entry(server.to_string()).or_default() += 1;
-                        }
-                    }
-                }
-                let mcp_servers: Vec<String> = mcp_map
-                    .into_iter()
-                    .map(|(name, count)| format!("{}:{}", name, count))
-                    .collect();
-
-                // Build skills list
-                let skills = crate::skill::SkillRegistry::load()
-                    .map(|r| r.list().iter().map(|s| s.name.clone()).collect())
-                    .unwrap_or_default();
-
-                // Get all session IDs and client count
-                let (all_sessions, current_client_count) = {
-                    let sessions_guard = sessions.read().await;
-                    let all: Vec<String> = sessions_guard.keys().cloned().collect();
-                    let count = *client_count.read().await;
-                    (all, count)
-                };
-
-                let event = ServerEvent::History {
+                if handle_get_history(
                     id,
-                    session_id: client_session_id.clone(),
-                    messages,
-                    provider_name: Some(provider_name),
-                    provider_model: Some(provider_model),
-                    available_models,
-                    available_model_routes,
-                    mcp_servers,
-                    skills,
-                    total_tokens: None,
-                    all_sessions,
-                    client_count: Some(current_client_count),
-                    is_canary: Some(is_canary),
-                    server_version: Some(env!("JCODE_VERSION").to_string()),
-                    server_name: Some(server_name.clone()),
-                    server_icon: Some(server_icon.clone()),
-                    server_has_update: Some(server_has_newer_binary()),
-                    was_interrupted: None,
-                    upstream_provider,
-                };
-                let json = encode_event(&event);
-                let mut w = writer.lock().await;
-                if w.write_all(json.as_bytes()).await.is_err() {
+                    &client_session_id,
+                    &agent,
+                    &provider,
+                    &sessions,
+                    &client_count,
+                    &writer,
+                    &server_name,
+                    &server_icon,
+                )
+                .await
+                .is_err()
+                {
                     break;
                 }
             }
@@ -1172,81 +1107,21 @@ pub(super) async fn handle_client(
                             .await;
                         }
 
-                        // Send updated history to client
                         let _ = provider.prefetch_models().await;
-                        let (
-                            messages,
-                            is_canary,
-                            provider_name,
-                            provider_model,
-                            available_models,
-                            available_model_routes,
-                            tool_names,
-                            upstream_provider,
-                        ) = {
-                            let agent_guard = agent.lock().await;
-                            (
-                                agent_guard.get_history(),
-                                agent_guard.is_canary(),
-                                agent_guard.provider_name(),
-                                agent_guard.provider_model(),
-                                agent_guard.available_models_display(),
-                                agent_guard.model_routes(),
-                                agent_guard.tool_names().await,
-                                agent_guard.last_upstream_provider(),
-                            )
-                        };
-
-                        // Build MCP server list with tool counts
-                        let mut mcp_map: std::collections::BTreeMap<String, usize> =
-                            std::collections::BTreeMap::new();
-                        for name in &tool_names {
-                            if let Some(rest) = name.strip_prefix("mcp__") {
-                                if let Some((server, _tool)) = rest.split_once("__") {
-                                    *mcp_map.entry(server.to_string()).or_default() += 1;
-                                }
-                            }
-                        }
-                        let mcp_servers: Vec<String> = mcp_map
-                            .into_iter()
-                            .map(|(name, count)| format!("{}:{}", name, count))
-                            .collect();
-
-                        let skills = crate::skill::SkillRegistry::load()
-                            .map(|r| r.list().iter().map(|s| s.name.clone()).collect())
-                            .unwrap_or_default();
-
-                        let (all_sessions, current_client_count) = {
-                            let sessions_guard = sessions.read().await;
-                            let all: Vec<String> = sessions_guard.keys().cloned().collect();
-                            let count = *client_count.read().await;
-                            (all, count)
-                        };
-
-                        let event = ServerEvent::History {
+                        if send_history(
                             id,
-                            session_id: session_id.clone(),
-                            messages,
-                            provider_name: Some(provider_name),
-                            provider_model: Some(provider_model),
-                            available_models,
-                            available_model_routes,
-                            mcp_servers,
-                            skills,
-                            total_tokens: None,
-                            all_sessions,
-                            client_count: Some(current_client_count),
-                            is_canary: Some(is_canary),
-                            server_version: Some(env!("JCODE_VERSION").to_string()),
-                            server_name: Some(server_name.clone()),
-                            server_icon: Some(server_icon.clone()),
-                            server_has_update: Some(server_has_newer_binary()),
-                            was_interrupted: if was_interrupted { Some(true) } else { None },
-                            upstream_provider,
-                        };
-                        let json = encode_event(&event);
-                        let mut w = writer.lock().await;
-                        if w.write_all(json.as_bytes()).await.is_err() {
+                            &session_id,
+                            &agent,
+                            &sessions,
+                            &client_count,
+                            &writer,
+                            &server_name,
+                            &server_icon,
+                            if was_interrupted { Some(true) } else { None },
+                        )
+                        .await
+                        .is_err()
+                        {
                             break;
                         }
                     }

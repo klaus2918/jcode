@@ -2,6 +2,7 @@
 
 mod client_comm;
 mod client_lifecycle;
+mod client_state;
 mod debug;
 mod headless;
 mod provider_control;

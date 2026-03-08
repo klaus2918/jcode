@@ -1,7 +1,6 @@
 use crate::agent::Agent;
 use crate::protocol::ServerEvent;
 use crate::provider::Provider;
-use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
