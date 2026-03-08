@@ -15,6 +15,7 @@ mod debug_events;
 mod debug_jobs;
 mod debug_server_state;
 mod debug_swarm_read;
+mod debug_swarm_write;
 mod debug_testers;
 mod headless;
 mod provider_control;
