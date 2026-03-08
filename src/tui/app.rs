@@ -4172,97 +4172,11 @@ impl App {
         if self.handle_diff_pane_focus_key(code.clone(), modifiers) {
             return Ok(());
         }
-        // Handle Alt combos (readline word movement)
-        if modifiers.contains(KeyModifiers::ALT) {
-            match code {
-                c if self.centered_toggle_keys.toggle.matches(c, modifiers) => {
-                    self.toggle_centered_mode();
-                    return Ok(());
-                }
-                KeyCode::Char('b') => {
-                    // Alt+B: back one word
-                    self.cursor_pos = self.find_word_boundary_back();
-                    return Ok(());
-                }
-                KeyCode::Char('f') => {
-                    // Alt+F: forward one word
-                    self.cursor_pos = self.find_word_boundary_forward();
-                    return Ok(());
-                }
-                KeyCode::Char('d') => {
-                    // Alt+D: delete word forward
-                    let end = self.find_word_boundary_forward();
-                    self.input.drain(self.cursor_pos..end);
-                    self.sync_model_picker_preview_from_input();
-                    return Ok(());
-                }
-                KeyCode::Backspace => {
-                    // Alt+Backspace: delete word backward
-                    let start = self.find_word_boundary_back();
-                    self.input.drain(start..self.cursor_pos);
-                    self.cursor_pos = start;
-                    self.sync_model_picker_preview_from_input();
-                    return Ok(());
-                }
-                KeyCode::Char('i') => {
-                    // Alt+I: toggle info widget
-                    super::info_widget::toggle_enabled();
-                    let status = if super::info_widget::is_enabled() {
-                        "Info widget: ON"
-                    } else {
-                        "Info widget: OFF"
-                    };
-                    self.set_status_notice(status);
-                    return Ok(());
-                }
-                KeyCode::Char('v') => {
-                    // Alt+V: paste image from clipboard
-                    self.paste_image_from_clipboard();
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-
-        // Handle configurable scroll keys (default: Ctrl+K/J, Alt+U/D for page)
-        if let Some(amount) = self.scroll_keys.scroll_amount(code.clone(), modifiers) {
-            if amount < 0 {
-                self.scroll_up((-amount) as usize);
-            } else {
-                self.scroll_down(amount as usize);
-            }
+        if modifiers.contains(KeyModifiers::ALT) && input::handle_alt_key(self, code.clone()) {
             return Ok(());
         }
 
-        // Handle prompt jump keys (default: Ctrl+[/], plus Ctrl+1..9 recency)
-        if let Some(dir) = self.scroll_keys.prompt_jump(code.clone(), modifiers) {
-            if dir < 0 {
-                self.scroll_to_prev_prompt();
-            } else {
-                self.scroll_to_next_prompt();
-            }
-            return Ok(());
-        }
-
-        if let Some(rank) = Self::ctrl_prompt_rank(&code, modifiers) {
-            self.scroll_to_recent_prompt_rank(rank);
-            return Ok(());
-        }
-
-        // Handle scroll bookmark toggle (default: Ctrl+G)
-        if self.scroll_keys.is_bookmark(code.clone(), modifiers) {
-            self.toggle_scroll_bookmark();
-            return Ok(());
-        }
-
-        // Shift+Tab: cycle diff mode (Off → Inline → Pinned → File)
-        if code == KeyCode::BackTab {
-            self.diff_mode = self.diff_mode.cycle();
-            if !self.diff_mode.has_side_pane() {
-                self.diff_pane_focus = false;
-            }
-            let status = format!("Diffs: {}", self.diff_mode.label());
-            self.set_status_notice(&status);
+        if input::handle_navigation_shortcuts(self, code.clone(), modifiers) {
             return Ok(());
         }
 

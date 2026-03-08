@@ -215,6 +215,93 @@ pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
     }
 }
 
+pub(super) fn handle_alt_key(app: &mut App, code: KeyCode) -> bool {
+    match code {
+        KeyCode::Char('b') => {
+            app.cursor_pos = app.find_word_boundary_back();
+            true
+        }
+        KeyCode::Char('f') => {
+            app.cursor_pos = app.find_word_boundary_forward();
+            true
+        }
+        KeyCode::Char('d') => {
+            let end = app.find_word_boundary_forward();
+            app.input.drain(app.cursor_pos..end);
+            app.sync_model_picker_preview_from_input();
+            true
+        }
+        KeyCode::Backspace => {
+            let start = app.find_word_boundary_back();
+            app.input.drain(start..app.cursor_pos);
+            app.cursor_pos = start;
+            app.sync_model_picker_preview_from_input();
+            true
+        }
+        KeyCode::Char('i') => {
+            crate::tui::info_widget::toggle_enabled();
+            let status = if crate::tui::info_widget::is_enabled() {
+                "Info widget: ON"
+            } else {
+                "Info widget: OFF"
+            };
+            app.set_status_notice(status);
+            true
+        }
+        KeyCode::Char('v') => {
+            paste_image_from_clipboard(app);
+            true
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn handle_navigation_shortcuts(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: crossterm::event::KeyModifiers,
+) -> bool {
+    if let Some(amount) = app.scroll_keys.scroll_amount(code.clone(), modifiers) {
+        if amount < 0 {
+            app.scroll_up((-amount) as usize);
+        } else {
+            app.scroll_down(amount as usize);
+        }
+        return true;
+    }
+
+    if let Some(dir) = app.scroll_keys.prompt_jump(code.clone(), modifiers) {
+        if dir < 0 {
+            app.scroll_to_prev_prompt();
+        } else {
+            app.scroll_to_next_prompt();
+        }
+        return true;
+    }
+
+    if let Some(rank) = App::ctrl_prompt_rank(&code, modifiers) {
+        app.scroll_to_recent_prompt_rank(rank);
+        return true;
+    }
+
+    if app.scroll_keys.is_bookmark(code.clone(), modifiers) {
+        app.toggle_scroll_bookmark();
+        return true;
+    }
+
+    if code == KeyCode::BackTab {
+        app.diff_mode = app.diff_mode.cycle();
+        if !app.diff_mode.has_side_pane() {
+            app.diff_pane_focus = false;
+        }
+        let status = format!("Diffs: {}", app.diff_mode.label());
+        app.set_status_notice(&status);
+        return true;
+    }
+
+    false
+}
+
 pub(super) fn handle_enter(app: &mut App) -> bool {
     if app.activate_model_picker_from_preview() {
         return true;
