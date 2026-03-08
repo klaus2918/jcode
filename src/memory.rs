@@ -157,7 +157,10 @@ pub fn take_pending_memory(session_id: &str) -> Option<PendingMemory> {
                     if *last_sig == sig
                         && last_at.elapsed().as_secs() < MEMORY_REPEAT_SUPPRESSION_SECS
                     {
-                        crate::memory_log::log_pending_discarded(session_id, "duplicate suppressed");
+                        crate::memory_log::log_pending_discarded(
+                            session_id,
+                            "duplicate suppressed",
+                        );
                         return None;
                     }
                 }
@@ -1255,12 +1258,11 @@ impl MemoryManager {
         let mut graph = self.load_project_graph()?;
 
         if let Some(ref emb) = entry.embedding {
-            if let Some(existing_id) = Self::find_duplicate_in_graph(&graph, emb, Self::STORAGE_DEDUP_THRESHOLD) {
+            if let Some(existing_id) =
+                Self::find_duplicate_in_graph(&graph, emb, Self::STORAGE_DEDUP_THRESHOLD)
+            {
                 if let Some(existing) = graph.get_memory_mut(&existing_id) {
-                    existing.reinforce(
-                        entry.source.as_deref().unwrap_or("dedup"),
-                        0,
-                    );
+                    existing.reinforce(entry.source.as_deref().unwrap_or("dedup"), 0);
                     self.save_project_graph(&graph)?;
                     return Ok(existing_id);
                 }
@@ -1268,12 +1270,11 @@ impl MemoryManager {
 
             // Cross-store dedup: also check global graph
             if let Ok(mut global_graph) = self.load_global_graph() {
-                if let Some(existing_id) = Self::find_duplicate_in_graph(&global_graph, emb, Self::STORAGE_DEDUP_THRESHOLD) {
+                if let Some(existing_id) =
+                    Self::find_duplicate_in_graph(&global_graph, emb, Self::STORAGE_DEDUP_THRESHOLD)
+                {
                     if let Some(existing) = global_graph.get_memory_mut(&existing_id) {
-                        existing.reinforce(
-                            entry.source.as_deref().unwrap_or("cross-dedup"),
-                            0,
-                        );
+                        existing.reinforce(entry.source.as_deref().unwrap_or("cross-dedup"), 0);
                         self.save_global_graph(&global_graph)?;
                         return Ok(existing_id);
                     }
@@ -1293,12 +1294,11 @@ impl MemoryManager {
         let mut graph = self.load_global_graph()?;
 
         if let Some(ref emb) = entry.embedding {
-            if let Some(existing_id) = Self::find_duplicate_in_graph(&graph, emb, Self::STORAGE_DEDUP_THRESHOLD) {
+            if let Some(existing_id) =
+                Self::find_duplicate_in_graph(&graph, emb, Self::STORAGE_DEDUP_THRESHOLD)
+            {
                 if let Some(existing) = graph.get_memory_mut(&existing_id) {
-                    existing.reinforce(
-                        entry.source.as_deref().unwrap_or("dedup"),
-                        0,
-                    );
+                    existing.reinforce(entry.source.as_deref().unwrap_or("dedup"), 0);
                     self.save_global_graph(&graph)?;
                     return Ok(existing_id);
                 }
@@ -1306,12 +1306,13 @@ impl MemoryManager {
 
             // Cross-store dedup: also check project graph
             if let Ok(mut project_graph) = self.load_project_graph() {
-                if let Some(existing_id) = Self::find_duplicate_in_graph(&project_graph, emb, Self::STORAGE_DEDUP_THRESHOLD) {
+                if let Some(existing_id) = Self::find_duplicate_in_graph(
+                    &project_graph,
+                    emb,
+                    Self::STORAGE_DEDUP_THRESHOLD,
+                ) {
                     if let Some(existing) = project_graph.get_memory_mut(&existing_id) {
-                        existing.reinforce(
-                            entry.source.as_deref().unwrap_or("cross-dedup"),
-                            0,
-                        );
+                        existing.reinforce(entry.source.as_deref().unwrap_or("cross-dedup"), 0);
                         self.save_project_graph(&project_graph)?;
                         return Ok(existing_id);
                     }
@@ -2398,14 +2399,13 @@ mod tests {
     use std::sync::Mutex;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
     static PENDING_MEMORY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_temp_home<F, T>(f: F) -> T
     where
         F: FnOnce(&Path) -> T,
     {
-        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let _guard = crate::storage::lock_test_env();
         let old = std::env::var("JCODE_HOME").ok();
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2589,7 +2589,7 @@ mod tests {
     #[test]
     fn manager_persists_and_forgets_memories() {
         with_temp_home(|_dir| {
-            let manager = MemoryManager::new();
+            let manager = MemoryManager::new_test();
             let entry_project =
                 MemoryEntry::new(MemoryCategory::Fact, "Project memory").with_embedding(vec![1.0, 0.0, 0.0]);
             let entry_global = MemoryEntry::new(MemoryCategory::Preference, "Global memory")
@@ -2620,7 +2620,7 @@ mod tests {
     #[test]
     fn graph_based_memory_operations() {
         with_temp_home(|_home| {
-            let manager = MemoryManager::new();
+            let manager = MemoryManager::new_test();
 
             // Create two memories
             let entry1 = MemoryEntry::new(MemoryCategory::Fact, "The capital of France is Paris, a city known for the Eiffel Tower");

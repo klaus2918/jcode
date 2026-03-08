@@ -2038,7 +2038,10 @@ pub(super) async fn handle_debug_client(
                                     swarm_id
                                 ))
                             } else {
-                                Err(anyhow::anyhow!("No coordinator set for swarm '{}'", swarm_id))
+                                Err(anyhow::anyhow!(
+                                    "No coordinator set for swarm '{}'",
+                                    swarm_id
+                                ))
                             }
                         } else if cmd == "swarm:roles" {
                             // List all members with their roles
@@ -3418,16 +3421,9 @@ pub(super) async fn handle_debug_client(
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::sync::{Mutex, OnceLock};
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        let mutex = ENV_LOCK.get_or_init(|| Mutex::new(()));
-        match mutex.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        crate::storage::lock_test_env()
     }
 
     struct TestHomeGuard {
@@ -3596,19 +3592,13 @@ mod debug_execution_tests {
     use crate::agent::Agent;
     use crate::provider;
     use crate::tool::Registry;
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::collections::HashMap;
     use std::ffi::OsString;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::Arc;
     use tokio::sync::{Mutex as AsyncMutex, RwLock};
 
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        let mutex = ENV_LOCK.get_or_init(|| Mutex::new(()));
-        match mutex.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        crate::storage::lock_test_env()
     }
 
     struct EnvVarGuard {

@@ -615,6 +615,7 @@ mod tests {
 
     #[test]
     fn save_github_token_creates_config_dir() {
+        let _guard = crate::storage::lock_test_env();
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("github-copilot");
         let prev_jcode_home = std::env::var_os("JCODE_HOME");
@@ -647,6 +648,7 @@ mod tests {
 
     #[test]
     fn copilot_config_dir_uses_jcode_home_external_dir() {
+        let _guard = crate::storage::lock_test_env();
         let dir = TempDir::new().unwrap();
         let prev = std::env::var_os("JCODE_HOME");
         std::env::set_var("JCODE_HOME", dir.path());

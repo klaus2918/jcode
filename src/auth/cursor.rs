@@ -196,10 +196,7 @@ fn status_output_indicates_authenticated(success: bool, stdout: &[u8], stderr: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn config_file_path_under_jcode() {
@@ -308,7 +305,7 @@ mod tests {
 
     #[test]
     fn cursor_vscdb_paths_respect_jcode_home() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::storage::lock_test_env();
         let prev_home = std::env::var_os("JCODE_HOME");
         let temp = TempDir::new().unwrap();
         std::env::set_var("JCODE_HOME", temp.path());

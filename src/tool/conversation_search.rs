@@ -284,7 +284,6 @@ fn extract_snippet(text: &str, query: &str) -> String {
 mod tests {
     use super::*;
     use crate::compaction::CompactionManager;
-    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn create_test_tool() -> ConversationSearchTool {
@@ -293,8 +292,7 @@ mod tests {
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        crate::storage::lock_test_env()
     }
 
     fn setup_session(messages: Vec<Message>) -> (ToolContext, std::path::PathBuf, Option<String>) {

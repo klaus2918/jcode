@@ -540,9 +540,6 @@ pub fn load_claude_md_files_from_dir(working_dir: Option<&Path>) -> (Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Verify the default system prompt does NOT identify as "Claude Code"
     /// It's fine to say "powered by Claude" but not "Claude Code" (Anthropic's product)
@@ -584,10 +581,11 @@ mod tests {
 
     #[test]
     fn test_load_claude_md_files_uses_sandboxed_global_files() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::storage::lock_test_env();
         let prev_home = std::env::var_os("JCODE_HOME");
         let temp = tempfile::TempDir::new().unwrap();
         std::env::set_var("JCODE_HOME", temp.path());
+        std::fs::create_dir_all(temp.path().join("external")).unwrap();
 
         std::fs::write(
             temp.path().join("external/AGENTS.md"),

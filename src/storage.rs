@@ -2,6 +2,8 @@ use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// Platform-aware runtime directory for sockets and ephemeral state.
 ///
@@ -94,11 +96,21 @@ pub fn harden_secret_file_permissions(path: &Path) {
 }
 
 #[cfg(test)]
+pub(crate) fn test_env_lock() -> &'static Mutex<()> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(test)]
+pub(crate) fn lock_test_env() -> MutexGuard<'static, ()> {
+    test_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[cfg(unix)]
     #[test]
@@ -137,7 +149,7 @@ mod tests {
 
     #[test]
     fn user_home_path_uses_external_dir_under_jcode_home() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = lock_test_env();
         let prev_home = std::env::var_os("JCODE_HOME");
         let temp = tempfile::TempDir::new().expect("create temp dir");
         std::env::set_var("JCODE_HOME", temp.path());

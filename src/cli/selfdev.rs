@@ -352,16 +352,10 @@ mod tests {
     use super::*;
     use crate::{provider, session, storage, tool};
     use std::ffi::OsString;
-    use std::sync::{Arc, Mutex, OnceLock};
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    use std::sync::Arc;
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        let mutex = ENV_LOCK.get_or_init(|| Mutex::new(()));
-        match mutex.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        storage::lock_test_env()
     }
 
     struct TestEnvGuard {

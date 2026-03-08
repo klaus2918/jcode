@@ -16541,6 +16541,7 @@ mod tests {
 
     #[test]
     fn test_diagram_focus_toggle_and_pan() {
+        let _render_lock = scroll_render_test_lock();
         let mut app = create_test_app();
         app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
         crate::tui::mermaid::clear_active_diagrams();
@@ -16568,6 +16569,7 @@ mod tests {
 
     #[test]
     fn test_diagram_cycle_ctrl_arrows() {
+        let _render_lock = scroll_render_test_lock();
         let mut app = create_test_app();
         app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
         crate::tui::mermaid::clear_active_diagrams();
@@ -17896,6 +17898,15 @@ mod tests {
         )
     }
 
+    fn scroll_render_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Render app to TestBackend and return the buffer text.
     fn render_and_snap(
         app: &App,
@@ -17991,6 +18002,7 @@ mod tests {
 
     #[test]
     fn test_prompt_jump_ctrl_brackets() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
 
         // Seed max scroll estimates before key handling.
@@ -18029,6 +18041,7 @@ mod tests {
 
     #[test]
     fn test_prompt_jump_ctrl_digit_is_recency_rank_in_app() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
 
         // Seed max scroll estimates before key handling.
@@ -18046,6 +18059,7 @@ mod tests {
 
     #[test]
     fn test_scroll_cmd_j_k_fallback_in_app() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
 
         // Seed max scroll estimates before key handling.
@@ -18065,6 +18079,7 @@ mod tests {
 
     #[test]
     fn test_remote_prompt_jump_ctrl_brackets() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
@@ -18107,6 +18122,7 @@ mod tests {
 
     #[test]
     fn test_remote_prompt_jump_ctrl_digit_is_recency_rank() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
@@ -18128,6 +18144,7 @@ mod tests {
 
     #[test]
     fn test_remote_scroll_cmd_j_k_fallback() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
@@ -18152,6 +18169,7 @@ mod tests {
 
     #[test]
     fn test_scroll_ctrl_k_j_offset() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
 
         assert_eq!(app.scroll_offset, 0);
@@ -18199,6 +18217,7 @@ mod tests {
 
     #[test]
     fn test_scroll_offset_capped() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 4);
 
         let (up_code, up_mods) = scroll_up_key(&app);
@@ -18218,6 +18237,7 @@ mod tests {
 
     #[test]
     fn test_scroll_render_bottom() {
+        let _render_lock = scroll_render_test_lock();
         let (app, mut terminal) = create_scroll_test_app(80, 15, 1, 20);
         let text = render_and_snap(&app, &mut terminal);
 
@@ -18240,6 +18260,7 @@ mod tests {
 
     #[test]
     fn test_scroll_render_scrolled_up() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(80, 25, 1, 8);
         app.scroll_offset = 10;
         app.auto_scroll_paused = true;
@@ -18254,6 +18275,7 @@ mod tests {
 
     #[test]
     fn test_scroll_top_does_not_snap_to_bottom() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(80, 25, 1, 12);
 
         // Top position in paused mode (absolute offset from top).
@@ -18278,6 +18300,7 @@ mod tests {
 
     #[test]
     fn test_scroll_content_shifts() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(80, 25, 1, 12);
 
         // Render at bottom
@@ -18298,6 +18321,7 @@ mod tests {
 
     #[test]
     fn test_scroll_render_with_mermaid() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(100, 30, 2, 10);
 
         // Render at several positions without crashing
@@ -18334,6 +18358,7 @@ mod tests {
 
     #[test]
     fn test_scroll_visual_debug_frame() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 10);
 
         crate::tui::visual_debug::enable();
@@ -18367,6 +18392,7 @@ mod tests {
 
     #[test]
     fn test_scroll_key_then_render() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(80, 25, 1, 40);
 
         // Render at bottom first (populates LAST_MAX_SCROLL)
@@ -18391,6 +18417,7 @@ mod tests {
 
     #[test]
     fn test_scroll_round_trip() {
+        let _render_lock = scroll_render_test_lock();
         let (mut app, mut terminal) = create_scroll_test_app(80, 25, 1, 12);
 
         let (up_code, up_mods) = scroll_up_key(&app);
