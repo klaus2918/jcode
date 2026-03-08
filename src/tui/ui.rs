@@ -5709,8 +5709,7 @@ fn color_to_rgb(color: Color) -> Option<[u8; 3]> {
 /// this calculates the cell rect the image will occupy after aspect-ratio
 /// scaling and returns a `Rect` centered both horizontally and vertically.
 fn vcenter_fitted_image(area: Rect, img_w_px: u32, img_h_px: u32) -> Rect {
-    let font_size = super::mermaid::get_font_size();
-    vcenter_fitted_image_with_font(area, img_w_px, img_h_px, font_size)
+    vcenter_fitted_image_with_font(area, img_w_px, img_h_px, super::mermaid::get_font_size())
 }
 
 fn vcenter_fitted_image_with_font(
