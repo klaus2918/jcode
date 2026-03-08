@@ -45,6 +45,14 @@ pub(super) fn diff_change_counts_for_tool(tool: &ToolCall, content: &str) -> (us
         "edit" | "Edit" => {
             diff_counts_from_input_pair(&tool.input, "old_string", "new_string").unwrap_or((0, 0))
         }
+        "write" => {
+            let content = tool
+                .input
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            diff_counts_from_strings("", content)
+        }
         "multiedit" => diff_counts_from_multiedit(&tool.input).unwrap_or((0, 0)),
         "patch" | "Patch" => diff_counts_from_unified_patch_input(&tool.input).unwrap_or((0, 0)),
         "apply_patch" | "ApplyPatch" => {
@@ -120,15 +128,13 @@ fn diff_counts_from_apply_patch_input(input: &serde_json::Value) -> Option<(usiz
     let mut deletions = 0usize;
 
     for line in patch_text.lines() {
-        let trimmed = line.trim_start();
-
-        if trimmed.starts_with("*** ") || trimmed.starts_with("@@") {
+        if line.starts_with("***") || line.starts_with("@@") {
             continue;
         }
 
-        if trimmed.starts_with('+') {
+        if line.starts_with('+') {
             additions += 1;
-        } else if trimmed.starts_with('-') {
+        } else if line.starts_with('-') {
             deletions += 1;
         }
     }
@@ -218,14 +224,10 @@ fn generate_diff_lines_from_strings(old: &str, new: &str) -> Vec<ParsedDiffLine>
 
     let diff = similar::TextDiff::from_lines(old, new);
     let mut lines = Vec::new();
-    let mut line_num = 1usize;
 
     for change in diff.iter_all_changes() {
         let content = change.value().trim();
         if content.is_empty() {
-            if change.tag() != ChangeTag::Equal {
-                line_num += 1;
-            }
             continue;
         }
 
@@ -233,22 +235,18 @@ fn generate_diff_lines_from_strings(old: &str, new: &str) -> Vec<ParsedDiffLine>
             ChangeTag::Delete => {
                 lines.push(ParsedDiffLine {
                     kind: DiffLineKind::Del,
-                    prefix: format!("{}- ", line_num),
+                    prefix: format!("{}- ", change.old_index().unwrap_or(0) + 1),
                     content: content.to_string(),
                 });
-                line_num += 1;
             }
             ChangeTag::Insert => {
                 lines.push(ParsedDiffLine {
                     kind: DiffLineKind::Add,
-                    prefix: format!("{}+ ", line_num),
+                    prefix: format!("{}+ ", change.new_index().unwrap_or(0) + 1),
                     content: content.to_string(),
                 });
-                line_num += 1;
             }
-            ChangeTag::Equal => {
-                line_num += 1;
-            }
+            ChangeTag::Equal => {}
         }
     }
 
@@ -339,4 +337,52 @@ pub(super) fn tint_span_with_diff_color(span: Span<'static>, diff_color: Color) 
 
     let tinted = Color::Rgb(blend(sr, dr), blend(sg, dg), blend(sb, db));
     Span::styled(span.content, span.style.fg(tinted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        diff_change_counts_for_tool, diff_counts_from_apply_patch_input,
+        generate_diff_lines_from_strings, DiffLineKind,
+    };
+    use crate::message::ToolCall;
+    use serde_json::json;
+
+    #[test]
+    fn apply_patch_counts_ignore_context_lines_with_plus_or_minus_prefixes() {
+        let input = json!({
+            "patch_text": "*** Begin Patch\n*** Update File: demo.txt\n@@\n  +context line\n  -context line\n+added line\n-deleted line\n*** End Patch\n"
+        });
+
+        assert_eq!(diff_counts_from_apply_patch_input(&input), Some((1, 1)));
+    }
+
+    #[test]
+    fn write_tool_falls_back_to_content_diff_counts() {
+        let tool = ToolCall {
+            id: "tool_1".to_string(),
+            name: "write".to_string(),
+            input: json!({
+                "file_path": "demo.txt",
+                "content": "first line\nsecond line\n"
+            }),
+            intent: None,
+        };
+
+        assert_eq!(diff_change_counts_for_tool(&tool, ""), (2, 0));
+    }
+
+    #[test]
+    fn generated_diff_lines_use_old_and_new_line_numbers() {
+        let lines =
+            generate_diff_lines_from_strings("one\ntwo\nthree\n", "one\nthree\nfour\nfive\n");
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].kind, DiffLineKind::Del);
+        assert_eq!(lines[0].prefix, "2- ");
+        assert_eq!(lines[1].kind, DiffLineKind::Add);
+        assert_eq!(lines[1].prefix, "3+ ");
+        assert_eq!(lines[2].kind, DiffLineKind::Add);
+        assert_eq!(lines[2].prefix, "4+ ");
+    }
 }
