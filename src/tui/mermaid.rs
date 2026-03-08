@@ -201,7 +201,7 @@ struct ViewportState {
 }
 
 /// Resize mode for images - locked at creation time
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResizeMode {
     Fit,
     Scale,
@@ -279,7 +279,7 @@ impl SourceImageCache {
 }
 
 /// Track what was rendered last frame for skip-redundant optimization
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LastRenderState {
     area: Rect,
     crop_top: bool,
@@ -3500,6 +3500,127 @@ mod tests {
     fn test_skipped_renders_counter_is_non_negative() {
         let skipped = MERMAID_DEBUG.lock().unwrap().stats.skipped_renders;
         assert!(skipped < u64::MAX, "skipped_renders is a valid counter");
+    }
+
+    #[test]
+    fn test_skipped_renders_increments_on_identical_last_render_state() {
+        // Exercise the LAST_RENDER + skipped_renders counting logic directly.
+        // Simulate two consecutive renders with the same area & resize mode.
+        let hash: u64 = 0xDEAD_BEEF_1234;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        let state_key = LastRenderState {
+            area,
+            crop_top: false,
+            resize_mode: ResizeMode::Fit,
+        };
+
+        // Clear previous entry if any
+        if let Ok(mut map) = LAST_RENDER.lock() {
+            map.remove(&hash);
+        }
+
+        let before = MERMAID_DEBUG.lock().unwrap().stats.skipped_renders;
+
+        // First render - no prior entry, so no skip
+        {
+            let last_same = LAST_RENDER
+                .lock()
+                .ok()
+                .and_then(|mut map| {
+                    let prev = map.get(&hash).cloned();
+                    map.insert(hash, state_key.clone());
+                    prev
+                })
+                .map(|prev| prev == state_key)
+                .unwrap_or(false);
+            if last_same {
+                if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+                    dbg.stats.skipped_renders += 1;
+                }
+            }
+        }
+
+        let after_first = MERMAID_DEBUG.lock().unwrap().stats.skipped_renders;
+        assert_eq!(
+            after_first, before,
+            "first render should not increment skipped_renders"
+        );
+
+        // Second render - same state_key → should increment
+        {
+            let last_same = LAST_RENDER
+                .lock()
+                .ok()
+                .and_then(|mut map| {
+                    let prev = map.get(&hash).cloned();
+                    map.insert(hash, state_key.clone());
+                    prev
+                })
+                .map(|prev| prev == state_key)
+                .unwrap_or(false);
+            if last_same {
+                if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+                    dbg.stats.skipped_renders += 1;
+                }
+            }
+        }
+
+        let after_second = MERMAID_DEBUG.lock().unwrap().stats.skipped_renders;
+        assert_eq!(
+            after_second,
+            before + 1,
+            "second identical render should increment skipped_renders by 1"
+        );
+    }
+
+    #[test]
+    fn test_last_render_state_equality_requires_all_fields() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        let s1 = LastRenderState {
+            area,
+            crop_top: false,
+            resize_mode: ResizeMode::Fit,
+        };
+        let s2 = LastRenderState {
+            area,
+            crop_top: false,
+            resize_mode: ResizeMode::Fit,
+        };
+        let s3 = LastRenderState {
+            area,
+            crop_top: true,
+            resize_mode: ResizeMode::Fit,
+        };
+        let s4 = LastRenderState {
+            area,
+            crop_top: false,
+            resize_mode: ResizeMode::Crop,
+        };
+        let s5 = LastRenderState {
+            area: Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 24,
+            },
+            crop_top: false,
+            resize_mode: ResizeMode::Fit,
+        };
+
+        assert_eq!(s1, s2, "identical states should be equal");
+        assert_ne!(s1, s3, "different crop_top should not be equal");
+        assert_ne!(s1, s4, "different resize_mode should not be equal");
+        assert_ne!(s1, s5, "different area should not be equal");
     }
 
     #[test]
