@@ -11,6 +11,7 @@ mod comm_session;
 mod comm_sync;
 mod debug;
 mod debug_jobs;
+mod debug_server_state;
 mod debug_testers;
 mod headless;
 mod provider_control;
