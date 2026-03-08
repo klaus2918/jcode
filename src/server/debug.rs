@@ -342,6 +342,7 @@ pub(super) async fn handle_debug_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::debug_jobs::DebugJobStatus;
     use std::ffi::OsString;
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
@@ -476,9 +477,9 @@ mod tests {
 
 #[cfg(test)]
 mod debug_execution_tests {
-    use super::debug_command_exec::{debug_message_timeout_secs, resolve_debug_session};
     use crate::agent::Agent;
     use crate::provider;
+    use crate::server::debug_command_exec::{debug_message_timeout_secs, resolve_debug_session};
     use crate::tool::Registry;
     use std::collections::HashMap;
     use std::ffi::OsString;
