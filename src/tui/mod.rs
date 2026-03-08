@@ -180,6 +180,23 @@ pub trait TuiState {
     fn suggestion_prompts(&self) -> Vec<(String, String)>;
     /// Cache TTL status - shows whether the prompt cache is warm/cold based on idle time
     fn cache_ttl_status(&self) -> Option<CacheTtlInfo>;
+    /// Whether the notification line has content to show
+    fn has_notification(&self) -> bool {
+        if self.status_notice().is_some() {
+            return true;
+        }
+        if self.has_stashed_input() {
+            return true;
+        }
+        if !self.is_processing() {
+            if let Some(cache_info) = self.cache_ttl_status() {
+                if cache_info.is_cold || cache_info.remaining_secs <= 60 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 /// Cache TTL information for the current provider
@@ -284,7 +301,7 @@ pub(crate) fn idle_donut_active(state: &dyn TuiState) -> bool {
 
 pub(crate) fn should_animate(state: &dyn TuiState) -> bool {
     state.is_processing()
-        || state.status_notice().is_some()
+        || state.has_notification()
         || state.rate_limit_remaining().is_some()
         || startup_animation_active(state)
         || idle_donut_active(state)
@@ -310,6 +327,7 @@ pub(crate) fn redraw_interval(state: &dyn TuiState) -> Duration {
     if state.is_processing()
         || !state.streaming_text().is_empty()
         || state.status_notice().is_some()
+        || state.has_notification()
         || state.rate_limit_remaining().is_some()
     {
         return match tier {

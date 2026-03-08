@@ -360,6 +360,32 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         Line::from("")
     };
 
+    crate::memory::check_staleness();
+
+    let aligned_line = if app.centered_mode() {
+        line.alignment(Alignment::Center)
+    } else {
+        line
+    };
+    frame.render_widget(Paragraph::new(aligned_line), area);
+}
+
+/// Build the spans for the notification line. Returns empty vec when there is nothing to show.
+/// This is the single source of truth for notification content - both the layout height
+/// calculation (via `has_notification`) and the renderer call this.
+pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    let push_sep = |spans: &mut Vec<Span<'static>>| {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" · ", Style::default().fg(dim_color())));
+        }
+    };
+
+    if let Some(notice) = app.status_notice() {
+        spans.push(Span::styled(notice, Style::default().fg(accent_color())));
+    }
+
     if !app.is_processing() {
         if let Some(cache_info) = app.cache_ttl_status() {
             if cache_info.is_cold {
@@ -375,11 +401,8 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                         }
                     })
                     .unwrap_or_default();
-                if !line.spans.is_empty() {
-                    line.spans
-                        .push(Span::styled(" · ", Style::default().fg(dim_color())));
-                }
-                line.spans.push(Span::styled(
+                push_sep(&mut spans);
+                spans.push(Span::styled(
                     format!("🧊 cache cold{}", tokens_str),
                     Style::default().fg(rgb(140, 180, 255)),
                 ));
@@ -394,11 +417,8 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                         }
                     })
                     .unwrap_or_default();
-                if !line.spans.is_empty() {
-                    line.spans
-                        .push(Span::styled(" · ", Style::default().fg(dim_color())));
-                }
-                line.spans.push(Span::styled(
+                push_sep(&mut spans);
+                spans.push(Span::styled(
                     format!("⏳ cache {}s{}", cache_info.remaining_secs, tokens_str),
                     Style::default().fg(rgb(255, 193, 7)),
                 ));
@@ -406,28 +426,23 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         }
     }
 
-    if let Some(notice) = app.status_notice() {
-        if !line.spans.is_empty() {
-            line.spans
-                .push(Span::styled(" · ", Style::default().fg(dim_color())));
-        }
-        line.spans
-            .push(Span::styled(notice, Style::default().fg(accent_color())));
-    }
-
     if app.has_stashed_input() {
-        if !line.spans.is_empty() {
-            line.spans
-                .push(Span::styled(" · ", Style::default().fg(dim_color())));
-        }
-        line.spans.push(Span::styled(
+        push_sep(&mut spans);
+        spans.push(Span::styled(
             "📋 stash",
             Style::default().fg(rgb(255, 193, 7)),
         ));
     }
 
-    crate::memory::check_staleness();
+    spans
+}
 
+pub(super) fn draw_notification(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
+    let spans = build_notification_spans(app);
+    if spans.is_empty() {
+        return;
+    }
+    let line = Line::from(spans);
     let aligned_line = if app.centered_mode() {
         line.alignment(Alignment::Center)
     } else {
