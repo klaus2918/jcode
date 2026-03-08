@@ -1,5 +1,5 @@
 use super::{App, SendAction};
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 
 pub(super) struct PreparedInput {
     pub raw_input: String,
@@ -259,7 +259,7 @@ pub(super) fn handle_alt_key(app: &mut App, code: KeyCode) -> bool {
 pub(super) fn handle_navigation_shortcuts(
     app: &mut App,
     code: KeyCode,
-    modifiers: crossterm::event::KeyModifiers,
+    modifiers: KeyModifiers,
 ) -> bool {
     if let Some(amount) = app.scroll_keys.scroll_amount(code.clone(), modifiers) {
         if amount < 0 {
@@ -300,6 +300,54 @@ pub(super) fn handle_navigation_shortcuts(
     }
 
     false
+}
+
+pub(super) fn handle_pre_control_shortcuts(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('m')) {
+        app.toggle_diagram_pane();
+        return true;
+    }
+    if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('t')) {
+        app.toggle_diagram_pane_position();
+        return true;
+    }
+    if let Some(direction) = app.model_switch_keys.direction_for(code.clone(), modifiers) {
+        app.cycle_model(direction);
+        return true;
+    }
+    if let Some(direction) = app
+        .effort_switch_keys
+        .direction_for(code.clone(), modifiers)
+    {
+        app.cycle_effort(direction);
+        return true;
+    }
+    if app
+        .centered_toggle_keys
+        .toggle
+        .matches(code.clone(), modifiers)
+    {
+        app.toggle_centered_mode();
+        return true;
+    }
+
+    app.normalize_diagram_state();
+    let diagram_available = app.diagram_available();
+    if app.handle_diagram_focus_key(code.clone(), modifiers, diagram_available) {
+        return true;
+    }
+    if app.handle_diff_pane_focus_key(code.clone(), modifiers) {
+        return true;
+    }
+    if modifiers.contains(KeyModifiers::ALT) && handle_alt_key(app, code.clone()) {
+        return true;
+    }
+
+    handle_navigation_shortcuts(app, code, modifiers)
 }
 
 pub(super) fn handle_enter(app: &mut App) -> bool {

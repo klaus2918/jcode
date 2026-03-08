@@ -4134,51 +4134,12 @@ impl App {
             return Ok(());
         }
 
-        if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('m')) {
-            self.toggle_diagram_pane();
-            return Ok(());
-        }
-        if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('t')) {
-            self.toggle_diagram_pane_position();
-            return Ok(());
-        }
-        if let Some(direction) = self
-            .model_switch_keys
-            .direction_for(code.clone(), modifiers)
-        {
-            self.cycle_model(direction);
-            return Ok(());
-        }
-        if let Some(direction) = self
-            .effort_switch_keys
-            .direction_for(code.clone(), modifiers)
-        {
-            self.cycle_effort(direction);
-            return Ok(());
-        }
-        if self
-            .centered_toggle_keys
-            .toggle
-            .matches(code.clone(), modifiers)
-        {
-            self.toggle_centered_mode();
-            return Ok(());
-        }
-        self.normalize_diagram_state();
-        let diagram_available = self.diagram_available();
-        if self.handle_diagram_focus_key(code.clone(), modifiers, diagram_available) {
-            return Ok(());
-        }
-        if self.handle_diff_pane_focus_key(code.clone(), modifiers) {
-            return Ok(());
-        }
-        if modifiers.contains(KeyModifiers::ALT) && input::handle_alt_key(self, code.clone()) {
+        if input::handle_pre_control_shortcuts(self, code.clone(), modifiers) {
             return Ok(());
         }
 
-        if input::handle_navigation_shortcuts(self, code.clone(), modifiers) {
-            return Ok(());
-        }
+        self.normalize_diagram_state();
+        let diagram_available = self.diagram_available();
 
         // Handle ctrl combos regardless of processing state
         if modifiers.contains(KeyModifiers::CONTROL) {
