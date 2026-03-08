@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod client_comm;
 mod client_lifecycle;
 mod debug;
 mod headless;

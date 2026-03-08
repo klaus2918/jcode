@@ -1,18 +1,22 @@
+use super::client_comm::{
+    handle_comm_list, handle_comm_read, handle_comm_share, handle_comm_subscribe_channel,
+    handle_comm_unsubscribe_channel,
+};
 use super::reload::{do_server_reload_with_progress, normalize_model_arg, provider_cli_arg};
 use super::{
     broadcast_swarm_plan, broadcast_swarm_status, create_headless_session, is_jcode_repo_or_parent,
     is_selfdev_env, record_swarm_event, record_swarm_event_for_session, remove_plan_participant,
     remove_session_from_swarm, rename_plan_participant, server_has_newer_binary, socket_path,
     summarize_plan_items, swarm_id_for_dir, truncate_detail, update_member_status,
-    ClientConnectionInfo, ClientDebugState, ContextEntry, FileAccess, SharedContext, SwarmEvent,
-    SwarmEventType, SwarmMember, VersionedPlan,
+    ClientConnectionInfo, ClientDebugState, FileAccess, SharedContext, SwarmEvent, SwarmEventType,
+    SwarmMember, VersionedPlan,
 };
 use crate::agent::{Agent, StreamError};
 use crate::bus::{Bus, BusEvent};
 use crate::id;
 use crate::plan::PlanItem;
 use crate::protocol::{
-    decode_request, encode_event, AgentInfo, FeatureToggle, NotificationType, Request, ServerEvent,
+    decode_request, encode_event, FeatureToggle, NotificationType, Request, ServerEvent,
 };
 use crate::provider::Provider;
 use crate::session::Session;
@@ -1777,89 +1781,20 @@ pub(super) async fn handle_client(
                 key,
                 value,
             } => {
-                // Find the swarm id for this session
-                let swarm_id = {
-                    let members = swarm_members.read().await;
-                    members
-                        .get(&req_session_id)
-                        .and_then(|m| m.swarm_id.clone())
-                };
-
-                if let Some(swarm_id) = swarm_id {
-                    let friendly_name = {
-                        let members = swarm_members.read().await;
-                        members
-                            .get(&req_session_id)
-                            .and_then(|m| m.friendly_name.clone())
-                    };
-
-                    // Store the shared context
-                    {
-                        let mut ctx = shared_context.write().await;
-                        let swarm_ctx = ctx.entry(swarm_id.clone()).or_insert_with(HashMap::new);
-                        let now = Instant::now();
-                        // Preserve created_at if updating existing context
-                        let created_at = swarm_ctx.get(&key).map(|c| c.created_at).unwrap_or(now);
-                        swarm_ctx.insert(
-                            key.clone(),
-                            SharedContext {
-                                key: key.clone(),
-                                value: value.clone(),
-                                from_session: req_session_id.clone(),
-                                from_name: friendly_name.clone(),
-                                created_at,
-                                updated_at: now,
-                            },
-                        );
-                    }
-
-                    // Notify other swarm members
-                    let swarm_session_ids: Vec<String> = {
-                        let swarms = swarms_by_id.read().await;
-                        swarms
-                            .get(&swarm_id)
-                            .map(|s| s.iter().cloned().collect())
-                            .unwrap_or_default()
-                    };
-
-                    let members = swarm_members.read().await;
-                    for sid in &swarm_session_ids {
-                        if sid != &req_session_id {
-                            if let Some(member) = members.get(sid) {
-                                let _ = member.event_tx.send(ServerEvent::Notification {
-                                    from_session: req_session_id.clone(),
-                                    from_name: friendly_name.clone(),
-                                    notification_type: NotificationType::SharedContext {
-                                        key: key.clone(),
-                                        value: value.clone(),
-                                    },
-                                    message: format!("Shared context: {} = {}", key, value),
-                                });
-                            }
-                        }
-                    }
-                    record_swarm_event(
-                        &event_history,
-                        &event_counter,
-                        &swarm_event_tx,
-                        req_session_id.clone(),
-                        friendly_name.clone(),
-                        Some(swarm_id.clone()),
-                        SwarmEventType::ContextUpdate {
-                            swarm_id: swarm_id.clone(),
-                            key: key.clone(),
-                        },
-                    )
-                    .await;
-                    let _ = client_event_tx.send(ServerEvent::Done { id });
-                } else {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: "Not in a swarm. Use a git repository to enable swarm features."
-                            .to_string(),
-                        retry_after_secs: None,
-                    });
-                }
+                handle_comm_share(
+                    id,
+                    req_session_id,
+                    key,
+                    value,
+                    &client_event_tx,
+                    &swarm_members,
+                    &swarms_by_id,
+                    &shared_context,
+                    &event_history,
+                    &event_counter,
+                    &swarm_event_tx,
+                )
+                .await;
             }
 
             Request::CommRead {
@@ -1867,51 +1802,15 @@ pub(super) async fn handle_client(
                 session_id: req_session_id,
                 key,
             } => {
-                // Find the swarm id for this session
-                let swarm_id = {
-                    let members = swarm_members.read().await;
-                    members
-                        .get(&req_session_id)
-                        .and_then(|m| m.swarm_id.clone())
-                };
-
-                let entries = if let Some(swarm_id) = swarm_id {
-                    let ctx = shared_context.read().await;
-                    if let Some(swarm_ctx) = ctx.get(&swarm_id) {
-                        let entries: Vec<ContextEntry> = if let Some(k) = key {
-                            // Get specific key
-                            swarm_ctx
-                                .get(&k)
-                                .map(|c| {
-                                    vec![ContextEntry {
-                                        key: c.key.clone(),
-                                        value: c.value.clone(),
-                                        from_session: c.from_session.clone(),
-                                        from_name: c.from_name.clone(),
-                                    }]
-                                })
-                                .unwrap_or_default()
-                        } else {
-                            // Get all
-                            swarm_ctx
-                                .values()
-                                .map(|c| ContextEntry {
-                                    key: c.key.clone(),
-                                    value: c.value.clone(),
-                                    from_session: c.from_session.clone(),
-                                    from_name: c.from_name.clone(),
-                                })
-                                .collect()
-                        };
-                        entries
-                    } else {
-                        vec![]
-                    }
-                } else {
-                    vec![]
-                };
-
-                let _ = client_event_tx.send(ServerEvent::CommContext { id, entries });
+                handle_comm_read(
+                    id,
+                    req_session_id,
+                    key,
+                    &client_event_tx,
+                    &swarm_members,
+                    &shared_context,
+                )
+                .await;
             }
 
             Request::CommMessage {
@@ -2060,64 +1959,15 @@ pub(super) async fn handle_client(
                 id,
                 session_id: req_session_id,
             } => {
-                // Find the swarm id for this session
-                let swarm_id = {
-                    let members = swarm_members.read().await;
-                    members
-                        .get(&req_session_id)
-                        .and_then(|m| m.swarm_id.clone())
-                };
-
-                if let Some(swarm_id) = swarm_id {
-                    let swarm_session_ids: Vec<String> = {
-                        let swarms = swarms_by_id.read().await;
-                        swarms
-                            .get(&swarm_id)
-                            .map(|s| s.iter().cloned().collect())
-                            .unwrap_or_default()
-                    };
-
-                    let members = swarm_members.read().await;
-                    let touches = file_touches.read().await;
-
-                    let member_list: Vec<AgentInfo> = swarm_session_ids
-                        .iter()
-                        .filter_map(|sid| {
-                            members.get(sid).map(|m| {
-                                // Get files this member has touched
-                                let files: Vec<String> = touches
-                                    .iter()
-                                    .filter_map(|(path, accesses)| {
-                                        if accesses.iter().any(|a| &a.session_id == sid) {
-                                            Some(path.display().to_string())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect();
-
-                                AgentInfo {
-                                    session_id: sid.clone(),
-                                    friendly_name: m.friendly_name.clone(),
-                                    files_touched: files,
-                                    role: Some(m.role.clone()),
-                                }
-                            })
-                        })
-                        .collect();
-
-                    let _ = client_event_tx.send(ServerEvent::CommMembers {
-                        id,
-                        members: member_list,
-                    });
-                } else {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: "Not in a swarm. Use a git repository to enable swarm features."
-                            .to_string(),
-                        retry_after_secs: None,
-                    });
-                }
+                handle_comm_list(
+                    id,
+                    req_session_id,
+                    &client_event_tx,
+                    &swarm_members,
+                    &swarms_by_id,
+                    &file_touches,
+                )
+                .await;
             }
 
             Request::CommProposePlan {
@@ -3499,41 +3349,18 @@ pub(super) async fn handle_client(
                 session_id: req_session_id,
                 channel,
             } => {
-                let swarm_id = {
-                    let members = swarm_members.read().await;
-                    members
-                        .get(&req_session_id)
-                        .and_then(|m| m.swarm_id.clone())
-                };
-
-                if let Some(swarm_id) = swarm_id {
-                    let mut subs = channel_subscriptions.write().await;
-                    subs.entry(swarm_id.clone())
-                        .or_default()
-                        .entry(channel.clone())
-                        .or_default()
-                        .insert(req_session_id.clone());
-                    record_swarm_event(
-                        &event_history,
-                        &event_counter,
-                        &swarm_event_tx,
-                        req_session_id.clone(),
-                        None,
-                        Some(swarm_id.clone()),
-                        SwarmEventType::Notification {
-                            notification_type: "channel_subscribe".to_string(),
-                            message: channel.clone(),
-                        },
-                    )
-                    .await;
-                    let _ = client_event_tx.send(ServerEvent::Done { id });
-                } else {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: "Not in a swarm.".to_string(),
-                        retry_after_secs: None,
-                    });
-                }
+                handle_comm_subscribe_channel(
+                    id,
+                    req_session_id,
+                    channel,
+                    &client_event_tx,
+                    &swarm_members,
+                    &channel_subscriptions,
+                    &event_history,
+                    &event_counter,
+                    &swarm_event_tx,
+                )
+                .await;
             }
 
             Request::CommUnsubscribeChannel {
@@ -3541,44 +3368,18 @@ pub(super) async fn handle_client(
                 session_id: req_session_id,
                 channel,
             } => {
-                let swarm_id = {
-                    let members = swarm_members.read().await;
-                    members
-                        .get(&req_session_id)
-                        .and_then(|m| m.swarm_id.clone())
-                };
-
-                if let Some(swarm_id) = swarm_id {
-                    let mut subs = channel_subscriptions.write().await;
-                    if let Some(swarm_subs) = subs.get_mut(&swarm_id) {
-                        if let Some(channel_subs) = swarm_subs.get_mut(&channel) {
-                            channel_subs.remove(&req_session_id);
-                            if channel_subs.is_empty() {
-                                swarm_subs.remove(&channel);
-                            }
-                        }
-                    }
-                    record_swarm_event(
-                        &event_history,
-                        &event_counter,
-                        &swarm_event_tx,
-                        req_session_id.clone(),
-                        None,
-                        Some(swarm_id.clone()),
-                        SwarmEventType::Notification {
-                            notification_type: "channel_unsubscribe".to_string(),
-                            message: channel.clone(),
-                        },
-                    )
-                    .await;
-                    let _ = client_event_tx.send(ServerEvent::Done { id });
-                } else {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: "Not in a swarm.".to_string(),
-                        retry_after_secs: None,
-                    });
-                }
+                handle_comm_unsubscribe_channel(
+                    id,
+                    req_session_id,
+                    channel,
+                    &client_event_tx,
+                    &swarm_members,
+                    &channel_subscriptions,
+                    &event_history,
+                    &event_counter,
+                    &swarm_event_tx,
+                )
+                .await;
             }
 
             Request::CommAwaitMembers {
