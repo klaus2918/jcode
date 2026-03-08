@@ -14,6 +14,7 @@ mod debug_ambient;
 mod debug_client_commands;
 mod debug_command_exec;
 mod debug_events;
+mod debug_help;
 mod debug_jobs;
 mod debug_server_state;
 mod debug_session_admin;
