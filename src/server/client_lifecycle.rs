@@ -27,7 +27,7 @@ use super::{
     truncate_detail, update_member_status, ClientConnectionInfo, ClientDebugState, FileAccess,
     SharedContext, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
 };
-use crate::agent::{Agent, StreamError};
+use crate::agent::{Agent, InterruptSignal, SoftInterruptQueue, StreamError};
 use crate::bus::{Bus, BusEvent};
 use crate::id;
 use crate::protocol::{decode_request, encode_event, NotificationType, Request, ServerEvent};
@@ -479,135 +479,43 @@ pub(super) async fn handle_client(
                 content,
                 images,
             } => {
-                // Check if this client is already processing
-                if client_is_processing {
-                    let _ = client_event_tx.send(ServerEvent::Error {
-                        id,
-                        message: "Already processing a message".to_string(),
-                        retry_after_secs: None,
-                    });
-                    continue;
-                }
-
-                // Set processing flag for this client
-                client_is_processing = true;
-                processing_message_id = Some(id);
-                processing_session_id = Some(client_session_id.clone());
-
-                update_member_status(
+                start_processing_message(
+                    id,
+                    content,
+                    images,
                     &client_session_id,
-                    "running",
-                    Some(truncate_detail(&content, 120)),
+                    &mut client_is_processing,
+                    &mut processing_message_id,
+                    &mut processing_session_id,
+                    &mut processing_task,
+                    &agent,
+                    &client_event_tx,
+                    &processing_done_tx,
                     &swarm_members,
                     &swarms_by_id,
-                    Some(&event_history),
-                    Some(&event_counter),
-                    Some(&swarm_event_tx),
+                    &event_history,
+                    &event_counter,
+                    &swarm_event_tx,
                 )
                 .await;
-
-                let agent = Arc::clone(&agent);
-                let tx = client_event_tx.clone();
-                let done_tx = processing_done_tx.clone();
-                crate::logging::info(&format!("Processing message id={} spawning task", id));
-                processing_task = Some(tokio::spawn(async move {
-                    let result = match std::panic::AssertUnwindSafe(process_message_streaming_mpsc(
-                        agent, &content, images, tx,
-                    ))
-                    .catch_unwind()
-                    .await
-                    {
-                        Ok(r) => r,
-                        Err(panic_payload) => {
-                            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                                s.to_string()
-                            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                                s.clone()
-                            } else {
-                                "unknown panic".to_string()
-                            };
-                            crate::logging::error(&format!(
-                                "Processing task PANICKED for message id={}: {}",
-                                id, msg
-                            ));
-                            Err(anyhow::anyhow!("Processing task panicked: {}", msg))
-                        }
-                    };
-                    match &result {
-                        Ok(()) => crate::logging::info(&format!(
-                            "Processing task completed OK for message id={}",
-                            id
-                        )),
-                        Err(e) => crate::logging::warn(&format!(
-                            "Processing task completed with error for message id={}: {}",
-                            id, e
-                        )),
-                    }
-                    let _ = done_tx.send((id, result));
-                }));
             }
 
             Request::Cancel { id } => {
-                let _ = id; // cancel request id (not the message id)
-                if let Some(mut handle) = processing_task.take() {
-                    if handle.is_finished() {
-                        processing_task = Some(handle);
-                        continue;
-                    }
-                    // Signal graceful shutdown so the agent checkpoints partial content
-                    // before exiting, then wait briefly for it to finish.
-                    cancel_signal.fire();
-                    match tokio::time::timeout(std::time::Duration::from_millis(500), &mut handle)
-                        .await
-                    {
-                        Ok(_) => {
-                            // Task exited gracefully within timeout
-                        }
-                        Err(_) => {
-                            // Timed out waiting for graceful exit, force abort and wait
-                            // for the task to actually release resources (e.g. agent mutex)
-                            handle.abort();
-                            match tokio::time::timeout(
-                                std::time::Duration::from_millis(2000),
-                                handle,
-                            )
-                            .await
-                            {
-                                Ok(_) => {
-                                    crate::logging::info(
-                                        "Aborted processing task released resources",
-                                    );
-                                }
-                                Err(_) => {
-                                    crate::logging::warn(
-                                        "Aborted processing task did not release resources within 2s",
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    // Reset the signal for future turns
-                    cancel_signal.reset();
-                    processing_task = None;
-                    client_is_processing = false;
-                    if let Some(session_id) = processing_session_id.take() {
-                        update_member_status(
-                            &session_id,
-                            "stopped",
-                            Some("cancelled".to_string()),
-                            &swarm_members,
-                            &swarms_by_id,
-                            Some(&event_history),
-                            Some(&event_counter),
-                            Some(&swarm_event_tx),
-                        )
-                        .await;
-                    }
-                    if let Some(message_id) = processing_message_id.take() {
-                        let _ = client_event_tx.send(ServerEvent::Interrupted);
-                        let _ = client_event_tx.send(ServerEvent::Done { id: message_id });
-                    }
-                }
+                let _ = id;
+                cancel_processing_message(
+                    &mut client_is_processing,
+                    &mut processing_message_id,
+                    &mut processing_session_id,
+                    &mut processing_task,
+                    &cancel_signal,
+                    &client_event_tx,
+                    &swarm_members,
+                    &swarms_by_id,
+                    &event_history,
+                    &event_counter,
+                    &swarm_event_tx,
+                )
+                .await;
             }
 
             Request::SoftInterrupt {
@@ -615,26 +523,15 @@ pub(super) async fn handle_client(
                 content,
                 urgent,
             } => {
-                // Queue a soft interrupt message to be injected at the next safe point
-                // Uses the pre-extracted queue handle so we don't need the agent lock
-                if let Ok(mut q) = soft_interrupt_queue.lock() {
-                    q.push(crate::agent::SoftInterruptMessage { content, urgent });
-                }
-                let _ = client_event_tx.send(ServerEvent::Ack { id });
+                queue_soft_interrupt(id, content, urgent, &soft_interrupt_queue, &client_event_tx);
             }
 
             Request::CancelSoftInterrupts { id } => {
-                // Cancel all pending soft interrupts (drain the queue)
-                if let Ok(mut q) = soft_interrupt_queue.lock() {
-                    q.clear();
-                }
-                let _ = client_event_tx.send(ServerEvent::Ack { id });
+                clear_soft_interrupts(id, &soft_interrupt_queue, &client_event_tx);
             }
 
             Request::BackgroundTool { id } => {
-                // Signal the agent to move the currently executing tool to background
-                background_tool_signal.fire();
-                let _ = client_event_tx.send(ServerEvent::Ack { id });
+                move_tool_to_background(id, &background_tool_signal, &client_event_tx);
             }
 
             Request::Clear { id } => {
@@ -1334,6 +1231,179 @@ pub(super) async fn handle_client(
 
     event_handle.abort();
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_processing_message(
+    id: u64,
+    content: String,
+    images: Vec<(String, String)>,
+    client_session_id: &str,
+    client_is_processing: &mut bool,
+    processing_message_id: &mut Option<u64>,
+    processing_session_id: &mut Option<String>,
+    processing_task: &mut Option<tokio::task::JoinHandle<()>>,
+    agent: &Arc<Mutex<Agent>>,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+    processing_done_tx: &mpsc::UnboundedSender<(u64, Result<()>)>,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_counter: &Arc<std::sync::atomic::AtomicU64>,
+    swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+) {
+    if *client_is_processing {
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: "Already processing a message".to_string(),
+            retry_after_secs: None,
+        });
+        return;
+    }
+
+    *client_is_processing = true;
+    *processing_message_id = Some(id);
+    *processing_session_id = Some(client_session_id.to_string());
+
+    update_member_status(
+        client_session_id,
+        "running",
+        Some(truncate_detail(&content, 120)),
+        swarm_members,
+        swarms_by_id,
+        Some(event_history),
+        Some(event_counter),
+        Some(swarm_event_tx),
+    )
+    .await;
+
+    let agent = Arc::clone(agent);
+    let tx = client_event_tx.clone();
+    let done_tx = processing_done_tx.clone();
+    crate::logging::info(&format!("Processing message id={} spawning task", id));
+    *processing_task = Some(tokio::spawn(async move {
+        let result = match std::panic::AssertUnwindSafe(process_message_streaming_mpsc(
+            agent, &content, images, tx,
+        ))
+        .catch_unwind()
+        .await
+        {
+            Ok(result) => result,
+            Err(panic_payload) => {
+                let msg = if let Some(text) = panic_payload.downcast_ref::<&str>() {
+                    text.to_string()
+                } else if let Some(text) = panic_payload.downcast_ref::<String>() {
+                    text.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                crate::logging::error(&format!(
+                    "Processing task PANICKED for message id={}: {}",
+                    id, msg
+                ));
+                Err(anyhow::anyhow!("Processing task panicked: {}", msg))
+            }
+        };
+        match &result {
+            Ok(()) => crate::logging::info(&format!(
+                "Processing task completed OK for message id={}",
+                id
+            )),
+            Err(error) => crate::logging::warn(&format!(
+                "Processing task completed with error for message id={}: {}",
+                id, error
+            )),
+        }
+        let _ = done_tx.send((id, result));
+    }));
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cancel_processing_message(
+    client_is_processing: &mut bool,
+    processing_message_id: &mut Option<u64>,
+    processing_session_id: &mut Option<String>,
+    processing_task: &mut Option<tokio::task::JoinHandle<()>>,
+    cancel_signal: &InterruptSignal,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_counter: &Arc<std::sync::atomic::AtomicU64>,
+    swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+) {
+    if let Some(mut handle) = processing_task.take() {
+        if handle.is_finished() {
+            *processing_task = Some(handle);
+            return;
+        }
+        cancel_signal.fire();
+        match tokio::time::timeout(std::time::Duration::from_millis(500), &mut handle).await {
+            Ok(_) => {}
+            Err(_) => {
+                handle.abort();
+                match tokio::time::timeout(std::time::Duration::from_millis(2000), handle).await {
+                    Ok(_) => crate::logging::info("Aborted processing task released resources"),
+                    Err(_) => crate::logging::warn(
+                        "Aborted processing task did not release resources within 2s",
+                    ),
+                }
+            }
+        }
+        cancel_signal.reset();
+        *processing_task = None;
+        *client_is_processing = false;
+        if let Some(session_id) = processing_session_id.take() {
+            update_member_status(
+                &session_id,
+                "stopped",
+                Some("cancelled".to_string()),
+                swarm_members,
+                swarms_by_id,
+                Some(event_history),
+                Some(event_counter),
+                Some(swarm_event_tx),
+            )
+            .await;
+        }
+        if let Some(message_id) = processing_message_id.take() {
+            let _ = client_event_tx.send(ServerEvent::Interrupted);
+            let _ = client_event_tx.send(ServerEvent::Done { id: message_id });
+        }
+    }
+}
+
+fn queue_soft_interrupt(
+    id: u64,
+    content: String,
+    urgent: bool,
+    soft_interrupt_queue: &SoftInterruptQueue,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    if let Ok(mut queue) = soft_interrupt_queue.lock() {
+        queue.push(crate::agent::SoftInterruptMessage { content, urgent });
+    }
+    let _ = client_event_tx.send(ServerEvent::Ack { id });
+}
+
+fn clear_soft_interrupts(
+    id: u64,
+    soft_interrupt_queue: &SoftInterruptQueue,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    if let Ok(mut queue) = soft_interrupt_queue.lock() {
+        queue.clear();
+    }
+    let _ = client_event_tx.send(ServerEvent::Ack { id });
+}
+
+fn move_tool_to_background(
+    id: u64,
+    background_tool_signal: &InterruptSignal,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    background_tool_signal.fire();
+    let _ = client_event_tx.send(ServerEvent::Ack { id });
 }
 
 /// Process a message and stream events (broadcast channel - deprecated)
