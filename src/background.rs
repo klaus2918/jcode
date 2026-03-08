@@ -115,6 +115,22 @@ impl BackgroundTaskManager {
         F: FnOnce(PathBuf) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<TaskResult>> + Send,
     {
+        self.spawn_with_notify(tool_name, session_id, true, execute_fn)
+            .await
+    }
+
+    /// Spawn a background task with explicit notify flag
+    pub async fn spawn_with_notify<F, Fut>(
+        &self,
+        tool_name: &str,
+        session_id: &str,
+        notify: bool,
+        execute_fn: F,
+    ) -> BackgroundTaskInfo
+    where
+        F: FnOnce(PathBuf) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<TaskResult>> + Send,
+    {
         let task_id = Self::generate_task_id();
         let output_path = self.output_dir.join(format!("{}.output", task_id));
         let status_path = self.output_dir.join(format!("{}.status.json", task_id));
@@ -141,6 +157,7 @@ impl BackgroundTaskManager {
         let tool_name_owned = tool_name.to_string();
         let session_id_owned = session_id.to_string();
         let started_at = Instant::now();
+        let notify_flag = notify;
 
         // Spawn the background task
         let handle = tokio::spawn(async move {
@@ -200,6 +217,7 @@ impl BackgroundTaskManager {
                 output_preview,
                 output_file: output_path_clone,
                 duration_secs,
+                notify: notify_flag,
             }));
 
             result
@@ -322,6 +340,7 @@ impl BackgroundTaskManager {
                 output_preview,
                 output_file: output_path_clone,
                 duration_secs,
+                notify: true,
             }));
 
             Ok(TaskResult { exit_code, error })

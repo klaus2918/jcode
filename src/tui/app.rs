@@ -4059,8 +4059,7 @@ impl App {
                     bus_event = bus_receiver.recv() => {
                         match bus_event {
                             Ok(BusEvent::BackgroundTaskCompleted(task)) => {
-                            // Only show notifications for tasks from this session
-                            if task.session_id == self.session.id {
+                            if task.notify && task.session_id == self.session.id {
                                 let status_str = match task.status {
                                     BackgroundTaskStatus::Completed => "✓ completed",
                                     BackgroundTaskStatus::Failed => "✗ failed",
@@ -8333,6 +8332,41 @@ impl App {
 
         if trimmed == "/changelog" {
             self.changelog_scroll = Some(0);
+            return;
+        }
+
+        if trimmed == "/cache" || trimmed.starts_with("/cache ") {
+            let arg = trimmed.strip_prefix("/cache").unwrap_or("").trim();
+            match arg {
+                "1h" | "1hour" | "extended" => {
+                    crate::provider::anthropic::set_cache_ttl_1h(true);
+                    self.push_display_message(DisplayMessage::system(
+                        "Cache TTL set to 1 hour. Cache writes cost 2x base input tokens.".to_string(),
+                    ));
+                }
+                "5m" | "5min" | "default" | "reset" => {
+                    crate::provider::anthropic::set_cache_ttl_1h(false);
+                    self.push_display_message(DisplayMessage::system(
+                        "Cache TTL set to 5 minutes (default).".to_string(),
+                    ));
+                }
+                "" => {
+                    let current = crate::provider::anthropic::is_cache_ttl_1h();
+                    let new_state = !current;
+                    crate::provider::anthropic::set_cache_ttl_1h(new_state);
+                    let msg = if new_state {
+                        "Cache TTL toggled to 1 hour. Cache writes cost 2x base input tokens.\nUse `/cache 5m` to revert."
+                    } else {
+                        "Cache TTL toggled to 5 minutes (default).\nUse `/cache 1h` to extend."
+                    };
+                    self.push_display_message(DisplayMessage::system(msg.to_string()));
+                }
+                _ => {
+                    self.push_display_message(DisplayMessage::error(
+                        "Usage: `/cache` (toggle), `/cache 1h` (1 hour), `/cache 5m` (default)".to_string(),
+                    ));
+                }
+            }
             return;
         }
 
@@ -14054,6 +14088,10 @@ impl App {
             ("/quit".into(), "Exit jcode"),
             ("/auth".into(), "Show authentication status"),
             (
+                "/cache".into(),
+                "Toggle cache TTL between 5min and 1h",
+            ),
+            (
                 "/login".into(),
                 "Login to a provider (use `/login <provider>` for the full list)",
             ),
@@ -14209,6 +14247,7 @@ impl App {
                 | "/rewind"
                 | "/config"
                 | "/save"
+                | "/cache"
         )
     }
 

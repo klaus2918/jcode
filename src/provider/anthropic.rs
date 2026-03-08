@@ -13,9 +13,22 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
+
+static CACHE_TTL_1H: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable the 1-hour cache TTL (default: 5-minute)
+pub fn set_cache_ttl_1h(enabled: bool) {
+    CACHE_TTL_1H.store(enabled, Ordering::Relaxed);
+}
+
+/// Check if 1-hour cache TTL is enabled
+pub fn is_cache_ttl_1h() -> bool {
+    CACHE_TTL_1H.load(Ordering::Relaxed)
+}
 
 /// Anthropic Messages API endpoint
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -1177,11 +1190,27 @@ enum ApiSystem {
 struct CacheControlParam {
     #[serde(rename = "type")]
     kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttl: Option<&'static str>,
 }
 
 impl CacheControlParam {
     fn ephemeral() -> Self {
-        Self { kind: "ephemeral" }
+        if is_cache_ttl_1h() {
+            Self::ephemeral_1h()
+        } else {
+            Self {
+                kind: "ephemeral",
+                ttl: None,
+            }
+        }
+    }
+
+    fn ephemeral_1h() -> Self {
+        Self {
+            kind: "ephemeral",
+            ttl: Some("1h"),
+        }
     }
 }
 

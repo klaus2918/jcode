@@ -285,21 +285,50 @@ pub(super) async fn handle_client(
     loop {
         line.clear();
         tokio::select! {
-            // Forward ModelsUpdated bus events to this client
-            // (fired when Copilot/OpenAI async init completes after History was already sent)
+            // Forward bus events to this client
             bus_event = bus_rx.recv() => {
-                if matches!(bus_event, Ok(BusEvent::ModelsUpdated)) {
-                    let (models, model_routes) = {
-                        let agent_guard = agent.lock().await;
-                        (
-                            agent_guard.available_models_display(),
-                            agent_guard.model_routes(),
-                        )
-                    };
-                    let _ = client_event_tx.send(ServerEvent::AvailableModelsUpdated {
-                        available_models: models,
-                        available_model_routes: model_routes,
-                    });
+                match bus_event {
+                    Ok(BusEvent::ModelsUpdated) => {
+                        let (models, model_routes) = {
+                            let agent_guard = agent.lock().await;
+                            (
+                                agent_guard.available_models_display(),
+                                agent_guard.model_routes(),
+                            )
+                        };
+                        let _ = client_event_tx.send(ServerEvent::AvailableModelsUpdated {
+                            available_models: models,
+                            available_model_routes: model_routes,
+                        });
+                    }
+                    Ok(BusEvent::BackgroundTaskCompleted(ref task)) => {
+                        if task.notify && task.session_id == client_session_id {
+                            let status_str = match task.status {
+                                crate::bus::BackgroundTaskStatus::Completed => "completed",
+                                crate::bus::BackgroundTaskStatus::Failed => "failed",
+                                crate::bus::BackgroundTaskStatus::Running => "running",
+                            };
+                            let notification = format!(
+                                "[Background Task Completed]\n\
+                                 Task: {} ({})\n\
+                                 Status: {}\n\
+                                 Duration: {:.1}s\n\
+                                 Exit code: {}\n\n\
+                                 Output preview:\n{}\n\n\
+                                 Use `bg action=\"output\" task_id=\"{}\"` for full output.",
+                                task.task_id,
+                                task.tool_name,
+                                status_str,
+                                task.duration_secs,
+                                task.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                                task.output_preview,
+                                task.task_id,
+                            );
+                            let agent_guard = agent.lock().await;
+                            agent_guard.queue_soft_interrupt(notification, false);
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }

@@ -48,6 +48,12 @@ struct BashInput {
     timeout: Option<u64>,
     #[serde(default)]
     run_in_background: Option<bool>,
+    #[serde(default = "default_true")]
+    notify: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[async_trait]
@@ -93,6 +99,10 @@ impl Tool for BashTool {
                 "run_in_background": {
                     "type": "boolean",
                     "description": "Run the command in the background. Returns immediately with task_id and output_file path. Use the bg tool or Read tool to check on progress."
+                },
+                "notify": {
+                    "type": "boolean",
+                    "description": "For background tasks: send a notification to the agent when the task completes (default: true). Set to false to suppress completion notifications."
                 }
             }
         })
@@ -109,7 +119,8 @@ impl Tool for BashTool {
         // Auto-detect and setup browser bridge if needed
         if crate::browser::is_browser_command(&params.command) {
             if !crate::browser::is_setup_complete() {
-                let setup_log = crate::browser::ensure_browser_setup().await
+                let setup_log = crate::browser::ensure_browser_setup()
+                    .await
                     .unwrap_or_else(|e| format!("Browser setup failed: {}\n", e));
 
                 if !crate::browser::is_setup_complete() {
@@ -126,8 +137,12 @@ impl Tool for BashTool {
                 // Execute the rewritten command and append output
                 let result = self.execute_foreground(&params, &ctx).await?;
                 output.push_str(&result.output);
-                return Ok(ToolOutput::new(output)
-                    .with_title(params.description.clone().unwrap_or_else(|| "browser".to_string())));
+                return Ok(ToolOutput::new(output).with_title(
+                    params
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| "browser".to_string()),
+                ));
             }
 
             params.command = crate::browser::rewrite_command_with_full_path(&params.command);
@@ -136,7 +151,8 @@ impl Tool for BashTool {
             // This gives each agent its own browser tab, preventing
             // multi-agent conflicts when using the browser bridge.
             if std::env::var("BROWSER_SESSION").is_err() {
-                if let Some(session_name) = crate::browser::ensure_browser_session(&ctx.session_id) {
+                if let Some(session_name) = crate::browser::ensure_browser_session(&ctx.session_id)
+                {
                     params.command = format!("BROWSER_SESSION={} {}", session_name, params.command);
                 }
             }
@@ -148,7 +164,11 @@ impl Tool for BashTool {
 }
 
 impl BashTool {
-    async fn execute_foreground(&self, params: &BashInput, ctx: &ToolContext) -> Result<ToolOutput> {
+    async fn execute_foreground(
+        &self,
+        params: &BashInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput> {
         let timeout_ms = params.timeout.unwrap_or(DEFAULT_TIMEOUT_MS).min(600000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
@@ -231,10 +251,7 @@ impl BashTool {
                                             } else {
                                                 format!("{}\n", input)
                                             };
-                                            if stdin_pipe
-                                                .write_all(line.as_bytes())
-                                                .await
-                                                .is_err()
+                                            if stdin_pipe.write_all(line.as_bytes()).await.is_err()
                                             {
                                                 break;
                                             }
@@ -303,8 +320,12 @@ impl BashTool {
                 } else {
                     output
                 };
-                Ok(ToolOutput::new(output)
-                    .with_title(params.description.clone().unwrap_or_else(|| params.command.clone())))
+                Ok(ToolOutput::new(output).with_title(
+                    params
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| params.command.clone()),
+                ))
             }
             Ok(Err(e)) => Err(anyhow::anyhow!("Command failed: {}", e)),
             Err(_) => {
@@ -321,8 +342,9 @@ impl BashTool {
         let description = params.description.clone();
         let working_dir = ctx.working_dir.clone();
 
+        let notify = params.notify;
         let info = crate::background::global()
-            .spawn("bash", &ctx.session_id, move |output_path| async move {
+            .spawn_with_notify("bash", &ctx.session_id, notify, move |output_path| async move {
                 let mut cmd = build_shell_command(&command);
                 cmd.kill_on_drop(true)
                     .stdout(Stdio::piped())
@@ -411,17 +433,23 @@ impl BashTool {
             })
             .await;
 
+        let notify_msg = if notify {
+            "You will be notified when the task completes."
+        } else {
+            "Notifications disabled. Use `bg` tool to check status."
+        };
         let output = format!(
             "Command started in background.\n\n\
              Task ID: {}\n\
              Output file: {}\n\
              Status file: {}\n\n\
-             You will be notified when the task completes.\n\
+             {}\n\
              To check progress: use the `bg` tool with action=\"status\" and task_id=\"{}\"\n\
              To see output: use the `read` tool on the output file, or `bg` with action=\"output\"",
             info.task_id,
             info.output_file.display(),
             info.status_file.display(),
+            notify_msg,
             info.task_id,
         );
 

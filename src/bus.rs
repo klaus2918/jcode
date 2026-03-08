@@ -108,6 +108,7 @@ pub struct BackgroundTaskCompleted {
     pub output_preview: String,
     pub output_file: PathBuf,
     pub duration_secs: f64,
+    pub notify: bool,
 }
 
 #[derive(Clone, Debug)]
