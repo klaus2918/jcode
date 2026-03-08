@@ -11,6 +11,7 @@ mod layout_utils;
 pub mod markdown;
 pub mod mermaid;
 pub mod permissions;
+mod remote_diff;
 pub mod screenshot;
 pub mod session_picker;
 mod stream_buffer;

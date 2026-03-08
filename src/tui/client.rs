@@ -7,6 +7,7 @@
 //! - TUI can reconnect after server restart
 
 use super::markdown::IncrementalMarkdownRenderer;
+use super::remote_diff::RemoteDiffTracker;
 use super::{DisplayMessage, ProcessingStatus, TuiState};
 use crate::message::ToolCall;
 use crate::protocol::{NotificationType, Request, ServerEvent};
@@ -16,46 +17,10 @@ use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use ratatui::DefaultTerminal;
-use similar::TextDiff;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::time::interval;
-
-/// Check if client-side diffs are enabled (default: true, disable with JCODE_SHOW_DIFFS=0)
-fn show_diffs_enabled() -> bool {
-    std::env::var("JCODE_SHOW_DIFFS")
-        .map(|v| v != "0" && v != "false")
-        .unwrap_or(true)
-}
-
-/// Resolve a file path for client-side diff generation.
-/// Expands `~` to home directory and resolves relative paths against cwd.
-fn resolve_diff_path(raw: &str) -> std::path::PathBuf {
-    let expanded = if raw.starts_with("~/") {
-        if let Some(home) = dirs::home_dir() {
-            home.join(&raw[2..])
-        } else {
-            std::path::PathBuf::from(raw)
-        }
-    } else {
-        std::path::PathBuf::from(raw)
-    };
-    if expanded.is_absolute() {
-        expanded
-    } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(expanded)
-    }
-}
-
-/// Tracks a pending file edit for diff generation
-struct PendingFileDiff {
-    file_path: String,
-    original_content: String,
-}
 
 /// Client TUI state
 pub struct ClientApp {
@@ -100,10 +65,7 @@ pub struct ClientApp {
     provider_model: String,
 
     // For client-side diff generation
-    pending_diffs: HashMap<String, PendingFileDiff>,
-    current_tool_id: Option<String>,
-    current_tool_name: Option<String>,
-    current_tool_input: String,
+    tool_diff: RemoteDiffTracker,
     // Short-lived notice for status feedback
     status_notice: Option<(String, Instant)>,
     // Time when app started (for startup animations)
@@ -322,10 +284,7 @@ impl ClientApp {
             provider_model: "unknown".to_string(),
 
             // Diff tracking
-            pending_diffs: HashMap::new(),
-            current_tool_id: None,
-            current_tool_name: None,
-            current_tool_input: String::new(),
+            tool_diff: RemoteDiffTracker::default(),
             status_notice: None,
             app_started: Instant::now(),
             reload_info: Vec::new(),
@@ -612,11 +571,13 @@ impl ClientApp {
                 // first frame shows real provider/model rather than "unknown".
                 let wait_deadline = tokio::time::Instant::now() + Duration::from_millis(500);
                 while !self.has_loaded_history {
-                    let remaining = wait_deadline.saturating_duration_since(tokio::time::Instant::now());
+                    let remaining =
+                        wait_deadline.saturating_duration_since(tokio::time::Instant::now());
                     if remaining.is_zero() {
                         break;
                     }
-                    match tokio::time::timeout(remaining, reader.read_line(&mut server_line)).await {
+                    match tokio::time::timeout(remaining, reader.read_line(&mut server_line)).await
+                    {
                         Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
                         Ok(Ok(_)) => {
                             if let Ok(event) = serde_json::from_str::<ServerEvent>(&server_line) {
@@ -699,10 +660,7 @@ impl ClientApp {
                                 self.streaming_md_renderer.borrow_mut().reset();
                                 crate::tui::mermaid::clear_streaming_preview_diagram();
                                 self.streaming_tool_calls.clear();
-                                self.current_tool_id = None;
-                                self.current_tool_name = None;
-                                self.current_tool_input.clear();
-                                self.pending_diffs.clear();
+                                self.tool_diff.clear();
                                 self.streaming_tps_start = None;
                                 self.streaming_tps_elapsed = Duration::ZERO;
                                 self.call_output_tokens_seen = 0;
@@ -820,70 +778,23 @@ impl ClientApp {
                 if matches!(name.as_str(), "memory" | "remember") {
                     crate::memory::set_state(crate::tui::info_widget::MemoryState::Embedding);
                 }
-                self.current_tool_id = Some(id);
-                self.current_tool_name = Some(name);
-                self.current_tool_input.clear();
+                self.tool_diff.handle_tool_start(&id, &name);
             }
             ServerEvent::ToolInput { delta } => {
                 // Accumulate tool input JSON
-                self.current_tool_input.push_str(&delta);
+                self.tool_diff.handle_tool_input(&delta);
             }
             ServerEvent::ToolExec { id, name } => {
                 if let Some(start) = self.streaming_tps_start.take() {
                     self.streaming_tps_elapsed += start.elapsed();
                 }
-                // Tool is about to execute - if it's edit/write, cache the file content
-                if show_diffs_enabled()
-                    && matches!(name.as_str(), "edit" | "write" | "multiedit")
-                {
-                    if let Ok(input) =
-                        serde_json::from_str::<serde_json::Value>(&self.current_tool_input)
-                    {
-                        if let Some(file_path) = input.get("file_path").and_then(|v| v.as_str()) {
-                            let resolved = resolve_diff_path(file_path);
-                            let original =
-                                std::fs::read_to_string(&resolved).unwrap_or_default();
-                            self.pending_diffs.insert(
-                                id.clone(),
-                                PendingFileDiff {
-                                    file_path: resolved.to_string_lossy().to_string(),
-                                    original_content: original,
-                                },
-                            );
-                        }
-                    }
-                }
-                // Clear tracking state
-                self.current_tool_id = None;
-                self.current_tool_name = None;
-                self.current_tool_input.clear();
+                self.tool_diff.handle_tool_exec(&id, &name);
             }
             ServerEvent::ToolDone {
                 id, name, output, ..
             } => {
-                // Check if we have a pending diff for this tool
-                if let Some(pending) = self.pending_diffs.remove(&id) {
-                    // Read the file again and generate diff
-                    let new_content =
-                        std::fs::read_to_string(&pending.file_path).unwrap_or_default();
-                    let diff = generate_unified_diff(
-                        &pending.original_content,
-                        &new_content,
-                        &pending.file_path,
-                    );
-                    if !diff.is_empty() {
-                        self.streaming_text
-                            .push_str(&format!("\n[{}] {}\n{}\n", name, pending.file_path, diff));
-                    } else {
-                        // No changes or couldn't generate diff, show original output
-                        self.streaming_text
-                            .push_str(&format!("\n[{}] {}\n", name, output));
-                    }
-                } else {
-                    // No pending diff, just show the output
-                    self.streaming_text
-                        .push_str(&format!("\n[{}] {}\n", name, output));
-                }
+                let rendered = self.tool_diff.finish_tool(&id, &name, &output);
+                self.streaming_text.push_str(&format!("\n{}\n", rendered));
             }
             ServerEvent::TokenUsage {
                 input,
@@ -941,10 +852,7 @@ impl ClientApp {
                 self.streaming_md_renderer.borrow_mut().reset();
                 crate::tui::mermaid::clear_streaming_preview_diagram();
                 self.streaming_tool_calls.clear();
-                self.current_tool_id = None;
-                self.current_tool_name = None;
-                self.current_tool_input.clear();
-                self.pending_diffs.clear();
+                self.tool_diff.clear();
                 self.call_output_tokens_seen = 0;
                 self.streaming_tps_start = None;
                 self.streaming_tps_elapsed = Duration::ZERO;
@@ -989,7 +897,7 @@ impl ClientApp {
                     None
                 };
                 // Clear any leftover diff tracking state
-                self.pending_diffs.clear();
+                self.tool_diff.clear();
                 self.call_output_tokens_seen = 0;
             }
             ServerEvent::Error { message, .. } => {
@@ -1002,7 +910,7 @@ impl ClientApp {
                     tool_data: None,
                 });
                 self.is_processing = false;
-                self.pending_diffs.clear();
+                self.tool_diff.clear();
                 self.call_output_tokens_seen = 0;
             }
             ServerEvent::SessionId { session_id } => {
@@ -1084,10 +992,7 @@ impl ClientApp {
                     self.scroll_offset = 0;
                     self.auto_scroll_paused = false;
                     self.queued_messages.clear();
-                    self.pending_diffs.clear();
-                    self.current_tool_id = None;
-                    self.current_tool_name = None;
-                    self.current_tool_input.clear();
+                    self.tool_diff.clear();
                     self.has_loaded_history = false;
                     crate::tui::mermaid::clear_streaming_preview_diagram();
                 }
@@ -1378,23 +1283,6 @@ impl ClientApp {
         }
         Ok(())
     }
-}
-
-/// Generate a unified diff between two strings
-fn generate_unified_diff(old: &str, new: &str, file_path: &str) -> String {
-    let diff = TextDiff::from_lines(old, new);
-    let mut output = String::new();
-
-    // Header
-    output.push_str(&format!("--- a/{}\n", file_path));
-    output.push_str(&format!("+++ b/{}\n", file_path));
-
-    // Generate hunks
-    for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
-        output.push_str(&format!("{}", hunk));
-    }
-
-    output
 }
 
 impl TuiState for ClientApp {
@@ -1755,6 +1643,19 @@ impl TuiState for ClientApp {
             } else {
                 super::info_widget::AuthMethod::Unknown
             }
+        } else if provider_name.contains("openai") {
+            match crate::auth::codex::load_credentials() {
+                Ok(creds) if !creds.refresh_token.is_empty() => {
+                    super::info_widget::AuthMethod::OpenAIOAuth
+                }
+                _ => {
+                    if std::env::var("OPENAI_API_KEY").is_ok() {
+                        super::info_widget::AuthMethod::OpenAIApiKey
+                    } else {
+                        super::info_widget::AuthMethod::Unknown
+                    }
+                }
+            }
         } else if provider_name.contains("openrouter") {
             super::info_widget::AuthMethod::OpenRouterApiKey
         } else if provider_name.contains("copilot") {
@@ -2026,12 +1927,12 @@ mod tests {
         app.is_processing = true;
         app.status = ProcessingStatus::Streaming;
         app.streaming_text = "partial assistant output".to_string();
-        app.current_tool_id = Some("tool_1".to_string());
-        app.current_tool_name = Some("bash".to_string());
-        app.current_tool_input = "{\"command\":\"sleep 10\"}".to_string();
-        app.pending_diffs.insert(
+        app.tool_diff.current_tool_id = Some("tool_1".to_string());
+        app.tool_diff.current_tool_name = Some("bash".to_string());
+        app.tool_diff.current_tool_input = "{\"command\":\"sleep 10\"}".to_string();
+        app.tool_diff.pending_diffs.insert(
             "tool_1".to_string(),
-            PendingFileDiff {
+            crate::tui::remote_diff::PendingFileDiff {
                 file_path: "src/main.rs".to_string(),
                 original_content: "fn main() {}".to_string(),
             },
@@ -2042,10 +1943,10 @@ mod tests {
         assert!(!app.is_processing);
         assert!(matches!(app.status, ProcessingStatus::Idle));
         assert!(app.streaming_text.is_empty());
-        assert!(app.current_tool_id.is_none());
-        assert!(app.current_tool_name.is_none());
-        assert!(app.current_tool_input.is_empty());
-        assert!(app.pending_diffs.is_empty());
+        assert!(app.tool_diff.current_tool_id.is_none());
+        assert!(app.tool_diff.current_tool_name.is_none());
+        assert!(app.tool_diff.current_tool_input.is_empty());
+        assert!(app.tool_diff.pending_diffs.is_empty());
         assert_eq!(app.call_output_tokens_seen, 0);
 
         let last = app
@@ -2102,10 +2003,10 @@ mod tests {
                 tool_calls: None,
                 tool_data: None,
             }],
-            available_model_routes: vec![],
             provider_name: Some("claude".to_string()),
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             available_models: vec![],
+            available_model_routes: vec![],
             mcp_servers: vec![],
             skills: vec![],
             total_tokens: None,
@@ -2148,10 +2049,10 @@ mod tests {
                 tool_calls: None,
                 tool_data: None,
             }],
-            available_model_routes: vec![],
             provider_name: Some("claude".to_string()),
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             available_models: vec![],
+            available_model_routes: vec![],
             mcp_servers: vec![],
             skills: vec![],
             total_tokens: None,

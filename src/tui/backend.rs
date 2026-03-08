@@ -9,9 +9,9 @@ use crate::message::ToolCall;
 use crate::protocol::{FeatureToggle, Request, ServerEvent};
 use crate::server;
 use crate::transport::{Stream, WriteHalf};
+use crate::tui::remote_diff::RemoteDiffTracker;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
@@ -204,40 +204,6 @@ pub struct BackendInfo {
     pub skills: Vec<String>,
 }
 
-/// Resolve a file path for client-side diff generation.
-/// Expands `~` to home directory and resolves relative paths against cwd.
-fn resolve_diff_path(raw: &str) -> std::path::PathBuf {
-    let expanded = if raw.starts_with("~/") {
-        if let Some(home) = dirs::home_dir() {
-            home.join(&raw[2..])
-        } else {
-            std::path::PathBuf::from(raw)
-        }
-    } else {
-        std::path::PathBuf::from(raw)
-    };
-    if expanded.is_absolute() {
-        expanded
-    } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(expanded)
-    }
-}
-
-/// Data for pending file diff generation (client-side)
-struct PendingFileDiff {
-    file_path: String,
-    original_content: String,
-}
-
-/// Check if client-side diff generation is enabled
-fn show_diffs_enabled() -> bool {
-    std::env::var("JCODE_SHOW_DIFFS")
-        .map(|v| v != "0" && v.to_lowercase() != "false")
-        .unwrap_or(true)
-}
-
 /// Remote connection to jcode server
 pub struct RemoteConnection {
     reader: BufReader<crate::transport::ReadHalf>,
@@ -246,10 +212,7 @@ pub struct RemoteConnection {
     next_request_id: u64,
     provider_name: String,
     provider_model: String,
-    pending_diffs: HashMap<String, PendingFileDiff>,
-    current_tool_id: Option<String>,
-    current_tool_name: Option<String>,
-    current_tool_input: String,
+    tool_diff: RemoteDiffTracker,
     line_buffer: String,
     has_loaded_history: bool,
     call_output_tokens_seen: u64,
@@ -273,10 +236,7 @@ impl RemoteConnection {
             next_request_id: 1,
             provider_name: "remote".to_string(),
             provider_model: "unknown".to_string(),
-            pending_diffs: HashMap::new(),
-            current_tool_id: None,
-            current_tool_name: None,
-            current_tool_input: String::new(),
+            tool_diff: RemoteDiffTracker::default(),
             line_buffer: String::new(),
             has_loaded_history: false,
             call_output_tokens_seen: 0,
@@ -536,10 +496,7 @@ impl RemoteConnection {
             next_request_id: 1,
             provider_name: "replay".to_string(),
             provider_model: "replay".to_string(),
-            pending_diffs: HashMap::new(),
-            current_tool_id: None,
-            current_tool_name: None,
-            current_tool_input: String::new(),
+            tool_diff: RemoteDiffTracker::default(),
             line_buffer: String::new(),
             has_loaded_history: false,
             call_output_tokens_seen: 0,
@@ -563,61 +520,32 @@ impl RemoteConnection {
 
     /// Handle tool start - begin tracking for diff generation
     pub fn handle_tool_start(&mut self, id: &str, name: &str) {
-        self.current_tool_id = Some(id.to_string());
-        self.current_tool_name = Some(name.to_string());
-        self.current_tool_input.clear();
+        self.tool_diff.handle_tool_start(id, name);
     }
 
     /// Handle tool input delta
     pub fn handle_tool_input(&mut self, delta: &str) {
-        self.current_tool_input.push_str(delta);
+        self.tool_diff.handle_tool_input(delta);
     }
 
     /// Get parsed current tool input (before it's cleared in handle_tool_exec)
     pub fn get_current_tool_input(&self) -> serde_json::Value {
-        serde_json::from_str(&self.current_tool_input).unwrap_or(serde_json::Value::Null)
+        self.tool_diff.current_tool_input_json()
     }
 
     /// Handle tool exec - cache file content if edit/write
     pub fn handle_tool_exec(&mut self, id: &str, name: &str) {
-        if show_diffs_enabled()
-            && matches!(name, "edit" | "write" | "multiedit")
-        {
-            if let Ok(input) = serde_json::from_str::<serde_json::Value>(&self.current_tool_input) {
-                if let Some(file_path) = input.get("file_path").and_then(|v| v.as_str()) {
-                    let resolved = resolve_diff_path(file_path);
-                    let original = std::fs::read_to_string(&resolved).unwrap_or_default();
-                    self.pending_diffs.insert(
-                        id.to_string(),
-                        PendingFileDiff {
-                            file_path: resolved.to_string_lossy().to_string(),
-                            original_content: original,
-                        },
-                    );
-                }
-            }
-        }
-        self.current_tool_id = None;
-        self.current_tool_name = None;
-        self.current_tool_input.clear();
+        self.tool_diff.handle_tool_exec(id, name);
     }
 
     /// Handle tool done - generate diff if we have pending data
     pub fn handle_tool_done(&mut self, id: &str, name: &str, output: &str) -> String {
-        if let Some(pending) = self.pending_diffs.remove(id) {
-            let new_content = std::fs::read_to_string(&pending.file_path).unwrap_or_default();
-            let diff =
-                generate_unified_diff(&pending.original_content, &new_content, &pending.file_path);
-            if !diff.is_empty() {
-                return format!("[{}] {}\n{}", name, pending.file_path, diff);
-            }
-        }
-        format!("[{}] {}", name, output)
+        self.tool_diff.finish_tool(id, name, output)
     }
 
     /// Clear pending diff state
     pub fn clear_pending(&mut self) {
-        self.pending_diffs.clear();
+        self.tool_diff.clear();
     }
 
     /// Per-API-call output token watermark (for TPS delta accumulation).
@@ -629,20 +557,4 @@ impl RemoteConnection {
     pub fn reset_call_output_tokens_seen(&mut self) {
         self.call_output_tokens_seen = 0;
     }
-}
-
-/// Generate a unified diff between two strings
-fn generate_unified_diff(old: &str, new: &str, file_path: &str) -> String {
-    use similar::TextDiff;
-    let diff = TextDiff::from_lines(old, new);
-    let mut output = String::new();
-
-    output.push_str(&format!("--- a/{}\n", file_path));
-    output.push_str(&format!("+++ b/{}\n", file_path));
-
-    for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
-        output.push_str(&format!("{}", hunk));
-    }
-
-    output
 }
