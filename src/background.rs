@@ -82,7 +82,7 @@ impl BackgroundTaskManager {
         use std::time::{SystemTime, UNIX_EPOCH};
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("system time after unix epoch")
             .as_millis();
         // Use last 6 digits of timestamp + 4 random chars
         let rand_part: String = (0..4)
@@ -91,7 +91,7 @@ impl BackgroundTaskManager {
                 "abcdefghijklmnopqrstuvwxyz0123456789"
                     .chars()
                     .nth(idx)
-                    .unwrap()
+                    .expect("idx < 36")
             })
             .collect();
         format!(

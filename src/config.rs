@@ -321,18 +321,16 @@ impl DisplayConfig {
 /// Update channel: how aggressively to receive updates
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum UpdateChannel {
     /// Only update from tagged GitHub Releases (default)
+    #[default]
     Stable,
     /// Update from latest commit on main branch (bleeding edge)
     Main,
 }
 
-impl Default for UpdateChannel {
-    fn default() -> Self {
-        Self::Stable
-    }
-}
+
 
 impl std::fmt::Display for UpdateChannel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

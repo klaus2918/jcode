@@ -116,7 +116,7 @@ mod search_regex {
         ($name:ident, $pat:expr) => {
             pub fn $name() -> &'static Regex {
                 static RE: OnceLock<Regex> = OnceLock::new();
-                RE.get_or_init(|| Regex::new($pat).unwrap())
+                RE.get_or_init(|| Regex::new($pat).expect("valid regex"))
             }
         };
     }

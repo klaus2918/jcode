@@ -92,7 +92,9 @@ impl CacheTracker {
             return None;
         }
 
-        let previous_hash = self.previous_prefix_hash.as_ref().unwrap();
+        let Some(previous_hash) = self.previous_prefix_hash.as_ref() else {
+            return None;
+        };
         let previous_count = self.previous_message_count;
 
         // For append-only caching, the current messages should START with

@@ -1,4 +1,5 @@
 use super::*;
+use ratatui::layout::Rect;
 
 impl App {
     pub(super) fn scroll_max_estimate(&self) -> usize {
@@ -151,6 +152,42 @@ impl App {
 
     pub(super) const DIAGRAM_PANE_ANIM_DURATION: f32 = 0.15;
 
+    fn diagram_pane_ratio_limits(&self) -> (u8, u8) {
+        match self.diagram_pane_position {
+            crate::config::DiagramPanePosition::Side => (25, 80),
+            crate::config::DiagramPanePosition::Top => (20, 75),
+        }
+    }
+
+    fn set_diagram_pane_ratio(&mut self, next: i16, animate: bool, announce: bool) {
+        let (min_ratio, max_ratio) = self.diagram_pane_ratio_limits();
+        let next = next.clamp(min_ratio as i16, max_ratio as i16) as u8;
+        let current_target = self.diagram_pane_ratio_target;
+        if next == current_target {
+            if !animate {
+                self.diagram_pane_ratio = next;
+                self.diagram_pane_ratio_from = next;
+                self.diagram_pane_anim_start = None;
+            }
+            return;
+        }
+
+        if animate {
+            self.diagram_pane_ratio_from = self.animated_diagram_pane_ratio();
+            self.diagram_pane_ratio_target = next;
+            self.diagram_pane_anim_start = Some(Instant::now());
+        } else {
+            self.diagram_pane_ratio = next;
+            self.diagram_pane_ratio_from = next;
+            self.diagram_pane_ratio_target = next;
+            self.diagram_pane_anim_start = None;
+        }
+
+        if announce {
+            self.set_status_notice(format!("Diagram pane: {}%", next));
+        }
+    }
+
     pub(super) fn animated_diagram_pane_ratio(&self) -> u8 {
         let Some(start) = self.diagram_pane_anim_start else {
             return self.diagram_pane_ratio_target;
@@ -164,18 +201,17 @@ impl App {
     }
 
     pub(super) fn adjust_diagram_pane_ratio(&mut self, delta: i8) {
-        let (min_ratio, max_ratio) = match self.diagram_pane_position {
-            crate::config::DiagramPanePosition::Side => (25i16, 80i16),
-            crate::config::DiagramPanePosition::Top => (20i16, 75i16),
-        };
-        let current_target = self.diagram_pane_ratio_target;
-        let next = (current_target as i16 + delta as i16).clamp(min_ratio, max_ratio) as u8;
-        if next != current_target {
-            self.diagram_pane_ratio_from = self.animated_diagram_pane_ratio();
-            self.diagram_pane_ratio_target = next;
-            self.diagram_pane_anim_start = Some(Instant::now());
-            self.set_status_notice(format!("Diagram pane: {}%", next));
-        }
+        let next = self.diagram_pane_ratio_target as i16 + delta as i16;
+        self.set_diagram_pane_ratio(next, true, true);
+    }
+
+    pub(super) fn adjust_diagram_pane_ratio_immediate(&mut self, delta: i8) {
+        let next = self.diagram_pane_ratio_target as i16 + delta as i16;
+        self.set_diagram_pane_ratio(next, false, false);
+    }
+
+    pub(super) fn set_diagram_pane_ratio_immediate(&mut self, next: u8) {
+        self.set_diagram_pane_ratio(next as i16, false, false);
     }
 
     pub(super) fn adjust_diagram_zoom(&mut self, delta: i8) {
@@ -209,11 +245,10 @@ impl App {
             DiagramPanePosition::Side => DiagramPanePosition::Top,
             DiagramPanePosition::Top => DiagramPanePosition::Side,
         };
-        let (min_ratio, max_ratio) = match self.diagram_pane_position {
-            DiagramPanePosition::Side => (25u8, 80u8),
-            DiagramPanePosition::Top => (20u8, 75u8),
-        };
+        let (min_ratio, max_ratio) = self.diagram_pane_ratio_limits();
         self.diagram_pane_ratio_target = self.diagram_pane_ratio_target.clamp(min_ratio, max_ratio);
+        self.diagram_pane_ratio = self.diagram_pane_ratio_target;
+        self.diagram_pane_ratio_from = self.diagram_pane_ratio_target;
         self.diagram_pane_anim_start = None;
         let label = match self.diagram_pane_position {
             DiagramPanePosition::Side => "side",
@@ -356,9 +391,13 @@ impl App {
         let mut over_diagram = false;
         let mut over_diff_pane = false;
         let mut on_diagram_border = false;
+        let mut current_messages_area: Option<Rect> = None;
+        let mut current_diagram_area: Option<Rect> = None;
         let mut terminal_width: u16 = 0;
         let mut terminal_height: u16 = 0;
         if let Some(layout) = layout {
+            current_messages_area = Some(layout.messages_area);
+            current_diagram_area = layout.diagram_area;
             terminal_width = layout.messages_area.width
                 + layout.diagram_area.map(|a| a.width).unwrap_or(0);
             terminal_height = layout.messages_area.height
@@ -400,29 +439,37 @@ impl App {
 
         if self.diagram_pane_dragging {
             match mouse.kind {
-                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Moved => {
+                MouseEventKind::Drag(MouseButton::Left) => {
                     if diagram_available {
                         let is_side = matches!(
                             self.diagram_pane_position,
                             crate::config::DiagramPanePosition::Side
                         );
-                        let new_ratio = if is_side && terminal_width > 0 {
-                            ((terminal_width.saturating_sub(mouse.column)) as u32 * 100
-                                / terminal_width as u32) as u8
+                        let new_ratio = if is_side {
+                            if let (Some(messages_area), Some(diagram_area)) =
+                                (current_messages_area, current_diagram_area)
+                            {
+                                let right_edge =
+                                    diagram_area.x.saturating_add(diagram_area.width);
+                                let total_width = right_edge.saturating_sub(messages_area.x);
+                                let desired_width = right_edge.saturating_sub(mouse.column);
+                                if desired_width == diagram_area.width || total_width == 0 {
+                                    self.diagram_pane_ratio_target
+                                } else {
+                                    ((desired_width as u32 * 100) / total_width as u32) as u8
+                                }
+                            } else if terminal_width > 0 {
+                                ((terminal_width.saturating_sub(mouse.column)) as u32 * 100
+                                    / terminal_width as u32) as u8
+                            } else {
+                                self.diagram_pane_ratio_target
+                            }
                         } else if !is_side && terminal_height > 0 {
                             (mouse.row as u32 * 100 / terminal_height as u32) as u8
                         } else {
                             self.diagram_pane_ratio_target
                         };
-                        let (min_r, max_r) = if is_side {
-                            (25u8, 80u8)
-                        } else {
-                            (20u8, 75u8)
-                        };
-                        let clamped = new_ratio.clamp(min_r, max_r);
-                        self.diagram_pane_ratio_target = clamped;
-                        self.diagram_pane_ratio_from = clamped;
-                        self.diagram_pane_anim_start = None;
+                        self.set_diagram_pane_ratio_immediate(new_ratio);
                     }
                 }
                 MouseEventKind::Up(MouseButton::Left) => {
@@ -468,7 +515,7 @@ impl App {
                     _ => 0,
                 };
                 if delta != 0 {
-                    self.adjust_diagram_pane_ratio(delta);
+                    self.adjust_diagram_pane_ratio_immediate(delta);
                     handled_scroll = true;
                 }
             }

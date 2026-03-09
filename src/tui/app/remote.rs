@@ -295,7 +295,7 @@ pub(super) async fn connect_with_retry(
                                 }
                                 if let Some(amount) = app
                                     .scroll_keys
-                                    .scroll_amount(key.code.clone(), key.modifiers)
+                                    .scroll_amount(key.code, key.modifiers)
                                 {
                                     if amount < 0 {
                                         app.scroll_up((-amount) as usize);
@@ -1616,13 +1616,13 @@ pub(super) async fn handle_remote_key(
         app.toggle_diagram_pane_position();
         return Ok(());
     }
-    if let Some(direction) = app.model_switch_keys.direction_for(code.clone(), modifiers) {
+    if let Some(direction) = app.model_switch_keys.direction_for(code, modifiers) {
         remote.cycle_model(direction).await?;
         return Ok(());
     }
     if let Some(direction) = app
         .effort_switch_keys
-        .direction_for(code.clone(), modifiers)
+        .direction_for(code, modifiers)
     {
         let efforts = ["none", "low", "medium", "high", "xhigh"];
         let current = app.remote_reasoning_effort.as_deref();
@@ -1636,13 +1636,11 @@ pub(super) async fn handle_remote_key(
             } else {
                 current_index + 1
             }
-        } else {
-            if current_index == 0 {
+        } else if current_index == 0 {
                 0
             } else {
                 current_index - 1
-            }
-        };
+            };
         let next_effort = efforts[next_index];
         if Some(next_effort) == current {
             let label = super::effort_display_label(next_effort);
@@ -1659,17 +1657,17 @@ pub(super) async fn handle_remote_key(
     if app
         .centered_toggle_keys
         .toggle
-        .matches(code.clone(), modifiers)
+        .matches(code, modifiers)
     {
         app.toggle_centered_mode();
         return Ok(());
     }
     app.normalize_diagram_state();
     let diagram_available = app.diagram_available();
-    if app.handle_diagram_focus_key(code.clone(), modifiers, diagram_available) {
+    if app.handle_diagram_focus_key(code, modifiers, diagram_available) {
         return Ok(());
     }
-    if app.handle_diff_pane_focus_key(code.clone(), modifiers) {
+    if app.handle_diff_pane_focus_key(code, modifiers) {
         return Ok(());
     }
 
@@ -1707,7 +1705,7 @@ pub(super) async fn handle_remote_key(
         }
     }
 
-    if let Some(amount) = app.scroll_keys.scroll_amount(code.clone(), modifiers) {
+    if let Some(amount) = app.scroll_keys.scroll_amount(code, modifiers) {
         if amount < 0 {
             app.scroll_up((-amount) as usize);
         } else {
@@ -1716,7 +1714,7 @@ pub(super) async fn handle_remote_key(
         return Ok(());
     }
 
-    if let Some(dir) = app.scroll_keys.prompt_jump(code.clone(), modifiers) {
+    if let Some(dir) = app.scroll_keys.prompt_jump(code, modifiers) {
         if dir < 0 {
             app.scroll_to_prev_prompt();
         } else {
@@ -1733,13 +1731,13 @@ pub(super) async fn handle_remote_key(
     if app
         .centered_toggle_keys
         .toggle
-        .matches(code.clone(), modifiers)
+        .matches(code, modifiers)
     {
         app.toggle_centered_mode();
         return Ok(());
     }
 
-    if app.scroll_keys.is_bookmark(code.clone(), modifiers) {
+    if app.scroll_keys.is_bookmark(code, modifiers) {
         app.toggle_scroll_bookmark();
         return Ok(());
     }
@@ -1755,7 +1753,7 @@ pub(super) async fn handle_remote_key(
     }
 
     if modifiers.contains(KeyModifiers::CONTROL) {
-        if app.handle_diagram_ctrl_key(code.clone(), diagram_available) {
+        if app.handle_diagram_ctrl_key(code, diagram_available) {
             return Ok(());
         }
         match code {
@@ -2247,7 +2245,7 @@ pub(super) async fn handle_remote_key(
                 }
 
                 if trimmed == "/save" || trimmed.starts_with("/save ") {
-                    let label = trimmed.strip_prefix("/save").unwrap().trim();
+                    let label = trimmed.strip_prefix("/save").unwrap_or_default().trim();
                     let label = if label.is_empty() {
                         None
                     } else {

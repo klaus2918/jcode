@@ -1931,7 +1931,7 @@ impl App {
             let cmd = cmd.trim();
 
             self.debug_trace
-                .record("cmd", format!("{}", cmd.to_string()));
+                .record("cmd", cmd.to_string());
 
             let response = self.handle_debug_command(cmd);
 
@@ -1973,7 +1973,7 @@ impl App {
             "pageup" | "pgup" => KeyCode::PageUp,
             "pagedown" | "pgdn" => KeyCode::PageDown,
             "space" => KeyCode::Char(' '),
-            s if s.len() == 1 => KeyCode::Char(s.chars().next().unwrap()),
+            s if s.len() == 1 => KeyCode::Char(s.chars().next().expect("non-empty key string")),
             s if s.starts_with('f') && s.len() <= 3 => {
                 if let Ok(n) = s[1..].parse::<u8>() {
                     KeyCode::F(n)

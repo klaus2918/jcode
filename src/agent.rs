@@ -1,5 +1,4 @@
 #![allow(unused_assignments)]
-#![allow(unused_assignments)]
 
 mod prompt_support;
 
@@ -160,6 +159,23 @@ pub struct TokenUsage {
     pub output_tokens: u64,
     pub cache_read_input_tokens: Option<u64>,
     pub cache_creation_input_tokens: Option<u64>,
+}
+
+enum NoToolCallOutcome {
+    Break,
+    ContinueWithoutEvent,
+    ContinueWithSoftInterrupt {
+        content: String,
+        point: &'static str,
+    },
+}
+
+enum PostToolInterruptOutcome {
+    NoInterrupt,
+    SoftInterrupt {
+        content: String,
+        point: &'static str,
+    },
 }
 
 pub struct Agent {
@@ -924,6 +940,66 @@ impl Agent {
         Ok(true)
     }
 
+    fn filter_truncated_tool_calls(
+        &mut self,
+        stop_reason: Option<&str>,
+        tool_calls: &mut Vec<ToolCall>,
+        assistant_message_id: Option<&String>,
+    ) {
+        let stop_reason = stop_reason.unwrap_or("");
+        if !Self::should_continue_after_stop_reason(stop_reason) {
+            return;
+        }
+
+        let before = tool_calls.len();
+        tool_calls.retain(|tc| !tc.input.is_null());
+        let discarded = before - tool_calls.len();
+        if discarded > 0 && tool_calls.is_empty() {
+            logging::warn(&format!(
+                "Discarded {} tool call(s) with null input (truncated by {}); requesting continuation",
+                discarded,
+                if stop_reason.is_empty() {
+                    "unknown"
+                } else {
+                    stop_reason
+                }
+            ));
+            if let Some(msg_id) = assistant_message_id {
+                self.session.remove_tool_use_blocks(msg_id);
+                let _ = self.session.save();
+            }
+        }
+    }
+
+    fn handle_streaming_no_tool_calls(
+        &mut self,
+        stop_reason: Option<&str>,
+        incomplete_continuations: &mut u32,
+    ) -> Result<NoToolCallOutcome> {
+        if self.maybe_continue_incomplete_response(stop_reason, incomplete_continuations)? {
+            return Ok(NoToolCallOutcome::ContinueWithoutEvent);
+        }
+        logging::info("Turn complete - no tool calls");
+        if let Some(content) = self.inject_soft_interrupts() {
+            return Ok(NoToolCallOutcome::ContinueWithSoftInterrupt {
+                content,
+                point: "B",
+            });
+        }
+        Ok(NoToolCallOutcome::Break)
+    }
+
+    fn take_post_tool_soft_interrupt(&mut self) -> PostToolInterruptOutcome {
+        if let Some(content) = self.inject_soft_interrupts() {
+            PostToolInterruptOutcome::SoftInterrupt {
+                content,
+                point: "D",
+            }
+        } else {
+            PostToolInterruptOutcome::NoInterrupt
+        }
+    }
+
     pub fn session_id(&self) -> &str {
         &self.session.id
     }
@@ -1473,16 +1549,7 @@ impl Agent {
         name: &str,
         input: serde_json::Value,
     ) -> Result<crate::tool::ToolOutput> {
-        if name == "selfdev" && !self.session.is_canary {
-            return Err(anyhow::anyhow!(
-                "Tool 'selfdev' is only available in self-dev mode"
-            ));
-        }
-        if let Some(allowed) = self.allowed_tools.as_ref() {
-            if !allowed.contains(name) {
-                return Err(anyhow::anyhow!("Tool '{}' is not allowed", name));
-            }
-        }
+        self.validate_tool_allowed(name)?;
 
         let call_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1496,6 +1563,20 @@ impl Agent {
             stdin_request_tx: self.stdin_request_tx.clone(),
         };
         self.registry.execute(name, input, ctx).await
+    }
+
+    fn validate_tool_allowed(&self, name: &str) -> Result<()> {
+        if name == "selfdev" && !self.session.is_canary {
+            return Err(anyhow::anyhow!(
+                "Tool 'selfdev' is only available in self-dev mode"
+            ));
+        }
+        if let Some(allowed) = self.allowed_tools.as_ref() {
+            if !allowed.contains(name) {
+                return Err(anyhow::anyhow!("Tool '{}' is not allowed", name));
+            }
+        }
+        Ok(())
     }
 
     /// Restore a session by ID (loads from disk)
@@ -1856,7 +1937,7 @@ impl Agent {
 
             let mut text_content = String::new();
             #[allow(unused_variables)]
-            let mut text_wrapped_detected = false;
+            let text_wrapped_detected = false;
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             let mut current_tool: Option<ToolCall> = None;
             let mut current_tool_input = String::new();
@@ -2224,24 +2305,11 @@ impl Agent {
             // If stop_reason indicates truncation (e.g. max_tokens), discard tool calls
             // with null/empty inputs since they were likely truncated mid-generation.
             // This prevents executing broken tool calls and instead requests a continuation.
-            if Self::should_continue_after_stop_reason(stop_reason.as_deref().unwrap_or("")) {
-                let before = tool_calls.len();
-                tool_calls.retain(|tc| !tc.input.is_null());
-                let discarded = before - tool_calls.len();
-                if discarded > 0 && tool_calls.is_empty() {
-                    logging::warn(&format!(
-                        "Discarded {} tool call(s) with null input (truncated by {}); requesting continuation",
-                        discarded,
-                        stop_reason.as_deref().unwrap_or("unknown")
-                    ));
-                    // Remove the broken ToolUse blocks from the stored assistant message
-                    // so the provider doesn't see ToolUse without matching ToolResult.
-                    if let Some(ref msg_id) = assistant_message_id {
-                        self.session.remove_tool_use_blocks(msg_id);
-                        let _ = self.session.save();
-                    }
-                }
-            }
+            self.filter_truncated_tool_calls(
+                stop_reason.as_deref(),
+                &mut tool_calls,
+                assistant_message_id.as_ref(),
+            );
 
             // If no tool calls, we're done
             if tool_calls.is_empty() {
@@ -2276,16 +2344,7 @@ impl Agent {
 
             // Execute tools and add results
             for tc in tool_calls {
-                if tc.name == "selfdev" && !self.session.is_canary {
-                    return Err(anyhow::anyhow!(
-                        "Tool 'selfdev' is only available in self-dev mode"
-                    ));
-                }
-                if let Some(allowed) = self.allowed_tools.as_ref() {
-                    if !allowed.contains(&tc.name) {
-                        return Err(anyhow::anyhow!("Tool '{}' is not allowed", tc.name));
-                    }
-                }
+                self.validate_tool_allowed(&tc.name)?;
 
                 let message_id = assistant_message_id
                     .clone()
@@ -2971,46 +3030,32 @@ impl Agent {
 
             // If stop_reason indicates truncation (e.g. max_tokens), discard tool calls
             // with null/empty inputs since they were likely truncated mid-generation.
-            if Self::should_continue_after_stop_reason(stop_reason.as_deref().unwrap_or("")) {
-                let before = tool_calls.len();
-                tool_calls.retain(|tc| !tc.input.is_null());
-                let discarded = before - tool_calls.len();
-                if discarded > 0 && tool_calls.is_empty() {
-                    logging::warn(&format!(
-                        "Discarded {} tool call(s) with null input (truncated by {}); requesting continuation",
-                        discarded,
-                        stop_reason.as_deref().unwrap_or("unknown")
-                    ));
-                    if let Some(ref msg_id) = assistant_message_id {
-                        self.session.remove_tool_use_blocks(msg_id);
-                        let _ = self.session.save();
-                    }
-                }
-            }
+            self.filter_truncated_tool_calls(
+                stop_reason.as_deref(),
+                &mut tool_calls,
+                assistant_message_id.as_ref(),
+            );
 
             // If no tool calls, check for soft interrupt or exit
             // NOTE: We only inject here (Point B) when there are no tools.
             // Injecting before tool_results would break the API requirement that
             // tool_use must be immediately followed by tool_result.
             if tool_calls.is_empty() {
-                if self.maybe_continue_incomplete_response(
+                match self.handle_streaming_no_tool_calls(
                     stop_reason.as_deref(),
                     &mut incomplete_continuations,
                 )? {
-                    continue;
+                    NoToolCallOutcome::Break => break,
+                    NoToolCallOutcome::ContinueWithoutEvent => continue,
+                    NoToolCallOutcome::ContinueWithSoftInterrupt { content, point } => {
+                        let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
+                            content,
+                            point: point.to_string(),
+                            tools_skipped: None,
+                        });
+                        continue;
+                    }
                 }
-                logging::info("Turn complete - no tool calls");
-                // === INJECTION POINT B: No tools, turn complete ===
-                if let Some(content) = self.inject_soft_interrupts() {
-                    let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
-                        content,
-                        point: "B".to_string(),
-                        tools_skipped: None,
-                    });
-                    // Continue loop to process the injected message
-                    continue;
-                }
-                break;
             }
 
             logging::info(&format!(
@@ -3076,16 +3121,7 @@ impl Agent {
                 }
                 let tc = &tool_calls[tool_index];
 
-                if tc.name == "selfdev" && !self.session.is_canary {
-                    return Err(anyhow::anyhow!(
-                        "Tool 'selfdev' is only available in self-dev mode"
-                    ));
-                }
-                if let Some(allowed) = self.allowed_tools.as_ref() {
-                    if !allowed.contains(&tc.name) {
-                        return Err(anyhow::anyhow!("Tool '{}' is not allowed", tc.name));
-                    }
-                }
+                self.validate_tool_allowed(&tc.name)?;
 
                 let message_id = assistant_message_id
                     .clone()
@@ -3186,10 +3222,12 @@ impl Agent {
             // === INJECTION POINT D: All tools done, before next API call ===
             // This is the safest point for non-urgent injection since all tool_results
             // have been added and the conversation is in a valid state.
-            if let Some(content) = self.inject_soft_interrupts() {
+            if let PostToolInterruptOutcome::SoftInterrupt { content, point } =
+                self.take_post_tool_soft_interrupt()
+            {
                 let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
                     content,
-                    point: "D".to_string(),
+                    point: point.to_string(),
                     tools_skipped: None,
                 });
             }
@@ -3701,46 +3739,32 @@ impl Agent {
 
             // If stop_reason indicates truncation (e.g. max_tokens), discard tool calls
             // with null/empty inputs since they were likely truncated mid-generation.
-            if Self::should_continue_after_stop_reason(stop_reason.as_deref().unwrap_or("")) {
-                let before = tool_calls.len();
-                tool_calls.retain(|tc| !tc.input.is_null());
-                let discarded = before - tool_calls.len();
-                if discarded > 0 && tool_calls.is_empty() {
-                    logging::warn(&format!(
-                        "Discarded {} tool call(s) with null input (truncated by {}); requesting continuation",
-                        discarded,
-                        stop_reason.as_deref().unwrap_or("unknown")
-                    ));
-                    if let Some(ref msg_id) = assistant_message_id {
-                        self.session.remove_tool_use_blocks(msg_id);
-                        let _ = self.session.save();
-                    }
-                }
-            }
+            self.filter_truncated_tool_calls(
+                stop_reason.as_deref(),
+                &mut tool_calls,
+                assistant_message_id.as_ref(),
+            );
 
             // If no tool calls, check for soft interrupt or exit
             // NOTE: We only inject here (Point B) when there are no tools.
             // Injecting before tool_results would break the API requirement that
             // tool_use must be immediately followed by tool_result.
             if tool_calls.is_empty() {
-                if self.maybe_continue_incomplete_response(
+                match self.handle_streaming_no_tool_calls(
                     stop_reason.as_deref(),
                     &mut incomplete_continuations,
                 )? {
-                    continue;
+                    NoToolCallOutcome::Break => break,
+                    NoToolCallOutcome::ContinueWithoutEvent => continue,
+                    NoToolCallOutcome::ContinueWithSoftInterrupt { content, point } => {
+                        let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
+                            content,
+                            point: point.to_string(),
+                            tools_skipped: None,
+                        });
+                        continue;
+                    }
                 }
-                logging::info("Turn complete - no tool calls");
-                // === INJECTION POINT B: No tools, turn complete ===
-                if let Some(content) = self.inject_soft_interrupts() {
-                    let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
-                        content,
-                        point: "B".to_string(),
-                        tools_skipped: None,
-                    });
-                    // Continue loop to process the injected message
-                    continue;
-                }
-                break;
             }
 
             // If graceful shutdown was signaled during streaming and we have tool calls,
@@ -3827,16 +3851,7 @@ impl Agent {
                 }
                 let tc = &tool_calls[tool_index];
 
-                if tc.name == "selfdev" && !self.session.is_canary {
-                    return Err(anyhow::anyhow!(
-                        "Tool 'selfdev' is only available in self-dev mode"
-                    ));
-                }
-                if let Some(allowed) = self.allowed_tools.as_ref() {
-                    if !allowed.contains(&tc.name) {
-                        return Err(anyhow::anyhow!("Tool '{}' is not allowed", tc.name));
-                    }
-                }
+                self.validate_tool_allowed(&tc.name)?;
 
                 let message_id = assistant_message_id
                     .clone()
@@ -4070,10 +4085,12 @@ impl Agent {
             // === INJECTION POINT D: All tools done, before next API call ===
             // This is the safest point for non-urgent injection since all tool_results
             // have been added and the conversation is in a valid state.
-            if let Some(content) = self.inject_soft_interrupts() {
+            if let PostToolInterruptOutcome::SoftInterrupt { content, point } =
+                self.take_post_tool_soft_interrupt()
+            {
                 let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
                     content,
-                    point: "D".to_string(),
+                    point: point.to_string(),
                     tools_skipped: None,
                 });
             }

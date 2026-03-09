@@ -376,10 +376,10 @@ pub async fn spawn_server_notify(cmd: &mut std::process::Command) -> Result<std:
 async fn poll_for_socket(path: &std::path::Path, timeout: Duration) -> Result<()> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if crate::transport::is_socket_path(path) {
-            if Stream::connect(path).await.is_ok() {
-                return Ok(());
-            }
+        if crate::transport::is_socket_path(path)
+            && Stream::connect(path).await.is_ok()
+        {
+            return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -1032,8 +1032,8 @@ impl Server {
         crate::transport::remove_socket(&self.socket_path);
         crate::transport::remove_socket(&self.debug_socket_path);
 
-        let mut main_listener = Listener::bind(&self.socket_path)?;
-        let mut debug_listener = Listener::bind(&self.debug_socket_path)?;
+        let main_listener = Listener::bind(&self.socket_path)?;
+        let debug_listener = Listener::bind(&self.debug_socket_path)?;
 
         // Restrict socket files to owner-only so other local users cannot connect.
         let _ = crate::platform::set_permissions_owner_only(&self.socket_path);
@@ -1543,7 +1543,7 @@ impl Server {
                 let swarm_event_tx = gw_swarm_event_tx.clone();
                 let server_name = gw_server_name.clone();
                 let server_icon = gw_server_icon.clone();
-                let ambient_runner = gw_ambient_runner.clone();
+                let _ambient_runner = gw_ambient_runner.clone();
                 let mcp_pool = Arc::clone(&gw_mcp_pool);
                 let shutdown_signals = Arc::clone(&gw_shutdown_signals);
 

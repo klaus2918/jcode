@@ -157,7 +157,7 @@ impl Tool for MultiEditTool {
             output.push_str(&generate_diff_summary(&original_content, &content));
         }
 
-        Ok(ToolOutput::new(output).with_title(format!("{}", params.file_path)))
+        Ok(ToolOutput::new(output).with_title(params.file_path.clone()))
     }
 }
 

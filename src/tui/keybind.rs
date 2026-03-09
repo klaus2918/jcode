@@ -10,7 +10,7 @@ pub struct KeyBinding {
 impl KeyBinding {
     pub fn matches(&self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         let (code, modifiers) = normalize_key(code, modifiers);
-        let (bind_code, bind_mods) = normalize_key(self.code.clone(), self.modifiers);
+        let (bind_code, bind_mods) = normalize_key(self.code, self.modifiers);
         code == bind_code && modifiers == bind_mods
     }
 }
@@ -25,7 +25,7 @@ pub struct ModelSwitchKeys {
 
 impl ModelSwitchKeys {
     pub fn direction_for(&self, code: KeyCode, modifiers: KeyModifiers) -> Option<i8> {
-        if self.next.matches(code.clone(), modifiers) {
+        if self.next.matches(code, modifiers) {
             return Some(1);
         }
         if let Some(prev) = &self.prev {
@@ -151,7 +151,7 @@ fn parse_keybinding(raw: &str) -> Option<KeyBinding> {
         "backspace" => KeyCode::Backspace,
         _ => {
             if key.len() == 1 {
-                KeyCode::Char(key.chars().next().unwrap())
+                KeyCode::Char(key.chars().next().expect("non-empty key string"))
             } else {
                 return None;
             }
@@ -194,7 +194,7 @@ pub struct ScrollKeys {
 
 impl ScrollKeys {
     fn matches_scroll_up(&self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        self.up.matches(code.clone(), modifiers)
+        self.up.matches(code, modifiers)
             || self
                 .up_fallback
                 .as_ref()
@@ -203,7 +203,7 @@ impl ScrollKeys {
     }
 
     fn matches_scroll_down(&self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        self.down.matches(code.clone(), modifiers)
+        self.down.matches(code, modifiers)
             || self
                 .down_fallback
                 .as_ref()
@@ -213,13 +213,13 @@ impl ScrollKeys {
 
     /// Check if a key matches scroll up (returns scroll amount, negative = up)
     pub fn scroll_amount(&self, code: KeyCode, modifiers: KeyModifiers) -> Option<i32> {
-        if self.matches_scroll_up(code.clone(), modifiers) {
+        if self.matches_scroll_up(code, modifiers) {
             return Some(-3); // Scroll up 3 lines
         }
-        if self.matches_scroll_down(code.clone(), modifiers) {
+        if self.matches_scroll_down(code, modifiers) {
             return Some(3); // Scroll down 3 lines
         }
-        if self.page_up.matches(code.clone(), modifiers) {
+        if self.page_up.matches(code, modifiers) {
             return Some(-10); // Page up
         }
         if self.page_down.matches(code, modifiers) {
@@ -251,7 +251,7 @@ impl ScrollKeys {
 
     /// Check if a key matches prompt jump (returns direction: -1 = prev, 1 = next)
     pub fn prompt_jump(&self, code: KeyCode, modifiers: KeyModifiers) -> Option<i8> {
-        if self.prompt_up.matches(code.clone(), modifiers) {
+        if self.prompt_up.matches(code, modifiers) {
             return Some(-1);
         }
         if self.prompt_down.matches(code, modifiers) {
@@ -388,7 +388,7 @@ pub struct CenteredToggleKeys {
 
 impl EffortSwitchKeys {
     pub fn direction_for(&self, code: KeyCode, modifiers: KeyModifiers) -> Option<i8> {
-        if self.increase.matches(code.clone(), modifiers) {
+        if self.increase.matches(code, modifiers) {
             return Some(1);
         }
         if self.decrease.matches(code, modifiers) {

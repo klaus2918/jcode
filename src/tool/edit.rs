@@ -134,7 +134,7 @@ impl Tool for EditTool {
             "Edited {}: replaced {} occurrence(s)\n{}\n\nContext after edit (lines {}-{}):\n{}",
             params.file_path, occurrences, diff, context.0, context.1, context.2
         ))
-        .with_title(format!("{}", params.file_path)))
+        .with_title(params.file_path.clone()))
     }
 }
 

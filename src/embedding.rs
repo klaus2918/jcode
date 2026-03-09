@@ -44,6 +44,7 @@ pub struct Embedder {
     tokenizer: Tokenizer,
 }
 
+#[derive(Default)]
 struct EmbedderCache {
     embedder: Option<Arc<Embedder>>,
     load_error: Option<String>,
@@ -60,24 +61,7 @@ struct EmbedderCache {
     cache_hits: u64,
 }
 
-impl Default for EmbedderCache {
-    fn default() -> Self {
-        Self {
-            embedder: None,
-            load_error: None,
-            loaded_at: None,
-            last_used_at: None,
-            load_count: 0,
-            unload_count: 0,
-            embed_calls: 0,
-            embed_failures: 0,
-            total_embed_ms: 0,
-            embedding_lru: std::collections::HashMap::new(),
-            lru_counter: 0,
-            cache_hits: 0,
-        }
-    }
-}
+
 
 #[derive(Debug, Clone)]
 pub struct EmbedderStats {

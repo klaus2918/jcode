@@ -100,7 +100,7 @@ impl Tool for WriteTool {
                 if diff.is_empty() { "" } else { ":" },
                 diff
             ))
-            .with_title(format!("{}", params.file_path)))
+            .with_title(params.file_path.clone()))
         } else {
             // For new files, show all lines as additions
             let diff = generate_diff_summary("", &params.content);
@@ -108,7 +108,7 @@ impl Tool for WriteTool {
                 "Created {} ({} lines):\n{}",
                 params.file_path, line_count, diff
             ))
-            .with_title(format!("{}", params.file_path)))
+            .with_title(params.file_path.clone()))
         }
     }
 }

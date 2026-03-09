@@ -1582,7 +1582,6 @@ pub fn stats() -> MemoryAgentStats {
 }
 
 // Re-export constants for use in memory.rs
-pub use crate::memory::{EMBEDDING_MAX_HITS, EMBEDDING_SIMILARITY_THRESHOLD};
 
 #[cfg(test)]
 mod tests {

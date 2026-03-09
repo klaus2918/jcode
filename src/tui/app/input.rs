@@ -267,7 +267,7 @@ pub(super) fn handle_navigation_shortcuts(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> bool {
-    if let Some(amount) = app.scroll_keys.scroll_amount(code.clone(), modifiers) {
+    if let Some(amount) = app.scroll_keys.scroll_amount(code, modifiers) {
         if amount < 0 {
             app.scroll_up((-amount) as usize);
         } else {
@@ -276,7 +276,7 @@ pub(super) fn handle_navigation_shortcuts(
         return true;
     }
 
-    if let Some(dir) = app.scroll_keys.prompt_jump(code.clone(), modifiers) {
+    if let Some(dir) = app.scroll_keys.prompt_jump(code, modifiers) {
         if dir < 0 {
             app.scroll_to_prev_prompt();
         } else {
@@ -290,7 +290,7 @@ pub(super) fn handle_navigation_shortcuts(
         return true;
     }
 
-    if app.scroll_keys.is_bookmark(code.clone(), modifiers) {
+    if app.scroll_keys.is_bookmark(code, modifiers) {
         app.toggle_scroll_bookmark();
         return true;
     }
@@ -321,13 +321,13 @@ pub(super) fn handle_pre_control_shortcuts(
         app.toggle_diagram_pane_position();
         return true;
     }
-    if let Some(direction) = app.model_switch_keys.direction_for(code.clone(), modifiers) {
+    if let Some(direction) = app.model_switch_keys.direction_for(code, modifiers) {
         app.cycle_model(direction);
         return true;
     }
     if let Some(direction) = app
         .effort_switch_keys
-        .direction_for(code.clone(), modifiers)
+        .direction_for(code, modifiers)
     {
         app.cycle_effort(direction);
         return true;
@@ -335,7 +335,7 @@ pub(super) fn handle_pre_control_shortcuts(
     if app
         .centered_toggle_keys
         .toggle
-        .matches(code.clone(), modifiers)
+        .matches(code, modifiers)
     {
         app.toggle_centered_mode();
         return true;
@@ -343,13 +343,13 @@ pub(super) fn handle_pre_control_shortcuts(
 
     app.normalize_diagram_state();
     let diagram_available = app.diagram_available();
-    if app.handle_diagram_focus_key(code.clone(), modifiers, diagram_available) {
+    if app.handle_diagram_focus_key(code, modifiers, diagram_available) {
         return true;
     }
-    if app.handle_diff_pane_focus_key(code.clone(), modifiers) {
+    if app.handle_diff_pane_focus_key(code, modifiers) {
         return true;
     }
-    if modifiers.contains(KeyModifiers::ALT) && handle_alt_key(app, code.clone()) {
+    if modifiers.contains(KeyModifiers::ALT) && handle_alt_key(app, code) {
         return true;
     }
 
@@ -395,7 +395,7 @@ pub(super) fn handle_global_control_shortcuts(
     code: KeyCode,
     diagram_available: bool,
 ) -> bool {
-    if app.handle_diagram_ctrl_key(code.clone(), diagram_available) {
+    if app.handle_diagram_ctrl_key(code, diagram_available) {
         return true;
     }
 
@@ -613,11 +613,11 @@ impl App {
         let mut modifiers = modifiers;
         ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
 
-        if handle_modal_key(self, code.clone(), modifiers)? {
+        if handle_modal_key(self, code, modifiers)? {
             return Ok(());
         }
 
-        if handle_pre_control_shortcuts(self, code.clone(), modifiers) {
+        if handle_pre_control_shortcuts(self, code, modifiers) {
             return Ok(());
         }
 

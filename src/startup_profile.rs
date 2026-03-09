@@ -41,7 +41,7 @@ pub fn report() -> String {
     let total = profile
         .marks
         .last()
-        .unwrap()
+        .expect("at least one profile mark")
         .1
         .duration_since(profile.start);
     let mut lines = vec![format!(

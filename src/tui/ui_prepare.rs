@@ -274,38 +274,17 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
         Ok(c) => c,
         Err(poisoned) => {
             let mut c = poisoned.into_inner();
-            c.key = None;
-            c.prepared = None;
-            c.prev_key = None;
-            c.prev_prepared = None;
+            c.entries.clear();
             c
         }
     };
 
-    if cache.key.as_ref() == Some(&key) {
-        if let Some(prepared) = cache.prepared.clone() {
-            return prepared;
-        }
+    let mut cache = cache;
+    if let Some(prepared) = cache.get_exact(&key) {
+        return prepared;
     }
 
-    let incremental_base = if cache.msg_count > 0
-        && msg_count > cache.msg_count
-        && cache.prepared.is_some()
-        && cache
-            .key
-            .as_ref()
-            .map(|k| {
-                k.width == key.width
-                    && k.diff_mode == key.diff_mode
-                    && k.diagram_mode == key.diagram_mode
-                    && k.centered == key.centered
-            })
-            .unwrap_or(false)
-    {
-        Some((cache.prepared.clone().unwrap(), cache.msg_count))
-    } else {
-        None
-    };
+    let incremental_base = cache.best_incremental_base(&key, msg_count);
 
     drop(cache);
 
@@ -319,12 +298,7 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
         Ok(c) => c,
         Err(poisoned) => poisoned.into_inner(),
     };
-    cache.prev_key = cache.key.take();
-    cache.prev_prepared = cache.prepared.take();
-    cache.prev_msg_count = cache.msg_count;
-    cache.key = Some(key);
-    cache.prepared = Some(prepared.clone());
-    cache.msg_count = msg_count;
+    cache.insert(key, prepared.clone(), msg_count);
     prepared
 }
 
@@ -832,16 +806,14 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
         }
     }
 
-    if include_streaming && app.is_processing() {
-        if !app.streaming_text().is_empty() {
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-            }
-            let content_width = width.saturating_sub(4) as usize;
-            let md_lines = app.render_streaming_markdown(content_width);
-            for line in md_lines {
-                lines.push(align_if_unset(line, align));
-            }
+    if include_streaming && app.is_processing() && !app.streaming_text().is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        let content_width = width.saturating_sub(4) as usize;
+        let md_lines = app.render_streaming_markdown(content_width);
+        for line in md_lines {
+            lines.push(align_if_unset(line, align));
         }
     }
 

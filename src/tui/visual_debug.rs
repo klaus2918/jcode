@@ -434,25 +434,25 @@ fn normalize_string(s: &str) -> String {
 
     let uuid_re = UUID_RE.get_or_init(|| {
         Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-            .unwrap()
+            .expect("valid uuid regex")
     });
-    let session_id_re = SESSION_ID_RE.get_or_init(|| Regex::new(r"session_[0-9a-zA-Z_]+").unwrap());
+    let session_id_re = SESSION_ID_RE.get_or_init(|| Regex::new(r"session_[0-9a-zA-Z_]+").expect("valid session_id regex"));
     let timestamp_re = TIMESTAMP_RE.get_or_init(|| {
-        Regex::new(r"\d{10,13}").unwrap() // Unix timestamps (10-13 digits)
+        Regex::new(r"\d{10,13}").expect("valid timestamp regex")
     });
     let iso_date_re =
-        ISO_DATE_RE.get_or_init(|| Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}").unwrap());
+        ISO_DATE_RE.get_or_init(|| Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}").expect("valid iso_date regex"));
     let duration_re = DURATION_RE.get_or_init(|| {
-        Regex::new(r"\d+(\.\d+)?s").unwrap() // Duration like "1.5s"
+        Regex::new(r"\d+(\.\d+)?s").expect("valid duration regex")
     });
     let path_re = PATH_RE.get_or_init(|| {
-        Regex::new(r"/(?:home|Users)/[^/\s]+").unwrap() // Home directory paths
+        Regex::new(r"/(?:home|Users)/[^/\s]+").expect("valid path regex")
     });
     let elapsed_re = ELAPSED_RE.get_or_init(|| {
-        Regex::new(r"\d+m?\d*s").unwrap() // Elapsed time like "5s" or "1m30s"
+        Regex::new(r"\d+m?\d*s").expect("valid elapsed regex")
     });
     let tokens_re = TOKENS_RE.get_or_init(|| {
-        Regex::new(r"\d+[kK]? tokens?").unwrap() // Token counts
+        Regex::new(r"\d+[kK]? tokens?").expect("valid tokens regex")
     });
 
     let mut result = s.to_string();

@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-#![allow(dead_code)]
 
 use crate::id::{extract_session_name, new_id, new_memorable_session_id};
 use crate::message::{ContentBlock, Message, Role, ToolCall};
@@ -12,8 +11,10 @@ use std::path::PathBuf;
 
 /// Session exit status - why the session ended
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum SessionStatus {
     /// Session is currently active/running
+    #[default]
     Active,
     /// User closed the session normally (Ctrl+C, /quit, etc.)
     Closed,
@@ -29,11 +30,7 @@ pub enum SessionStatus {
     Error { message: String },
 }
 
-impl Default for SessionStatus {
-    fn default() -> Self {
-        SessionStatus::Active
-    }
-}
+
 
 impl SessionStatus {
     /// Get a short display string for the status

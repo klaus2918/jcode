@@ -480,7 +480,7 @@ pub async fn fetch_github_username(client: &reqwest::Client, token: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    
     use tempfile::TempDir;
 
     #[test]

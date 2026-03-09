@@ -1454,7 +1454,7 @@ impl Provider for OpenRouterProvider {
                 }
                 Role::Assistant => {
                     let mut text_content = String::new();
-                    let mut reasoning_content = String::new();
+                    let reasoning_content = String::new();
                     let mut tool_calls = Vec::new();
                     let mut post_tool_outputs: Vec<(String, String)> = Vec::new();
                     let mut missing_tool_outputs: Vec<String> = Vec::new();
@@ -1511,17 +1511,16 @@ impl Provider for OpenRouterProvider {
 
                     if allow_reasoning
                         && (include_reasoning_content || !reasoning_content.is_empty())
+                        && (!reasoning_content.is_empty() || !tool_calls.is_empty())
                     {
-                        if !reasoning_content.is_empty() || !tool_calls.is_empty() {
-                            let reasoning_payload =
-                                if reasoning_content.is_empty() && !tool_calls.is_empty() {
-                                    " ".to_string()
-                                } else {
-                                    reasoning_content
-                                };
-                            assistant_msg["reasoning_content"] =
-                                serde_json::json!(reasoning_payload);
-                        }
+                        let reasoning_payload =
+                            if reasoning_content.is_empty() && !tool_calls.is_empty() {
+                                " ".to_string()
+                            } else {
+                                reasoning_content
+                            };
+                        assistant_msg["reasoning_content"] =
+                            serde_json::json!(reasoning_payload);
                     }
 
                     if !text_content.is_empty() || !tool_calls.is_empty() {
@@ -2337,7 +2336,7 @@ impl OpenRouterStream {
                     // Tool calls
                     if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                         for tc in tool_calls {
-                            let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                            let _index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
 
                             // Check if this is a new tool call
                             if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
@@ -2382,7 +2381,7 @@ impl OpenRouterStream {
                     }
 
                     // Check for finish reason
-                    if let Some(finish_reason) =
+                    if let Some(_finish_reason) =
                         choice.get("finish_reason").and_then(|f| f.as_str())
                     {
                         // Emit any pending tool call

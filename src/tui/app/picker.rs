@@ -470,36 +470,42 @@ impl App {
         }
         match code {
             KeyCode::Down => {
-                let picker = self.picker_state.as_mut().unwrap();
-                let max = picker.filtered.len().saturating_sub(1);
-                picker.selected = (picker.selected + 1).min(max);
+                if let Some(picker) = self.picker_state.as_mut() {
+                    let max = picker.filtered.len().saturating_sub(1);
+                    picker.selected = (picker.selected + 1).min(max);
+                }
                 Ok(true)
             }
             KeyCode::Up => {
-                let picker = self.picker_state.as_mut().unwrap();
-                picker.selected = picker.selected.saturating_sub(1);
+                if let Some(picker) = self.picker_state.as_mut() {
+                    picker.selected = picker.selected.saturating_sub(1);
+                }
                 Ok(true)
             }
             KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
-                let picker = self.picker_state.as_mut().unwrap();
-                let max = picker.filtered.len().saturating_sub(1);
-                picker.selected = (picker.selected + 1).min(max);
+                if let Some(picker) = self.picker_state.as_mut() {
+                    let max = picker.filtered.len().saturating_sub(1);
+                    picker.selected = (picker.selected + 1).min(max);
+                }
                 Ok(true)
             }
             KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
-                let picker = self.picker_state.as_mut().unwrap();
-                picker.selected = picker.selected.saturating_sub(1);
+                if let Some(picker) = self.picker_state.as_mut() {
+                    picker.selected = picker.selected.saturating_sub(1);
+                }
                 Ok(true)
             }
             KeyCode::PageDown => {
-                let picker = self.picker_state.as_mut().unwrap();
-                let max = picker.filtered.len().saturating_sub(1);
-                picker.selected = (picker.selected + 5).min(max);
+                if let Some(picker) = self.picker_state.as_mut() {
+                    let max = picker.filtered.len().saturating_sub(1);
+                    picker.selected = (picker.selected + 5).min(max);
+                }
                 Ok(true)
             }
             KeyCode::PageUp => {
-                let picker = self.picker_state.as_mut().unwrap();
-                picker.selected = picker.selected.saturating_sub(5);
+                if let Some(picker) = self.picker_state.as_mut() {
+                    picker.selected = picker.selected.saturating_sub(5);
+                }
                 Ok(true)
             }
             KeyCode::Enter => {
@@ -663,7 +669,9 @@ impl App {
         modifiers: KeyModifiers,
     ) -> Result<()> {
         let action = {
-            let picker_cell = self.session_picker_overlay.as_ref().unwrap();
+            let Some(picker_cell) = self.session_picker_overlay.as_ref() else {
+                return Ok(());
+            };
             let mut picker = picker_cell.borrow_mut();
             picker.handle_overlay_key(code, modifiers)?
         };
@@ -691,9 +699,8 @@ impl App {
     ) -> Result<()> {
         match code {
             KeyCode::Esc => {
-                if let Some(ref picker) = self.picker_state {
+                if let Some(ref mut picker) = self.picker_state {
                     if !picker.filter.is_empty() {
-                        let picker = self.picker_state.as_mut().unwrap();
                         picker.filter.clear();
                         Self::apply_picker_filter(picker);
                         return Ok(());

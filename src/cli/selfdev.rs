@@ -3,11 +3,10 @@ use std::process::Command as ProcessCommand;
 
 use crate::{build, id, logging, server, session, startup_profile, tui};
 
-use super::hot_exec::hot_rebuild;
-use super::hot_exec::hot_reload;
-use super::hot_exec::hot_update;
+use super::hot_exec::{execute_requested_action, has_requested_action};
 use super::terminal::{
-    cleanup_tui_runtime, init_tui_runtime, set_current_session, spawn_session_signal_watchers,
+    cleanup_tui_runtime, cleanup_tui_runtime_for_run_result, init_tui_runtime,
+    print_session_resume_hint, set_current_session, spawn_session_signal_watchers,
 };
 
 pub const EXIT_RELOAD_REQUESTED: i32 = 42;
@@ -168,9 +167,9 @@ pub async fn run_canary_wrapper(
             let canary_path = build::canary_binary_path().ok();
             let stable_path = build::stable_binary_path().ok();
             if canary_path.as_ref().map(|p| p.exists()).unwrap_or(false) {
-                canary_path.unwrap()
+                canary_path.expect("canary path verified above")
             } else if stable_path.as_ref().map(|p| p.exists()).unwrap_or(false) {
-                stable_path.unwrap()
+                stable_path.expect("stable path verified above")
             } else {
                 anyhow::bail!("No binary found for server!");
             }
@@ -263,28 +262,13 @@ pub async fn run_canary_wrapper(
         }
     };
 
-    let will_exec = run_result.reload_session.is_some()
-        || run_result.rebuild_session.is_some()
-        || run_result.update_session.is_some()
-        || run_result.exit_code == Some(EXIT_RELOAD_REQUESTED);
+    cleanup_tui_runtime_for_run_result(
+        &tui_runtime,
+        &run_result,
+        run_result.exit_code == Some(EXIT_RELOAD_REQUESTED),
+    );
 
-    if !will_exec {
-        cleanup_tui_runtime(&tui_runtime, true);
-    } else {
-        cleanup_tui_runtime(&tui_runtime, false);
-    }
-
-    if let Some(ref reload_session_id) = run_result.reload_session {
-        hot_reload(reload_session_id)?;
-    }
-
-    if let Some(ref rebuild_session_id) = run_result.rebuild_session {
-        hot_rebuild(rebuild_session_id)?;
-    }
-
-    if let Some(ref update_session_id) = run_result.update_session {
-        hot_update(update_session_id)?;
-    }
+    execute_requested_action(&run_result)?;
 
     if let Some(code) = run_result.exit_code {
         if code == EXIT_RELOAD_REQUESTED {
@@ -315,20 +299,16 @@ pub async fn run_canary_wrapper(
         }
     }
 
-    eprintln!();
-    eprintln!(
-        "\x1b[33mSession \x1b[1m{}\x1b[0m\x1b[33m - to resume:\x1b[0m",
-        session_name
-    );
-    eprintln!("  jcode --resume {}", session_id);
-    eprintln!();
+    if !has_requested_action(&run_result) {
+        print_session_resume_hint(session_id);
+    }
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
     use crate::{provider, session, storage, tool};
     use std::ffi::OsString;
     use std::sync::Arc;

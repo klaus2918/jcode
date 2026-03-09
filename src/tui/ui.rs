@@ -559,10 +559,12 @@ fn render_context_bar(
         }
     }
     if rem > 0 && !final_segs.is_empty() {
-        bar.push(Span::styled(
-            "█".repeat(rem),
-            Style::default().fg(final_segs.last().unwrap().3),
-        ));
+        if let Some(last_seg) = final_segs.last() {
+            bar.push(Span::styled(
+                "█".repeat(rem),
+                Style::default().fg(last_seg.3),
+            ));
+        }
     }
     if empty_w > 0 {
         bar.push(Span::styled(
@@ -1399,14 +1401,61 @@ struct BodyCacheKey {
     centered: bool,
 }
 
+#[derive(Clone)]
+struct BodyCacheEntry {
+    key: BodyCacheKey,
+    prepared: Arc<PreparedMessages>,
+    msg_count: usize,
+}
+
+const BODY_CACHE_MAX_ENTRIES: usize = 8;
+
 #[derive(Default)]
 struct BodyCacheState {
-    key: Option<BodyCacheKey>,
-    prepared: Option<Arc<PreparedMessages>>,
-    msg_count: usize,
-    prev_key: Option<BodyCacheKey>,
-    prev_prepared: Option<Arc<PreparedMessages>>,
-    prev_msg_count: usize,
+    entries: VecDeque<BodyCacheEntry>,
+}
+
+impl BodyCacheState {
+    fn get_exact(&mut self, key: &BodyCacheKey) -> Option<Arc<PreparedMessages>> {
+        let pos = self.entries.iter().position(|entry| &entry.key == key)?;
+        let entry = self.entries.remove(pos)?;
+        let prepared = entry.prepared.clone();
+        self.entries.push_front(entry);
+        Some(prepared)
+    }
+
+    fn best_incremental_base(
+        &self,
+        key: &BodyCacheKey,
+        msg_count: usize,
+    ) -> Option<(Arc<PreparedMessages>, usize)> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.msg_count > 0
+                    && msg_count > entry.msg_count
+                    && entry.key.width == key.width
+                    && entry.key.diff_mode == key.diff_mode
+                    && entry.key.diagram_mode == key.diagram_mode
+                    && entry.key.centered == key.centered
+            })
+            .max_by_key(|entry| entry.msg_count)
+            .map(|entry| (entry.prepared.clone(), entry.msg_count))
+    }
+
+    fn insert(&mut self, key: BodyCacheKey, prepared: Arc<PreparedMessages>, msg_count: usize) {
+        if let Some(pos) = self.entries.iter().position(|entry| entry.key == key) {
+            self.entries.remove(pos);
+        }
+        self.entries.push_front(BodyCacheEntry {
+            key,
+            prepared,
+            msg_count,
+        });
+        while self.entries.len() > BODY_CACHE_MAX_ENTRIES {
+            self.entries.pop_back();
+        }
+    }
 }
 
 static BODY_CACHE: OnceLock<Mutex<BodyCacheState>> = OnceLock::new();
@@ -2713,6 +2762,76 @@ mod tests {
     }
 
     #[test]
+    fn test_body_cache_state_keeps_multiple_width_entries() {
+        let key_a = BodyCacheKey {
+            width: 40,
+            diff_mode: crate::config::DiffDisplayMode::Off,
+            messages_version: 1,
+            diagram_mode: crate::config::DiagramDisplayMode::Pinned,
+            centered: false,
+        };
+        let key_b = BodyCacheKey {
+            width: 41,
+            ..key_a.clone()
+        };
+
+        let prepared_a = Arc::new(PreparedMessages {
+            wrapped_lines: vec![Line::from("a")],
+            wrapped_user_indices: Vec::new(),
+            wrapped_user_prompt_starts: Vec::new(),
+            image_regions: Vec::new(),
+            edit_tool_ranges: Vec::new(),
+        });
+        let prepared_b = Arc::new(PreparedMessages {
+            wrapped_lines: vec![Line::from("b")],
+            wrapped_user_indices: Vec::new(),
+            wrapped_user_prompt_starts: Vec::new(),
+            image_regions: Vec::new(),
+            edit_tool_ranges: Vec::new(),
+        });
+
+        let mut cache = BodyCacheState::default();
+        cache.insert(key_a.clone(), prepared_a.clone(), 3);
+        cache.insert(key_b.clone(), prepared_b.clone(), 3);
+
+        let hit_a = cache.get_exact(&key_a).expect("expected width 40 cache hit");
+        let hit_b = cache.get_exact(&key_b).expect("expected width 41 cache hit");
+
+        assert!(Arc::ptr_eq(&hit_a, &prepared_a));
+        assert!(Arc::ptr_eq(&hit_b, &prepared_b));
+        assert_eq!(cache.entries.len(), 2);
+    }
+
+    #[test]
+    fn test_body_cache_state_evicts_oldest_entries() {
+        let mut cache = BodyCacheState::default();
+
+        for idx in 0..(BODY_CACHE_MAX_ENTRIES + 2) {
+            let key = BodyCacheKey {
+                width: 40 + idx as u16,
+                diff_mode: crate::config::DiffDisplayMode::Off,
+                messages_version: 1,
+                diagram_mode: crate::config::DiagramDisplayMode::Pinned,
+                centered: false,
+            };
+            let prepared = Arc::new(PreparedMessages {
+                wrapped_lines: vec![Line::from(format!("{idx}"))],
+                wrapped_user_indices: Vec::new(),
+                wrapped_user_prompt_starts: Vec::new(),
+                image_regions: Vec::new(),
+                edit_tool_ranges: Vec::new(),
+            });
+            cache.insert(key, prepared, idx);
+        }
+
+        assert_eq!(cache.entries.len(), BODY_CACHE_MAX_ENTRIES);
+        assert!(cache
+            .entries
+            .iter()
+            .all(|entry| entry.key.width >= 42), "oldest widths should be evicted");
+    }
+
+    #[test]
     fn test_file_diff_cache_reuses_entry_when_signature_matches() {
         let temp = tempfile::NamedTempFile::new().expect("temp file");
         std::fs::write(temp.path(), "fn main() {}\n").expect("write file");
@@ -3686,7 +3805,7 @@ mod tests {
         ];
 
         for (img_w, img_h, label) in test_cases {
-            let diagram = info_widget::DiagramInfo {
+            let _diagram = info_widget::DiagramInfo {
                 hash: img_w as u64 * 1000 + img_h as u64,
                 width: img_w,
                 height: img_h,

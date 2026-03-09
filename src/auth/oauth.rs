@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-#![allow(dead_code)]
 
 use crate::auth::claude as claude_auth;
 use anyhow::Result;
@@ -1585,7 +1584,7 @@ mod tests {
 
     #[test]
     fn openai_auth_url_contains_required_params() {
-        let (verifier, challenge) = generate_pkce();
+        let (_verifier, challenge) = generate_pkce();
         let state = generate_state();
         let redirect_uri = openai::redirect_uri(openai::DEFAULT_PORT);
         let auth_url = format!(

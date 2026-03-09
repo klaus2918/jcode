@@ -126,7 +126,7 @@ fn handle_replay_input(
             _ => {
                 if let Some(amount) = app
                     .scroll_keys
-                    .scroll_amount(key.code.clone(), key.modifiers)
+                    .scroll_amount(key.code, key.modifiers)
                 {
                     if amount < 0 {
                         app.scroll_up((-amount) as usize);

@@ -130,8 +130,10 @@ impl App {
             return Some(0);
         }
         // First char of the command (after /) must match
-        if !h.starts_with(&n[..n.chars().next().unwrap().len_utf8()]) {
-            return None;
+        if let Some(first_char) = n.chars().next() {
+            if !h.starts_with(&n[..first_char.len_utf8()]) {
+                return None;
+            }
         }
         let mut score = 0usize;
         let mut pos = 0usize;
@@ -882,7 +884,7 @@ impl App {
             // Clean up old socket
             let _ = std::fs::remove_file(&socket_path);
 
-            let mut listener = match Listener::bind(&socket_path) {
+            let listener = match Listener::bind(&socket_path) {
                 Ok(l) => l,
                 Err(e) => {
                     crate::logging::error(&format!("Failed to bind debug socket: {}", e));
@@ -1082,7 +1084,7 @@ pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
         }
 
         if app.is_remote {
-            info.push_str(&format!("\n**Remote Mode:** connected\n"));
+            info.push_str("\n**Remote Mode:** connected\n");
             if let Some(count) = app.remote_client_count {
                 info.push_str(&format!("**Connected Clients:** {}\n", count));
             }

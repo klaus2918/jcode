@@ -241,7 +241,7 @@ pub async fn run_gateway(
 /// Plain HTTP requests get handled inline; WebSocket connections proceed to
 /// the existing auth + bridge flow.
 async fn handle_connection(
-    mut tcp_stream: tokio::net::TcpStream,
+    tcp_stream: tokio::net::TcpStream,
     peer_addr: SocketAddr,
     registry: Arc<tokio::sync::RwLock<DeviceRegistry>>,
     client_tx: tokio::sync::mpsc::UnboundedSender<GatewayClient>,
@@ -601,9 +601,8 @@ async fn handle_http(
 
         ("OPTIONS", _) => {
             // CORS preflight
-            format!(
-                "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            ).into_bytes()
+            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_string().into_bytes()
         }
 
         _ => {

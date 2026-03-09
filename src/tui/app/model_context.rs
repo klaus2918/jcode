@@ -67,13 +67,11 @@ impl App {
             } else {
                 current_index + 1
             }
-        } else {
-            if current_index == 0 {
+        } else if current_index == 0 {
                 0 // already at min
             } else {
                 current_index - 1
-            }
-        };
+            };
 
         let next_effort = efforts[next_index];
         if Some(next_effort.to_string()) == current {

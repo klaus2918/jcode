@@ -553,13 +553,11 @@ fn escape_currency_dollars(text: &str) -> String {
             continue;
         }
 
-        if at_line_start {
-            if c == ' ' || c == '\t' {
-                leading_spaces += 1;
-                out.push(c);
-                i += 1;
-                continue;
-            }
+        if at_line_start && (c == ' ' || c == '\t') {
+            leading_spaces += 1;
+            out.push(c);
+            i += 1;
+            continue;
         }
 
         let maybe_fence = inline_code_len == 0 && c == '`' && count_backticks(&chars, i) >= 3;

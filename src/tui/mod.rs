@@ -21,8 +21,6 @@ mod ui_diff;
 pub mod visual_debug;
 
 pub use app::{App, DisplayMessage, ProcessingStatus, RunResult};
-pub use backend::{DebugEvent, DebugMessage, RemoteConnection};
-pub use core::TuiCore;
 
 use crate::message::ToolCall;
 use ratatui::prelude::Frame;

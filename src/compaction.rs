@@ -336,7 +336,7 @@ impl CompactionManager {
             ewma_delta = alpha * delta + (1.0 - alpha) * ewma_delta;
         }
 
-        let current = *snapshots.last().unwrap() as f64;
+        let current = *snapshots.last().expect("non-empty snapshots") as f64;
         let projected = current + ewma_delta * cfg.lookahead_turns as f64;
 
         crate::logging::info(&format!(
@@ -1105,24 +1105,22 @@ impl CompactionManager {
                                 && word.len() > 3
                                 && word.len() < 120
                                 && !word.starts_with("http")
-                            {
-                                if word.contains(".rs")
+                                && (word.contains(".rs")
                                     || word.contains(".ts")
                                     || word.contains(".py")
                                     || word.contains(".toml")
                                     || word.contains(".json")
                                     || word.starts_with("src/")
-                                    || word.starts_with("./")
-                                {
-                                    let cleaned = word.trim_matches(|c: char| {
-                                        !c.is_alphanumeric()
-                                            && c != '/'
-                                            && c != '.'
-                                            && c != '_'
-                                            && c != '-'
-                                    });
-                                    file_mentions.push(cleaned.to_string());
-                                }
+                                    || word.starts_with("./"))
+                            {
+                                let cleaned = word.trim_matches(|c: char| {
+                                    !c.is_alphanumeric()
+                                        && c != '/'
+                                        && c != '.'
+                                        && c != '_'
+                                        && c != '-'
+                                });
+                                file_mentions.push(cleaned.to_string());
                             }
                         }
                     }

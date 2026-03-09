@@ -612,9 +612,10 @@ impl PipelineState {
 }
 
 /// State of the memory sidecar
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum MemoryState {
     /// Idle, no activity
+    #[default]
     Idle,
     /// Running embedding search
     Embedding,
@@ -630,11 +631,6 @@ pub enum MemoryState {
     ToolAction { action: String, detail: String },
 }
 
-impl Default for MemoryState {
-    fn default() -> Self {
-        MemoryState::Idle
-    }
-}
 
 /// A memory system event
 #[derive(Debug, Clone)]
@@ -960,7 +956,7 @@ impl InfoWidgetData {
 }
 
 /// State for a single widget instance
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct SingleWidgetState {
     /// Current page index (for widgets with multiple pages)
     page_index: usize,
@@ -968,14 +964,7 @@ struct SingleWidgetState {
     last_page_switch: Option<Instant>,
 }
 
-impl Default for SingleWidgetState {
-    fn default() -> Self {
-        Self {
-            page_index: 0,
-            last_page_switch: None,
-        }
-    }
-}
+
 
 /// Global state for all widgets
 #[derive(Debug, Clone)]
@@ -1597,7 +1586,7 @@ fn render_todos_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
         .iter()
         .filter(|t| t.status == "completed")
         .count();
-    let in_progress: usize = data
+    let _in_progress: usize = data
         .todos
         .iter()
         .filter(|t| t.status == "in_progress")
@@ -2109,7 +2098,7 @@ fn render_swarm_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
 }
 
 /// Render background tasks widget
-fn render_background_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
+fn render_background_widget(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'static>> {
     let Some(info) = &data.background_info else {
         return Vec::new();
     };
@@ -2665,7 +2654,7 @@ fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static
         .iter()
         .filter(|t| t.status == "completed")
         .count();
-    let in_progress: usize = data
+    let _in_progress: usize = data
         .todos
         .iter()
         .filter(|t| t.status == "in_progress")
@@ -2754,7 +2743,7 @@ fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static
 
         if !priority_marker.0.is_empty() {
             spans.push(Span::styled(
-                format!("{}", priority_marker.0),
+                priority_marker.0.clone(),
                 Style::default().fg(priority_marker.1),
             ));
         }

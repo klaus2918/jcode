@@ -37,8 +37,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::Instant;
 
-const DEFAULT_RENDER_WIDTH: u32 = 1600;
-const DEFAULT_RENDER_HEIGHT: u32 = 1200;
+/// Render Mermaid source images a bit denser than the immediate terminal-pixel
+/// target so the terminal image protocol scales down from a sharper PNG.
+/// This especially helps small text remain legible in the pinned side pane.
+const RENDER_SUPERSAMPLE: f64 = 1.5;
+const DEFAULT_RENDER_WIDTH: u32 = 2400;
+const DEFAULT_RENDER_HEIGHT: u32 = 1800;
 const DEFAULT_PICKER_FONT_SIZE: (u16, u16) = (8, 16);
 
 /// When true, mermaid placeholders include image hashes even without a
@@ -995,7 +999,7 @@ pub fn debug_test_scroll(content: Option<&str>) -> ScrollTestResult {
     let render_result = render_mermaid_sized(test_content, Some(80));
     let hash = match render_result {
         RenderResult::Image { hash, .. } => hash,
-        RenderResult::Error(e) => {
+        RenderResult::Error(_e) => {
             return ScrollTestResult {
                 hash: "error".to_string(),
                 frames_rendered: 0,
@@ -1592,7 +1596,8 @@ fn calculate_render_size(
         _ => 1.1,
     };
 
-    let width = (base_width * complexity_factor).clamp(400.0, DEFAULT_RENDER_WIDTH as f64);
+    let width =
+        (base_width * complexity_factor * RENDER_SUPERSAMPLE).clamp(400.0, DEFAULT_RENDER_WIDTH as f64);
     let height = (width * 0.75).clamp(300.0, DEFAULT_RENDER_HEIGHT as f64);
 
     (width, height)
@@ -2907,10 +2912,8 @@ pub fn evict_old_cache() {
         let should_delete = age.as_secs() > CACHE_MAX_AGE_SECS
             || (total_size - deleted_bytes) > CACHE_MAX_SIZE_BYTES;
 
-        if should_delete {
-            if fs::remove_file(path).is_ok() {
-                deleted_bytes += size;
-            }
+        if should_delete && fs::remove_file(path).is_ok() {
+            deleted_bytes += size;
         }
     }
 }
@@ -3296,8 +3299,8 @@ mod tests {
             small_path, large_path,
             "expected width-specific cache variants"
         );
-        assert!(small_path.to_string_lossy().contains("_w400"));
-        assert!(large_path.to_string_lossy().contains("_w960"));
+        assert!(small_path.to_string_lossy().contains("_w432"));
+        assert!(large_path.to_string_lossy().contains("_w1440"));
     }
 
     #[test]
@@ -3338,12 +3341,12 @@ mod tests {
             large_h
         );
         assert!(
-            small_w <= 450,
+            small_w <= 650,
             "small render should stay near narrow target width, got {}",
             small_w
         );
         assert!(
-            large_w >= 900,
+            large_w >= 1300,
             "large render should approach wide target width, got {}",
             large_w
         );

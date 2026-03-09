@@ -47,7 +47,7 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if trimmed == "/save" || trimmed.starts_with("/save ") {
-        let label = trimmed.strip_prefix("/save").unwrap().trim();
+        let label = trimmed.strip_prefix("/save").unwrap_or_default().trim();
         let label = if label.is_empty() {
             None
         } else {

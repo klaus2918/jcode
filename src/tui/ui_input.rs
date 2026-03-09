@@ -127,7 +127,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         String::new()
     };
 
-    let mut line = if let Some(build_progress) = crate::build::read_build_progress() {
+    let line = if let Some(build_progress) = crate::build::read_build_progress() {
         let spinner_idx = (elapsed * 12.5) as usize % super::SPINNER_FRAMES.len();
         let spinner = super::SPINNER_FRAMES[spinner_idx];
         Line::from(vec![

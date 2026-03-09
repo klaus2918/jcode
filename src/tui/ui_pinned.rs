@@ -74,6 +74,7 @@ struct PinnedCacheKey {
     collect_images: bool,
 }
 
+#[derive(Default)]
 struct PinnedCacheState {
     key: Option<PinnedCacheKey>,
     entries: Vec<PinnedContentEntry>,
@@ -93,15 +94,7 @@ struct PinnedImagePlacement {
     rows: u16,
 }
 
-impl Default for PinnedCacheState {
-    fn default() -> Self {
-        Self {
-            key: None,
-            entries: Vec::new(),
-            rendered_lines: None,
-        }
-    }
-}
+
 
 static PINNED_CACHE: OnceLock<Mutex<PinnedCacheState>> = OnceLock::new();
 
@@ -517,7 +510,9 @@ pub(super) fn draw_pinned_content_cached(
         });
     }
 
-    let rendered = cache.rendered_lines.as_ref().unwrap();
+    let Some(rendered) = cache.rendered_lines.as_ref() else {
+        return;
+    };
     let total_lines = rendered.lines.len();
     PINNED_PANE_TOTAL_LINES.store(total_lines, Ordering::Relaxed);
 

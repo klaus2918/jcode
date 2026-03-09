@@ -6,7 +6,7 @@
 //!
 //! Integrates with the Haiku sidecar for relevance verification and extraction.
 
-use crate::memory_graph::{EdgeKind, MemoryGraph, GRAPH_VERSION};
+use crate::memory_graph::{MemoryGraph, GRAPH_VERSION};
 use crate::sidecar::Sidecar;
 use crate::storage;
 use crate::tui::info_widget::{
@@ -561,20 +561,18 @@ fn prompt_preview(prompt: &str, max_chars: usize) -> String {
 /// Trust levels for memories
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum TrustLevel {
     /// User explicitly stated this
     High,
     /// Observed from user behavior
+    #[default]
     Medium,
     /// Inferred by the agent
     Low,
 }
 
-impl Default for TrustLevel {
-    fn default() -> Self {
-        TrustLevel::Medium
-    }
-}
+
 
 /// A reinforcement breadcrumb tracking when/where a memory was reinforced
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1334,10 +1332,10 @@ impl MemoryManager {
         for entry in graph.active_memories() {
             if let Some(ref emb) = entry.embedding {
                 let sim = crate::embedding::cosine_similarity(query_emb, emb);
-                if sim >= threshold {
-                    if best.as_ref().map(|(_, s)| sim > *s).unwrap_or(true) {
-                        best = Some((entry.id.clone(), sim));
-                    }
+                if sim >= threshold
+                    && best.as_ref().map(|(_, s)| sim > *s).unwrap_or(true)
+                {
+                    best = Some((entry.id.clone(), sim));
                 }
             }
         }
@@ -2267,7 +2265,7 @@ impl MemoryManager {
     /// Get memories related to a given memory via graph traversal
     pub fn get_related(&self, memory_id: &str, depth: usize) -> Result<Vec<MemoryEntry>> {
         // Find which store contains the memory
-        let (mut graph, is_project) = {
+        let (mut graph, _is_project) = {
             let project_graph = self.load_project_graph()?;
             if project_graph.memories.contains_key(memory_id) {
                 (project_graph, true)

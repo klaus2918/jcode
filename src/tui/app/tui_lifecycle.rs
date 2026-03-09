@@ -588,7 +588,7 @@ impl App {
             // Build the reload message based on what triggered it
             // Extract build hash for the AI notification
             let is_reload = reload_info.is_some();
-            let (message, build_hash) = if let Some(info) = reload_info {
+            let (message, _build_hash) = if let Some(info) = reload_info {
                 if let Some(hash) = info.strip_prefix("reload:") {
                     let h = hash.trim().to_string();
                     (
