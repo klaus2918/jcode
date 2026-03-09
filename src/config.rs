@@ -390,7 +390,7 @@ impl Default for ProviderConfig {
         Self {
             default_model: None,
             default_provider: None,
-            openai_reasoning_effort: Some("xhigh".to_string()),
+            openai_reasoning_effort: Some("high".to_string()),
             openai_transport: None,
             copilot_premium: None,
         }
@@ -997,7 +997,7 @@ update_channel = "stable"
 # When set, this provider is preferred on startup if available
 # default_provider = "copilot"
 # OpenAI reasoning effort (none|low|medium|high|xhigh)
-openai_reasoning_effort = "xhigh"
+openai_reasoning_effort = "high"
 # OpenAI transport mode (auto|websocket|https)
 # openai_transport = "auto"
 # Copilot premium mode: "normal" (default), "one" (first msg only), "zero" (all free)
