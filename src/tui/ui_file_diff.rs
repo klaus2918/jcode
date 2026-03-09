@@ -74,10 +74,7 @@ pub(super) fn file_content_signature(file_path: &str) -> Option<FileContentSigna
     })
 }
 
-fn render_file_diff_row(
-    row: &FileDiffDisplayRow,
-    file_ext: Option<&str>,
-) -> Line<'static> {
+fn render_file_diff_row(row: &FileDiffDisplayRow, file_ext: Option<&str>) -> Line<'static> {
     match row.kind {
         FileDiffDisplayRowKind::Placeholder => Line::from(Span::styled(
             row.text.clone(),
