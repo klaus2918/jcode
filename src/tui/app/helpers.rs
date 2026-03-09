@@ -1,6 +1,180 @@
 use crate::tui::info_widget::GitInfo;
-use std::path::Path;
+use crossterm::event::{KeyCode, KeyModifiers};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+#[cfg(target_os = "macos")]
+pub(super) fn ctrl_bracket_fallback_to_esc(code: &mut KeyCode, modifiers: &mut KeyModifiers) {
+    if !modifiers.contains(KeyModifiers::CONTROL) {
+        return;
+    }
+    match code {
+        KeyCode::Esc => {
+            *code = KeyCode::Char('[');
+        }
+        KeyCode::Char('5') => {
+            // Legacy tty mapping for Ctrl+]
+            *code = KeyCode::Char(']');
+        }
+        _ => {}
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn ctrl_bracket_fallback_to_esc(_code: &mut KeyCode, _modifiers: &mut KeyModifiers) {}
+
+/// Debug command file path
+pub(super) fn debug_cmd_path() -> PathBuf {
+    if let Ok(path) = std::env::var("JCODE_DEBUG_CMD_PATH") {
+        return PathBuf::from(path);
+    }
+    std::env::temp_dir().join("jcode_debug_cmd")
+}
+
+/// Debug response file path
+pub(super) fn debug_response_path() -> PathBuf {
+    if let Ok(path) = std::env::var("JCODE_DEBUG_RESPONSE_PATH") {
+        return PathBuf::from(path);
+    }
+    std::env::temp_dir().join("jcode_debug_response")
+}
+
+/// Parse rate limit reset time from error message
+/// Returns the Duration until rate limit resets, if this is a rate limit error
+pub(super) fn parse_rate_limit_error(error: &str) -> Option<Duration> {
+    let error_lower = error.to_lowercase();
+
+    if !error_lower.contains("rate limit")
+        && !error_lower.contains("rate_limit")
+        && !error_lower.contains("429")
+        && !error_lower.contains("too many requests")
+        && !error_lower.contains("hit your limit")
+    {
+        return None;
+    }
+
+    if let Some(idx) = error_lower.find("retry") {
+        let after = &error_lower[idx..];
+        for word in after.split_whitespace() {
+            if let Ok(secs) = word
+                .trim_matches(|c: char| !c.is_ascii_digit())
+                .parse::<u64>()
+            {
+                if secs > 0 && secs < 86400 {
+                    return Some(Duration::from_secs(secs));
+                }
+            }
+        }
+    }
+
+    if let Some(idx) = error_lower.find("resets") {
+        let after = &error_lower[idx..];
+        for word in after.split_whitespace() {
+            let word = word.trim_matches(|c: char| c == '·' || c == ' ');
+            if word.ends_with("am") || word.ends_with("pm") {
+                if let Some(duration) = parse_clock_time_to_duration(word) {
+                    return Some(duration);
+                }
+            }
+        }
+    }
+
+    if let Some(idx) = error_lower.find("reset") {
+        let after = &error_lower[idx..];
+        for word in after.split_whitespace() {
+            if let Ok(secs) = word
+                .trim_matches(|c: char| !c.is_ascii_digit())
+                .parse::<u64>()
+            {
+                if secs > 0 && secs < 86400 {
+                    return Some(Duration::from_secs(secs));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+pub(super) fn is_context_limit_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("context length")
+        || lower.contains("context window")
+        || lower.contains("maximum context")
+        || lower.contains("max context")
+        || lower.contains("token limit")
+        || lower.contains("too many tokens")
+        || lower.contains("prompt is too long")
+        || lower.contains("input is too long")
+        || lower.contains("request too large")
+        || lower.contains("length limit")
+        || lower.contains("maximum tokens")
+        || (lower.contains("exceeded") && lower.contains("tokens"))
+}
+
+/// Parse a clock time like "5am" or "12:30pm" and return duration until that time
+pub(super) fn parse_clock_time_to_duration(time_str: &str) -> Option<Duration> {
+    let time_lower = time_str.to_lowercase();
+    let is_pm = time_lower.ends_with("pm");
+    let time_part = time_lower.trim_end_matches("am").trim_end_matches("pm");
+
+    let (hour, minute) = if time_part.contains(':') {
+        let parts: Vec<&str> = time_part.split(':').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+        let h: u32 = parts[0].parse().ok()?;
+        let m: u32 = parts[1].parse().ok()?;
+        (h, m)
+    } else {
+        let h: u32 = time_part.parse().ok()?;
+        (h, 0)
+    };
+
+    let hour_24 = if is_pm && hour != 12 {
+        hour + 12
+    } else if !is_pm && hour == 12 {
+        0
+    } else {
+        hour
+    };
+
+    if hour_24 >= 24 || minute >= 60 {
+        return None;
+    }
+
+    let now = chrono::Local::now();
+    let today = now.date_naive();
+    let target_time = chrono::NaiveTime::from_hms_opt(hour_24, minute, 0)?;
+    let mut target_datetime = today.and_time(target_time);
+
+    if target_datetime <= now.naive_local() {
+        target_datetime = (today + chrono::Duration::days(1)).and_time(target_time);
+    }
+
+    let duration_secs = (target_datetime - now.naive_local()).num_seconds();
+    if duration_secs > 0 {
+        Some(Duration::from_secs(duration_secs as u64))
+    } else {
+        None
+    }
+}
+
+pub(super) fn format_cache_footer(read_tokens: Option<u64>, write_tokens: Option<u64>) -> Option<String> {
+    let _ = (read_tokens, write_tokens);
+    None
+}
+
+/// Format token count for display (e.g., 63000 -> "63K")
+pub(super) fn format_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.0}k", tokens as f64 / 1_000.0)
+    } else {
+        format!("{}", tokens)
+    }
+}
 
 /// Copy text to clipboard, trying wl-copy first (Wayland), then arboard as fallback.
 pub(super) fn copy_to_clipboard(text: &str) -> bool {
