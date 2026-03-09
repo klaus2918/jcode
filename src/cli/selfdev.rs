@@ -3,12 +3,12 @@ use std::process::Command as ProcessCommand;
 
 use crate::{build, id, logging, server, session, startup_profile, tui};
 
+use super::hot_exec::hot_rebuild;
+use super::hot_exec::hot_reload;
+use super::hot_exec::hot_update;
 use super::terminal::{
     cleanup_tui_runtime, init_tui_runtime, set_current_session, spawn_session_signal_watchers,
 };
-use super::tui_launch::hot_rebuild;
-use super::tui_launch::hot_reload;
-use super::tui_launch::hot_update;
 
 pub const EXIT_RELOAD_REQUESTED: i32 = 42;
 
