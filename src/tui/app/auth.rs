@@ -1204,3 +1204,87 @@ impl App {
     }
 
 }
+
+pub(super) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed == "/auth" {
+        app.show_auth_status();
+        return true;
+    }
+
+    if trimmed == "/login" {
+        app.show_interactive_login();
+        return true;
+    }
+
+    if let Some(provider) = trimmed
+        .strip_prefix("/login ")
+        .or_else(|| trimmed.strip_prefix("/auth "))
+    {
+        let providers = crate::provider_catalog::tui_login_providers();
+        if let Some(provider) =
+            crate::provider_catalog::resolve_login_selection(provider, &providers)
+        {
+            app.start_login_provider(provider);
+        } else {
+            let valid = providers
+                .iter()
+                .map(|provider| provider.id)
+                .collect::<Vec<_>>()
+                .join(", ");
+            app.push_display_message(DisplayMessage::error(format!(
+                "Unknown provider '{}'. Use: {}",
+                provider.trim(),
+                valid
+            )));
+        }
+        return true;
+    }
+
+    if trimmed == "/account" || trimmed == "/accounts" {
+        app.show_accounts();
+        return true;
+    }
+
+    if let Some(sub) = trimmed.strip_prefix("/account ") {
+        let parts: Vec<&str> = sub.trim().splitn(2, ' ').collect();
+        match parts[0] {
+            "list" | "ls" => app.show_accounts(),
+            "switch" | "use" => {
+                if let Some(label) = parts.get(1) {
+                    app.switch_account(label.trim());
+                } else {
+                    app.push_display_message(DisplayMessage::error(
+                        "Usage: `/account switch <label>`".to_string(),
+                    ));
+                }
+            }
+            "add" | "login" => {
+                let label = parts.get(1).map(|s| s.trim()).unwrap_or("default");
+                app.start_claude_login_for_account(label);
+            }
+            "remove" | "rm" | "delete" => {
+                if let Some(label) = parts.get(1) {
+                    app.remove_account(label.trim());
+                } else {
+                    app.push_display_message(DisplayMessage::error(
+                        "Usage: `/account remove <label>`".to_string(),
+                    ));
+                }
+            }
+            other => {
+                let accounts = crate::auth::claude::list_accounts().unwrap_or_default();
+                if accounts.iter().any(|a| a.label == other) {
+                    app.switch_account(other);
+                } else {
+                    app.push_display_message(DisplayMessage::error(format!(
+                        "Unknown subcommand '{}'. Use: list, switch, add, remove",
+                        other
+                    )));
+                }
+            }
+        }
+        return true;
+    }
+
+    false
+}

@@ -668,3 +668,111 @@ impl App {
         self.push_display_message(DisplayMessage::system(content));
     }
 }
+
+pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed == "/model" || trimmed == "/models" {
+        app.open_model_picker();
+        return true;
+    }
+
+    if let Some(model_name) = trimmed.strip_prefix("/model ") {
+        let model_name = model_name.trim();
+        match app.provider.set_model(model_name) {
+            Ok(()) => {
+                app.provider_session_id = None;
+                app.session.provider_session_id = None;
+                app.upstream_provider = None;
+                app.connection_type = None;
+                let active_model = app.provider.model();
+                app.update_context_limit_for_model(&active_model);
+                app.session.model = Some(active_model.clone());
+                let _ = app.session.save();
+                app.push_display_message(DisplayMessage {
+                    role: "system".to_string(),
+                    content: format!("✓ Switched to model: {}", active_model),
+                    tool_calls: vec![],
+                    duration_secs: None,
+                    title: None,
+                    tool_data: None,
+                });
+                app.set_status_notice(format!("Model → {}", model_name));
+            }
+            Err(e) => {
+                app.push_display_message(DisplayMessage {
+                    role: "error".to_string(),
+                    content: format!("Failed to switch model: {}", e),
+                    tool_calls: vec![],
+                    duration_secs: None,
+                    title: None,
+                    tool_data: None,
+                });
+                app.set_status_notice("Model switch failed");
+            }
+        }
+        return true;
+    }
+
+    if trimmed == "/effort" {
+        let current = app.provider.reasoning_effort();
+        let efforts = app.provider.available_efforts();
+        if efforts.is_empty() {
+            app.push_display_message(DisplayMessage::system(
+                "Reasoning effort not available for this provider.".to_string(),
+            ));
+        } else {
+            let current_label = current
+                .as_deref()
+                .map(effort_display_label)
+                .unwrap_or("default");
+            let list: Vec<String> = efforts
+                .iter()
+                .map(|e| {
+                    if Some(e.to_string()) == current {
+                        format!("**{}** ← current", effort_display_label(e))
+                    } else {
+                        effort_display_label(e).to_string()
+                    }
+                })
+                .collect();
+            app.push_display_message(DisplayMessage::system(format!(
+                "Reasoning effort: {}\nAvailable: {}\nUse `/effort <level>` or Alt+←/→ to change.",
+                current_label,
+                list.join(" · ")
+            )));
+        }
+        return true;
+    }
+
+    if let Some(level) = trimmed.strip_prefix("/effort ") {
+        let level = level.trim();
+        match app.provider.set_reasoning_effort(level) {
+            Ok(()) => {
+                let new_effort = app.provider.reasoning_effort();
+                let label = new_effort
+                    .as_deref()
+                    .map(effort_display_label)
+                    .unwrap_or("default");
+                app.push_display_message(DisplayMessage::system(format!(
+                    "✓ Reasoning effort → {}",
+                    label
+                )));
+                let efforts = app.provider.available_efforts();
+                let idx = new_effort
+                    .as_ref()
+                    .and_then(|e| efforts.iter().position(|x| *x == e.as_str()))
+                    .unwrap_or(0);
+                let bar = effort_bar(idx, efforts.len());
+                app.set_status_notice(format!("Effort: {} {}", label, bar));
+            }
+            Err(e) => {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to set effort: {}",
+                    e
+                )));
+            }
+        }
+        return true;
+    }
+
+    false
+}

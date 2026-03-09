@@ -952,3 +952,152 @@ impl App {
         crate::storage::runtime_dir().join("jcode-debug.sock")
     }
 }
+
+pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed == "/version" {
+        let version = env!("JCODE_VERSION");
+        let is_canary = if app.session.is_canary {
+            " (canary/self-dev)"
+        } else {
+            ""
+        };
+        app.push_display_message(DisplayMessage {
+            role: "system".to_string(),
+            content: format!("jcode {}{}", version, is_canary),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        });
+        return true;
+    }
+
+    if trimmed == "/changelog" {
+        app.changelog_scroll = Some(0);
+        return true;
+    }
+
+    if trimmed == "/cache" || trimmed.starts_with("/cache ") {
+        let arg = trimmed.strip_prefix("/cache").unwrap_or("").trim();
+        match arg {
+            "1h" | "1hour" | "extended" => {
+                crate::provider::anthropic::set_cache_ttl_1h(true);
+                app.push_display_message(DisplayMessage::system(
+                    "Cache TTL set to 1 hour. Cache writes cost 2x base input tokens.".to_string(),
+                ));
+            }
+            "5m" | "5min" | "default" | "reset" => {
+                crate::provider::anthropic::set_cache_ttl_1h(false);
+                app.push_display_message(DisplayMessage::system(
+                    "Cache TTL set to 5 minutes (default).".to_string(),
+                ));
+            }
+            "" => {
+                let current = crate::provider::anthropic::is_cache_ttl_1h();
+                let new_state = !current;
+                crate::provider::anthropic::set_cache_ttl_1h(new_state);
+                let msg = if new_state {
+                    "Cache TTL toggled to 1 hour. Cache writes cost 2x base input tokens.\nUse `/cache 5m` to revert."
+                } else {
+                    "Cache TTL toggled to 5 minutes (default).\nUse `/cache 1h` to extend."
+                };
+                app.push_display_message(DisplayMessage::system(msg.to_string()));
+            }
+            _ => {
+                app.push_display_message(DisplayMessage::error(
+                    "Usage: `/cache` (toggle), `/cache 1h` (1 hour), `/cache 5m` (default)"
+                        .to_string(),
+                ));
+            }
+        }
+        return true;
+    }
+
+    if trimmed == "/info" {
+        let version = env!("JCODE_VERSION");
+        let terminal_size = crossterm::terminal::size()
+            .map(|(w, h)| format!("{}x{}", w, h))
+            .unwrap_or_else(|_| "unknown".to_string());
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        let turn_count = app
+            .display_messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .count();
+
+        let session_duration = chrono::Utc::now().signed_duration_since(app.session.created_at);
+        let duration_str = if session_duration.num_hours() > 0 {
+            format!(
+                "{}h {}m",
+                session_duration.num_hours(),
+                session_duration.num_minutes() % 60
+            )
+        } else if session_duration.num_minutes() > 0 {
+            format!("{}m", session_duration.num_minutes())
+        } else {
+            format!("{}s", session_duration.num_seconds())
+        };
+
+        let mut info = String::new();
+        info.push_str(&format!("**Version:** {}\n", version));
+        info.push_str(&format!(
+            "**Session:** {} ({})\n",
+            app.session.short_name.as_deref().unwrap_or("unnamed"),
+            &app.session.id[..8]
+        ));
+        info.push_str(&format!(
+            "**Duration:** {} ({} turns)\n",
+            duration_str, turn_count
+        ));
+        info.push_str(&format!(
+            "**Tokens:** ↑{} ↓{}\n",
+            app.total_input_tokens, app.total_output_tokens
+        ));
+        info.push_str(&format!("**Terminal:** {}\n", terminal_size));
+        info.push_str(&format!("**CWD:** {}\n", cwd));
+        info.push_str(&format!(
+            "**Features:** memory={}, swarm={}\n",
+            if app.memory_enabled { "on" } else { "off" },
+            if app.swarm_enabled { "on" } else { "off" }
+        ));
+
+        if let Some(ref model) = app.remote_provider_model {
+            info.push_str(&format!("**Model:** {}\n", model));
+        }
+        if let Some(ref provider_id) = app.provider_session_id {
+            info.push_str(&format!(
+                "**Provider Session:** {}...\n",
+                &provider_id[..provider_id.len().min(16)]
+            ));
+        }
+
+        if app.session.is_canary {
+            info.push_str("\n**Self-Dev Mode:** enabled\n");
+            if let Some(ref build) = app.session.testing_build {
+                info.push_str(&format!("**Testing Build:** {}\n", build));
+            }
+        }
+
+        if app.is_remote {
+            info.push_str(&format!("\n**Remote Mode:** connected\n"));
+            if let Some(count) = app.remote_client_count {
+                info.push_str(&format!("**Connected Clients:** {}\n", count));
+            }
+        }
+
+        app.push_display_message(DisplayMessage {
+            role: "system".to_string(),
+            content: info,
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        });
+        return true;
+    }
+
+    false
+}

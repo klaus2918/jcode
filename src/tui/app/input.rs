@@ -849,10 +849,10 @@ impl App {
             || commands::handle_session_command(self, trimmed)
             || commands::handle_config_command(self, trimmed)
             || commands::handle_debug_command(self, trimmed)
-            || commands::handle_model_command(self, trimmed)
-            || commands::handle_info_command(self, trimmed)
-            || commands::handle_auth_command(self, trimmed)
-            || commands::handle_dev_command(self, trimmed)
+            || super::model_context::handle_model_command(self, trimmed)
+            || super::state_ui::handle_info_command(self, trimmed)
+            || super::auth::handle_auth_command(self, trimmed)
+            || super::tui_lifecycle::handle_dev_command(self, trimmed)
         {
             return;
         }

@@ -736,3 +736,135 @@ impl App {
         }
     }
 }
+
+pub(super) fn handle_dev_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed == "/reload" {
+        if !app.has_newer_binary() {
+            app.push_display_message(DisplayMessage {
+                role: "system".to_string(),
+                content: "No newer binary found. Nothing to reload.\nUse /rebuild to build a new version.".to_string(),
+                tool_calls: vec![],
+                duration_secs: None,
+                title: None,
+                tool_data: None,
+            });
+            return true;
+        }
+        app.push_display_message(DisplayMessage {
+            role: "system".to_string(),
+            content: "Reloading with newer binary...".to_string(),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        });
+        app.session.provider_session_id = app.provider_session_id.clone();
+        app.session
+            .set_status(crate::session::SessionStatus::Reloaded);
+        let _ = app.session.save();
+        app.save_input_for_reload(&app.session.id.clone());
+        app.reload_requested = Some(app.session.id.clone());
+        app.should_quit = true;
+        return true;
+    }
+
+    if trimmed == "/rebuild" {
+        app.push_display_message(DisplayMessage {
+            role: "system".to_string(),
+            content: "Rebuilding jcode (git pull + cargo build + tests)...".to_string(),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        });
+        app.session.provider_session_id = app.provider_session_id.clone();
+        app.session
+            .set_status(crate::session::SessionStatus::Reloaded);
+        let _ = app.session.save();
+        app.rebuild_requested = Some(app.session.id.clone());
+        app.should_quit = true;
+        return true;
+    }
+
+    if trimmed == "/update" {
+        app.push_display_message(DisplayMessage::system(
+            "Checking for updates...".to_string(),
+        ));
+        app.session.provider_session_id = app.provider_session_id.clone();
+        app.session
+            .set_status(crate::session::SessionStatus::Reloaded);
+        let _ = app.session.save();
+        app.update_requested = Some(app.session.id.clone());
+        app.should_quit = true;
+        return true;
+    }
+
+    if trimmed == "/z" || trimmed == "/zz" || trimmed == "/zzz" || trimmed == "/zstatus" {
+        use crate::provider::copilot::PremiumMode;
+        let current = app.provider.premium_mode();
+
+        if trimmed == "/zstatus" {
+            let label = match current {
+                PremiumMode::Normal => "normal",
+                PremiumMode::OnePerSession => "one premium per session",
+                PremiumMode::Zero => "zero premium requests",
+            };
+            let env = std::env::var("JCODE_COPILOT_PREMIUM").ok();
+            let env_label = match env.as_deref() {
+                Some("0") => "0 (zero)",
+                Some("1") => "1 (one per session)",
+                _ => "unset (normal)",
+            };
+            app.push_display_message(DisplayMessage::system(format!(
+                "Premium mode: **{}**\nEnv JCODE_COPILOT_PREMIUM: {}",
+                label, env_label,
+            )));
+            return true;
+        }
+
+        if trimmed == "/z" {
+            app.provider.set_premium_mode(PremiumMode::Normal);
+            let _ = crate::config::Config::set_copilot_premium(None);
+            app.set_status_notice("Premium: normal");
+            app.push_display_message(DisplayMessage::system(
+                "Premium request mode reset to normal. (saved to config)".to_string(),
+            ));
+            return true;
+        }
+
+        let mode = if trimmed == "/zzz" {
+            PremiumMode::Zero
+        } else {
+            PremiumMode::OnePerSession
+        };
+        if current == mode {
+            app.provider.set_premium_mode(PremiumMode::Normal);
+            let _ = crate::config::Config::set_copilot_premium(None);
+            app.set_status_notice("Premium: normal");
+            app.push_display_message(DisplayMessage::system(
+                "Premium request mode reset to normal. (saved to config)".to_string(),
+            ));
+        } else {
+            app.provider.set_premium_mode(mode);
+            let config_val = match mode {
+                PremiumMode::Zero => "zero",
+                PremiumMode::OnePerSession => "one",
+                PremiumMode::Normal => "normal",
+            };
+            let _ = crate::config::Config::set_copilot_premium(Some(config_val));
+            let label = match mode {
+                PremiumMode::OnePerSession => "one premium per session",
+                PremiumMode::Zero => "zero premium requests",
+                PremiumMode::Normal => "normal",
+            };
+            app.set_status_notice(&format!("Premium: {}", label));
+            app.push_display_message(DisplayMessage::system(format!(
+                "Premium mode: **{}**. Toggle off with `/z`. (saved to config)",
+                label,
+            )));
+        }
+        return true;
+    }
+
+    false
+}
