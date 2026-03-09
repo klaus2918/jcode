@@ -121,6 +121,10 @@ pub enum Request {
     #[serde(rename = "set_model")]
     SetModel { id: u64, model: String },
 
+    /// Set reasoning effort for OpenAI models (none|low|medium|high|xhigh)
+    #[serde(rename = "set_reasoning_effort")]
+    SetReasoningEffort { id: u64, effort: String },
+
     /// Set Copilot premium request conservation mode (0=normal, 1=one-per-session, 2=zero)
     #[serde(rename = "set_premium_mode")]
     SetPremiumMode { id: u64, mode: u8 },
@@ -583,6 +587,9 @@ pub enum ServerEvent {
         /// Upstream provider (e.g., which provider OpenRouter routed to, or calculated preference)
         #[serde(skip_serializing_if = "Option::is_none")]
         upstream_provider: Option<String>,
+        /// Reasoning effort for OpenAI models
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
     },
 
     /// Server is reloading (clients should reconnect)
@@ -615,6 +622,16 @@ pub enum ServerEvent {
         model: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         provider_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
+    /// Reasoning effort changed (response to set_reasoning_effort)
+    #[serde(rename = "reasoning_effort_changed")]
+    ReasoningEffortChanged {
+        id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -835,6 +852,7 @@ impl Request {
             Request::ResumeSession { id, .. } => *id,
             Request::CycleModel { id, .. } => *id,
             Request::SetModel { id, .. } => *id,
+            Request::SetReasoningEffort { id, .. } => *id,
             Request::SetPremiumMode { id, .. } => *id,
             Request::SetFeature { id, .. } => *id,
             Request::Split { id } => *id,

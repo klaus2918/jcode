@@ -208,6 +208,7 @@ pub struct BackendInfo {
 pub struct RemoteConnection {
     reader: BufReader<crate::transport::ReadHalf>,
     writer: Arc<Mutex<WriteHalf>>,
+    dummy_peer: Option<Stream>,
     session_id: Option<String>,
     next_request_id: u64,
     provider_name: String,
@@ -232,6 +233,7 @@ impl RemoteConnection {
         let mut conn = Self {
             reader: BufReader::new(reader),
             writer: Arc::new(Mutex::new(writer)),
+            dummy_peer: None,
             session_id: None,
             next_request_id: 1,
             provider_name: "remote".to_string(),
@@ -363,6 +365,16 @@ impl RemoteConnection {
         self.send_request(request).await
     }
 
+    /// Set reasoning effort on the server (for OpenAI models)
+    pub async fn set_reasoning_effort(&mut self, effort: &str) -> Result<()> {
+        let request = Request::SetReasoningEffort {
+            id: self.next_request_id,
+            effort: effort.to_string(),
+        };
+        self.next_request_id += 1;
+        self.send_request(request).await
+    }
+
     /// Toggle a runtime feature on the server for this session
     pub async fn set_feature(&mut self, feature: FeatureToggle, enabled: bool) -> Result<()> {
         let request = Request::SetFeature {
@@ -487,11 +499,12 @@ impl RemoteConnection {
 
     /// Create a dummy RemoteConnection for replay mode (no real server)
     pub fn dummy() -> Self {
-        let (a, _b) = crate::transport::Stream::pair().expect("socketpair");
+        let (a, b) = crate::transport::Stream::pair().expect("socketpair");
         let (reader, writer) = a.into_split();
         Self {
             reader: BufReader::new(reader),
             writer: Arc::new(Mutex::new(writer)),
+            dummy_peer: Some(b),
             session_id: None,
             next_request_id: 1,
             provider_name: "replay".to_string(),

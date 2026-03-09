@@ -45,6 +45,9 @@ struct PendingRemoteMessage {
     content: String,
     images: Vec<(String, String)>,
     is_system: bool,
+    auto_retry: bool,
+    retry_attempts: u8,
+    retry_at: Option<Instant>,
 }
 
 const MEMORY_INJECTION_SUPPRESSION_SECS: u64 = 90;
@@ -608,6 +611,7 @@ pub struct App {
     // Remote provider info (set when running in remote mode)
     remote_provider_name: Option<String>,
     remote_provider_model: Option<String>,
+    remote_reasoning_effort: Option<String>,
     remote_available_models: Vec<String>,
     remote_model_routes: Vec<crate::provider::ModelRoute>,
     // Remote MCP servers and skills (set from server in remote mode)
@@ -849,6 +853,9 @@ impl Provider for NullProvider {
 }
 
 impl App {
+    const AUTO_RETRY_BASE_DELAY_SECS: u64 = 2;
+    const AUTO_RETRY_MAX_ATTEMPTS: u8 = 3;
+
     async fn begin_remote_send(
         &mut self,
         remote: &mut super::backend::RemoteConnection,
@@ -856,7 +863,60 @@ impl App {
         images: Vec<(String, String)>,
         is_system: bool,
     ) -> Result<u64> {
-        remote::begin_remote_send(self, remote, content, images, is_system).await
+        remote::begin_remote_send(self, remote, content, images, is_system, false, 0).await
+    }
+
+    fn schedule_pending_remote_retry(&mut self, reason: &str) -> bool {
+        let Some(pending) = self.rate_limit_pending_message.as_mut() else {
+            return false;
+        };
+        if !pending.auto_retry {
+            return false;
+        }
+        let outcome = {
+            let current_attempts = pending.retry_attempts;
+            if current_attempts >= Self::AUTO_RETRY_MAX_ATTEMPTS {
+                Err(current_attempts)
+            } else {
+                pending.retry_attempts += 1;
+                let retry_attempts = pending.retry_attempts;
+                let backoff_secs = Self::AUTO_RETRY_BASE_DELAY_SECS * u64::from(retry_attempts);
+                let retry_at = Instant::now() + Duration::from_secs(backoff_secs);
+                pending.retry_at = Some(retry_at);
+                Ok((retry_attempts, backoff_secs, retry_at))
+            }
+        };
+
+        match outcome {
+            Err(current_attempts) => {
+                self.rate_limit_pending_message = None;
+                self.rate_limit_reset = None;
+                self.push_display_message(DisplayMessage::error(format!(
+                    "{} Auto-retry limit reached after {} attempt{}. Use `/poke` again to retry manually.",
+                    reason,
+                    current_attempts,
+                    if current_attempts == 1 { "" } else { "s" }
+                )));
+                false
+            }
+            Ok((retry_attempts, backoff_secs, retry_at)) => {
+                self.rate_limit_reset = Some(retry_at);
+                self.push_display_message(DisplayMessage::system(format!(
+                    "{} Auto-retrying in {} second{} (attempt {}/{}).",
+                    reason,
+                    backoff_secs,
+                    if backoff_secs == 1 { "" } else { "s" },
+                    retry_attempts,
+                    Self::AUTO_RETRY_MAX_ATTEMPTS
+                )));
+                true
+            }
+        }
+    }
+
+    fn clear_pending_remote_retry(&mut self) {
+        self.rate_limit_pending_message = None;
+        self.rate_limit_reset = None;
     }
 
     pub fn new(provider: Arc<dyn Provider>, registry: Registry) -> Self {
@@ -961,6 +1021,7 @@ impl App {
             debug_tx: None,
             remote_provider_name: None,
             remote_provider_model: None,
+            remote_reasoning_effort: None,
             remote_available_models: Vec::new(),
             remote_model_routes: Vec::new(),
             remote_mcp_servers: Vec::new(),
@@ -9342,7 +9403,10 @@ impl super::TuiState for App {
         };
 
         let (model, reasoning_effort) = if self.is_remote || self.is_replay {
-            (self.remote_provider_model.clone(), None)
+            (
+                self.remote_provider_model.clone(),
+                self.remote_reasoning_effort.clone(),
+            )
         } else {
             (
                 Some(self.provider.model()),
@@ -10358,6 +10422,7 @@ fn gather_git_info_inner() -> Option<super::info_widget::GitInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::TuiState;
     use ratatui::layout::Rect;
 
     // Mock provider for testing
@@ -11311,6 +11376,38 @@ mod tests {
     }
 
     #[test]
+    fn test_ctrl_c_requests_cancel_while_processing() {
+        let mut app = create_test_app();
+        app.is_processing = true;
+        app.interleave_message = Some("queued interrupt".to_string());
+        app.pending_soft_interrupts
+            .push("pending soft interrupt".to_string());
+
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL)
+            .unwrap();
+
+        assert!(app.cancel_requested);
+        assert!(app.interleave_message.is_none());
+        assert!(app.pending_soft_interrupts.is_empty());
+        assert_eq!(app.status_notice(), Some("Interrupting...".to_string()));
+    }
+
+    #[test]
+    fn test_ctrl_c_still_arms_quit_when_idle() {
+        let mut app = create_test_app();
+
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL)
+            .unwrap();
+
+        assert!(!app.cancel_requested);
+        assert!(app.quit_pending.is_some());
+        assert_eq!(
+            app.status_notice(),
+            Some("Press Ctrl+C again to quit".to_string())
+        );
+    }
+
+    #[test]
     fn test_ctrl_up_edits_queued_message() {
         let mut app = create_test_app();
         app.queue_mode = true;
@@ -11901,6 +11998,9 @@ mod tests {
             content: "retry me".to_string(),
             images: vec![],
             is_system: false,
+            auto_retry: false,
+            retry_attempts: 0,
+            retry_at: None,
         });
         app.streaming_text = "partial response being streamed".to_string();
 
@@ -11929,6 +12029,34 @@ mod tests {
             .expect("missing reconnect status message");
         assert_eq!(last.role, "system");
         assert_eq!(last.content, "⚡ Connection lost — reconnecting…");
+    }
+
+    #[test]
+    fn test_handle_remote_disconnect_retryable_pending_schedules_retry() {
+        let mut app = create_test_app();
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        app.current_message_id = Some(7);
+        app.rate_limit_pending_message = Some(PendingRemoteMessage {
+            content: "retry me".to_string(),
+            images: vec![],
+            is_system: true,
+            auto_retry: true,
+            retry_attempts: 0,
+            retry_at: None,
+        });
+
+        let mut state = remote::RemoteRunState::default();
+        remote::handle_disconnect(&mut app, &mut state);
+
+        let pending = app
+            .rate_limit_pending_message
+            .as_ref()
+            .expect("retryable continuation should remain pending");
+        assert!(pending.auto_retry);
+        assert_eq!(pending.retry_attempts, 1);
+        assert!(pending.retry_at.is_some());
+        assert!(app.rate_limit_reset.is_some());
     }
 
     #[test]
@@ -11964,6 +12092,7 @@ mod tests {
                 server_has_update: None,
                 was_interrupted: Some(true),
                 upstream_provider: None,
+                reasoning_effort: None,
             },
             &mut remote,
         );
@@ -12013,6 +12142,7 @@ mod tests {
                 server_has_update: None,
                 was_interrupted: None,
                 upstream_provider: None,
+                reasoning_effort: None,
             },
             &mut remote,
         );
@@ -12035,6 +12165,9 @@ mod tests {
             content: "retry me".to_string(),
             images: vec![],
             is_system: false,
+            auto_retry: false,
+            retry_attempts: 0,
+            retry_at: None,
         });
         app.is_processing = true;
         app.status = ProcessingStatus::Streaming;
@@ -12074,6 +12207,9 @@ mod tests {
             content: "retry me".to_string(),
             images: vec![],
             is_system: false,
+            auto_retry: false,
+            retry_attempts: 0,
+            retry_at: None,
         });
 
         app.handle_server_event(
@@ -12092,6 +12228,68 @@ mod tests {
             .expect("missing error message");
         assert_eq!(last.role, "error");
         assert_eq!(last.content, "provider failed hard");
+    }
+
+    #[test]
+    fn test_remote_error_with_retryable_pending_schedules_retry() {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.rate_limit_pending_message = Some(PendingRemoteMessage {
+            content: "retry me".to_string(),
+            images: vec![],
+            is_system: true,
+            auto_retry: true,
+            retry_attempts: 0,
+            retry_at: None,
+        });
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+
+        app.handle_server_event(
+            crate::protocol::ServerEvent::Error {
+                id: 11,
+                message: "provider failed hard".to_string(),
+                retry_after_secs: None,
+            },
+            &mut remote,
+        );
+
+        let pending = app
+            .rate_limit_pending_message
+            .as_ref()
+            .expect("retryable continuation should remain pending");
+        assert!(pending.auto_retry);
+        assert_eq!(pending.retry_attempts, 1);
+        assert!(pending.retry_at.is_some());
+        assert!(app.rate_limit_reset.is_some());
+        assert!(app
+            .display_messages()
+            .iter()
+            .any(|m| m.role == "system" && m.content.contains("Auto-retrying")));
+    }
+
+    #[test]
+    fn test_schedule_pending_remote_retry_respects_retry_limit() {
+        let mut app = create_test_app();
+        app.rate_limit_pending_message = Some(PendingRemoteMessage {
+            content: "retry me".to_string(),
+            images: vec![],
+            is_system: true,
+            auto_retry: true,
+            retry_attempts: App::AUTO_RETRY_MAX_ATTEMPTS,
+            retry_at: None,
+        });
+
+        assert!(!app.schedule_pending_remote_retry("⚠ failed."));
+        assert!(app.rate_limit_pending_message.is_none());
+        assert!(app.rate_limit_reset.is_none());
+        assert!(app
+            .display_messages()
+            .iter()
+            .any(|m| m.role == "error" && m.content.contains("Auto-retry limit reached")));
     }
 
     #[test]
@@ -12496,6 +12694,39 @@ mod tests {
         rt.block_on(app.handle_remote_key(KeyCode::Char('5'), KeyModifiers::CONTROL, &mut remote))
             .unwrap();
         assert!(app.scroll_offset > 0);
+    }
+
+    #[test]
+    fn test_remote_ctrl_c_interrupts_while_processing() {
+        let mut app = create_test_app();
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        rt.block_on(app.handle_remote_key(KeyCode::Char('c'), KeyModifiers::CONTROL, &mut remote))
+            .unwrap();
+
+        assert!(app.quit_pending.is_none());
+        assert!(app.is_processing);
+    }
+
+    #[test]
+    fn test_remote_ctrl_c_still_arms_quit_when_idle() {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        rt.block_on(app.handle_remote_key(KeyCode::Char('c'), KeyModifiers::CONTROL, &mut remote))
+            .unwrap();
+
+        assert!(app.quit_pending.is_some());
+        assert_eq!(
+            app.status_notice(),
+            Some("Press Ctrl+C again to quit".to_string())
+        );
     }
 
     #[test]

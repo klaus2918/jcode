@@ -51,20 +51,34 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
             app.rate_limit_reset = None;
             if !app.is_processing {
                 if let Some(pending) = app.rate_limit_pending_message.clone() {
-                    app.push_display_message(DisplayMessage::system(format!(
-                        "✓ Rate limit reset. Retrying...{}",
-                        if pending.is_system {
-                            " (system message)"
-                        } else {
-                            ""
-                        }
-                    )));
+                    let status = if pending.auto_retry {
+                        format!(
+                            "✓ Retrying continuation...{}",
+                            if pending.is_system {
+                                " (system message)"
+                            } else {
+                                ""
+                            }
+                        )
+                    } else {
+                        format!(
+                            "✓ Rate limit reset. Retrying...{}",
+                            if pending.is_system {
+                                " (system message)"
+                            } else {
+                                ""
+                            }
+                        )
+                    };
+                    app.push_display_message(DisplayMessage::system(status));
                     let _ = begin_remote_send(
                         app,
                         remote,
                         pending.content,
                         pending.images,
                         pending.is_system,
+                        pending.auto_retry,
+                        pending.retry_attempts,
                     )
                     .await;
                     return;
@@ -76,6 +90,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
     if !app.is_processing && !app.queued_messages.is_empty() {
         let messages = std::mem::take(&mut app.queued_messages);
         let combined = messages.join("\n\n");
+        let auto_retry = combined.trim_start().starts_with("[SYSTEM:");
         crate::logging::info(&format!(
             "Sending queued continuation message ({} chars)",
             combined.len()
@@ -83,7 +98,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
         for msg in &messages {
             app.push_display_message(DisplayMessage::user(msg.clone()));
         }
-        if begin_remote_send(app, remote, combined, vec![], true)
+        if begin_remote_send(app, remote, combined, vec![], true, auto_retry, 0)
             .await
             .is_err()
         {
@@ -509,7 +524,10 @@ pub(super) async fn handle_remote_event(
 }
 
 pub(super) fn handle_disconnect(app: &mut App, state: &mut RemoteRunState) {
-    app.rate_limit_pending_message = None;
+    let scheduled_retry = app.schedule_pending_remote_retry("⚡ Connection lost.");
+    if !scheduled_retry {
+        app.clear_pending_remote_retry();
+    }
     app.current_message_id = None;
     app.last_stream_activity = None;
     if let Some(chunk) = app.stream_buffer.flush() {
@@ -582,7 +600,9 @@ async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) 
                 title: None,
                 tool_data: None,
             });
-            if let Err(e) = begin_remote_send(app, remote, interleave_msg, vec![], false).await {
+            if let Err(e) =
+                begin_remote_send(app, remote, interleave_msg, vec![], false, false, 0).await
+            {
                 app.push_display_message(DisplayMessage::error(format!(
                     "Failed to send message: {}",
                     e
@@ -592,10 +612,11 @@ async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) 
     } else if !app.queued_messages.is_empty() {
         let messages = std::mem::take(&mut app.queued_messages);
         let combined = messages.join("\n\n");
+        let auto_retry = combined.trim_start().starts_with("[SYSTEM:");
         for msg in &messages {
             app.push_display_message(DisplayMessage::user(msg.clone()));
         }
-        let _ = begin_remote_send(app, remote, combined, vec![], true).await;
+        let _ = begin_remote_send(app, remote, combined, vec![], true, auto_retry, 0).await;
     }
 }
 
@@ -624,7 +645,6 @@ async fn detect_and_cancel_stall(app: &mut App, remote: &mut RemoteConnection) {
             app.current_message_id = None;
             app.processing_started = None;
             app.last_stream_activity = None;
-            app.rate_limit_pending_message = None;
             if !app.streaming_text.is_empty() {
                 let content = app.take_streaming_text();
                 app.push_display_message(DisplayMessage {
@@ -636,9 +656,14 @@ async fn detect_and_cancel_stall(app: &mut App, remote: &mut RemoteConnection) {
                     tool_data: None,
                 });
             }
-            app.push_display_message(DisplayMessage::system(
-                "⚠ Stream stalled (no response for 2 minutes). Processing cancelled. You can resend your message.".to_string(),
-            ));
+            if !app.schedule_pending_remote_retry(
+                "⚠ Stream stalled (no response for 2 minutes). Processing cancelled.",
+            ) {
+                app.clear_pending_remote_retry();
+                app.push_display_message(DisplayMessage::system(
+                    "⚠ Stream stalled (no response for 2 minutes). Processing cancelled. You can resend your message.".to_string(),
+                ));
+            }
         }
     }
 }
@@ -747,6 +772,8 @@ pub(super) async fn begin_remote_send(
     content: String,
     images: Vec<(String, String)>,
     is_system: bool,
+    auto_retry: bool,
+    retry_attempts: u8,
 ) -> Result<u64> {
     let msg_id = remote
         .send_message_with_images(content.clone(), images.clone())
@@ -766,6 +793,9 @@ pub(super) async fn begin_remote_send(
         content,
         images,
         is_system,
+        auto_retry,
+        retry_attempts,
+        retry_at: None,
     });
     remote.reset_call_output_tokens_seen();
     Ok(msg_id)
@@ -914,6 +944,7 @@ pub(super) fn handle_server_event(
             app.connection_type = Some(connection);
             false
         }
+        ServerEvent::Pong { .. } => false,
         ServerEvent::ConnectionPhase { phase } => {
             let cp = match phase.as_str() {
                 "authenticating" => crate::message::ConnectionPhase::Authenticating,
@@ -930,7 +961,13 @@ pub(super) fn handle_server_event(
             false
         }
         ServerEvent::Interrupted => {
-            app.rate_limit_pending_message = None;
+            let keep_pending_retry = app
+                .rate_limit_pending_message
+                .as_ref()
+                .is_some_and(|pending| pending.auto_retry && app.rate_limit_reset.is_some());
+            if !keep_pending_retry {
+                app.clear_pending_remote_retry();
+            }
             app.interleave_message = None;
             app.pending_soft_interrupts.clear();
             if let Some(chunk) = app.stream_buffer.flush() {
@@ -968,7 +1005,7 @@ pub(super) fn handle_server_event(
                 id, app.current_message_id
             ));
             if app.current_message_id == Some(id) {
-                app.rate_limit_pending_message = None;
+                app.clear_pending_remote_retry();
                 if let Some(chunk) = app.stream_buffer.flush() {
                     app.streaming_text.push_str(&chunk);
                 }
@@ -989,7 +1026,6 @@ pub(super) fn handle_server_event(
                     app.push_turn_footer(duration);
                 }
                 crate::tui::mermaid::clear_streaming_preview_diagram();
-                app.rate_limit_pending_message = None;
                 app.is_processing = false;
                 app.status = ProcessingStatus::Idle;
                 app.processing_started = None;
@@ -1088,7 +1124,6 @@ pub(super) fn handle_server_event(
                 title: None,
                 tool_data: None,
             });
-            app.rate_limit_pending_message = None;
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
             app.interleave_message = None;
@@ -1099,6 +1134,9 @@ pub(super) fn handle_server_event(
             app.thinking_buffer.clear();
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
+            if !app.schedule_pending_remote_retry("⚠ Remote request failed.") {
+                app.clear_pending_remote_retry();
+            }
             false
         }
         ServerEvent::SessionId { session_id } => {
@@ -1160,6 +1198,7 @@ pub(super) fn handle_server_event(
             server_has_update,
             was_interrupted,
             upstream_provider,
+            reasoning_effort,
             ..
         } => {
             let prev_session_id = app.remote_session_id.clone();
@@ -1214,6 +1253,7 @@ pub(super) fn handle_server_event(
             if upstream_provider.is_some() {
                 app.upstream_provider = upstream_provider;
             }
+            app.remote_reasoning_effort = reasoning_effort;
             app.remote_available_models = available_models;
             app.remote_model_routes = available_model_routes;
             app.remote_sessions = all_sessions;
@@ -1361,6 +1401,26 @@ pub(super) fn handle_server_event(
         } => {
             app.remote_available_models = available_models;
             app.remote_model_routes = available_model_routes;
+            false
+        }
+        ServerEvent::ReasoningEffortChanged { effort, error, .. } => {
+            if let Some(err) = error {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to set effort: {}",
+                    err
+                )));
+            } else {
+                app.remote_reasoning_effort = effort.clone();
+                let label = effort
+                    .as_deref()
+                    .map(super::effort_display_label)
+                    .unwrap_or("default");
+                app.push_display_message(DisplayMessage::system(format!(
+                    "✓ Reasoning effort → {}",
+                    label
+                )));
+                app.set_status_notice(format!("Effort: {}", label));
+            }
             false
         }
         ServerEvent::SoftInterruptInjected {
@@ -1564,7 +1624,36 @@ pub(super) async fn handle_remote_key(
         .effort_switch_keys
         .direction_for(code.clone(), modifiers)
     {
-        app.cycle_effort(direction);
+        let efforts = ["none", "low", "medium", "high", "xhigh"];
+        let current = app.remote_reasoning_effort.as_deref();
+        let current_index = current
+            .and_then(|c| efforts.iter().position(|e| *e == c))
+            .unwrap_or(efforts.len() - 1);
+        let len = efforts.len();
+        let next_index = if direction > 0 {
+            if current_index + 1 >= len {
+                current_index
+            } else {
+                current_index + 1
+            }
+        } else {
+            if current_index == 0 {
+                0
+            } else {
+                current_index - 1
+            }
+        };
+        let next_effort = efforts[next_index];
+        if Some(next_effort) == current {
+            let label = super::effort_display_label(next_effort);
+            app.set_status_notice(format!(
+                "Effort: {} (already at {})",
+                label,
+                if direction > 0 { "max" } else { "min" }
+            ));
+        } else {
+            remote.set_reasoning_effort(next_effort).await?;
+        }
         return Ok(());
     }
     if app
@@ -1678,7 +1767,12 @@ pub(super) async fn handle_remote_key(
                 }
             }
             KeyCode::Char('c') | KeyCode::Char('d') => {
-                app.handle_quit_request();
+                if app.is_processing {
+                    remote.cancel().await?;
+                    app.set_status_notice("Interrupting...");
+                } else {
+                    app.handle_quit_request();
+                }
                 return Ok(());
             }
             KeyCode::Char('r') => {
@@ -1954,6 +2048,40 @@ pub(super) async fn handle_remote_key(
                     app.upstream_provider = None;
                     app.connection_type = None;
                     remote.set_model(model_name).await?;
+                    return Ok(());
+                }
+
+                if trimmed == "/effort" {
+                    let current = app.remote_reasoning_effort.as_deref();
+                    let label = current
+                        .map(super::effort_display_label)
+                        .unwrap_or("default");
+                    let efforts = ["none", "low", "medium", "high", "xhigh"];
+                    let list: Vec<String> = efforts
+                        .iter()
+                        .map(|e| {
+                            if Some(*e) == current {
+                                format!("**{}** ← current", super::effort_display_label(e))
+                            } else {
+                                super::effort_display_label(e).to_string()
+                            }
+                        })
+                        .collect();
+                    app.push_display_message(DisplayMessage::system(format!(
+                        "Reasoning effort: {}\nAvailable: {}\nUse `/effort <level>` or Alt+←/→ to change.",
+                        label,
+                        list.join(" · ")
+                    )));
+                    return Ok(());
+                }
+
+                if let Some(level) = trimmed.strip_prefix("/effort ") {
+                    let level = level.trim();
+                    if level.is_empty() {
+                        app.push_display_message(DisplayMessage::error("Usage: /effort <level>"));
+                        return Ok(());
+                    }
+                    remote.set_reasoning_effort(level).await?;
                     return Ok(());
                 }
 
@@ -2305,7 +2433,16 @@ pub(super) async fn handle_remote_key(
                         if incomplete.len() == 1 { "" } else { "s" },
                     )));
 
-                    let _ = app.begin_remote_send(remote, poke_msg, vec![], false).await;
+                    let _ = super::remote::begin_remote_send(
+                        app,
+                        remote,
+                        poke_msg,
+                        vec![],
+                        true,
+                        true,
+                        0,
+                    )
+                    .await;
                     return Ok(());
                 }
 

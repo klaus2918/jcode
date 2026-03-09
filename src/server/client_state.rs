@@ -79,8 +79,10 @@ pub(super) async fn send_history(
         available_model_routes,
         tool_names,
         upstream_provider,
+        reasoning_effort,
     ) = {
         let agent_guard = agent.lock().await;
+        let provider = agent_guard.provider_handle();
         (
             agent_guard.get_history(),
             agent_guard.is_canary(),
@@ -90,6 +92,7 @@ pub(super) async fn send_history(
             agent_guard.model_routes(),
             agent_guard.tool_names().await,
             agent_guard.last_upstream_provider(),
+            provider.reasoning_effort(),
         )
     };
 
@@ -145,6 +148,7 @@ pub(super) async fn send_history(
             server_has_update: Some(server_has_newer_binary()),
             was_interrupted,
             upstream_provider,
+            reasoning_effort,
         },
     )
     .await
