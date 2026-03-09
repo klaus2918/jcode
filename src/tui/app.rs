@@ -38,6 +38,7 @@ mod auth;
 mod commands;
 mod conversation_state;
 mod debug;
+mod event_wrappers;
 mod helpers;
 mod input;
 mod local;
@@ -1570,38 +1571,6 @@ impl App {
         Ok(frames)
     }
 
-    /// Handle a server event. Returns true if we're at a "safe point" for interleaving
-    /// (after a tool completes but before the turn ends).
-    fn handle_server_event(
-        &mut self,
-        event: crate::protocol::ServerEvent,
-        remote: &mut super::backend::RemoteConnection,
-    ) -> bool {
-        remote::handle_server_event(self, event, remote)
-    }
-
-    fn handle_remote_char_input(&mut self, c: char) {
-        remote::handle_remote_char_input(self, c);
-    }
-
-    /// Handle keyboard input in remote mode
-    async fn handle_remote_key(
-        &mut self,
-        code: KeyCode,
-        modifiers: KeyModifiers,
-        remote: &mut super::backend::RemoteConnection,
-    ) -> Result<()> {
-        remote::handle_remote_key(self, code, modifiers, remote).await
-    }
-
-    /// Process turn while still accepting input for queueing
-    async fn process_turn_with_input(
-        &mut self,
-        terminal: &mut DefaultTerminal,
-        event_stream: &mut EventStream,
-    ) {
-        local::process_turn_with_input(self, terminal, event_stream).await;
-    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,35 @@
+use super::*;
+use crate::tui::backend;
+
+impl App {
+    pub(super) fn handle_server_event(
+        &mut self,
+        event: crate::protocol::ServerEvent,
+        remote: &mut backend::RemoteConnection,
+    ) -> bool {
+        remote::handle_server_event(self, event, remote)
+    }
+
+    pub(super) fn handle_remote_char_input(&mut self, c: char) {
+        remote::handle_remote_char_input(self, c);
+    }
+
+    /// Handle keyboard input in remote mode
+    pub(super) async fn handle_remote_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        remote: &mut backend::RemoteConnection,
+    ) -> Result<()> {
+        remote::handle_remote_key(self, code, modifiers, remote).await
+    }
+
+    /// Process turn while still accepting input for queueing
+    pub(super) async fn process_turn_with_input(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        event_stream: &mut EventStream,
+    ) {
+        local::process_turn_with_input(self, terminal, event_stream).await;
+    }
+}
