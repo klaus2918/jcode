@@ -25,8 +25,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
+use tokio::time::{self, MissedTickBehavior};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
@@ -47,6 +48,34 @@ impl StreamError {
 const JCODE_NATIVE_TOOLS: &[&str] = &["selfdev", "communicate"];
 static RECOVERED_TEXT_WRAPPED_TOOL_CALLS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+const STREAM_KEEPALIVE_PONG_ID: u64 = 0;
+
+fn stream_keepalive_interval() -> Duration {
+    if cfg!(test) {
+        Duration::from_millis(50)
+    } else {
+        Duration::from_secs(30)
+    }
+}
+
+fn stream_keepalive_ticker() -> time::Interval {
+    let interval = stream_keepalive_interval();
+    let mut ticker = time::interval_at(time::Instant::now() + interval, interval);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    ticker
+}
+
+fn send_stream_keepalive_broadcast(event_tx: &broadcast::Sender<ServerEvent>) {
+    let _ = event_tx.send(ServerEvent::Pong {
+        id: STREAM_KEEPALIVE_PONG_ID,
+    });
+}
+
+fn send_stream_keepalive_mpsc(event_tx: &mpsc::UnboundedSender<ServerEvent>) {
+    let _ = event_tx.send(ServerEvent::Pong {
+        id: STREAM_KEEPALIVE_PONG_ID,
+    });
+}
 
 fn tool_output_to_content_blocks(
     tool_use_id: String,
@@ -2533,40 +2562,50 @@ impl Agent {
             } else {
                 &messages_with_memory
             };
-            let mut stream = match self
-                .provider
-                .complete_split(
-                    send_messages,
-                    &tools,
-                    &split_prompt.static_part,
-                    &split_prompt.dynamic_part,
-                    self.provider_session_id.as_deref(),
-                )
-                .await
-            {
-                Ok(stream) => stream,
-                Err(e) => {
-                    if self.try_auto_compact_after_context_limit(&e.to_string()) {
-                        context_limit_retries += 1;
-                        if context_limit_retries > Self::MAX_CONTEXT_LIMIT_RETRIES {
-                            logging::warn(
-                                "Context-limit compaction retry limit reached; giving up",
-                            );
-                            return Err(anyhow::anyhow!(
-                                "Context limit exceeded after {} compaction retries",
-                                Self::MAX_CONTEXT_LIMIT_RETRIES
-                            ));
-                        }
-                        let _ = event_tx.send(ServerEvent::Compaction {
-                            trigger: "auto_recovery".to_string(),
-                            pre_tokens: None,
-                            messages_dropped: None,
-                        });
-                        continue;
+            let provider = Arc::clone(&self.provider);
+            let resume_session_id = self.provider_session_id.clone();
+            let mut keepalive = stream_keepalive_ticker();
+            let mut complete_future = std::pin::pin!(provider.complete_split(
+                send_messages,
+                &tools,
+                &split_prompt.static_part,
+                &split_prompt.dynamic_part,
+                resume_session_id.as_deref(),
+            ));
+            let mut stream = loop {
+                tokio::select! {
+                    _ = keepalive.tick() => {
+                        send_stream_keepalive_broadcast(&event_tx);
                     }
-                    return Err(e);
+                    result = &mut complete_future => {
+                        match result {
+                            Ok(stream) => break stream,
+                            Err(e) => {
+                                if self.try_auto_compact_after_context_limit(&e.to_string()) {
+                                    context_limit_retries += 1;
+                                    if context_limit_retries > Self::MAX_CONTEXT_LIMIT_RETRIES {
+                                        logging::warn(
+                                            "Context-limit compaction retry limit reached; giving up",
+                                        );
+                                        return Err(anyhow::anyhow!(
+                                            "Context limit exceeded after {} compaction retries",
+                                            Self::MAX_CONTEXT_LIMIT_RETRIES
+                                        ));
+                                    }
+                                    let _ = event_tx.send(ServerEvent::Compaction {
+                                        trigger: "auto_recovery".to_string(),
+                                        pre_tokens: None,
+                                        messages_dropped: None,
+                                    });
+                                    continue;
+                                }
+                                return Err(e);
+                            }
+                        }
+                    }
                 }
             };
+            drop(complete_future);
 
             // Successful API call - reset retry counter
             context_limit_retries = 0;
@@ -2595,7 +2634,19 @@ impl Agent {
                 std::collections::HashMap::new();
 
             let mut retry_after_compaction = false;
-            while let Some(event) = stream.next().await {
+            let mut keepalive = stream_keepalive_ticker();
+            loop {
+                let next_event = std::pin::pin!(stream.next());
+                let event = tokio::select! {
+                    _ = keepalive.tick() => {
+                        send_stream_keepalive_broadcast(&event_tx);
+                        continue;
+                    }
+                    event = next_event => event,
+                };
+                let Some(event) = event else {
+                    break;
+                };
                 let event = match event {
                     Ok(event) => event,
                     Err(e) => {
@@ -3236,40 +3287,50 @@ impl Agent {
             } else {
                 &messages_with_memory
             };
-            let mut stream = match self
-                .provider
-                .complete_split(
-                    send_messages,
-                    &tools,
-                    &split_prompt.static_part,
-                    &split_prompt.dynamic_part,
-                    self.provider_session_id.as_deref(),
-                )
-                .await
-            {
-                Ok(stream) => stream,
-                Err(e) => {
-                    if self.try_auto_compact_after_context_limit(&e.to_string()) {
-                        context_limit_retries += 1;
-                        if context_limit_retries > Self::MAX_CONTEXT_LIMIT_RETRIES {
-                            logging::warn(
-                                "Context-limit compaction retry limit reached; giving up",
-                            );
-                            return Err(anyhow::anyhow!(
-                                "Context limit exceeded after {} compaction retries",
-                                Self::MAX_CONTEXT_LIMIT_RETRIES
-                            ));
-                        }
-                        let _ = event_tx.send(ServerEvent::Compaction {
-                            trigger: "auto_recovery".to_string(),
-                            pre_tokens: None,
-                            messages_dropped: None,
-                        });
-                        continue;
+            let provider = Arc::clone(&self.provider);
+            let resume_session_id = self.provider_session_id.clone();
+            let mut keepalive = stream_keepalive_ticker();
+            let mut complete_future = std::pin::pin!(provider.complete_split(
+                send_messages,
+                &tools,
+                &split_prompt.static_part,
+                &split_prompt.dynamic_part,
+                resume_session_id.as_deref(),
+            ));
+            let mut stream = loop {
+                tokio::select! {
+                    _ = keepalive.tick() => {
+                        send_stream_keepalive_mpsc(&event_tx);
                     }
-                    return Err(e);
+                    result = &mut complete_future => {
+                        match result {
+                            Ok(stream) => break stream,
+                            Err(e) => {
+                                if self.try_auto_compact_after_context_limit(&e.to_string()) {
+                                    context_limit_retries += 1;
+                                    if context_limit_retries > Self::MAX_CONTEXT_LIMIT_RETRIES {
+                                        logging::warn(
+                                            "Context-limit compaction retry limit reached; giving up",
+                                        );
+                                        return Err(anyhow::anyhow!(
+                                            "Context limit exceeded after {} compaction retries",
+                                            Self::MAX_CONTEXT_LIMIT_RETRIES
+                                        ));
+                                    }
+                                    let _ = event_tx.send(ServerEvent::Compaction {
+                                        trigger: "auto_recovery".to_string(),
+                                        pre_tokens: None,
+                                        messages_dropped: None,
+                                    });
+                                    continue;
+                                }
+                                return Err(e);
+                            }
+                        }
+                    }
                 }
             };
+            drop(complete_future);
 
             // Successful API call - reset retry counter
             context_limit_retries = 0;
@@ -3297,7 +3358,19 @@ impl Agent {
                 std::collections::HashMap::new();
 
             let mut retry_after_compaction = false;
-            while let Some(event) = stream.next().await {
+            let mut keepalive = stream_keepalive_ticker();
+            loop {
+                let next_event = std::pin::pin!(stream.next());
+                let event = tokio::select! {
+                    _ = keepalive.tick() => {
+                        send_stream_keepalive_mpsc(&event_tx);
+                        continue;
+                    }
+                    event = next_event => event,
+                };
+                let Some(event) = event else {
+                    break;
+                };
                 let event = match event {
                     Ok(event) => event,
                     Err(e) => {
@@ -4078,4 +4151,112 @@ fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::{Message, StreamEvent, ToolDefinition};
+    use crate::provider::{EventStream, Provider};
+    use crate::tool::Registry;
+    use async_trait::async_trait;
+    use tokio::sync::mpsc as tokio_mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    struct DelayedProvider {
+        open_delay: Duration,
+        first_event_delay: Duration,
+    }
+
+    #[async_trait]
+    impl Provider for DelayedProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<EventStream> {
+            tokio::time::sleep(self.open_delay).await;
+
+            let first_event_delay = self.first_event_delay;
+            let (tx, rx) = tokio_mpsc::channel::<Result<StreamEvent>>(8);
+            tokio::spawn(async move {
+                tokio::time::sleep(first_event_delay).await;
+                let _ = tx
+                    .send(Ok(StreamEvent::TextDelta("hello".to_string())))
+                    .await;
+                let _ = tx
+                    .send(Ok(StreamEvent::MessageEnd {
+                        stop_reason: Some("end_turn".to_string()),
+                    }))
+                    .await;
+            });
+
+            Ok(Box::pin(ReceiverStream::new(rx)))
+        }
+
+        fn name(&self) -> &str {
+            "delayed"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(Self {
+                open_delay: self.open_delay,
+                first_event_delay: self.first_event_delay,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn run_turn_streaming_mpsc_emits_keepalive_while_provider_is_quiet() {
+        let provider: Arc<dyn Provider> = Arc::new(DelayedProvider {
+            open_delay: stream_keepalive_interval() + Duration::from_millis(30),
+            first_event_delay: stream_keepalive_interval() + Duration::from_millis(30),
+        });
+        let registry = Registry::new(provider.clone()).await;
+        let mut agent = Agent::new(provider, registry);
+        agent.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "test".to_string(),
+                cache_control: None,
+            }],
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async move { agent.run_turn_streaming_mpsc(tx).await });
+
+        let first = tokio::time::timeout(Duration::from_secs(6), rx.recv())
+            .await
+            .expect("expected keepalive before timeout")
+            .expect("channel closed before keepalive");
+        assert!(matches!(first, ServerEvent::Pong { id } if id == STREAM_KEEPALIVE_PONG_ID));
+
+        let mut saw_text = false;
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < deadline {
+            let Some(event) = tokio::time::timeout(Duration::from_millis(250), rx.recv())
+                .await
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+            match event {
+                ServerEvent::TextDelta { text } => {
+                    assert_eq!(text, "hello");
+                    saw_text = true;
+                    break;
+                }
+                ServerEvent::Pong { id } => {
+                    assert_eq!(id, STREAM_KEEPALIVE_PONG_ID);
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_text, "expected delayed provider text after keepalive");
+        task.await.unwrap().unwrap();
+    }
 }
