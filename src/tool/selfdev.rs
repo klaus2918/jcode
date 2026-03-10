@@ -155,6 +155,14 @@ impl Tool for SelfDevTool {
 }
 
 impl SelfDevTool {
+    fn reload_timeout_secs() -> u64 {
+        std::env::var("JCODE_SELFDEV_RELOAD_TIMEOUT_SECS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .filter(|secs| *secs > 0)
+            .unwrap_or(15)
+    }
+
     async fn do_reload(&self, context: Option<String>, session_id: &str) -> Result<ToolOutput> {
         let repo_dir = build::get_repo_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not find jcode repository directory"))?;
@@ -219,8 +227,19 @@ impl SelfDevTool {
         //
         // We don't return a ToolOutput here because the reload hasn't happened yet.
         // The actual result comes after the process restarts.
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        let timeout = std::time::Duration::from_secs(SelfDevTool::reload_timeout_secs());
+        let sleep_forever = async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        };
+
+        match tokio::time::timeout(timeout, sleep_forever).await {
+            Ok(_) => unreachable!("infinite wait future unexpectedly completed"),
+            Err(_) => Err(anyhow::anyhow!(
+                "Timed out waiting for the server to begin reload after {}s. The reload signal may not have been picked up; check that the connected server is running a build with unified self-dev reload support and try restarting the shared server.",
+                timeout.as_secs()
+            )),
         }
     }
 
@@ -413,6 +432,38 @@ Use the `debug_socket` tool to execute these commands directly."#
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
     fn test_reload_context_serialization() {
@@ -445,5 +496,34 @@ mod tests {
         assert!(path.is_ok());
         let path = path.unwrap();
         assert!(path.to_string_lossy().contains("reload-context.json"));
+    }
+
+    #[test]
+    fn reload_timeout_secs_defaults_to_15() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::remove("JCODE_SELFDEV_RELOAD_TIMEOUT_SECS");
+        assert_eq!(SelfDevTool::reload_timeout_secs(), 15);
+    }
+
+    #[test]
+    fn reload_timeout_secs_honors_valid_env_override() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::set("JCODE_SELFDEV_RELOAD_TIMEOUT_SECS", "27");
+        assert_eq!(SelfDevTool::reload_timeout_secs(), 27);
+    }
+
+    #[test]
+    fn reload_timeout_secs_ignores_empty_invalid_and_zero_values() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::set("JCODE_SELFDEV_RELOAD_TIMEOUT_SECS", "   ");
+        assert_eq!(SelfDevTool::reload_timeout_secs(), 15);
+        drop(_guard);
+
+        let _guard = EnvVarGuard::set("JCODE_SELFDEV_RELOAD_TIMEOUT_SECS", "abc");
+        assert_eq!(SelfDevTool::reload_timeout_secs(), 15);
+        drop(_guard);
+
+        let _guard = EnvVarGuard::set("JCODE_SELFDEV_RELOAD_TIMEOUT_SECS", "0");
+        assert_eq!(SelfDevTool::reload_timeout_secs(), 15);
     }
 }

@@ -58,6 +58,18 @@ pub(super) async fn handle_comm_spawn(
                 .map(|agent_guard| agent_guard.provider_model())
         })
     };
+    let coordinator_is_canary = {
+        let agent_sessions = sessions.read().await;
+        agent_sessions
+            .get(&req_session_id)
+            .and_then(|agent| {
+                agent
+                    .try_lock()
+                    .ok()
+                    .map(|agent_guard| agent_guard.is_canary())
+            })
+            .unwrap_or(false)
+    };
 
     match create_headless_session(
         sessions,
@@ -68,6 +80,7 @@ pub(super) async fn handle_comm_spawn(
         swarms_by_id,
         swarm_coordinators,
         swarm_plans,
+        coordinator_is_canary,
         coordinator_model,
         Some(Arc::clone(mcp_pool)),
     )

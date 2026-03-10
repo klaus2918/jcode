@@ -38,12 +38,8 @@ POLL_INTERVAL = 0.05
 
 def jcode_debug_socket():
     """Find the active jcode debug socket path."""
-    # Check selfdev socket first
-    selfdev = "/tmp/jcode-selfdev-debug.sock"
-    if os.path.exists(selfdev):
-        return selfdev
-    uid = os.getuid()
-    return f"/run/user/{uid}/jcode-debug.sock"
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return os.path.join(runtime_dir, "jcode-debug.sock")
 
 
 def _send_recv(sock_path, request, timeout=TIMEOUT_SECS):
@@ -88,8 +84,9 @@ def get_any_session_id():
     return sessions[0]["session_id"]
 
 
-def create_session(cwd="/tmp"):
-    r = dbg(f"create_session:{cwd}")
+def create_session(cwd="/tmp", selfdev=False):
+    command = f"create_session:selfdev:{cwd}" if selfdev else f"create_session:{cwd}"
+    r = dbg(command)
     assert r.get("ok") is not False, f"create_session failed: {r}"
     return json.loads(r["output"])["session_id"]
 
@@ -186,24 +183,30 @@ def test_state_with_session():
 
 @test("4. selfdev status action works")
 def test_selfdev_status():
-    sess = get_any_session_id()
-    r = dbg('tool:selfdev {"action":"status"}', session_id=sess)
-    assert r.get("ok") is not False, f"selfdev status failed: {r}"
-    output = r.get("output", "")
-    assert "Build Status" in output or "Canary" in output, \
-        f"Expected build status in output, got: {output[:200]}"
-    if verbose:
-        print(f"     output snippet: {output[:150].strip()!r}")
+    sess = create_session("/home/jeremy/jcode", selfdev=True)
+    try:
+        r = dbg('tool:selfdev {"action":"status"}', session_id=sess)
+        assert r.get("ok") is not False, f"selfdev status failed: {r}"
+        output = r.get("output", "")
+        assert "Build Status" in output or "Canary" in output, \
+            f"Expected build status in output, got: {output[:200]}"
+        if verbose:
+            print(f"     output snippet: {output[:150].strip()!r}")
+    finally:
+        destroy_session(sess)
 
 
 @test("5. selfdev socket-info action works")
 def test_selfdev_socket_info():
-    sess = get_any_session_id()
-    r = dbg('tool:selfdev {"action":"socket-info"}', session_id=sess)
-    assert r.get("ok") is not False, f"selfdev socket-info failed: {r}"
-    output = r.get("output", "")
-    assert "debug" in output.lower() or "socket" in output.lower(), \
-        f"Expected socket info, got: {output[:200]}"
+    sess = create_session("/home/jeremy/jcode", selfdev=True)
+    try:
+        r = dbg('tool:selfdev {"action":"socket-info"}', session_id=sess)
+        assert r.get("ok") is not False, f"selfdev socket-info failed: {r}"
+        output = r.get("output", "")
+        assert "debug" in output.lower() or "socket" in output.lower(), \
+            f"Expected socket info, got: {output[:200]}"
+    finally:
+        destroy_session(sess)
 
 
 @test("6. Reload context file: write and load roundtrip")

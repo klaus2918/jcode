@@ -1,9 +1,9 @@
 use super::client_state::send_history;
 use super::reload::{do_server_reload_with_progress, normalize_model_arg, provider_cli_arg};
 use super::{
-    broadcast_swarm_status, is_jcode_repo_or_parent, is_selfdev_env, remove_plan_participant,
-    rename_plan_participant, socket_path, swarm_id_for_dir, update_member_status,
-    ClientConnectionInfo, SwarmEvent, SwarmMember, VersionedPlan,
+    broadcast_swarm_status, remove_plan_participant, rename_plan_participant, socket_path,
+    swarm_id_for_dir, update_member_status, ClientConnectionInfo, SwarmEvent, SwarmMember,
+    VersionedPlan,
 };
 use crate::agent::Agent;
 use crate::message::ContentBlock;
@@ -262,19 +262,7 @@ pub(super) async fn handle_subscribe(
         }
     }
 
-    let mut should_selfdev = *client_selfdev;
-    if matches!(selfdev, Some(true)) {
-        should_selfdev = true;
-    }
-
-    if !should_selfdev {
-        if let Some(ref dir) = subscribe_working_dir {
-            let path = PathBuf::from(dir);
-            if is_jcode_repo_or_parent(&path) {
-                should_selfdev = true;
-            }
-        }
-    }
+    let should_selfdev = *client_selfdev || matches!(selfdev, Some(true));
 
     if should_selfdev {
         *client_selfdev = true;
@@ -312,13 +300,23 @@ pub(super) async fn handle_reload(
         )
     };
 
+    let is_selfdev_session = {
+        let agent_guard = agent.lock().await;
+        agent_guard.is_canary()
+    };
+
     let progress_tx = client_event_tx.clone();
     let socket_arg = socket_path().to_string_lossy().to_string();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if let Err(error) =
-            do_server_reload_with_progress(progress_tx.clone(), provider_arg, model_arg, socket_arg)
-                .await
+        if let Err(error) = do_server_reload_with_progress(
+            progress_tx.clone(),
+            provider_arg,
+            model_arg,
+            socket_arg,
+            is_selfdev_session,
+        )
+        .await
         {
             let _ = progress_tx.send(ServerEvent::ReloadProgress {
                 step: "error".to_string(),
@@ -367,7 +365,7 @@ pub(super) async fn handle_resume_session(
     let (result, is_canary) = {
         let mut agent_guard = agent.lock().await;
         let result = agent_guard.restore_session(&session_id);
-        if *client_selfdev || is_selfdev_env() {
+        if *client_selfdev {
             agent_guard.set_canary("self-dev");
         }
         let is_canary = agent_guard.is_canary();

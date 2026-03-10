@@ -1,10 +1,7 @@
 use crate::agent::Agent;
 use crate::protocol::ServerEvent;
 use crate::provider::Provider;
-use crate::server::{
-    broadcast_swarm_status, is_jcode_repo_or_parent, is_selfdev_env, swarm_id_for_dir, SwarmMember,
-    VersionedPlan,
-};
+use crate::server::{broadcast_swarm_status, swarm_id_for_dir, SwarmMember, VersionedPlan};
 use crate::tool::Registry;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -21,6 +18,7 @@ pub(super) async fn create_headless_session(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     _swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    selfdev_requested: bool,
     model_override: Option<String>,
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
 ) -> Result<String> {
@@ -43,13 +41,7 @@ pub(super) async fn create_headless_session(
 
     registry.enable_memory_test_mode().await;
 
-    let should_selfdev = is_selfdev_env()
-        || working_dir
-            .as_ref()
-            .map(|d| crate::build::is_jcode_repo(d) || is_jcode_repo_or_parent(d))
-            .unwrap_or(false);
-
-    if should_selfdev {
+    if selfdev_requested {
         registry.register_selfdev_tools().await;
     }
 
@@ -86,7 +78,7 @@ pub(super) async fn create_headless_session(
         }
     }
 
-    if should_selfdev {
+    if selfdev_requested {
         new_agent.set_canary("self-dev");
     }
 
@@ -168,6 +160,7 @@ pub(super) async fn create_headless_session(
         "working_dir": working_dir,
         "swarm_id": swarm_id,
         "friendly_name": friendly_name,
+        "is_canary": selfdev_requested,
     })
     .to_string())
 }

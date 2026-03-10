@@ -151,7 +151,7 @@ pub(super) async fn handle_debug_client(
                 if !debug_control_allowed() {
                     let event = ServerEvent::Error {
                         id,
-                        message: "Debug control is disabled. Set JCODE_DEBUG_CONTROL=1 or run in self-dev mode.".to_string(),
+                        message: "Debug control is disabled. Set JCODE_DEBUG_CONTROL=1, enable display.debug_socket, or start the shared server from a self-dev session.".to_string(),
                         retry_after_secs: None,
                     };
                     let json = encode_event(&event);

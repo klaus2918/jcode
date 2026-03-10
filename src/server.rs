@@ -420,22 +420,6 @@ const EMBEDDING_IDLE_CHECK_SECS: u64 = 30;
 /// Default embedding idle unload threshold (15 minutes).
 const EMBEDDING_IDLE_UNLOAD_DEFAULT_SECS: u64 = 15 * 60;
 
-/// Self-dev socket path (used for detection when env var isn't set)
-const SELFDEV_SOCKET: &str = "/tmp/jcode-selfdev.sock";
-
-fn is_selfdev_env() -> bool {
-    if std::env::var("JCODE_SELFDEV_MODE").is_ok() {
-        return true;
-    }
-    if std::env::var("JCODE_SOCKET").ok().as_deref() == Some(SELFDEV_SOCKET) {
-        return true;
-    }
-    std::env::current_dir()
-        .ok()
-        .map(|p| crate::build::is_jcode_repo(&p))
-        .unwrap_or(false)
-}
-
 /// Write a single byte to the fd in `JCODE_READY_FD` and close it.
 /// Called after socket bind so the parent process knows the server is
 /// accepting connections.  The env var is cleared afterwards so child
@@ -486,21 +470,7 @@ pub fn send_reload_signal(hash: String, triggering_session: Option<String>) {
     }));
 }
 
-fn is_jcode_repo_or_parent(path: &std::path::Path) -> bool {
-    let mut current = Some(path);
-    while let Some(dir) = current {
-        if crate::build::is_jcode_repo(dir) {
-            return true;
-        }
-        current = dir.parent();
-    }
-    false
-}
-
 fn debug_control_allowed() -> bool {
-    if is_selfdev_env() {
-        return true;
-    }
     // Check config file setting
     if crate::config::config().display.debug_socket {
         return true;
@@ -529,8 +499,29 @@ fn embedding_idle_unload_secs() -> u64 {
         .unwrap_or(EMBEDDING_IDLE_UNLOAD_DEFAULT_SECS)
 }
 
-fn server_update_candidate() -> Option<(PathBuf, &'static str)> {
-    build::client_update_candidate(is_selfdev_env())
+async fn session_prefers_selfdev_binary(
+    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    session_id: Option<&str>,
+) -> bool {
+    let Some(session_id) = session_id else {
+        return false;
+    };
+
+    let agent = {
+        let sessions_guard = sessions.read().await;
+        sessions_guard.get(session_id).cloned()
+    };
+
+    let Some(agent) = agent else {
+        return false;
+    };
+
+    let agent_guard = agent.lock().await;
+    agent_guard.is_canary()
+}
+
+fn server_update_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'static str)> {
+    build::client_update_candidate(is_selfdev_session)
 }
 
 fn canonicalize_or(path: PathBuf) -> PathBuf {
@@ -593,30 +584,34 @@ fn swarm_id_for_dir(dir: Option<PathBuf>) -> Option<String> {
 
 fn server_has_newer_binary() -> bool {
     let current_exe = std::env::current_exe().ok();
-    let Some((candidate, _label)) = server_update_candidate() else {
-        return false;
-    };
-
     let current_mtime = current_exe
         .as_ref()
         .and_then(|p| std::fs::metadata(p).ok())
         .and_then(|m| m.modified().ok());
-    let candidate_mtime = std::fs::metadata(&candidate)
-        .ok()
-        .and_then(|m| m.modified().ok());
+    let current_canonical = current_exe
+        .as_ref()
+        .map(|path| canonicalize_or(path.clone()));
 
-    match (current_mtime, candidate_mtime) {
-        (Some(current), Some(candidate)) => candidate > current,
-        _ => {
-            if let Some(current_exe) = current_exe {
-                let current = canonicalize_or(current_exe);
-                let candidate_path = canonicalize_or(candidate);
-                current != candidate_path
-            } else {
-                false
-            }
+    let mut candidates = HashSet::new();
+    for is_selfdev_session in [false, true] {
+        if let Some((candidate, _label)) = server_update_candidate(is_selfdev_session) {
+            candidates.insert(canonicalize_or(candidate));
         }
     }
+
+    candidates.into_iter().any(|candidate| {
+        let candidate_mtime = std::fs::metadata(&candidate)
+            .ok()
+            .and_then(|m| m.modified().ok());
+
+        match (current_mtime, candidate_mtime) {
+            (Some(current), Some(candidate_time)) => candidate_time > current,
+            _ => current_canonical
+                .as_ref()
+                .map(|current| current != &candidate)
+                .unwrap_or(false),
+        }
+    })
 }
 
 /// Exit code when server shuts down due to idle timeout
@@ -649,6 +644,7 @@ pub struct Server {
     provider: Arc<dyn Provider>,
     socket_path: PathBuf,
     debug_socket_path: PathBuf,
+    gateway_config_override: Option<crate::gateway::GatewayConfig>,
     /// Server identity for multi-server support
     identity: ServerIdentity,
     /// Broadcast channel for streaming events to all subscribers
@@ -728,6 +724,7 @@ impl Server {
             provider,
             socket_path: socket_path(),
             debug_socket_path: debug_socket_path(),
+            gateway_config_override: None,
             identity,
             event_tx,
             sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -763,6 +760,11 @@ impl Server {
         server.socket_path = socket_path;
         server.debug_socket_path = debug_socket_path;
         server
+    }
+
+    pub fn with_gateway_config(mut self, gateway_config: crate::gateway::GatewayConfig) -> Self {
+        self.gateway_config_override = Some(gateway_config);
+        self
     }
 
     /// Get the server identity
@@ -1112,22 +1114,20 @@ impl Server {
             }
         });
 
-        // Spawn selfdev reload monitor (event-driven via in-process channel)
-        // Only run on selfdev servers to avoid non-selfdev servers picking up
-        // reload signals, which would kill all their client connections
-        if is_selfdev_env() {
-            let signal_sessions = Arc::clone(&self.sessions);
-            let signal_swarm_members = Arc::clone(&self.swarm_members);
-            let signal_shutdown_signals = Arc::clone(&self.shutdown_signals);
-            tokio::spawn(async move {
-                await_reload_signal(
-                    signal_sessions,
-                    signal_swarm_members,
-                    signal_shutdown_signals,
-                )
-                .await;
-            });
-        }
+        // Spawn reload monitor (event-driven via in-process channel).
+        // In the unified server design, self-dev sessions share the main server,
+        // so the shared server must always listen for reload signals.
+        let signal_sessions = Arc::clone(&self.sessions);
+        let signal_swarm_members = Arc::clone(&self.swarm_members);
+        let signal_shutdown_signals = Arc::clone(&self.shutdown_signals);
+        tokio::spawn(async move {
+            await_reload_signal(
+                signal_sessions,
+                signal_swarm_members,
+                signal_shutdown_signals,
+            )
+            .await;
+        });
 
         // Log when we receive SIGTERM for debugging
         #[cfg(unix)]
@@ -1471,16 +1471,20 @@ impl Server {
     /// Returns a task handle that accepts gateway clients and feeds them
     /// into handle_client just like Unix socket connections.
     fn spawn_gateway(&self) -> Option<tokio::task::JoinHandle<()>> {
-        let gw_config = &crate::config::config().gateway;
-        if !gw_config.enabled {
+        let config = if let Some(override_config) = &self.gateway_config_override {
+            override_config.clone()
+        } else {
+            let gw_config = &crate::config::config().gateway;
+            crate::gateway::GatewayConfig {
+                port: gw_config.port,
+                bind_addr: gw_config.bind_addr.clone(),
+                enabled: gw_config.enabled,
+            }
+        };
+
+        if !config.enabled {
             return None;
         }
-
-        let config = crate::gateway::GatewayConfig {
-            port: gw_config.port,
-            bind_addr: gw_config.bind_addr.clone(),
-            enabled: true,
-        };
 
         let (client_tx, mut client_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::gateway::GatewayClient>();

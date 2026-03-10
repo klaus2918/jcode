@@ -9,6 +9,42 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
+fn parse_create_session_command(cmd: &str) -> Option<(Option<String>, bool)> {
+    if cmd == "create_session" {
+        return Some((None, false));
+    }
+
+    if let Some(rest) = cmd.strip_prefix("create_session:selfdev:") {
+        let working_dir = rest.trim();
+        return Some((
+            if working_dir.is_empty() {
+                None
+            } else {
+                Some(working_dir.to_string())
+            },
+            true,
+        ));
+    }
+
+    if cmd == "create_session:selfdev" {
+        return Some((None, true));
+    }
+
+    if let Some(rest) = cmd.strip_prefix("create_session:") {
+        let working_dir = rest.trim();
+        return Some((
+            if working_dir.is_empty() {
+                None
+            } else {
+                Some(working_dir.to_string())
+            },
+            false,
+        ));
+    }
+
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn maybe_handle_session_admin_command(
     cmd: &str,
@@ -24,17 +60,22 @@ pub(super) async fn maybe_handle_session_admin_command(
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
 ) -> Result<Option<String>> {
-    if cmd == "create_session" || cmd.starts_with("create_session:") {
+    if let Some((working_dir, selfdev_requested)) = parse_create_session_command(cmd) {
+        let create_command = match working_dir {
+            Some(dir) => format!("create_session:{dir}"),
+            None => "create_session".to_string(),
+        };
         return Ok(Some(
             create_headless_session(
                 sessions,
                 session_id,
                 provider,
-                cmd,
+                &create_command,
                 swarm_members,
                 swarms_by_id,
                 swarm_coordinators,
                 swarm_plans,
+                selfdev_requested,
                 None,
                 mcp_pool,
             )
