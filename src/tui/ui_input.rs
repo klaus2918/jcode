@@ -185,7 +185,10 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 Line::from(spans)
             }
             ProcessingStatus::Connecting(ref phase) => {
-                let label = format!(" {}… {}", phase, format_elapsed(elapsed));
+                let mut label = format!(" {}… {}", phase, format_elapsed(elapsed));
+                if let Some(conn) = app.connection_type() {
+                    label.push_str(&format!(" · {}", conn));
+                }
                 let label_color = match phase {
                     crate::message::ConnectionPhase::Retrying { .. } => rgb(255, 193, 7),
                     crate::message::ConnectionPhase::Authenticating if elapsed > 10.0 => {
@@ -226,6 +229,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             }
             ProcessingStatus::Streaming => {
                 let time_str = format_elapsed(elapsed);
+                let (input_tokens, output_tokens) = app.streaming_tokens();
                 let mut status_text = match stale_secs {
                     Some(s) if s > 10.0 => format!("(stalled {:.0}s) · {}", s, time_str),
                     Some(s) if s > 2.0 => format!("(no tokens {:.0}s) · {}", s, time_str),
@@ -233,6 +237,9 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 };
                 if let Some(tps) = app.output_tps() {
                     status_text = format!("{} · {:.1} tps", status_text, tps);
+                }
+                if input_tokens > 0 || output_tokens > 0 {
+                    status_text = format!("{} · ↑{} ↓{}", status_text, input_tokens, output_tokens);
                 }
                 if unexpected_cache_miss {
                     let miss_tokens = cache_creation.unwrap_or(0);
@@ -282,8 +289,18 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 let anim_color = animated_tool_color(elapsed);
                 let batch_prog = app.batch_progress();
                 let is_batch = name == "batch";
-                let tool_detail = if is_batch && batch_prog.is_some() {
+                // For batch: compute initial total from the streaming tool call input
+                let batch_total_initial = if is_batch {
+                    app.streaming_tool_calls()
+                        .last()
+                        .and_then(|tc| tc.input.get("tool_calls"))
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                } else {
                     None
+                };
+                let tool_detail = if is_batch {
+                    None // batch always uses progress display
                 } else {
                     app.streaming_tool_calls()
                         .last()
@@ -301,16 +318,22 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 ];
 
                 // For batch tool: show "completed/total · last_tool" progress
-                if let Some((completed, total, last_tool)) = batch_prog.filter(|_| is_batch) {
-                    let progress_color = if completed == total {
+                if is_batch {
+                    let (completed, total, last_tool) = match batch_prog {
+                        Some((c, t, l)) => (c, t, l),
+                        None => (0, batch_total_initial.unwrap_or(0), None),
+                    };
+                    let progress_color = if total > 0 && completed == total {
                         rgb(100, 200, 100)
                     } else {
                         rgb(100, 180, 255)
                     };
-                    spans.push(Span::styled(
-                        format!(" · {}/{}", completed, total),
-                        Style::default().fg(progress_color).bold(),
-                    ));
+                    if total > 0 {
+                        spans.push(Span::styled(
+                            format!(" · {}/{}", completed, total),
+                            Style::default().fg(progress_color).bold(),
+                        ));
+                    }
                     if let Some(tool_name) = last_tool.filter(|_| completed < total) {
                         spans.push(Span::styled(
                             format!(" · {}", tool_name),
