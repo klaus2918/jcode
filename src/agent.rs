@@ -222,6 +222,36 @@ pub struct Agent {
 }
 
 impl Agent {
+    fn build_base(
+        provider: Arc<dyn Provider>,
+        registry: Registry,
+        session: Session,
+        allowed_tools: Option<HashSet<String>>,
+    ) -> Self {
+        let skills = SkillRegistry::load().unwrap_or_default();
+        Self {
+            provider,
+            registry,
+            skills,
+            session,
+            active_skill: None,
+            allowed_tools,
+            provider_session_id: None,
+            last_upstream_provider: None,
+            last_connection_type: None,
+            pending_alerts: Vec::new(),
+            soft_interrupt_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
+            background_tool_signal: InterruptSignal::new(),
+            graceful_shutdown: InterruptSignal::new(),
+            cache_tracker: CacheTracker::new(),
+            last_usage: TokenUsage::default(),
+            locked_tools: None,
+            system_prompt_override: None,
+            memory_enabled: crate::config::config().features.memory,
+            stdin_request_tx: None,
+        }
+    }
+
     fn is_context_limit_error(error: &str) -> bool {
         let lower = error.to_lowercase();
         lower.contains("context length")
@@ -291,28 +321,7 @@ impl Agent {
     }
 
     pub fn new(provider: Arc<dyn Provider>, registry: Registry) -> Self {
-        let skills = SkillRegistry::load().unwrap_or_default();
-        let mut agent = Self {
-            provider,
-            registry,
-            skills,
-            session: Session::create(None, None),
-            active_skill: None,
-            allowed_tools: None,
-            provider_session_id: None,
-            last_upstream_provider: None,
-            last_connection_type: None,
-            pending_alerts: Vec::new(),
-            soft_interrupt_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
-            background_tool_signal: InterruptSignal::new(),
-            graceful_shutdown: InterruptSignal::new(),
-            cache_tracker: CacheTracker::new(),
-            last_usage: TokenUsage::default(),
-            locked_tools: None,
-            system_prompt_override: None,
-            memory_enabled: crate::config::config().features.memory,
-            stdin_request_tx: None,
-        };
+        let mut agent = Self::build_base(provider, registry, Session::create(None, None), None);
         agent.session.model = Some(agent.provider.model());
         agent.seed_compaction_from_session();
         agent.log_env_snapshot("create");
@@ -325,28 +334,7 @@ impl Agent {
         session: Session,
         allowed_tools: Option<HashSet<String>>,
     ) -> Self {
-        let skills = SkillRegistry::load().unwrap_or_default();
-        let mut agent = Self {
-            provider,
-            registry,
-            skills,
-            session,
-            active_skill: None,
-            allowed_tools,
-            provider_session_id: None,
-            last_upstream_provider: None,
-            last_connection_type: None,
-            pending_alerts: Vec::new(),
-            soft_interrupt_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
-            background_tool_signal: InterruptSignal::new(),
-            graceful_shutdown: InterruptSignal::new(),
-            cache_tracker: CacheTracker::new(),
-            last_usage: TokenUsage::default(),
-            locked_tools: None,
-            system_prompt_override: None,
-            memory_enabled: crate::config::config().features.memory,
-            stdin_request_tx: None,
-        };
+        let mut agent = Self::build_base(provider, registry, session, allowed_tools);
         if let Some(model) = agent.session.model.clone() {
             if let Err(e) = agent.provider.set_model(&model) {
                 logging::error(&format!(

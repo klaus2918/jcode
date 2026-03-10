@@ -1366,6 +1366,7 @@ impl App {
                                             self.clear_streaming_render_state();
                                             self.stream_buffer.clear();
                                             self.streaming_tool_calls.clear();
+                                            self.batch_progress = None;
                                             self.push_display_message(DisplayMessage::system("Interrupted"));
                                             return Ok(());
                                         }

@@ -447,6 +447,36 @@ fn test_mouse_scroll_over_diff_pane_scrolls_side_panel() {
 }
 
 #[test]
+fn test_mouse_scroll_events_are_classified_as_scroll_only() {
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::File;
+
+    crate::tui::ui::record_layout_snapshot(
+        Rect::new(0, 0, 40, 20),
+        None,
+        Some(Rect::new(40, 0, 20, 20)),
+    );
+
+    let scroll_only = app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 45,
+        row: 5,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    assert!(scroll_only, "scroll wheel events should be deferrable during streaming");
+
+    let non_scroll = app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 10,
+        row: 5,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    assert!(!non_scroll, "clicks should still redraw immediately");
+}
+
+#[test]
 fn test_mouse_scroll_over_unfocused_diagram_resizes_immediately_without_animation() {
     let mut app = create_test_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
@@ -522,6 +552,41 @@ fn test_dragging_diagram_border_resizes_immediately_without_animation() {
     assert!(app.diagram_pane_anim_start.is_none());
 
     crate::tui::mermaid::clear_active_diagrams();
+}
+
+#[test]
+fn test_is_scroll_only_key_detects_navigation_inputs() {
+    let mut app = create_test_app();
+
+    let (up_code, up_mods) = scroll_up_key(&app);
+    assert!(super::input::is_scroll_only_key(&app, up_code, up_mods));
+
+    let (down_code, down_mods) = scroll_down_key(&app);
+    assert!(super::input::is_scroll_only_key(&app, down_code, down_mods));
+
+    app.diff_pane_focus = true;
+    assert!(super::input::is_scroll_only_key(
+        &app,
+        KeyCode::Char('j'),
+        KeyModifiers::empty()
+    ));
+
+    assert!(super::input::is_scroll_only_key(
+        &app,
+        KeyCode::BackTab,
+        KeyModifiers::empty()
+    ));
+
+    assert!(!super::input::is_scroll_only_key(
+        &app,
+        KeyCode::Char('a'),
+        KeyModifiers::empty()
+    ));
+    assert!(!super::input::is_scroll_only_key(
+        &app,
+        KeyCode::Enter,
+        KeyModifiers::empty()
+    ));
 }
 
 #[test]
@@ -2376,6 +2441,38 @@ fn test_remote_ctrl_c_still_arms_quit_when_idle() {
 
     rt.block_on(app.handle_remote_key(KeyCode::Char('c'), KeyModifiers::CONTROL, &mut remote))
         .unwrap();
+
+    assert!(app.quit_pending.is_some());
+    assert_eq!(
+        app.status_notice(),
+        Some("Press Ctrl+C again to quit".to_string())
+    );
+}
+
+#[test]
+fn test_disconnected_key_handler_allows_typing_and_queueing() {
+    let mut app = create_test_app();
+
+    remote::handle_disconnected_key(&mut app, KeyCode::Char('h'), KeyModifiers::empty()).unwrap();
+    remote::handle_disconnected_key(&mut app, KeyCode::Char('i'), KeyModifiers::empty()).unwrap();
+    assert_eq!(app.input, "hi");
+
+    remote::handle_disconnected_key(&mut app, KeyCode::Enter, KeyModifiers::empty()).unwrap();
+
+    assert!(app.input.is_empty());
+    assert_eq!(app.queued_messages().len(), 1);
+    assert_eq!(app.queued_messages()[0], "hi");
+    assert_eq!(
+        app.status_notice(),
+        Some("Queued for send after reconnect (1 message)".to_string())
+    );
+}
+
+#[test]
+fn test_disconnected_key_handler_ctrl_c_arms_quit() {
+    let mut app = create_test_app();
+
+    remote::handle_disconnected_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap();
 
     assert!(app.quit_pending.is_some());
     assert_eq!(
