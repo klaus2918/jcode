@@ -62,6 +62,10 @@ impl crate::tui::TuiState for App {
         self.upstream_provider.clone()
     }
 
+    fn connection_type(&self) -> Option<String> {
+        self.connection_type.clone()
+    }
+
     fn mcp_servers(&self) -> Vec<(String, usize)> {
         self.mcp_server_names.clone()
     }

@@ -13,7 +13,7 @@ pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
     if icon.is_empty() {
         0
     } else {
-        2
+        icon.len() + 1
     }
 }
 
@@ -770,6 +770,13 @@ pub(crate) fn wrap_input_text<'a>(
 fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {
     if app.queue_mode() {
         ("⏳", queued_color())
+    } else if let Some(ref conn) = app.connection_type() {
+        let lower = conn.to_lowercase();
+        if lower.contains("websocket") {
+            ("ws", rgb(100, 200, 180))
+        } else {
+            ("http", rgb(140, 180, 255))
+        }
     } else {
         ("⚡", asap_color())
     }

@@ -240,6 +240,10 @@ impl TuiState for BenchState {
         None
     }
 
+    fn connection_type(&self) -> Option<String> {
+        None
+    }
+
     fn mcp_servers(&self) -> Vec<(String, usize)> {
         Vec::new()
     }

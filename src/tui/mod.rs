@@ -71,6 +71,8 @@ pub trait TuiState {
     fn provider_model(&self) -> String;
     /// Upstream provider (e.g., which provider OpenRouter routed to)
     fn upstream_provider(&self) -> Option<String>;
+    /// Active transport/connection type (websocket/https/etc.)
+    fn connection_type(&self) -> Option<String>;
     fn mcp_servers(&self) -> Vec<(String, usize)>;
     fn available_skills(&self) -> Vec<String>;
     fn streaming_tokens(&self) -> (u64, u64);
