@@ -2425,12 +2425,7 @@ impl MultiProvider {
         usage.five_hour >= 0.99 && usage.seven_day >= 0.99
     }
 
-    fn is_openai_usage_exhausted(&self) -> bool {
-        if self.openai.is_none() {
-            return false;
-        }
-
-        let usage = crate::usage::get_openai_usage_sync();
+    fn is_openai_usage_exhausted_from_usage(usage: &crate::usage::OpenAIUsageData) -> bool {
         if !usage.has_limits() {
             return false;
         }
@@ -2447,6 +2442,15 @@ impl MultiProvider {
             .unwrap_or(false);
 
         five_hour_exhausted && seven_day_exhausted
+    }
+
+    fn is_openai_usage_exhausted(&self) -> bool {
+        if self.openai.is_none() {
+            return false;
+        }
+
+        let usage = crate::usage::get_openai_usage_sync();
+        Self::is_openai_usage_exhausted_from_usage(&usage)
     }
 }
 
@@ -3496,6 +3500,29 @@ mod tests {
             "expected credentials error, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_openai_usage_exhaustion_requires_both_windows() {
+        let mut usage = crate::usage::OpenAIUsageData::default();
+        usage.five_hour = Some(crate::usage::OpenAIUsageWindow {
+            name: "5h".to_string(),
+            usage_ratio: 1.0,
+            resets_at: None,
+        });
+        usage.seven_day = Some(crate::usage::OpenAIUsageWindow {
+            name: "7d".to_string(),
+            usage_ratio: 0.50,
+            resets_at: None,
+        });
+        assert!(!MultiProvider::is_openai_usage_exhausted_from_usage(&usage));
+
+        usage.seven_day = Some(crate::usage::OpenAIUsageWindow {
+            name: "7d".to_string(),
+            usage_ratio: 1.0,
+            resets_at: None,
+        });
+        assert!(MultiProvider::is_openai_usage_exhausted_from_usage(&usage));
     }
 
     #[test]
