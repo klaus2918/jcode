@@ -69,6 +69,7 @@ pub(super) async fn do_server_reload_with_progress(
     provider_arg: Option<String>,
     model_arg: Option<String>,
     socket_arg: String,
+    is_selfdev_session: bool,
 ) -> Result<()> {
     let send_progress =
         |step: &str, message: &str, success: Option<bool>, output: Option<String>| {
@@ -94,7 +95,7 @@ pub(super) async fn do_server_reload_with_progress(
         send_progress("init", "📁 Repository: (not found)", Some(true), None);
     }
 
-    let (exe, exe_label) = super::server_update_candidate()
+    let (exe, exe_label) = super::server_update_candidate(is_selfdev_session)
         .ok_or_else(|| anyhow::anyhow!("No reloadable binary found"))?;
     if !exe.exists() {
         send_progress("verify", "❌ No reloadable binary found", Some(false), None);
@@ -209,10 +210,6 @@ pub(super) async fn await_reload_signal(
 ) {
     use std::process::Command as ProcessCommand;
 
-    if !super::is_selfdev_env() {
-        return;
-    }
-
     let mut rx = super::reload_signal().1.clone();
 
     loop {
@@ -235,12 +232,16 @@ pub(super) async fn await_reload_signal(
         )
         .await;
 
-        if let Ok(binary) = crate::build::canary_binary_path() {
+        let prefers_selfdev =
+            super::session_prefers_selfdev_binary(&sessions, signal.triggering_session.as_deref())
+                .await;
+
+        if let Some((binary, label)) = super::server_update_candidate(prefers_selfdev) {
             if binary.exists() {
                 let socket = super::socket_path();
                 crate::logging::info(&format!(
-                    "Server: exec'ing into canary binary {:?} (socket: {:?})",
-                    binary, socket
+                    "Server: exec'ing into {} binary {:?} (socket: {:?})",
+                    label, binary, socket
                 ));
                 let err = crate::platform::replace_process(
                     ProcessCommand::new(&binary)
@@ -248,7 +249,10 @@ pub(super) async fn await_reload_signal(
                         .arg("--socket")
                         .arg(socket.as_os_str()),
                 );
-                crate::logging::error(&format!("Failed to exec into canary {:?}: {}", binary, err));
+                crate::logging::error(&format!(
+                    "Failed to exec into {} {:?}: {}",
+                    label, binary, err
+                ));
             }
         }
         std::process::exit(42);

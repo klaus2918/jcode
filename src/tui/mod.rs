@@ -375,7 +375,7 @@ pub(crate) fn subscribe_metadata() -> (Option<String>, Option<bool>) {
     let working_dir = std::env::current_dir().ok();
     let working_dir_str = working_dir.as_ref().map(|p| p.display().to_string());
 
-    let mut selfdev = std::env::var("JCODE_SELFDEV_MODE").is_ok();
+    let mut selfdev = crate::cli::selfdev::client_selfdev_requested();
     if !selfdev {
         if let Some(ref dir) = working_dir {
             let mut current = Some(dir.as_path());

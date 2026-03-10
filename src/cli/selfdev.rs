@@ -3,15 +3,23 @@ use std::process::Command as ProcessCommand;
 
 use crate::{build, id, logging, server, session, startup_profile, tui};
 
-use super::hot_exec::{execute_requested_action, has_requested_action};
 use super::terminal::{
     cleanup_tui_runtime, cleanup_tui_runtime_for_run_result, init_tui_runtime,
     print_session_resume_hint, set_current_session, spawn_session_signal_watchers,
+};
+use super::{
+    hot_exec::{execute_requested_action, has_requested_action},
+    provider_init::ProviderChoice,
 };
 
 pub const EXIT_RELOAD_REQUESTED: i32 = 42;
 
 pub const SELFDEV_SOCKET: &str = "/tmp/jcode-selfdev.sock";
+pub const CLIENT_SELFDEV_ENV: &str = "JCODE_CLIENT_SELFDEV_MODE";
+
+pub fn client_selfdev_requested() -> bool {
+    std::env::var(CLIENT_SELFDEV_ENV).is_ok() || std::env::var("JCODE_SELFDEV_MODE").is_ok()
+}
 
 fn should_replace_stale_selfdev_server(server_hash: &str, current_hash: &str) -> bool {
     let server_hash = server_hash.trim();
@@ -27,7 +35,7 @@ fn should_replace_stale_selfdev_server(server_hash: &str, current_hash: &str) ->
 
 pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) -> Result<()> {
     startup_profile::mark("run_self_dev_enter");
-    std::env::set_var("JCODE_SELFDEV_MODE", "1");
+    std::env::set_var(CLIENT_SELFDEV_ENV, "1");
 
     let repo_dir =
         build::get_repo_dir().ok_or_else(|| anyhow::anyhow!("Could not find jcode repository"))?;
@@ -77,7 +85,6 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
 
     let hash = build::current_git_hash(&repo_dir)?;
     startup_profile::mark("selfdev_git_hash");
-    let binary_path = target_binary.clone();
 
     if !is_resume {
         eprintln!("Starting self-dev session with {}...", hash);
@@ -85,23 +92,23 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
         logging::info(&format!("Resuming self-dev session with {}...", hash));
     }
 
-    let exe = std::env::current_exe()?;
-    let cwd = std::env::current_dir()?;
-
     if is_resume {
         std::env::set_var("JCODE_RESUMING", "1");
     }
 
-    let err = crate::platform::replace_process(
-        ProcessCommand::new(&exe)
-            .arg("canary-wrapper")
-            .arg(&session_id)
-            .arg(binary_path.to_string_lossy().as_ref())
-            .arg(&hash)
-            .current_dir(cwd),
-    );
+    let server_running = super::dispatch::server_is_running().await;
+    if !server_running {
+        super::dispatch::maybe_prompt_server_bootstrap_login(&ProviderChoice::Auto).await?;
+        super::dispatch::spawn_server(&ProviderChoice::Auto, None).await?;
+    }
 
-    Err(anyhow::anyhow!("Failed to exec wrapper {:?}: {}", exe, err))
+    if std::env::var("JCODE_RESUMING").is_err() && server_running {
+        eprintln!("Connecting to shared server...");
+    }
+
+    eprintln!("Starting self-dev TUI...");
+
+    super::tui_launch::run_tui_client(Some(session_id), None, !server_running).await
 }
 
 pub async fn is_server_alive(socket_path: &str) -> bool {
@@ -183,9 +190,7 @@ pub async fn run_canary_wrapper(
                 Ok(mut f) => {
                     let lock_ok = {
                         let fd = std::os::unix::io::AsRawFd::as_raw_fd(&f);
-                        let ret = unsafe {
-                            libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB)
-                        };
+                        let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
                         ret == 0
                     };
                     if lock_ok {

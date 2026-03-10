@@ -507,9 +507,9 @@ impl RemoteConnection {
             Ok(0) => RemoteRead::Disconnected(RemoteDisconnectReason::PeerClosed),
             Ok(_) => match serde_json::from_str(&self.line_buffer) {
                 Ok(event) => RemoteRead::Event(event),
-                Err(error) => RemoteRead::Disconnected(RemoteDisconnectReason::Protocol(
-                    error.to_string(),
-                )),
+                Err(error) => {
+                    RemoteRead::Disconnected(RemoteDisconnectReason::Protocol(error.to_string()))
+                }
             },
             Err(error) => RemoteRead::Disconnected(RemoteDisconnectReason::Io(error.to_string())),
         }
