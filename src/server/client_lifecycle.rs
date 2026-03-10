@@ -85,13 +85,26 @@ pub(super) async fn handle_client(
     // Client selfdev status is determined by Subscribe request, not server's env
     let mut client_selfdev = false;
 
+    let client_start = std::time::Instant::now();
+
     let provider = provider_template.fork();
+    let t0 = std::time::Instant::now();
     let registry = Registry::new(provider.clone()).await;
+    let registry_ms = t0.elapsed().as_millis();
+
     let mut swarm_enabled = crate::config::config().features.swarm;
 
     // Create a new session for this client
+    let t0 = std::time::Instant::now();
     let mut new_agent = Agent::new(Arc::clone(&provider), registry.clone());
+    let agent_new_ms = t0.elapsed().as_millis();
+
     new_agent.set_memory_enabled(crate::config::config().features.memory);
+
+    crate::logging::info(&format!(
+        "[TIMING] handle_client setup: registry={registry_ms}ms, agent_new={agent_new_ms}ms, total={}ms",
+        client_start.elapsed().as_millis()
+    ));
     let mut client_session_id = new_agent.session_id().to_string();
     let friendly_name = new_agent.session_short_name().map(|s| s.to_string());
     let client_connection_id = id::new_id("conn");
