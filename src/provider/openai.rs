@@ -1614,7 +1614,11 @@ impl Provider for OpenAIProvider {
         // Try to reuse an existing WebSocket connection with previous_response_id
         // to send only incremental input items instead of the full conversation.
         let persistent_ws = Arc::clone(&self.persistent_ws);
-        let transport_mode_snapshot = *self.transport_mode.blocking_read();
+        let transport_mode_snapshot = self
+            .transport_mode
+            .try_read()
+            .map(|g| *g)
+            .unwrap_or(OpenAITransportMode::HTTPS);
         let use_websocket_transport = match transport_mode_snapshot {
             OpenAITransportMode::HTTPS => false,
             OpenAITransportMode::WebSocket => true,
@@ -1889,7 +1893,7 @@ impl Provider for OpenAIProvider {
     }
 
     fn transport(&self) -> Option<String> {
-        Some(self.transport_mode.blocking_read().as_str().to_string())
+        self.transport_mode.try_read().ok().map(|g| g.as_str().to_string())
     }
 
     fn set_transport(&self, transport: &str) -> Result<()> {
@@ -1902,8 +1906,15 @@ impl Provider for OpenAIProvider {
                 other
             ),
         };
-        *self.transport_mode.blocking_write() = mode;
-        Ok(())
+        match self.transport_mode.try_write() {
+            Ok(mut guard) => {
+                *guard = mode;
+                Ok(())
+            }
+            Err(_) => Err(anyhow::anyhow!(
+                "Cannot change transport while a request is in progress"
+            )),
+        }
     }
 
     fn available_transports(&self) -> Vec<&'static str> {
