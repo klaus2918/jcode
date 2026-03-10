@@ -246,13 +246,8 @@ impl OpenAIProvider {
         }
     }
 
-    fn should_prefer_websocket(model: &str) -> bool {
-        let normalized = model.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            return false;
-        }
-
-        normalized.contains("codex") || normalized.starts_with("gpt-5")
+    fn should_prefer_websocket(_model: &str) -> bool {
+        false
     }
 
     fn normalize_reasoning_effort(raw: &str) -> Option<String> {
@@ -3763,15 +3758,11 @@ mod tests {
     }
 
     #[test]
-    fn test_should_prefer_websocket_for_gpt5_family_models() {
-        assert!(OpenAIProvider::should_prefer_websocket(
-            "gpt-5.3-codex-spark"
-        ));
-        assert!(OpenAIProvider::should_prefer_websocket(
-            "GPT-5.3-CODEX-SPARK"
-        ));
-        assert!(OpenAIProvider::should_prefer_websocket("gpt-5.3-codex"));
-        assert!(OpenAIProvider::should_prefer_websocket("gpt-5"));
+    fn test_should_prefer_websocket_disabled_by_default() {
+        assert!(!OpenAIProvider::should_prefer_websocket("gpt-5.3-codex-spark"));
+        assert!(!OpenAIProvider::should_prefer_websocket("gpt-5.3-codex"));
+        assert!(!OpenAIProvider::should_prefer_websocket("gpt-5"));
+        assert!(!OpenAIProvider::should_prefer_websocket("codex-mini"));
         assert!(!OpenAIProvider::should_prefer_websocket(""));
     }
 
