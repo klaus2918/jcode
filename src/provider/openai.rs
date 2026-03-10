@@ -45,8 +45,6 @@ const WEBSOCKET_UPGRADE_REQUIRED_ERROR: StatusCode = StatusCode::UPGRADE_REQUIRE
 const WEBSOCKET_FALLBACK_NOTICE: &str = "falling back from websockets to https transport";
 const WEBSOCKET_CONNECT_TIMEOUT_SECS: u64 = 8;
 const WEBSOCKET_FIRST_EVENT_TIMEOUT_SECS: u64 = 8;
-const WEBSOCKET_IDLE_TIMEOUT_SECS: u64 = 60;
-const WEBSOCKET_PERSISTENT_IDLE_TIMEOUT_SECS: u64 = 60;
 const WEBSOCKET_COMPLETION_TIMEOUT_SECS: u64 = 300;
 /// Maximum age of a persistent WebSocket connection before forcing reconnect
 const WEBSOCKET_PERSISTENT_MAX_AGE_SECS: u64 = 3000; // 50 min (server limit is 60 min)
@@ -2256,7 +2254,7 @@ async fn stream_response_websocket(
     let mut saw_response_completed = false;
     let mut saw_api_activity = false;
     let ws_started_at = Instant::now();
-    let mut last_api_activity_at = Instant::now();
+    let mut _last_api_activity_at = Instant::now();
     let mut pending: VecDeque<StreamEvent> = VecDeque::new();
 
     loop {
@@ -2278,19 +2276,10 @@ async fn stream_response_websocket(
             )));
         }
 
-        if saw_api_activity
-            && last_api_activity_at.elapsed() >= Duration::from_secs(WEBSOCKET_IDLE_TIMEOUT_SECS)
-        {
-            return Err(OpenAIStreamFailure::FallbackToHttps(anyhow::anyhow!(
-                "WebSocket stream stalled without API activity for {}s",
-                WEBSOCKET_IDLE_TIMEOUT_SECS
-            )));
-        }
-
-        let timeout_secs = if saw_api_activity {
-            WEBSOCKET_IDLE_TIMEOUT_SECS
-        } else {
+        let timeout_secs = if !saw_api_activity {
             WEBSOCKET_FIRST_EVENT_TIMEOUT_SECS
+        } else {
+            WEBSOCKET_COMPLETION_TIMEOUT_SECS.saturating_sub(ws_started_at.elapsed().as_secs()).max(1)
         };
         let next_item = tokio::time::timeout(Duration::from_secs(timeout_secs), ws_stream.next())
             .await
@@ -2379,13 +2368,13 @@ async fn stream_response_websocket(
                     }
                     if made_api_activity {
                         saw_api_activity = true;
-                        last_api_activity_at = Instant::now();
+                        _last_api_activity_at = Instant::now();
                     }
                 }
                 WsMessage::Ping(payload) => {
                     let _ = ws_stream.send(WsMessage::Pong(payload)).await;
                     if saw_api_activity {
-                        last_api_activity_at = Instant::now();
+                        _last_api_activity_at = Instant::now();
                     }
                 }
                 WsMessage::Close(_) => {
@@ -2403,7 +2392,7 @@ async fn stream_response_websocket(
                 }
                 WsMessage::Pong(_) => {
                     if saw_api_activity {
-                        last_api_activity_at = Instant::now();
+                        _last_api_activity_at = Instant::now();
                     }
                 }
                 _ => {}
@@ -2532,23 +2521,14 @@ async fn try_persistent_ws_continuation(
     let mut pending: VecDeque<StreamEvent> = VecDeque::new();
     let mut new_response_id: Option<String> = None;
     let stream_started = Instant::now();
-    let mut last_api_activity_at = Instant::now();
+    let mut _last_api_activity_at = Instant::now();
 
     loop {
         if stream_started.elapsed() >= Duration::from_secs(WEBSOCKET_COMPLETION_TIMEOUT_SECS) {
             return PersistentWsResult::Failed("completion timeout".to_string());
         }
 
-        if last_api_activity_at.elapsed()
-            >= Duration::from_secs(WEBSOCKET_PERSISTENT_IDLE_TIMEOUT_SECS)
-        {
-            return PersistentWsResult::Failed(format!(
-                "idle timeout on persistent WS ({}s)",
-                WEBSOCKET_PERSISTENT_IDLE_TIMEOUT_SECS
-            ));
-        }
-
-        let timeout_secs = WEBSOCKET_PERSISTENT_IDLE_TIMEOUT_SECS;
+        let timeout_secs = WEBSOCKET_COMPLETION_TIMEOUT_SECS.saturating_sub(stream_started.elapsed().as_secs()).max(1);
         let next_item =
             match tokio::time::timeout(Duration::from_secs(timeout_secs), state.ws_stream.next())
                 .await
@@ -2556,7 +2536,7 @@ async fn try_persistent_ws_continuation(
                 Ok(item) => item,
                 Err(_) => {
                     return PersistentWsResult::Failed(format!(
-                        "idle timeout on persistent WS ({}s)",
+                        "completion timeout on persistent WS ({}s)",
                         timeout_secs
                     ))
                 }
@@ -2573,7 +2553,7 @@ async fn try_persistent_ws_continuation(
 
         match result {
             Ok(WsMessage::Text(text)) => {
-                last_api_activity_at = Instant::now();
+                _last_api_activity_at = Instant::now();
                 let text = text.to_string();
                 if is_websocket_fallback_notice(&text) {
                     return PersistentWsResult::Failed("server requested fallback".to_string());
@@ -2794,7 +2774,7 @@ async fn stream_response_websocket_persistent(
     let mut saw_response_completed = false;
     let mut saw_api_activity = false;
     let ws_started_at = Instant::now();
-    let mut last_api_activity_at = Instant::now();
+    let mut _last_api_activity_at = Instant::now();
     let mut pending: VecDeque<StreamEvent> = VecDeque::new();
     let mut response_id: Option<String> = None;
     let connected_at = Instant::now();
@@ -2818,19 +2798,10 @@ async fn stream_response_websocket_persistent(
             )));
         }
 
-        if saw_api_activity
-            && last_api_activity_at.elapsed() >= Duration::from_secs(WEBSOCKET_IDLE_TIMEOUT_SECS)
-        {
-            return Err(OpenAIStreamFailure::FallbackToHttps(anyhow::anyhow!(
-                "WebSocket stream stalled without API activity for {}s",
-                WEBSOCKET_IDLE_TIMEOUT_SECS
-            )));
-        }
-
-        let timeout_secs = if saw_api_activity {
-            WEBSOCKET_IDLE_TIMEOUT_SECS
-        } else {
+        let timeout_secs = if !saw_api_activity {
             WEBSOCKET_FIRST_EVENT_TIMEOUT_SECS
+        } else {
+            WEBSOCKET_COMPLETION_TIMEOUT_SECS.saturating_sub(ws_started_at.elapsed().as_secs()).max(1)
         };
         let next_item = tokio::time::timeout(Duration::from_secs(timeout_secs), ws_stream.next())
             .await
@@ -2939,13 +2910,13 @@ async fn stream_response_websocket_persistent(
                     }
                     if made_api_activity {
                         saw_api_activity = true;
-                        last_api_activity_at = Instant::now();
+                        _last_api_activity_at = Instant::now();
                     }
                 }
                 WsMessage::Ping(payload) => {
                     let _ = ws_stream.send(WsMessage::Pong(payload)).await;
                     if saw_api_activity {
-                        last_api_activity_at = Instant::now();
+                        _last_api_activity_at = Instant::now();
                     }
                 }
                 WsMessage::Close(_) => {
@@ -2963,7 +2934,7 @@ async fn stream_response_websocket_persistent(
                 }
                 WsMessage::Pong(_) => {
                     if saw_api_activity {
-                        last_api_activity_at = Instant::now();
+                        _last_api_activity_at = Instant::now();
                     }
                 }
                 _ => {}
@@ -3901,16 +3872,11 @@ mod tests {
     }
 
     #[test]
-    fn test_websocket_idle_timeout_is_long_enough_for_reasoning_gaps() {
+    fn test_websocket_completion_timeout_is_long_enough_for_reasoning() {
         assert!(
-            WEBSOCKET_IDLE_TIMEOUT_SECS >= 30,
-            "idle timeout regressed to {}s; this causes false websocket fallbacks during reasoning gaps",
-            WEBSOCKET_IDLE_TIMEOUT_SECS
-        );
-        assert!(
-            WEBSOCKET_PERSISTENT_IDLE_TIMEOUT_SECS >= 30,
-            "persistent idle timeout regressed to {}s; this causes false websocket fallbacks during reasoning gaps",
-            WEBSOCKET_PERSISTENT_IDLE_TIMEOUT_SECS
+            WEBSOCKET_COMPLETION_TIMEOUT_SECS >= 120,
+            "completion timeout regressed to {}s; reasoning models may need several minutes",
+            WEBSOCKET_COMPLETION_TIMEOUT_SECS
         );
     }
 
