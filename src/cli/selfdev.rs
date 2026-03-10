@@ -13,6 +13,12 @@ pub const EXIT_RELOAD_REQUESTED: i32 = 42;
 
 pub const SELFDEV_SOCKET: &str = "/tmp/jcode-selfdev.sock";
 
+fn should_replace_stale_selfdev_server(server_hash: &str, current_hash: &str) -> bool {
+    let server_hash = server_hash.trim();
+    let current_hash = current_hash.trim();
+    !server_hash.is_empty() && !current_hash.is_empty() && server_hash != current_hash
+}
+
 pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) -> Result<()> {
     startup_profile::mark("run_self_dev_enter");
     std::env::set_var("JCODE_SELFDEV_MODE", "1");
@@ -93,37 +99,17 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
 }
 
 pub async fn is_server_alive(socket_path: &str) -> bool {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-
     if !crate::transport::is_socket_path(std::path::Path::new(socket_path)) {
         return false;
     }
 
-    let stream = match tokio::time::timeout(
-        std::time::Duration::from_secs(3),
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(250),
         crate::transport::Stream::connect(socket_path),
     )
     .await
     {
-        Ok(Ok(s)) => s,
-        _ => return false,
-    };
-
-    let (reader, mut writer) = stream.into_split();
-    let ping = "{\"type\":\"ping\",\"id\":0}\n";
-    if writer.write_all(ping.as_bytes()).await.is_err() {
-        return false;
-    }
-
-    let mut buf_reader = tokio::io::BufReader::new(reader);
-    let mut line = String::new();
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        buf_reader.read_line(&mut line),
-    )
-    .await
-    {
-        Ok(Ok(n)) if n > 0 => true,
+        Ok(Ok(_stream)) => true,
         _ => false,
     }
 }
@@ -150,8 +136,25 @@ pub async fn run_canary_wrapper(
         };
     }
 
-    let server_alive = is_server_alive(&socket_path).await;
+    let mut server_alive = is_server_alive(&socket_path).await;
     startup_profile::mark("canary_server_alive_check");
+
+    if server_alive {
+        let hash_path = format!("{}.hash", socket_path);
+        let server_hash = std::fs::read_to_string(&hash_path).unwrap_or_default();
+        if should_replace_stale_selfdev_server(&server_hash, current_hash) {
+            startup_msg!(
+                "Replacing existing self-dev server ({}) on {} with current build ({})",
+                server_hash.trim(),
+                socket_path,
+                current_hash
+            );
+            let _ = std::fs::remove_file(&socket_path);
+            let _ = std::fs::remove_file(&hash_path);
+            let _ = std::fs::remove_file(server::debug_socket_path());
+            server_alive = false;
+        }
+    }
 
     let mut server_just_spawned = false;
     if !server_alive {
@@ -308,7 +311,7 @@ pub async fn run_canary_wrapper(
 
 #[cfg(test)]
 mod tests {
-    
+    use super::should_replace_stale_selfdev_server;
     use crate::{provider, session, storage, tool};
     use std::ffi::OsString;
     use std::sync::Arc;
@@ -494,5 +497,13 @@ mod tests {
                 .join("sessions")
                 .join(format!("{}.json", session_id)),
         );
+    }
+
+    #[test]
+    fn test_should_replace_stale_selfdev_server() {
+        assert!(should_replace_stale_selfdev_server("abc123", "def456"));
+        assert!(!should_replace_stale_selfdev_server("abc123", "abc123"));
+        assert!(!should_replace_stale_selfdev_server("", "def456"));
+        assert!(!should_replace_stale_selfdev_server("abc123", ""));
     }
 }
