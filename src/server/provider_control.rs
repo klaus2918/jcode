@@ -68,6 +68,7 @@ pub(super) async fn handle_cycle_model(
 
     match result {
         Ok((updated, pname)) => {
+            crate::telemetry::record_model_switch();
             let _ = client_event_tx.send(ServerEvent::ModelChanged {
                 id,
                 model: updated,
@@ -141,6 +142,7 @@ pub(super) async fn handle_set_model(
 
     match result {
         Ok((updated, pname)) => {
+            crate::telemetry::record_model_switch();
             let _ = client_event_tx.send(ServerEvent::ModelChanged {
                 id,
                 model: updated,

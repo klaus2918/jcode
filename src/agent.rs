@@ -325,6 +325,7 @@ impl Agent {
         agent.session.model = Some(agent.provider.model());
         agent.seed_compaction_from_session();
         agent.log_env_snapshot("create");
+        crate::telemetry::begin_session(&agent.provider.name(), &agent.provider.model());
         agent
     }
 
@@ -999,6 +1000,7 @@ impl Agent {
 
     /// Mark this agent session as closed and persist it.
     pub fn mark_closed(&mut self) {
+        crate::telemetry::end_session(&self.provider.name(), &self.provider.model());
         self.session.mark_closed();
         if !self.session.messages.is_empty() {
             let _ = self.session.save();
@@ -1396,6 +1398,7 @@ impl Agent {
         }
 
         self.add_message(Role::User, blocks);
+        crate::telemetry::record_turn();
         self.session.save()?;
         self.run_turn_streaming_mpsc(event_tx).await
     }

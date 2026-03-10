@@ -430,6 +430,16 @@ pub(super) async fn handle_client(
                                 .await;
                             }
                             let retry_after_secs = e.downcast_ref::<StreamError>().and_then(|se| se.retry_after_secs);
+                            if retry_after_secs.is_some() {
+                                crate::telemetry::record_error(crate::telemetry::ErrorCategory::RateLimited);
+                            } else {
+                                let msg = e.to_string().to_lowercase();
+                                if msg.contains("timeout") {
+                                    crate::telemetry::record_error(crate::telemetry::ErrorCategory::ProviderTimeout);
+                                } else if msg.contains("auth") || msg.contains("unauthorized") || msg.contains("forbidden") {
+                                    crate::telemetry::record_error(crate::telemetry::ErrorCategory::AuthFailed);
+                                }
+                            }
                             let _ = client_event_tx.send(ServerEvent::Error {
                                 id: done_id,
                                 message: e.to_string(),
