@@ -237,9 +237,17 @@ pub(super) async fn await_reload_signal(
 
         if let Ok(binary) = crate::build::canary_binary_path() {
             if binary.exists() {
-                crate::logging::info(&format!("Server: exec'ing into canary binary {:?}", binary));
-                let err =
-                    crate::platform::replace_process(ProcessCommand::new(&binary).arg("serve"));
+                let socket = super::socket_path();
+                crate::logging::info(&format!(
+                    "Server: exec'ing into canary binary {:?} (socket: {:?})",
+                    binary, socket
+                ));
+                let err = crate::platform::replace_process(
+                    ProcessCommand::new(&binary)
+                        .arg("serve")
+                        .arg("--socket")
+                        .arg(socket.as_os_str()),
+                );
                 crate::logging::error(&format!("Failed to exec into canary {:?}: {}", binary, err));
             }
         }

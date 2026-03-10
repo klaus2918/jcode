@@ -158,47 +158,104 @@ pub async fn run_canary_wrapper(
 
     let mut server_just_spawned = false;
     if !server_alive {
-        startup_msg!("Starting self-dev server...");
-
-        let _ = std::fs::remove_file(&socket_path);
-        let _ = std::fs::remove_file(format!("{}.hash", socket_path));
-        let _ = std::fs::remove_file(server::debug_socket_path());
-
-        let binary_path = if initial_binary_path.exists() {
-            initial_binary_path.clone()
-        } else {
-            let canary_path = build::canary_binary_path().ok();
-            let stable_path = build::stable_binary_path().ok();
-            if canary_path.as_ref().map(|p| p.exists()).unwrap_or(false) {
-                canary_path.expect("canary path verified above")
-            } else if stable_path.as_ref().map(|p| p.exists()).unwrap_or(false) {
-                stable_path.expect("stable path verified above")
-            } else {
-                anyhow::bail!("No binary found for server!");
+        let spawn_lock_path = format!("{}.spawning", socket_path);
+        let already_spawning = {
+            use std::io::Write;
+            let lock_file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&spawn_lock_path);
+            match lock_file {
+                Ok(mut f) => {
+                    let lock_ok = {
+                        let fd = std::os::unix::io::AsRawFd::as_raw_fd(&f);
+                        let ret = unsafe {
+                            libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB)
+                        };
+                        ret == 0
+                    };
+                    if lock_ok {
+                        let _ = write!(f, "{}", std::process::id());
+                        false
+                    } else {
+                        if let Ok(meta) = std::fs::metadata(&spawn_lock_path) {
+                            let age = meta
+                                .modified()
+                                .ok()
+                                .and_then(|m| m.elapsed().ok())
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            age < 30
+                        } else {
+                            false
+                        }
+                    }
+                }
+                Err(_) => false,
             }
         };
 
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let mut cmd = std::process::Command::new(&binary_path);
-        cmd.arg("serve")
-            .current_dir(&cwd)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .stdin(std::process::Stdio::null());
-
-        #[cfg(unix)]
-        {
-            let _child = server::spawn_server_notify(&mut cmd).await?;
-        }
-        #[cfg(not(unix))]
-        {
-            cmd.spawn()?;
+        if already_spawning {
+            startup_msg!("Another client is already spawning the server, waiting...");
+            for _ in 0..100 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if is_server_alive(&socket_path).await {
+                    server_alive = true;
+                    break;
+                }
+            }
+            if !server_alive {
+                startup_msg!("Timed out waiting for other spawn, proceeding...");
+            }
         }
 
-        startup_profile::mark("canary_server_spawned");
-        server_just_spawned = true;
-        startup_msg!("Server spawned, starting TUI...");
-    } else {
+        if !server_alive {
+            startup_msg!("Starting self-dev server...");
+
+            let _ = std::fs::remove_file(&socket_path);
+            let _ = std::fs::remove_file(format!("{}.hash", socket_path));
+            let _ = std::fs::remove_file(server::debug_socket_path());
+
+            let binary_path = if initial_binary_path.exists() {
+                initial_binary_path.clone()
+            } else {
+                let canary_path = build::canary_binary_path().ok();
+                let stable_path = build::stable_binary_path().ok();
+                if canary_path.as_ref().map(|p| p.exists()).unwrap_or(false) {
+                    canary_path.expect("canary path verified above")
+                } else if stable_path.as_ref().map(|p| p.exists()).unwrap_or(false) {
+                    stable_path.expect("stable path verified above")
+                } else {
+                    anyhow::bail!("No binary found for server!");
+                }
+            };
+
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let mut cmd = std::process::Command::new(&binary_path);
+            cmd.arg("serve")
+                .current_dir(&cwd)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .stdin(std::process::Stdio::null());
+
+            #[cfg(unix)]
+            {
+                let _child = server::spawn_server_notify(&mut cmd).await?;
+            }
+            #[cfg(not(unix))]
+            {
+                cmd.spawn()?;
+            }
+
+            startup_profile::mark("canary_server_spawned");
+            server_just_spawned = true;
+            startup_msg!("Server spawned, starting TUI...");
+        }
+        let _ = std::fs::remove_file(&spawn_lock_path);
+    }
+
+    if !server_just_spawned {
         let hash_path = format!("{}.hash", socket_path);
         let server_hash = std::fs::read_to_string(&hash_path).unwrap_or_default();
 
