@@ -1,6 +1,6 @@
 use super::{
-    record_swarm_event, truncate_detail, FileAccess, SharedContext, SwarmEvent, SwarmEventType,
-    SwarmMember,
+    queue_soft_interrupt_for_session, record_swarm_event, truncate_detail, FileAccess,
+    SessionInterruptQueues, SharedContext, SwarmEvent, SwarmEventType, SwarmMember,
 };
 use crate::agent::Agent;
 use crate::protocol::{AgentInfo, ContextEntry, NotificationType, ServerEvent};
@@ -323,6 +323,7 @@ pub(super) async fn handle_comm_message(
     channel: Option<String>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
@@ -363,7 +364,6 @@ pub(super) async fn handle_comm_message(
         };
 
         let members = swarm_members.read().await;
-        let session_agents = sessions.read().await;
 
         let target_sessions: Vec<String> = if let Some(target) = to_session.clone() {
             vec![target]
@@ -417,11 +417,14 @@ pub(super) async fn handle_comm_message(
                     message: notification_msg.clone(),
                 });
 
-                if let Some(agent) = session_agents.get(session_id) {
-                    if let Ok(agent) = agent.try_lock() {
-                        agent.queue_soft_interrupt(notification_msg.clone(), false);
-                    }
-                }
+                let _ = queue_soft_interrupt_for_session(
+                    session_id,
+                    notification_msg.clone(),
+                    false,
+                    soft_interrupt_queues,
+                    sessions,
+                )
+                .await;
             }
         }
 

@@ -95,6 +95,7 @@ pub(super) async fn handle_debug_client(
     server_start_time: std::time::Instant,
     ambient_runner: Option<AmbientRunnerHandle>,
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
+    soft_interrupt_queues: super::SessionInterruptQueues,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -230,6 +231,7 @@ pub(super) async fn handle_debug_client(
                             &event_history,
                             &event_counter,
                             &swarm_event_tx,
+                            &soft_interrupt_queues,
                             mcp_pool.clone(),
                         )
                         .await?

@@ -1,6 +1,7 @@
 use super::{
-    broadcast_swarm_plan, record_swarm_event, summarize_plan_items, SharedContext, SwarmEvent,
-    SwarmEventType, SwarmMember, VersionedPlan,
+    broadcast_swarm_plan, queue_soft_interrupt_for_session, record_swarm_event,
+    summarize_plan_items, SessionInterruptQueues, SharedContext, SwarmEvent, SwarmEventType,
+    SwarmMember, VersionedPlan,
 };
 use crate::agent::Agent;
 use crate::plan::PlanItem;
@@ -22,6 +23,7 @@ pub(super) async fn handle_comm_propose_plan(
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
     event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -85,7 +87,6 @@ pub(super) async fn handle_comm_propose_plan(
         };
 
         let members = swarm_members.read().await;
-        let agent_sessions = sessions.read().await;
         let notification_msg = format!(
             "Plan updated by {} ({} items, v{})",
             from_label,
@@ -107,11 +108,14 @@ pub(super) async fn handle_comm_propose_plan(
                     message: notification_msg.clone(),
                 });
             }
-            if let Some(agent) = agent_sessions.get(&sid) {
-                if let Ok(agent) = agent.try_lock() {
-                    agent.queue_soft_interrupt(notification_msg.clone(), false);
-                }
-            }
+            let _ = queue_soft_interrupt_for_session(
+                &sid,
+                notification_msg.clone(),
+                false,
+                soft_interrupt_queues,
+                sessions,
+            )
+            .await;
         }
 
         broadcast_swarm_plan(
@@ -183,7 +187,6 @@ pub(super) async fn handle_comm_propose_plan(
     );
 
     let members = swarm_members.read().await;
-    let agent_sessions = sessions.read().await;
     if let Some(member) = members.get(&coordinator_id) {
         let _ = member.event_tx.send(ServerEvent::Notification {
             from_session: req_session_id.clone(),
@@ -203,11 +206,14 @@ pub(super) async fn handle_comm_propose_plan(
             proposal_key: proposal_key.clone(),
         });
     }
-    if let Some(agent) = agent_sessions.get(&coordinator_id) {
-        if let Ok(agent) = agent.try_lock() {
-            agent.queue_soft_interrupt(notification_msg.clone(), false);
-        }
-    }
+    let _ = queue_soft_interrupt_for_session(
+        &coordinator_id,
+        notification_msg.clone(),
+        false,
+        soft_interrupt_queues,
+        sessions,
+    )
+    .await;
 
     let proposer_confirmation = "Plan proposal sent to coordinator (not yet applied).".to_string();
     if let Some(member) = members.get(&req_session_id) {
@@ -221,11 +227,14 @@ pub(super) async fn handle_comm_propose_plan(
             message: proposer_confirmation.clone(),
         });
     }
-    if let Some(agent) = agent_sessions.get(&req_session_id) {
-        if let Ok(agent) = agent.try_lock() {
-            agent.queue_soft_interrupt(proposer_confirmation, false);
-        }
-    }
+    let _ = queue_soft_interrupt_for_session(
+        &req_session_id,
+        proposer_confirmation,
+        false,
+        soft_interrupt_queues,
+        sessions,
+    )
+    .await;
 
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }
@@ -242,6 +251,7 @@ pub(super) async fn handle_comm_approve_plan(
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
     event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -336,7 +346,6 @@ pub(super) async fn handle_comm_approve_plan(
         };
 
         let members = swarm_members.read().await;
-        let agent_sessions = sessions.read().await;
         for sid in participant_ids {
             if let Some(member) = members.get(&sid) {
                 let message = format!(
@@ -354,11 +363,14 @@ pub(super) async fn handle_comm_approve_plan(
                     message: message.clone(),
                 });
 
-                if let Some(agent) = agent_sessions.get(&sid) {
-                    if let Ok(agent) = agent.try_lock() {
-                        agent.queue_soft_interrupt(message.clone(), false);
-                    }
-                }
+                let _ = queue_soft_interrupt_for_session(
+                    &sid,
+                    message.clone(),
+                    false,
+                    soft_interrupt_queues,
+                    sessions,
+                )
+                .await;
             }
         }
     }
@@ -377,6 +389,7 @@ pub(super) async fn handle_comm_reject_plan(
     shared_context: &Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
     event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -428,7 +441,6 @@ pub(super) async fn handle_comm_reject_plan(
     };
 
     let members = swarm_members.read().await;
-    let agent_sessions = sessions.read().await;
     if let Some(member) = members.get(&proposer_session) {
         let reason_msg = reason
             .as_ref()
@@ -445,11 +457,14 @@ pub(super) async fn handle_comm_reject_plan(
             message: message.clone(),
         });
 
-        if let Some(agent) = agent_sessions.get(&proposer_session) {
-            if let Ok(agent) = agent.try_lock() {
-                agent.queue_soft_interrupt(message, false);
-            }
-        }
+        let _ = queue_soft_interrupt_for_session(
+            &proposer_session,
+            message,
+            false,
+            soft_interrupt_queues,
+            sessions,
+        )
+        .await;
     }
     record_swarm_event(
         event_history,

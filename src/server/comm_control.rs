@@ -1,7 +1,7 @@
 use super::{
-    broadcast_swarm_plan, broadcast_swarm_status, record_swarm_event, truncate_detail,
-    update_member_status, ClientConnectionInfo, SwarmEvent, SwarmEventType, SwarmMember,
-    VersionedPlan,
+    broadcast_swarm_plan, broadcast_swarm_status, queue_soft_interrupt_for_session,
+    record_swarm_event, truncate_detail, update_member_status, ClientConnectionInfo,
+    SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
 };
 use crate::agent::Agent;
 use crate::protocol::{AwaitedMemberStatus, NotificationType, ServerEvent};
@@ -140,6 +140,7 @@ pub(super) async fn handle_comm_assign_task(
     message: Option<String>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    soft_interrupt_queues: &super::SessionInterruptQueues,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
@@ -235,11 +236,14 @@ pub(super) async fn handle_comm_assign_task(
         let agent_sessions = sessions.read().await;
         agent_sessions.get(&target_session).cloned()
     };
-    if let Some(agent) = target_agent.as_ref() {
-        if let Ok(agent) = agent.try_lock() {
-            agent.queue_soft_interrupt(notification.clone(), false);
-        }
-    }
+    let _ = queue_soft_interrupt_for_session(
+        &target_session,
+        notification.clone(),
+        false,
+        soft_interrupt_queues,
+        sessions,
+    )
+    .await;
     if let Some(member) = swarm_members.read().await.get(&target_session) {
         let _ = member.event_tx.send(ServerEvent::Notification {
             from_session: req_session_id.clone(),

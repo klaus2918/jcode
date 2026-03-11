@@ -1,6 +1,7 @@
 use super::{
-    broadcast_swarm_status, create_headless_session, record_swarm_event, SwarmEvent,
-    SwarmEventType, SwarmMember, VersionedPlan,
+    broadcast_swarm_status, create_headless_session, record_swarm_event,
+    remove_session_interrupt_queue, SessionInterruptQueues, SwarmEvent, SwarmEventType,
+    SwarmMember, VersionedPlan,
 };
 use crate::agent::Agent;
 use crate::provider::Provider;
@@ -58,6 +59,7 @@ pub(super) async fn maybe_handle_session_admin_command(
     event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    soft_interrupt_queues: &SessionInterruptQueues,
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
 ) -> Result<Option<String>> {
     if let Some((working_dir, selfdev_requested)) = parse_create_session_command(cmd) {
@@ -75,6 +77,7 @@ pub(super) async fn maybe_handle_session_admin_command(
                 swarms_by_id,
                 swarm_coordinators,
                 swarm_plans,
+                soft_interrupt_queues,
                 selfdev_requested,
                 None,
                 mcp_pool,
@@ -93,6 +96,7 @@ pub(super) async fn maybe_handle_session_admin_command(
             let mut sessions_guard = sessions.write().await;
             sessions_guard.remove(target_id)
         };
+        remove_session_interrupt_queue(soft_interrupt_queues, target_id).await;
         if let Some(ref agent_arc) = removed_agent {
             let agent = agent_arc.lock().await;
             let memory_enabled = agent.memory_enabled();
