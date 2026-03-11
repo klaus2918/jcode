@@ -120,8 +120,21 @@ pub fn wait_for_callback(port: u16, expected_state: &str) -> Result<String> {
 
 /// Async version of wait_for_callback using tokio (for use from TUI context)
 pub async fn wait_for_callback_async(port: u16, expected_state: &str) -> Result<String> {
+    let listener = bind_callback_listener(port)?;
+    wait_for_callback_async_on_listener(listener, expected_state).await
+}
+
+pub fn bind_callback_listener(port: u16) -> Result<tokio::net::TcpListener> {
+    let std_listener = std::net::TcpListener::bind(format!("127.0.0.1:{port}"))?;
+    std_listener.set_nonblocking(true)?;
+    Ok(tokio::net::TcpListener::from_std(std_listener)?)
+}
+
+pub async fn wait_for_callback_async_on_listener(
+    listener: tokio::net::TcpListener,
+    expected_state: &str,
+) -> Result<String> {
     let expected_state = expected_state.to_string();
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
 
     let (stream, _) = listener.accept().await?;
 
@@ -181,9 +194,8 @@ pub async fn login_claude() -> Result<OAuthTokens> {
     }
 
     // Try local callback first for a fully automatic flow.
-    if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") {
+    if let Ok(listener) = bind_callback_listener(0) {
         let port = listener.local_addr()?.port();
-        drop(listener);
 
         let redirect_uri = format!("http://localhost:{}/callback", port);
         let auth_url = claude_auth_url(&redirect_uri, &challenge, &verifier);
@@ -214,7 +226,7 @@ pub async fn login_claude() -> Result<OAuthTokens> {
         if browser_opened {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(120),
-                wait_for_callback_async(port, &verifier),
+                wait_for_callback_async_on_listener(listener, &verifier),
             )
             .await
             {
@@ -537,17 +549,18 @@ pub async fn login_openai() -> Result<OAuthTokens> {
         eprintln!("{qr}\n");
     }
 
+    let callback_listener = bind_callback_listener(port).ok();
     let browser_opened = open::that(&auth_url).is_ok();
-    let callback_available = callback_listener_available(port);
 
-    if browser_opened && callback_available {
+    if browser_opened {
+        if let Some(listener) = callback_listener {
         eprintln!(
             "Waiting up to 300s for automatic callback on {}",
             redirect_uri
         );
         match tokio::time::timeout(
             std::time::Duration::from_secs(300),
-            wait_for_callback_async(port, &state),
+            wait_for_callback_async_on_listener(listener, &state),
         )
         .await
         {
@@ -559,14 +572,15 @@ pub async fn login_openai() -> Result<OAuthTokens> {
                 eprintln!("Timed out waiting for callback. Falling back to manual paste.");
             }
         }
+        } else {
+            eprintln!(
+                "Local callback port {} is unavailable. Finish login in any browser, then paste the full callback URL here.\n",
+                port
+            );
+        }
     } else if !browser_opened {
         eprintln!(
             "Couldn't open a browser on this machine. Use the QR code above, then paste the full callback URL here.\n"
-        );
-    } else {
-        eprintln!(
-            "Local callback port {} is unavailable. Finish login in any browser, then paste the full callback URL here.\n",
-            port
         );
     }
 
@@ -1253,6 +1267,37 @@ mod tests {
         let result = handle.await.unwrap();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "test_code_123");
+    }
+
+    #[tokio::test]
+    async fn wait_for_callback_async_on_prebound_listener_parses_code() {
+        let state = "test_state_prebound";
+        let listener = bind_callback_listener(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let state_clone = state.to_string();
+        let handle = tokio::spawn(async move {
+            wait_for_callback_async_on_listener(listener, &state_clone).await
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
+        use tokio::io::AsyncWriteExt;
+        stream
+            .write_all(
+                format!(
+                    "GET /callback?code=prebound_code&state={} HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                    state
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "prebound_code");
     }
 
     #[tokio::test]

@@ -143,7 +143,7 @@ impl App {
         let hash = hasher.finalize();
         let challenge = URL_SAFE_NO_PAD.encode(hash);
 
-        let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+        let listener = match crate::auth::oauth::bind_callback_listener(0) {
             Ok(l) => l,
             Err(_) => {
                 self.start_claude_login_manual();
@@ -157,7 +157,6 @@ impl App {
                 return;
             }
         };
-        drop(listener);
 
         let redirect_uri = format!("http://localhost:{}/callback", port);
 
@@ -193,7 +192,9 @@ impl App {
         let verifier_clone = verifier;
         let redirect_clone = redirect_uri;
         tokio::spawn(async move {
-            match crate::auth::oauth::wait_for_callback_async(port, &verifier_clone).await {
+            match crate::auth::oauth::wait_for_callback_async_on_listener(listener, &verifier_clone)
+                .await
+            {
                 Ok(code) => {
                     match Self::claude_token_exchange(
                         verifier_clone,
@@ -460,14 +461,15 @@ impl App {
         .map(|section| format!("\n\n{section}"))
         .unwrap_or_default();
 
+        let callback_listener = crate::auth::oauth::bind_callback_listener(port).ok();
+        let callback_available = callback_listener.is_some();
         let browser_opened = open::that(&auth_url).is_ok();
-        let callback_available = crate::auth::oauth::callback_listener_available(port);
 
-        if callback_available {
+        if let Some(listener) = callback_listener {
             let verifier_clone = verifier.clone();
             let state_clone = state.clone();
             tokio::spawn(async move {
-                match Self::openai_login_callback(verifier_clone, state_clone).await {
+                match Self::openai_login_callback(verifier_clone, state_clone, listener).await {
                     Ok(msg) => {
                         crate::logging::info(&format!("OpenAI login: {}", msg));
                         Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
@@ -522,12 +524,13 @@ impl App {
     async fn openai_login_callback(
         verifier: String,
         expected_state: String,
+        listener: tokio::net::TcpListener,
     ) -> Result<String, String> {
         let port = crate::auth::oauth::openai::DEFAULT_PORT;
         let redirect_uri = crate::auth::oauth::openai::redirect_uri(port);
         let code = tokio::time::timeout(
             std::time::Duration::from_secs(300),
-            crate::auth::oauth::wait_for_callback_async(port, &expected_state),
+            crate::auth::oauth::wait_for_callback_async_on_listener(listener, &expected_state),
         )
         .await
         .map_err(|_| "Login timed out after 5 minutes. Please try again.".to_string())?
