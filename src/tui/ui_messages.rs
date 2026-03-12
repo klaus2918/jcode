@@ -115,6 +115,93 @@ pub(crate) fn render_system_message(
     lines
 }
 
+fn swarm_notification_style(title: Option<&str>) -> (&'static str, Color, Color) {
+    match title.unwrap_or_default() {
+        t if t.starts_with("DM from ") => ("✉", rgb(120, 180, 255), rgb(214, 232, 255)),
+        t if t.starts_with('#') => ("#", rgb(90, 210, 200), rgb(214, 247, 244)),
+        t if t.starts_with("Broadcast") => ("📣", rgb(255, 193, 94), rgb(255, 240, 214)),
+        t if t.starts_with("Shared context") => ("🧠", rgb(120, 210, 160), rgb(221, 247, 232)),
+        t if t.starts_with("File activity") => ("⚠", rgb(255, 160, 120), rgb(255, 228, 214)),
+        t if t.starts_with("Plan") => ("☰", rgb(186, 139, 255), rgb(238, 228, 255)),
+        _ => ("◦", rgb(160, 160, 180), rgb(225, 225, 235)),
+    }
+}
+
+pub(crate) fn render_swarm_message(
+    msg: &DisplayMessage,
+    width: u16,
+    _diff_mode: crate::config::DiffDisplayMode,
+) -> Vec<Line<'static>> {
+    let centered = markdown::center_code_blocks();
+    let title = msg.title.as_deref().unwrap_or("Swarm").trim();
+    let content = msg.content.trim();
+    let (icon, rail_color, text_color) = swarm_notification_style(msg.title.as_deref());
+    let rail_style = Style::default().fg(rail_color);
+    let header_style = Style::default().fg(rail_color).bold();
+    let body_style = Style::default().fg(text_color);
+
+    let content_width = if centered {
+        width.saturating_sub(6) as usize
+    } else {
+        width.saturating_sub(4) as usize
+    }
+    .max(1);
+
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("│ ", rail_style),
+        Span::styled(format!("{} {}", icon, title), header_style),
+    ]));
+
+    let mut body_lines = if content.is_empty() {
+        vec![Line::from(Span::styled(String::new(), body_style))]
+    } else {
+        markdown::render_markdown_with_width(content, Some(content_width))
+    };
+
+    if !content.is_empty() {
+        body_lines.retain(|line| {
+            line.spans
+                .iter()
+                .any(|span| !span.content.trim().is_empty())
+        });
+        if body_lines.is_empty() {
+            body_lines.push(Line::from(Span::styled(content.to_string(), body_style)));
+        }
+    }
+
+    for line in &mut body_lines {
+        if line.spans.is_empty() {
+            line.spans.push(Span::styled(String::new(), body_style));
+        }
+        for span in &mut line.spans {
+            if span.style.fg.is_none() {
+                span.style.fg = Some(text_color);
+            }
+        }
+    }
+
+    for line in body_lines {
+        let mut spans = vec![Span::styled("│ ", rail_style)];
+        spans.extend(line.spans);
+        lines.push(Line::from(spans));
+    }
+
+    if centered {
+        let max_line_width = lines.iter().map(Line::width).max().unwrap_or(0);
+        let pad = (width as usize).saturating_sub(max_line_width) / 2;
+        if pad > 0 {
+            let pad_str = " ".repeat(pad);
+            for line in &mut lines {
+                line.spans.insert(0, Span::raw(pad_str.clone()));
+                line.alignment = Some(ratatui::layout::Alignment::Left);
+            }
+        }
+    }
+
+    lines
+}
+
 pub(crate) fn render_tool_message(
     msg: &DisplayMessage,
     width: u16,

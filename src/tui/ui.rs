@@ -60,7 +60,9 @@ use file_diff_ui::{
 };
 pub(crate) use header::capitalize;
 use messages::get_cached_message_lines;
-pub(crate) use messages::{render_assistant_message, render_system_message, render_tool_message};
+pub(crate) use messages::{
+    render_assistant_message, render_swarm_message, render_system_message, render_tool_message,
+};
 use picker_ui::draw_picker_line;
 use pinned_ui::{collect_pinned_content_cached, draw_pinned_content_cached};
 use tools_ui::get_tool_summary;
@@ -837,7 +839,8 @@ fn render_memory_tile_box(
         format!("╭{}{}{}╮", left_border, title_text, right_border),
         border_style,
     ));
-    let content_lines = memory_tile_content_lines(&tile.items, inner_width, border_style, text_style);
+    let content_lines =
+        memory_tile_content_lines(&tile.items, inner_width, border_style, text_style);
     let bottom = Line::from(Span::styled(
         format!("╰{}╯", "─".repeat(box_width.saturating_sub(2))),
         border_style,
@@ -895,7 +898,10 @@ fn choose_memory_tile_width(
     candidates.sort_unstable();
     candidates.dedup();
 
-    for width in candidates.into_iter().filter(|w| *w >= min_box_width && *w <= max_box_width) {
+    for width in candidates
+        .into_iter()
+        .filter(|w| *w >= min_box_width && *w <= max_box_width)
+    {
         if let Some(plan) = plan_memory_tile(tile, width, border_style, text_style) {
             let whitespace = width * plan.height;
             let score = whitespace.saturating_sub(plan.score * 2);
@@ -1031,7 +1037,9 @@ fn render_memory_tiles(
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut cursor = 0usize;
         let mut row_has_content = false;
-        for placed in placements.iter().filter(|placed| y >= placed.y && y < placed.y + placed.plan.height)
+        for placed in placements
+            .iter()
+            .filter(|placed| y >= placed.y && y < placed.y + placed.plan.height)
         {
             if placed.x > cursor {
                 spans.push(Span::raw(" ".repeat(placed.x - cursor)));
@@ -3642,6 +3650,43 @@ mod tests {
     }
 
     #[test]
+    fn test_render_swarm_message_uses_left_rail_not_box() {
+        crate::tui::markdown::set_center_code_blocks(false);
+        let msg = DisplayMessage::swarm("DM from fox", "Can you take parser tests?");
+
+        let lines = render_swarm_message(&msg, 80, crate::config::DiffDisplayMode::Off);
+        let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
+
+        assert_eq!(rendered.len(), 2, "expected compact header + body layout");
+        assert!(rendered[0].starts_with("│ ✉ DM from fox"));
+        assert_eq!(rendered[1], "│ Can you take parser tests?");
+        assert!(
+            rendered
+                .iter()
+                .all(|line| !line.contains('╭') && !line.contains('╰')),
+            "swarm notifications should no longer render as rounded boxes: {:?}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn test_render_swarm_message_trims_extra_newlines() {
+        crate::tui::markdown::set_center_code_blocks(false);
+        let msg = DisplayMessage::swarm("Broadcast · coordinator", "\n\nPlan updated\n\n");
+
+        let lines = render_swarm_message(&msg, 80, crate::config::DiffDisplayMode::Off);
+        let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
+
+        assert_eq!(rendered[0], "│ 📣 Broadcast · coordinator");
+        assert_eq!(rendered[1], "│ Plan updated");
+        assert_eq!(
+            rendered.len(),
+            2,
+            "trimmed message should not add blank lines"
+        );
+    }
+
+    #[test]
     fn test_truncate_line_to_width_uses_display_width() {
         let line = Line::from(Span::raw("🧠 hello world"));
         let truncated = truncate_line_to_width(&line, 8);
@@ -3669,23 +3714,14 @@ mod tests {
         let preference = tiles.remove(0);
         let fact = tiles.remove(0);
 
-        let preference_width = choose_memory_tile_width(
-            &preference,
-            20,
-            96,
-            border_style,
-            text_style,
-        );
+        let preference_width =
+            choose_memory_tile_width(&preference, 20, 96, border_style, text_style);
         let fact_width = choose_memory_tile_width(&fact, 20, 96, border_style, text_style);
         let narrow_preference = plan_memory_tile(&preference, 20, border_style, text_style)
             .expect("narrow preference plan");
-        let chosen_preference = plan_memory_tile(
-            &preference,
-            preference_width,
-            border_style,
-            text_style,
-        )
-        .expect("chosen preference plan");
+        let chosen_preference =
+            plan_memory_tile(&preference, preference_width, border_style, text_style)
+                .expect("chosen preference plan");
 
         assert!(
             chosen_preference.height <= narrow_preference.height,
@@ -3745,7 +3781,10 @@ mod tests {
             rendered
         );
         assert!(
-            rendered.iter().skip(1).any(|line| line.contains(" correction ")),
+            rendered
+                .iter()
+                .skip(1)
+                .any(|line| line.contains(" correction ")),
             "expected at least one box to appear on a later visual row: {:?}",
             rendered
         );

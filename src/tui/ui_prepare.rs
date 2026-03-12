@@ -523,31 +523,14 @@ fn prepare_body_incremental(
                 }
             }
             "swarm" => {
-                let title = msg.title.clone().unwrap_or_else(|| "Swarm".to_string());
-                let border_style = Style::default().fg(rgb(170, 110, 255));
-                let text_style = Style::default().fg(rgb(230, 220, 255));
-                let total_width = if centered {
-                    (width.saturating_sub(4) as usize).min(120)
-                } else {
-                    width.saturating_sub(2) as usize
-                };
-                let content_width = total_width.saturating_sub(4).max(1);
-                let mut box_content =
-                    markdown::render_markdown_with_width(&msg.content, Some(content_width));
-                if box_content.is_empty() {
-                    box_content.push(Line::from(Span::styled(msg.content.clone(), text_style)));
-                } else {
-                    for line in &mut box_content {
-                        for span in &mut line.spans {
-                            if span.style.fg.is_none() {
-                                span.style.fg = text_style.fg;
-                            }
-                        }
-                    }
-                }
-                let title = format!("🟣 {}", title);
-                let box_lines = render_rounded_box(&title, box_content, total_width, border_style);
-                for line in box_lines {
+                let content_width = width.saturating_sub(4);
+                let cached = get_cached_message_lines(
+                    msg,
+                    content_width,
+                    app.diff_mode(),
+                    render_swarm_message,
+                );
+                for line in cached {
                     new_lines.push(align_if_unset(line, align));
                 }
             }
@@ -778,7 +761,7 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
     let pending_count = input_ui::pending_prompt_count(app);
 
     for (msg_idx, msg) in app.display_messages().iter().enumerate() {
-        if !lines.is_empty() && msg.role != "tool" && msg.role != "meta" {
+        if !lines.is_empty() && msg.role != "tool" && msg.role != "meta" && msg.role != "swarm" {
             lines.push(Line::from(""));
         }
 

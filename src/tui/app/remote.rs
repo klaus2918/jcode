@@ -1894,7 +1894,7 @@ pub(super) fn handle_server_event(
                 .or_else(|| crate::id::extract_session_name(&from_session).map(str::to_string))
                 .unwrap_or_else(|| from_session[..8.min(from_session.len())].to_string());
 
-            let (title, status_notice) = match notification_type {
+            let (title, message, status_notice) = match notification_type {
                 NotificationType::Message { scope, channel } => {
                     let title = match scope.as_deref() {
                         Some("dm") => format!("DM from {}", sender),
@@ -1909,14 +1909,20 @@ pub(super) fn handle_server_event(
                         Some(other) => format!("{} · {}", capitalize(other), sender),
                         None => format!("Swarm · {}", sender),
                     };
-                    (title, "New swarm message".to_string())
+                    (
+                        title,
+                        message.trim().to_string(),
+                        "New swarm message".to_string(),
+                    )
                 }
-                NotificationType::SharedContext { key, .. } => (
+                NotificationType::SharedContext { key, value } => (
                     format!("Shared context · {}", sender),
+                    format!("{} = {}", key, value).trim().to_string(),
                     format!("Shared context: {}", key),
                 ),
                 NotificationType::FileConflict { path, operation } => (
                     format!("File activity · {}", sender),
+                    format!("{} {}", operation, path).trim().to_string(),
                     format!("{} {}", operation, path),
                 ),
             };
