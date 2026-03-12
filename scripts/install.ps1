@@ -321,12 +321,12 @@ $DownloadPath = Join-Path $TempDir "jcode.download"
 
 try {
     Write-Info "Downloading $Artifact.tar.gz..."
-    Invoke-WebRequest -Uri $TgzUrl -OutFile $DownloadPath -UseBasicParsing
+    Invoke-WebRequest -Uri $TgzUrl -OutFile $DownloadPath
     $DownloadMode = "tar"
 } catch {
     try {
         Write-Info "Trying direct binary download..."
-        Invoke-WebRequest -Uri $ExeUrl -OutFile $DownloadPath -UseBasicParsing
+        Invoke-WebRequest -Uri $ExeUrl -OutFile $DownloadPath
         $DownloadMode = "bin"
     } catch {
         $DownloadMode = ""
