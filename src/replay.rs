@@ -72,6 +72,14 @@ pub enum TimelineEventKind {
     /// Turn complete (commits streaming text, resets to idle)
     #[serde(rename = "done")]
     Done,
+
+    /// Memory injection from auto-recall
+    #[serde(rename = "memory_injection")]
+    MemoryInjection {
+        summary: String,
+        content: String,
+        count: u32,
+    },
 }
 
 fn default_thinking_duration() -> u64 {
@@ -252,6 +260,12 @@ pub enum ReplayEvent {
     UserMessage { text: String },
     /// Start processing state (shows thinking spinner)
     StartProcessing,
+    /// Memory injection from auto-recall
+    MemoryInjection {
+        summary: String,
+        content: String,
+        count: u32,
+    },
 }
 
 /// Convert a timeline into a sequence of (delay_ms, ReplayEvent) pairs for playback.
@@ -367,6 +381,20 @@ pub fn timeline_to_replay_events(timeline: &[TimelineEvent]) -> Vec<(u64, Replay
                     ReplayEvent::Server(ServerEvent::Done { id: turn_id }),
                 ));
                 turn_id += 1;
+            }
+            TimelineEventKind::MemoryInjection {
+                summary,
+                content,
+                count,
+            } => {
+                out.push((
+                    delay,
+                    ReplayEvent::MemoryInjection {
+                        summary: summary.clone(),
+                        content: content.clone(),
+                        count: *count,
+                    },
+                ));
             }
         }
     }

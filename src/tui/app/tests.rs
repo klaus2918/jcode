@@ -129,6 +129,27 @@ fn test_subscription_command_shows_jcode_status_scaffold() {
 }
 
 #[test]
+fn test_usage_report_shows_jcode_scaffold_when_subscription_mode_active() {
+    let _guard = crate::storage::lock_test_env();
+    crate::subscription_catalog::clear_runtime_env();
+    crate::subscription_catalog::apply_runtime_env();
+
+    let mut app = create_test_app();
+    app.handle_usage_report(Vec::new());
+
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing /usage scaffold response");
+    assert_eq!(msg.role, "system");
+    assert!(msg.content.contains("Jcode Subscription"));
+    assert!(msg.content.contains("Use `/subscription`"));
+    assert!(msg.content.contains("$20 Starter"));
+
+    crate::subscription_catalog::clear_runtime_env();
+}
+
+#[test]
 fn test_show_accounts_includes_masked_email_column() {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let accounts = vec![crate::auth::claude::AnthropicAccount {

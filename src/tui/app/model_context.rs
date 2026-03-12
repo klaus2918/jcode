@@ -494,16 +494,90 @@ impl App {
     }
 
     pub(super) fn handle_usage_report(&mut self, results: Vec<crate::usage::ProviderUsage>) {
+        let jcode_runtime = crate::subscription_catalog::is_runtime_mode_enabled();
+
         if results.is_empty() {
-            self.push_display_message(DisplayMessage::system(
-                "No providers with OAuth credentials found.\n\
-                 Use `/login anthropic` or `/login openai` to authenticate."
-                    .to_string(),
-            ));
+            if jcode_runtime {
+                let mut output = String::from("## Subscription Usage\n\n");
+                output.push_str("### Jcode Subscription\n\n");
+                output.push_str(
+                    "Live billing/usage reporting is not connected yet for the curated jcode-managed subscription path.\n\n",
+                );
+                output.push_str(&format!(
+                    "- Runtime mode: {}\n",
+                    if jcode_runtime { "active" } else { "inactive" }
+                ));
+                output.push_str(&format!(
+                    "- Router base: `{}`\n",
+                    crate::subscription_catalog::configured_api_base().unwrap_or_else(|| {
+                        crate::subscription_catalog::DEFAULT_JCODE_API_BASE.to_string()
+                    })
+                ));
+                output.push_str(&format!(
+                    "- Current catalog: {}\n\n",
+                    crate::subscription_catalog::curated_models()
+                        .iter()
+                        .map(|model| model.display_name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                output.push_str("Planned retail → usable inference budgets:\n");
+                output.push_str(&format!(
+                    "- {}: ${:.2} usable\n",
+                    crate::subscription_catalog::JcodeTier::Starter20.display_name(),
+                    crate::subscription_catalog::JcodeTier::Starter20.usable_budget_usd()
+                ));
+                output.push_str(&format!(
+                    "- {}: ${:.2} usable\n\n",
+                    crate::subscription_catalog::JcodeTier::Pro100.display_name(),
+                    crate::subscription_catalog::JcodeTier::Pro100.usable_budget_usd()
+                ));
+                output.push_str(
+                    "Use `/subscription` for the full curated subscription status scaffold.",
+                );
+                self.push_display_message(DisplayMessage::system(output));
+            } else {
+                self.push_display_message(DisplayMessage::system(
+                    "No providers with OAuth credentials found.\n\
+                     Use `/login anthropic` or `/login openai` to authenticate."
+                        .to_string(),
+                ));
+            }
             return;
         }
 
         let mut output = String::from("## Subscription Usage\n\n");
+
+        if jcode_runtime {
+            output.push_str("### Jcode Subscription\n\n");
+            output.push_str(
+                "Live jcode subscription billing/usage metering is not wired yet, so this section shows scaffold data only.\n",
+            );
+            output.push_str(&format!(
+                "- Router base: `{}`\n",
+                crate::subscription_catalog::configured_api_base().unwrap_or_else(|| {
+                    crate::subscription_catalog::DEFAULT_JCODE_API_BASE.to_string()
+                })
+            ));
+            output.push_str(&format!(
+                "- Curated models: {}\n",
+                crate::subscription_catalog::curated_models()
+                    .iter()
+                    .map(|model| model.display_name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            output.push_str(&format!(
+                "- {} usable budget: ${:.2}\n",
+                crate::subscription_catalog::JcodeTier::Starter20.display_name(),
+                crate::subscription_catalog::JcodeTier::Starter20.usable_budget_usd()
+            ));
+            output.push_str(&format!(
+                "- {} usable budget: ${:.2}\n\n---\n\n",
+                crate::subscription_catalog::JcodeTier::Pro100.display_name(),
+                crate::subscription_catalog::JcodeTier::Pro100.usable_budget_usd()
+            ));
+        }
 
         for (i, provider) in results.iter().enumerate() {
             if i > 0 {
