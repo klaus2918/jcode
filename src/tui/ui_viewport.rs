@@ -1,4 +1,6 @@
 use super::*;
+use unicode_width::UnicodeWidthStr;
+
 fn lower_bound(values: &[usize], target: usize) -> usize {
     values.partition_point(|&v| v < target)
 }
@@ -15,15 +17,24 @@ pub(super) fn compute_visible_margins(
     let visible_user_start = lower_bound(user_line_indices, scroll);
     let visible_user_end = lower_bound(user_line_indices, visible_end);
     let visible_user_indices = &user_line_indices[visible_user_start..visible_user_end];
+    let mut visible_user_cursor = 0usize;
 
     let mut right_widths = Vec::with_capacity(visible_height);
     let mut left_widths = Vec::with_capacity(visible_height);
 
     for row in 0..visible_height {
         let line_idx = scroll + row;
+        while visible_user_cursor < visible_user_indices.len()
+            && visible_user_indices[visible_user_cursor] < line_idx
+        {
+            visible_user_cursor += 1;
+        }
+        let is_user_line = visible_user_cursor < visible_user_indices.len()
+            && visible_user_indices[visible_user_cursor] == line_idx;
+
         if line_idx < lines.len() {
             let mut used = lines[line_idx].width().min(area.width as usize) as u16;
-            if visible_user_indices.binary_search(&line_idx).is_ok() && area.width > 0 {
+            if is_user_line && area.width > 0 {
                 used = used.saturating_add(1).min(area.width);
             }
 
@@ -124,6 +135,28 @@ pub(super) fn draw_messages(
     }
 
     let visible_end = (scroll + visible_height).min(wrapped_lines.len());
+    let copy_badge_ui = app.copy_badge_ui();
+    let copy_badge_now = std::time::Instant::now();
+
+    let mut visible_copy_targets: Vec<VisibleCopyTarget> = Vec::new();
+    let mut badge_assignments: Vec<(usize, char)> = Vec::new();
+    for (slot, target) in prepared
+        .copy_targets
+        .iter()
+        .filter(|target| target.end_line > scroll && target.start_line < visible_end)
+        .take(COPY_BADGE_KEYS.len())
+        .enumerate()
+    {
+        let key = COPY_BADGE_KEYS[slot];
+        visible_copy_targets.push(VisibleCopyTarget {
+            key,
+            kind_label: target.kind.label(),
+            copied_notice: target.kind.copied_notice(),
+            content: target.content.clone(),
+        });
+        badge_assignments.push((target.badge_line, key));
+    }
+    set_visible_copy_targets(visible_copy_targets);
 
     let now_ms = app.now_millis();
     let prompt_anim_enabled = crate::config::config().display.prompt_entry_animation
@@ -171,13 +204,29 @@ pub(super) fn draw_messages(
             for abs_idx in anim.line_idx.max(scroll)..prompt_end.min(visible_end) {
                 let rel_idx = abs_idx - scroll;
                 if let Some(line) = visible_lines.get_mut(rel_idx) {
+                    let line_width = line.width().max(1) as f32;
+                    let mut consumed = 0usize;
                     for span in &mut line.spans {
                         if !span.content.is_empty() {
-                            let base = match span.style.fg {
+                            let base_fg = match span.style.fg {
                                 Some(c) => c,
                                 None => user_text(),
                             };
-                            span.style = span.style.fg(prompt_entry_color(base, t));
+                            let base_bg = span.style.bg.unwrap_or(user_bg());
+                            let span_width = span.content.as_ref().width();
+                            let span_center = if span_width == 0 {
+                                consumed as f32 / line_width
+                            } else {
+                                (consumed as f32 + span_width as f32 * 0.5) / line_width
+                            }
+                            .clamp(0.0, 1.0);
+
+                            let pulsed_fg = prompt_entry_color(base_fg, t);
+                            let shimmer_fg = prompt_entry_shimmer_color(pulsed_fg, span_center, t);
+                            let spotlight_bg = prompt_entry_bg_color(base_bg, t);
+
+                            span.style = span.style.fg(shimmer_fg).bg(spotlight_bg);
+                            consumed += span_width;
                         }
                     }
                 }
@@ -201,6 +250,50 @@ pub(super) fn draw_messages(
                     line.spans.insert(0, Span::styled("  │ ", accent_style));
                 }
             }
+        }
+    }
+
+    for (badge_line, key) in badge_assignments {
+        if badge_line < scroll || badge_line >= visible_end {
+            continue;
+        }
+        let rel_idx = badge_line - scroll;
+        if let Some(line) = visible_lines.get_mut(rel_idx) {
+            let alt_style = if copy_badge_ui.alt_is_active(copy_badge_now) {
+                Style::default().fg(queued_color()).bold()
+            } else {
+                Style::default().fg(dim_color())
+            };
+            let shift_style = if copy_badge_ui.shift_is_active(copy_badge_now) {
+                Style::default().fg(queued_color()).bold()
+            } else {
+                Style::default().fg(dim_color())
+            };
+            let key_style = if copy_badge_ui.key_is_active(key, copy_badge_now) {
+                Style::default().fg(accent_color()).bold()
+            } else {
+                Style::default().fg(dim_color())
+            };
+
+            if let Some(success) = copy_badge_ui.feedback_for_key(key, copy_badge_now) {
+                let feedback_style = if success {
+                    Style::default().fg(ai_color()).bold()
+                } else {
+                    Style::default().fg(Color::Red).bold()
+                };
+                let feedback_text = if success { " ✓ Copied!" } else { " ✗ Copy failed" };
+                line.spans.push(Span::styled(feedback_text, feedback_style));
+                line.spans.push(Span::raw(" "));
+            }
+
+            line.spans.push(Span::styled("[Alt]", alt_style));
+            line.spans.push(Span::raw(" "));
+            line.spans.push(Span::styled("[⇧]", shift_style));
+            line.spans.push(Span::raw(" "));
+            line.spans.push(Span::styled(
+                format!("[{}]", key.to_ascii_uppercase()),
+                key_style,
+            ));
         }
     }
 
@@ -337,9 +430,9 @@ pub(super) fn draw_messages(
 
                     let preview_lines: Vec<Line<'static>> = if !is_long {
                         vec![Line::from(vec![
-                            Span::styled(num_str.clone(), dim_style.fg(dim_color())),
-                            Span::styled("› ", dim_style.fg(user_color())),
-                            Span::styled(text_flat, dim_style.fg(user_text())),
+                            Span::styled(num_str.clone(), dim_style.fg(dim_color()).bg(user_bg())),
+                            Span::styled("› ", dim_style.fg(user_color()).bg(user_bg())),
+                            Span::styled(text_flat, dim_style.fg(user_text()).bg(user_bg())),
                         ])
                         .alignment(align)]
                     } else {
@@ -350,21 +443,21 @@ pub(super) fn draw_messages(
                         let tail: String = text_chars[tail_start..].iter().collect();
 
                         let first = Line::from(vec![
-                            Span::styled(num_str.clone(), dim_style.fg(dim_color())),
-                            Span::styled("› ", dim_style.fg(user_color())),
+                            Span::styled(num_str.clone(), dim_style.fg(dim_color()).bg(user_bg())),
+                            Span::styled("› ", dim_style.fg(user_color()).bg(user_bg())),
                             Span::styled(
                                 format!("{} ...", head.trim_end()),
-                                dim_style.fg(user_text()),
+                                dim_style.fg(user_text()).bg(user_bg()),
                             ),
                         ])
                         .alignment(align);
 
                         let padding: String = " ".repeat(prefix_len);
                         let second = Line::from(vec![
-                            Span::styled(padding, dim_style),
+                            Span::styled(padding, dim_style.bg(user_bg())),
                             Span::styled(
                                 format!("... {}", tail.trim_start()),
-                                dim_style.fg(user_text()),
+                                dim_style.fg(user_text()).bg(user_bg()),
                             ),
                         ])
                         .alignment(align);

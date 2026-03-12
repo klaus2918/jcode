@@ -1,7 +1,7 @@
 use super::{
     broadcast_swarm_plan, broadcast_swarm_status, queue_soft_interrupt_for_session,
-    record_swarm_event, truncate_detail, update_member_status, ClientConnectionInfo,
-    SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
+    record_swarm_event, truncate_detail, update_member_status, ClientConnectionInfo, SwarmEvent,
+    SwarmEventType, SwarmMember, VersionedPlan,
 };
 use crate::agent::Agent;
 use crate::protocol::{AwaitedMemberStatus, NotificationType, ServerEvent};

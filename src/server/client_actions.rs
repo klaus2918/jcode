@@ -1,7 +1,8 @@
 use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
-    broadcast_swarm_status, remove_session_from_swarm, swarm_id_for_dir, truncate_detail,
-    update_member_status, SwarmEvent, SwarmMember, VersionedPlan,
+    broadcast_swarm_status, remove_session_channel_subscriptions, remove_session_from_swarm,
+    swarm_id_for_dir, truncate_detail, update_member_status, SwarmEvent, SwarmMember,
+    VersionedPlan,
 };
 use crate::agent::{Agent, StreamError};
 use crate::protocol::{FeatureToggle, NotificationType, ServerEvent};
@@ -21,6 +22,7 @@ pub(super) async fn handle_set_feature(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
+    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
@@ -67,6 +69,8 @@ pub(super) async fn handle_set_feature(
                     swarm_plans,
                 )
                 .await;
+                remove_session_channel_subscriptions(client_session_id, channel_subscriptions)
+                    .await;
             }
 
             if enabled {
@@ -218,7 +222,7 @@ pub(super) fn handle_compact(
                     Ok(()) => ServerEvent::CompactResult {
                         id,
                         message: format!(
-                            "{}\n\n✓ **Compaction started** — summarizing older messages in background.\n\
+                            "{}\n\n📦 **Compacting context** (manual) — summarizing older messages in the background to stay within the context window.\n\
                             The summary will be applied automatically when ready.",
                             status_msg
                         ),
@@ -279,9 +283,14 @@ pub(super) async fn handle_agent_task(
     )
     .await;
 
-    let result =
-        process_message_streaming_mpsc(Arc::clone(agent), &task, vec![], client_event_tx.clone())
-            .await;
+    let result = process_message_streaming_mpsc(
+        Arc::clone(agent),
+        &task,
+        vec![],
+        None,
+        client_event_tx.clone(),
+    )
+    .await;
     match result {
         Ok(()) => {
             update_member_status(

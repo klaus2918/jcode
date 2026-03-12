@@ -4,9 +4,10 @@ use super::{
 };
 use crate::bus::BusEvent;
 use crate::message::ToolCall;
-use crate::protocol::ServerEvent;
+use crate::protocol::{NotificationType, ServerEvent};
 use crate::tool::selfdev::ReloadContext;
 use crate::tui::backend::{RemoteConnection, RemoteDisconnectReason, RemoteRead};
+use crate::tui::ui::capitalize;
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseEvent};
 use futures::StreamExt;
@@ -96,9 +97,9 @@ pub(super) enum RemoteEventOutcome {
     Reconnect,
 }
 
-const RELOAD_SOCKET_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
+const RELOAD_SOCKET_WAIT_TIMEOUT: Duration = Duration::from_millis(800);
 const RELOAD_SOCKET_WAIT_WINDOW: Duration = Duration::from_secs(10);
-const RELOAD_SOCKET_PROBE_INTERVAL: Duration = Duration::from_millis(100);
+const RELOAD_SOCKET_PROBE_INTERVAL: Duration = Duration::from_millis(25);
 
 pub(super) fn should_wait_for_reload_socket(state: &RemoteRunState) -> bool {
     state.server_reload_in_progress
@@ -263,6 +264,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
                         pending.content,
                         pending.images,
                         pending.is_system,
+                        pending.system_reminder,
                         pending.auto_retry,
                         pending.retry_attempts,
                     )
@@ -274,21 +276,51 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
     }
 
     if !app.is_processing && !app.queued_messages.is_empty() {
-        let messages = std::mem::take(&mut app.queued_messages);
+        let queued_messages = std::mem::take(&mut app.queued_messages);
+        let hidden_reminders = std::mem::take(&mut app.hidden_queued_system_messages);
+        let (messages, reminder, display_system_messages) =
+            super::helpers::partition_queued_messages(queued_messages, hidden_reminders);
         let combined = messages.join("\n\n");
-        let auto_retry = combined.trim_start().starts_with("[SYSTEM:");
+        let auto_retry = reminder.is_some() && messages.is_empty();
         crate::logging::info(&format!(
             "Sending queued continuation message ({} chars)",
             combined.len()
         ));
+        for msg in display_system_messages {
+            app.push_display_message(DisplayMessage::system(msg));
+        }
         for msg in &messages {
             app.push_display_message(DisplayMessage::user(msg.clone()));
         }
-        if begin_remote_send(app, remote, combined, vec![], true, auto_retry, 0)
+        if begin_remote_send(app, remote, combined, vec![], true, reminder, auto_retry, 0)
             .await
             .is_err()
         {
             crate::logging::error("Failed to send queued continuation message");
+        }
+    }
+
+    if !app.is_processing && !app.hidden_queued_system_messages.is_empty() {
+        let reminders = std::mem::take(&mut app.hidden_queued_system_messages);
+        let combined = reminders.join("\n\n");
+        crate::logging::info(&format!(
+            "Sending hidden continuation reminder ({} chars)",
+            combined.len()
+        ));
+        if begin_remote_send(
+            app,
+            remote,
+            String::new(),
+            vec![],
+            true,
+            Some(combined),
+            true,
+            0,
+        )
+        .await
+        .is_err()
+        {
+            crate::logging::error("Failed to send hidden continuation reminder");
         }
     }
 
@@ -304,7 +336,8 @@ pub(super) async fn handle_terminal_event(
     let mut needs_redraw = false;
     match event {
         Some(Ok(Event::Key(key))) => {
-            if key.kind == KeyEventKind::Press {
+            app.update_copy_badge_key_event(key);
+            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                 handle_remote_key(app, key.code, key.modifiers, remote).await?;
                 if let Some(spec) = app.pending_model_switch.take() {
                     let _ = remote.set_model(&spec).await;
@@ -512,8 +545,11 @@ fn handle_terminal_event_while_disconnected(
     let mut needs_redraw = false;
 
     match event {
-        Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
-            handle_disconnected_key(app, key.code, key.modifiers)?;
+        Some(Ok(Event::Key(key))) => {
+            app.update_copy_badge_key_event(key);
+            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                handle_disconnected_key(app, key.code, key.modifiers)?;
+            }
             needs_redraw = true;
         }
         Some(Ok(Event::Paste(text))) => {
@@ -588,6 +624,13 @@ pub(super) async fn handle_post_connect(
         .is_some();
 
     if state.reconnect_attempts > 0 {
+        if let Some(disconnect_start) = state.disconnect_start {
+            crate::logging::info(&format!(
+                "Reload reconnect succeeded after {}ms (attempts={})",
+                disconnect_start.elapsed().as_millis(),
+                state.reconnect_attempts
+            ));
+        }
         if app.reload_info.is_empty() {
             if let Ok(jcode_dir) = crate::storage::jcode_dir() {
                 let info_path = jcode_dir.join("reload-info");
@@ -679,7 +722,7 @@ pub(super) async fn handle_post_connect(
                 .unwrap_or_default();
 
             let continuation_msg = format!(
-                "[SYSTEM: Reload succeeded. Build {} → {}.{}\nIMPORTANT: The reload is done. You MUST immediately continue your work. Do NOT ask the user what to do next. Do NOT summarize what happened. Just pick up exactly where you left off and keep going.]",
+                "Reload succeeded ({} → {}).{} Continue immediately from where you left off. Do not ask the user what to do next. Do not summarize the reload.",
                 ctx.version_before,
                 ctx.version_after,
                 task_info
@@ -689,7 +732,8 @@ pub(super) async fn handle_post_connect(
                 "Queuing reload continuation message ({} chars)",
                 continuation_msg.len()
             ));
-            app.queued_messages.push(continuation_msg);
+            app.push_display_message(DisplayMessage::system("Reload complete — continuing."));
+            app.hidden_queued_system_messages.push(continuation_msg);
         } else {
             crate::logging::warn(
                 "Reload context expected but not found (race condition?), skipping continuation",
@@ -871,7 +915,7 @@ async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) 
                 tool_data: None,
             });
             if let Err(e) =
-                begin_remote_send(app, remote, interleave_msg, vec![], false, false, 0).await
+                begin_remote_send(app, remote, interleave_msg, vec![], false, None, false, 0).await
             {
                 app.push_display_message(DisplayMessage::error(format!(
                     "Failed to send message: {}",
@@ -880,13 +924,34 @@ async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) 
             }
         }
     } else if !app.queued_messages.is_empty() {
-        let messages = std::mem::take(&mut app.queued_messages);
+        let queued_messages = std::mem::take(&mut app.queued_messages);
+        let hidden_reminders = std::mem::take(&mut app.hidden_queued_system_messages);
+        let (messages, reminder, display_system_messages) =
+            super::helpers::partition_queued_messages(queued_messages, hidden_reminders);
         let combined = messages.join("\n\n");
-        let auto_retry = combined.trim_start().starts_with("[SYSTEM:");
+        let auto_retry = reminder.is_some() && messages.is_empty();
+        for msg in display_system_messages {
+            app.push_display_message(DisplayMessage::system(msg));
+        }
         for msg in &messages {
             app.push_display_message(DisplayMessage::user(msg.clone()));
         }
-        let _ = begin_remote_send(app, remote, combined, vec![], true, auto_retry, 0).await;
+        let _ =
+            begin_remote_send(app, remote, combined, vec![], true, reminder, auto_retry, 0).await;
+    } else if !app.hidden_queued_system_messages.is_empty() {
+        let reminders = std::mem::take(&mut app.hidden_queued_system_messages);
+        let combined = reminders.join("\n\n");
+        let _ = begin_remote_send(
+            app,
+            remote,
+            String::new(),
+            vec![],
+            true,
+            Some(combined),
+            true,
+            0,
+        )
+        .await;
     }
 }
 
@@ -1042,11 +1107,16 @@ pub(super) async fn begin_remote_send(
     content: String,
     images: Vec<(String, String)>,
     is_system: bool,
+    system_reminder: Option<String>,
     auto_retry: bool,
     retry_attempts: u8,
 ) -> Result<u64> {
     let msg_id = remote
-        .send_message_with_images(content.clone(), images.clone())
+        .send_message_with_images_and_reminder(
+            content.clone(),
+            images.clone(),
+            system_reminder.clone(),
+        )
         .await?;
     app.current_message_id = Some(msg_id);
     app.is_processing = true;
@@ -1063,6 +1133,7 @@ pub(super) async fn begin_remote_send(
         content,
         images,
         is_system,
+        system_reminder,
         auto_retry,
         retry_attempts,
         retry_at: None,
@@ -1120,7 +1191,7 @@ pub(super) fn handle_server_event(
                 app.streaming_tps_start = Some(Instant::now());
             }
             remote.handle_tool_start(&id, &name);
-            if matches!(name.as_str(), "memory" | "remember") {
+            if matches!(name.as_str(), "memory") {
                 crate::memory::set_state(crate::tui::info_widget::MemoryState::Embedding);
             }
             app.status = ProcessingStatus::RunningTool(name.clone());
@@ -1176,6 +1247,7 @@ pub(super) fn handle_server_event(
                 });
             }
             crate::tui::mermaid::clear_streaming_preview_diagram();
+            let is_batch = name == "batch";
             app.push_display_message(DisplayMessage {
                 role: "tool".to_string(),
                 content: display_output,
@@ -1189,9 +1261,16 @@ pub(super) fn handle_server_event(
                     intent: None,
                 }),
             });
+            if is_batch {
+                app.batch_progress = None;
+            }
             app.streaming_tool_calls.clear();
             app.status = ProcessingStatus::Streaming;
             true
+        }
+        ServerEvent::BatchProgress { progress } => {
+            app.batch_progress = Some(progress);
+            false
         }
         ServerEvent::TokenUsage {
             input,
@@ -1265,6 +1344,7 @@ pub(super) fn handle_server_event(
             app.clear_streaming_render_state();
             app.stream_buffer.clear();
             app.streaming_tool_calls.clear();
+            app.batch_progress = None;
             app.thought_line_inserted = false;
             app.thinking_prefix_emitted = false;
             app.thinking_buffer.clear();
@@ -1309,6 +1389,7 @@ pub(super) fn handle_server_event(
                 app.processing_started = None;
                 app.replay_processing_started_ms = None;
                 app.replay_elapsed_override = None;
+                app.batch_progress = None;
                 app.streaming_tool_calls.clear();
                 app.current_message_id = None;
                 app.thought_line_inserted = false;
@@ -1477,6 +1558,7 @@ pub(super) fn handle_server_event(
             was_interrupted,
             upstream_provider,
             reasoning_effort,
+            compaction_mode,
             ..
         } => {
             let prev_session_id = app.remote_session_id.clone();
@@ -1532,6 +1614,7 @@ pub(super) fn handle_server_event(
                 app.upstream_provider = upstream_provider;
             }
             app.remote_reasoning_effort = reasoning_effort;
+            app.remote_compaction_mode = Some(compaction_mode);
             app.remote_available_models = available_models;
             app.remote_model_routes = available_model_routes;
             app.remote_skills = skills;
@@ -1590,14 +1673,10 @@ pub(super) fn handle_server_event(
                     "Session was interrupted mid-generation, queuing continuation",
                 );
                 app.push_display_message(DisplayMessage::system(
-                    "⚡ Session was interrupted mid-generation. Continuing...".to_string(),
+                    "Reload complete — continuing.".to_string(),
                 ));
-                app.queued_messages.push(
-                    "[SYSTEM: Your session was interrupted by a server reload while you were working. \
-                     The session has been restored. Any tool that was running was aborted and its results \
-                     may be incomplete. Please continue exactly where you left off. \
-                     Look at the conversation history to understand what you were doing and resume immediately. \
-                     Do NOT ask the user what to do - just continue your work.]"
+                app.hidden_queued_system_messages.push(
+                    "Your session was interrupted by a server reload while you were working. The session has been restored. Any tool that was running was aborted and its results may be incomplete. Continue exactly where you left off and do not ask the user what to do next."
                         .to_string(),
                 );
             }
@@ -1673,7 +1752,6 @@ pub(super) fn handle_server_event(
                 if let Some(ref pname) = provider_name {
                     app.remote_provider_name = Some(pname.clone());
                 }
-                app.connection_type = None;
                 app.push_display_message(DisplayMessage::system(format!(
                     "✓ Switched to model: {}",
                     model
@@ -1726,6 +1804,23 @@ pub(super) fn handle_server_event(
                     label
                 )));
                 app.set_status_notice(format!("Transport: {}", label));
+            }
+            false
+        }
+        ServerEvent::CompactionModeChanged { mode, error, .. } => {
+            if let Some(err) = error {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to set compaction mode: {}",
+                    err
+                )));
+            } else {
+                let label = mode.as_str();
+                app.remote_compaction_mode = Some(mode);
+                app.push_display_message(DisplayMessage::system(format!(
+                    "✓ Compaction mode → {}",
+                    label
+                )));
+                app.set_status_notice(format!("Compaction: {}", label));
             }
             false
         }
@@ -1788,6 +1883,70 @@ pub(super) fn handle_server_event(
             }
             false
         }
+        ServerEvent::Notification {
+            from_session,
+            from_name,
+            notification_type,
+            message,
+        } => {
+            let sender = from_name
+                .clone()
+                .or_else(|| crate::id::extract_session_name(&from_session).map(str::to_string))
+                .unwrap_or_else(|| from_session[..8.min(from_session.len())].to_string());
+
+            let (title, status_notice) = match notification_type {
+                NotificationType::Message { scope, channel } => {
+                    let title = match scope.as_deref() {
+                        Some("dm") => format!("DM from {}", sender),
+                        Some("channel") => format!(
+                            "#{} · {}",
+                            channel.unwrap_or_else(|| "channel".to_string()),
+                            sender
+                        ),
+                        Some("broadcast") => format!("Broadcast · {}", sender),
+                        Some("plan") => format!("Plan update · {}", sender),
+                        Some("swarm") => format!("Swarm · {}", sender),
+                        Some(other) => format!("{} · {}", capitalize(other), sender),
+                        None => format!("Swarm · {}", sender),
+                    };
+                    (title, "New swarm message".to_string())
+                }
+                NotificationType::SharedContext { key, .. } => (
+                    format!("Shared context · {}", sender),
+                    format!("Shared context: {}", key),
+                ),
+                NotificationType::FileConflict { path, operation } => (
+                    format!("File activity · {}", sender),
+                    format!("{} {}", operation, path),
+                ),
+            };
+
+            app.push_display_message(DisplayMessage::swarm(title, message));
+            app.set_status_notice(status_notice);
+            false
+        }
+        ServerEvent::Compaction {
+            trigger,
+            pre_tokens,
+            messages_dropped,
+        } => {
+            if let Some(dropped) = messages_dropped {
+                app.provider_session_id = None;
+                app.session.provider_session_id = None;
+                app.context_warning_shown = false;
+                app.push_display_message(DisplayMessage::system(
+                    App::format_emergency_compaction_message(dropped),
+                ));
+                app.set_status_notice("Emergency compaction");
+            } else {
+                app.handle_compaction_event(crate::compaction::CompactionEvent {
+                    trigger,
+                    pre_tokens,
+                    messages_dropped: None,
+                });
+            }
+            false
+        }
         ServerEvent::SplitResponse {
             new_session_id,
             new_session_name,
@@ -1824,7 +1983,7 @@ pub(super) fn handle_server_event(
         } => {
             if success {
                 app.push_display_message(DisplayMessage::system(message));
-                app.set_status_notice("📦 Compaction started");
+                app.set_status_notice("Compacting context");
             } else {
                 app.push_display_message(DisplayMessage::system(message));
                 app.set_status_notice("Compaction failed");
@@ -2028,6 +2187,10 @@ pub(super) async fn handle_remote_key(
         return Ok(());
     }
 
+    if input::handle_visible_copy_shortcut(app, code, modifiers) {
+        return Ok(());
+    }
+
     if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('m')) {
         app.toggle_diagram_pane();
         return Ok(());
@@ -2133,6 +2296,11 @@ pub(super) async fn handle_remote_key(
         } else {
             app.scroll_to_next_prompt();
         }
+        return Ok(());
+    }
+
+    if let Some(ratio) = App::ctrl_side_panel_ratio_preset(&code, modifiers) {
+        app.set_side_panel_ratio_preset(ratio);
         return Ok(());
     }
 
@@ -2435,6 +2603,11 @@ pub(super) async fn handle_remote_key(
                 }
 
                 if trimmed == "/quit" {
+                    crate::telemetry::end_session_with_reason(
+                        app.provider.name(),
+                        &app.provider.model(),
+                        crate::telemetry::SessionEndReason::NormalExit,
+                    );
                     app.session.mark_closed();
                     let _ = app.session.save();
                     app.should_quit = true;
@@ -2453,7 +2626,6 @@ pub(super) async fn handle_remote_key(
                         return Ok(());
                     }
                     app.upstream_provider = None;
-                    app.connection_type = None;
                     remote.set_model(model_name).await?;
                     return Ok(());
                 }
@@ -2750,6 +2922,30 @@ pub(super) async fn handle_remote_key(
                     return Ok(());
                 }
 
+                if trimmed == "/compact mode" || trimmed == "/compact mode status" {
+                    let mode = app
+                        .remote_compaction_mode
+                        .clone()
+                        .unwrap_or(crate::config::CompactionMode::Reactive);
+                    app.push_display_message(DisplayMessage::system(format!(
+                        "Compaction mode: **{}**\nAvailable: reactive · proactive · semantic\nUse `/compact mode <mode>` to change it for this session.",
+                        mode.as_str()
+                    )));
+                    return Ok(());
+                }
+
+                if let Some(mode_str) = trimmed.strip_prefix("/compact mode ") {
+                    let mode_str = mode_str.trim();
+                    let Some(mode) = crate::config::CompactionMode::parse(mode_str) else {
+                        app.push_display_message(DisplayMessage::error(
+                            "Usage: `/compact mode <reactive|proactive|semantic>`".to_string(),
+                        ));
+                        return Ok(());
+                    };
+                    remote.set_compaction_mode(mode).await?;
+                    return Ok(());
+                }
+
                 if app.pending_login.is_some() {
                     app.input = trimmed.to_string();
                     app.cursor_pos = app.input.len();
@@ -2872,6 +3068,7 @@ pub(super) async fn handle_remote_key(
                             poke_msg,
                             vec![],
                             true,
+                            None,
                             true,
                             0,
                         )

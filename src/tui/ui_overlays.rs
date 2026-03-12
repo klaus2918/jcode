@@ -183,10 +183,6 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(Line::from(Span::styled("  Memory & Swarm", section_style)));
     lines.push(Line::from(""));
     lines.push(help_entry("/memory [on|off]", "Toggle memory features"));
-    lines.push(help_entry(
-        "/remember",
-        "Extract memories from conversation",
-    ));
     lines.push(help_entry("/swarm [on|off]", "Toggle swarm features"));
 
     lines.push(Line::from(""));
@@ -249,7 +245,11 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(key_entry("PageUp / PageDown", "Scroll history"));
     lines.push(key_entry("Up / Down", "Scroll history (when input empty)"));
     lines.push(key_entry("Ctrl+[ / Ctrl+]", "Jump between user prompts"));
-    lines.push(key_entry("Ctrl+1..9", "Jump by recency (1 = most recent)"));
+    lines.push(key_entry("Ctrl+1..4", "Resize side panel to 25/50/75/100%"));
+    lines.push(key_entry(
+        "Ctrl+5..9",
+        "Jump by recency (5 = 5th most recent)",
+    ));
 
     lines.push(Line::from(""));
     lines.push(separator());

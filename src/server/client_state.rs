@@ -80,6 +80,7 @@ pub(super) async fn send_history(
         tool_names,
         upstream_provider,
         reasoning_effort,
+        compaction_mode,
     ) = {
         let agent_guard = agent.lock().await;
         let provider = agent_guard.provider_handle();
@@ -93,6 +94,7 @@ pub(super) async fn send_history(
             agent_guard.tool_names().await,
             agent_guard.last_upstream_provider(),
             provider.reasoning_effort(),
+            agent_guard.compaction_mode().await,
         )
     };
 
@@ -149,6 +151,7 @@ pub(super) async fn send_history(
             was_interrupted,
             upstream_provider,
             reasoning_effort,
+            compaction_mode,
         },
     )
     .await

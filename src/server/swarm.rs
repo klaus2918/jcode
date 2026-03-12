@@ -137,6 +137,33 @@ pub(super) async fn remove_plan_participant(
     }
 }
 
+pub(super) async fn remove_session_channel_subscriptions(
+    session_id: &str,
+    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+) {
+    let mut subs = channel_subscriptions.write().await;
+    let swarm_ids: Vec<String> = subs.keys().cloned().collect();
+
+    for swarm_id in swarm_ids {
+        let mut remove_swarm = false;
+        if let Some(swarm_subs) = subs.get_mut(&swarm_id) {
+            let channel_names: Vec<String> = swarm_subs.keys().cloned().collect();
+            for channel_name in channel_names {
+                if let Some(members) = swarm_subs.get_mut(&channel_name) {
+                    members.remove(session_id);
+                    if members.is_empty() {
+                        swarm_subs.remove(&channel_name);
+                    }
+                }
+            }
+            remove_swarm = swarm_subs.is_empty();
+        }
+        if remove_swarm {
+            subs.remove(&swarm_id);
+        }
+    }
+}
+
 pub(super) async fn remove_session_from_swarm(
     session_id: &str,
     swarm_id: &str,

@@ -20,12 +20,14 @@ use super::comm_plan::{
 use super::comm_session::{handle_comm_spawn, handle_comm_stop};
 use super::comm_sync::{handle_comm_read_context, handle_comm_resync_plan, handle_comm_summary};
 use super::provider_control::{
-    handle_cycle_model, handle_notify_auth_changed, handle_set_model, handle_set_premium_mode,
-    handle_set_reasoning_effort, handle_set_transport, handle_switch_anthropic_account,
+    handle_cycle_model, handle_notify_auth_changed, handle_set_compaction_mode, handle_set_model,
+    handle_set_premium_mode, handle_set_reasoning_effort, handle_set_transport,
+    handle_switch_anthropic_account,
 };
 use super::{
-    broadcast_swarm_status, record_swarm_event, swarm_id_for_dir, truncate_detail,
-    update_member_status, ClientConnectionInfo, ClientDebugState, FileAccess, SharedContext,
+    broadcast_swarm_status, enqueue_soft_interrupt, record_swarm_event,
+    register_session_interrupt_queue, swarm_id_for_dir, truncate_detail, update_member_status,
+    ClientConnectionInfo, ClientDebugState, FileAccess, SessionInterruptQueues, SharedContext,
     SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
 };
 use crate::agent::{Agent, InterruptSignal, SoftInterruptQueue, StreamError};
@@ -69,6 +71,7 @@ pub(super) async fn handle_client(
     server_icon: String,
     mcp_pool: Arc<crate::mcp::SharedMcpPool>,
     shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
+    soft_interrupt_queues: SessionInterruptQueues,
 ) -> Result<()> {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -148,6 +151,12 @@ pub(super) async fn handle_client(
         let mut signals = shutdown_signals.write().await;
         signals.insert(client_session_id.clone(), cancel_signal.clone());
     }
+    register_session_interrupt_queue(
+        &soft_interrupt_queues,
+        &client_session_id,
+        soft_interrupt_queue.clone(),
+    )
+    .await;
 
     let agent = Arc::new(Mutex::new(new_agent));
     {
@@ -330,6 +339,11 @@ pub(super) async fn handle_client(
                             available_model_routes: model_routes,
                         });
                     }
+                    Ok(BusEvent::BatchProgress(progress)) => {
+                        if progress.session_id == client_session_id {
+                            let _ = client_event_tx.send(ServerEvent::BatchProgress { progress });
+                        }
+                    }
                     Ok(BusEvent::BackgroundTaskCompleted(ref task)) => {
                         if task.notify && task.session_id == client_session_id {
                             let status_str = match task.status {
@@ -502,11 +516,13 @@ pub(super) async fn handle_client(
                 id,
                 content,
                 images,
+                system_reminder,
             } => {
                 start_processing_message(
                     id,
                     content,
                     images,
+                    system_reminder,
                     &client_session_id,
                     &mut client_is_processing,
                     &mut processing_message_id,
@@ -568,9 +584,11 @@ pub(super) async fn handle_client(
                     &provider,
                     &registry,
                     &sessions,
+                    &soft_interrupt_queues,
                     &client_connections,
                     &swarm_members,
                     &swarms_by_id,
+                    &channel_subscriptions,
                     &swarm_plans,
                     &event_history,
                     &event_counter,
@@ -619,6 +637,7 @@ pub(super) async fn handle_client(
                     &registry,
                     &swarm_members,
                     &swarms_by_id,
+                    &channel_subscriptions,
                     &swarm_plans,
                     &swarm_coordinators,
                     &client_event_tx,
@@ -669,9 +688,11 @@ pub(super) async fn handle_client(
                     &provider,
                     &registry,
                     &sessions,
+                    &soft_interrupt_queues,
                     &client_connections,
                     &swarm_members,
                     &swarms_by_id,
+                    &channel_subscriptions,
                     &swarm_plans,
                     &swarm_coordinators,
                     &client_count,
@@ -711,6 +732,10 @@ pub(super) async fn handle_client(
                 handle_set_transport(id, transport, &agent, &client_event_tx).await;
             }
 
+            Request::SetCompactionMode { id, mode } => {
+                handle_set_compaction_mode(id, mode, &agent, &client_event_tx).await;
+            }
+
             Request::NotifyAuthChanged { id } => {
                 handle_notify_auth_changed(id, &provider, &agent, &client_event_tx).await;
             }
@@ -735,6 +760,7 @@ pub(super) async fn handle_client(
                     &swarm_members,
                     &swarms_by_id,
                     &swarm_coordinators,
+                    &channel_subscriptions,
                     &swarm_plans,
                     &client_event_tx,
                 )
@@ -841,12 +867,14 @@ pub(super) async fn handle_client(
                     channel,
                     &client_event_tx,
                     &sessions,
+                    &soft_interrupt_queues,
                     &swarm_members,
                     &swarms_by_id,
                     &channel_subscriptions,
                     &event_history,
                     &event_counter,
                     &swarm_event_tx,
+                    &client_connections,
                 )
                 .await;
             }
@@ -882,6 +910,7 @@ pub(super) async fn handle_client(
                     &swarm_plans,
                     &swarm_coordinators,
                     &sessions,
+                    &soft_interrupt_queues,
                     &event_history,
                     &event_counter,
                     &swarm_event_tx,
@@ -905,6 +934,7 @@ pub(super) async fn handle_client(
                     &swarm_plans,
                     &swarm_coordinators,
                     &sessions,
+                    &soft_interrupt_queues,
                     &event_history,
                     &event_counter,
                     &swarm_event_tx,
@@ -928,6 +958,7 @@ pub(super) async fn handle_client(
                     &shared_context,
                     &swarm_coordinators,
                     &sessions,
+                    &soft_interrupt_queues,
                     &event_history,
                     &event_counter,
                     &swarm_event_tx,
@@ -954,10 +985,12 @@ pub(super) async fn handle_client(
                     &swarms_by_id,
                     &swarm_coordinators,
                     &swarm_plans,
+                    &channel_subscriptions,
                     &event_history,
                     &event_counter,
                     &swarm_event_tx,
                     &mcp_pool,
+                    &soft_interrupt_queues,
                 )
                 .await;
             }
@@ -977,9 +1010,11 @@ pub(super) async fn handle_client(
                     &swarms_by_id,
                     &swarm_coordinators,
                     &swarm_plans,
+                    &channel_subscriptions,
                     &event_history,
                     &event_counter,
                     &swarm_event_tx,
+                    &soft_interrupt_queues,
                 )
                 .await;
             }
@@ -1057,6 +1092,7 @@ pub(super) async fn handle_client(
                     message,
                     &client_event_tx,
                     &sessions,
+                    &soft_interrupt_queues,
                     &client_connections,
                     &swarm_members,
                     &swarms_by_id,
@@ -1148,11 +1184,13 @@ pub(super) async fn handle_client(
         &swarms_by_id,
         &swarm_coordinators,
         &swarm_plans,
+        &channel_subscriptions,
         &client_debug_state,
         &client_debug_id,
         &client_connections,
         &client_connection_id,
         &shutdown_signals,
+        &soft_interrupt_queues,
         &event_history,
         &event_counter,
         &swarm_event_tx,
@@ -1166,6 +1204,7 @@ async fn start_processing_message(
     id: u64,
     content: String,
     images: Vec<(String, String)>,
+    system_reminder: Option<String>,
     client_session_id: &str,
     client_is_processing: &mut bool,
     processing_message_id: &mut Option<u64>,
@@ -1211,7 +1250,11 @@ async fn start_processing_message(
     crate::logging::info(&format!("Processing message id={} spawning task", id));
     *processing_task = Some(tokio::spawn(async move {
         let result = match std::panic::AssertUnwindSafe(process_message_streaming_mpsc(
-            agent, &content, images, tx,
+            agent,
+            &content,
+            images,
+            system_reminder,
+            tx,
         ))
         .catch_unwind()
         .await
@@ -1308,9 +1351,7 @@ fn queue_soft_interrupt(
     soft_interrupt_queue: &SoftInterruptQueue,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    if let Ok(mut queue) = soft_interrupt_queue.lock() {
-        queue.push(crate::agent::SoftInterruptMessage { content, urgent });
-    }
+    let _ = enqueue_soft_interrupt(soft_interrupt_queue, content, urgent);
     let _ = client_event_tx.send(ServerEvent::Ack { id });
 }
 
@@ -1350,10 +1391,11 @@ pub(super) async fn process_message_streaming_mpsc(
     agent: Arc<Mutex<Agent>>,
     content: &str,
     images: Vec<(String, String)>,
+    system_reminder: Option<String>,
     event_tx: tokio::sync::mpsc::UnboundedSender<ServerEvent>,
 ) -> Result<()> {
     let mut agent = agent.lock().await;
     agent
-        .run_once_streaming_mpsc(content, images, event_tx)
+        .run_once_streaming_mpsc(content, images, system_reminder, event_tx)
         .await
 }

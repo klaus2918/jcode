@@ -137,6 +137,67 @@ fn append_stream_route(status_text: &mut String, app: &dyn TuiState) {
     }
 }
 
+fn batch_progress_state(
+    batch_prog: Option<crate::bus::BatchProgress>,
+    initial_total: Option<usize>,
+) -> (usize, usize, Option<String>) {
+    match batch_prog {
+        Some(progress) => (progress.completed, progress.total, progress.last_completed),
+        None => (0, initial_total.unwrap_or(0), None),
+    }
+}
+
+fn batch_running_summary(batch_prog: &crate::bus::BatchProgress) -> Option<String> {
+    let mut running = batch_prog.running.clone();
+    if running.is_empty() {
+        return None;
+    }
+    running.sort_by(|a, b| a.id.cmp(&b.id));
+    let first = &running[0];
+    let detail = get_tool_summary(first);
+    let label = if detail.is_empty() {
+        first.name.clone()
+    } else {
+        format!("{} ({})", first.name, detail)
+    };
+    if running.len() == 1 {
+        Some(label)
+    } else {
+        Some(format!("{} +{} more", label, running.len() - 1))
+    }
+}
+
+fn append_batch_progress_spans(
+    spans: &mut Vec<Span<'static>>,
+    anim_color: Color,
+    batch_prog: Option<crate::bus::BatchProgress>,
+    initial_total: Option<usize>,
+) {
+    let running_summary = batch_prog.as_ref().and_then(batch_running_summary);
+    let (completed, total, last_completed) = batch_progress_state(batch_prog, initial_total);
+
+    if total > 0 {
+        spans.push(Span::styled(
+            format!(" · {}/{} done", completed, total),
+            Style::default().fg(anim_color).bold(),
+        ));
+    }
+
+    if let Some(running) = running_summary {
+        spans.push(Span::styled(
+            format!(" · running: {}", running),
+            Style::default().fg(dim_color()),
+        ));
+    }
+
+    if let Some(tool_name) = last_completed.filter(|_| completed < total) {
+        spans.push(Span::styled(
+            format!(" · last done: {}", tool_name),
+            Style::default().fg(dim_color()),
+        ));
+    }
+}
+
 pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count: usize) {
     let elapsed = app.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
     let stale_secs = app.time_since_activity().map(|d| d.as_secs_f32());
@@ -358,27 +419,12 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
 
                 // For batch tool: show "completed/total · last_tool" progress
                 if is_batch {
-                    let (completed, total, last_tool) = match batch_prog {
-                        Some((c, t, l)) => (c, t, l),
-                        None => (0, batch_total_initial.unwrap_or(0), None),
-                    };
-                    let progress_color = if total > 0 && completed == total {
-                        rgb(100, 200, 100)
-                    } else {
-                        rgb(100, 180, 255)
-                    };
-                    if total > 0 {
-                        spans.push(Span::styled(
-                            format!(" · {}/{}", completed, total),
-                            Style::default().fg(progress_color).bold(),
-                        ));
-                    }
-                    if let Some(tool_name) = last_tool.filter(|_| completed < total) {
-                        spans.push(Span::styled(
-                            format!(" · {}", tool_name),
-                            Style::default().fg(dim_color()),
-                        ));
-                    }
+                    append_batch_progress_spans(
+                        &mut spans,
+                        anim_color,
+                        batch_prog,
+                        batch_total_initial,
+                    );
                 } else if let Some(detail) = tool_detail {
                     spans.push(Span::styled(
                         format!(" · {}", detail),
@@ -468,6 +514,101 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         line
     };
     frame.render_widget(Paragraph::new(aligned_line), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Modifier;
+
+    #[test]
+    fn batch_progress_spans_use_batch_chroma_for_initial_count() {
+        let mut spans = Vec::new();
+        let anim_color = rgb(12, 34, 56);
+
+        append_batch_progress_spans(&mut spans, anim_color, None, Some(3));
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), " · 0/3 done");
+        assert_eq!(spans[0].style.fg, Some(anim_color));
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn batch_progress_spans_make_last_completed_explicit() {
+        let mut spans = Vec::new();
+
+        append_batch_progress_spans(
+            &mut spans,
+            rgb(120, 130, 140),
+            Some(crate::bus::BatchProgress {
+                session_id: "s".to_string(),
+                tool_call_id: "tc".to_string(),
+                total: 3,
+                completed: 1,
+                last_completed: Some("read".to_string()),
+                running: Vec::new(),
+            }),
+            Some(3),
+        );
+
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content.as_ref(), " · 1/3 done");
+        assert_eq!(spans[1].content.as_ref(), " · last done: read");
+    }
+
+    #[test]
+    fn batch_progress_spans_hide_last_completed_when_batch_finished() {
+        let mut spans = Vec::new();
+
+        append_batch_progress_spans(
+            &mut spans,
+            rgb(120, 130, 140),
+            Some(crate::bus::BatchProgress {
+                session_id: "s".to_string(),
+                tool_call_id: "tc".to_string(),
+                total: 3,
+                completed: 3,
+                last_completed: Some("read".to_string()),
+                running: Vec::new(),
+            }),
+            Some(3),
+        );
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), " · 3/3 done");
+    }
+
+    #[test]
+    fn batch_progress_spans_show_running_subcall_detail() {
+        let mut spans = Vec::new();
+
+        append_batch_progress_spans(
+            &mut spans,
+            rgb(120, 130, 140),
+            Some(crate::bus::BatchProgress {
+                session_id: "s".to_string(),
+                tool_call_id: "tc".to_string(),
+                total: 2,
+                completed: 0,
+                last_completed: None,
+                running: vec![crate::message::ToolCall {
+                    id: "batch-1-bash".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "cargo test -p jcode"}),
+                    intent: None,
+                }],
+            }),
+            Some(2),
+        );
+
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content.as_ref(), " · 0/2 done");
+        assert_eq!(
+            spans[1].content.as_ref(),
+            " · running: bash ($ cargo test -p jcode)"
+        );
+    }
 }
 
 /// Build the spans for the notification line. Returns empty vec when there is nothing to show.
@@ -873,9 +1014,11 @@ fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {
     } else if let Some(ref conn) = app.connection_type() {
         let lower = conn.to_lowercase();
         if lower.contains("websocket") {
-            ("ws", rgb(100, 200, 180))
+            ("󰌘", rgb(100, 200, 180))
+        } else if lower.contains("subprocess") || lower.contains("cli") {
+            ("󰆍", rgb(180, 160, 220))
         } else {
-            ("http", rgb(140, 180, 255))
+            ("󰖟", rgb(140, 180, 255))
         }
     } else {
         ("⚡", asap_color())

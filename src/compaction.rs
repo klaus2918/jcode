@@ -90,6 +90,7 @@ pub struct Summary {
 pub struct CompactionEvent {
     pub trigger: String,
     pub pre_tokens: Option<u64>,
+    pub messages_dropped: Option<usize>,
 }
 
 /// What happened when ensure_context_fits was called
@@ -98,7 +99,7 @@ pub enum CompactionAction {
     /// Nothing needed — context is fine
     None,
     /// Background summarization started (context 80-95%)
-    BackgroundStarted,
+    BackgroundStarted { trigger: String },
     /// Emergency hard compact performed (context >= 95%)
     /// Contains number of messages dropped
     HardCompacted(usize),
@@ -126,6 +127,9 @@ pub struct CompactionManager {
 
     /// Background compaction task handle
     pending_task: Option<JoinHandle<Result<CompactionResult>>>,
+
+    /// User-facing trigger label for the currently running background compaction.
+    pending_trigger: Option<String>,
 
     /// Turn index (relative to uncompacted messages) where pending compaction will cut off
     pending_cutoff: usize,
@@ -174,6 +178,7 @@ impl CompactionManager {
             compacted_count: 0,
             active_summary: None,
             pending_task: None,
+            pending_trigger: None,
             pending_cutoff: 0,
             total_turns: 0,
             token_budget: DEFAULT_TOKEN_BUDGET,
@@ -637,13 +642,10 @@ impl CompactionManager {
         let messages_to_summarize: Vec<Message> = active[..cutoff].to_vec();
         let msg_count = messages_to_summarize.len();
         let existing_summary = self.active_summary.clone();
-        let mode_label = match self.mode {
-            crate::config::CompactionMode::Reactive => "reactive",
-            crate::config::CompactionMode::Proactive => "proactive",
-            crate::config::CompactionMode::Semantic => "semantic",
-        };
+        let mode_label = self.mode_trigger_label().to_string();
 
         self.pending_cutoff = cutoff;
+        self.pending_trigger = Some(mode_label.clone());
 
         // Spawn background task that notifies via Bus when done
         self.pending_task = Some(tokio::spawn(async move {
@@ -701,7 +703,12 @@ impl CompactionManager {
         }
 
         if bg_started {
-            CompactionAction::BackgroundStarted
+            CompactionAction::BackgroundStarted {
+                trigger: self
+                    .pending_trigger
+                    .clone()
+                    .unwrap_or_else(|| self.mode_trigger_label().to_string()),
+            }
         } else {
             CompactionAction::None
         }
@@ -756,6 +763,7 @@ impl CompactionManager {
         let existing_summary = self.active_summary.clone();
 
         self.pending_cutoff = cutoff;
+        self.pending_trigger = Some("manual".to_string());
 
         self.pending_task = Some(tokio::spawn(async move {
             let start = std::time::Instant::now();
@@ -873,8 +881,12 @@ impl CompactionManager {
                 // Store summary
                 self.active_summary = Some(summary);
                 self.last_compaction = Some(CompactionEvent {
-                    trigger: "background".to_string(),
+                    trigger: self
+                        .pending_trigger
+                        .take()
+                        .unwrap_or_else(|| self.mode_trigger_label().to_string()),
                     pre_tokens: Some(pre_tokens),
+                    messages_dropped: None,
                 });
                 self.observed_input_tokens = None;
 
@@ -886,10 +898,12 @@ impl CompactionManager {
             }
             Ok(Err(e)) => {
                 crate::logging::error(&format!("[compaction] Failed to generate summary: {}", e));
+                self.pending_trigger = None;
                 self.pending_cutoff = 0;
             }
             Err(e) => {
                 crate::logging::error(&format!("[compaction] Task panicked: {}", e));
+                self.pending_trigger = None;
                 self.pending_cutoff = 0;
             }
         }
@@ -967,6 +981,16 @@ impl CompactionManager {
     /// Get the active compaction mode
     pub fn mode(&self) -> crate::config::CompactionMode {
         self.mode.clone()
+    }
+
+    /// Change the active compaction mode for this session at runtime.
+    pub fn set_mode(&mut self, mode: crate::config::CompactionMode) {
+        self.mode = mode.clone();
+        self.compaction_config.mode = mode;
+    }
+
+    fn mode_trigger_label(&self) -> &'static str {
+        self.mode.as_str()
     }
 
     /// Get the number of compacted (summarized) messages
@@ -1153,6 +1177,7 @@ impl CompactionManager {
         self.last_compaction = Some(CompactionEvent {
             trigger: "hard_compact".to_string(),
             pre_tokens: Some(pre_tokens),
+            messages_dropped: Some(dropped_count),
         });
         self.observed_input_tokens = None;
 
@@ -1539,7 +1564,9 @@ mod tests {
         let action = manager.ensure_context_fits(&messages, provider);
         assert_eq!(
             action,
-            CompactionAction::BackgroundStarted,
+            CompactionAction::BackgroundStarted {
+                trigger: "reactive".to_string()
+            },
             "should start background compaction at 85%"
         );
         assert!(

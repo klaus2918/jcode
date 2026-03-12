@@ -1,6 +1,81 @@
 use super::*;
 
 impl App {
+    pub(super) fn format_compaction_strategy_label(trigger: &str) -> &'static str {
+        match trigger {
+            "manual" => "manual",
+            "proactive" => "proactive",
+            "semantic" => "semantic",
+            "reactive" => "reactive",
+            "auto_recovery" => "automatic recovery",
+            "hard_compact" => "emergency",
+            _ => "automatic",
+        }
+    }
+
+    pub(super) fn format_compaction_started_message(trigger: &str) -> String {
+        let strategy = Self::format_compaction_strategy_label(trigger);
+        format!(
+            "📦 **Compacting context** ({}) — summarizing older messages in the background to stay within the context window.",
+            strategy
+        )
+    }
+
+    pub(super) fn format_compaction_complete_message(
+        trigger: &str,
+        pre_tokens: Option<u64>,
+    ) -> String {
+        if trigger == "hard_compact" {
+            let mut message =
+                "📦 **Emergency compaction** — older messages were dropped to recover from context pressure. Recent context was kept.".to_string();
+            if let Some(tokens) = pre_tokens {
+                message.push_str(&format!(
+                    " Previous size: ~{} tokens.",
+                    Self::format_compaction_number(tokens)
+                ));
+            }
+            return message;
+        }
+
+        let reason = match trigger {
+            "auto_recovery" => "after the context window filled up",
+            _ => "to stay within the context window",
+        };
+        let strategy = Self::format_compaction_strategy_label(trigger);
+        let mut message = format!(
+            "📦 **Context compacted** ({}) — older messages were summarized {}.",
+            strategy, reason
+        );
+        if let Some(tokens) = pre_tokens {
+            message.push_str(&format!(
+                " Previous size: ~{} tokens.",
+                Self::format_compaction_number(tokens)
+            ));
+        }
+        message
+    }
+
+    pub(super) fn format_emergency_compaction_message(dropped: usize) -> String {
+        let noun = if dropped == 1 { "message" } else { "messages" };
+        format!(
+            "📦 **Emergency compaction** — dropped {} oldest {} because the context window was full. Recent context was kept.",
+            Self::format_compaction_number(dropped as u64),
+            noun,
+        )
+    }
+
+    pub(super) fn format_compaction_number(value: u64) -> String {
+        let digits = value.to_string();
+        let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+        for (idx, ch) in digits.chars().rev().enumerate() {
+            if idx > 0 && idx % 3 == 0 {
+                formatted.push(',');
+            }
+            formatted.push(ch);
+        }
+        formatted.chars().rev().collect()
+    }
+
     pub(super) fn add_provider_message(&mut self, message: Message) {
         self.messages.push(message);
         if self.is_remote || !self.provider.supports_compaction() {
@@ -62,22 +137,17 @@ impl App {
             Ok(mut manager) => {
                 let action = manager.ensure_context_fits(&self.messages, self.provider.clone());
                 match action {
-                    crate::compaction::CompactionAction::BackgroundStarted => {
+                    crate::compaction::CompactionAction::BackgroundStarted { trigger } => {
                         self.push_display_message(DisplayMessage::system(
-                            "📦 **Compaction started** — context above 80%, summarizing older messages in background..."
-                                .to_string(),
+                            Self::format_compaction_started_message(&trigger),
                         ));
-                        self.set_status_notice("Compacting context...");
+                        self.set_status_notice("Compacting context");
                     }
                     crate::compaction::CompactionAction::HardCompacted(dropped) => {
-                        self.push_display_message(DisplayMessage::system(format!(
-                            "📦 **Emergency compaction** — context critically full, dropped {} old messages to fit.",
-                            dropped,
-                        )));
-                        self.set_status_notice(format!(
-                            "Emergency compaction: {} msgs dropped",
-                            dropped
+                        self.push_display_message(DisplayMessage::system(
+                            Self::format_emergency_compaction_message(dropped),
                         ));
+                        self.set_status_notice("Emergency compaction");
                     }
                     crate::compaction::CompactionAction::None => {}
                 }
@@ -106,18 +176,17 @@ impl App {
         self.provider_session_id = None;
         self.session.provider_session_id = None;
         self.context_warning_shown = false;
-        let tokens_str = event
-            .pre_tokens
-            .map(|t| format!(" (was {} tokens)", t))
-            .unwrap_or_default();
-        self.push_display_message(DisplayMessage::system(format!(
-            "📦 **Compaction complete** — context summarized ({}){}",
-            event.trigger, tokens_str
-        )));
-        self.set_status_notice("Context compacted");
+        let message = if let Some(dropped) = event.messages_dropped {
+            self.set_status_notice("Emergency compaction");
+            Self::format_emergency_compaction_message(dropped)
+        } else {
+            self.set_status_notice("Context compacted");
+            Self::format_compaction_complete_message(&event.trigger, event.pre_tokens)
+        };
+        self.push_display_message(DisplayMessage::system(message));
     }
 
-    pub(super) fn set_status_notice(&mut self, text: impl Into<String>) {
+    pub fn set_status_notice(&mut self, text: impl Into<String>) {
         self.status_notice = Some((text.into(), Instant::now()));
     }
 
@@ -183,6 +252,11 @@ impl App {
                 // Second press within timeout - actually quit
                 // Mark session as closed and save
                 self.session.provider_session_id = self.provider_session_id.clone();
+                crate::telemetry::end_session_with_reason(
+                    self.provider.name(),
+                    &self.provider.model(),
+                    crate::telemetry::SessionEndReason::NormalExit,
+                );
                 self.session.mark_closed();
                 let _ = self.session.save();
                 self.should_quit = true;

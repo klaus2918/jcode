@@ -1874,30 +1874,20 @@ impl SessionPicker {
                     rendered_messages += 1;
                 }
                 "system" => {
-                    let should_render_markdown = msg.content.contains('\n')
-                        || msg.content.contains("```")
-                        || msg.content.contains("# ")
-                        || msg.content.contains("- ");
-
-                    if should_render_markdown {
-                        let md_lines = markdown::render_markdown_with_width(
-                            &msg.content,
-                            Some(assistant_width as usize),
-                        );
-                        for line in md_lines {
-                            lines.push(super::ui::align_if_unset(line, align));
-                            rendered_messages += 1;
-                        }
-                    } else {
-                        lines.push(
-                            Line::from(vec![Span::styled(
-                                msg.content.clone(),
-                                Style::default()
-                                    .fg(rgb(186, 139, 255))
-                                    .add_modifier(Modifier::ITALIC),
-                            )])
-                            .alignment(align),
-                        );
+                    let md_lines = super::ui::render_system_message(
+                        &DisplayMessage {
+                            role: msg.role.clone(),
+                            content: msg.content.clone(),
+                            tool_calls: msg.tool_calls.clone(),
+                            duration_secs: None,
+                            title: None,
+                            tool_data: msg.tool_data.clone(),
+                        },
+                        assistant_width,
+                        crate::config::DiffDisplayMode::Off,
+                    );
+                    for line in md_lines {
+                        lines.push(super::ui::align_if_unset(line, align));
                         rendered_messages += 1;
                     }
                 }

@@ -60,9 +60,10 @@ use file_diff_ui::{
 };
 pub(crate) use header::capitalize;
 use messages::get_cached_message_lines;
-pub(crate) use messages::{render_assistant_message, render_tool_message};
+pub(crate) use messages::{render_assistant_message, render_system_message, render_tool_message};
 use picker_ui::draw_picker_line;
 use pinned_ui::{collect_pinned_content_cached, draw_pinned_content_cached};
+use tools_ui::get_tool_summary;
 #[cfg(test)]
 use viewport::compute_visible_margins;
 use viewport::draw_messages;
@@ -76,7 +77,7 @@ static PINNED_PANE_TOTAL_LINES: AtomicUsize = AtomicUsize::new(0);
 /// Effective scroll position of the side pane after render-time clamping.
 static LAST_DIFF_PANE_EFFECTIVE_SCROLL: AtomicUsize = AtomicUsize::new(0);
 /// Wrapped line indices where each user prompt starts (updated each render frame).
-/// Used by prompt-jump keybindings (Ctrl+1..9, Ctrl+[/]) for accurate positioning.
+/// Used by prompt-jump keybindings (Ctrl+5..9, Ctrl+[/]) for accurate positioning.
 static LAST_USER_PROMPT_POSITIONS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 
 /// Get the last known max scroll value (from the most recent render frame).
@@ -135,6 +136,9 @@ fn dim_color() -> Color {
 }
 fn accent_color() -> Color {
     rgb(186, 139, 255)
+}
+fn system_message_color() -> Color {
+    rgb(255, 170, 220)
 }
 fn queued_color() -> Color {
     rgb(255, 193, 7)
@@ -980,6 +984,24 @@ fn prompt_entry_color(base: Color, t: f32) -> Color {
     blend_color(base, peak, phase.clamp(0.0, 1.0) * 0.7)
 }
 
+fn prompt_entry_bg_color(base: Color, t: f32) -> Color {
+    let spotlight = rgb(58, 66, 82);
+    let ease_in = 1.0 - (1.0 - t).powi(3);
+    let ease_out = (1.0 - t).powi(2);
+    let phase = (ease_in * ease_out * 1.65).clamp(0.0, 1.0);
+    blend_color(base, spotlight, phase * 0.85)
+}
+
+fn prompt_entry_shimmer_color(base: Color, pos: f32, t: f32) -> Color {
+    let travel = (t * 1.15).clamp(0.0, 1.0);
+    let width = 0.18;
+    let dist = (pos - travel).abs();
+    let shimmer = (1.0 - (dist / width).clamp(0.0, 1.0)).powf(2.2);
+    let pulse = (1.0 - t).powf(0.55);
+    let highlight = rgb(255, 248, 210);
+    blend_color(base, highlight, shimmer * pulse * 0.7)
+}
+
 /// Generate an animated color that pulses between two colors
 fn animated_tool_color(elapsed: f32) -> Color {
     // Cycle period of ~1.5 seconds
@@ -1252,9 +1274,25 @@ fn format_status_for_debug(app: &dyn TuiState) -> String {
         }
         ProcessingStatus::RunningTool(ref name) => {
             if name == "batch" {
-                if let Some((completed, total, last)) = app.batch_progress() {
-                    let last_str = last.map(|l| format!(", last: {}", l)).unwrap_or_default();
-                    return format!("Running batch: {}/{}{}", completed, total, last_str);
+                if let Some(progress) = app.batch_progress() {
+                    let completed = progress.completed;
+                    let total = progress.total;
+                    let mut status = format!("Running batch: {}/{} done", completed, total);
+                    if let Some(running) = progress.running.first() {
+                        let detail = get_tool_summary(running);
+                        if detail.is_empty() {
+                            status.push_str(&format!(", running: {}", running.name));
+                        } else {
+                            status.push_str(&format!(", running: {} ({})", running.name, detail));
+                        }
+                        if progress.running.len() > 1 {
+                            status.push_str(&format!(" +{} more", progress.running.len() - 1));
+                        }
+                    }
+                    if let Some(last) = progress.last_completed.filter(|_| completed < total) {
+                        status.push_str(&format!(", last done: {}", last));
+                    }
+                    return status;
                 }
             }
             format!("Running tool: {}", name)
@@ -1275,6 +1313,56 @@ struct ImageRegion {
     height: u16,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CopyTargetKind {
+    CodeBlock { language: Option<String> },
+    Error,
+}
+
+impl CopyTargetKind {
+    fn label(&self) -> String {
+        match self {
+            Self::CodeBlock { language } => language
+                .as_deref()
+                .filter(|lang| !lang.is_empty())
+                .unwrap_or("code")
+                .to_string(),
+            Self::Error => "error".to_string(),
+        }
+    }
+
+    fn copied_notice(&self) -> String {
+        match self {
+            Self::CodeBlock { language } => {
+                let label = language
+                    .as_deref()
+                    .filter(|lang| !lang.is_empty())
+                    .unwrap_or("code block");
+                format!("Copied {}", label)
+            }
+            Self::Error => "Copied error".to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RawCopyTarget {
+    pub(crate) kind: CopyTargetKind,
+    pub(crate) content: String,
+    pub(crate) start_raw_line: usize,
+    pub(crate) end_raw_line: usize,
+    pub(crate) badge_raw_line: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CopyTarget {
+    kind: CopyTargetKind,
+    content: String,
+    start_line: usize,
+    end_line: usize,
+    badge_line: usize,
+}
+
 #[derive(Clone)]
 struct PreparedMessages {
     wrapped_lines: Vec<Line<'static>>,
@@ -1291,6 +1379,7 @@ struct PreparedMessages {
     /// Line ranges for edit tool messages: (msg_index, start_line, end_line)
     /// Used by File diff mode to determine which edit is visible at current scroll
     edit_tool_ranges: Vec<EditToolRange>,
+    copy_targets: Vec<CopyTarget>,
 }
 
 #[derive(Clone, Debug)]
@@ -1309,6 +1398,41 @@ struct ActiveFileDiffContext {
     file_path: String,
     start_line: usize,
     end_line: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct VisibleCopyTarget {
+    pub key: char,
+    pub kind_label: String,
+    pub copied_notice: String,
+    pub content: String,
+}
+
+const COPY_BADGE_KEYS: [char; 12] = ['s', 'd', 'f', 'g', 'w', 'e', 'r', 't', 'x', 'c', 'v', 'b'];
+
+static VISIBLE_COPY_TARGETS: OnceLock<Mutex<Vec<VisibleCopyTarget>>> = OnceLock::new();
+
+fn visible_copy_targets_state() -> &'static Mutex<Vec<VisibleCopyTarget>> {
+    VISIBLE_COPY_TARGETS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn set_visible_copy_targets(targets: Vec<VisibleCopyTarget>) {
+    let mut state = match visible_copy_targets_state().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *state = targets;
+}
+
+pub(crate) fn visible_copy_target_for_key(key: char) -> Option<VisibleCopyTarget> {
+    let state = match visible_copy_targets_state().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    state
+        .iter()
+        .find(|target| target.key.eq_ignore_ascii_case(&key))
+        .cloned()
 }
 
 #[derive(Clone, Copy)]
@@ -1703,12 +1827,12 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                 const MIN_CHAT_WIDTH: u16 = 20;
                 let max_diagram = area.width.saturating_sub(MIN_CHAT_WIDTH);
                 if max_diagram >= MIN_DIAGRAM_WIDTH {
-                    let ratio = app.diagram_pane_ratio().clamp(25, 80) as u32;
-                    let ratio_cap = ((area.width as u32 * ratio) / 100) as u16;
+                    let ratio = app.diagram_pane_ratio().clamp(25, 100) as u32;
+                    let ratio_target = ((area.width as u32 * ratio) / 100) as u16;
                     let needed =
                         estimate_pinned_diagram_pane_width(diagram, area.height, MIN_DIAGRAM_WIDTH);
-                    let diagram_width = needed
-                        .min(ratio_cap)
+                    let diagram_width = ratio_target
+                        .max(needed.min(max_diagram))
                         .max(MIN_DIAGRAM_WIDTH)
                         .min(max_diagram);
                     let chat_width = area.width.saturating_sub(diagram_width);
@@ -1738,15 +1862,15 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                 const MIN_CHAT_HEIGHT: u16 = 8;
                 let max_diagram = area.height.saturating_sub(MIN_CHAT_HEIGHT);
                 if max_diagram >= MIN_DIAGRAM_HEIGHT {
-                    let ratio = app.diagram_pane_ratio().clamp(20, 75) as u32;
-                    let ratio_cap = ((area.height as u32 * ratio) / 100) as u16;
+                    let ratio = app.diagram_pane_ratio().clamp(20, 100) as u32;
+                    let ratio_target = ((area.height as u32 * ratio) / 100) as u16;
                     let needed = estimate_pinned_diagram_pane_height(
                         diagram,
                         area.width,
                         MIN_DIAGRAM_HEIGHT,
                     );
-                    let diagram_height = needed
-                        .min(ratio_cap)
+                    let diagram_height = ratio_target
+                        .max(needed.min(max_diagram))
                         .max(MIN_DIAGRAM_HEIGHT)
                         .min(max_diagram);
                     let chat_height = area.height.saturating_sub(diagram_height);
@@ -1816,7 +1940,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         const MIN_CHAT_WIDTH: u16 = 20;
         let max_diff = chat_area.width.saturating_sub(MIN_CHAT_WIDTH);
         if max_diff >= MIN_DIFF_WIDTH {
-            let diff_width = (chat_area.width * 35 / 100)
+            let diff_width = (((chat_area.width as u32
+                * app.diagram_pane_ratio().clamp(25, 100) as u32)
+                / 100) as u16)
                 .max(MIN_DIFF_WIDTH)
                 .min(max_diff);
             let new_chat_width = chat_area.width.saturating_sub(diff_width);
@@ -2750,6 +2876,31 @@ mod tests {
     }
 
     #[test]
+    fn test_prompt_entry_bg_color_pulses_then_fades() {
+        let base = user_bg();
+        let early = prompt_entry_bg_color(base, 0.15);
+        let peak = prompt_entry_bg_color(base, 0.45);
+        let late = prompt_entry_bg_color(base, 0.95);
+
+        assert_ne!(early, base);
+        assert_ne!(peak, base);
+        assert_ne!(late, peak);
+    }
+
+    #[test]
+    fn test_prompt_entry_shimmer_color_moves_across_positions() {
+        let base = user_text();
+        let left_early = prompt_entry_shimmer_color(base, 0.1, 0.1);
+        let right_early = prompt_entry_shimmer_color(base, 0.9, 0.1);
+        let left_late = prompt_entry_shimmer_color(base, 0.1, 0.8);
+        let right_late = prompt_entry_shimmer_color(base, 0.9, 0.8);
+
+        assert_ne!(left_early, right_early);
+        assert_ne!(left_late, right_late);
+        assert_ne!(left_early, left_late);
+    }
+
+    #[test]
     fn test_active_file_diff_context_resolves_visible_edit() {
         let prepared = PreparedMessages {
             wrapped_lines: vec![Line::from("a"); 20],
@@ -2774,6 +2925,7 @@ mod tests {
                     end_line: 14,
                 },
             ],
+            copy_targets: Vec::new(),
         };
 
         let active = active_file_diff_context(&prepared, 9, 4).expect("visible edit context");
@@ -2804,6 +2956,7 @@ mod tests {
             user_prompt_texts: Vec::new(),
             image_regions: Vec::new(),
             edit_tool_ranges: Vec::new(),
+            copy_targets: Vec::new(),
         });
         let prepared_b = Arc::new(PreparedMessages {
             wrapped_lines: vec![Line::from("b")],
@@ -2813,6 +2966,7 @@ mod tests {
             user_prompt_texts: Vec::new(),
             image_regions: Vec::new(),
             edit_tool_ranges: Vec::new(),
+            copy_targets: Vec::new(),
         });
 
         let mut cache = BodyCacheState::default();
@@ -2851,6 +3005,7 @@ mod tests {
                 user_prompt_texts: Vec::new(),
                 image_regions: Vec::new(),
                 edit_tool_ranges: Vec::new(),
+                copy_targets: Vec::new(),
             });
             cache.insert(key, prepared, idx);
         }

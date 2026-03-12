@@ -1182,6 +1182,7 @@ mod tests {
             tool_call_id: "call_1".to_string(),
             working_dir: None,
             stdin_request_tx: None,
+            execution_mode: crate::tool::ToolExecutionMode::Direct,
         };
 
         let err = tool
@@ -1247,6 +1248,7 @@ mod tests {
             tool_call_id: "call_1".to_string(),
             working_dir: None,
             stdin_request_tx: None,
+            execution_mode: crate::tool::ToolExecutionMode::Direct,
         };
 
         let err = tool

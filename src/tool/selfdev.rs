@@ -3,7 +3,7 @@
 use crate::build;
 use crate::server;
 use crate::storage;
-use crate::tool::{Tool, ToolContext, ToolOutput};
+use crate::tool::{Tool, ToolContext, ToolExecutionMode, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -140,7 +140,10 @@ impl Tool for SelfDevTool {
         let title = format!("selfdev {}", action);
 
         let result = match action.as_str() {
-            "reload" => self.do_reload(params.context, &ctx.session_id).await,
+            "reload" => {
+                self.do_reload(params.context, &ctx.session_id, ctx.execution_mode)
+                    .await
+            }
             "status" => self.do_status().await,
             "socket-info" => self.do_socket_info().await,
             "socket-help" => self.do_socket_help().await,
@@ -155,6 +158,15 @@ impl Tool for SelfDevTool {
 }
 
 impl SelfDevTool {
+    fn is_test_session() -> bool {
+        std::env::var("JCODE_TEST_SESSION")
+            .map(|value| {
+                let trimmed = value.trim();
+                !trimmed.is_empty() && trimmed != "0" && !trimmed.eq_ignore_ascii_case("false")
+            })
+            .unwrap_or(false)
+    }
+
     fn reload_timeout_secs() -> u64 {
         std::env::var("JCODE_SELFDEV_RELOAD_TIMEOUT_SECS")
             .ok()
@@ -163,7 +175,12 @@ impl SelfDevTool {
             .unwrap_or(15)
     }
 
-    async fn do_reload(&self, context: Option<String>, session_id: &str) -> Result<ToolOutput> {
+    async fn do_reload(
+        &self,
+        context: Option<String>,
+        session_id: &str,
+        execution_mode: ToolExecutionMode,
+    ) -> Result<ToolOutput> {
         let repo_dir = build::get_repo_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not find jcode repository directory"))?;
 
@@ -180,13 +197,19 @@ impl SelfDevTool {
             ));
         }
 
-        let hash = build::current_git_hash(&repo_dir)?;
+        let hash = if SelfDevTool::is_test_session() {
+            "test-reload-hash".to_string()
+        } else {
+            build::current_git_hash(&repo_dir)?
+        };
         let version_before = env!("JCODE_VERSION").to_string();
 
         // Install the new binary and update canary symlink so the server
         // exec's into the correct (freshly built) binary.
-        build::install_version(&repo_dir, &hash)?;
-        build::update_canary_symlink(&hash)?;
+        if !SelfDevTool::is_test_session() {
+            build::install_version(&repo_dir, &hash)?;
+            build::update_canary_symlink(&hash)?;
+        }
 
         // Update manifest - track what we're testing
         let mut manifest = build::BuildManifest::load()?;
@@ -218,28 +241,46 @@ impl SelfDevTool {
         std::fs::write(&info_path, &info)?;
 
         // Signal the server via in-process channel (replaces filesystem-based rebuild-signal)
-        server::send_reload_signal(hash.clone(), Some(session_id.to_string()));
+        let request_id =
+            server::send_reload_signal(hash.clone(), Some(session_id.to_string()), true);
 
-        // Block until the server picks up the signal and triggers graceful shutdown.
-        // The agent's tool execution loop will abort this task when the shutdown
-        // signal fires, recording "interrupted by reload" as the tool result.
-        // On restart, the continuation message provides the real reload outcome.
-        //
-        // We don't return a ToolOutput here because the reload hasn't happened yet.
-        // The actual result comes after the process restarts.
         let timeout = std::time::Duration::from_secs(SelfDevTool::reload_timeout_secs());
-        let sleep_forever = async {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            }
-        };
+        let ack = server::wait_for_reload_ack(&request_id, timeout)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "Timed out waiting for the server to begin reload after {}s: {}. The reload signal may not have been picked up; check that the connected server is running a build with unified self-dev reload support and try restarting the shared server.",
+                    timeout.as_secs(),
+                    error
+                )
+            })?;
 
-        match tokio::time::timeout(timeout, sleep_forever).await {
-            Ok(_) => unreachable!("infinite wait future unexpectedly completed"),
-            Err(_) => Err(anyhow::anyhow!(
-                "Timed out waiting for the server to begin reload after {}s. The reload signal may not have been picked up; check that the connected server is running a build with unified self-dev reload support and try restarting the shared server.",
-                timeout.as_secs()
-            )),
+        crate::logging::info(&format!(
+            "Reload acknowledged by server for request {} ({})",
+            ack.request_id, ack.hash
+        ));
+
+        match execution_mode {
+            ToolExecutionMode::Direct => Ok(ToolOutput::new(format!(
+                "Reload acknowledged for build {}. Server is restarting now.",
+                ack.hash
+            ))),
+            ToolExecutionMode::AgentTurn => {
+                let sleep_forever = async {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
+                };
+
+                match tokio::time::timeout(timeout, sleep_forever).await {
+                    Ok(_) => unreachable!("infinite wait future unexpectedly completed"),
+                    Err(_) => Err(anyhow::anyhow!(
+                        "Reload was acknowledged by the server for build {}, but this tool execution was not interrupted within {}s. The server restart may be stuck; inspect logs and active sessions.",
+                        ack.hash,
+                        timeout.as_secs()
+                    )),
+                }
+            }
         }
     }
 
@@ -304,6 +345,21 @@ impl SelfDevTool {
             "**Path:** {}\n",
             server::debug_socket_path().display()
         ));
+
+        if let Some(reload_state) = server::ReloadState::load() {
+            status.push_str("\n## Reload State\n\n");
+            status.push_str(&format!(
+                "**Phase:** {:?}\n**Request:** {}\n**Hash:** {}\n**PID:** {}\n**Timestamp:** {}\n",
+                reload_state.phase,
+                reload_state.request_id,
+                reload_state.hash,
+                reload_state.pid,
+                reload_state.timestamp,
+            ));
+            if let Some(detail) = reload_state.detail {
+                status.push_str(&format!("**Detail:** {}\n", detail));
+            }
+        }
 
         // Recent crash info
         if let Some(ref crash) = manifest.last_crash {
@@ -525,5 +581,38 @@ mod tests {
 
         let _guard = EnvVarGuard::set("JCODE_SELFDEV_RELOAD_TIMEOUT_SECS", "0");
         assert_eq!(SelfDevTool::reload_timeout_secs(), 15);
+    }
+
+    #[tokio::test]
+    async fn do_reload_returns_after_ack_in_direct_mode() {
+        let request_id = server::send_reload_signal("direct-hash".to_string(), None, true);
+        let waiter = tokio::spawn({
+            let request_id = request_id.clone();
+            async move {
+                server::wait_for_reload_ack(&request_id, std::time::Duration::from_secs(1)).await
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        server::acknowledge_reload_signal(&crate::server::ReloadSignal {
+            hash: "direct-hash".to_string(),
+            triggering_session: None,
+            prefer_selfdev_binary: true,
+            request_id: "ignored".to_string(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        server::acknowledge_reload_signal(&crate::server::ReloadSignal {
+            hash: "direct-hash".to_string(),
+            triggering_session: None,
+            prefer_selfdev_binary: true,
+            request_id,
+        });
+
+        let ack = waiter
+            .await
+            .expect("waiter task should complete")
+            .expect("ack should be received");
+        assert_eq!(ack.hash, "direct-hash");
     }
 }

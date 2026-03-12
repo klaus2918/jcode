@@ -9,7 +9,7 @@ impl App {
         images: Vec<(String, String)>,
         is_system: bool,
     ) -> Result<u64> {
-        remote::begin_remote_send(self, remote, content, images, is_system, false, 0).await
+        remote::begin_remote_send(self, remote, content, images, is_system, None, false, 0).await
     }
 
     pub(super) fn schedule_pending_remote_retry(&mut self, reason: &str) -> bool {
@@ -107,6 +107,8 @@ impl App {
             t_prompt.as_secs_f64() * 1000.0,
         ));
 
+        crate::telemetry::begin_session(provider.name(), &provider.model());
+
         let mut app = Self {
             provider,
             registry,
@@ -125,6 +127,8 @@ impl App {
             streaming_text: String::new(),
             should_quit: false,
             queued_messages: Vec::new(),
+            hidden_queued_system_messages: Vec::new(),
+            current_turn_system_reminder: None,
             streaming_input_tokens: 0,
             streaming_output_tokens: 0,
             streaming_cache_read_tokens: None,
@@ -166,11 +170,13 @@ impl App {
             restart_requested: None,
             pasted_contents: Vec::new(),
             pending_images: Vec::new(),
+            copy_badge_ui: CopyBadgeUiState::default(),
             debug_tx: None,
             remote_provider_name: None,
             remote_provider_model: None,
             remote_reasoning_effort: None,
             remote_transport: None,
+            remote_compaction_mode: None,
             remote_available_models: Vec::new(),
             remote_model_routes: Vec::new(),
             remote_mcp_servers: Vec::new(),
@@ -297,12 +303,13 @@ impl App {
             if let Ok(session) = Session::load(session_id) {
                 app.session = session;
             }
-            if let Some((input, cursor, queued_messages)) =
+            if let Some((input, cursor, queued_messages, hidden_queued_system_messages)) =
                 Self::restore_input_for_reload(session_id)
             {
                 app.input = input;
                 app.cursor_pos = cursor;
                 app.queued_messages = queued_messages;
+                app.hidden_queued_system_messages = hidden_queued_system_messages;
             }
         }
 
@@ -503,10 +510,13 @@ impl App {
 
     /// Restore a previous session (for hot-reload)
     pub fn restore_session(&mut self, session_id: &str) {
-        if let Some((input, cursor, queued_messages)) = Self::restore_input_for_reload(session_id) {
+        if let Some((input, cursor, queued_messages, hidden_queued_system_messages)) =
+            Self::restore_input_for_reload(session_id)
+        {
             self.input = input;
             self.cursor_pos = cursor;
             self.queued_messages = queued_messages;
+            self.hidden_queued_system_messages = hidden_queued_system_messages;
         }
         if let Ok(session) = Session::load(session_id) {
             // Count stats before restoring
@@ -563,6 +573,7 @@ impl App {
             self.update_context_limit_for_model(&active_model);
             // Mark session as active now that it's being used again
             self.session.mark_active();
+            crate::telemetry::begin_resumed_session(self.provider.name(), &active_model);
             crate::logging::info(&format!("Restored session: {}", session_id));
 
             // Build stats message
@@ -598,25 +609,19 @@ impl App {
             let (message, _build_hash) = if let Some(info) = reload_info {
                 if let Some(hash) = info.strip_prefix("reload:") {
                     let h = hash.trim().to_string();
-                    (
-                        format!("✓ Reloaded with build {}. Session restored{}", h, stats),
-                        h,
-                    )
+                    (format!("Reload complete — continuing.{}", stats), h)
                 } else if let Some(hash) = info.strip_prefix("rebuild:") {
                     let h = hash.trim().to_string();
-                    (
-                        format!("✓ Rebuilt and reloaded ({}). Session restored{}", h, stats),
-                        h,
-                    )
+                    (format!("Rebuild complete — continuing.{}", stats), h)
                 } else {
                     (
-                        format!("✓ JCode reloaded. Session restored{}", stats),
+                        format!("Reload complete — continuing.{}", stats),
                         "unknown".to_string(),
                     )
                 }
             } else {
                 (
-                    format!("✓ JCode reloaded. Session restored{}", stats),
+                    format!("Reload complete — continuing.{}", stats),
                     "unknown".to_string(),
                 )
             };
@@ -643,7 +648,7 @@ impl App {
                     .unwrap_or_default();
 
                 let continuation_msg = format!(
-                    "[SYSTEM: Reload succeeded. Build {} → {}.{}\nSession restored with {} turns.\nIMPORTANT: The reload is done. You MUST immediately continue your work. Do NOT ask the user what to do next. Do NOT summarize what happened. Just pick up exactly where you left off and keep going.]",
+                    "Reload succeeded ({} → {}).{} Session restored with {} turns. Continue immediately from where you left off. Do not ask the user what to do next. Do not summarize the reload.",
                     ctx.version_before,
                     ctx.version_after,
                     task_info,
@@ -654,7 +659,7 @@ impl App {
                     "Queuing reload continuation message ({} chars)",
                     continuation_msg.len()
                 ));
-                self.queued_messages.push(continuation_msg);
+                self.hidden_queued_system_messages.push(continuation_msg);
                 // Trigger processing so the queued message gets sent to the LLM.
                 // Without this, the local event loop waits for user input since
                 // process_queued_messages only runs inside process_turn_with_input.
@@ -669,15 +674,10 @@ impl App {
                     "Session was interrupted by reload (not initiator), queuing continuation",
                 );
                 self.push_display_message(DisplayMessage::system(
-                    "⚡ Session was interrupted by server reload. Continuing...".to_string(),
+                    "Reload complete — continuing.".to_string(),
                 ));
-                self.queued_messages.push(
-                    "[SYSTEM: Your session was interrupted by a server reload while a tool was running. \
-                     The tool was aborted and its results may be incomplete. \
-                     Please continue exactly where you left off. Look at the conversation history \
-                     to understand what you were doing and resume immediately. \
-                     Do NOT ask the user what to do - just continue your work.]"
-                        .to_string(),
+                self.hidden_queued_system_messages.push(
+                    "Your session was interrupted by a server reload while a tool was running. The tool was aborted and results may be incomplete. Continue exactly where you left off and do not ask the user what to do next.".to_string(),
                 );
                 self.is_processing = true;
                 self.status = ProcessingStatus::Sending;

@@ -10,7 +10,7 @@ impl App {
         self.display_messages_version = self.display_messages_version.wrapping_add(1);
     }
 
-    pub(super) fn push_display_message(&mut self, message: DisplayMessage) {
+    pub fn push_display_message(&mut self, message: DisplayMessage) {
         let is_tool = message.role == "tool";
         self.display_messages.push(message);
         self.bump_display_messages_version();
@@ -210,6 +210,14 @@ impl App {
                 .collect();
         }
 
+        if prefix.starts_with("/compact mode ") {
+            let modes = ["reactive", "proactive", "semantic"];
+            return modes
+                .iter()
+                .map(|mode| (format!("/compact mode {}", mode), *mode))
+                .collect();
+        }
+
         if prefix.starts_with("/login ") || prefix.starts_with("/auth ") {
             return crate::provider_catalog::tui_login_providers()
                 .iter()
@@ -256,10 +264,6 @@ impl App {
                 "Compact context (summarize old messages)",
             ),
             ("/fix".into(), "Recover when the model cannot continue"),
-            (
-                "/remember".into(),
-                "Extract and save memories from conversation",
-            ),
             ("/memory".into(), "Toggle memory feature (on/off/status)"),
             ("/swarm".into(), "Toggle swarm feature (on/off/status)"),
             ("/version".into(), "Show current version"),
@@ -463,7 +467,7 @@ impl App {
     }
 
     pub fn queued_count(&self) -> usize {
-        self.queued_messages.len()
+        self.queued_messages.len() + self.hidden_queued_system_messages.len()
     }
 
     pub fn queued_messages(&self) -> &[String] {
@@ -767,7 +771,10 @@ impl App {
     }
 
     pub(super) fn save_input_for_reload(&self, session_id: &str) {
-        if self.input.is_empty() && self.queued_messages.is_empty() {
+        if self.input.is_empty()
+            && self.queued_messages.is_empty()
+            && self.hidden_queued_system_messages.is_empty()
+        {
             return;
         }
         if let Ok(jcode_dir) = crate::storage::jcode_dir() {
@@ -776,6 +783,7 @@ impl App {
                 "cursor": self.cursor_pos,
                 "input": self.input,
                 "queued_messages": self.queued_messages,
+                "hidden_queued_system_messages": self.hidden_queued_system_messages,
             });
             let _ = std::fs::write(&path, data.to_string());
         }
@@ -783,7 +791,7 @@ impl App {
 
     pub(super) fn restore_input_for_reload(
         session_id: &str,
-    ) -> Option<(String, usize, Vec<String>)> {
+    ) -> Option<(String, usize, Vec<String>, Vec<String>)> {
         let jcode_dir = crate::storage::jcode_dir().ok()?;
         let path = jcode_dir.join(format!("client-input-{}", session_id));
         if !path.exists() {
@@ -809,14 +817,29 @@ impl App {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let hidden_queued_system_messages = value
+                .get("hidden_queued_system_messages")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let cursor = cursor.min(input.len());
-            return Some((input, cursor, queued_messages));
+            return Some((
+                input,
+                cursor,
+                queued_messages,
+                hidden_queued_system_messages,
+            ));
         }
 
         let (cursor_str, input) = data.split_once('\n')?;
         let cursor = cursor_str.parse::<usize>().unwrap_or(0);
         let cursor = cursor.min(input.len());
-        Some((input.to_string(), cursor, Vec::new()))
+        Some((input.to_string(), cursor, Vec::new(), Vec::new()))
     }
 
     /// Toggle scroll bookmark: stash current position and jump to bottom,

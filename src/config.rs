@@ -28,6 +28,25 @@ pub enum CompactionMode {
     Semantic,
 }
 
+impl CompactionMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Reactive => "reactive",
+            Self::Proactive => "proactive",
+            Self::Semantic => "semantic",
+        }
+    }
+
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "reactive" => Some(Self::Reactive),
+            "proactive" => Some(Self::Proactive),
+            "semantic" => Some(Self::Semantic),
+            _ => None,
+        }
+    }
+}
+
 /// Compaction configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -270,6 +289,8 @@ pub struct DisplayConfig {
     pub idle_animation: bool,
     /// Briefly animate user prompt line when it enters viewport (default: true)
     pub prompt_entry_animation: bool,
+    /// Disable specific animation variants by name (e.g. ["mobius", "knot"])
+    pub disabled_animations: Vec<String>,
     /// Wrap long lines in the pinned diff pane (default: true)
     pub diff_line_wrap: bool,
     /// Performance tier override: auto/full/reduced/minimal (default: auto)
@@ -297,6 +318,7 @@ impl Default for DisplayConfig {
             startup_animation: false,
             idle_animation: true,
             prompt_entry_animation: true,
+            disabled_animations: Vec::new(),
             diff_line_wrap: true,
             performance: String::new(),
             animation_fps: 60,
@@ -657,6 +679,9 @@ impl Config {
                 self.display.prompt_entry_animation = parsed;
             }
         }
+        if let Ok(v) = std::env::var("JCODE_DISABLED_ANIMATIONS") {
+            self.display.disabled_animations = parse_env_list(&v);
+        }
         if let Ok(v) = std::env::var("JCODE_PERFORMANCE") {
             let trimmed = v.trim().to_lowercase();
             if matches!(trimmed.as_str(), "auto" | "full" | "reduced" | "minimal") {
@@ -920,7 +945,8 @@ effort_decrease = "alt+left"
 centered_toggle = "alt+c"
 
 # Jump between user prompts
-# Also supports Ctrl+1..9 for recency rank jumps (1 = most recent).
+# Ctrl+1..4 resizes the pinned side panel to 25/50/75/100%.
+# Ctrl+5..9 jumps by recency rank (5 = 5th most recent).
 scroll_prompt_up = "ctrl+["
 scroll_prompt_down = "ctrl+]"
 
@@ -962,6 +988,11 @@ idle_animation = true
 
 # Briefly animate a user prompt line when it enters the viewport (default: true)
 prompt_entry_animation = true
+
+# Disable specific animation variants by name.
+# Examples: ["mobius"] or ["mobius", "knot", "three_rings"]
+# Aliases: "mobius" also disables the idle knot; "three_rings" disables gyroscope.
+# disabled_animations = []
 
 # Performance tier: auto/full/reduced/minimal (default: auto)
 # auto = detect system load, memory, terminal type, SSH
@@ -1111,6 +1142,7 @@ desktop_notifications = true
 - Startup animation: {}
 - Idle animation: {}
 - Prompt entry animation: {}
+- Disabled animations: {}
 - Performance tier: {}
 - Animation FPS: {}
 - Redraw FPS: {}
@@ -1176,6 +1208,11 @@ desktop_notifications = true
             self.display.startup_animation,
             self.display.idle_animation,
             self.display.prompt_entry_animation,
+            if self.display.disabled_animations.is_empty() {
+                "(none)".to_string()
+            } else {
+                self.display.disabled_animations.join(", ")
+            },
             if self.display.performance.is_empty() {
                 "auto"
             } else {
@@ -1301,4 +1338,12 @@ fn parse_env_bool(raw: &str) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn parse_env_list(raw: &str) -> Vec<String> {
+    raw.split([',', '\n'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }

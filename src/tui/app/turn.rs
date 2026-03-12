@@ -1,6 +1,23 @@
 use super::*;
 
 impl App {
+    fn append_current_turn_system_reminder(&self, split: &mut crate::prompt::SplitSystemPrompt) {
+        let Some(reminder) = self
+            .current_turn_system_reminder
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+
+        if !split.dynamic_part.is_empty() {
+            split.dynamic_part.push_str("\n\n");
+        }
+        split.dynamic_part.push_str("# System Reminder\n\n");
+        split.dynamic_part.push_str(reminder);
+    }
+
     async fn run_turn(&mut self) -> Result<()> {
         loop {
             let repaired = self.repair_missing_tool_outputs();
@@ -40,11 +57,12 @@ impl App {
 
             self.status = ProcessingStatus::Sending;
             let stamped;
+            let request_messages = provider_messages;
             let send_messages = if crate::config::config().features.message_timestamps {
-                stamped = Message::with_timestamps(&provider_messages);
+                stamped = Message::with_timestamps(&request_messages);
                 &stamped
             } else {
-                &provider_messages
+                &request_messages
             };
             let mut stream = self
                 .provider
@@ -326,6 +344,7 @@ impl App {
                             tool_call_id: request_id.clone(),
                             working_dir: self.session.working_dir.as_deref().map(PathBuf::from),
                             stdin_request_tx: None,
+                            execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
                         };
                         let tool_result = self.registry.execute(&tool_name, input, ctx).await;
                         let native_result = match tool_result {
@@ -366,6 +385,7 @@ impl App {
             }
 
             let assistant_message_id = if !content_blocks.is_empty() {
+                crate::telemetry::record_assistant_response();
                 let content_clone = content_blocks.clone();
                 self.add_provider_message(Message {
                     role: Role::Assistant,
@@ -432,7 +452,7 @@ impl App {
             // selfdev are not known to the SDK and need to be executed locally.
             for tc in tool_calls {
                 self.status = ProcessingStatus::RunningTool(tc.name.clone());
-                if matches!(tc.name.as_str(), "memory" | "remember") {
+                if matches!(tc.name.as_str(), "memory") {
                     crate::memory::set_state(crate::tui::info_widget::MemoryState::Embedding);
                 }
                 let message_id = assistant_message_id
@@ -464,6 +484,7 @@ impl App {
                             tool_call_id: tc.id.clone(),
                             working_dir: self.session.working_dir.as_deref().map(PathBuf::from),
                             stdin_request_tx: None,
+                            execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
                         };
 
                         Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
@@ -476,6 +497,7 @@ impl App {
                         }));
 
                         let result = self.registry.execute(&tc.name, tc.input.clone(), ctx).await;
+                        crate::telemetry::record_tool_call();
                         match result {
                             Ok(o) => {
                                 Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
@@ -489,6 +511,7 @@ impl App {
                                 (o.output, false, o.title)
                             }
                             Err(e) => {
+                                crate::telemetry::record_tool_failure();
                                 Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
                                     session_id: self.session.id.clone(),
                                     message_id: message_id.clone(),
@@ -592,10 +615,11 @@ impl App {
             // Clone data needed for the API call to avoid borrow issues
             // The future would hold references across the select! which conflicts with handle_key
             let provider = self.provider.clone();
+            let request_messages = provider_messages;
             let messages_clone = if crate::config::config().features.message_timestamps {
-                Message::with_timestamps(&provider_messages)
+                Message::with_timestamps(&request_messages)
             } else {
-                provider_messages.clone()
+                request_messages.clone()
             };
             let session_id_clone = self.provider_session_id.clone();
             let static_part = split_prompt.static_part.clone();
@@ -617,7 +641,8 @@ impl App {
                     event = event_stream.next() => {
                         match event {
                             Some(Ok(Event::Key(key))) => {
-                                if key.kind == KeyEventKind::Press {
+                                self.update_copy_badge_key_event(key);
+                                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                     let scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
                                     let _ = self.handle_key(key.code, key.modifiers);
                                     if self.cancel_requested {
@@ -701,7 +726,8 @@ impl App {
                     event = event_stream.next() => {
                         match event {
                             Some(Ok(Event::Key(key))) => {
-                                if key.kind == KeyEventKind::Press {
+                                self.update_copy_badge_key_event(key);
+                                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                     let scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
                                     let _ = self.handle_key(key.code, key.modifiers);
                                     // Check for cancel request
@@ -890,7 +916,7 @@ impl App {
                                         });
                                         // Update status to show tool in progress
                                         self.status = ProcessingStatus::RunningTool(name.clone());
-                                        if matches!(name.as_str(), "memory" | "remember") {
+                                        if matches!(name.as_str(), "memory") {
                                             crate::memory::set_state(
                                                 crate::tui::info_widget::MemoryState::Embedding,
                                             );
@@ -1132,9 +1158,14 @@ impl App {
                                             message_id: self.session_id().to_string(),
                                             tool_call_id: request_id.clone(),
                                             working_dir: self.session.working_dir.as_deref().map(PathBuf::from),
-                            stdin_request_tx: None,
+                                            stdin_request_tx: None,
+                                            execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
                                         };
                                         let tool_result = self.registry.execute(&tool_name, input, ctx).await;
+                                        crate::telemetry::record_tool_call();
+                                        if tool_result.is_err() {
+                                            crate::telemetry::record_tool_failure();
+                                        }
                                         let native_result = match tool_result {
                                             Ok(output) => crate::provider::NativeToolResult::success(request_id, output.output),
                                             Err(e) => crate::provider::NativeToolResult::error(request_id, e.to_string()),
@@ -1179,6 +1210,7 @@ impl App {
             }
 
             let assistant_message_id = if !content_blocks.is_empty() {
+                crate::telemetry::record_assistant_response();
                 let content_clone = content_blocks.clone();
                 self.add_provider_message(Message {
                     role: Role::Assistant,
@@ -1244,7 +1276,7 @@ impl App {
             // SDK may have executed some tools, but custom tools need local execution
             for tc in tool_calls {
                 self.status = ProcessingStatus::RunningTool(tc.name.clone());
-                if matches!(tc.name.as_str(), "memory" | "remember") {
+                if matches!(tc.name.as_str(), "memory") {
                     crate::memory::set_state(crate::tui::info_widget::MemoryState::Embedding);
                 }
                 terminal.draw(|frame| crate::tui::ui::draw(frame, self))?;
@@ -1308,6 +1340,7 @@ impl App {
                     tool_call_id: tc.id.clone(),
                     working_dir: self.session.working_dir.as_deref().map(PathBuf::from),
                     stdin_request_tx: None,
+                    execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
                 };
 
                 Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
@@ -1338,7 +1371,8 @@ impl App {
                         event = event_stream.next() => {
                             match event {
                                 Some(Ok(Event::Key(key))) => {
-                                    if key.kind == KeyEventKind::Press {
+                                    self.update_copy_badge_key_event(key);
+                                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                         let scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
                                         let _ = self.handle_key(key.code, key.modifiers);
                                         if self.cancel_requested {
@@ -1490,7 +1524,7 @@ impl App {
     }
 
     /// Build split system prompt for better caching
-    fn build_system_prompt_split(
+    pub(super) fn build_system_prompt_split(
         &mut self,
         memory_prompt: Option<&str>,
     ) -> crate::prompt::SplitSystemPrompt {
@@ -1515,13 +1549,14 @@ impl App {
                 description: s.description.clone(),
             })
             .collect();
-        let (split, context_info) = crate::prompt::build_system_prompt_split(
+        let (mut split, context_info) = crate::prompt::build_system_prompt_split(
             skill_prompt.as_deref(),
             &available_skills,
             self.session.is_canary,
             memory_prompt,
             None,
         );
+        self.append_current_turn_system_reminder(&mut split);
         self.context_info = context_info;
         split
     }

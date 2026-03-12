@@ -1,6 +1,8 @@
+use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
-    queue_soft_interrupt_for_session, record_swarm_event, truncate_detail, FileAccess,
-    SessionInterruptQueues, SharedContext, SwarmEvent, SwarmEventType, SwarmMember,
+    queue_soft_interrupt_for_session, record_swarm_event, truncate_detail, update_member_status,
+    ClientConnectionInfo, FileAccess, SessionInterruptQueues, SharedContext, SwarmEvent,
+    SwarmEventType, SwarmMember,
 };
 use crate::agent::Agent;
 use crate::protocol::{AgentInfo, ContextEntry, NotificationType, ServerEvent};
@@ -330,6 +332,7 @@ pub(super) async fn handle_comm_message(
     event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
 ) {
     let swarm_id = swarm_id_for_session(&from_session, swarm_members).await;
 
@@ -393,14 +396,24 @@ pub(super) async fn handle_comm_message(
                 .collect()
         };
 
+        let connected_sessions: HashSet<String> = {
+            let connections = client_connections.read().await;
+            connections
+                .values()
+                .map(|connection| connection.session_id.clone())
+                .collect()
+        };
+
         for session_id in &target_sessions {
             if !swarm_session_ids.contains(session_id) {
                 continue;
             }
             if let Some(member) = members.get(session_id) {
                 let from_label = friendly_name
-                    .as_deref()
-                    .unwrap_or(&from_session[..8.min(from_session.len())]);
+                    .clone()
+                    .unwrap_or_else(|| from_session[..8.min(from_session.len())].to_string());
+                let target_has_client = connected_sessions.contains(session_id);
+                let target_is_headless = member.is_headless;
                 let scope_label = match (scope, channel.as_deref()) {
                     ("channel", Some(channel_name)) => format!("#{}", channel_name),
                     ("dm", _) => "DM".to_string(),
@@ -425,6 +438,104 @@ pub(super) async fn handle_comm_message(
                     sessions,
                 )
                 .await;
+
+                if target_is_headless && !target_has_client {
+                    let target_session = session_id.clone();
+                    let notification_msg = notification_msg.clone();
+                    let scope_string = scope.to_string();
+                    let channel_name = channel.clone();
+                    let from_session_clone = from_session.clone();
+                    let from_name_clone = friendly_name.clone();
+                    let sessions_for_run = Arc::clone(sessions);
+                    let swarm_members_for_run = Arc::clone(swarm_members);
+                    let swarms_for_run = Arc::clone(swarms_by_id);
+                    let event_history_for_run = Arc::clone(event_history);
+                    let event_counter_for_run = Arc::clone(event_counter);
+                    let swarm_event_tx_for_run = swarm_event_tx.clone();
+                    tokio::spawn(async move {
+                        let agent_arc = {
+                            let agent_sessions = sessions_for_run.read().await;
+                            agent_sessions.get(&target_session).cloned()
+                        };
+                        let Some(agent_arc) = agent_arc else {
+                            return;
+                        };
+
+                        let detail = match scope_string.as_str() {
+                            "dm" => format!("DM from {}", from_label),
+                            "channel" => format!(
+                                "#{} from {}",
+                                channel_name
+                                    .clone()
+                                    .unwrap_or_else(|| "channel".to_string()),
+                                from_label
+                            ),
+                            _ => format!("broadcast from {}", from_label),
+                        };
+
+                        update_member_status(
+                            &target_session,
+                            "running",
+                            Some(truncate_detail(&detail, 120)),
+                            &swarm_members_for_run,
+                            &swarms_for_run,
+                            Some(&event_history_for_run),
+                            Some(&event_counter_for_run),
+                            Some(&swarm_event_tx_for_run),
+                        )
+                        .await;
+
+                        let sender_name = from_name_clone
+                            .clone()
+                            .unwrap_or_else(|| from_session_clone.clone());
+                        let reminder = match scope_string.as_str() {
+                            "dm" => format!(
+                                "You just received a direct swarm message from {}. The latest swarm notification context has already been queued into this turn. Review it and respond or act if useful.",
+                                sender_name
+                            ),
+                            "channel" => format!(
+                                "You just received a swarm channel message in #{} from {}. The latest swarm notification context has already been queued into this turn. Review it and respond or act if useful.",
+                                channel_name.clone().unwrap_or_else(|| "channel".to_string()),
+                                sender_name
+                            ),
+                            _ => format!(
+                                "You just received a swarm broadcast from {}. The latest swarm notification context has already been queued into this turn. Review it and respond or act if useful.",
+                                sender_name
+                            ),
+                        };
+
+                        let (drain_tx, mut drain_rx) =
+                            tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
+                        tokio::spawn(async move { while drain_rx.recv().await.is_some() {} });
+
+                        let result = process_message_streaming_mpsc(
+                            Arc::clone(&agent_arc),
+                            &notification_msg,
+                            vec![],
+                            Some(reminder),
+                            drain_tx,
+                        )
+                        .await;
+
+                        let (status, detail) = match result {
+                            Ok(()) => ("ready", None),
+                            Err(error) => {
+                                ("failed", Some(truncate_detail(&error.to_string(), 120)))
+                            }
+                        };
+                        update_member_status(
+                            &target_session,
+                            status,
+                            detail,
+                            &swarm_members_for_run,
+                            &swarms_for_run,
+                            Some(&event_history_for_run),
+                            Some(&event_counter_for_run),
+                            Some(&swarm_event_tx_for_run),
+                        )
+                        .await;
+                    });
+                }
             }
         }
 

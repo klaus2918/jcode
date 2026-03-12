@@ -364,6 +364,48 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
 pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     use crate::bus::{Bus, BusEvent};
 
+    if trimmed == "/compact mode" || trimmed == "/compact mode status" {
+        let mode = app
+            .registry
+            .compaction()
+            .try_read()
+            .map(|manager| manager.mode())
+            .unwrap_or_default();
+        app.push_display_message(DisplayMessage::system(format!(
+            "Compaction mode: **{}**\nAvailable: reactive · proactive · semantic\nUse `/compact mode <mode>` to change it for this session.",
+            mode.as_str()
+        )));
+        return true;
+    }
+
+    if let Some(mode_str) = trimmed.strip_prefix("/compact mode ") {
+        let mode_str = mode_str.trim();
+        let Some(mode) = crate::config::CompactionMode::parse(mode_str) else {
+            app.push_display_message(DisplayMessage::error(
+                "Usage: `/compact mode <reactive|proactive|semantic>`".to_string(),
+            ));
+            return true;
+        };
+
+        match app.registry.compaction().try_write() {
+            Ok(mut manager) => {
+                manager.set_mode(mode.clone());
+                let label = mode.as_str();
+                app.push_display_message(DisplayMessage::system(format!(
+                    "✓ Compaction mode → {}",
+                    label
+                )));
+                app.set_status_notice(format!("Compaction: {}", label));
+            }
+            Err(_) => {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot access compaction manager (lock held)".to_string(),
+                ));
+            }
+        }
+        return true;
+    }
+
     if trimmed == "/compact" {
         if !app.provider.supports_compaction() {
             app.push_display_message(DisplayMessage::system(
@@ -400,10 +442,11 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
                         app.push_display_message(DisplayMessage {
                             role: "system".to_string(),
                             content: format!(
-                                "{}\n\n✓ **Compaction started** - summarizing older messages in background.\n\
+                                "{}\n\n{}\n\
                                 The summary will be applied automatically when ready.\n\
                                 Use `/help compact` for details.",
-                                status_msg
+                                status_msg,
+                                App::format_compaction_started_message("manual")
                             ),
                             tool_calls: vec![],
                             duration_secs: None,
@@ -454,97 +497,6 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
             let results = crate::usage::fetch_all_provider_usage().await;
             Bus::global().publish(BusEvent::UsageReport(results));
         });
-        return true;
-    }
-
-    if trimmed == "/remember" {
-        if !app.memory_enabled {
-            app.push_display_message(DisplayMessage::system(
-                "Memory feature is disabled. Use `/memory on` to enable it.".to_string(),
-            ));
-            return true;
-        }
-
-        use crate::tui::info_widget::{MemoryEventKind, MemoryState};
-
-        let context = crate::memory::format_context_for_relevance(&app.messages);
-        if context.len() < 100 {
-            app.push_display_message(DisplayMessage {
-                role: "system".to_string(),
-                content: "Not enough conversation to extract memories from.".to_string(),
-                tool_calls: vec![],
-                duration_secs: None,
-                title: None,
-                tool_data: None,
-            });
-            return true;
-        }
-
-        app.push_display_message(DisplayMessage {
-            role: "system".to_string(),
-            content: "🧠 Extracting memories from conversation...".to_string(),
-            tool_calls: vec![],
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        });
-
-        crate::memory::set_state(MemoryState::Extracting {
-            reason: "manual".to_string(),
-        });
-        crate::memory::add_event(MemoryEventKind::ExtractionStarted {
-            reason: "/remember command".to_string(),
-        });
-
-        let context_owned = context.clone();
-        tokio::spawn(async move {
-            let sidecar = crate::sidecar::Sidecar::new();
-            match sidecar.extract_memories(&context_owned).await {
-                Ok(extracted) if !extracted.is_empty() => {
-                    let manager = crate::memory::MemoryManager::new();
-                    let mut stored_count = 0;
-
-                    for mem in extracted {
-                        let category = crate::memory::MemoryCategory::from_extracted(&mem.category);
-
-                        let trust = match mem.trust.as_str() {
-                            "high" => crate::memory::TrustLevel::High,
-                            "low" => crate::memory::TrustLevel::Low,
-                            _ => crate::memory::TrustLevel::Medium,
-                        };
-
-                        let entry = crate::memory::MemoryEntry::new(category, &mem.content)
-                            .with_source("manual")
-                            .with_trust(trust);
-
-                        if manager.remember_project(entry).is_ok() {
-                            stored_count += 1;
-                        }
-                    }
-
-                    crate::logging::info(&format!(
-                        "/remember: extracted {} memories",
-                        stored_count
-                    ));
-                    crate::memory::add_event(MemoryEventKind::ExtractionComplete {
-                        count: stored_count,
-                    });
-                    crate::memory::set_state(MemoryState::Idle);
-                }
-                Ok(_) => {
-                    crate::logging::info("/remember: no memories extracted");
-                    crate::memory::set_state(MemoryState::Idle);
-                }
-                Err(e) => {
-                    crate::logging::error(&format!("/remember failed: {}", e));
-                    crate::memory::add_event(MemoryEventKind::Error {
-                        message: e.to_string(),
-                    });
-                    crate::memory::set_state(MemoryState::Idle);
-                }
-            }
-        });
-
         return true;
     }
 

@@ -102,8 +102,11 @@ fn apply_terminal_event(
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<bool> {
     match event {
-        Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
-            app.handle_key(key.code, key.modifiers)?;
+        Some(Ok(Event::Key(key))) => {
+            app.update_copy_badge_key_event(key);
+            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                app.handle_key(key.code, key.modifiers)?;
+            }
             Ok(true)
         }
         Some(Ok(Event::Paste(text))) => {

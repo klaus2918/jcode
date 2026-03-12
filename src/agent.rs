@@ -15,7 +15,7 @@ use crate::protocol::{HistoryMessage, ServerEvent};
 use crate::provider::{NativeToolResult, Provider};
 use crate::session::{EnvSnapshot, GitState, Session, SessionStatus, StoredMessage};
 use crate::skill::SkillRegistry;
-use crate::tool::{Registry, ToolContext};
+use crate::tool::{Registry, ToolContext, ToolExecutionMode};
 use anyhow::Result;
 use chrono::Utc;
 use futures::StreamExt;
@@ -207,6 +207,9 @@ pub struct Agent {
     last_connection_type: Option<String>,
     /// Pending swarm alerts to inject into the next turn
     pending_alerts: Vec<String>,
+    /// Transient reminder injected into provider requests for the current turn only.
+    /// Not persisted to session history.
+    current_turn_system_reminder: Option<String>,
     /// Soft interrupt queue: messages to inject at next safe point without cancelling
     /// Uses std::sync::Mutex so it can be accessed without async, even while agent is processing
     soft_interrupt_queue: SoftInterruptQueue,
@@ -249,6 +252,7 @@ impl Agent {
             last_upstream_provider: None,
             last_connection_type: None,
             pending_alerts: Vec::new(),
+            current_turn_system_reminder: None,
             soft_interrupt_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
             background_tool_signal: InterruptSignal::new(),
             graceful_shutdown: InterruptSignal::new(),
@@ -357,6 +361,7 @@ impl Agent {
         }
         agent.seed_compaction_from_session();
         agent.log_env_snapshot("attach");
+        crate::telemetry::begin_session(&agent.provider.name(), &agent.provider.model());
         agent
     }
 
@@ -431,8 +436,8 @@ impl Agent {
                 Ok(mut manager) => {
                     let action = manager.ensure_context_fits(&all_messages, self.provider.clone());
                     match action {
-                        crate::compaction::CompactionAction::BackgroundStarted => {
-                            logging::info("Background compaction started (context above 80%)");
+                        crate::compaction::CompactionAction::BackgroundStarted { trigger } => {
+                            logging::info(&format!("Background compaction started ({})", trigger));
                         }
                         crate::compaction::CompactionAction::HardCompacted(dropped) => {
                             logging::warn(&format!(
@@ -1009,7 +1014,11 @@ impl Agent {
 
     /// Mark this agent session as closed and persist it.
     pub fn mark_closed(&mut self) {
-        crate::telemetry::end_session(&self.provider.name(), &self.provider.model());
+        crate::telemetry::end_session_with_reason(
+            &self.provider.name(),
+            &self.provider.model(),
+            crate::telemetry::SessionEndReason::NormalExit,
+        );
         self.session.mark_closed();
         if !self.session.messages.is_empty() {
             let _ = self.session.save();
@@ -1017,6 +1026,11 @@ impl Agent {
     }
 
     pub fn mark_crashed(&mut self, message: Option<String>) {
+        crate::telemetry::record_crash(
+            &self.provider.name(),
+            &self.provider.model(),
+            crate::telemetry::SessionEndReason::Unknown,
+        );
         self.session.mark_crashed(message);
         if !self.session.messages.is_empty() {
             let _ = self.session.save();
@@ -1210,6 +1224,17 @@ impl Agent {
         self.registry.clone()
     }
 
+    pub async fn compaction_mode(&self) -> crate::config::CompactionMode {
+        self.registry.compaction().read().await.mode()
+    }
+
+    pub async fn set_compaction_mode(&self, mode: crate::config::CompactionMode) -> Result<()> {
+        let compaction = self.registry.compaction();
+        let mut manager = compaction.write().await;
+        manager.set_mode(mode);
+        Ok(())
+    }
+
     pub fn provider_messages(&self) -> Vec<Message> {
         self.session.messages_for_provider()
     }
@@ -1371,6 +1396,7 @@ impl Agent {
         &mut self,
         user_message: &str,
         images: Vec<(String, String)>,
+        system_reminder: Option<String>,
         event_tx: mpsc::UnboundedSender<ServerEvent>,
     ) -> Result<()> {
         // Inject any pending notifications before the user message
@@ -1389,6 +1415,9 @@ impl Agent {
                 }],
             );
         }
+
+        self.current_turn_system_reminder =
+            system_reminder.filter(|value| !value.trim().is_empty());
 
         let mut blocks: Vec<ContentBlock> = images
             .into_iter()
@@ -1409,7 +1438,9 @@ impl Agent {
         self.add_message(Role::User, blocks);
         crate::telemetry::record_turn();
         self.session.save()?;
-        self.run_turn_streaming_mpsc(event_tx).await
+        let result = self.run_turn_streaming_mpsc(event_tx).await;
+        self.current_turn_system_reminder = None;
+        result
     }
 
     /// Clear conversation history
@@ -1566,6 +1597,7 @@ impl Agent {
             tool_call_id: call_id,
             working_dir: self.working_dir().map(PathBuf::from),
             stdin_request_tx: self.stdin_request_tx.clone(),
+            execution_mode: ToolExecutionMode::Direct,
         };
         self.registry.execute(name, input, ctx).await
     }
@@ -2184,8 +2216,13 @@ impl Agent {
                             tool_call_id: request_id.clone(),
                             working_dir: self.working_dir().map(PathBuf::from),
                             stdin_request_tx: self.stdin_request_tx.clone(),
+                            execution_mode: ToolExecutionMode::AgentTurn,
                         };
+                        crate::telemetry::record_tool_call();
                         let tool_result = self.registry.execute(&tool_name, input, ctx).await;
+                        if tool_result.is_err() {
+                            crate::telemetry::record_tool_failure();
+                        }
                         let native_result = match tool_result {
                             Ok(output) => NativeToolResult::success(request_id, output.output),
                             Err(e) => NativeToolResult::error(request_id, e.to_string()),
@@ -2292,6 +2329,7 @@ impl Agent {
             }
 
             let assistant_message_id = if !content_blocks.is_empty() {
+                crate::telemetry::record_assistant_response();
                 let token_usage = Some(crate::session::StoredTokenUsage {
                     input_tokens: self.last_usage.input_tokens,
                     output_tokens: self.last_usage.output_tokens,
@@ -2423,6 +2461,7 @@ impl Agent {
                     tool_call_id: tc.id.clone(),
                     working_dir: self.working_dir().map(PathBuf::from),
                     stdin_request_tx: self.stdin_request_tx.clone(),
+                    execution_mode: ToolExecutionMode::AgentTurn,
                 };
 
                 if trace {
@@ -2448,6 +2487,7 @@ impl Agent {
                 }));
 
                 let result = self.registry.execute(&tc.name, tc.input.clone(), ctx).await;
+                crate::telemetry::record_tool_call();
                 self.unlock_tools_if_needed(&tc.name);
                 let tool_elapsed = tool_start.elapsed();
                 logging::info(&format!(
@@ -2491,6 +2531,7 @@ impl Agent {
                         self.session.save()?;
                     }
                     Err(e) => {
+                        crate::telemetry::record_tool_failure();
                         Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
                             session_id: self.session.id.clone(),
                             message_id: message_id.clone(),
@@ -2893,8 +2934,13 @@ impl Agent {
                             tool_call_id: request_id.clone(),
                             working_dir: self.working_dir().map(PathBuf::from),
                             stdin_request_tx: self.stdin_request_tx.clone(),
+                            execution_mode: ToolExecutionMode::AgentTurn,
                         };
+                        crate::telemetry::record_tool_call();
                         let tool_result = self.registry.execute(&tool_name, input, ctx).await;
+                        if tool_result.is_err() {
+                            crate::telemetry::record_tool_failure();
+                        }
                         let native_result = match tool_result {
                             Ok(output) => NativeToolResult::success(request_id, output.output),
                             Err(e) => NativeToolResult::error(request_id, e.to_string()),
@@ -3018,6 +3064,7 @@ impl Agent {
             }
 
             let assistant_message_id = if !content_blocks.is_empty() {
+                crate::telemetry::record_assistant_response();
                 let token_usage = Some(crate::session::StoredTokenUsage {
                     input_tokens: self.last_usage.input_tokens,
                     output_tokens: self.last_usage.output_tokens,
@@ -3162,6 +3209,7 @@ impl Agent {
                     tool_call_id: tc.id.clone(),
                     working_dir: self.working_dir().map(PathBuf::from),
                     stdin_request_tx: self.stdin_request_tx.clone(),
+                    execution_mode: ToolExecutionMode::AgentTurn,
                 };
 
                 if trace {
@@ -3172,6 +3220,7 @@ impl Agent {
                 let tool_start = Instant::now();
 
                 let result = self.registry.execute(&tc.name, tc.input.clone(), ctx).await;
+                crate::telemetry::record_tool_call();
                 self.unlock_tools_if_needed(&tc.name);
                 let tool_elapsed = tool_start.elapsed();
                 logging::info(&format!(
@@ -3603,8 +3652,13 @@ impl Agent {
                             tool_call_id: request_id.clone(),
                             working_dir: self.working_dir().map(PathBuf::from),
                             stdin_request_tx: self.stdin_request_tx.clone(),
+                            execution_mode: ToolExecutionMode::AgentTurn,
                         };
+                        crate::telemetry::record_tool_call();
                         let tool_result = self.registry.execute(&tool_name, input, ctx).await;
+                        if tool_result.is_err() {
+                            crate::telemetry::record_tool_failure();
+                        }
                         let native_result = match tool_result {
                             Ok(output) => NativeToolResult::success(request_id, output.output),
                             Err(e) => NativeToolResult::error(request_id, e.to_string()),
@@ -3727,6 +3781,7 @@ impl Agent {
             }
 
             let assistant_message_id = if !content_blocks.is_empty() {
+                crate::telemetry::record_assistant_response();
                 let token_usage = Some(crate::session::StoredTokenUsage {
                     input_tokens: self.last_usage.input_tokens,
                     output_tokens: self.last_usage.output_tokens,
@@ -3890,6 +3945,7 @@ impl Agent {
                     tool_call_id: tc.id.clone(),
                     working_dir: self.working_dir().map(PathBuf::from),
                     stdin_request_tx: self.stdin_request_tx.clone(),
+                    execution_mode: ToolExecutionMode::AgentTurn,
                 };
 
                 if trace {

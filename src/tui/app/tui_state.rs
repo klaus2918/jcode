@@ -312,10 +312,8 @@ impl crate::tui::TuiState for App {
         self.subagent_status.clone()
     }
 
-    fn batch_progress(&self) -> Option<(usize, usize, Option<String>)> {
-        self.batch_progress
-            .as_ref()
-            .map(|p| (p.completed, p.total, p.last_completed.clone()))
+    fn batch_progress(&self) -> Option<crate::bus::BatchProgress> {
+        self.batch_progress.clone()
     }
 
     fn time_since_activity(&self) -> Option<std::time::Duration> {
@@ -950,6 +948,10 @@ impl crate::tui::TuiState for App {
 
     fn now_millis(&self) -> u64 {
         self.app_started.elapsed().as_millis() as u64
+    }
+
+    fn copy_badge_ui(&self) -> crate::tui::CopyBadgeUiState {
+        self.copy_badge_ui.clone()
     }
 
     fn suggestion_prompts(&self) -> Vec<(String, String)> {

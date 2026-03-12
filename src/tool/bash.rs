@@ -483,6 +483,7 @@ mod tests {
             tool_call_id: "test-call".to_string(),
             working_dir: Some(std::path::PathBuf::from("/tmp")),
             stdin_request_tx: stdin_tx,
+            execution_mode: crate::tool::ToolExecutionMode::Direct,
         }
     }
 

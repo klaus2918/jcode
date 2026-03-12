@@ -21,7 +21,6 @@ mod memory;
 mod multiedit;
 mod patch;
 mod read;
-mod remember;
 pub mod selfdev;
 mod session_search;
 mod skill;
@@ -117,6 +116,13 @@ pub struct ToolContext {
     pub tool_call_id: String,
     pub working_dir: Option<PathBuf>,
     pub stdin_request_tx: Option<tokio::sync::mpsc::UnboundedSender<StdinInputRequest>>,
+    pub execution_mode: ToolExecutionMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExecutionMode {
+    AgentTurn,
+    Direct,
 }
 
 impl ToolContext {
@@ -127,6 +133,7 @@ impl ToolContext {
             tool_call_id,
             working_dir: self.working_dir.clone(),
             stdin_request_tx: self.stdin_request_tx.clone(),
+            execution_mode: self.execution_mode,
         }
     }
 
@@ -237,7 +244,6 @@ impl Registry {
                 "session_search",
                 session_search::SessionSearchTool::new(),
             );
-            Self::insert_tool(&mut m, "remember", remember::RememberTool::new());
             Self::insert_tool(&mut m, "memory", memory::MemoryTool::new());
             Self::insert_tool(&mut m, "gmail", gmail::GmailTool::new());
             Self::insert_tool(&mut m, "schedule", ambient::ScheduleTool::new());
@@ -325,12 +331,6 @@ impl Registry {
         tools.insert(
             "memory".to_string(),
             Arc::new(memory::MemoryTool::new_test()) as Arc<dyn Tool>,
-        );
-
-        // Replace remember tool with test version
-        tools.insert(
-            "remember".to_string(),
-            Arc::new(remember::RememberTool::new_test()) as Arc<dyn Tool>,
         );
 
         crate::logging::info("Memory test mode enabled - using isolated storage");
@@ -745,6 +745,7 @@ mod tests {
             tool_call_id: "test".to_string(),
             working_dir: Some(temp_dir),
             stdin_request_tx: None,
+            execution_mode: ToolExecutionMode::Direct,
         };
 
         let result = registry

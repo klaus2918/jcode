@@ -452,7 +452,7 @@ pub(super) async fn execute_debug_command(
         let info_path = jcode_dir.join("reload-info");
         std::fs::write(&info_path, format!("reload:{}", hash))?;
 
-        super::send_reload_signal(hash.clone(), None);
+        let _request_id = super::send_reload_signal(hash.clone(), None, false);
 
         return Ok(format!(
             "Reload signal sent for build {}. Server will restart.",
@@ -461,4 +461,126 @@ pub(super) async fn execute_debug_command(
     }
 
     Err(anyhow::anyhow!("Unknown debug command '{}'", trimmed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execute_debug_command;
+    use crate::agent::Agent;
+    use crate::provider::{EventStream, Provider};
+    use crate::tool::Registry;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    use tokio::sync::{Mutex as AsyncMutex, RwLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    struct TestProvider;
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        async fn complete(
+            &self,
+            _messages: &[crate::message::Message],
+            _tools: &[crate::message::ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<EventStream> {
+            unimplemented!("not needed for debug command test")
+        }
+
+        fn name(&self) -> &str {
+            "test"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(Self)
+        }
+    }
+
+    #[tokio::test]
+    async fn debug_tool_selfdev_reload_returns_promptly_for_direct_execution() {
+        let _env_lock = lock_env();
+        let _test_session = EnvGuard::set("JCODE_TEST_SESSION", "1");
+        let _debug_control = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
+
+        let mut reload_rx = crate::server::subscribe_reload_signal_for_tests();
+
+        let provider: Arc<dyn Provider> = Arc::new(TestProvider);
+        let registry = Registry::new(provider.clone()).await;
+        registry.register_selfdev_tools().await;
+
+        let mut agent = Agent::new(provider, registry);
+        agent.set_canary("self-dev");
+        let agent = Arc::new(AsyncMutex::new(agent));
+
+        let debug_jobs = Arc::new(RwLock::new(HashMap::new()));
+        let started = Instant::now();
+        let ack_task = tokio::spawn(async move {
+            loop {
+                if let Some(signal) = reload_rx.borrow_and_update().clone() {
+                    crate::server::acknowledge_reload_signal(&signal);
+                    return;
+                }
+                reload_rx
+                    .changed()
+                    .await
+                    .expect("reload signal channel should remain open");
+            }
+        });
+        let output = tokio::time::timeout(
+            Duration::from_secs(2),
+            execute_debug_command(
+                agent,
+                r#"tool:selfdev {"action":"reload"}"#,
+                debug_jobs,
+                None,
+            ),
+        )
+        .await
+        .expect("debug selfdev reload should not hang")
+        .expect("debug selfdev reload should succeed");
+        ack_task.await.expect("reload ack task should complete");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "debug selfdev reload took too long"
+        );
+        assert!(
+            output.contains("Reload acknowledged") || output.contains("Server is restarting now"),
+            "expected reload acknowledgement output, got: {}",
+            output
+        );
+    }
 }

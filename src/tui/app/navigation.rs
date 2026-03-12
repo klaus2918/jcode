@@ -154,8 +154,8 @@ impl App {
 
     fn diagram_pane_ratio_limits(&self) -> (u8, u8) {
         match self.diagram_pane_position {
-            crate::config::DiagramPanePosition::Side => (25, 80),
-            crate::config::DiagramPanePosition::Top => (20, 75),
+            crate::config::DiagramPanePosition::Side => (25, 100),
+            crate::config::DiagramPanePosition::Top => (20, 100),
         }
     }
 
@@ -212,6 +212,11 @@ impl App {
 
     pub(super) fn set_diagram_pane_ratio_immediate(&mut self, next: u8) {
         self.set_diagram_pane_ratio(next as i16, false, false);
+    }
+
+    pub(super) fn set_side_panel_ratio_preset(&mut self, next: u8) {
+        self.set_diagram_pane_ratio(next as i16, false, false);
+        self.set_status_notice(format!("Side panel: {}%", self.diagram_pane_ratio_target));
     }
 
     pub(super) fn adjust_diagram_zoom(&mut self, delta: i8) {
@@ -334,7 +339,26 @@ impl App {
             return None;
         }
         match code {
-            KeyCode::Char(c) if c.is_ascii_digit() && *c != '0' => Some((*c as u8 - b'0') as usize),
+            KeyCode::Char(c) if ('5'..='9').contains(c) => Some((*c as u8 - b'0') as usize),
+            _ => None,
+        }
+    }
+
+    pub(super) fn ctrl_side_panel_ratio_preset(
+        code: &KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Option<u8> {
+        if !modifiers.contains(KeyModifiers::CONTROL)
+            || modifiers.contains(KeyModifiers::ALT)
+            || modifiers.contains(KeyModifiers::SHIFT)
+        {
+            return None;
+        }
+        match code {
+            KeyCode::Char('1') => Some(25),
+            KeyCode::Char('2') => Some(50),
+            KeyCode::Char('3') => Some(75),
+            KeyCode::Char('4') => Some(100),
             _ => None,
         }
     }

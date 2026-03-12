@@ -41,14 +41,7 @@ const AVAILABLE_MODELS: &[&str] = &[
 ];
 
 /// Native tools that jcode handles locally (not Claude Code built-ins)
-const NATIVE_TOOL_NAMES: &[&str] = &[
-    "selfdev",
-    "communicate",
-    "memory",
-    "remember",
-    "session_search",
-    "bg",
-];
+const NATIVE_TOOL_NAMES: &[&str] = &["selfdev", "communicate", "memory", "session_search", "bg"];
 
 /// Channel for sending native tool results back to the provider (unused for CLI)
 pub type NativeToolResultSender = mpsc::Sender<NativeToolResult>;

@@ -49,6 +49,40 @@ fn test_help_topic_shows_command_details() {
     assert_eq!(msg.role, "system");
     assert!(msg.content.contains("`/compact`"));
     assert!(msg.content.contains("background"));
+    assert!(msg.content.contains("`/compact mode`"));
+}
+
+#[test]
+fn test_compact_mode_command_updates_local_session_mode() {
+    let mut app = create_test_app();
+
+    app.input = "/compact mode semantic".to_string();
+    app.submit_input();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mode = rt.block_on(async { app.registry.compaction().read().await.mode() });
+    assert_eq!(mode, crate::config::CompactionMode::Semantic);
+
+    let last = app.display_messages().last().expect("missing response");
+    assert_eq!(last.role, "system");
+    assert_eq!(last.content, "✓ Compaction mode → semantic");
+}
+
+#[test]
+fn test_compact_mode_status_shows_local_mode() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let compaction = app.registry.compaction();
+        let mut manager = compaction.write().await;
+        manager.set_mode(crate::config::CompactionMode::Proactive);
+    });
+
+    app.input = "/compact mode".to_string();
+    app.submit_input();
+
+    let last = app.display_messages().last().expect("missing response");
+    assert!(last.content.contains("Compaction mode: **proactive**"));
 }
 
 #[test]
@@ -777,6 +811,30 @@ fn test_model_picker_includes_copilot_models_in_remote_mode() {
 }
 
 #[test]
+fn test_model_picker_remote_falls_back_to_current_model_when_catalog_empty() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_provider_name = Some("openrouter".to_string());
+    app.remote_provider_model = Some("anthropic/claude-sonnet-4".to_string());
+    app.remote_available_models.clear();
+    app.remote_model_routes.clear();
+
+    app.open_model_picker();
+
+    let picker = app
+        .picker_state
+        .as_ref()
+        .expect("model picker should open with current-model fallback");
+
+    assert_eq!(picker.models.len(), 1);
+    assert_eq!(picker.models[0].name, "anthropic/claude-sonnet-4");
+    assert_eq!(picker.models[0].routes.len(), 1);
+    assert_eq!(picker.models[0].routes[0].provider, "openrouter");
+    assert_eq!(picker.models[0].routes[0].api_method, "current");
+    assert!(picker.models[0].routes[0].available);
+}
+
+#[test]
 fn test_model_picker_copilot_models_have_copilot_route() {
     let mut app = create_test_app();
     configure_test_remote_models_with_copilot(&mut app);
@@ -1468,8 +1526,7 @@ fn test_restore_session_adds_reload_message() {
     assert_eq!(app.display_messages()[1].role, "system");
     assert!(app.display_messages()[1]
         .content
-        .to_lowercase()
-        .contains("reloaded"));
+        .contains("Reload complete — continuing."));
 
     // Messages for API should only have the original message (no reload msg to avoid breaking alternation)
     assert_eq!(app.messages.len(), 1);
@@ -1479,6 +1536,20 @@ fn test_restore_session_adds_reload_message() {
 
     // Clean up
     let _ = std::fs::remove_file(crate::session::session_path(&session_id).unwrap());
+}
+
+#[test]
+fn test_system_reminder_is_added_to_system_prompt_not_user_messages() {
+    let mut app = create_test_app();
+    app.current_turn_system_reminder = Some(
+        "Your session was interrupted by a server reload. Continue where you left off.".to_string(),
+    );
+
+    let split = app.build_system_prompt_split(None);
+
+    assert!(split.dynamic_part.contains("# System Reminder"));
+    assert!(split.dynamic_part.contains("Continue where you left off."));
+    assert!(app.messages.is_empty());
 }
 
 #[test]
@@ -1578,12 +1649,15 @@ fn test_save_and_restore_reload_state_preserves_queued_messages() {
     app.cursor_pos = 3;
     app.queued_messages.push("queued one".to_string());
     app.queued_messages.push("queued two".to_string());
+    app.hidden_queued_system_messages
+        .push("continue silently".to_string());
     app.save_input_for_reload(&session_id);
 
     let restored = App::restore_input_for_reload(&session_id).expect("reload state should exist");
     assert_eq!(restored.0, "draft");
     assert_eq!(restored.1, 3);
     assert_eq!(restored.2, vec!["queued one", "queued two"]);
+    assert_eq!(restored.3, vec!["continue silently"]);
 
     assert!(App::restore_input_for_reload(&session_id).is_none());
 }
@@ -1753,6 +1827,7 @@ fn test_handle_remote_disconnect_flushes_streaming_text_and_sets_reconnect_state
         content: "retry me".to_string(),
         images: vec![],
         is_system: false,
+        system_reminder: None,
         auto_retry: false,
         retry_attempts: 0,
         retry_at: None,
@@ -1797,6 +1872,7 @@ fn test_handle_remote_disconnect_retryable_pending_schedules_retry() {
         content: "retry me".to_string(),
         images: vec![],
         is_system: true,
+        system_reminder: None,
         auto_retry: true,
         retry_attempts: 0,
         retry_at: None,
@@ -1813,6 +1889,71 @@ fn test_handle_remote_disconnect_retryable_pending_schedules_retry() {
     assert_eq!(pending.retry_attempts, 1);
     assert!(pending.retry_at.is_some());
     assert!(app.rate_limit_reset.is_some());
+}
+
+#[test]
+fn test_handle_server_event_compaction_shows_completion_message_in_remote_mode() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.provider_session_id = Some("provider-session".to_string());
+    app.session.provider_session_id = Some("provider-session".to_string());
+    app.context_warning_shown = true;
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::Compaction {
+            trigger: "semantic".to_string(),
+            pre_tokens: Some(12_345),
+            messages_dropped: None,
+        },
+        &mut remote,
+    );
+
+    assert!(app.provider_session_id.is_none());
+    assert!(app.session.provider_session_id.is_none());
+    assert!(!app.context_warning_shown);
+    assert_eq!(app.status_notice(), Some("Context compacted".to_string()));
+
+    let last = app
+        .display_messages()
+        .last()
+        .expect("missing compaction message");
+    assert_eq!(last.role, "system");
+    assert_eq!(
+        last.content,
+        "📦 **Context compacted** (semantic) — older messages were summarized to stay within the context window. Previous size: ~12,345 tokens."
+    );
+}
+
+#[test]
+fn test_handle_server_event_compaction_mode_changed_updates_remote_mode() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::CompactionModeChanged {
+            id: 7,
+            mode: crate::config::CompactionMode::Semantic,
+            error: None,
+        },
+        &mut remote,
+    );
+
+    assert_eq!(
+        app.remote_compaction_mode,
+        Some(crate::config::CompactionMode::Semantic)
+    );
+    assert_eq!(
+        app.status_notice(),
+        Some("Compaction: semantic".to_string())
+    );
+
+    let last = app.display_messages().last().expect("missing response");
+    assert_eq!(last.content, "✓ Compaction mode → semantic");
 }
 
 #[test]
@@ -1874,6 +2015,7 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
             was_interrupted: Some(true),
             upstream_provider: None,
             reasoning_effort: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
         },
         &mut remote,
     );
@@ -1882,12 +2024,17 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
     let system_msg = app
         .display_messages()
         .iter()
-        .find(|m| m.role == "system" && m.content.contains("interrupted"))
-        .expect("should have a system message about interruption");
-    assert!(system_msg.content.contains("interrupted mid-generation"));
+        .find(|m| m.role == "system" && m.content == "Reload complete — continuing.")
+        .expect("should have a short reload continuation message");
+    assert_eq!(system_msg.content, "Reload complete — continuing.");
 
-    assert_eq!(app.queued_messages().len(), 1);
-    assert!(app.queued_messages()[0].contains("interrupted by a server reload"));
+    assert!(app.queued_messages().is_empty());
+    assert_eq!(app.hidden_queued_system_messages.len(), 1);
+    assert!(app.hidden_queued_system_messages[0].contains("interrupted by a server reload"));
+    assert!(app
+        .display_messages()
+        .iter()
+        .any(|m| m.role == "system" && m.content == "Reload complete — continuing."));
 }
 
 #[test]
@@ -1924,6 +2071,7 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
             was_interrupted: None,
             upstream_provider: None,
             reasoning_effort: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
         },
         &mut remote,
     );
@@ -1975,6 +2123,7 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
             was_interrupted: Some(true),
             upstream_provider: None,
             reasoning_effort: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
         },
         &mut remote,
     );
@@ -2000,6 +2149,7 @@ fn test_remote_error_with_retry_after_keeps_pending_for_auto_retry() {
         content: "retry me".to_string(),
         images: vec![],
         is_system: false,
+        system_reminder: None,
         auto_retry: false,
         retry_attempts: 0,
         retry_at: None,
@@ -2042,6 +2192,7 @@ fn test_remote_error_without_retry_clears_pending() {
         content: "retry me".to_string(),
         images: vec![],
         is_system: false,
+        system_reminder: None,
         auto_retry: false,
         retry_attempts: 0,
         retry_at: None,
@@ -2076,6 +2227,7 @@ fn test_remote_error_with_retryable_pending_schedules_retry() {
         content: "retry me".to_string(),
         images: vec![],
         is_system: true,
+        system_reminder: None,
         auto_retry: true,
         retry_attempts: 0,
         retry_at: None,
@@ -2113,6 +2265,7 @@ fn test_schedule_pending_remote_retry_respects_retry_limit() {
         content: "retry me".to_string(),
         images: vec![],
         is_system: true,
+        system_reminder: None,
         auto_retry: true,
         retry_attempts: App::AUTO_RETRY_MAX_ATTEMPTS,
         retry_at: None,
@@ -2283,6 +2436,39 @@ fn create_scroll_test_app(
     app.session.short_name = Some("test".to_string());
 
     let backend = ratatui::backend::TestBackend::new(width, height);
+    let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    (app, terminal)
+}
+
+fn create_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    let mut app = create_test_app();
+    app.display_messages = vec![
+        DisplayMessage {
+            role: "user".to_string(),
+            content: "Show me some code".to_string(),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        },
+        DisplayMessage {
+            role: "assistant".to_string(),
+            content: "```rust\nfn main() {\n    println!(\"hello\");\n}\n```".to_string(),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        },
+    ];
+    app.bump_display_messages_version();
+    app.scroll_offset = 0;
+    app.auto_scroll_paused = false;
+    app.is_processing = false;
+    app.streaming_text.clear();
+    app.status = ProcessingStatus::Idle;
+    app.session.short_name = Some("test".to_string());
+
+    let backend = ratatui::backend::TestBackend::new(100, 30);
     let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
     (app, terminal)
 }
@@ -2475,6 +2661,27 @@ fn test_prompt_jump_ctrl_esc_fallback_on_macos() {
 }
 
 #[test]
+fn test_ctrl_digit_side_panel_preset_in_app() {
+    let mut app = create_test_app();
+
+    app.handle_key(KeyCode::Char('1'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert_eq!(app.diagram_pane_ratio_target, 25);
+
+    app.handle_key(KeyCode::Char('2'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert_eq!(app.diagram_pane_ratio_target, 50);
+
+    app.handle_key(KeyCode::Char('3'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert_eq!(app.diagram_pane_ratio_target, 75);
+
+    app.handle_key(KeyCode::Char('4'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert_eq!(app.diagram_pane_ratio_target, 100);
+}
+
+#[test]
 fn test_prompt_jump_ctrl_digit_is_recency_rank_in_app() {
     let _render_lock = scroll_render_test_lock();
     let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
@@ -2556,6 +2763,18 @@ fn test_remote_prompt_jump_ctrl_esc_fallback_on_macos() {
 }
 
 #[test]
+fn test_remote_ctrl_digit_side_panel_preset() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('4'), KeyModifiers::CONTROL, &mut remote))
+        .unwrap();
+    assert_eq!(app.diagram_pane_ratio_target, 100);
+}
+
+#[test]
 fn test_remote_prompt_jump_ctrl_digit_is_recency_rank() {
     let _render_lock = scroll_render_test_lock();
     let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
@@ -2607,6 +2826,112 @@ fn test_remote_ctrl_c_still_arms_quit_when_idle() {
     assert_eq!(
         app.status_notice(),
         Some("Press Ctrl+C again to quit".to_string())
+    );
+}
+
+#[test]
+fn test_local_copy_badge_shortcut_accepts_alt_uppercase_encoding() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = create_copy_test_app();
+
+    render_and_snap(&app, &mut terminal);
+
+    app.handle_key(KeyCode::Char('S'), KeyModifiers::ALT)
+        .unwrap();
+
+    let notice = app.status_notice().unwrap_or_default();
+    assert!(
+        notice == "Copied rust",
+        "expected copy notice, got: {}",
+        notice
+    );
+
+    let text = render_and_snap(&app, &mut terminal);
+    assert!(text.contains("Copied!"), "expected inline copied feedback: {}", text);
+}
+
+#[test]
+fn test_remote_copy_badge_shortcut_supported() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = create_copy_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    render_and_snap(&app, &mut terminal);
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('S'), KeyModifiers::ALT, &mut remote))
+        .unwrap();
+
+    let notice = app.status_notice().unwrap_or_default();
+    assert!(
+        notice == "Copied rust",
+        "expected copy notice, got: {}",
+        notice
+    );
+
+    let text = render_and_snap(&app, &mut terminal);
+    assert!(text.contains("Copied!"), "expected inline copied feedback: {}", text);
+}
+
+#[test]
+fn test_copy_badge_modifier_highlights_while_held() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = create_copy_test_app();
+
+    render_and_snap(&app, &mut terminal);
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode};
+
+    app.handle_key_event(KeyEvent::new_with_kind(
+        KeyCode::Modifier(ModifierKeyCode::LeftAlt),
+        KeyModifiers::ALT,
+        KeyEventKind::Press,
+    ));
+    assert!(app.copy_badge_ui().alt_active);
+
+    app.handle_key_event(KeyEvent::new_with_kind(
+        KeyCode::Modifier(ModifierKeyCode::LeftShift),
+        KeyModifiers::ALT | KeyModifiers::SHIFT,
+        KeyEventKind::Press,
+    ));
+    assert!(app.copy_badge_ui().shift_active);
+
+    app.handle_key_event(KeyEvent::new_with_kind(
+        KeyCode::Modifier(ModifierKeyCode::LeftShift),
+        KeyModifiers::ALT,
+        KeyEventKind::Release,
+    ));
+    assert!(!app.copy_badge_ui().shift_active);
+
+    app.handle_key_event(KeyEvent::new_with_kind(
+        KeyCode::Modifier(ModifierKeyCode::LeftAlt),
+        KeyModifiers::empty(),
+        KeyEventKind::Release,
+    ));
+    assert!(!app.copy_badge_ui().alt_active);
+}
+
+#[test]
+fn test_copy_badge_requires_prior_combo_progress() {
+    let mut state = CopyBadgeUiState::default();
+    let now = std::time::Instant::now();
+
+    state.shift_active = true;
+    state.shift_pulse_until = Some(now + std::time::Duration::from_millis(100));
+    state.key_active = Some(('s', now + std::time::Duration::from_millis(100)));
+
+    assert!(!state.shift_is_active(now), "shift should not light before alt");
+    assert!(
+        !state.key_is_active('s', now),
+        "final key should not light before alt+shift"
+    );
+
+    state.alt_active = true;
+    assert!(state.shift_is_active(now), "shift should light once alt is active");
+    assert!(
+        state.key_is_active('s', now),
+        "final key should light once alt+shift are active"
     );
 }
 

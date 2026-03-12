@@ -35,11 +35,11 @@ use self::reload::await_reload_signal;
 #[allow(unused_imports)]
 use self::swarm::{
     broadcast_swarm_plan, broadcast_swarm_status, record_swarm_event,
-    record_swarm_event_for_session, remove_plan_participant, remove_session_from_swarm,
-    rename_plan_participant, run_swarm_message, summarize_plan_items, truncate_detail,
-    update_member_status,
+    record_swarm_event_for_session, remove_plan_participant, remove_session_channel_subscriptions,
+    remove_session_from_swarm, rename_plan_participant, run_swarm_message, summarize_plan_items,
+    truncate_detail, update_member_status,
 };
-use crate::agent::Agent;
+use crate::agent::{Agent, SoftInterruptQueue};
 use crate::ambient_runner::AmbientRunnerHandle;
 use crate::build;
 use crate::bus::{Bus, BusEvent, FileOp};
@@ -180,6 +180,78 @@ pub struct SwarmEvent {
 /// Ring buffer for recent swarm events
 const MAX_EVENT_HISTORY: usize = 5000;
 
+pub(super) type SessionInterruptQueues = Arc<RwLock<HashMap<String, SoftInterruptQueue>>>;
+
+pub(super) fn enqueue_soft_interrupt(
+    queue: &SoftInterruptQueue,
+    content: String,
+    urgent: bool,
+) -> bool {
+    if let Ok(mut pending) = queue.lock() {
+        pending.push(crate::agent::SoftInterruptMessage { content, urgent });
+        true
+    } else {
+        false
+    }
+}
+
+pub(super) async fn register_session_interrupt_queue(
+    queues: &SessionInterruptQueues,
+    session_id: &str,
+    queue: SoftInterruptQueue,
+) {
+    let mut guard = queues.write().await;
+    guard.insert(session_id.to_string(), queue);
+}
+
+pub(super) async fn rename_session_interrupt_queue(
+    queues: &SessionInterruptQueues,
+    old_session_id: &str,
+    new_session_id: &str,
+) {
+    let mut guard = queues.write().await;
+    if let Some(queue) = guard.remove(old_session_id) {
+        guard.insert(new_session_id.to_string(), queue);
+    }
+}
+
+pub(super) async fn remove_session_interrupt_queue(
+    queues: &SessionInterruptQueues,
+    session_id: &str,
+) {
+    let mut guard = queues.write().await;
+    guard.remove(session_id);
+}
+
+pub(super) async fn queue_soft_interrupt_for_session(
+    session_id: &str,
+    content: String,
+    urgent: bool,
+    queues: &SessionInterruptQueues,
+    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+) -> bool {
+    if let Some(queue) = queues.read().await.get(session_id).cloned() {
+        return enqueue_soft_interrupt(&queue, content, urgent);
+    }
+
+    let queue = {
+        let guard = sessions.read().await;
+        guard.get(session_id).and_then(|agent| {
+            agent
+                .try_lock()
+                .ok()
+                .map(|agent_guard| agent_guard.soft_interrupt_queue())
+        })
+    };
+
+    if let Some(queue) = queue {
+        register_session_interrupt_queue(queues, session_id, queue.clone()).await;
+        enqueue_soft_interrupt(&queue, content, urgent)
+    } else {
+        false
+    }
+}
+
 /// Socket path for main communication
 /// Can be overridden via JCODE_SOCKET env var
 pub fn socket_path() -> PathBuf {
@@ -199,6 +271,76 @@ pub fn debug_socket_path() -> PathBuf {
         .unwrap_or("jcode.sock");
     let debug_filename = filename.replace(".sock", "-debug.sock");
     main_path.with_file_name(debug_filename)
+}
+
+/// Marker file indicating a server reload handoff is in progress.
+///
+/// Clients use this to distinguish "server is temporarily restarting" from
+/// "no server exists, spawn a new one".
+pub fn reload_marker_path() -> PathBuf {
+    crate::storage::runtime_dir().join("jcode.reload")
+}
+
+pub fn write_reload_marker() {
+    ReloadState {
+        request_id: "unknown".to_string(),
+        hash: "unknown".to_string(),
+        phase: ReloadPhase::Starting,
+        pid: std::process::id(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        detail: None,
+    }
+    .write();
+}
+
+pub fn clear_reload_marker() {
+    let _ = std::fs::remove_file(reload_marker_path());
+}
+
+pub fn reload_marker_exists() -> bool {
+    reload_marker_path().exists()
+}
+
+pub fn reload_marker_active(max_age: Duration) -> bool {
+    matches!(recent_reload_state(max_age), Some(state) if state.phase == ReloadPhase::Starting)
+}
+
+pub fn recent_reload_state(max_age: Duration) -> Option<ReloadState> {
+    let path = reload_marker_path();
+    let state = ReloadState::load()?;
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return None;
+    };
+    let Ok(modified) = metadata.modified() else {
+        let _ = std::fs::remove_file(&path);
+        return None;
+    };
+    let Ok(elapsed) = modified.elapsed() else {
+        return Some(state);
+    };
+    if elapsed <= max_age {
+        Some(state)
+    } else {
+        let _ = std::fs::remove_file(&path);
+        None
+    }
+}
+
+pub fn write_reload_state(
+    request_id: &str,
+    hash: &str,
+    phase: ReloadPhase,
+    detail: Option<String>,
+) {
+    ReloadState {
+        request_id: request_id.to_string(),
+        hash: hash.to_string(),
+        phase,
+        pid: std::process::id(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        detail,
+    }
+    .write();
 }
 
 fn sibling_socket_path(path: &std::path::Path) -> Option<PathBuf> {
@@ -243,7 +385,11 @@ pub async fn connect_socket(path: &std::path::Path) -> Result<Stream> {
 
 #[cfg(test)]
 mod socket_tests {
-    use super::{cleanup_socket_pair, sibling_socket_path};
+    use super::{
+        cleanup_socket_pair, reload_marker_active, reload_marker_path, sibling_socket_path,
+        write_reload_state, ReloadPhase,
+    };
+    use std::time::Duration;
 
     #[test]
     fn sibling_socket_path_roundtrip() {
@@ -275,6 +421,139 @@ mod socket_tests {
 
         assert!(!main.exists(), "main socket file should be removed");
         assert!(!debug.exists(), "debug socket file should be removed");
+    }
+
+    #[test]
+    fn reload_marker_active_expires_stale_marker() {
+        let marker = reload_marker_path();
+        if let Some(parent) = marker.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        write_reload_state("test-request", "test-hash", ReloadPhase::Starting, None);
+        assert!(reload_marker_active(Duration::from_secs(30)));
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!reload_marker_active(Duration::ZERO));
+        assert!(!marker.exists(), "stale reload marker should be cleaned up");
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::{
+        queue_soft_interrupt_for_session, register_session_interrupt_queue, SessionInterruptQueues,
+    };
+    use crate::agent::Agent;
+    use crate::message::{Message, ToolDefinition};
+    use crate::provider::{EventStream, Provider};
+    use crate::tool::Registry;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, RwLock};
+
+    struct TestProvider;
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<EventStream> {
+            unimplemented!("test provider")
+        }
+
+        fn name(&self) -> &str {
+            "test"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(TestProvider)
+        }
+    }
+
+    async fn test_agent() -> Arc<Mutex<Agent>> {
+        let provider: Arc<dyn Provider> = Arc::new(TestProvider);
+        let registry = Registry::new(provider.clone()).await;
+        Arc::new(Mutex::new(Agent::new(provider, registry)))
+    }
+
+    #[tokio::test]
+    async fn queue_soft_interrupt_for_session_uses_registered_queue_when_agent_busy() {
+        let agent = test_agent().await;
+        let session_id = {
+            let guard = agent.lock().await;
+            guard.session_id().to_string()
+        };
+        let queue = {
+            let guard = agent.lock().await;
+            guard.soft_interrupt_queue()
+        };
+        let queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
+        register_session_interrupt_queue(&queues, &session_id, queue.clone()).await;
+        let sessions = Arc::new(RwLock::new(HashMap::from([(
+            session_id.clone(),
+            agent.clone(),
+        )])));
+
+        let _busy_guard = agent.lock().await;
+        let queued = queue_soft_interrupt_for_session(
+            &session_id,
+            "queued while busy".to_string(),
+            false,
+            &queues,
+            &sessions,
+        )
+        .await;
+
+        assert!(
+            queued,
+            "interrupt should queue even while agent lock is held"
+        );
+        let pending = queue.lock().expect("queue lock");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].content, "queued while busy");
+        assert!(!pending[0].urgent);
+    }
+
+    #[tokio::test]
+    async fn queue_soft_interrupt_for_session_registers_queue_on_fallback_lookup() {
+        let agent = test_agent().await;
+        let session_id = {
+            let guard = agent.lock().await;
+            guard.session_id().to_string()
+        };
+        let queue = {
+            let guard = agent.lock().await;
+            guard.soft_interrupt_queue()
+        };
+        let queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
+        let sessions = Arc::new(RwLock::new(HashMap::from([(
+            session_id.clone(),
+            agent.clone(),
+        )])));
+
+        let queued = queue_soft_interrupt_for_session(
+            &session_id,
+            "fallback lookup".to_string(),
+            true,
+            &queues,
+            &sessions,
+        )
+        .await;
+
+        assert!(queued, "interrupt should queue via session fallback");
+        assert!(
+            queues.read().await.contains_key(&session_id),
+            "fallback should cache the session queue for later busy sends"
+        );
+        let pending = queue.lock().expect("queue lock");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].content, "fallback lookup");
+        assert!(pending[0].urgent);
     }
 }
 
@@ -411,7 +690,7 @@ fn server_start_error(child: &mut std::process::Child, status: std::process::Exi
     }
 }
 
-/// Idle timeout for self-dev server (5 minutes)
+/// Idle timeout for the shared server when no clients are connected (5 minutes)
 const IDLE_TIMEOUT_SECS: u64 = 300;
 
 /// How often to check whether the embedding model can be unloaded.
@@ -445,6 +724,55 @@ fn signal_ready_fd() {
 pub struct ReloadSignal {
     pub hash: String,
     pub triggering_session: Option<String>,
+    pub prefer_selfdev_binary: bool,
+    pub request_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReloadAck {
+    pub hash: String,
+    pub request_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReloadPhase {
+    Starting,
+    SocketReady,
+    Failed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReloadState {
+    pub request_id: String,
+    pub hash: String,
+    pub phase: ReloadPhase,
+    pub pid: u32,
+    pub timestamp: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl ReloadState {
+    fn path() -> PathBuf {
+        reload_marker_path()
+    }
+
+    fn write(&self) {
+        let path = Self::path();
+        if let Some(parent) = path.parent() {
+            let _ = crate::storage::ensure_dir(parent);
+        }
+        let _ = crate::storage::write_json(&path, self);
+    }
+
+    pub fn load() -> Option<Self> {
+        let path = Self::path();
+        if !path.exists() {
+            return None;
+        }
+        crate::storage::read_json(&path).ok()
+    }
 }
 
 /// Global reload signal channel. The selfdev tool and debug commands fire this;
@@ -454,6 +782,11 @@ static RELOAD_SIGNAL: std::sync::OnceLock<(
     tokio::sync::watch::Receiver<Option<ReloadSignal>>,
 )> = std::sync::OnceLock::new();
 
+static RELOAD_ACK: std::sync::OnceLock<(
+    tokio::sync::watch::Sender<Option<ReloadAck>>,
+    tokio::sync::watch::Receiver<Option<ReloadAck>>,
+)> = std::sync::OnceLock::new();
+
 fn reload_signal() -> &'static (
     tokio::sync::watch::Sender<Option<ReloadSignal>>,
     tokio::sync::watch::Receiver<Option<ReloadSignal>>,
@@ -461,13 +794,71 @@ fn reload_signal() -> &'static (
     RELOAD_SIGNAL.get_or_init(|| tokio::sync::watch::channel(None))
 }
 
+#[cfg(test)]
+pub(crate) fn subscribe_reload_signal_for_tests(
+) -> tokio::sync::watch::Receiver<Option<ReloadSignal>> {
+    reload_signal().1.clone()
+}
+
+fn reload_ack() -> &'static (
+    tokio::sync::watch::Sender<Option<ReloadAck>>,
+    tokio::sync::watch::Receiver<Option<ReloadAck>>,
+) {
+    RELOAD_ACK.get_or_init(|| tokio::sync::watch::channel(None))
+}
+
 /// Send a reload signal to the server (called by selfdev tool / debug commands).
-pub fn send_reload_signal(hash: String, triggering_session: Option<String>) {
+pub fn send_reload_signal(
+    hash: String,
+    triggering_session: Option<String>,
+    prefer_selfdev_binary: bool,
+) -> String {
+    let request_id = crate::id::new_id("reload");
     let (tx, _) = reload_signal();
     let _ = tx.send(Some(ReloadSignal {
         hash,
         triggering_session,
+        prefer_selfdev_binary,
+        request_id: request_id.clone(),
     }));
+    request_id
+}
+
+pub fn acknowledge_reload_signal(signal: &ReloadSignal) {
+    let (tx, _) = reload_ack();
+    let _ = tx.send(Some(ReloadAck {
+        hash: signal.hash.clone(),
+        request_id: signal.request_id.clone(),
+    }));
+}
+
+pub async fn wait_for_reload_ack(
+    request_id: &str,
+    timeout: std::time::Duration,
+) -> anyhow::Result<ReloadAck> {
+    let mut rx = reload_ack().1.clone();
+
+    if let Some(ack) = rx.borrow_and_update().clone() {
+        if ack.request_id == request_id {
+            return Ok(ack);
+        }
+    }
+
+    let request_id = request_id.to_string();
+    tokio::time::timeout(timeout, async move {
+        loop {
+            rx.changed()
+                .await
+                .map_err(|_| anyhow::anyhow!("reload acknowledgement channel closed"))?;
+            if let Some(ack) = rx.borrow_and_update().clone() {
+                if ack.request_id == request_id {
+                    return Ok(ack);
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for reload acknowledgement"))?
 }
 
 fn debug_control_allowed() -> bool {
@@ -497,27 +888,6 @@ fn embedding_idle_unload_secs() -> u64 {
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(EMBEDDING_IDLE_UNLOAD_DEFAULT_SECS)
-}
-
-async fn session_prefers_selfdev_binary(
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
-    session_id: Option<&str>,
-) -> bool {
-    let Some(session_id) = session_id else {
-        return false;
-    };
-
-    let agent = {
-        let sessions_guard = sessions.read().await;
-        sessions_guard.get(session_id).cloned()
-    };
-
-    let Some(agent) = agent else {
-        return false;
-    };
-
-    let agent_guard = agent.lock().await;
-    agent_guard.is_canary()
 }
 
 fn server_update_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'static str)> {
@@ -692,6 +1062,9 @@ pub struct Server {
     /// Graceful shutdown signals by session_id (stored outside agent mutex so they
     /// can be signaled without locking the agent during active tool execution)
     shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
+    /// Soft interrupt queues by session_id (stored outside agent mutex so swarm/debug
+    /// notifications can be enqueued while an agent is actively processing)
+    soft_interrupt_queues: SessionInterruptQueues,
 }
 
 impl Server {
@@ -748,6 +1121,7 @@ impl Server {
             ambient_runner,
             mcp_pool: Arc::new(crate::mcp::SharedMcpPool::from_default_config()),
             shutdown_signals: Arc::new(RwLock::new(HashMap::new())),
+            soft_interrupt_queues: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -781,6 +1155,7 @@ impl Server {
         _swarm_coordinators: Arc<RwLock<HashMap<String, String>>>,
         _shared_context: Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
         sessions: Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+        soft_interrupt_queues: SessionInterruptQueues,
         event_history: Arc<RwLock<Vec<SwarmEvent>>>,
         event_counter: Arc<std::sync::atomic::AtomicU64>,
         swarm_event_tx: broadcast::Sender<SwarmEvent>,
@@ -915,8 +1290,6 @@ impl Server {
                         let members = swarm_members.read().await;
                         let current_member = members.get(&session_id);
                         let current_name = current_member.and_then(|m| m.friendly_name.clone());
-                        let agent_sessions = sessions.read().await;
-
                         // Deduplicate previous touches by session (keep latest per agent)
                         let mut unique_by_session: std::collections::HashMap<&str, &FileAccess> =
                             std::collections::HashMap::new();
@@ -957,10 +1330,19 @@ impl Server {
                                 };
                                 let _ = member.event_tx.send(notification);
 
-                                if let Some(agent) = agent_sessions.get(&session_id) {
-                                    if let Ok(agent) = agent.try_lock() {
-                                        agent.queue_soft_interrupt(alert_msg.clone(), false);
-                                    }
+                                if !queue_soft_interrupt_for_session(
+                                    &session_id,
+                                    alert_msg.clone(),
+                                    false,
+                                    &soft_interrupt_queues,
+                                    &sessions,
+                                )
+                                .await
+                                {
+                                    crate::logging::warn(&format!(
+                                        "Failed to queue file-conflict soft interrupt for session {}",
+                                        session_id
+                                    ));
                                 }
                             }
                         }
@@ -995,10 +1377,19 @@ impl Server {
                                 };
                                 let _ = prev_member.event_tx.send(notification);
 
-                                if let Some(agent) = agent_sessions.get(&prev.session_id) {
-                                    if let Ok(agent) = agent.try_lock() {
-                                        agent.queue_soft_interrupt(alert_msg.clone(), false);
-                                    }
+                                if !queue_soft_interrupt_for_session(
+                                    &prev.session_id,
+                                    alert_msg.clone(),
+                                    false,
+                                    &soft_interrupt_queues,
+                                    &sessions,
+                                )
+                                .await
+                                {
+                                    crate::logging::warn(&format!(
+                                        "Failed to queue file-conflict soft interrupt for session {}",
+                                        prev.session_id
+                                    ));
                                 }
                             }
                         }
@@ -1034,6 +1425,9 @@ impl Server {
 
         let main_listener = Listener::bind(&self.socket_path)?;
         let debug_listener = Listener::bind(&self.debug_socket_path)?;
+
+        // We successfully rebound the socket pair, so any reload handoff is complete.
+        clear_reload_marker();
 
         // Restrict socket files to owner-only so other local users cannot connect.
         let _ = crate::platform::set_permissions_owner_only(&self.socket_path);
@@ -1152,6 +1546,7 @@ impl Server {
         let monitor_swarm_coordinators = Arc::clone(&self.swarm_coordinators);
         let monitor_shared_context = Arc::clone(&self.shared_context);
         let monitor_sessions = Arc::clone(&self.sessions);
+        let monitor_soft_interrupt_queues = Arc::clone(&self.soft_interrupt_queues);
         let monitor_event_history = Arc::clone(&self.event_history);
         let monitor_event_counter = Arc::clone(&self.event_counter);
         let monitor_swarm_event_tx = self.swarm_event_tx.clone();
@@ -1164,6 +1559,7 @@ impl Server {
                 monitor_swarm_coordinators,
                 monitor_shared_context,
                 monitor_sessions,
+                monitor_soft_interrupt_queues,
                 monitor_event_history,
                 monitor_event_counter,
                 monitor_swarm_event_tx,
@@ -1287,6 +1683,7 @@ impl Server {
         let main_ambient_runner = self.ambient_runner.clone();
         let main_mcp_pool = Arc::clone(&self.mcp_pool);
         let main_shutdown_signals = Arc::clone(&self.shutdown_signals);
+        let main_soft_interrupt_queues = Arc::clone(&self.soft_interrupt_queues);
 
         let main_handle = tokio::spawn(async move {
             loop {
@@ -1316,6 +1713,7 @@ impl Server {
                         let ambient_runner = main_ambient_runner.clone();
                         let mcp_pool = Arc::clone(&main_mcp_pool);
                         let shutdown_signals = Arc::clone(&main_shutdown_signals);
+                        let soft_interrupt_queues = Arc::clone(&main_soft_interrupt_queues);
 
                         // Increment client count
                         *client_count.write().await += 1;
@@ -1346,6 +1744,7 @@ impl Server {
                                 server_icon,
                                 mcp_pool,
                                 shutdown_signals,
+                                soft_interrupt_queues,
                             )
                             .await;
 
@@ -1392,6 +1791,7 @@ impl Server {
         let debug_start_time = std::time::Instant::now();
         let debug_ambient_runner = self.ambient_runner.clone();
         let debug_mcp_pool = Arc::clone(&self.mcp_pool);
+        let debug_soft_interrupt_queues = Arc::clone(&self.soft_interrupt_queues);
 
         let debug_handle = tokio::spawn(async move {
             loop {
@@ -1419,6 +1819,7 @@ impl Server {
                         let server_start_time = debug_start_time;
                         let ambient_runner = debug_ambient_runner.clone();
                         let mcp_pool = Some(debug_mcp_pool.clone());
+                        let soft_interrupt_queues = Arc::clone(&debug_soft_interrupt_queues);
 
                         tokio::spawn(async move {
                             if let Err(e) = handle_debug_client(
@@ -1445,6 +1846,7 @@ impl Server {
                                 server_start_time,
                                 ambient_runner,
                                 mcp_pool,
+                                soft_interrupt_queues,
                             )
                             .await
                             {
@@ -1458,6 +1860,8 @@ impl Server {
                 }
             }
         });
+
+        crate::logging::info("Accept loop tasks spawned");
 
         // Spawn WebSocket gateway for iOS/web clients (if enabled)
         let _gateway_handle = self.spawn_gateway();
@@ -1521,6 +1925,7 @@ impl Server {
         let gw_ambient_runner = self.ambient_runner.clone();
         let gw_mcp_pool = Arc::clone(&self.mcp_pool);
         let gw_shutdown_signals = Arc::clone(&self.shutdown_signals);
+        let gw_soft_interrupt_queues = Arc::clone(&self.soft_interrupt_queues);
 
         let handle = tokio::spawn(async move {
             while let Some(gw_client) = client_rx.recv().await {
@@ -1548,6 +1953,7 @@ impl Server {
                 let _ambient_runner = gw_ambient_runner.clone();
                 let mcp_pool = Arc::clone(&gw_mcp_pool);
                 let shutdown_signals = Arc::clone(&gw_shutdown_signals);
+                let soft_interrupt_queues = Arc::clone(&gw_soft_interrupt_queues);
 
                 *client_count.write().await += 1;
 
@@ -1582,6 +1988,7 @@ impl Server {
                         server_icon,
                         mcp_pool,
                         shutdown_signals,
+                        soft_interrupt_queues,
                     )
                     .await;
 
@@ -1643,6 +2050,7 @@ impl Client {
             id,
             content: content.to_string(),
             images: vec![],
+            system_reminder: None,
         };
         let json = serde_json::to_string(&request)? + "\n";
         self.writer.write_all(json.as_bytes()).await?;

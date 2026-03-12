@@ -59,6 +59,7 @@ struct PendingRemoteMessage {
     content: String,
     images: Vec<(String, String)>,
     is_system: bool,
+    system_reminder: Option<String>,
     auto_retry: bool,
     retry_attempts: u8,
     retry_at: Option<Instant>,
@@ -93,6 +94,63 @@ pub struct DisplayMessage {
     pub title: Option<String>,
     /// Full tool call data (for role="tool" messages)
     pub tool_data: Option<ToolCall>,
+}
+
+#[derive(Clone, Default)]
+pub struct CopyBadgeUiState {
+    pub alt_active: bool,
+    pub shift_active: bool,
+    pub alt_pulse_until: Option<Instant>,
+    pub shift_pulse_until: Option<Instant>,
+    pub key_active: Option<(char, Instant)>,
+    pub copied_feedback: Option<CopyBadgeFeedback>,
+}
+
+#[derive(Clone)]
+pub struct CopyBadgeFeedback {
+    pub key: char,
+    pub success: bool,
+    pub expires_at: Instant,
+}
+
+impl CopyBadgeUiState {
+    pub(crate) fn alt_is_active(&self, now: Instant) -> bool {
+        self.alt_active
+            || self
+                .alt_pulse_until
+                .map(|expires_at| expires_at > now)
+                .unwrap_or(false)
+    }
+
+    pub(crate) fn shift_is_active(&self, now: Instant) -> bool {
+        self.alt_is_active(now)
+            && (self.shift_active
+                || self
+                    .shift_pulse_until
+                    .map(|expires_at| expires_at > now)
+                    .unwrap_or(false))
+    }
+
+    pub(crate) fn key_is_active(&self, key: char, now: Instant) -> bool {
+        self.shift_is_active(now)
+            && self
+                .key_active
+                .as_ref()
+                .map(|(active_key, expires_at)| {
+                    active_key.eq_ignore_ascii_case(&key) && *expires_at > now
+                })
+                .unwrap_or(false)
+    }
+
+    pub(crate) fn feedback_for_key(&self, key: char, now: Instant) -> Option<bool> {
+        self.copied_feedback.as_ref().and_then(|feedback| {
+            if feedback.key.eq_ignore_ascii_case(&key) && feedback.expires_at > now {
+                Some(feedback.success)
+            } else {
+                None
+            }
+        })
+    }
 }
 
 /// Result from running the TUI
@@ -142,6 +200,8 @@ pub struct App {
     should_quit: bool,
     // Message queueing
     queued_messages: Vec<String>,
+    hidden_queued_system_messages: Vec<String>,
+    current_turn_system_reminder: Option<String>,
     // Live token usage (per turn)
     streaming_input_tokens: u64,
     streaming_output_tokens: u64,
@@ -221,6 +281,8 @@ pub struct App {
     pasted_contents: Vec<String>,
     // Pending pasted images (media_type, base64_data) attached to next message
     pending_images: Vec<(String, String)>,
+    // Inline UI state for copy badges ([Alt] [⇧] [S])
+    copy_badge_ui: CopyBadgeUiState,
     // Debug socket broadcast channel (if enabled)
     debug_tx: Option<tokio::sync::broadcast::Sender<super::backend::DebugEvent>>,
     // Remote provider info (set when running in remote mode)
@@ -228,6 +290,7 @@ pub struct App {
     remote_provider_model: Option<String>,
     remote_reasoning_effort: Option<String>,
     remote_transport: Option<String>,
+    remote_compaction_mode: Option<crate::config::CompactionMode>,
     remote_available_models: Vec<String>,
     remote_model_routes: Vec<crate::provider::ModelRoute>,
     // Remote MCP servers and skills (set from server in remote mode)

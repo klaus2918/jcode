@@ -1,7 +1,8 @@
 use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
     broadcast_swarm_plan, broadcast_swarm_status, create_headless_session, record_swarm_event,
-    record_swarm_event_for_session, remove_plan_participant, truncate_detail, update_member_status,
+    record_swarm_event_for_session, remove_plan_participant, remove_session_channel_subscriptions,
+    remove_session_interrupt_queue, truncate_detail, update_member_status, SessionInterruptQueues,
     SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
 };
 use crate::agent::Agent;
@@ -25,10 +26,12 @@ pub(super) async fn handle_comm_spawn(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    _channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
     event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
+    soft_interrupt_queues: &SessionInterruptQueues,
 ) {
     let swarm_id = match require_coordinator_swarm(
         id,
@@ -80,6 +83,7 @@ pub(super) async fn handle_comm_spawn(
         swarms_by_id,
         swarm_coordinators,
         swarm_plans,
+        soft_interrupt_queues,
         coordinator_is_canary,
         coordinator_model,
         Some(Arc::clone(mcp_pool)),
@@ -158,6 +162,7 @@ pub(super) async fn handle_comm_spawn(
                             Arc::clone(&agent_arc),
                             &initial_msg,
                             vec![],
+                            None,
                             drain_tx,
                         )
                         .await;
@@ -209,9 +214,11 @@ pub(super) async fn handle_comm_stop(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
     event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    soft_interrupt_queues: &SessionInterruptQueues,
 ) {
     if require_coordinator_swarm(
         id,
@@ -231,6 +238,7 @@ pub(super) async fn handle_comm_stop(
     let removed_agent = sessions_guard.remove(&target_session);
     drop(sessions_guard);
     if let Some(agent_arc) = removed_agent {
+        remove_session_interrupt_queue(soft_interrupt_queues, &target_session).await;
         if let Ok(agent) = agent_arc.try_lock() {
             let memory_enabled = agent.memory_enabled();
             let transcript = if memory_enabled {
@@ -306,6 +314,7 @@ pub(super) async fn handle_comm_stop(
             }
             broadcast_swarm_status(swarm_id, swarm_members, swarms_by_id).await;
         }
+        remove_session_channel_subscriptions(&target_session, channel_subscriptions).await;
         let _ = client_event_tx.send(ServerEvent::Done { id });
     } else {
         let _ = client_event_tx.send(ServerEvent::Error {

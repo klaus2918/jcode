@@ -4,13 +4,26 @@ use super::dim_color;
 use crate::tui::{color_support::rgb, TuiState, STARTUP_ANIMATION_WINDOW};
 use ratatui::{prelude::*, widgets::Paragraph};
 use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
 const STARTUP_ASCII_STATUS_FPS: f32 = 12.0;
 const STARTUP_ASCII_STATUS_SPINNER: &[&str] = &["|", "/", "-", "\\"];
 const LUMINANCE: &[u8] = b".,-~:;=!*#$@";
+
+const STARTUP_VARIANTS: &[&str] = &[
+    "donut",
+    "globe",
+    "cube",
+    "mobius",
+    "octahedron",
+    "lorenz",
+    "rabbit",
+    "black_hole",
+];
+
+const IDLE_VARIANTS: &[&str] = &["donut", "knot", "three_rings", "black_hole"];
 
 struct RenderBuffers {
     output: Vec<Vec<u8>>,
@@ -131,17 +144,81 @@ fn render_startup_animation(
     elapsed: f32,
     width: usize,
     height: usize,
-    variant: usize,
+    variant: &str,
 ) -> Vec<String> {
-    match variant % 7 {
-        0 => render_donut(elapsed, width, height),
-        1 => render_globe(elapsed, width, height),
-        2 => render_cube(elapsed, width, height),
-        3 => render_mobius(elapsed, width, height),
-        4 => render_octahedron(elapsed, width, height),
-        5 => render_lorenz(elapsed, width, height),
-        _ => render_rabbit(elapsed, width, height),
+    match variant {
+        "donut" => render_donut(elapsed, width, height),
+        "globe" => render_globe(elapsed, width, height),
+        "cube" => render_cube(elapsed, width, height),
+        "mobius" => render_mobius(elapsed, width, height),
+        "octahedron" => render_octahedron(elapsed, width, height),
+        "lorenz" => render_lorenz(elapsed, width, height),
+        "rabbit" => render_rabbit(elapsed, width, height),
+        "black_hole" => render_black_hole(elapsed, width, height),
+        _ => render_donut(elapsed, width, height),
     }
+}
+
+fn render_black_hole(elapsed: f32, width: usize, height: usize) -> Vec<String> {
+    with_render_buffers(width, height, |output, _zbuffer| {
+        let cx = width as f32 / 2.0;
+        let cy = height as f32 / 2.0;
+        let aspect = 0.5f32;
+        let disk_half_len = width as f32 * 0.36;
+        let disk_half_thickness = (height as f32 * 0.055).max(0.8);
+        let horizon_r = height.min(width / 3) as f32 * 0.16;
+        let halo_r = horizon_r * 1.85;
+        let shimmer = elapsed * 2.4;
+
+        for y in 0..height {
+            for x in 0..width {
+                let dx = x as f32 - cx;
+                let dy = (y as f32 - cy) / aspect;
+                let r = (dx * dx + dy * dy).sqrt();
+
+                let abs_x = dx.abs();
+                let abs_y = dy.abs();
+
+                let disk_falloff_x = (1.0 - abs_x / disk_half_len).clamp(0.0, 1.0);
+                let disk_core = (1.0 - abs_y / disk_half_thickness).clamp(0.0, 1.0);
+                let disk_glow =
+                    (1.0 - abs_y / (disk_half_thickness * 3.8 + 1.0)).clamp(0.0, 1.0) * 0.42;
+                let lens_band = (1.0
+                    - ((abs_y - horizon_r * 0.72).abs() / (horizon_r * 0.55 + 0.1)))
+                    .clamp(0.0, 1.0)
+                    * (1.0 - abs_x / (halo_r * 1.5 + 1.0)).clamp(0.0, 1.0);
+                let halo =
+                    (1.0 - ((r - halo_r).abs() / (horizon_r * 0.95 + 0.1))).clamp(0.0, 1.0) * 0.38;
+
+                let streak_phase = shimmer + dx * 0.33;
+                let streaks = ((streak_phase.sin() * 0.5 + 0.5) * 0.55
+                    + ((streak_phase * 0.47 + 1.7).sin() * 0.5 + 0.5) * 0.45)
+                    * disk_falloff_x;
+                let relativistic_beam = (1.0
+                    - ((dx - disk_half_len * 0.34).abs() / (disk_half_len * 0.52 + 0.1)))
+                    .clamp(0.0, 1.0)
+                    * 0.32;
+
+                let mut brightness = disk_core * (0.55 + 0.45 * streaks) * disk_falloff_x
+                    + disk_glow * disk_falloff_x
+                    + lens_band * 0.62
+                    + halo * 0.28
+                    + relativistic_beam * disk_core;
+
+                if r <= horizon_r {
+                    brightness = 0.0;
+                }
+
+                if abs_x <= horizon_r * 0.95 && abs_y <= disk_half_thickness * 1.2 {
+                    brightness *= (abs_x / (horizon_r * 0.95 + 0.1)).clamp(0.0, 1.0);
+                }
+
+                brightness = brightness.clamp(0.0, 1.0);
+                let idx = (brightness * (LUMINANCE.len() - 1) as f32) as usize;
+                output[y][x] = LUMINANCE[idx.min(LUMINANCE.len() - 1)];
+            }
+        }
+    })
 }
 
 fn render_globe(elapsed: f32, width: usize, height: usize) -> Vec<String> {
@@ -607,14 +684,78 @@ fn render_dna_helix(elapsed: f32, width: usize, height: usize) -> Vec<String> {
     })
 }
 
-fn startup_animation_variant() -> usize {
-    static VARIANT: OnceLock<usize> = OnceLock::new();
-    *VARIANT.get_or_init(|| {
+fn animation_seed() -> u64 {
+    static SEED: OnceLock<u64> = OnceLock::new();
+    *SEED.get_or_init(|| {
         let mut hasher = DefaultHasher::new();
         std::time::SystemTime::now().hash(&mut hasher);
         std::process::id().hash(&mut hasher);
-        (hasher.finish() % 7) as usize
+        hasher.finish()
     })
+}
+
+fn normalized_animation_name(name: &str) -> String {
+    name.trim().to_lowercase().replace(['-', ' '], "_")
+}
+
+fn expand_disabled_animation_names<I>(names: I) -> HashSet<String>
+where
+    I: IntoIterator,
+    I::Item: AsRef<str>,
+{
+    let mut disabled: HashSet<String> = names
+        .into_iter()
+        .map(|name| normalized_animation_name(name.as_ref()))
+        .collect();
+
+    if disabled.contains("mobius") {
+        disabled.insert("knot".to_string());
+    }
+    if disabled.contains("knot") {
+        disabled.insert("mobius".to_string());
+    }
+    if disabled.contains("three_rings") || disabled.contains("three-rings") {
+        disabled.insert("three_rings".to_string());
+        disabled.insert("gyroscope".to_string());
+    }
+    if disabled.contains("gyroscope") {
+        disabled.insert("three_rings".to_string());
+    }
+
+    disabled
+}
+
+fn disabled_animation_names() -> HashSet<String> {
+    expand_disabled_animation_names(crate::config::config().display.disabled_animations.iter())
+}
+
+fn choose_animation_variant_from_disabled<'a>(
+    variants: &'a [&'a str],
+    salt: u64,
+    disabled: &HashSet<String>,
+) -> &'a str {
+    let available: Vec<&str> = variants
+        .iter()
+        .copied()
+        .filter(|name| !disabled.contains(&normalized_animation_name(name)))
+        .collect();
+
+    let pool = if available.is_empty() {
+        variants
+    } else {
+        &available
+    };
+    let idx = ((animation_seed() ^ salt) as usize) % pool.len();
+    pool[idx]
+}
+
+fn choose_animation_variant<'a>(variants: &'a [&'a str], salt: u64) -> &'a str {
+    let disabled = disabled_animation_names();
+    choose_animation_variant_from_disabled(variants, salt, &disabled)
+}
+
+fn startup_animation_variant() -> &'static str {
+    choose_animation_variant(STARTUP_VARIANTS, 0x5354_4152_5455_50)
 }
 
 pub(super) fn build_startup_animation_lines(
@@ -722,8 +863,8 @@ pub(super) fn draw_idle_animation(frame: &mut Frame, app: &dyn TuiState, area: R
         let bufs = &mut *bufs;
 
         let variant = idle_animation_variant();
-        match variant % 3 {
-            0 => sample_donut(
+        match variant {
+            "donut" => sample_donut(
                 elapsed,
                 sw,
                 sh,
@@ -731,7 +872,15 @@ pub(super) fn draw_idle_animation(frame: &mut Frame, app: &dyn TuiState, area: R
                 &mut bufs.lum_map,
                 &mut bufs.z_buf,
             ),
-            1 => sample_knot(
+            "knot" => sample_knot(
+                elapsed,
+                sw,
+                sh,
+                &mut bufs.hit,
+                &mut bufs.lum_map,
+                &mut bufs.z_buf,
+            ),
+            "black_hole" => sample_black_hole(
                 elapsed,
                 sw,
                 sh,
@@ -867,14 +1016,8 @@ fn sample_donut(
     }
 }
 
-fn idle_animation_variant() -> usize {
-    static VARIANT: OnceLock<usize> = OnceLock::new();
-    *VARIANT.get_or_init(|| {
-        let mut hasher = DefaultHasher::new();
-        std::time::SystemTime::now().hash(&mut hasher);
-        std::process::id().hash(&mut hasher);
-        (hasher.finish() % 3) as usize
-    })
+fn idle_animation_variant() -> &'static str {
+    choose_animation_variant(IDLE_VARIANTS, 0x4944_4c45_414e_494d)
 }
 
 fn sample_dna(
@@ -1022,6 +1165,80 @@ fn sample_dna(
             }
         }
         t += rung_step;
+    }
+}
+
+fn sample_black_hole(
+    elapsed: f32,
+    sw: usize,
+    sh: usize,
+    hit: &mut [bool],
+    lum_map: &mut [f32],
+    z_buf: &mut [f32],
+) {
+    let cx = sw as f32 / 2.0;
+    let cy = sh as f32 / 2.0;
+    let aspect = 0.5f32;
+    let disk_half_len = sw as f32 * 0.35;
+    let disk_half_thickness = (sh as f32 * 0.052).max(1.0);
+    let horizon_r = (sh as f32).min(sw as f32 / 3.2) * 0.16;
+    let halo_r = horizon_r * 1.8;
+    let shimmer = elapsed * 2.35;
+
+    for y in 0..sh {
+        for x in 0..sw {
+            let dx = x as f32 - cx;
+            let dy = (y as f32 - cy) / aspect;
+            let r = (dx * dx + dy * dy).sqrt();
+            let idx = y * sw + x;
+
+            let abs_x = dx.abs();
+            let abs_y = dy.abs();
+
+            let disk_falloff_x = (1.0 - abs_x / disk_half_len).clamp(0.0, 1.0);
+            let disk_core = (1.0 - abs_y / disk_half_thickness).clamp(0.0, 1.0);
+            let disk_glow =
+                (1.0 - abs_y / (disk_half_thickness * 3.8 + 1.0)).clamp(0.0, 1.0) * 0.42;
+            let lens_band = (1.0 - ((abs_y - horizon_r * 0.72).abs() / (horizon_r * 0.55 + 0.1)))
+                .clamp(0.0, 1.0)
+                * (1.0 - abs_x / (halo_r * 1.5 + 1.0)).clamp(0.0, 1.0);
+            let halo =
+                (1.0 - ((r - halo_r).abs() / (horizon_r * 0.95 + 0.1))).clamp(0.0, 1.0) * 0.38;
+
+            let streak_phase = shimmer + dx * 0.33;
+            let streaks = ((streak_phase.sin() * 0.5 + 0.5) * 0.55
+                + ((streak_phase * 0.47 + 1.7).sin() * 0.5 + 0.5) * 0.45)
+                * disk_falloff_x;
+            let relativistic_beam = (1.0
+                - ((dx - disk_half_len * 0.34).abs() / (disk_half_len * 0.52 + 0.1)))
+                .clamp(0.0, 1.0)
+                * 0.32;
+
+            let mut brightness = disk_core * (0.55 + 0.45 * streaks) * disk_falloff_x
+                + disk_glow * disk_falloff_x
+                + lens_band * 0.62
+                + halo * 0.28
+                + relativistic_beam * disk_core;
+
+            if r <= horizon_r {
+                brightness = 0.0;
+            }
+
+            if abs_x <= horizon_r * 0.95 && abs_y <= disk_half_thickness * 1.2 {
+                brightness *= (abs_x / (horizon_r * 0.95 + 0.1)).clamp(0.0, 1.0);
+            }
+
+            brightness = brightness.clamp(0.0, 1.0);
+            if brightness > 0.06 {
+                hit[idx] = true;
+                lum_map[idx] = brightness * 2.0 - 1.0;
+                z_buf[idx] = brightness + lens_band * 0.2;
+            } else {
+                hit[idx] = false;
+                lum_map[idx] = -1.0;
+                z_buf[idx] = 0.0;
+            }
+        }
     }
 }
 
@@ -1428,4 +1645,31 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
         ((g1 + m) * 255.0) as u8,
         ((b1 + m) * 255.0) as u8,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabling_mobius_also_disables_knot_alias() {
+        let disabled = expand_disabled_animation_names(["mobius"]);
+        assert!(disabled.contains("mobius"));
+        assert!(disabled.contains("knot"));
+    }
+
+    #[test]
+    fn disabling_three_rings_also_disables_gyroscope_alias() {
+        let disabled = expand_disabled_animation_names(["three_rings"]);
+        assert!(disabled.contains("three_rings"));
+        assert!(disabled.contains("gyroscope"));
+    }
+
+    #[test]
+    fn variant_selection_avoids_disabled_entries_when_possible() {
+        let disabled = expand_disabled_animation_names(["donut", "black_hole"]);
+        let variant = choose_animation_variant_from_disabled(IDLE_VARIANTS, 7, &disabled);
+        assert_ne!(variant, "donut");
+        assert_ne!(variant, "black_hole");
+    }
 }

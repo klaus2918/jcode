@@ -554,24 +554,24 @@ pub async fn login_openai() -> Result<OAuthTokens> {
 
     if browser_opened {
         if let Some(listener) = callback_listener {
-        eprintln!(
-            "Waiting up to 300s for automatic callback on {}",
-            redirect_uri
-        );
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(300),
-            wait_for_callback_async_on_listener(listener, &state),
-        )
-        .await
-        {
-            Ok(Ok(code)) => return exchange_openai_code(&code, &verifier, &redirect_uri).await,
-            Ok(Err(err)) => {
-                eprintln!("Automatic callback failed ({err}). Falling back to manual paste.");
+            eprintln!(
+                "Waiting up to 300s for automatic callback on {}",
+                redirect_uri
+            );
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                wait_for_callback_async_on_listener(listener, &state),
+            )
+            .await
+            {
+                Ok(Ok(code)) => return exchange_openai_code(&code, &verifier, &redirect_uri).await,
+                Ok(Err(err)) => {
+                    eprintln!("Automatic callback failed ({err}). Falling back to manual paste.");
+                }
+                Err(_) => {
+                    eprintln!("Timed out waiting for callback. Falling back to manual paste.");
+                }
             }
-            Err(_) => {
-                eprintln!("Timed out waiting for callback. Falling back to manual paste.");
-            }
-        }
         } else {
             eprintln!(
                 "Local callback port {} is unavailable. Finish login in any browser, then paste the full callback URL here.\n",
@@ -1240,14 +1240,13 @@ mod tests {
     #[tokio::test]
     async fn wait_for_callback_async_parses_code() {
         let state = "test_state_abc";
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = bind_callback_listener(0).unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener);
 
         let state_clone = state.to_string();
-        let handle = tokio::spawn(async move { wait_for_callback_async(port, &state_clone).await });
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let handle = tokio::spawn(async move {
+            wait_for_callback_async_on_listener(listener, &state_clone).await
+        });
 
         let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
             .await
@@ -1302,14 +1301,12 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_callback_async_rejects_wrong_state() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = bind_callback_listener(0).unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener);
 
-        let handle =
-            tokio::spawn(async move { wait_for_callback_async(port, "expected_state").await });
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let handle = tokio::spawn(async move {
+            wait_for_callback_async_on_listener(listener, "expected_state").await
+        });
 
         let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
             .await
@@ -1329,13 +1326,13 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_callback_async_rejects_missing_code() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = bind_callback_listener(0).unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener);
 
-        let handle = tokio::spawn(async move { wait_for_callback_async(port, "state123").await });
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let handle =
+            tokio::spawn(
+                async move { wait_for_callback_async_on_listener(listener, "state123").await },
+            );
 
         let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
             .await

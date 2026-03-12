@@ -219,6 +219,46 @@ pub(super) async fn handle_set_transport(
     }
 }
 
+pub(super) async fn handle_set_compaction_mode(
+    id: u64,
+    mode: crate::config::CompactionMode,
+    agent: &Arc<Mutex<Agent>>,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    let result = {
+        let agent_guard = agent.lock().await;
+        agent_guard
+            .set_compaction_mode(mode.clone())
+            .await
+            .map(|_| ())
+    };
+
+    match result {
+        Ok(()) => {
+            let updated_mode = {
+                let agent_guard = agent.lock().await;
+                agent_guard.compaction_mode().await
+            };
+            let _ = client_event_tx.send(ServerEvent::CompactionModeChanged {
+                id,
+                mode: updated_mode,
+                error: None,
+            });
+        }
+        Err(e) => {
+            let fallback_mode = {
+                let agent_guard = agent.lock().await;
+                agent_guard.compaction_mode().await
+            };
+            let _ = client_event_tx.send(ServerEvent::CompactionModeChanged {
+                id,
+                mode: fallback_mode,
+                error: Some(e.to_string()),
+            });
+        }
+    }
+}
+
 pub(super) async fn handle_notify_auth_changed(
     id: u64,
     provider: &Arc<dyn Provider>,

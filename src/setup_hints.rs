@@ -11,6 +11,7 @@ use crate::storage;
 #[allow(unused_imports)]
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
@@ -25,8 +26,47 @@ pub struct SetupHintsState {
     pub alacritty_dismissed: bool,
     #[serde(default)]
     pub desktop_shortcut_created: bool,
+    #[serde(default)]
+    pub startup_spawn_hint_dismissed: bool,
     pub mac_ghostty_guided: bool,
     pub mac_ghostty_dismissed: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StartupHints {
+    pub auto_send_message: Option<String>,
+    pub status_notice: Option<String>,
+    pub display_message: Option<(String, String)>,
+}
+
+impl StartupHints {
+    fn none() -> Option<Self> {
+        None
+    }
+
+    fn with_status_notice(status_notice: String) -> Self {
+        Self {
+            auto_send_message: None,
+            status_notice: Some(status_notice),
+            display_message: None,
+        }
+    }
+
+    fn with_auto_send(auto_send_message: String) -> Self {
+        Self {
+            auto_send_message: Some(auto_send_message),
+            status_notice: None,
+            display_message: None,
+        }
+    }
+
+    fn with_spawn_notice(message: String) -> Self {
+        Self {
+            auto_send_message: None,
+            status_notice: Some(message.clone()),
+            display_message: Some(("Launch".to_string(), message)),
+        }
+    }
 }
 
 impl SetupHintsState {
@@ -72,6 +112,91 @@ impl MacTerminalKind {
             Self::Unknown => "your current terminal",
         }
     }
+
+    fn cli_value(self) -> &'static str {
+        match self {
+            Self::Ghostty => "ghostty",
+            Self::Iterm2 => "iterm2",
+            Self::AppleTerminal => "terminal",
+            Self::WezTerm => "wezterm",
+            Self::Warp => "warp",
+            Self::Alacritty => "alacritty",
+            Self::Vscode => "vscode",
+            Self::Unknown => "terminal",
+        }
+    }
+
+    fn from_cli_value(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ghostty" => Some(Self::Ghostty),
+            "iterm2" | "iterm" => Some(Self::Iterm2),
+            "terminal" | "terminal.app" | "apple_terminal" => Some(Self::AppleTerminal),
+            "wezterm" => Some(Self::WezTerm),
+            "warp" => Some(Self::Warp),
+            "alacritty" => Some(Self::Alacritty),
+            "vscode" | "code" => Some(Self::Vscode),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for MacTerminalKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MacTerminalPreference {
+    terminal: String,
+}
+
+#[cfg(target_os = "macos")]
+fn mac_terminal_pref_path() -> Result<PathBuf> {
+    Ok(storage::jcode_dir()?.join("preferred_terminal.json"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mac_terminal_pref_path() -> Result<PathBuf> {
+    anyhow::bail!("Preferred terminal config is only supported on macOS")
+}
+
+#[cfg(target_os = "macos")]
+fn load_preferred_macos_terminal() -> Option<MacTerminalKind> {
+    let path = mac_terminal_pref_path().ok()?;
+    let pref: MacTerminalPreference = storage::read_json(&path).ok()?;
+    MacTerminalKind::from_cli_value(&pref.terminal)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn load_preferred_macos_terminal() -> Option<MacTerminalKind> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn save_preferred_macos_terminal(terminal: MacTerminalKind) -> Result<()> {
+    let path = mac_terminal_pref_path()?;
+    storage::write_json(
+        &path,
+        &MacTerminalPreference {
+            terminal: terminal.cli_value().to_string(),
+        },
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn save_preferred_macos_terminal(_terminal: MacTerminalKind) -> Result<()> {
+    anyhow::bail!("Preferred terminal config is only supported on macOS")
+}
+
+#[cfg(target_os = "macos")]
+fn effective_macos_terminal() -> MacTerminalKind {
+    load_preferred_macos_terminal().unwrap_or_else(detect_macos_terminal)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn effective_macos_terminal() -> MacTerminalKind {
+    MacTerminalKind::Unknown
 }
 
 #[cfg(target_os = "macos")]
@@ -245,6 +370,169 @@ fn find_alacritty_path() -> Option<String> {
             }
         }
     }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn mac_hotkey_support_dir() -> Result<PathBuf> {
+    Ok(storage::jcode_dir()?.join("hotkey"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mac_hotkey_support_dir() -> Result<PathBuf> {
+    anyhow::bail!("Hotkey support dir is only available on macOS")
+}
+
+#[cfg(target_os = "macos")]
+fn mac_hotkey_launch_agent_path() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Could not find home directory")?;
+    Ok(home
+        .join("Library")
+        .join("LaunchAgents")
+        .join("com.jcode.hotkey.plist"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mac_hotkey_launch_agent_path() -> Result<PathBuf> {
+    anyhow::bail!("LaunchAgent path is only available on macOS")
+}
+
+#[cfg(target_os = "macos")]
+fn escape_shell_single_quotes(input: &str) -> String {
+    input.replace('\'', r#"'\''"#)
+}
+
+#[cfg(target_os = "macos")]
+fn launch_script_for_macos_terminal(terminal: MacTerminalKind, exe_path: &str) -> String {
+    let escaped_exe = escape_shell_single_quotes(exe_path);
+    match terminal {
+        MacTerminalKind::Ghostty => {
+            format!("#!/bin/bash\nopen -na Ghostty --args -e '{}'\n", escaped_exe)
+        }
+        MacTerminalKind::Alacritty => {
+            format!("#!/bin/bash\nopen -na Alacritty --args -e '{}'\n", escaped_exe)
+        }
+        MacTerminalKind::WezTerm => format!(
+            "#!/bin/bash\nopen -na WezTerm --args start --always-new-process -- '{}'\n",
+            escaped_exe
+        ),
+        MacTerminalKind::Iterm2 => format!(
+            "#!/bin/bash\nosascript <<'APPLESCRIPT'\ntell application \"iTerm2\"\n    create window with default profile command \"{}\"\n    activate\nend tell\nAPPLESCRIPT\n",
+            exe_path.replace('"', r#"\""#)
+        ),
+        MacTerminalKind::Warp => {
+            format!("#!/bin/bash\nopen -na Warp --args '{}'\n", escaped_exe)
+        }
+        MacTerminalKind::Vscode => format!(
+            "#!/bin/bash\nopen -na 'Visual Studio Code' --args --new-window --command 'workbench.action.terminal.new' '{}'\n",
+            escaped_exe
+        ),
+        MacTerminalKind::AppleTerminal | MacTerminalKind::Unknown => format!(
+            "#!/bin/bash\nosascript <<'APPLESCRIPT'\ntell application \"Terminal\"\n    activate\n    do script \"{}\"\nend tell\nAPPLESCRIPT\n",
+            exe_path.replace('"', r#"\""#)
+        ),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_hotkey_listener(
+    preferred_terminal: Option<MacTerminalKind>,
+) -> Result<MacTerminalKind> {
+    let terminal = preferred_terminal.unwrap_or_else(effective_macos_terminal);
+    let hotkey_dir = mac_hotkey_support_dir()?;
+    std::fs::create_dir_all(&hotkey_dir)?;
+
+    let exe = std::env::current_exe()?;
+    let exe_path = exe.to_string_lossy().into_owned();
+
+    let launch_script_path = hotkey_dir.join("launch_jcode.sh");
+    std::fs::write(
+        &launch_script_path,
+        launch_script_for_macos_terminal(terminal, &exe_path),
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&launch_script_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    let plist_path = mac_hotkey_launch_agent_path()?;
+    if let Some(parent) = plist_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let plist = format!(
+        r#"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+    <key>Label</key>
+    <string>com.jcode.hotkey</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>setup-hotkey</string>
+        <string>--listen-macos-hotkey</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{stdout_path}</string>
+    <key>StandardErrorPath</key>
+    <string>{stderr_path}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>JCODE_PREFERRED_TERMINAL</key>
+        <string>{terminal}</string>
+    </dict>
+</dict>
+</plist>
+"#,
+        exe = exe_path,
+        stdout_path = hotkey_dir.join("mac_hotkey.out.log").display(),
+        stderr_path = hotkey_dir.join("mac_hotkey.err.log").display(),
+        terminal = terminal.cli_value(),
+    );
+    std::fs::write(&plist_path, plist)?;
+
+    save_preferred_macos_terminal(terminal)?;
+
+    let _ = std::process::Command::new("launchctl")
+        .args(["unload", plist_path.to_string_lossy().as_ref()])
+        .status();
+    let status = std::process::Command::new("launchctl")
+        .args(["load", "-w", plist_path.to_string_lossy().as_ref()])
+        .status()
+        .context("failed to load jcode LaunchAgent")?;
+    if !status.success() {
+        anyhow::bail!("launchctl load failed with exit code {:?}", status.code());
+    }
+
+    Ok(terminal)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_macos_hotkey_listener(
+    _preferred_terminal: Option<MacTerminalKind>,
+) -> Result<MacTerminalKind> {
+    anyhow::bail!("macOS hotkey listener is only supported on macOS")
+}
+
+#[cfg(target_os = "macos")]
+fn startup_spawn_notice(state: &SetupHintsState) -> Option<String> {
+    if !state.hotkey_configured || state.startup_spawn_hint_dismissed {
+        return None;
+    }
+    Some(format!(
+        "Press Alt+; from anywhere to open jcode in {}.",
+        effective_macos_terminal().label()
+    ))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn startup_spawn_notice(_state: &SetupHintsState) -> Option<String> {
     None
 }
 
@@ -654,7 +942,44 @@ fn nudge_macos_ghostty(state: &mut SetupHintsState) -> Option<String> {
 /// Manual `jcode setup-hotkey` command.
 ///
 /// Runs the full interactive setup flow regardless of launch count.
-pub fn run_setup_hotkey() -> Result<()> {
+pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if _listen_macos_hotkey {
+            return run_macos_hotkey_listener();
+        }
+
+        let mut state = SetupHintsState::load();
+        let terminal = effective_macos_terminal();
+        eprintln!("\x1b[1mjcode setup-hotkey\x1b[0m");
+        eprintln!();
+        eprintln!("  Preferred terminal: {}", terminal.label());
+        eprintln!("  Installing a LaunchAgent so Alt+; opens jcode from anywhere.");
+        eprintln!();
+
+        match install_macos_hotkey_listener(Some(terminal)) {
+            Ok(installed_terminal) => {
+                state.hotkey_configured = true;
+                state.hotkey_dismissed = true;
+                let _ = state.save();
+                eprintln!(
+                    "  \x1b[32m✓\x1b[0m Created hotkey (\x1b[1mAlt+;\x1b[0m) → {} + jcode",
+                    installed_terminal.label()
+                );
+                eprintln!();
+                eprintln!(
+                    "  Press \x1b[1mAlt+;\x1b[0m from anywhere to open jcode in {}.",
+                    installed_terminal.label()
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("  \x1b[31m✗\x1b[0m Failed: {}", e);
+                anyhow::bail!("macOS hotkey setup failed: {}", e);
+            }
+        }
+    }
+
     if !cfg!(windows) {
         eprintln!("Global hotkey setup is currently only supported on Windows.");
         eprintln!();
@@ -748,17 +1073,44 @@ pub fn run_setup_hotkey() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn run_macos_hotkey_listener() -> Result<()> {
+    use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+    use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+    use std::process::Command;
+
+    let launch_script = mac_hotkey_support_dir()?.join("launch_jcode.sh");
+    let manager = GlobalHotKeyManager::new().context("failed to initialize global hotkey manager")?;
+    let hotkey = HotKey::new(Some(Modifiers::ALT), Code::Semicolon);
+    manager
+        .register(hotkey)
+        .context("failed to register Alt+; hotkey")?;
+
+    loop {
+        if let Ok(event) = GlobalHotKeyEvent::receiver().recv() {
+            if event.id == hotkey.id() && event.state == HotKeyState::Pressed {
+                let _ = Command::new("sh").arg(&launch_script).spawn();
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_macos_hotkey_listener() -> Result<()> {
+    anyhow::bail!("macOS hotkey listener is only supported on macOS")
+}
+
 /// Main entry point: check if we should show setup hints.
 ///
 /// Called early in startup, before the TUI is initialized.
-/// Returns an optional startup user message to auto-send in jcode.
+/// Returns optional structured startup hints for the TUI.
 ///
 /// - Windows: On every 3rd launch, can show hotkey + Alacritty nudges.
 /// - macOS: On every 3rd launch, can suggest Ghostty and optionally hand off
 ///   to AI-guided setup by returning a prebuilt prompt.
-pub fn maybe_show_setup_hints() -> Option<String> {
+pub fn maybe_show_setup_hints() -> Option<StartupHints> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-        return None;
+        return StartupHints::none();
     }
 
     let mut state = SetupHintsState::load();
@@ -769,19 +1121,21 @@ pub fn maybe_show_setup_hints() -> Option<String> {
         let _ = create_desktop_shortcut(&mut state);
     }
 
+    let startup_notice = startup_spawn_notice(&state);
+
     if !cfg!(windows) && !cfg!(target_os = "macos") {
-        return None;
+        return startup_notice.map(StartupHints::with_spawn_notice);
     }
 
     if state.launch_count % 3 != 0 {
-        return None;
+        return startup_notice.map(StartupHints::with_spawn_notice);
     }
 
     if cfg!(target_os = "macos") {
         if !state.mac_ghostty_guided && !state.mac_ghostty_dismissed {
-            return nudge_macos_ghostty(&mut state);
+            return nudge_macos_ghostty(&mut state).map(StartupHints::with_auto_send);
         }
-        return None;
+        return startup_notice.map(StartupHints::with_spawn_notice);
     }
 
     let terminal = detect_terminal();
@@ -808,7 +1162,7 @@ pub fn maybe_show_setup_hints() -> Option<String> {
         prompt_try_it_out(did_install_alacritty);
     }
 
-    None
+    startup_notice.map(StartupHints::with_spawn_notice)
 }
 
 /// Create a desktop shortcut/launcher for jcode.

@@ -1,6 +1,7 @@
 use super::{
-    record_swarm_event, remove_session_from_swarm, update_member_status, ClientConnectionInfo,
-    ClientDebugState, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
+    record_swarm_event, remove_session_channel_subscriptions, remove_session_from_swarm,
+    remove_session_interrupt_queue, update_member_status, ClientConnectionInfo, ClientDebugState,
+    SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
 };
 use crate::agent::{Agent, InterruptSignal};
 use anyhow::Result;
@@ -19,11 +20,13 @@ pub(super) async fn cleanup_client_connection(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
     client_debug_state: &Arc<RwLock<ClientDebugState>>,
     client_debug_id: &str,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     client_connection_id: &str,
     shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
     event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -122,6 +125,7 @@ pub(super) async fn cleanup_client_connection(
             )
             .await;
         }
+        remove_session_channel_subscriptions(client_session_id, channel_subscriptions).await;
     }
 
     {
@@ -136,6 +140,7 @@ pub(super) async fn cleanup_client_connection(
         let mut signals = shutdown_signals.write().await;
         signals.remove(client_session_id);
     }
+    remove_session_interrupt_queue(soft_interrupt_queues, client_session_id).await;
 
     if let Some(handle) = processing_task.take() {
         handle.abort();

@@ -305,7 +305,8 @@ impl RemoteConnection {
     /// Send a message to the server
     /// Send a message to the server and return the request ID
     pub async fn send_message(&mut self, content: String) -> Result<u64> {
-        self.send_message_with_images(content, vec![]).await
+        self.send_message_with_images_and_reminder(content, vec![], None)
+            .await
     }
 
     /// Send a message with images to the server and return the request ID
@@ -313,6 +314,16 @@ impl RemoteConnection {
         &mut self,
         content: String,
         images: Vec<(String, String)>,
+    ) -> Result<u64> {
+        self.send_message_with_images_and_reminder(content, images, None)
+            .await
+    }
+
+    pub async fn send_message_with_images_and_reminder(
+        &mut self,
+        content: String,
+        images: Vec<(String, String)>,
+        system_reminder: Option<String>,
     ) -> Result<u64> {
         // Output token usage snapshots are cumulative within a single API call.
         // Reset per-call watermark before sending the next user request.
@@ -323,6 +334,7 @@ impl RemoteConnection {
             id,
             content,
             images,
+            system_reminder,
         };
         self.next_request_id += 1;
         self.send_request(request).await?;
@@ -404,6 +416,16 @@ impl RemoteConnection {
             id: self.next_request_id,
             feature,
             enabled,
+        };
+        self.next_request_id += 1;
+        self.send_request(request).await
+    }
+
+    /// Set compaction mode on the server for this session.
+    pub async fn set_compaction_mode(&mut self, mode: crate::config::CompactionMode) -> Result<()> {
+        let request = Request::SetCompactionMode {
+            id: self.next_request_id,
+            mode,
         };
         self.next_request_id += 1;
         self.send_request(request).await

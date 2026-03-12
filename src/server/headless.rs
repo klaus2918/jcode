@@ -1,7 +1,10 @@
 use crate::agent::Agent;
 use crate::protocol::ServerEvent;
 use crate::provider::Provider;
-use crate::server::{broadcast_swarm_status, swarm_id_for_dir, SwarmMember, VersionedPlan};
+use crate::server::{
+    broadcast_swarm_status, register_session_interrupt_queue, swarm_id_for_dir,
+    SessionInterruptQueues, SwarmMember, VersionedPlan,
+};
 use crate::tool::Registry;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -18,6 +21,7 @@ pub(super) async fn create_headless_session(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     _swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
     selfdev_requested: bool,
     model_override: Option<String>,
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
@@ -92,7 +96,16 @@ pub(super) async fn create_headless_session(
     let agent = Arc::new(Mutex::new(new_agent));
     {
         let mut sessions_guard = sessions.write().await;
-        sessions_guard.insert(client_session_id.clone(), agent);
+        sessions_guard.insert(client_session_id.clone(), Arc::clone(&agent));
+    }
+    {
+        let agent_guard = agent.lock().await;
+        register_session_interrupt_queue(
+            soft_interrupt_queues,
+            &client_session_id,
+            agent_guard.soft_interrupt_queue(),
+        )
+        .await;
     }
 
     let swarm_id = if swarm_enabled {

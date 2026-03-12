@@ -1,8 +1,10 @@
 use super::{Registry, Tool, ToolContext, ToolOutput};
+use crate::message::ToolCall;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 const MAX_PARALLEL: usize = 10;
 
@@ -139,13 +141,46 @@ impl Tool for BatchTool {
         // Execute all tools in parallel, emitting progress events as each completes
         let num_tools = params.tool_calls.len();
         use futures::StreamExt;
-        let mut stream: futures::stream::FuturesUnordered<_> = params
+        let subcalls: Vec<(usize, String, Value)> = params
             .tool_calls
             .into_iter()
             .enumerate()
             .map(|(i, tc)| {
-                let registry = self.registry.clone();
                 let (tool_name, parameters) = tc.resolved_parameters();
+                (i, tool_name, parameters)
+            })
+            .collect();
+
+        let mut running: HashMap<usize, ToolCall> = subcalls
+            .iter()
+            .map(|(i, tool_name, parameters)| {
+                (
+                    *i,
+                    ToolCall {
+                        id: format!("batch-{}-{}", i + 1, tool_name),
+                        name: tool_name.clone(),
+                        input: parameters.clone(),
+                        intent: None,
+                    },
+                )
+            })
+            .collect();
+
+        crate::bus::Bus::global().publish(crate::bus::BusEvent::BatchProgress(
+            crate::bus::BatchProgress {
+                session_id: ctx.session_id.clone(),
+                tool_call_id: ctx.tool_call_id.clone(),
+                total: num_tools,
+                completed: 0,
+                last_completed: None,
+                running: running.values().cloned().collect(),
+            },
+        ));
+
+        let mut stream: futures::stream::FuturesUnordered<_> = subcalls
+            .into_iter()
+            .map(|(i, tool_name, parameters)| {
+                let registry = self.registry.clone();
                 let sub_ctx = ctx.for_subcall(format!("batch-{}-{}", i + 1, tool_name.clone()));
                 async move {
                     let result = registry.execute(&tool_name, parameters, sub_ctx).await;
@@ -158,6 +193,7 @@ impl Tool for BatchTool {
         let mut completed_count = 0usize;
         while let Some((i, tool_name, result)) = stream.next().await {
             completed_count += 1;
+            running.remove(&i);
             crate::bus::Bus::global().publish(crate::bus::BusEvent::BatchProgress(
                 crate::bus::BatchProgress {
                     session_id: ctx.session_id.clone(),
@@ -165,6 +201,7 @@ impl Tool for BatchTool {
                     total: num_tools,
                     completed: completed_count,
                     last_completed: Some(tool_name.clone()),
+                    running: running.values().cloned().collect(),
                 },
             ));
             results.push((i, tool_name, result));

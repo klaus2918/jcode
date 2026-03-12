@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::message::ToolCall;
 use crate::todo::TodoItem;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -61,7 +62,7 @@ pub struct SubagentStatus {
 }
 
 /// Progress update from a running batch tool call
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BatchProgress {
     pub session_id: String,
     /// Parent tool_call_id of the batch call
@@ -72,6 +73,9 @@ pub struct BatchProgress {
     pub completed: usize,
     /// Name of the sub-call that just completed
     pub last_completed: Option<String>,
+    /// Sub-calls that are currently still running
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub running: Vec<ToolCall>,
 }
 
 /// Type of file operation for swarm awareness

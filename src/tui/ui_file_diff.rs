@@ -325,12 +325,14 @@ fn find_visible_edit_tool<'a>(
     let visible_start = scroll;
     let visible_end = scroll + visible_height;
     let visible_mid = scroll + visible_height / 2;
+    let candidate_start = edit_ranges.partition_point(|range| range.end_line <= visible_start);
+    let candidate_end = edit_ranges.partition_point(|range| range.start_line < visible_end);
 
     let mut best: Option<&EditToolRange> = None;
     let mut best_overlap = 0usize;
     let mut best_distance = usize::MAX;
 
-    for range in edit_ranges {
+    for range in &edit_ranges[candidate_start..candidate_end] {
         let overlap_start = range.start_line.max(visible_start);
         let overlap_end = range.end_line.min(visible_end);
         let overlap = if overlap_end > overlap_start {
@@ -350,6 +352,26 @@ fn find_visible_edit_tool<'a>(
             best = Some(range);
             best_overlap = overlap;
             best_distance = distance;
+        }
+    }
+
+    if best.is_some() {
+        return best;
+    }
+
+    // No overlapping edit range. Check the nearest neighbors around the insertion window
+    // instead of rescanning the entire history.
+    for idx in [candidate_start.checked_sub(1), Some(candidate_start)]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(range) = edit_ranges.get(idx) {
+            let range_mid = (range.start_line + range.end_line) / 2;
+            let distance = range_mid.abs_diff(visible_mid);
+            if best.is_none() || distance < best_distance {
+                best = Some(range);
+                best_distance = distance;
+            }
         }
     }
 

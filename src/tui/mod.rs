@@ -20,7 +20,7 @@ mod ui;
 mod ui_diff;
 pub mod visual_debug;
 
-pub use app::{App, DisplayMessage, ProcessingStatus, RunResult};
+pub use app::{App, CopyBadgeUiState, DisplayMessage, ProcessingStatus, RunResult};
 
 use crate::message::ToolCall;
 use ratatui::prelude::Frame;
@@ -33,7 +33,10 @@ pub fn enable_keyboard_enhancement() -> bool {
     use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
     let result = crossterm::execute!(
         std::io::stdout(),
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        )
     )
     .is_ok();
     crate::logging::info(&format!(
@@ -85,8 +88,8 @@ pub trait TuiState {
     fn command_suggestions(&self) -> Vec<(String, &'static str)>;
     fn active_skill(&self) -> Option<String>;
     fn subagent_status(&self) -> Option<String>;
-    /// Progress of a currently-running batch tool call (completed, total, last tool name)
-    fn batch_progress(&self) -> Option<(usize, usize, Option<String>)>;
+    /// Progress of a currently-running batch tool call.
+    fn batch_progress(&self) -> Option<crate::bus::BatchProgress>;
     fn time_since_activity(&self) -> Option<Duration>;
     /// Total session token usage (input, output) - used for high usage warnings
     fn total_session_tokens(&self) -> Option<(u64, u64)>;
@@ -177,6 +180,8 @@ pub trait TuiState {
     fn working_dir(&self) -> Option<String>;
     /// Monotonic clock for viewport animations
     fn now_millis(&self) -> u64;
+    /// UI state for live copy badge highlighting / feedback
+    fn copy_badge_ui(&self) -> crate::tui::CopyBadgeUiState;
     /// Suggestion prompts for new users (shown in initial empty state).
     /// Returns (label, prompt_text) pairs. Empty if user is experienced or not authenticated.
     fn suggestion_prompts(&self) -> Vec<(String, String)>;

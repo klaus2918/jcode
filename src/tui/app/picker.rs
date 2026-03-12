@@ -110,6 +110,22 @@ impl App {
             self.provider.model_routes()
         };
 
+        let routes = if routes.is_empty() && self.is_remote && current_model != "unknown" {
+            vec![crate::provider::ModelRoute {
+                model: current_model.clone(),
+                provider: self
+                    .remote_provider_name
+                    .clone()
+                    .unwrap_or_else(|| "current".to_string()),
+                api_method: "current".to_string(),
+                available: true,
+                detail: "catalog still loading".to_string(),
+                cheapness: None,
+            }]
+        } else {
+            routes
+        };
+
         if routes.is_empty() {
             self.set_status_notice("No models available");
             return;
@@ -904,7 +920,6 @@ impl App {
 
                     self.picker_state = None;
                     self.upstream_provider = None;
-                    self.connection_type = None;
                     if self.is_remote {
                         self.pending_model_switch = Some(spec);
                     } else {

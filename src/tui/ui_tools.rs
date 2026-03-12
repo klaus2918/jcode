@@ -186,11 +186,6 @@ pub(super) fn is_memory_store_tool(tc: &ToolCall) -> bool {
             .get("action")
             .and_then(|v| v.as_str())
             .is_some_and(|a| a == "remember"),
-        "remember" => tc
-            .input
-            .get("action")
-            .and_then(|v| v.as_str())
-            .map_or(true, |a| a == "store"),
         _ => false,
     }
 }
@@ -202,11 +197,6 @@ pub(super) fn is_memory_recall_tool(tc: &ToolCall) -> bool {
             .get("action")
             .and_then(|v| v.as_str())
             .is_some_and(|a| a == "recall"),
-        "remember" => tc
-            .input
-            .get("action")
-            .and_then(|v| v.as_str())
-            .is_some_and(|a| a == "search"),
         _ => false,
     }
 }
@@ -399,32 +389,6 @@ pub(super) fn get_tool_summary(tool: &ToolCall) -> String {
                 "related" => {
                     let id = tool.input.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                     format!("related {}", truncate(id, 30))
-                }
-                _ => action.to_string(),
-            }
-        }
-        "remember" => {
-            let action = tool
-                .input
-                .get("action")
-                .and_then(|v| v.as_str())
-                .unwrap_or("store");
-            match action {
-                "store" => {
-                    let content = tool
-                        .input
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    format!("store: {}", truncate(content, 40))
-                }
-                "search" => {
-                    let query = tool
-                        .input
-                        .get("query")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    format!("search '{}'", truncate(query, 35))
                 }
                 _ => action.to_string(),
             }

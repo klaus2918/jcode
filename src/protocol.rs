@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::bus::BatchProgress;
 use crate::message::ToolCall;
 use crate::plan::PlanItem;
 
@@ -34,6 +35,8 @@ pub enum Request {
         content: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<(String, String)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        system_reminder: Option<String>,
     },
 
     /// Cancel current generation
@@ -139,6 +142,13 @@ pub enum Request {
         id: u64,
         feature: FeatureToggle,
         enabled: bool,
+    },
+
+    /// Set the compaction mode for this session
+    #[serde(rename = "set_compaction_mode")]
+    SetCompactionMode {
+        id: u64,
+        mode: crate::config::CompactionMode,
     },
 
     /// Split the current session — clone conversation into a new session
@@ -392,6 +402,10 @@ pub enum ServerEvent {
         error: Option<String>,
     },
 
+    /// Batch tool progress update, including currently-running subcalls
+    #[serde(rename = "batch_progress")]
+    BatchProgress { progress: BatchProgress },
+
     /// Token usage update
     #[serde(rename = "tokens")]
     TokenUsage {
@@ -594,6 +608,9 @@ pub enum ServerEvent {
         /// Reasoning effort for OpenAI models
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_effort: Option<String>,
+        /// Active compaction mode for this session
+        #[serde(default)]
+        compaction_mode: crate::config::CompactionMode,
     },
 
     /// Server is reloading (clients should reconnect)
@@ -646,6 +663,15 @@ pub enum ServerEvent {
         id: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         transport: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
+    /// Compaction mode changed (response to set_compaction_mode)
+    #[serde(rename = "compaction_mode_changed")]
+    CompactionModeChanged {
+        id: u64,
+        mode: crate::config::CompactionMode,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -870,6 +896,7 @@ impl Request {
             Request::SetTransport { id, .. } => *id,
             Request::SetPremiumMode { id, .. } => *id,
             Request::SetFeature { id, .. } => *id,
+            Request::SetCompactionMode { id, .. } => *id,
             Request::Split { id } => *id,
             Request::Compact { id } => *id,
             Request::NotifyAuthChanged { id } => *id,
@@ -926,6 +953,7 @@ mod tests {
             id: 1,
             content: "hello".to_string(),
             images: vec![],
+            system_reminder: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let decoded: Request = serde_json::from_str(&json).unwrap();
@@ -976,6 +1004,35 @@ mod tests {
         let decoded: ServerEvent = serde_json::from_str(json.trim()).unwrap();
         match decoded {
             ServerEvent::Interrupted => {}
+            _ => panic!("wrong event type"),
+        }
+    }
+
+    #[test]
+    fn test_history_event_decodes_without_compaction_mode_for_older_servers() {
+        let json = r#"{
+            "type":"history",
+            "id":1,
+            "session_id":"ses_test_123",
+            "messages":[],
+            "provider_name":"openai",
+            "provider_model":"gpt-5.4",
+            "available_models":["gpt-5.4"]
+        }"#;
+        let decoded: ServerEvent = serde_json::from_str(json).unwrap();
+        match decoded {
+            ServerEvent::History {
+                provider_name,
+                provider_model,
+                available_models,
+                compaction_mode,
+                ..
+            } => {
+                assert_eq!(provider_name.as_deref(), Some("openai"));
+                assert_eq!(provider_model.as_deref(), Some("gpt-5.4"));
+                assert_eq!(available_models, vec!["gpt-5.4"]);
+                assert_eq!(compaction_mode, crate::config::CompactionMode::Reactive);
+            }
             _ => panic!("wrong event type"),
         }
     }

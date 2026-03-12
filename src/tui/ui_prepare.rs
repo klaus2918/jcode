@@ -1,5 +1,37 @@
 use super::*;
 
+fn user_prompt_number_style(color: Color) -> Style {
+    Style::default().fg(color).bg(user_bg())
+}
+
+fn user_prompt_accent_style() -> Style {
+    Style::default().fg(user_color()).bg(user_bg())
+}
+
+fn user_prompt_text_style() -> Style {
+    Style::default().fg(user_text()).bg(user_bg())
+}
+
+fn assistant_message_copy_targets(
+    content: &str,
+    rendered_lines: &[Line<'static>],
+) -> Vec<RawCopyTarget> {
+    if content.starts_with("Error:")
+        || content.starts_with("error:")
+        || content.starts_with("Failed:")
+    {
+        return vec![RawCopyTarget {
+            kind: CopyTargetKind::Error,
+            content: content.trim_end().to_string(),
+            start_raw_line: 0,
+            end_raw_line: rendered_lines.len().max(1),
+            badge_raw_line: 0,
+        }];
+    }
+
+    crate::tui::markdown::extract_copy_targets_from_rendered_lines(rendered_lines)
+}
+
 pub(super) fn prepare_messages(
     app: &dyn TuiState,
     width: u16,
@@ -73,6 +105,7 @@ fn prepare_messages_inner(
             user_prompt_texts: Vec::new(),
             image_regions: Vec::new(),
             edit_tool_ranges: Vec::new(),
+            copy_targets: Vec::new(),
         }
     };
 
@@ -90,6 +123,7 @@ fn prepare_messages_inner(
             user_prompt_texts: Vec::new(),
             image_regions: Vec::new(),
             edit_tool_ranges: Vec::new(),
+            copy_targets: Vec::new(),
         }
     };
 
@@ -100,6 +134,7 @@ fn prepare_messages_inner(
     let user_prompt_texts;
     let mut image_regions;
     let edit_tool_ranges;
+    let copy_targets;
 
     if startup_active {
         let elapsed = app.animation_elapsed();
@@ -142,6 +177,7 @@ fn prepare_messages_inner(
         user_prompt_texts = Vec::new();
         image_regions = Vec::new();
         edit_tool_ranges = Vec::new();
+        copy_targets = Vec::new();
     } else {
         let is_initial_empty = app.display_messages().is_empty()
             && !app.is_processing()
@@ -269,6 +305,18 @@ fn prepare_messages_inner(
                 end_line: r.end_line + body_offset,
             })
             .collect();
+
+        copy_targets = body_prepared
+            .copy_targets
+            .iter()
+            .map(|target| CopyTarget {
+                kind: target.kind.clone(),
+                content: target.content.clone(),
+                start_line: target.start_line + body_offset,
+                end_line: target.end_line + body_offset,
+                badge_line: target.badge_line + body_offset,
+            })
+            .collect();
     }
 
     PreparedMessages {
@@ -279,6 +327,7 @@ fn prepare_messages_inner(
         user_prompt_texts,
         image_regions,
         edit_tool_ranges,
+        copy_targets,
     }
 }
 
@@ -356,6 +405,7 @@ fn prepare_body_incremental(
     let mut new_user_line_indices: Vec<usize> = Vec::new();
     let mut new_user_prompt_texts: Vec<String> = Vec::new();
     let mut new_edit_tool_line_ranges: Vec<(usize, String, usize, usize)> = Vec::new();
+    let mut new_copy_targets: Vec<RawCopyTarget> = Vec::new();
 
     let body_has_content = !prev.wrapped_lines.is_empty();
 
@@ -388,6 +438,16 @@ fn prepare_body_incremental(
                     app.diff_mode(),
                     render_assistant_message,
                 );
+                let cached_copy_targets = assistant_message_copy_targets(&msg.content, &cached);
+                for target in cached_copy_targets {
+                    new_copy_targets.push(RawCopyTarget {
+                        kind: target.kind,
+                        content: target.content,
+                        start_raw_line: new_lines.len() + target.start_raw_line,
+                        end_raw_line: new_lines.len() + target.end_raw_line,
+                        badge_raw_line: new_lines.len() + target.badge_raw_line,
+                    });
+                }
                 for line in cached {
                     new_lines.push(align_if_unset(line, align));
                 }
@@ -451,29 +511,44 @@ fn prepare_body_incremental(
                 }
             }
             "system" => {
-                let should_render_markdown = msg.content.contains('\n')
-                    || msg.content.contains("```")
-                    || msg.content.contains("# ")
-                    || msg.content.contains("- ");
-
-                if should_render_markdown {
-                    let content_width = width.saturating_sub(4) as usize;
-                    let rendered =
-                        markdown::render_markdown_with_width(&msg.content, Some(content_width));
-                    for line in rendered {
-                        new_lines.push(align_if_unset(line, align));
-                    }
+                let content_width = width.saturating_sub(4);
+                let cached = get_cached_message_lines(
+                    msg,
+                    content_width,
+                    app.diff_mode(),
+                    render_system_message,
+                );
+                for line in cached {
+                    new_lines.push(align_if_unset(line, align));
+                }
+            }
+            "swarm" => {
+                let title = msg.title.clone().unwrap_or_else(|| "Swarm".to_string());
+                let border_style = Style::default().fg(rgb(170, 110, 255));
+                let text_style = Style::default().fg(rgb(230, 220, 255));
+                let total_width = if centered {
+                    (width.saturating_sub(4) as usize).min(90)
                 } else {
-                    new_lines.push(
-                        Line::from(vec![
-                            Span::styled(if centered { "" } else { "  " }, Style::default()),
-                            Span::styled(
-                                msg.content.clone(),
-                                Style::default().fg(accent_color()).italic(),
-                            ),
-                        ])
-                        .alignment(align),
-                    );
+                    width.saturating_sub(2) as usize
+                };
+                let content_width = total_width.saturating_sub(4).max(1);
+                let mut box_content =
+                    markdown::render_markdown_with_width(&msg.content, Some(content_width));
+                if box_content.is_empty() {
+                    box_content.push(Line::from(Span::styled(msg.content.clone(), text_style)));
+                } else {
+                    for line in &mut box_content {
+                        for span in &mut line.spans {
+                            if span.style.fg.is_none() {
+                                span.style.fg = text_style.fg;
+                            }
+                        }
+                    }
+                }
+                let title = format!("🟣 {}", title);
+                let box_lines = render_rounded_box(&title, box_content, total_width, border_style);
+                for line in box_lines {
+                    new_lines.push(align_if_unset(line, align));
                 }
             }
             "memory" => {
@@ -571,6 +646,7 @@ fn prepare_body_incremental(
         &new_user_prompt_texts,
         width,
         &new_edit_tool_line_ranges,
+        &new_copy_targets,
     );
 
     let prev_len = prev.wrapped_lines.len();
@@ -616,6 +692,16 @@ fn prepare_body_incremental(
         });
     }
 
+    let mut copy_targets = prev.copy_targets.clone();
+    for target in new_wrapped.copy_targets {
+        copy_targets.push(CopyTarget {
+            start_line: target.start_line + prev_len,
+            end_line: target.end_line + prev_len,
+            badge_line: target.badge_line + prev_len,
+            ..target
+        });
+    }
+
     Arc::new(PreparedMessages {
         wrapped_lines,
         wrapped_user_indices,
@@ -624,6 +710,7 @@ fn prepare_body_incremental(
         user_prompt_texts,
         image_regions,
         edit_tool_ranges,
+        copy_targets,
     })
 }
 
@@ -642,6 +729,7 @@ fn prepare_streaming_cached(
             user_prompt_texts: Vec::new(),
             image_regions: Vec::new(),
             edit_tool_ranges: Vec::new(),
+            copy_targets: Vec::new(),
         };
     }
 
@@ -672,6 +760,7 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
     let mut user_line_indices: Vec<usize> = Vec::new();
     let mut user_prompt_texts: Vec<String> = Vec::new();
     let mut edit_tool_line_ranges: Vec<(usize, String, usize, usize)> = Vec::new();
+    let mut copy_targets: Vec<RawCopyTarget> = Vec::new();
     let centered = app.centered_mode();
     markdown::set_center_code_blocks(centered);
     let align = if centered {
@@ -702,9 +791,12 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 let num_color = rainbow_prompt_color(distance);
                 lines.push(
                     Line::from(vec![
-                        Span::styled(format!("{}", prompt_num), Style::default().fg(num_color)),
-                        Span::styled("› ", Style::default().fg(user_color())),
-                        Span::styled(msg.content.clone(), Style::default().fg(user_text())),
+                        Span::styled(
+                            format!("{}", prompt_num),
+                            user_prompt_number_style(num_color),
+                        ),
+                        Span::styled("› ", user_prompt_accent_style()),
+                        Span::styled(msg.content.clone(), user_prompt_text_style()),
                     ])
                     .alignment(align),
                 );
@@ -717,6 +809,16 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                     app.diff_mode(),
                     render_assistant_message,
                 );
+                let message_copy_targets = assistant_message_copy_targets(&msg.content, &cached);
+                for target in message_copy_targets {
+                    copy_targets.push(RawCopyTarget {
+                        kind: target.kind,
+                        content: target.content,
+                        start_raw_line: lines.len() + target.start_raw_line,
+                        end_raw_line: lines.len() + target.end_raw_line,
+                        badge_raw_line: lines.len() + target.badge_raw_line,
+                    });
+                }
                 for line in cached {
                     lines.push(align_if_unset(line, align));
                 }
@@ -780,29 +882,15 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 }
             }
             "system" => {
-                let should_render_markdown = msg.content.contains('\n')
-                    || msg.content.contains("```")
-                    || msg.content.contains("# ")
-                    || msg.content.contains("- ");
-
-                if should_render_markdown {
-                    let content_width = width.saturating_sub(4) as usize;
-                    let rendered =
-                        markdown::render_markdown_with_width(&msg.content, Some(content_width));
-                    for line in rendered {
-                        lines.push(align_if_unset(line, align));
-                    }
-                } else {
-                    lines.push(
-                        Line::from(vec![
-                            Span::styled(if centered { "" } else { "  " }, Style::default()),
-                            Span::styled(
-                                msg.content.clone(),
-                                Style::default().fg(accent_color()).italic(),
-                            ),
-                        ])
-                        .alignment(align),
-                    );
+                let content_width = width.saturating_sub(4);
+                let cached = get_cached_message_lines(
+                    msg,
+                    content_width,
+                    app.diff_mode(),
+                    render_system_message,
+                );
+                for line in cached {
+                    lines.push(align_if_unset(line, align));
                 }
             }
             "memory" => {
@@ -912,6 +1000,7 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
         &user_prompt_texts,
         width,
         &edit_tool_line_ranges,
+        &copy_targets,
     )
 }
 
@@ -983,6 +1072,7 @@ fn wrap_lines(
         user_prompt_texts: user_prompt_texts.to_vec(),
         image_regions,
         edit_tool_ranges: Vec::new(),
+        copy_targets: Vec::new(),
     }
 }
 
@@ -992,6 +1082,7 @@ fn wrap_lines_with_map(
     user_prompt_texts: &[String],
     width: u16,
     edit_ranges: &[(usize, String, usize, usize)],
+    copy_ranges: &[RawCopyTarget],
 ) -> PreparedMessages {
     let full_width = width.saturating_sub(1) as usize;
     let user_width = width.saturating_sub(2) as usize;
@@ -1067,6 +1158,29 @@ fn wrap_lines_with_map(
         });
     }
 
+    let mut copy_targets = Vec::new();
+    for target in copy_ranges {
+        let start_line = raw_to_wrapped
+            .get(target.start_raw_line)
+            .copied()
+            .unwrap_or(0);
+        let end_line = raw_to_wrapped
+            .get(target.end_raw_line)
+            .copied()
+            .unwrap_or(wrapped_lines.len());
+        let badge_line = raw_to_wrapped
+            .get(target.badge_raw_line)
+            .copied()
+            .unwrap_or(start_line);
+        copy_targets.push(CopyTarget {
+            kind: target.kind.clone(),
+            content: target.content.clone(),
+            start_line,
+            end_line,
+            badge_line,
+        });
+    }
+
     PreparedMessages {
         wrapped_lines,
         wrapped_user_indices,
@@ -1075,5 +1189,6 @@ fn wrap_lines_with_map(
         user_prompt_texts: user_prompt_texts.to_vec(),
         image_regions,
         edit_tool_ranges,
+        copy_targets,
     }
 }

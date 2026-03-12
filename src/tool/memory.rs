@@ -342,14 +342,10 @@ impl Tool for MemoryTool {
                     .ok_or_else(|| anyhow::anyhow!("to_id required"))?;
                 let weight = input.weight.unwrap_or(0.5);
 
-                if weight < 0.0 || weight > 1.0 {
-                    return Err(anyhow::anyhow!("weight must be between 0.0 and 1.0"));
-                }
-
                 memory::set_state(MemoryState::ToolAction {
                     action: "link".into(),
                     detail: format!(
-                        "{} → {}",
+                        "{} -> {}",
                         truncate_for_widget(&from_id, 15),
                         truncate_for_widget(&to_id, 15)
                     ),
@@ -360,9 +356,8 @@ impl Tool for MemoryTool {
                     to: to_id.clone(),
                 });
                 memory::set_state(MemoryState::Idle);
-
                 Ok(ToolOutput::new(format!(
-                    "Linked {} -> {} (weight: {:.2})",
+                    "Linked memories {} -> {} (weight {:.2})",
                     from_id, to_id, weight
                 )))
             }
@@ -376,7 +371,7 @@ impl Tool for MemoryTool {
                 });
                 let related = self.manager.get_related(&id, depth)?;
                 memory::add_event(MemoryEventKind::ToolRecalled {
-                    query: format!("related:{}", truncate_for_widget(&id, 25)),
+                    query: format!("related:{}", truncate_for_widget(&id, 20)),
                     count: related.len(),
                 });
                 memory::set_state(MemoryState::Idle);
@@ -393,15 +388,10 @@ impl Tool for MemoryTool {
                         id,
                         depth
                     );
-                    for entry in related {
-                        let tags_str = if entry.tags.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" [{}]", entry.tags.join(", "))
-                        };
+                    for e in related {
                         out.push_str(&format!(
-                            "- [{}] {}{}\n  id: {}\n\n",
-                            entry.category, entry.content, tags_str, entry.id
+                            "- [{}] {}\n  id: {}\n\n",
+                            e.category, e.content, e.id
                         ));
                     }
                     Ok(ToolOutput::new(out))
@@ -413,15 +403,10 @@ impl Tool for MemoryTool {
 }
 
 fn truncate_for_widget(s: &str, max: usize) -> String {
-    if s.len() > max {
-        format!("{}…", &s[..max])
+    if s.chars().count() > max {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{}…", truncated)
     } else {
         s.to_string()
-    }
-}
-
-impl Default for MemoryTool {
-    fn default() -> Self {
-        Self::new()
     }
 }

@@ -15,6 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::config::{config, DiagramDisplayMode};
 use crate::tui::mermaid;
+use crate::tui::ui::{CopyTargetKind, RawCopyTarget};
 
 // Syntax highlighting resources (loaded once)
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(|| SyntaxSet::load_defaults_newlines());
@@ -1289,6 +1290,60 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
     lines
 }
 
+fn line_plain_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+pub(crate) fn extract_copy_targets_from_rendered_lines(
+    lines: &[Line<'static>],
+) -> Vec<RawCopyTarget> {
+    let mut targets = Vec::new();
+
+    let mut idx = 0usize;
+    while idx < lines.len() {
+        let text = line_plain_text(&lines[idx]);
+        let trimmed = text.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("┌─ ") {
+            let label = rest.trim();
+            let language = if label.is_empty() || label == "code" {
+                None
+            } else {
+                Some(label.to_string())
+            };
+            let start = idx;
+            let badge_line = idx;
+            idx += 1;
+            let mut content_lines = Vec::new();
+            while idx < lines.len() {
+                let line_text = line_plain_text(&lines[idx]);
+                let line_trimmed = line_text.trim_start();
+                if line_trimmed.starts_with("└─") {
+                    idx += 1;
+                    break;
+                }
+                if let Some(code) = line_trimmed.strip_prefix("│ ") {
+                    content_lines.push(code.to_string());
+                }
+                idx += 1;
+            }
+            targets.push(RawCopyTarget {
+                kind: CopyTargetKind::CodeBlock { language },
+                content: content_lines.join("\n"),
+                start_raw_line: start,
+                end_raw_line: idx,
+                badge_raw_line: badge_line,
+            });
+            continue;
+        }
+        idx += 1;
+    }
+
+    targets
+}
+
 /// Render a table as ASCII-style lines
 /// max_width: Optional maximum width for the entire table
 fn render_table(rows: &[Vec<String>], max_width: Option<usize>) -> Vec<Line<'static>> {
@@ -2280,6 +2335,25 @@ mod tests {
     fn test_code_block() {
         let lines = render_markdown("```rust\nfn main() {}\n```");
         assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn test_extract_copy_targets_from_rendered_lines_for_code_block() {
+        let lines =
+            render_markdown("before\n\n```rust\nfn main() {}\nprintln!(\"hi\");\n```\n\nafter");
+        let targets = extract_copy_targets_from_rendered_lines(&lines);
+
+        assert_eq!(targets.len(), 1);
+        let target = &targets[0];
+        assert_eq!(
+            target.kind,
+            CopyTargetKind::CodeBlock {
+                language: Some("rust".to_string())
+            }
+        );
+        assert_eq!(target.content, "fn main() {}\nprintln!(\"hi\");");
+        assert_eq!(target.start_raw_line, target.badge_raw_line);
+        assert!(target.end_raw_line > target.start_raw_line);
     }
 
     #[test]

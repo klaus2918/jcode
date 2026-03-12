@@ -21,6 +21,23 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
+const LEGACY_NOTE_CATEGORY: &str = "note";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct LegacyNotesFile {
+    #[serde(default)]
+    entries: Vec<LegacyNoteEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyNoteEntry {
+    id: String,
+    content: String,
+    created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tag: Option<String>,
+}
+
 // === Global Activity Tracking ===
 
 /// Global memory activity state - updated by sidecar, read by info widget
@@ -1142,6 +1159,11 @@ impl MemoryManager {
         }
     }
 
+    pub fn with_project_dir(mut self, project_dir: impl Into<PathBuf>) -> Self {
+        self.project_dir = Some(project_dir.into());
+        self
+    }
+
     /// Create a memory manager in test mode (isolated storage)
     pub fn new_test() -> Self {
         Self {
@@ -1203,6 +1225,71 @@ impl MemoryManager {
 
         let memory_dir = storage::jcode_dir()?.join("memory").join("projects");
         Ok(Some(memory_dir.join(format!("{}.json", project_hash))))
+    }
+
+    fn legacy_notes_path(&self) -> Result<Option<PathBuf>> {
+        if self.test_mode {
+            let test_dir = storage::jcode_dir()?.join("notes").join("test");
+            std::fs::create_dir_all(&test_dir)?;
+            return Ok(Some(test_dir.join("test_notes.json")));
+        }
+
+        let project_dir = match self.get_project_dir() {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let project_hash = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            project_dir.hash(&mut hasher);
+            format!("{:016x}", hasher.finish())
+        };
+
+        Ok(Some(
+            storage::jcode_dir()?
+                .join("notes")
+                .join(format!("{}.json", project_hash)),
+        ))
+    }
+
+    fn import_legacy_notes_into_graph(&self, graph: &mut MemoryGraph) -> Result<bool> {
+        let Some(path) = self.legacy_notes_path()? else {
+            return Ok(false);
+        };
+        if !path.exists() {
+            return Ok(false);
+        }
+
+        let legacy: LegacyNotesFile = storage::read_json(&path)?;
+        if legacy.entries.is_empty() {
+            return Ok(false);
+        }
+
+        let mut changed = false;
+        for note in legacy.entries {
+            if graph.memories.contains_key(&note.id) {
+                continue;
+            }
+
+            let mut entry = MemoryEntry::new(
+                MemoryCategory::Custom(LEGACY_NOTE_CATEGORY.to_string()),
+                note.content,
+            );
+            entry.id = note.id;
+            entry.created_at = note.created_at;
+            entry.updated_at = note.created_at;
+            entry.source = Some("legacy_remember_migration".to_string());
+            if let Some(tag) = note.tag {
+                entry.tags.push(tag);
+            }
+            entry.ensure_embedding();
+            graph.add_memory(entry);
+            changed = true;
+        }
+
+        Ok(changed)
     }
 
     fn global_memory_path(&self) -> Result<PathBuf> {
@@ -2113,6 +2200,10 @@ impl MemoryManager {
             // Try loading as MemoryGraph first
             if let Ok(graph) = storage::read_json::<MemoryGraph>(&path) {
                 if graph.graph_version == GRAPH_VERSION {
+                    let mut graph = graph;
+                    if self.import_legacy_notes_into_graph(&mut graph)? {
+                        self.save_project_graph(&graph)?;
+                    }
                     if !self.test_mode {
                         cache_graph(path, &graph);
                     }
@@ -2122,7 +2213,8 @@ impl MemoryManager {
 
             // Fall back to legacy MemoryStore and migrate
             let store: MemoryStore = storage::read_json(&path)?;
-            let graph = MemoryGraph::from_legacy_store(store);
+            let mut graph = MemoryGraph::from_legacy_store(store);
+            let _ = self.import_legacy_notes_into_graph(&mut graph)?;
 
             // Save migrated format (create backup first)
             let backup_path = path.with_extension("json.bak");
@@ -2140,7 +2232,10 @@ impl MemoryManager {
             }
             Ok(graph)
         } else {
-            let graph = MemoryGraph::new();
+            let mut graph = MemoryGraph::new();
+            if self.import_legacy_notes_into_graph(&mut graph)? {
+                self.save_project_graph(&graph)?;
+            }
             if !self.test_mode {
                 cache_graph(path, &graph);
             }

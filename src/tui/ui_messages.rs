@@ -99,6 +99,22 @@ pub(crate) fn render_assistant_message(
     lines
 }
 
+pub(crate) fn render_system_message(
+    msg: &DisplayMessage,
+    width: u16,
+    _diff_mode: crate::config::DiffDisplayMode,
+) -> Vec<Line<'static>> {
+    let mut lines = markdown::render_markdown_with_width(&msg.content, Some(width as usize));
+    for line in &mut lines {
+        for span in &mut line.spans {
+            if span.style.fg.is_none() {
+                span.style.fg = Some(system_message_color());
+            }
+        }
+    }
+    lines
+}
+
 pub(crate) fn render_tool_message(
     msg: &DisplayMessage,
     width: u16,

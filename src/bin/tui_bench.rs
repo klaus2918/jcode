@@ -288,7 +288,7 @@ impl TuiState for BenchState {
         None
     }
 
-    fn batch_progress(&self) -> Option<(usize, usize, Option<String>)> {
+    fn batch_progress(&self) -> Option<jcode::bus::BatchProgress> {
         None
     }
 
@@ -473,6 +473,10 @@ impl TuiState for BenchState {
 
     fn now_millis(&self) -> u64 {
         self.started_at.elapsed().as_millis() as u64
+    }
+
+    fn copy_badge_ui(&self) -> jcode::tui::CopyBadgeUiState {
+        jcode::tui::CopyBadgeUiState::default()
     }
 
     fn suggestion_prompts(&self) -> Vec<(String, String)> {

@@ -658,6 +658,66 @@ fn parse_text_wrapped_tool_call(text: &str) -> Option<(String, String, String, S
     fallback
 }
 
+fn stream_text_or_recovered_tool_call(
+    text: &str,
+    pending: &mut VecDeque<StreamEvent>,
+) -> Option<StreamEvent> {
+    if text.is_empty() {
+        return None;
+    }
+
+    if let Some((prefix, tool_name, arguments, suffix)) = parse_text_wrapped_tool_call(text) {
+        let total = RECOVERED_TEXT_WRAPPED_TOOL_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+        crate::logging::warn(&format!(
+            "[openai] Recovered text-wrapped tool call for '{}' (total={})",
+            tool_name, total
+        ));
+        let suffix = sanitize_recovered_tool_suffix(&suffix);
+        if !prefix.is_empty() {
+            pending.push_back(StreamEvent::TextDelta(prefix));
+        }
+        pending.push_back(StreamEvent::ToolUseStart {
+            id: format!(
+                "fallback_text_call_{}",
+                FALLBACK_TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ),
+            name: tool_name,
+        });
+        pending.push_back(StreamEvent::ToolInputDelta(arguments));
+        pending.push_back(StreamEvent::ToolUseEnd);
+        if !suffix.is_empty() {
+            pending.push_back(StreamEvent::TextDelta(suffix));
+        }
+        return pending.pop_front();
+    }
+
+    Some(StreamEvent::TextDelta(text.to_string()))
+}
+
+fn sanitize_recovered_tool_suffix(suffix: &str) -> String {
+    let trimmed = suffix.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let normalized = trimmed.trim_start_matches('"');
+
+    if normalized.starts_with(",\"item_id\"")
+        || normalized.starts_with(",\"output_index\"")
+        || normalized.starts_with(",\"sequence_number\"")
+        || normalized.starts_with(",\"call_id\"")
+        || normalized.starts_with(",\"type\":\"response.")
+        || (normalized.starts_with(',')
+            && normalized.contains("\"item_id\"")
+            && (normalized.contains("\"output_index\"")
+                || normalized.contains("\"sequence_number\"")))
+    {
+        return String::new();
+    }
+
+    suffix.to_string()
+}
+
 fn orphan_tool_output_to_user_message(item: &Value, missing_output: &str) -> Option<Value> {
     let output_value = item.get("output")?;
     let output = if let Some(text) = output_value.as_str() {
@@ -1170,7 +1230,7 @@ fn parse_openai_response_event(
         "response.output_text.delta" => {
             if let Some(delta) = event.delta {
                 *saw_text_delta = true;
-                return Some(StreamEvent::TextDelta(delta));
+                return stream_text_or_recovered_tool_call(&delta, pending);
             }
         }
         "response.reasoning.delta" | "response.reasoning_summary_text.delta" => {
@@ -1406,35 +1466,7 @@ fn handle_openai_output_item(
                     }
                 }
             }
-            if !text.is_empty() {
-                if let Some((prefix, tool_name, arguments, suffix)) =
-                    parse_text_wrapped_tool_call(&text)
-                {
-                    let total =
-                        RECOVERED_TEXT_WRAPPED_TOOL_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-                    crate::logging::warn(&format!(
-                        "[openai] Recovered text-wrapped tool call for '{}' (total={})",
-                        tool_name, total
-                    ));
-                    if !prefix.is_empty() {
-                        pending.push_back(StreamEvent::TextDelta(prefix));
-                    }
-                    pending.push_back(StreamEvent::ToolUseStart {
-                        id: format!(
-                            "fallback_text_call_{}",
-                            FALLBACK_TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed)
-                        ),
-                        name: tool_name,
-                    });
-                    pending.push_back(StreamEvent::ToolInputDelta(arguments));
-                    pending.push_back(StreamEvent::ToolUseEnd);
-                    if !suffix.is_empty() {
-                        pending.push_back(StreamEvent::TextDelta(suffix));
-                    }
-                    return pending.pop_front();
-                }
-                return Some(StreamEvent::TextDelta(text));
-            }
+            return stream_text_or_recovered_tool_call(&text, pending);
         }
         "reasoning" => {
             if let Some(summary_arr) = item.get("summary").and_then(|v| v.as_array()) {
@@ -3158,6 +3190,25 @@ fn extract_error_with_retry(
         .and_then(|v| v.as_str())
         .unwrap_or("OpenAI response stream error (unknown)")
         .to_string();
+    let error_type = error.get("type").and_then(|v| v.as_str());
+    let code = error.get("code").and_then(|v| v.as_str());
+
+    let message_lower = message.to_lowercase();
+    let message = match (error_type, code) {
+        (Some(error_type), Some(code))
+            if !message_lower.contains(&error_type.to_lowercase())
+                && !message_lower.contains(&code.to_lowercase()) =>
+        {
+            format!("{} ({}): {}", error_type, code, message)
+        }
+        (Some(error_type), _) if !message_lower.contains(&error_type.to_lowercase()) => {
+            format!("{}: {}", error_type, message)
+        }
+        (_, Some(code)) if !message_lower.contains(&code.to_lowercase()) => {
+            format!("{}: {}", code, message)
+        }
+        _ => message,
+    };
 
     // Try to extract retry_after from error object or response metadata
     let retry_after = error
@@ -3199,7 +3250,10 @@ fn is_retryable_error(error_str: &str) -> bool {
         || error_str.contains("overloaded")
         // API-level server errors
         || error_str.contains("api_error")
+        || error_str.contains("server_error")
         || error_str.contains("internal server error")
+        || error_str.contains("an error occurred while processing your request")
+        || error_str.contains("please include the request id")
 }
 
 fn is_websocket_fallback_notice(data: &str) -> bool {

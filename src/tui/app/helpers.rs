@@ -3,6 +3,43 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub(super) fn extract_bracketed_system_message(message: &str) -> Option<String> {
+    let trimmed = message.trim();
+    let body = trimmed.strip_prefix("[SYSTEM:")?.trim_start();
+    let body = body.strip_suffix(']').unwrap_or(body).trim();
+    if body.is_empty() {
+        None
+    } else {
+        Some(body.to_string())
+    }
+}
+
+pub(super) fn partition_queued_messages(
+    messages: Vec<String>,
+    reminders: Vec<String>,
+) -> (Vec<String>, Option<String>, Vec<String>) {
+    let mut user_messages = Vec::new();
+    let mut display_system_messages = Vec::new();
+    let mut reminder_parts = reminders;
+
+    for message in messages {
+        if let Some(system_message) = extract_bracketed_system_message(&message) {
+            reminder_parts.push(system_message.clone());
+            display_system_messages.push(system_message);
+        } else {
+            user_messages.push(message);
+        }
+    }
+
+    let reminder = if reminder_parts.is_empty() {
+        None
+    } else {
+        Some(reminder_parts.join("\n\n"))
+    };
+
+    (user_messages, reminder, display_system_messages)
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn ctrl_bracket_fallback_to_esc(code: &mut KeyCode, modifiers: &mut KeyModifiers) {
     if !modifiers.contains(KeyModifiers::CONTROL) {
@@ -248,6 +285,15 @@ pub(super) fn mask_email(email: &str) -> String {
 
 /// Spawn a new terminal window that resumes a jcode session.
 /// Returns Ok(true) if a terminal was successfully launched, Ok(false) if no terminal found.
+fn resume_invocation_args(session_id: &str, socket: Option<&str>) -> Vec<String> {
+    let mut args = vec!["--resume".to_string(), session_id.to_string()];
+    if let Some(socket) = socket.filter(|s| !s.trim().is_empty()) {
+        args.push("--socket".to_string());
+        args.push(socket.to_string());
+    }
+    args
+}
+
 #[cfg(unix)]
 pub(super) fn spawn_in_new_terminal(
     exe: &Path,
@@ -288,11 +334,7 @@ pub(super) fn spawn_in_new_terminal(
             "kitty" => {
                 cmd.args(["--title", "jcode split", "-e"])
                     .arg(exe)
-                    .arg("--resume")
-                    .arg(session_id);
-                if let Some(socket) = socket {
-                    cmd.arg("--socket").arg(socket);
-                }
+                    .args(resume_invocation_args(session_id, socket));
             }
             "wezterm" => {
                 cmd.args([
@@ -300,24 +342,32 @@ pub(super) fn spawn_in_new_terminal(
                     "--always-new-process",
                     "--",
                     exe.to_string_lossy().as_ref(),
-                    "--resume",
-                    session_id,
                 ]);
+                cmd.args(resume_invocation_args(session_id, socket));
             }
             "alacritty" => {
-                cmd.args(["-e"]).arg(exe).arg("--resume").arg(session_id);
+                cmd.args(["-e"])
+                    .arg(exe)
+                    .args(resume_invocation_args(session_id, socket));
             }
             "gnome-terminal" => {
-                cmd.args(["--", exe.to_string_lossy().as_ref(), "--resume", session_id]);
+                cmd.args(["--", exe.to_string_lossy().as_ref()]);
+                cmd.args(resume_invocation_args(session_id, socket));
             }
             "konsole" => {
-                cmd.args(["-e"]).arg(exe).arg("--resume").arg(session_id);
+                cmd.args(["-e"])
+                    .arg(exe)
+                    .args(resume_invocation_args(session_id, socket));
             }
             "xterm" => {
-                cmd.args(["-e"]).arg(exe).arg("--resume").arg(session_id);
+                cmd.args(["-e"])
+                    .arg(exe)
+                    .args(resume_invocation_args(session_id, socket));
             }
             "foot" => {
-                cmd.args(["-e"]).arg(exe).arg("--resume").arg(session_id);
+                cmd.args(["-e"])
+                    .arg(exe)
+                    .args(resume_invocation_args(session_id, socket));
             }
             _ => continue,
         }
@@ -338,6 +388,65 @@ pub(super) fn spawn_in_new_terminal(
     _socket: Option<&str>,
 ) -> anyhow::Result<bool> {
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        extract_bracketed_system_message, partition_queued_messages, resume_invocation_args,
+    };
+
+    #[test]
+    fn extract_bracketed_system_message_strips_wrapper() {
+        let parsed = extract_bracketed_system_message(
+            "[SYSTEM: Your session was interrupted. Continue immediately.]",
+        );
+        assert_eq!(
+            parsed.as_deref(),
+            Some("Your session was interrupted. Continue immediately.")
+        );
+    }
+
+    #[test]
+    fn partition_queued_messages_moves_system_messages_into_reminders() {
+        let (user_messages, reminder, display_system_messages) = partition_queued_messages(
+            vec![
+                "[SYSTEM: Continue where you left off.]".to_string(),
+                "normal user input".to_string(),
+            ],
+            vec!["hidden reminder".to_string()],
+        );
+
+        assert_eq!(user_messages, vec!["normal user input"]);
+        assert_eq!(
+            display_system_messages,
+            vec!["Continue where you left off."]
+        );
+        assert_eq!(
+            reminder.as_deref(),
+            Some("hidden reminder\n\nContinue where you left off.")
+        );
+    }
+
+    #[test]
+    fn resume_invocation_args_includes_socket_when_present() {
+        let args = resume_invocation_args("ses_123", Some("/tmp/jcode-test.sock"));
+        assert_eq!(
+            args,
+            vec![
+                "--resume".to_string(),
+                "ses_123".to_string(),
+                "--socket".to_string(),
+                "/tmp/jcode-test.sock".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn resume_invocation_args_omits_blank_socket() {
+        let args = resume_invocation_args("ses_123", Some("   "));
+        assert_eq!(args, vec!["--resume".to_string(), "ses_123".to_string()]);
+    }
 }
 
 /// Try to get an image from the system clipboard.

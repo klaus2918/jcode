@@ -1,9 +1,10 @@
 use super::client_state::send_history;
 use super::reload::{do_server_reload_with_progress, normalize_model_arg, provider_cli_arg};
 use super::{
-    broadcast_swarm_status, remove_plan_participant, rename_plan_participant, socket_path,
-    swarm_id_for_dir, update_member_status, ClientConnectionInfo, SwarmEvent, SwarmMember,
-    VersionedPlan,
+    broadcast_swarm_status, register_session_interrupt_queue, remove_plan_participant,
+    remove_session_channel_subscriptions, remove_session_interrupt_queue, rename_plan_participant,
+    rename_session_interrupt_queue, socket_path, swarm_id_for_dir, update_member_status,
+    ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmMember, VersionedPlan,
 };
 use crate::agent::Agent;
 use crate::message::ContentBlock;
@@ -49,9 +50,11 @@ pub(super) async fn handle_clear_session(
     provider: &Arc<dyn Provider>,
     registry: &Registry,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
@@ -87,6 +90,16 @@ pub(super) async fn handle_clear_session(
         sessions_guard.remove(client_session_id);
         sessions_guard.insert(new_id.clone(), Arc::clone(agent));
     }
+    {
+        let agent_guard = agent.lock().await;
+        register_session_interrupt_queue(
+            soft_interrupt_queues,
+            &new_id,
+            agent_guard.soft_interrupt_queue(),
+        )
+        .await;
+    }
+    remove_session_interrupt_queue(soft_interrupt_queues, client_session_id).await;
 
     let swarm_id_for_update = {
         let mut members = swarm_members.write().await;
@@ -108,6 +121,7 @@ pub(super) async fn handle_clear_session(
             swarm.insert(new_id.clone());
         }
     }
+    remove_session_channel_subscriptions(client_session_id, channel_subscriptions).await;
     update_member_status(
         &new_id,
         "ready",
@@ -147,6 +161,7 @@ pub(super) async fn handle_subscribe(
     registry: &Registry,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
@@ -176,6 +191,10 @@ pub(super) async fn handle_subscribe(
         }
 
         if let Some(ref old_id) = old_swarm_id {
+            if updated_swarm_id.as_ref() != Some(old_id) {
+                remove_session_channel_subscriptions(client_session_id, channel_subscriptions)
+                    .await;
+            }
             let mut swarms = swarms_by_id.write().await;
             if let Some(swarm) = swarms.get_mut(old_id) {
                 swarm.remove(client_session_id);
@@ -308,7 +327,6 @@ pub(super) async fn handle_reload(
     let progress_tx = client_event_tx.clone();
     let socket_arg = socket_path().to_string_lossy().to_string();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if let Err(error) = do_server_reload_with_progress(
             progress_tx.clone(),
             provider_arg,
@@ -342,9 +360,11 @@ pub(super) async fn handle_resume_session(
     provider: &Arc<dyn Provider>,
     registry: &Registry,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     client_count: &Arc<RwLock<usize>>,
@@ -427,6 +447,8 @@ pub(super) async fn handle_resume_session(
                 sessions_guard.remove(&old_session_id);
                 sessions_guard.insert(session_id.clone(), Arc::clone(agent));
             }
+            rename_session_interrupt_queue(soft_interrupt_queues, &old_session_id, &session_id)
+                .await;
             {
                 let mut connections = client_connections.write().await;
                 if let Some(info) = connections.get_mut(client_connection_id) {
@@ -451,6 +473,7 @@ pub(super) async fn handle_resume_session(
                     members.insert(session_id.clone(), member);
                 }
             }
+            remove_session_channel_subscriptions(&old_session_id, channel_subscriptions).await;
             {
                 let mut coordinators = swarm_coordinators.write().await;
                 for coordinator in coordinators.values_mut() {

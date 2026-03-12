@@ -285,6 +285,11 @@ pub(super) fn handle_navigation_shortcuts(
         return true;
     }
 
+    if let Some(ratio) = App::ctrl_side_panel_ratio_preset(&code, modifiers) {
+        app.set_side_panel_ratio_preset(ratio);
+        return true;
+    }
+
     if let Some(rank) = App::ctrl_prompt_rank(&code, modifiers) {
         app.scroll_to_recent_prompt_rank(rank);
         return true;
@@ -315,6 +320,7 @@ pub(super) fn is_scroll_only_key(app: &App, code: KeyCode, modifiers: KeyModifie
 
     if app.scroll_keys.scroll_amount(code, modifiers).is_some()
         || app.scroll_keys.prompt_jump(code, modifiers).is_some()
+        || App::ctrl_side_panel_ratio_preset(&code, modifiers).is_some()
         || App::ctrl_prompt_rank(&code, modifiers).is_some()
         || app.scroll_keys.is_bookmark(code, modifiers)
         || code == KeyCode::BackTab
@@ -389,6 +395,10 @@ pub(super) fn handle_pre_control_shortcuts(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> bool {
+    if handle_visible_copy_shortcut(app, code, modifiers) {
+        return true;
+    }
+
     if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('m')) {
         app.toggle_diagram_pane();
         return true;
@@ -423,6 +433,43 @@ pub(super) fn handle_pre_control_shortcuts(
     }
 
     handle_navigation_shortcuts(app, code, modifiers)
+}
+
+pub(super) fn handle_visible_copy_shortcut(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    let KeyCode::Char(c) = code else {
+        return false;
+    };
+
+    if !modifiers.contains(KeyModifiers::ALT) {
+        return false;
+    }
+
+    // Many terminals encode Alt+Shift+<letter> as just Alt + uppercase letter
+    // instead of reporting an explicit Shift modifier. Accept either form so the
+    // on-screen [Alt] [⇧] copy badges behave consistently.
+    let explicit_shift = modifiers.contains(KeyModifiers::SHIFT);
+    let implicit_shift = c.is_ascii_uppercase();
+    if !explicit_shift && !implicit_shift {
+        return false;
+    }
+
+    if let Some(target) = crate::tui::ui::visible_copy_target_for_key(c) {
+        let success = super::copy_to_clipboard(&target.content);
+        app.record_copy_badge_key_press(c);
+        app.record_copy_badge_feedback(c, success);
+        if success {
+            app.set_status_notice(target.copied_notice);
+        } else {
+            app.set_status_notice(format!("Failed to copy {}", target.kind_label));
+        }
+        return true;
+    }
+
+    false
 }
 
 pub(super) fn handle_modal_key(
@@ -674,7 +721,13 @@ impl App {
             modifiers,
         });
 
-        let _ = self.handle_key(event.code, event.modifiers);
+        self.update_copy_badge_key_event(event);
+        if matches!(
+            event.kind,
+            crossterm::event::KeyEventKind::Press | crossterm::event::KeyEventKind::Repeat
+        ) {
+            let _ = self.handle_key(event.code, event.modifiers);
+        }
     }
 
     pub(super) fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
@@ -736,6 +789,112 @@ impl App {
     pub(super) fn redraw_now(&self, terminal: &mut DefaultTerminal) -> Result<()> {
         terminal.draw(|frame| crate::tui::ui::draw(frame, self))?;
         Ok(())
+    }
+
+    pub(super) fn update_copy_badge_key_event(&mut self, event: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyEventKind, ModifierKeyCode};
+
+        self.prune_copy_badge_ui();
+        let pulse_until = std::time::Instant::now() + std::time::Duration::from_millis(240);
+
+        match (event.kind, event.code) {
+            (KeyEventKind::Press | KeyEventKind::Repeat, KeyCode::Modifier(modifier)) => {
+                match modifier {
+                    ModifierKeyCode::LeftAlt | ModifierKeyCode::RightAlt => {
+                        self.copy_badge_ui.alt_active = true;
+                        self.copy_badge_ui.alt_pulse_until = Some(pulse_until);
+                    }
+                    ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift => {
+                        self.copy_badge_ui.shift_active = true;
+                        self.copy_badge_ui.shift_pulse_until = Some(pulse_until);
+                    }
+                    _ => {}
+                }
+            }
+            (KeyEventKind::Release, KeyCode::Modifier(modifier)) => match modifier {
+                ModifierKeyCode::LeftAlt | ModifierKeyCode::RightAlt => {
+                    self.copy_badge_ui.alt_active = false;
+                }
+                ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift => {
+                    self.copy_badge_ui.shift_active = false;
+                }
+                _ => {}
+            },
+            (KeyEventKind::Press | KeyEventKind::Repeat, KeyCode::Char(c)) => {
+                if event.modifiers.contains(KeyModifiers::ALT) {
+                    self.copy_badge_ui.alt_pulse_until = Some(pulse_until);
+                }
+                if event.modifiers.contains(KeyModifiers::SHIFT) || c.is_ascii_uppercase() {
+                    self.copy_badge_ui.shift_pulse_until = Some(pulse_until);
+                }
+                self.record_copy_badge_key_press(c);
+            }
+            (KeyEventKind::Release, KeyCode::Char(c)) => {
+                if let Some((active, _)) = self.copy_badge_ui.key_active {
+                    if active.eq_ignore_ascii_case(&c) {
+                        self.copy_badge_ui.key_active = None;
+                    }
+                }
+                if !event.modifiers.contains(KeyModifiers::ALT) {
+                    self.copy_badge_ui.alt_active = false;
+                }
+                if !event.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.copy_badge_ui.shift_active = false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn record_copy_badge_key_press(&mut self, key: char) {
+        let expiry = std::time::Instant::now() + std::time::Duration::from_millis(240);
+        self.copy_badge_ui.key_active = Some((key, expiry));
+    }
+
+    pub(super) fn record_copy_badge_feedback(&mut self, key: char, success: bool) {
+        self.copy_badge_ui.copied_feedback = Some(crate::tui::app::CopyBadgeFeedback {
+            key,
+            success,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_millis(1100),
+        });
+    }
+
+    pub(super) fn prune_copy_badge_ui(&mut self) {
+        let now = std::time::Instant::now();
+        if self
+            .copy_badge_ui
+            .alt_pulse_until
+            .map(|expires_at| expires_at <= now)
+            .unwrap_or(false)
+        {
+            self.copy_badge_ui.alt_pulse_until = None;
+        }
+        if self
+            .copy_badge_ui
+            .shift_pulse_until
+            .map(|expires_at| expires_at <= now)
+            .unwrap_or(false)
+        {
+            self.copy_badge_ui.shift_pulse_until = None;
+        }
+        if self
+            .copy_badge_ui
+            .key_active
+            .as_ref()
+            .map(|(_, expires_at)| *expires_at <= now)
+            .unwrap_or(false)
+        {
+            self.copy_badge_ui.key_active = None;
+        }
+        if self
+            .copy_badge_ui
+            .copied_feedback
+            .as_ref()
+            .map(|feedback| feedback.expires_at <= now)
+            .unwrap_or(false)
+        {
+            self.copy_badge_ui.copied_feedback = None;
+        }
     }
 
     /// Try to paste an image from the clipboard. Checks native image data first,
@@ -834,7 +993,7 @@ impl App {
                 "`/help`\nShow general command list and keyboard shortcuts.\n\n`/help <command>`\nShow detailed help for one command."
             }
             "compact" => {
-                "`/compact`\nForce context compaction now.\nStarts background summarization and applies it automatically when ready."
+                "`/compact`\nForce context compaction now.\nStarts background summarization and applies it automatically when ready.\n\n`/compact mode`\nShow current compaction mode for this session.\n\n`/compact mode <reactive|proactive|semantic>`\nChange compaction mode for this session."
             }
             "fix" => {
                 "`/fix`\nRun recovery actions when the model cannot continue.\nRepairs missing tool outputs, resets provider session state, and starts compaction when possible."
@@ -852,9 +1011,6 @@ impl App {
                 "`/effort`\nShow current reasoning effort.\n\n`/effort <level>`\nSet reasoning effort (none|low|medium|high|xhigh).\n\nAlso: Alt+←/→ to cycle."
             }
             "memory" => "`/memory [on|off|status]`\nToggle memory features for this session.",
-            "remember" => {
-                "`/remember`\nExtract memories from current conversation and store them."
-            }
             "swarm" => "`/swarm [on|off|status]`\nToggle swarm features for this session.",
             "poke" => {
                 "`/poke`\nPoke the model to resume when it has stopped with incomplete todos.\n\
@@ -995,6 +1151,7 @@ impl App {
             });
             self.session.add_message(Role::User, blocks);
         }
+        crate::telemetry::record_turn();
         let _ = self.session.save();
 
         // Set up processing state - actual processing happens after UI redraws
@@ -1025,24 +1182,35 @@ impl App {
         terminal: &mut DefaultTerminal,
         event_stream: &mut EventStream,
     ) {
-        while !self.queued_messages.is_empty() {
-            // Combine all currently queued messages into one
-            let messages = std::mem::take(&mut self.queued_messages);
+        while !self.queued_messages.is_empty() || !self.hidden_queued_system_messages.is_empty() {
+            // Combine all currently queued messages into one, treating [SYSTEM: ...]
+            // startup continuations as system reminders rather than user turns.
+            let queued_messages = std::mem::take(&mut self.queued_messages);
+            let hidden_reminders = std::mem::take(&mut self.hidden_queued_system_messages);
+            let (messages, reminder, display_system_messages) =
+                super::helpers::partition_queued_messages(queued_messages, hidden_reminders);
             let combined = messages.join("\n\n");
 
-            // Display each queued message as its own user prompt
+            for msg in display_system_messages {
+                self.push_display_message(DisplayMessage::system(msg));
+            }
+
             for msg in &messages {
                 self.push_display_message(DisplayMessage::user(msg.clone()));
             }
 
-            self.add_provider_message(Message::user(&combined));
-            self.session.add_message(
-                Role::User,
-                vec![ContentBlock::Text {
-                    text: combined,
-                    cache_control: None,
-                }],
-            );
+            self.current_turn_system_reminder = reminder;
+
+            if !combined.is_empty() {
+                self.add_provider_message(Message::user(&combined));
+                self.session.add_message(
+                    Role::User,
+                    vec![ContentBlock::Text {
+                        text: combined,
+                        cache_control: None,
+                    }],
+                );
+            }
             let _ = self.session.save();
             self.clear_streaming_render_state();
             self.stream_buffer.clear();
@@ -1082,6 +1250,7 @@ impl App {
                     }
                 }
             }
+            self.current_turn_system_reminder = None;
             // Loop will check if more messages were queued during this turn
         }
     }

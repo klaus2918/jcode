@@ -319,6 +319,7 @@ mod tests {
             tool_call_id: "test-tool-call".to_string(),
             working_dir: None,
             stdin_request_tx: None,
+            execution_mode: crate::tool::ToolExecutionMode::Direct,
         };
 
         (ctx, base, previous_home)

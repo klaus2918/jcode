@@ -90,7 +90,7 @@ pub(super) async fn maybe_handle_server_state_command(
         ));
     }
 
-    if cmd == "server:info" {
+    if cmd == "info" || cmd == "server:info" {
         let uptime_secs = server_start_time.elapsed().as_secs();
         let session_count = sessions.read().await.len();
         let member_count = swarm_members.read().await.len();
