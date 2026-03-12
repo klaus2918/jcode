@@ -26,7 +26,12 @@ export default {
       return jsonResponse({ error: "Missing required fields" }, 400);
     }
 
-    if (!["install", "session_end"].includes(body.event)) {
+    if (![
+      "install",
+      "session_start",
+      "session_end",
+      "session_crash",
+    ].includes(body.event)) {
       return jsonResponse({ error: "Unknown event type" }, 400);
     }
 
@@ -38,16 +43,36 @@ export default {
         )
           .bind(body.id, body.event, body.version, body.os, body.arch)
           .run();
-      } else if (body.event === "session_end") {
+      } else if (body.event === "session_start") {
+        await env.DB.prepare(
+          `INSERT INTO events (
+            telemetry_id, event, version, os, arch,
+            provider_start, model_start, resumed_session
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+          .bind(
+            body.id,
+            body.event,
+            body.version,
+            body.os,
+            body.arch,
+            body.provider_start || null,
+            body.model_start || null,
+            boolToInt(body.resumed_session)
+          )
+          .run();
+      } else if (["session_end", "session_crash"].includes(body.event)) {
         const errors = body.errors || {};
         await env.DB.prepare(
           `INSERT INTO events (
             telemetry_id, event, version, os, arch,
             provider_start, provider_end, model_start, model_end,
             provider_switches, model_switches, duration_mins, turns,
+            had_user_prompt, had_assistant_response, assistant_responses,
+            tool_calls, tool_failures, resumed_session, end_reason,
             error_provider_timeout, error_auth_failed, error_tool_error,
             error_mcp_error, error_rate_limited
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
           .bind(
             body.id,
@@ -63,6 +88,13 @@ export default {
             body.model_switches || 0,
             body.duration_mins || 0,
             body.turns || 0,
+            boolToInt(body.had_user_prompt),
+            boolToInt(body.had_assistant_response),
+            body.assistant_responses || 0,
+            body.tool_calls || 0,
+            body.tool_failures || 0,
+            boolToInt(body.resumed_session),
+            body.end_reason || null,
             errors.provider_timeout || 0,
             errors.auth_failed || 0,
             errors.tool_error || 0,
@@ -78,6 +110,10 @@ export default {
     }
   },
 };
+
+function boolToInt(value) {
+  return value ? 1 : 0;
+}
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
