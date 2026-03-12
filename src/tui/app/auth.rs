@@ -36,6 +36,76 @@ pub(super) enum PendingLogin {
 }
 
 impl App {
+    pub(super) fn show_jcode_subscription_status(&mut self) {
+        let configured_key = crate::subscription_catalog::configured_api_key().is_some();
+        let configured_base = crate::subscription_catalog::configured_api_base()
+            .unwrap_or_else(|| crate::subscription_catalog::DEFAULT_JCODE_API_BASE.to_string());
+        let runtime_mode = crate::subscription_catalog::is_runtime_mode_enabled();
+
+        let mut message = String::from("**Jcode Subscription Status**\n\n");
+        message.push_str(&format!(
+            "- Credentials: {}\n",
+            if configured_key {
+                "configured"
+            } else {
+                "not configured (`/login jcode`)"
+            }
+        ));
+        message.push_str(&format!(
+            "- Router base: `{}`{}\n",
+            configured_base,
+            if crate::subscription_catalog::has_router_base() {
+                ""
+            } else {
+                " _(default placeholder)_"
+            }
+        ));
+        message.push_str(&format!(
+            "- Runtime mode: {}\n\n",
+            if runtime_mode {
+                "active for this session"
+            } else {
+                "inactive for this session"
+            }
+        ));
+
+        message.push_str("**Catalog**\n\n");
+        for model in crate::subscription_catalog::curated_models() {
+            let default_suffix = if model.default_enabled {
+                " _(default)_"
+            } else {
+                ""
+            };
+            message.push_str(&format!(
+                "- **{}** — `{}`{}\n  - {}\n  - {}\n",
+                model.display_name,
+                model.id,
+                default_suffix,
+                crate::subscription_catalog::routing_policy_detail(model),
+                model.note
+            ));
+        }
+
+        message.push_str("\n**Planned tiers**\n\n");
+        for tier in [
+            crate::subscription_catalog::JcodeTier::Starter20,
+            crate::subscription_catalog::JcodeTier::Pro100,
+        ] {
+            message.push_str(&format!(
+                "- {} — ${}/mo retail, about ${:.2} usable inference budget\n",
+                tier.display_name(),
+                tier.retail_price_usd(),
+                tier.usable_budget_usd()
+            ));
+        }
+
+        message.push_str(
+            "\nUsage/billing reporting is not live yet; this command is a scaffold for the curated jcode-managed subscription path.",
+        );
+
+        self.push_display_message(DisplayMessage::system(message));
+    }
+
     pub(super) fn show_auth_status(&mut self) {
         let status = crate::auth::AuthStatus::check();
         let icon = |state: crate::auth::AuthState| match state {
@@ -1307,6 +1377,11 @@ pub(super) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
 
     if trimmed == "/account" || trimmed == "/accounts" {
         app.show_accounts();
+        return true;
+    }
+
+    if trimmed == "/subscription" || trimmed == "/subscription status" {
+        app.show_jcode_subscription_status();
         return true;
     }
 

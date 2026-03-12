@@ -197,6 +197,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Interactive or direct login",
     ));
     lines.push(help_entry("/account", "Manage Anthropic OAuth accounts"));
+    lines.push(help_entry(
+        "/subscription",
+        "Inspect jcode subscription scaffold",
+    ));
 
     lines.push(Line::from(""));
     lines.push(separator());

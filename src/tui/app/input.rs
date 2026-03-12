@@ -1024,6 +1024,7 @@ impl App {
             "resume" | "sessions" => "`/resume`\nOpen the interactive session picker. Browse and search all sessions, preview conversation history, and open any session in a new terminal window.\n\nPress `Esc` to return to your current session.",
             "info" => "`/info`\nShow session metadata and token usage.",
             "usage" => "`/usage`\nFetch and display subscription usage limits for connected providers. Today this shows OAuth provider windows (Anthropic, OpenAI/ChatGPT); jcode subscription budget reporting is scaffolded but not yet backed by a live billing service.",
+            "subscription" => "`/subscription`\nShow curated jcode subscription status for this session, including router config, runtime mode, curated models, and planned tier budget scaffolding.",
             "version" => "`/version`\nShow jcode version/build details.",
             "changelog" => "`/changelog`\nShow recent changes embedded in this build.",
             "quit" => "`/quit`\nExit jcode.",

@@ -105,6 +105,30 @@ fn test_mask_email_censors_local_part() {
 }
 
 #[test]
+fn test_subscription_command_shows_jcode_status_scaffold() {
+    let _guard = crate::storage::lock_test_env();
+    crate::subscription_catalog::clear_runtime_env();
+    std::env::remove_var(crate::subscription_catalog::JCODE_API_KEY_ENV);
+    std::env::remove_var(crate::subscription_catalog::JCODE_API_BASE_ENV);
+
+    let mut app = create_test_app();
+    app.input = "/subscription".to_string();
+    app.submit_input();
+
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing /subscription response");
+    assert_eq!(msg.role, "system");
+    assert!(msg.content.contains("Jcode Subscription Status"));
+    assert!(msg.content.contains("/login jcode"));
+    assert!(msg.content.contains("Healer Alpha"));
+    assert!(msg.content.contains("Kimi K2.5"));
+    assert!(msg.content.contains("$20 Starter"));
+    assert!(msg.content.contains("$100 Pro"));
+}
+
+#[test]
 fn test_show_accounts_includes_masked_email_column() {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let accounts = vec![crate::auth::claude::AnthropicAccount {
@@ -2847,7 +2871,11 @@ fn test_local_copy_badge_shortcut_accepts_alt_uppercase_encoding() {
     );
 
     let text = render_and_snap(&app, &mut terminal);
-    assert!(text.contains("Copied!"), "expected inline copied feedback: {}", text);
+    assert!(
+        text.contains("Copied!"),
+        "expected inline copied feedback: {}",
+        text
+    );
 }
 
 #[test]
@@ -2871,7 +2899,11 @@ fn test_remote_copy_badge_shortcut_supported() {
     );
 
     let text = render_and_snap(&app, &mut terminal);
-    assert!(text.contains("Copied!"), "expected inline copied feedback: {}", text);
+    assert!(
+        text.contains("Copied!"),
+        "expected inline copied feedback: {}",
+        text
+    );
 }
 
 #[test]
@@ -2921,14 +2953,20 @@ fn test_copy_badge_requires_prior_combo_progress() {
     state.shift_pulse_until = Some(now + std::time::Duration::from_millis(100));
     state.key_active = Some(('s', now + std::time::Duration::from_millis(100)));
 
-    assert!(!state.shift_is_active(now), "shift should not light before alt");
+    assert!(
+        !state.shift_is_active(now),
+        "shift should not light before alt"
+    );
     assert!(
         !state.key_is_active('s', now),
         "final key should not light before alt+shift"
     );
 
     state.alt_active = true;
-    assert!(state.shift_is_active(now), "shift should light once alt is active");
+    assert!(
+        state.shift_is_active(now),
+        "shift should light once alt is active"
+    );
     assert!(
         state.key_is_active('s', now),
         "final key should light once alt+shift are active"

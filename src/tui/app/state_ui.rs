@@ -433,6 +433,7 @@ impl App {
                 | "/login"
                 | "/auth"
                 | "/account"
+                | "/subscription"
                 | "/memory"
                 | "/swarm"
                 | "/rewind"
