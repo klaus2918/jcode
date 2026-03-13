@@ -2,7 +2,9 @@ use crate::message::{ContentBlock, Role};
 use crate::protocol::ServerEvent;
 use crate::session::{Session, StoredReplayEventKind};
 use anyhow::Result;
+use chrono::Duration;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 /// A single event in a replay timeline.
 ///
@@ -582,6 +584,207 @@ pub fn load_session(id_or_path: &str) -> Result<Session> {
     );
 }
 
+#[derive(Debug, Clone)]
+pub struct SwarmReplaySession {
+    pub session: Session,
+    pub timeline: Vec<TimelineEvent>,
+}
+
+pub fn load_swarm_sessions(
+    seed_id_or_path: &str,
+    auto_edit: bool,
+) -> Result<Vec<SwarmReplaySession>> {
+    let seed = load_session(seed_id_or_path)?;
+    let seed_working_dir = seed.working_dir.clone();
+    let lower_bound = seed.created_at - Duration::hours(6);
+    let upper_bound = seed.updated_at + Duration::hours(6);
+
+    let sessions_dir = crate::storage::jcode_dir()?.join("sessions");
+    if !sessions_dir.exists() {
+        return Ok(vec![SwarmReplaySession {
+            timeline: maybe_auto_edit(&seed, auto_edit),
+            session: seed,
+        }]);
+    }
+
+    let mut all_sessions: Vec<Session> = Vec::new();
+    for entry in std::fs::read_dir(&sessions_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.extension().map(|e| e == "json").unwrap_or(false) {
+            continue;
+        }
+        let data = match std::fs::read_to_string(&path) {
+            Ok(data) => data,
+            Err(_) => continue,
+        };
+        let Ok(session) = serde_json::from_str::<Session>(&data) else {
+            continue;
+        };
+        all_sessions.push(session);
+    }
+
+    let mut selected_ids: BTreeSet<String> = BTreeSet::new();
+    selected_ids.insert(seed.id.clone());
+
+    for session in &all_sessions {
+        if session.id == seed.id {
+            continue;
+        }
+        let same_working_dir =
+            seed_working_dir.is_some() && session.working_dir == seed_working_dir;
+        let linked_parent = session.parent_id.as_deref() == Some(seed.id.as_str())
+            || seed.parent_id.as_deref() == Some(session.id.as_str())
+            || (seed.parent_id.is_some() && session.parent_id == seed.parent_id);
+        let overlapping_time =
+            session.updated_at >= lower_bound && session.created_at <= upper_bound;
+        let has_swarm_events = session.replay_events.iter().any(|evt| {
+            matches!(
+                evt.kind,
+                StoredReplayEventKind::SwarmStatus { .. } | StoredReplayEventKind::SwarmPlan { .. }
+            )
+        });
+
+        if overlapping_time && (same_working_dir || linked_parent || has_swarm_events) {
+            selected_ids.insert(session.id.clone());
+        }
+    }
+
+    let mut selected: Vec<Session> = all_sessions
+        .into_iter()
+        .filter(|session| selected_ids.contains(&session.id))
+        .collect();
+    if !selected.iter().any(|session| session.id == seed.id) {
+        selected.push(seed.clone());
+    }
+
+    selected.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(selected
+        .into_iter()
+        .map(|session| {
+            let timeline = maybe_auto_edit(&session, auto_edit);
+            SwarmReplaySession { session, timeline }
+        })
+        .collect())
+}
+
+fn maybe_auto_edit(session: &Session, auto_edit: bool) -> Vec<TimelineEvent> {
+    let timeline = export_timeline(session);
+    if auto_edit {
+        auto_edit_timeline(&timeline, &AutoEditOpts::default())
+    } else {
+        timeline
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PaneReplayInput {
+    pub session: Session,
+    pub timeline: Vec<TimelineEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SwarmPaneFrames {
+    pub session_id: String,
+    pub title: String,
+    pub frames: Vec<(f64, ratatui::buffer::Buffer)>,
+}
+
+pub fn compose_swarm_buffers(
+    pane_frames: &[SwarmPaneFrames],
+    width: u16,
+    height: u16,
+    fps: u32,
+) -> Vec<(f64, ratatui::buffer::Buffer)> {
+    use ratatui::{buffer::Buffer, layout::Rect};
+
+    if pane_frames.is_empty() {
+        return Vec::new();
+    }
+
+    let fps = fps.max(1);
+    let frame_step = 1.0 / fps as f64;
+    let end_time = pane_frames
+        .iter()
+        .filter_map(|pane| pane.frames.last().map(|(t, _)| *t))
+        .fold(0.0, f64::max);
+
+    let pane_count = pane_frames.len() as u16;
+    let cols = if pane_count <= 2 { pane_count } else { 2 };
+    let rows = ((pane_count + cols - 1) / cols).max(1);
+    let pane_width = (width / cols).max(1);
+    let pane_height = (height / rows).max(1);
+
+    let mut output = Vec::new();
+    let mut t = 0.0;
+    while t <= end_time + frame_step {
+        let mut canvas = Buffer::empty(Rect::new(0, 0, width, height));
+        for (idx, pane) in pane_frames.iter().enumerate() {
+            let idx = idx as u16;
+            let col = idx % cols;
+            let row = idx / cols;
+            let x = col * pane_width;
+            let y = row * pane_height;
+            let area = Rect::new(
+                x,
+                y,
+                if col == cols - 1 {
+                    width - x
+                } else {
+                    pane_width
+                },
+                if row == rows - 1 {
+                    height - y
+                } else {
+                    pane_height
+                },
+            );
+            if let Some(buf) = buffer_at_time(&pane.frames, t) {
+                blit_buffer(&mut canvas, area, buf);
+            }
+        }
+        output.push((t, canvas));
+        t += frame_step;
+    }
+
+    output
+}
+
+fn buffer_at_time(
+    frames: &[(f64, ratatui::buffer::Buffer)],
+    t: f64,
+) -> Option<&ratatui::buffer::Buffer> {
+    let mut current = None;
+    for (frame_t, buf) in frames {
+        if *frame_t <= t {
+            current = Some(buf);
+        } else {
+            break;
+        }
+    }
+    current.or_else(|| frames.first().map(|(_, buf)| buf))
+}
+
+fn blit_buffer(
+    dst: &mut ratatui::buffer::Buffer,
+    area: ratatui::layout::Rect,
+    src: &ratatui::buffer::Buffer,
+) {
+    for sy in 0..area.height.min(src.area.height) {
+        for sx in 0..area.width.min(src.area.width) {
+            let dx = area.x + sx;
+            let dy = area.y + sy;
+            if let (Some(src_cell), Some(dst_cell)) = (src.cell((sx, sy)), dst.cell_mut((dx, dy))) {
+                *dst_cell = src_cell.clone();
+            }
+        }
+    }
+}
+
 fn extract_text(blocks: &[ContentBlock]) -> String {
     let mut text = String::new();
     for block in blocks {
@@ -735,6 +938,41 @@ mod tests {
     use crate::protocol::SwarmMemberStatus;
     use crate::session::{StoredReplayEvent, StoredReplayEventKind};
     use chrono::{Duration, Utc};
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        let mutex = ENV_LOCK.get_or_init(|| Mutex::new(()));
+        match mutex.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(prev) = &self.prev {
+                std::env::set_var(self.key, prev);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn test_timeline_roundtrip() {
@@ -888,7 +1126,8 @@ mod tests {
     #[test]
     fn test_export_timeline_includes_persisted_swarm_replay_events() {
         let base = Utc::now();
-        let mut session = Session::create_with_id("session_replay_swarm_test".to_string(), None, None);
+        let mut session =
+            Session::create_with_id("session_replay_swarm_test".to_string(), None, None);
         session.created_at = base;
         session.updated_at = base;
         session.replay_events = vec![
@@ -1011,6 +1250,88 @@ mod tests {
             ReplayEvent::SwarmPlan { swarm_id, version, items }
                 if swarm_id == "swarm_abc" && *version == 7 && items.len() == 1
         )));
+    }
+
+    #[test]
+    fn test_load_swarm_sessions_discovers_related_sessions() {
+        let _env_lock = lock_env();
+        let temp_home = tempfile::Builder::new()
+            .prefix("jcode-replay-swarm-test-")
+            .tempdir()
+            .expect("create temp JCODE_HOME");
+        let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
+
+        let mut seed = Session::create_with_id("session_seed".to_string(), None, None);
+        seed.working_dir = Some("/tmp/repo".to_string());
+        seed.record_swarm_status_event(vec![SwarmMemberStatus {
+            session_id: "session_seed".to_string(),
+            friendly_name: Some("seed".to_string()),
+            status: "running".to_string(),
+            detail: None,
+            role: Some("coordinator".to_string()),
+        }]);
+        seed.save().unwrap();
+
+        let mut child = Session::create_with_id(
+            "session_child".to_string(),
+            Some(seed.id.clone()),
+            Some("child".to_string()),
+        );
+        child.working_dir = Some("/tmp/repo".to_string());
+        child.record_swarm_plan_event(
+            "swarm_x".to_string(),
+            1,
+            vec![PlanItem {
+                content: "Task".to_string(),
+                status: "running".to_string(),
+                priority: "high".to_string(),
+                id: "task-1".to_string(),
+                blocked_by: vec![],
+                assigned_to: Some(seed.id.clone()),
+            }],
+            vec![seed.id.clone(), child.id.clone()],
+            None,
+        );
+        child.save().unwrap();
+
+        let mut unrelated = Session::create_with_id("session_other".to_string(), None, None);
+        unrelated.working_dir = Some("/tmp/other".to_string());
+        unrelated.save().unwrap();
+
+        let loaded = load_swarm_sessions("session_seed", false).unwrap();
+        let ids: Vec<_> = loaded.iter().map(|s| s.session.id.as_str()).collect();
+        assert!(ids.contains(&"session_seed"));
+        assert!(ids.contains(&"session_child"));
+        assert!(!ids.contains(&"session_other"));
+    }
+
+    #[test]
+    fn test_compose_swarm_buffers_combines_panes() {
+        use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+
+        let mut left = Buffer::empty(Rect::new(0, 0, 4, 2));
+        left[(0, 0)].set_symbol("L").set_style(Style::default());
+        let mut right = Buffer::empty(Rect::new(0, 0, 4, 2));
+        right[(0, 0)].set_symbol("R").set_style(Style::default());
+
+        let panes = vec![
+            SwarmPaneFrames {
+                session_id: "left".to_string(),
+                title: "left".to_string(),
+                frames: vec![(0.0, left)],
+            },
+            SwarmPaneFrames {
+                session_id: "right".to_string(),
+                title: "right".to_string(),
+                frames: vec![(0.0, right)],
+            },
+        ];
+
+        let frames = compose_swarm_buffers(&panes, 8, 2, 1);
+        assert!(!frames.is_empty());
+        let buf = &frames[0].1;
+        assert_eq!(buf[(0, 0)].symbol(), "L");
+        assert_eq!(buf[(4, 0)].symbol(), "R");
     }
 
     #[test]

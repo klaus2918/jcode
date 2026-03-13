@@ -97,6 +97,80 @@ pub async fn export_video(
     .await
 }
 
+pub async fn export_swarm_video(
+    panes: &[crate::replay::PaneReplayInput],
+    speed: f64,
+    output_path: &Path,
+    width: u16,
+    height: u16,
+    fps: u32,
+    centered_override: Option<bool>,
+) -> Result<()> {
+    if panes.is_empty() {
+        anyhow::bail!("No swarm replay panes to export");
+    }
+
+    crate::tui::mermaid::set_video_export_mode(true);
+
+    let (font_family, font_size) = get_terminal_font();
+    eprintln!(
+        "  Rendering swarm replay at {}x{}, {}fps, {:.1}x speed ({} panes, font: {} {}pt)...",
+        width,
+        height,
+        fps,
+        speed,
+        panes.len(),
+        font_family,
+        font_size
+    );
+
+    let pane_count = panes.len() as u16;
+    let cols = if pane_count <= 2 { pane_count } else { 2 };
+    let rows = ((pane_count + cols - 1) / cols).max(1);
+    let pane_width = (width / cols).max(1);
+    let pane_height = (height / rows).max(1);
+
+    let mut rendered_panes = Vec::with_capacity(panes.len());
+    for pane in panes {
+        let mut app = crate::tui::App::new_for_replay(pane.session.clone());
+        if let Some(centered) = centered_override {
+            app.set_centered(centered);
+        }
+        let frames = app
+            .run_headless_replay(&pane.timeline, speed, pane_width, pane_height, fps)
+            .await?;
+        rendered_panes.push(crate::replay::SwarmPaneFrames {
+            session_id: pane.session.id.clone(),
+            title: pane
+                .session
+                .short_name
+                .clone()
+                .unwrap_or_else(|| pane.session.id.clone()),
+            frames,
+        });
+    }
+
+    let frames = crate::replay::compose_swarm_buffers(&rendered_panes, width, height, fps);
+    crate::tui::mermaid::set_video_export_mode(false);
+
+    let font_px = font_size * 96.0 / 72.0;
+    let cell_w = (font_px * 0.6).ceil() as u32;
+    let cell_h = (font_px * 1.2).ceil() as u32;
+
+    render_svg_pipeline(
+        &frames,
+        output_path,
+        width,
+        height,
+        fps,
+        &font_family,
+        font_size,
+        cell_w,
+        cell_h,
+    )
+    .await
+}
+
 async fn render_svg_pipeline(
     frames: &[(f64, Buffer)],
     output_path: &Path,
