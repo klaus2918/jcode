@@ -1,5 +1,5 @@
 use super::*;
-use crate::tui::{backend, keybind, ui};
+use crate::tui::{backend, connection_type_icon, keybind, ui};
 
 impl App {
     pub(super) async fn begin_remote_send(
@@ -397,12 +397,7 @@ impl App {
         };
         let suffix = if is_canary { " [self-dev]" } else { "" };
         let server_name = self.remote_server_short_name.as_deref().unwrap_or("jcode");
-        let server_icon = self.remote_server_icon.as_deref().unwrap_or("");
-        let icons = if server_icon.is_empty() {
-            session_icon.to_string()
-        } else {
-            format!("{}{}", server_icon, session_icon)
-        };
+        let icon = connection_type_icon(self.connection_type.as_deref()).unwrap_or(session_icon);
         let server_label = if server_name.eq_ignore_ascii_case("jcode") {
             "jcode".to_string()
         } else {
@@ -412,7 +407,7 @@ impl App {
             std::io::stdout(),
             crossterm::terminal::SetTitle(format!(
                 "{} {} {}{}",
-                icons,
+                icon,
                 server_label,
                 ui::capitalize(&session_name),
                 suffix

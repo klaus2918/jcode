@@ -5,6 +5,7 @@ use super::{
     header_fade_t, header_icon_color, header_name_color, header_session_color,
     is_running_stable_release, semver, shorten_model_name, TuiState,
 };
+use crate::tui::connection_type_icon;
 use crate::auth::{AuthState, AuthStatus};
 use crate::tui::color_support::rgb;
 use ratatui::prelude::*;
@@ -269,7 +270,8 @@ pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Lin
     let session_name = app.session_display_name().unwrap_or_default();
     let server_name = app.server_display_name();
     let short_model = shorten_model_name(&model);
-    let icon = crate::id::session_icon(&session_name);
+    let icon = connection_type_icon(app.connection_type().as_deref())
+        .unwrap_or_else(|| crate::id::session_icon(&session_name));
     let nice_model = format_model_name(&short_model);
     let build_info = binary_age().unwrap_or_else(|| "unknown".to_string());
     let centered = app.centered_mode();
@@ -318,12 +320,7 @@ pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Lin
             .as_deref()
             .map(capitalize)
             .unwrap_or_else(|| "JCode".to_string());
-        let server_icon = app.server_display_icon().unwrap_or_default();
-        let icons = if server_icon.is_empty() {
-            icon.to_string()
-        } else {
-            format!("{}{}", server_icon, icon)
-        };
+        let icons = icon.to_string();
         let full_name = format!("{} {} {}", title_prefix, capitalize(&session_name), icons);
         lines.push(
             Line::from(Span::styled(

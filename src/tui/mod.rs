@@ -206,6 +206,17 @@ pub trait TuiState {
     }
 }
 
+pub(crate) fn connection_type_icon(connection_type: Option<&str>) -> Option<&'static str> {
+    let normalized = connection_type?.trim().to_ascii_lowercase();
+    if normalized.contains("websocket") || normalized == "ws" || normalized == "wss" {
+        Some("🕸️")
+    } else if normalized.contains("http") {
+        Some("🌐")
+    } else {
+        None
+    }
+}
+
 /// Cache TTL information for the current provider
 #[derive(Debug, Clone)]
 pub struct CacheTtlInfo {
@@ -404,7 +415,7 @@ pub fn render_frame(frame: &mut Frame<'_>, state: &dyn TuiState) {
 
 #[cfg(test)]
 mod tests {
-    use super::is_unexpected_cache_miss;
+    use super::{connection_type_icon, is_unexpected_cache_miss};
 
     #[test]
     fn cache_creation_only_on_turn_two_is_expected() {
@@ -424,5 +435,16 @@ mod tests {
     #[test]
     fn no_cache_creation_is_not_a_miss() {
         assert!(!is_unexpected_cache_miss(3, Some(0), Some(0)));
+    }
+
+    #[test]
+    fn connection_type_icon_uses_protocol_specific_icons() {
+        assert_eq!(connection_type_icon(Some("websocket")), Some("🕸️"));
+        assert_eq!(connection_type_icon(Some("wss")), Some("🕸️"));
+        assert_eq!(connection_type_icon(Some("https")), Some("🌐"));
+        assert_eq!(connection_type_icon(Some("https/sse")), Some("🌐"));
+        assert_eq!(connection_type_icon(Some("http")), Some("🌐"));
+        assert_eq!(connection_type_icon(Some("unknown")), None);
+        assert_eq!(connection_type_icon(None), None);
     }
 }
