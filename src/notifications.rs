@@ -7,7 +7,7 @@
 //!
 //! All sends are fire-and-forget: errors are logged, never block.
 
-use crate::config::{config, SafetyConfig};
+use crate::config::{SafetyConfig, config};
 use crate::logging;
 use crate::safety::AmbientTranscript;
 
@@ -189,7 +189,7 @@ impl NotificationDispatcher {
         // Email — uses DETAILED body (sent to your own address, private)
         // If email_html_override is provided, send it directly as HTML.
         if self.config.email_enabled {
-            if let (Some(ref to), Some(ref host), Some(ref from)) = (
+            if let (Some(to), Some(host), Some(from)) = (
                 &self.config.email_to,
                 &self.config.email_smtp_host,
                 &self.config.email_from,
@@ -347,7 +347,7 @@ async fn send_email(
 
 /// Convert markdown text to a styled HTML email body.
 fn markdown_to_html_email(markdown: &str) -> String {
-    use pulldown_cmark::{html, Options, Parser};
+    use pulldown_cmark::{Options, Parser, html};
 
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);

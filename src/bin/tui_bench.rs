@@ -2,9 +2,9 @@ use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use jcode::message::ToolCall;
 use jcode::prompt::ContextInfo;
-use jcode::tui::{info_widget::InfoWidgetData, DisplayMessage, ProcessingStatus, TuiState};
-use ratatui::backend::TestBackend;
+use jcode::tui::{DisplayMessage, ProcessingStatus, TuiState, info_widget::InfoWidgetData};
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -346,11 +346,7 @@ impl TuiState for BenchState {
 
     fn animation_elapsed(&self) -> f32 {
         let elapsed = self.started_at.elapsed().as_secs_f32();
-        if elapsed > 2.0 {
-            2.0
-        } else {
-            elapsed
-        }
+        if elapsed > 2.0 { 2.0 } else { elapsed }
     }
 
     fn rate_limit_remaining(&self) -> Option<Duration> {

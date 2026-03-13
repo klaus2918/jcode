@@ -621,8 +621,8 @@ mod tests {
         let prev_jcode_home = std::env::var_os("JCODE_HOME");
         let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
 
-        std::env::remove_var("JCODE_HOME");
-        std::env::set_var("XDG_CONFIG_HOME", dir.path().to_str().unwrap());
+        crate::env::remove_var("JCODE_HOME");
+        crate::env::set_var("XDG_CONFIG_HOME", dir.path().to_str().unwrap());
 
         let result = save_github_token("gho_newtoken", "testuser");
         assert!(result.is_ok());
@@ -634,15 +634,15 @@ mod tests {
         assert_eq!(loaded, "gho_newtoken");
 
         if let Some(prev) = prev_jcode_home {
-            std::env::set_var("JCODE_HOME", prev);
+            crate::env::set_var("JCODE_HOME", prev);
         } else {
-            std::env::remove_var("JCODE_HOME");
+            crate::env::remove_var("JCODE_HOME");
         }
 
         if let Some(prev) = prev_xdg_config_home {
-            std::env::set_var("XDG_CONFIG_HOME", prev);
+            crate::env::set_var("XDG_CONFIG_HOME", prev);
         } else {
-            std::env::remove_var("XDG_CONFIG_HOME");
+            crate::env::remove_var("XDG_CONFIG_HOME");
         }
     }
 
@@ -651,7 +651,7 @@ mod tests {
         let _guard = crate::storage::lock_test_env();
         let dir = TempDir::new().unwrap();
         let prev = std::env::var_os("JCODE_HOME");
-        std::env::set_var("JCODE_HOME", dir.path());
+        crate::env::set_var("JCODE_HOME", dir.path());
 
         let path = copilot_config_dir();
         assert_eq!(
@@ -663,9 +663,9 @@ mod tests {
         );
 
         if let Some(prev) = prev {
-            std::env::set_var("JCODE_HOME", prev);
+            crate::env::set_var("JCODE_HOME", prev);
         } else {
-            std::env::remove_var("JCODE_HOME");
+            crate::env::remove_var("JCODE_HOME");
         }
     }
 

@@ -206,7 +206,7 @@ impl App {
     }
 
     fn start_claude_login(&mut self) {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         use sha2::{Digest, Sha256};
 
         let verifier: String = {
@@ -334,7 +334,7 @@ impl App {
     }
 
     fn start_claude_login_manual(&mut self) {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         use sha2::{Digest, Sha256};
 
         let verifier: String = {
@@ -384,7 +384,7 @@ impl App {
     }
 
     pub(super) fn start_claude_login_for_account(&mut self, label: &str) {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         use sha2::{Digest, Sha256};
 
         let verifier: String = {
@@ -528,7 +528,7 @@ impl App {
     }
 
     fn start_openai_login(&mut self) {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         use sha2::{Digest, Sha256};
 
         let verifier: String = {
@@ -1344,7 +1344,7 @@ impl App {
                             let file_path = config_dir.join(&env_file);
                             std::fs::write(&file_path, content)?;
                             crate::platform::set_permissions_owner_only(&file_path)?;
-                            std::env::set_var(&key_name, &key);
+                            crate::env::set_var(&key_name, &key);
                             Ok(())
                         })()
                     } else {
@@ -1552,7 +1552,7 @@ impl App {
 
         crate::platform::set_permissions_owner_only(&file_path)?;
 
-        std::env::set_var(key_name, key);
+        crate::env::set_var(key_name, key);
         Ok(())
     }
 }

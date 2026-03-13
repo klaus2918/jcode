@@ -216,7 +216,14 @@ mod tests {
             .parse::<u32>()
             .expect("parse child sid");
 
-        assert_eq!(child_sid, child.id(), "detached child should lead its own session");
-        assert_ne!(child_sid as i32, parent_sid, "detached child should not share parent session");
+        assert_eq!(
+            child_sid,
+            child.id(),
+            "detached child should lead its own session"
+        );
+        assert_ne!(
+            child_sid as i32, parent_sid,
+            "detached child should not share parent session"
+        );
     }
 }

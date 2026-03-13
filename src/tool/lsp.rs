@@ -2,7 +2,7 @@ use super::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 
 const OPERATIONS: &[&str] = &[
@@ -89,10 +89,7 @@ impl Tool for LspTool {
 
         Ok(ToolOutput::new(format!(
             "LSP is not integrated in jcode yet. Requested: {} at {}:{}:{}.\nUse grep or read to inspect symbols.",
-            params.operation,
-            params.file_path,
-            params.line,
-            params.character
+            params.operation, params.file_path, params.line, params.character
         )))
     }
 }

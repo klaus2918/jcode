@@ -28,7 +28,7 @@ mod reload;
 mod swarm;
 
 use self::client_lifecycle::handle_client;
-use self::debug::{handle_debug_client, ClientConnectionInfo, ClientDebugState};
+use self::debug::{ClientConnectionInfo, ClientDebugState, handle_debug_client};
 use self::debug_jobs::DebugJob;
 use self::headless::create_headless_session;
 use self::reload::await_reload_signal;
@@ -56,7 +56,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 /// Record of a file access by an agent
 #[derive(Clone, Debug)]
@@ -399,8 +399,8 @@ fn mark_close_on_exec<T: std::os::fd::AsRawFd>(io: &T) {
 #[cfg(test)]
 mod socket_tests {
     use super::{
-        cleanup_socket_pair, reload_marker_active, reload_marker_path, sibling_socket_path,
-        write_reload_state, ReloadPhase,
+        ReloadPhase, cleanup_socket_pair, reload_marker_active, reload_marker_path,
+        sibling_socket_path, write_reload_state,
     };
     use std::time::Duration;
 
@@ -452,7 +452,7 @@ mod socket_tests {
 
 #[cfg(test)]
 mod startup_tests {
-    use super::{is_server_ready, Server};
+    use super::{Server, is_server_ready};
     use crate::message::{Message, ToolDefinition};
     use crate::provider::{EventStream, Provider};
     use crate::transport::Listener;
@@ -521,7 +521,7 @@ mod startup_tests {
 #[cfg(test)]
 mod queue_tests {
     use super::{
-        queue_soft_interrupt_for_session, register_session_interrupt_queue, SessionInterruptQueues,
+        SessionInterruptQueues, queue_soft_interrupt_for_session, register_session_interrupt_queue,
     };
     use crate::agent::Agent;
     use crate::message::{Message, ToolDefinition};
@@ -640,7 +640,7 @@ mod queue_tests {
 
 /// Set custom socket path (sets JCODE_SOCKET env var)
 pub fn set_socket_path(path: &str) {
-    std::env::set_var("JCODE_SOCKET", path);
+    crate::env::set_var("JCODE_SOCKET", path);
 }
 
 /// Spawn a server child process and wait until it signals readiness.
@@ -762,16 +762,23 @@ pub async fn wait_for_server_ready(path: &std::path::Path, timeout: Duration) ->
     );
 }
 
-async fn probe_server_ready(path: &std::path::Path) -> bool {
+async fn probe_server_ready(path: &std::path::Path, ping_timeout: Duration) -> bool {
     if !crate::transport::is_socket_path(path) {
         return false;
     }
 
-    connect_socket(path).await.is_ok()
+    let Ok(mut client) = Client::connect_with_path(path.to_path_buf()).await else {
+        return false;
+    };
+
+    matches!(
+        tokio::time::timeout(ping_timeout, client.ping()).await,
+        Ok(Ok(true))
+    )
 }
 
 pub async fn is_server_ready(path: &std::path::Path) -> bool {
-    probe_server_ready(path).await
+    probe_server_ready(path, Duration::from_millis(50)).await
 }
 
 #[cfg(unix)]
@@ -820,7 +827,7 @@ fn signal_ready_fd() {
         use std::os::unix::io::FromRawFd;
 
         if let Ok(fd_str) = std::env::var("JCODE_READY_FD") {
-            std::env::remove_var("JCODE_READY_FD");
+            crate::env::remove_var("JCODE_READY_FD");
             if let Ok(fd) = fd_str.parse::<i32>() {
                 let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
                 let _ = std::io::Write::write_all(&mut file, b"R");
@@ -906,8 +913,8 @@ fn reload_signal() -> &'static (
 }
 
 #[cfg(test)]
-pub(crate) fn subscribe_reload_signal_for_tests(
-) -> tokio::sync::watch::Receiver<Option<ReloadSignal>> {
+pub(crate) fn subscribe_reload_signal_for_tests()
+-> tokio::sync::watch::Receiver<Option<ReloadSignal>> {
     reload_signal().1.clone()
 }
 
@@ -1381,7 +1388,8 @@ impl Server {
                                 .collect();
                             crate::logging::info(&format!(
                                 "[conflict-check] {} prev write-touches from peers ({} total accesses)",
-                                result.len(), accesses.len()
+                                result.len(),
+                                accesses.len()
                             ));
                             result
                         } else {
@@ -1469,7 +1477,9 @@ impl Server {
                                 let alert_msg = format!(
                                     "⚠️ File conflict: {} — {} just {} this file you previously worked with{}",
                                     path.display(),
-                                    current_name.as_deref().unwrap_or(&session_id[..8.min(session_id.len())]),
+                                    current_name
+                                        .as_deref()
+                                        .unwrap_or(&session_id[..8.min(session_id.len())]),
                                     touch.op.as_str(),
                                     touch
                                         .summary
@@ -1657,7 +1667,7 @@ impl Server {
         {
             let sigterm_server_name = self.identity.name.clone();
             tokio::spawn(async move {
-                use tokio::signal::unix::{signal, SignalKind};
+                use tokio::signal::unix::{SignalKind, signal};
                 if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
                     sigterm.recv().await;
                     crate::logging::info("Server received SIGTERM, shutting down gracefully");

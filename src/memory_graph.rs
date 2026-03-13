@@ -707,9 +707,11 @@ mod tests {
         assert_eq!(old.superseded_by, Some(new_id.clone()));
 
         let edges = graph.get_edges(&new_id);
-        assert!(edges
-            .iter()
-            .any(|e| e.target == old_id && matches!(e.kind, EdgeKind::Supersedes)));
+        assert!(
+            edges
+                .iter()
+                .any(|e| e.target == old_id && matches!(e.kind, EdgeKind::Supersedes))
+        );
     }
 
     #[test]

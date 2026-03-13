@@ -1,8 +1,8 @@
 use crate::storage;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 const TELEMETRY_ENDPOINT: &str = "https://jcode-telemetry.jeremyhuang55555.workers.dev/v1/event";
@@ -432,16 +432,16 @@ mod tests {
 
     #[test]
     fn test_opt_out_env_var() {
-        std::env::set_var("JCODE_NO_TELEMETRY", "1");
+        crate::env::set_var("JCODE_NO_TELEMETRY", "1");
         assert!(!is_enabled());
-        std::env::remove_var("JCODE_NO_TELEMETRY");
+        crate::env::remove_var("JCODE_NO_TELEMETRY");
     }
 
     #[test]
     fn test_do_not_track() {
-        std::env::set_var("DO_NOT_TRACK", "1");
+        crate::env::set_var("DO_NOT_TRACK", "1");
         assert!(!is_enabled());
-        std::env::remove_var("DO_NOT_TRACK");
+        crate::env::remove_var("DO_NOT_TRACK");
     }
 
     #[test]

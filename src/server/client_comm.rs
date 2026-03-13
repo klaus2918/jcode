@@ -1,8 +1,8 @@
 use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
-    queue_soft_interrupt_for_session, record_swarm_event, truncate_detail, update_member_status,
     ClientConnectionInfo, FileAccess, SessionInterruptQueues, SharedContext, SwarmEvent,
-    SwarmEventType, SwarmMember,
+    SwarmEventType, SwarmMember, queue_soft_interrupt_for_session, record_swarm_event,
+    truncate_detail, update_member_status,
 };
 use crate::agent::Agent;
 use crate::protocol::{AgentInfo, ContextEntry, NotificationType, ServerEvent};
@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 async fn swarm_id_for_session(
     session_id: &str,
@@ -495,7 +495,9 @@ pub(super) async fn handle_comm_message(
                             ),
                             "channel" => format!(
                                 "You just received a swarm channel message in #{} from {}. The latest swarm notification context has already been queued into this turn. Review it and respond or act if useful.",
-                                channel_name.clone().unwrap_or_else(|| "channel".to_string()),
+                                channel_name
+                                    .clone()
+                                    .unwrap_or_else(|| "channel".to_string()),
                                 sender_name
                             ),
                             _ => format!(

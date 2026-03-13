@@ -505,13 +505,13 @@ mod tests {
         let _guard = crate::storage::lock_test_env();
         let prev_home = std::env::var_os("JCODE_HOME");
         let temp = tempfile::TempDir::new().expect("create temp dir");
-        std::env::set_var("JCODE_HOME", temp.path());
+        crate::env::set_var("JCODE_HOME", temp.path());
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
 
         match prev_home {
-            Some(value) => std::env::set_var("JCODE_HOME", value),
-            None => std::env::remove_var("JCODE_HOME"),
+            Some(value) => crate::env::set_var("JCODE_HOME", value),
+            None => crate::env::remove_var("JCODE_HOME"),
         }
 
         result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))

@@ -6,7 +6,7 @@
 //!
 //! Integrates with the Haiku sidecar for relevance verification and extraction.
 
-use crate::memory_graph::{MemoryGraph, GRAPH_VERSION};
+use crate::memory_graph::{GRAPH_VERSION, MemoryGraph};
 use crate::sidecar::Sidecar;
 use crate::storage;
 use crate::tui::info_widget::{
@@ -957,11 +957,7 @@ fn format_message_context(message: &crate::message::Message) -> String {
         }
     }
 
-    if has_content {
-        chunk
-    } else {
-        String::new()
-    }
+    if has_content { chunk } else { String::new() }
 }
 
 /// Format messages into a context string for relevance checking
@@ -2502,13 +2498,13 @@ mod tests {
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("jcode-test-{}", unique));
         fs::create_dir_all(&dir).expect("create temp dir");
-        std::env::set_var("JCODE_HOME", &dir);
+        crate::env::set_var("JCODE_HOME", &dir);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&dir)));
 
         match old {
-            Some(value) => std::env::set_var("JCODE_HOME", value),
-            None => std::env::remove_var("JCODE_HOME"),
+            Some(value) => crate::env::set_var("JCODE_HOME", value),
+            None => crate::env::remove_var("JCODE_HOME"),
         }
         let _ = fs::remove_dir_all(&dir);
 
@@ -2716,7 +2712,10 @@ mod tests {
                 MemoryCategory::Fact,
                 "The capital of France is Paris, a city known for the Eiffel Tower",
             );
-            let entry2 = MemoryEntry::new(MemoryCategory::Fact, "Photosynthesis converts carbon dioxide and water into glucose using sunlight energy");
+            let entry2 = MemoryEntry::new(
+                MemoryCategory::Fact,
+                "Photosynthesis converts carbon dioxide and water into glucose using sunlight energy",
+            );
 
             let id1 = manager.remember_project(entry1).expect("remember 1");
             let id2 = manager.remember_project(entry2).expect("remember 2");

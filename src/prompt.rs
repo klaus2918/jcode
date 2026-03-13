@@ -584,7 +584,7 @@ mod tests {
         let _guard = crate::storage::lock_test_env();
         let prev_home = std::env::var_os("JCODE_HOME");
         let temp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("JCODE_HOME", temp.path());
+        crate::env::set_var("JCODE_HOME", temp.path());
         std::fs::create_dir_all(temp.path().join("external")).unwrap();
 
         std::fs::write(
@@ -601,9 +601,9 @@ mod tests {
         assert!(content.contains("sandboxed global agents instructions"));
 
         if let Some(prev_home) = prev_home {
-            std::env::set_var("JCODE_HOME", prev_home);
+            crate::env::set_var("JCODE_HOME", prev_home);
         } else {
-            std::env::remove_var("JCODE_HOME");
+            crate::env::remove_var("JCODE_HOME");
         }
     }
 }

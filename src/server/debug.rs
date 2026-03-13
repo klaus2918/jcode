@@ -4,19 +4,19 @@ use super::debug_events::{
     maybe_handle_event_query_command, maybe_handle_event_subscription_command,
 };
 use super::debug_help::{debug_help_text, parse_namespaced_command, swarm_debug_help_text};
-use super::debug_jobs::{maybe_handle_job_command, DebugJob};
+use super::debug_jobs::{DebugJob, maybe_handle_job_command};
 use super::debug_server_state::maybe_handle_server_state_command;
 use super::debug_session_admin::maybe_handle_session_admin_command;
 use super::debug_swarm_read::maybe_handle_swarm_read_command;
 use super::debug_swarm_write::maybe_handle_swarm_write_command;
 use super::debug_testers::execute_tester_command;
 use super::{
-    debug_control_allowed, FileAccess, ServerIdentity, SharedContext, SwarmEvent, SwarmMember,
-    VersionedPlan,
+    FileAccess, ServerIdentity, SharedContext, SwarmEvent, SwarmMember, VersionedPlan,
+    debug_control_allowed,
 };
 use crate::agent::Agent;
 use crate::ambient_runner::AmbientRunnerHandle;
-use crate::protocol::{decode_request, encode_event, Request, ServerEvent};
+use crate::protocol::{Request, ServerEvent, decode_request, encode_event};
 use crate::provider::Provider;
 use crate::transport::Stream;
 use anyhow::Result;
@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 #[derive(Default)]
 pub(super) struct ClientDebugState {
@@ -365,7 +365,7 @@ mod tests {
                 .tempdir()
                 .expect("create temp home");
             let prev_home = std::env::var_os("JCODE_HOME");
-            std::env::set_var("JCODE_HOME", temp_home.path());
+            crate::env::set_var("JCODE_HOME", temp_home.path());
             Self {
                 _lock: lock,
                 prev_home,
@@ -377,9 +377,9 @@ mod tests {
     impl Drop for TestHomeGuard {
         fn drop(&mut self) {
             if let Some(prev_home) = &self.prev_home {
-                std::env::set_var("JCODE_HOME", prev_home);
+                crate::env::set_var("JCODE_HOME", prev_home);
             } else {
-                std::env::remove_var("JCODE_HOME");
+                crate::env::remove_var("JCODE_HOME");
             }
         }
     }
@@ -502,7 +502,7 @@ mod debug_execution_tests {
         fn set(key: &'static str, value: &str) -> Self {
             let lock = lock_env();
             let previous = std::env::var_os(key);
-            std::env::set_var(key, value);
+            crate::env::set_var(key, value);
             Self {
                 _lock: lock,
                 key,
@@ -513,7 +513,7 @@ mod debug_execution_tests {
         fn remove(key: &'static str) -> Self {
             let lock = lock_env();
             let previous = std::env::var_os(key);
-            std::env::remove_var(key);
+            crate::env::remove_var(key);
             Self {
                 _lock: lock,
                 key,
@@ -525,9 +525,9 @@ mod debug_execution_tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(prev) = &self.previous {
-                std::env::set_var(self.key, prev);
+                crate::env::set_var(self.key, prev);
             } else {
-                std::env::remove_var(self.key);
+                crate::env::remove_var(self.key);
             }
         }
     }

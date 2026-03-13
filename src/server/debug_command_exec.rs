@@ -1,5 +1,5 @@
-use super::debug_jobs::{maybe_start_async_debug_job, DebugJob};
 use super::ServerIdentity;
+use super::debug_jobs::{DebugJob, maybe_start_async_debug_job};
 use crate::agent::Agent;
 use crate::build;
 use crate::mcp::McpConfig;
@@ -48,11 +48,7 @@ pub(super) fn debug_message_timeout_secs() -> Option<u64> {
         return None;
     }
     let secs = trimmed.parse::<u64>().ok()?;
-    if secs == 0 {
-        None
-    } else {
-        Some(secs)
-    }
+    if secs == 0 { None } else { Some(secs) }
 }
 
 pub(super) async fn run_debug_message_with_timeout(
@@ -244,7 +240,7 @@ pub(super) async fn execute_debug_command(
             None => {
                 return Err(anyhow::anyhow!(
                     "Usage: mcp:connect:<server> {{\"command\":\"...\",\"args\":[...]}}"
-                ))
+                ));
             }
         };
         let mut input: serde_json::Value = serde_json::from_str(config_json)
@@ -397,7 +393,7 @@ pub(super) async fn execute_debug_command(
                 return Err(anyhow::anyhow!(
                     "Unknown provider '{}'. Use: claude, openai, openrouter, cursor, copilot, gemini, antigravity",
                     provider
-                ))
+                ));
             }
         };
         let mut agent = agent.lock().await;
@@ -492,7 +488,7 @@ mod tests {
     impl EnvGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let original = std::env::var_os(key);
-            std::env::set_var(key, value);
+            crate::env::set_var(key, value);
             Self { key, original }
         }
     }
@@ -500,9 +496,9 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             if let Some(value) = &self.original {
-                std::env::set_var(self.key, value);
+                crate::env::set_var(self.key, value);
             } else {
-                std::env::remove_var(self.key);
+                crate::env::remove_var(self.key);
             }
         }
     }

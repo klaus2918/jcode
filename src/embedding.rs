@@ -336,7 +336,7 @@ pub fn maybe_unload_if_idle(idle_for: Duration) -> bool {
         // even after the model is dropped.
         #[cfg(all(target_os = "linux", not(feature = "jemalloc")))]
         {
-            extern "C" {
+            unsafe extern "C" {
                 fn malloc_trim(pad: usize) -> i32;
             }
             let trimmed = unsafe { malloc_trim(0) };

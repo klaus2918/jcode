@@ -164,14 +164,14 @@ mod tests {
     #[test]
     fn runtime_cursor_api_key_reads_env() {
         let previous = std::env::var_os("CURSOR_API_KEY");
-        std::env::set_var("CURSOR_API_KEY", "cursor-env-test");
+        crate::env::set_var("CURSOR_API_KEY", "cursor-env-test");
 
         assert_eq!(runtime_cursor_api_key().as_deref(), Some("cursor-env-test"));
 
         if let Some(previous) = previous {
-            std::env::set_var("CURSOR_API_KEY", previous);
+            crate::env::set_var("CURSOR_API_KEY", previous);
         } else {
-            std::env::remove_var("CURSOR_API_KEY");
+            crate::env::remove_var("CURSOR_API_KEY");
         }
     }
 }

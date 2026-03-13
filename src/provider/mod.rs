@@ -646,6 +646,23 @@ pub trait Provider: Send + Sync {
         vec![]
     }
 
+    /// Get the active service tier override (if applicable, e.g., OpenAI).
+    fn service_tier(&self) -> Option<String> {
+        None
+    }
+
+    /// Set the active service tier override (if applicable, e.g., OpenAI).
+    fn set_service_tier(&self, _service_tier: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "This provider does not support service tier switching"
+        ))
+    }
+
+    /// Get ordered list of available service tiers.
+    fn available_service_tiers(&self) -> Vec<&'static str> {
+        vec![]
+    }
+
     fn transport(&self) -> Option<String> {
         None
     }
@@ -1012,12 +1029,20 @@ fn fallback_context_limit_for_model(model: &str, provider_hint: Option<&str>) ->
     }
 
     if model.starts_with("claude-opus-4-6") || model.starts_with("claude-opus-4.6") {
-        let eff_1m = is_1m || crate::provider::anthropic::effectively_1m(&format!("claude-opus-4-6{}", if is_1m { "[1m]" } else { "" }));
+        let eff_1m = is_1m
+            || crate::provider::anthropic::effectively_1m(&format!(
+                "claude-opus-4-6{}",
+                if is_1m { "[1m]" } else { "" }
+            ));
         return Some(if eff_1m { 1_048_576 } else { 200_000 });
     }
 
     if model.starts_with("claude-sonnet-4-6") || model.starts_with("claude-sonnet-4.6") {
-        let eff_1m = is_1m || crate::provider::anthropic::effectively_1m(&format!("claude-sonnet-4-6{}", if is_1m { "[1m]" } else { "" }));
+        let eff_1m = is_1m
+            || crate::provider::anthropic::effectively_1m(&format!(
+                "claude-sonnet-4-6{}",
+                if is_1m { "[1m]" } else { "" }
+            ));
         return Some(if eff_1m { 1_048_576 } else { 200_000 });
     }
 
@@ -2148,7 +2173,9 @@ impl MultiProvider {
                         .complete(messages, tools, system, resume_session_id)
                         .await
                 } else {
-                    Err(anyhow::anyhow!("OpenAI credentials not available. Run `jcode login --provider openai` to log in."))
+                    Err(anyhow::anyhow!(
+                        "OpenAI credentials not available. Run `jcode login --provider openai` to log in."
+                    ))
                 }
             }
             ActiveProvider::Copilot => {
@@ -2181,7 +2208,9 @@ impl MultiProvider {
                         .complete(messages, tools, system, resume_session_id)
                         .await
                 } else {
-                    Err(anyhow::anyhow!("OpenRouter credentials not available. Set OPENROUTER_API_KEY environment variable."))
+                    Err(anyhow::anyhow!(
+                        "OpenRouter credentials not available. Set OPENROUTER_API_KEY environment variable."
+                    ))
                 }
             }
         }
@@ -2237,7 +2266,9 @@ impl MultiProvider {
                         )
                         .await
                 } else {
-                    Err(anyhow::anyhow!("OpenAI credentials not available. Run `jcode login --provider openai` to log in."))
+                    Err(anyhow::anyhow!(
+                        "OpenAI credentials not available. Run `jcode login --provider openai` to log in."
+                    ))
                 }
             }
             ActiveProvider::Copilot => {
@@ -2288,7 +2319,9 @@ impl MultiProvider {
                         )
                         .await
                 } else {
-                    Err(anyhow::anyhow!("OpenRouter credentials not available. Set OPENROUTER_API_KEY environment variable."))
+                    Err(anyhow::anyhow!(
+                        "OpenRouter credentials not available. Set OPENROUTER_API_KEY environment variable."
+                    ))
                 }
             }
         }
@@ -3020,13 +3053,14 @@ impl Provider for MultiProvider {
             let is_opus = model.contains("opus");
 
             let model_defaults_1m = crate::provider::anthropic::effectively_1m(model);
-            let (available, detail) = if is_1m && !model_defaults_1m && !crate::usage::has_extra_usage() {
-                (false, "requires extra usage".to_string())
-            } else if is_opus && !is_max && has_oauth && !has_api_key {
-                (false, "requires Max subscription".to_string())
-            } else {
-                (true, String::new())
-            };
+            let (available, detail) =
+                if is_1m && !model_defaults_1m && !crate::usage::has_extra_usage() {
+                    (false, "requires extra usage".to_string())
+                } else if is_opus && !is_max && has_oauth && !has_api_key {
+                    (false, "requires Max subscription".to_string())
+                } else {
+                    (true, String::new())
+                };
 
             if has_oauth {
                 routes.push(ModelRoute {
@@ -3402,6 +3436,37 @@ impl Provider for MultiProvider {
         }
     }
 
+    fn service_tier(&self) -> Option<String> {
+        match self.active_provider() {
+            ActiveProvider::OpenAI => self.openai.as_ref().and_then(|o| o.service_tier()),
+            _ => None,
+        }
+    }
+
+    fn set_service_tier(&self, service_tier: &str) -> Result<()> {
+        match self.active_provider() {
+            ActiveProvider::OpenAI => self
+                .openai
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("OpenAI provider not available"))?
+                .set_service_tier(service_tier),
+            _ => Err(anyhow::anyhow!(
+                "Service tier switching is only supported for OpenAI models"
+            )),
+        }
+    }
+
+    fn available_service_tiers(&self) -> Vec<&'static str> {
+        match self.active_provider() {
+            ActiveProvider::OpenAI => self
+                .openai
+                .as_ref()
+                .map(|o| o.available_service_tiers())
+                .unwrap_or_default(),
+            _ => vec![],
+        }
+    }
+
     fn transport(&self) -> Option<String> {
         match self.active_provider() {
             ActiveProvider::OpenAI => self.openai.as_ref().and_then(|o| o.transport()),
@@ -3730,10 +3795,7 @@ mod tests {
     #[test]
     fn test_context_limit_claude() {
         // Default (no subscription info = assumes Max) -> 1M for opus/sonnet 4.6
-        assert_eq!(
-            context_limit_for_model("claude-opus-4-6"),
-            Some(1_048_576)
-        );
+        assert_eq!(context_limit_for_model("claude-opus-4-6"), Some(1_048_576));
         assert_eq!(
             context_limit_for_model("claude-sonnet-4-6"),
             Some(1_048_576)
@@ -3867,8 +3929,8 @@ mod tests {
     fn test_set_model_rejects_cross_provider_without_creds() {
         let _guard = crate::storage::lock_test_env();
         crate::subscription_catalog::clear_runtime_env();
-        std::env::remove_var("JCODE_ACTIVE_PROVIDER");
-        std::env::remove_var("JCODE_FORCE_PROVIDER");
+        crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
+        crate::env::remove_var("JCODE_FORCE_PROVIDER");
 
         let provider = MultiProvider {
             claude: None,
@@ -4078,7 +4140,7 @@ mod tests {
     fn test_subscription_filters_do_not_activate_from_saved_credentials_alone() {
         let _guard = crate::storage::lock_test_env();
         crate::subscription_catalog::clear_runtime_env();
-        std::env::set_var(crate::subscription_catalog::JCODE_API_KEY_ENV, "test-key");
+        crate::env::set_var(crate::subscription_catalog::JCODE_API_KEY_ENV, "test-key");
 
         assert!(ensure_model_allowed_for_subscription("gpt-5.4").is_ok());
         assert_eq!(
@@ -4089,7 +4151,7 @@ mod tests {
             vec!["gpt-5.4".to_string(), "moonshotai/kimi-k2.5".to_string()]
         );
 
-        std::env::remove_var(crate::subscription_catalog::JCODE_API_KEY_ENV);
+        crate::env::remove_var(crate::subscription_catalog::JCODE_API_KEY_ENV);
         crate::subscription_catalog::clear_runtime_env();
     }
 }

@@ -7,7 +7,7 @@ use crate::tool::{Tool, ToolContext, ToolExecutionMode, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Debug, Deserialize)]
 struct SelfDevInput {
@@ -501,13 +501,13 @@ mod tests {
     impl EnvVarGuard {
         fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
             let original = std::env::var_os(key);
-            std::env::set_var(key, value);
+            crate::env::set_var(key, value);
             Self { key, original }
         }
 
         fn remove(key: &'static str) -> Self {
             let original = std::env::var_os(key);
-            std::env::remove_var(key);
+            crate::env::remove_var(key);
             Self { key, original }
         }
     }
@@ -515,8 +515,8 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             match &self.original {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
+                Some(value) => crate::env::set_var(self.key, value),
+                None => crate::env::remove_var(self.key),
             }
         }
     }

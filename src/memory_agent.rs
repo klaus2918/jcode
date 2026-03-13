@@ -13,8 +13,8 @@ use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -320,7 +320,9 @@ impl MemoryAgent {
                 if extraction_ctx.len() >= 200 {
                     crate::logging::info(&format!(
                         "[{}] Triggering periodic extraction ({} turns since last, {} chars context)",
-                        session_id, ss.turns_since_extraction, extraction_ctx.len()
+                        session_id,
+                        ss.turns_since_extraction,
+                        extraction_ctx.len()
                     ));
                     ss.turns_since_extraction = 0;
                     let _ = ss;
@@ -1054,7 +1056,9 @@ async fn refine_clusters(
 
 async fn name_cluster_with_sidecar(member_contents: &[String]) -> Result<String> {
     let sidecar = Sidecar::new();
-    let mut prompt = String::from("These memories were retrieved together. Give this cluster a short descriptive name (2-4 words, no quotes):\n");
+    let mut prompt = String::from(
+        "These memories were retrieved together. Give this cluster a short descriptive name (2-4 words, no quotes):\n",
+    );
     for (i, content) in member_contents.iter().enumerate() {
         prompt.push_str(&format!("{}. {}\n", i + 1, content));
     }
@@ -1624,13 +1628,17 @@ mod tests {
             .next()
             .expect("cluster id")
             .to_string();
-        assert!(graph
-            .get_edges(&id_a)
-            .iter()
-            .any(|e| e.target == cluster_id && matches!(e.kind, EdgeKind::InCluster)));
-        assert!(graph
-            .get_edges(&id_b)
-            .iter()
-            .any(|e| e.target == cluster_id && matches!(e.kind, EdgeKind::InCluster)));
+        assert!(
+            graph
+                .get_edges(&id_a)
+                .iter()
+                .any(|e| e.target == cluster_id && matches!(e.kind, EdgeKind::InCluster))
+        );
+        assert!(
+            graph
+                .get_edges(&id_b)
+                .iter()
+                .any(|e| e.target == cluster_id && matches!(e.kind, EdgeKind::InCluster))
+        );
     }
 }

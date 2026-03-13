@@ -2,7 +2,7 @@ use super::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 const MAX_SIZE: usize = 5 * 1024 * 1024; // 5MB
@@ -147,7 +147,7 @@ mod html_regex {
     use std::sync::OnceLock;
 
     macro_rules! static_regex {
-        ($name:ident, $pat:expr) => {
+        ($name:ident, $pat:expr_2021) => {
             pub fn $name() -> &'static Regex {
                 static RE: OnceLock<Regex> = OnceLock::new();
                 RE.get_or_init(|| Regex::new($pat).expect("valid regex"))

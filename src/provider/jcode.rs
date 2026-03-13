@@ -1,4 +1,4 @@
-use super::{copilot, EventStream, ModelRoute, MultiProvider, NativeToolResultSender, Provider};
+use super::{EventStream, ModelRoute, MultiProvider, NativeToolResultSender, Provider, copilot};
 use crate::message::{Message, ToolDefinition};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -23,12 +23,12 @@ impl JcodeProvider {
     }
 
     fn apply_runtime_profile() {
-        std::env::set_var(
+        crate::env::set_var(
             "JCODE_OPENROUTER_MODEL",
             crate::subscription_catalog::default_model().id,
         );
-        std::env::set_var("JCODE_ACTIVE_PROVIDER", "openrouter");
-        std::env::set_var("JCODE_FORCE_PROVIDER", "1");
+        crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openrouter");
+        crate::env::set_var("JCODE_FORCE_PROVIDER", "1");
     }
 
     fn ensure_runtime_mode(&self) {
@@ -218,10 +218,12 @@ mod tests {
         runtime.block_on(async {
             let provider = JcodeProvider::new();
             assert!(crate::subscription_catalog::is_runtime_mode_enabled());
-            assert!(provider
-                .available_models_display()
-                .into_iter()
-                .all(|model| crate::subscription_catalog::is_curated_model(&model)));
+            assert!(
+                provider
+                    .available_models_display()
+                    .into_iter()
+                    .all(|model| crate::subscription_catalog::is_curated_model(&model))
+            );
         });
 
         crate::subscription_catalog::clear_runtime_env();

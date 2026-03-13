@@ -342,8 +342,8 @@ pub(super) fn tint_span_with_diff_color(span: Span<'static>, diff_color: Color) 
 #[cfg(test)]
 mod tests {
     use super::{
-        diff_change_counts_for_tool, diff_counts_from_apply_patch_input,
-        generate_diff_lines_from_strings, DiffLineKind,
+        DiffLineKind, diff_change_counts_for_tool, diff_counts_from_apply_patch_input,
+        generate_diff_lines_from_strings,
     };
     use crate::message::ToolCall;
     use serde_json::json;

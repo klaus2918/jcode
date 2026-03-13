@@ -75,19 +75,19 @@ pub fn apply_runtime_env() -> Result<()> {
         )
     })?;
 
-    std::env::set_var("JCODE_OPENROUTER_API_BASE", endpoint);
-    std::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", API_KEY_ENV);
-    std::env::set_var("JCODE_OPENROUTER_ENV_FILE", ENV_FILE);
-    std::env::set_var("JCODE_OPENROUTER_CACHE_NAMESPACE", "azure-openai");
-    std::env::set_var("JCODE_OPENROUTER_PROVIDER_FEATURES", "0");
-    std::env::set_var("JCODE_OPENROUTER_MODEL_CATALOG", "0");
+    crate::env::set_var("JCODE_OPENROUTER_API_BASE", endpoint);
+    crate::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", API_KEY_ENV);
+    crate::env::set_var("JCODE_OPENROUTER_ENV_FILE", ENV_FILE);
+    crate::env::set_var("JCODE_OPENROUTER_CACHE_NAMESPACE", "azure-openai");
+    crate::env::set_var("JCODE_OPENROUTER_PROVIDER_FEATURES", "0");
+    crate::env::set_var("JCODE_OPENROUTER_MODEL_CATALOG", "0");
 
     if uses_entra_id() {
-        std::env::set_var("JCODE_OPENROUTER_AUTH_HEADER", "authorization-bearer");
-        std::env::set_var("JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER", "azure");
+        crate::env::set_var("JCODE_OPENROUTER_AUTH_HEADER", "authorization-bearer");
+        crate::env::set_var("JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER", "azure");
     } else {
-        std::env::set_var("JCODE_OPENROUTER_AUTH_HEADER", "api-key");
-        std::env::remove_var("JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER");
+        crate::env::set_var("JCODE_OPENROUTER_AUTH_HEADER", "api-key");
+        crate::env::remove_var("JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER");
     }
 
     Ok(())

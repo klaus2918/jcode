@@ -159,28 +159,28 @@ pub fn is_runtime_mode_enabled() -> bool {
 }
 
 pub fn apply_runtime_env() {
-    std::env::set_var(JCODE_SUBSCRIPTION_ACTIVE_ENV, "1");
-    std::env::set_var(
+    crate::env::set_var(JCODE_SUBSCRIPTION_ACTIVE_ENV, "1");
+    crate::env::set_var(
         "JCODE_OPENROUTER_API_BASE",
         configured_api_base().unwrap_or_else(|| DEFAULT_JCODE_API_BASE.to_string()),
     );
-    std::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", JCODE_API_KEY_ENV);
-    std::env::set_var("JCODE_OPENROUTER_ENV_FILE", JCODE_ENV_FILE);
-    std::env::set_var("JCODE_OPENROUTER_CACHE_NAMESPACE", JCODE_CACHE_NAMESPACE);
-    std::env::set_var("JCODE_OPENROUTER_PROVIDER_FEATURES", "0");
-    std::env::remove_var("JCODE_OPENROUTER_PROVIDER");
-    std::env::remove_var("JCODE_OPENROUTER_NO_FALLBACK");
+    crate::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", JCODE_API_KEY_ENV);
+    crate::env::set_var("JCODE_OPENROUTER_ENV_FILE", JCODE_ENV_FILE);
+    crate::env::set_var("JCODE_OPENROUTER_CACHE_NAMESPACE", JCODE_CACHE_NAMESPACE);
+    crate::env::set_var("JCODE_OPENROUTER_PROVIDER_FEATURES", "0");
+    crate::env::remove_var("JCODE_OPENROUTER_PROVIDER");
+    crate::env::remove_var("JCODE_OPENROUTER_NO_FALLBACK");
 }
 
 pub fn clear_runtime_env() {
-    std::env::remove_var(JCODE_SUBSCRIPTION_ACTIVE_ENV);
-    std::env::remove_var("JCODE_OPENROUTER_API_BASE");
-    std::env::remove_var("JCODE_OPENROUTER_API_KEY_NAME");
-    std::env::remove_var("JCODE_OPENROUTER_ENV_FILE");
-    std::env::remove_var("JCODE_OPENROUTER_CACHE_NAMESPACE");
-    std::env::remove_var("JCODE_OPENROUTER_PROVIDER_FEATURES");
-    std::env::remove_var("JCODE_OPENROUTER_PROVIDER");
-    std::env::remove_var("JCODE_OPENROUTER_NO_FALLBACK");
+    crate::env::remove_var(JCODE_SUBSCRIPTION_ACTIVE_ENV);
+    crate::env::remove_var("JCODE_OPENROUTER_API_BASE");
+    crate::env::remove_var("JCODE_OPENROUTER_API_KEY_NAME");
+    crate::env::remove_var("JCODE_OPENROUTER_ENV_FILE");
+    crate::env::remove_var("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    crate::env::remove_var("JCODE_OPENROUTER_PROVIDER_FEATURES");
+    crate::env::remove_var("JCODE_OPENROUTER_PROVIDER");
+    crate::env::remove_var("JCODE_OPENROUTER_NO_FALLBACK");
 }
 
 #[cfg(test)]

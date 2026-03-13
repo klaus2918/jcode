@@ -5,10 +5,10 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
@@ -328,7 +328,7 @@ impl GeminiProvider {
                 },
                 Err(err) => {
                     return Err(err)
-                        .context("Gemini Code Assist setup failed during loadCodeAssist")
+                        .context("Gemini Code Assist setup failed during loadCodeAssist");
                 }
             };
 
@@ -403,7 +403,8 @@ impl GeminiProvider {
     ) -> Result<T> {
         let tokens = gemini_auth::load_or_refresh_tokens().await?;
         let url = format!("{}:{method}", Self::base_url());
-        let body_value = serde_json::to_value(body).context("Failed to serialize Gemini request body")?;
+        let body_value =
+            serde_json::to_value(body).context("Failed to serialize Gemini request body")?;
         let mut last_error: Option<anyhow::Error> = None;
         let mut resp = None;
         for attempt in 0..2 {
@@ -491,8 +492,8 @@ impl GeminiProvider {
         let resp = match resp {
             Some(resp) => resp,
             None => {
-                let err = last_error
-                    .unwrap_or_else(|| anyhow::anyhow!("Gemini operation lookup failed"));
+                let err =
+                    last_error.unwrap_or_else(|| anyhow::anyhow!("Gemini operation lookup failed"));
                 return Err(err).with_context(|| format!("Gemini request to {} failed", url));
             }
         };

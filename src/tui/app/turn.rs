@@ -702,7 +702,7 @@ impl App {
             let mut saw_message_end = false;
             let mut call_output_tokens_seen: u64 = 0;
             let mut interleaved = false; // Track if we interleaved a message mid-stream
-                                         // Track tool results from provider (already executed by Claude Code CLI)
+            // Track tool results from provider (already executed by Claude Code CLI)
             let mut sdk_tool_results: std::collections::HashMap<String, (String, bool)> =
                 std::collections::HashMap::new();
             let store_reasoning_content = self.provider.name() == "openrouter";

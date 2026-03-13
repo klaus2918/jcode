@@ -9,7 +9,7 @@ use crate::compaction::CompactionEvent;
 use crate::id;
 use crate::logging;
 use crate::message::{
-    ContentBlock, Message, Role, StreamEvent, ToolCall, ToolDefinition, TOOL_OUTPUT_MISSING_TEXT,
+    ContentBlock, Message, Role, StreamEvent, TOOL_OUTPUT_MISSING_TEXT, ToolCall, ToolDefinition,
 };
 use crate::protocol::{HistoryMessage, ServerEvent};
 use crate::provider::{NativeToolResult, Provider};
@@ -946,8 +946,7 @@ impl Agent {
         if *attempts >= Self::MAX_INCOMPLETE_CONTINUATION_ATTEMPTS {
             logging::warn(&format!(
                 "Response ended with stop_reason='{}' after {} continuation attempts; returning partial output",
-                stop_reason,
-                attempts
+                stop_reason, attempts
             ));
             return Ok(false);
         }
@@ -1252,7 +1251,8 @@ impl Agent {
     }
 
     pub async fn compaction_mode(&self) -> crate::config::CompactionMode {
-        self.registry.compaction().read().await.mode()
+        let mode = self.registry.compaction().read().await.mode();
+        mode
     }
 
     pub async fn set_compaction_mode(&self, mode: crate::config::CompactionMode) -> Result<()> {
@@ -3553,7 +3553,9 @@ impl Agent {
                             }
                         }
                         if self.is_graceful_shutdown() {
-                            logging::info("Graceful shutdown during streaming - checkpointing partial response");
+                            logging::info(
+                                "Graceful shutdown during streaming - checkpointing partial response",
+                            );
                             let _ = event_tx.send(ServerEvent::TextDelta {
                                 text: "\n\n[generation interrupted - server reloading]".to_string(),
                             });

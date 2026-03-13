@@ -13,8 +13,8 @@
 //! frames by a relay task.
 
 use anyhow::Result;
-use futures::stream::StreamExt;
 use futures::SinkExt;
+use futures::stream::StreamExt;
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::sync::Arc;

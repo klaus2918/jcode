@@ -1,6 +1,6 @@
 use super::info_widget::{
-    calculate_widget_height, is_overview_mergeable, InfoWidgetData, Side, WidgetKind,
-    WidgetPlacement,
+    InfoWidgetData, Side, WidgetKind, WidgetPlacement, calculate_widget_height,
+    is_overview_mergeable,
 };
 use ratatui::layout::Rect;
 use std::collections::HashSet;

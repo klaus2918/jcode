@@ -13,7 +13,7 @@ use syntect::highlighting::{Style as SynStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::{config, DiagramDisplayMode};
+use crate::config::{DiagramDisplayMode, config};
 use crate::tui::mermaid;
 use crate::tui::ui::{CopyTargetKind, RawCopyTarget};
 
@@ -2381,9 +2381,11 @@ mod tests {
         let lines = render_markdown(md);
         let rendered: Vec<String> = lines.iter().map(line_to_string).collect();
 
-        assert!(rendered
-            .iter()
-            .any(|l| l.contains('│') && l.contains('A') && l.contains('B')));
+        assert!(
+            rendered
+                .iter()
+                .any(|l| l.contains('│') && l.contains('A') && l.contains('B'))
+        );
         assert!(rendered.iter().any(|l| l.contains('─') && l.contains('┼')));
     }
 

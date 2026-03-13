@@ -7,7 +7,7 @@ use crate::session::Session;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -304,7 +304,7 @@ mod tests {
         let _ = std::fs::create_dir_all(base.join("sessions"));
 
         let previous_home = std::env::var("JCODE_HOME").ok();
-        std::env::set_var("JCODE_HOME", &base);
+        crate::env::set_var("JCODE_HOME", &base);
 
         let session_id = format!("test-session-{}", nonce);
         let mut session = Session::create_with_id(session_id.clone(), None, None);
@@ -327,9 +327,9 @@ mod tests {
 
     fn restore_env(base: std::path::PathBuf, previous_home: Option<String>) {
         if let Some(prev) = previous_home {
-            std::env::set_var("JCODE_HOME", prev);
+            crate::env::set_var("JCODE_HOME", prev);
         } else {
-            std::env::remove_var("JCODE_HOME");
+            crate::env::remove_var("JCODE_HOME");
         }
         let _ = std::fs::remove_dir_all(base);
     }

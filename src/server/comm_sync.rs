@@ -1,12 +1,12 @@
 use super::{
-    broadcast_swarm_plan, record_swarm_event, SwarmEvent, SwarmEventType, SwarmMember,
-    VersionedPlan,
+    SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan, broadcast_swarm_plan,
+    record_swarm_event,
 };
 use crate::agent::Agent;
 use crate::protocol::{NotificationType, ServerEvent};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 pub(super) async fn handle_comm_summary(
     id: u64,

@@ -145,8 +145,8 @@ fn test_mask_email_censors_local_part() {
 fn test_subscription_command_shows_jcode_status_scaffold() {
     let _guard = crate::storage::lock_test_env();
     crate::subscription_catalog::clear_runtime_env();
-    std::env::remove_var(crate::subscription_catalog::JCODE_API_KEY_ENV);
-    std::env::remove_var(crate::subscription_catalog::JCODE_API_BASE_ENV);
+    crate::env::remove_var(crate::subscription_catalog::JCODE_API_KEY_ENV);
+    crate::env::remove_var(crate::subscription_catalog::JCODE_API_BASE_ENV);
 
     let mut app = create_test_app();
     app.input = "/subscription".to_string();
@@ -455,10 +455,12 @@ fn test_pinned_side_diagram_layout_allocates_right_pane() {
         diagram.width < 120,
         "diagram should not consume full terminal width"
     );
-    assert!(frame
-        .render_order
-        .iter()
-        .any(|s| s == "draw_pinned_diagram"));
+    assert!(
+        frame
+            .render_order
+            .iter()
+            .any(|s| s == "draw_pinned_diagram")
+    );
 
     crate::tui::visual_debug::disable();
     crate::tui::mermaid::clear_active_diagrams();
@@ -495,10 +497,12 @@ fn test_pinned_top_diagram_layout_allocates_top_pane() {
         diagram.height
     );
     assert_eq!(messages.y, diagram.y + diagram.height);
-    assert!(frame
-        .render_order
-        .iter()
-        .any(|s| s == "draw_pinned_diagram"));
+    assert!(
+        frame
+            .render_order
+            .iter()
+            .any(|s| s == "draw_pinned_diagram")
+    );
 
     crate::tui::visual_debug::disable();
     crate::tui::mermaid::clear_active_diagrams();
@@ -527,10 +531,12 @@ fn test_pinned_diagram_not_shown_when_terminal_too_narrow() {
         frame.layout.diagram_area.is_none(),
         "diagram pane should be suppressed on narrow terminal"
     );
-    assert!(!frame
-        .render_order
-        .iter()
-        .any(|s| s == "draw_pinned_diagram"));
+    assert!(
+        !frame
+            .render_order
+            .iter()
+            .any(|s| s == "draw_pinned_diagram")
+    );
 
     crate::tui::visual_debug::disable();
     crate::tui::mermaid::clear_active_diagrams();
@@ -781,10 +787,12 @@ fn test_model_picker_preview_stays_open_and_updates_filter() {
         .expect("model picker preview should be open");
     assert!(picker.preview);
     assert_eq!(picker.filter, "g52c");
-    assert!(picker
-        .filtered
-        .iter()
-        .any(|&i| picker.models[i].name == "gpt-5.2-codex"));
+    assert!(
+        picker
+            .filtered
+            .iter()
+            .any(|&i| picker.models[i].name == "gpt-5.2-codex")
+    );
     assert_eq!(app.input(), "/model g52c");
 }
 
@@ -1606,9 +1614,11 @@ fn test_restore_session_adds_reload_message() {
     assert_eq!(app.display_messages()[0].role, "user");
     assert_eq!(app.display_messages()[0].content, "test message");
     assert_eq!(app.display_messages()[1].role, "system");
-    assert!(app.display_messages()[1]
-        .content
-        .contains("Reload complete — continuing."));
+    assert!(
+        app.display_messages()[1]
+            .content
+            .contains("Reload complete — continuing.")
+    );
 
     // Messages for API should only have the original message (no reload msg to avoid breaking alternation)
     assert_eq!(app.messages.len(), 1);
@@ -2127,7 +2137,7 @@ fn test_reload_socket_wait_enabled_only_during_recent_reload_disconnect() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("create temp dir");
     let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-    std::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+    crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
 
     let mut state = remote::RemoteRunState {
         server_reload_in_progress: true,
@@ -2141,9 +2151,9 @@ fn test_reload_socket_wait_enabled_only_during_recent_reload_disconnect() {
     assert!(!remote::should_wait_for_reload_socket(&state));
 
     if let Some(prev_runtime) = prev_runtime {
-        std::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
     } else {
-        std::env::remove_var("JCODE_RUNTIME_DIR");
+        crate::env::remove_var("JCODE_RUNTIME_DIR");
     }
 }
 
@@ -2152,7 +2162,7 @@ fn test_reload_socket_wait_disabled_for_old_disconnects() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("create temp dir");
     let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-    std::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+    crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
 
     let state = remote::RemoteRunState {
         server_reload_in_progress: true,
@@ -2163,9 +2173,9 @@ fn test_reload_socket_wait_disabled_for_old_disconnects() {
     assert!(!remote::should_wait_for_reload_socket(&state));
 
     if let Some(prev_runtime) = prev_runtime {
-        std::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
     } else {
-        std::env::remove_var("JCODE_RUNTIME_DIR");
+        crate::env::remove_var("JCODE_RUNTIME_DIR");
     }
 }
 
@@ -2174,7 +2184,7 @@ fn test_reload_socket_wait_enabled_by_reload_marker() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("create temp dir");
     let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-    std::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+    crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
 
     crate::server::write_reload_state(
         "reload-marker-test",
@@ -2192,9 +2202,9 @@ fn test_reload_socket_wait_enabled_by_reload_marker() {
 
     crate::server::clear_reload_marker();
     if let Some(prev_runtime) = prev_runtime {
-        std::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
     } else {
-        std::env::remove_var("JCODE_RUNTIME_DIR");
+        crate::env::remove_var("JCODE_RUNTIME_DIR");
     }
 }
 
@@ -2250,10 +2260,11 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
     assert!(app.queued_messages().is_empty());
     assert_eq!(app.hidden_queued_system_messages.len(), 1);
     assert!(app.hidden_queued_system_messages[0].contains("interrupted by a server reload"));
-    assert!(app
-        .display_messages()
-        .iter()
-        .any(|m| m.role == "system" && m.content == "Reload complete — continuing."));
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|m| m.role == "system" && m.content == "Reload complete — continuing.")
+    );
 }
 
 #[test]
@@ -2298,10 +2309,11 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
 
     assert!(app.queued_messages().is_empty());
     assert_eq!(app.connection_type.as_deref(), Some("https/sse"));
-    assert!(!app
-        .display_messages()
-        .iter()
-        .any(|m| m.content.contains("interrupted")));
+    assert!(
+        !app.display_messages()
+            .iter()
+            .any(|m| m.content.contains("interrupted"))
+    );
 }
 
 #[test]
@@ -2475,10 +2487,11 @@ fn test_remote_error_with_retryable_pending_schedules_retry() {
     assert_eq!(pending.retry_attempts, 1);
     assert!(pending.retry_at.is_some());
     assert!(app.rate_limit_reset.is_some());
-    assert!(app
-        .display_messages()
-        .iter()
-        .any(|m| m.role == "system" && m.content.contains("Auto-retrying")));
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|m| m.role == "system" && m.content.contains("Auto-retrying"))
+    );
 }
 
 #[test]
@@ -2497,10 +2510,11 @@ fn test_schedule_pending_remote_retry_respects_retry_limit() {
     assert!(!app.schedule_pending_remote_retry("⚠ failed."));
     assert!(app.rate_limit_pending_message.is_none());
     assert!(app.rate_limit_reset.is_none());
-    assert!(app
-        .display_messages()
-        .iter()
-        .any(|m| m.role == "error" && m.content.contains("Auto-retry limit reached")));
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|m| m.role == "error" && m.content.contains("Auto-retry limit reached"))
+    );
 }
 
 #[test]
@@ -2555,7 +2569,7 @@ fn test_info_widget_local_gemini_shows_oauth_auth_method() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("create temp dir");
     let prev_home = std::env::var_os("JCODE_HOME");
-    std::env::set_var("JCODE_HOME", temp.path());
+    crate::env::set_var("JCODE_HOME", temp.path());
 
     let path = crate::auth::gemini::tokens_path().expect("gemini tokens path");
     crate::storage::write_json_secret(
@@ -2582,9 +2596,9 @@ fn test_info_widget_local_gemini_shows_oauth_auth_method() {
     assert!(data.usage_info.is_none());
 
     if let Some(prev_home) = prev_home {
-        std::env::set_var("JCODE_HOME", prev_home);
+        crate::env::set_var("JCODE_HOME", prev_home);
     } else {
-        std::env::remove_var("JCODE_HOME");
+        crate::env::remove_var("JCODE_HOME");
     }
     crate::auth::AuthStatus::invalidate_cache();
 }
@@ -3231,6 +3245,22 @@ fn test_disconnected_key_handler_allows_typing_and_queueing() {
 }
 
 #[test]
+fn test_disconnected_key_handler_does_not_queue_commands() {
+    let mut app = create_test_app();
+    app.input = "/reload".to_string();
+    app.cursor_pos = app.input.len();
+
+    remote::handle_disconnected_key(&mut app, KeyCode::Enter, KeyModifiers::empty()).unwrap();
+
+    assert_eq!(app.input, "/reload");
+    assert!(app.queued_messages().is_empty());
+    assert_eq!(
+        app.status_notice(),
+        Some("Commands are not queued while disconnected".to_string())
+    );
+}
+
+#[test]
 fn test_disconnected_key_handler_ctrl_c_arms_quit() {
     let mut app = create_test_app();
 
@@ -3410,13 +3440,20 @@ fn test_prompt_preview_reserves_rows_without_overwriting_visible_history() {
     app.session.short_name = Some("test".to_string());
 
     let backend = ratatui::backend::TestBackend::new(40, 8);
-    let mut terminal =
-        ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
 
     let text = render_and_snap(&app, &mut terminal);
 
-    assert!(text.contains("1›"), "expected sticky prompt preview, got:\n{}", text);
-    assert!(text.contains("..."), "expected two-line preview truncation, got:\n{}", text);
+    assert!(
+        text.contains("1›"),
+        "expected sticky prompt preview, got:\n{}",
+        text
+    );
+    assert!(
+        text.contains("..."),
+        "expected two-line preview truncation, got:\n{}",
+        text
+    );
     assert!(
         text.contains("Intro line 20"),
         "latest visible content should remain visible below preview, got:\n{}",

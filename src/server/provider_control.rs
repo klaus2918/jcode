@@ -2,7 +2,7 @@ use crate::agent::Agent;
 use crate::protocol::ServerEvent;
 use crate::provider::Provider;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 async fn model_switching_available(agent: &Arc<Mutex<Agent>>) -> Option<String> {
     let models = {

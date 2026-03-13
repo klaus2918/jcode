@@ -13,9 +13,9 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 static CACHE_TTL_1H: AtomicBool = AtomicBool::new(false);
@@ -55,7 +55,9 @@ fn model_defaults_to_1m(model: &str) -> bool {
 
 /// Get the appropriate beta headers based on model
 fn oauth_beta_headers(model: &str) -> &'static str {
-    if is_1m_model(model) || (model_defaults_to_1m(model) && crate::auth::claude::is_max_subscription()) {
+    if is_1m_model(model)
+        || (model_defaults_to_1m(model) && crate::auth::claude::is_max_subscription())
+    {
         OAUTH_BETA_HEADERS_1M
     } else {
         OAUTH_BETA_HEADERS
@@ -69,7 +71,8 @@ fn is_1m_model(model: &str) -> bool {
 
 /// Check if a model effectively uses 1M context (explicit [1m] suffix OR default 1M for Max users)
 pub fn effectively_1m(model: &str) -> bool {
-    is_1m_model(model) || (model_defaults_to_1m(model) && crate::auth::claude::is_max_subscription())
+    is_1m_model(model)
+        || (model_defaults_to_1m(model) && crate::auth::claude::is_max_subscription())
 }
 
 /// Strip the [1m] suffix to get the actual API model name
@@ -85,8 +88,7 @@ const API_VERSION: &str = "2023-06-01";
 
 /// Claude Code identity block required for OAuth direct API access
 const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
-const CLAUDE_CODE_JCODE_NOTICE: &str =
-    "You are jcode, powered by Claude Code. You are a third-party CLI, not the official Claude Code CLI.";
+const CLAUDE_CODE_JCODE_NOTICE: &str = "You are jcode, powered by Claude Code. You are a third-party CLI, not the official Claude Code CLI.";
 
 fn map_tool_name_for_oauth(name: &str) -> String {
     match name {
@@ -404,7 +406,9 @@ impl AnthropicProvider {
                                 if !tool_results.contains(*tu_id) {
                                     crate::logging::warn(&format!(
                                         "[anthropic] Message {} has tool_use {} but no matching tool_result in message {}",
-                                        i, tu_id, i + 1
+                                        i,
+                                        tu_id,
+                                        i + 1
                                     ));
                                 }
                             }
@@ -1128,7 +1132,7 @@ fn process_sse_event(
                         events.push(StreamEvent::TextDelta(text));
                     }
                     ApiDelta::InputJsonDelta { partial_json } => {
-                        if let Some(ref mut tool) = current_tool_use {
+                        if let Some(tool) = current_tool_use {
                             tool.input_json.push_str(&partial_json);
                         }
                         events.push(StreamEvent::ToolInputDelta(partial_json));

@@ -548,16 +548,16 @@ mod tests {
     fn redact_secrets_redacts_runtime_key_assignment() {
         let key_var = "JCODE_OPENAI_COMPAT_API_KEY_NAME";
         let prev = std::env::var(key_var).ok();
-        std::env::set_var(key_var, "GROQ_API_KEY");
+        crate::env::set_var(key_var, "GROQ_API_KEY");
 
         let input = "GROQ_API_KEY=my_secret_token_value";
         let out = redact_secrets(input);
         assert_eq!(out, "GROQ_API_KEY=[REDACTED_SECRET]");
 
         if let Some(v) = prev {
-            std::env::set_var(key_var, v);
+            crate::env::set_var(key_var, v);
         } else {
-            std::env::remove_var(key_var);
+            crate::env::remove_var(key_var);
         }
     }
 

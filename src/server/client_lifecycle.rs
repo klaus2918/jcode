@@ -25,15 +25,15 @@ use super::provider_control::{
     handle_switch_anthropic_account,
 };
 use super::{
-    broadcast_swarm_status, enqueue_soft_interrupt, record_swarm_event,
-    register_session_interrupt_queue, swarm_id_for_dir, truncate_detail, update_member_status,
     ClientConnectionInfo, ClientDebugState, FileAccess, SessionInterruptQueues, SharedContext,
-    SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
+    SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan, broadcast_swarm_status,
+    enqueue_soft_interrupt, record_swarm_event, register_session_interrupt_queue, swarm_id_for_dir,
+    truncate_detail, update_member_status,
 };
 use crate::agent::{Agent, InterruptSignal, SoftInterruptQueue, StreamError};
 use crate::bus::{Bus, BusEvent};
 use crate::id;
-use crate::protocol::{decode_request, encode_event, NotificationType, Request, ServerEvent};
+use crate::protocol::{NotificationType, Request, ServerEvent, decode_request, encode_event};
 use crate::provider::Provider;
 use crate::tool::Registry;
 use crate::transport::Stream;
@@ -44,7 +44,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 pub(super) async fn handle_client(
     stream: Stream,

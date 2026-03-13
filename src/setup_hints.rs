@@ -407,10 +407,16 @@ fn launch_script_for_macos_terminal(terminal: MacTerminalKind, exe_path: &str) -
     let escaped_exe = escape_shell_single_quotes(exe_path);
     match terminal {
         MacTerminalKind::Ghostty => {
-            format!("#!/bin/bash\nopen -na Ghostty --args -e '{}'\n", escaped_exe)
+            format!(
+                "#!/bin/bash\nopen -na Ghostty --args -e '{}'\n",
+                escaped_exe
+            )
         }
         MacTerminalKind::Alacritty => {
-            format!("#!/bin/bash\nopen -na Alacritty --args -e '{}'\n", escaped_exe)
+            format!(
+                "#!/bin/bash\nopen -na Alacritty --args -e '{}'\n",
+                escaped_exe
+            )
         }
         MacTerminalKind::WezTerm => format!(
             "#!/bin/bash\nopen -na WezTerm --args start --always-new-process -- '{}'\n",
@@ -746,15 +752,25 @@ fn nudge_hotkey(state: &mut SetupHintsState) -> bool {
     };
 
     eprintln!("\x1b[36m┌─────────────────────────────────────────────────────────────┐\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m \x1b[1m💡 Set up Alt+; to launch jcode from anywhere?\x1b[0m              \x1b[36m│\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m    Creates a global hotkey - no extra software needed.       \x1b[36m│\x1b[0m");
+    eprintln!(
+        "\x1b[36m│\x1b[0m \x1b[1m💡 Set up Alt+; to launch jcode from anywhere?\x1b[0m              \x1b[36m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[36m│\x1b[0m    Creates a global hotkey - no extra software needed.       \x1b[36m│\x1b[0m"
+    );
     eprintln!(
         "\x1b[36m│\x1b[0m    Opens jcode in {:<39}    \x1b[36m│\x1b[0m",
         format!("{}.", terminal_name)
     );
-    eprintln!("\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m    \x1b[32m[y]\x1b[0m Set up   \x1b[90m[n]\x1b[0m Not now   \x1b[90m[d]\x1b[0m Don't ask again        \x1b[36m│\x1b[0m");
+    eprintln!(
+        "\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[36m│\x1b[0m    \x1b[32m[y]\x1b[0m Set up   \x1b[90m[n]\x1b[0m Not now   \x1b[90m[d]\x1b[0m Don't ask again        \x1b[36m│\x1b[0m"
+    );
     eprintln!("\x1b[36m└─────────────────────────────────────────────────────────────┘\x1b[0m");
     eprint!("\x1b[36m  >\x1b[0m ");
     let _ = io::stderr().flush();
@@ -777,7 +793,9 @@ fn nudge_hotkey(state: &mut SetupHintsState) -> bool {
                 }
                 Err(e) => {
                     eprintln!("  \x1b[31m✗\x1b[0m Failed to create hotkey: {}", e);
-                    eprintln!("    You can set it up manually later with: \x1b[1mjcode setup-hotkey\x1b[0m");
+                    eprintln!(
+                        "    You can set it up manually later with: \x1b[1mjcode setup-hotkey\x1b[0m"
+                    );
                     eprintln!();
                     false
                 }
@@ -803,15 +821,25 @@ fn nudge_alacritty(state: &mut SetupHintsState) -> bool {
     };
 
     eprintln!("\x1b[36m┌─────────────────────────────────────────────────────────────┐\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m \x1b[1m💡 Alacritty: the fastest terminal for jcode\x1b[0m               \x1b[36m│\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m");
+    eprintln!(
+        "\x1b[36m│\x1b[0m \x1b[1m💡 Alacritty: the fastest terminal for jcode\x1b[0m               \x1b[36m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m"
+    );
     eprintln!(
         "\x1b[36m│\x1b[0m    {:<55} \x1b[36m│\x1b[0m",
         format!("You're using {}.", current_terminal)
     );
-    eprintln!("\x1b[36m│\x1b[0m    Alacritty is GPU-accelerated with the lowest latency.    \x1b[36m│\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m    \x1b[32m[y]\x1b[0m Install   \x1b[90m[n]\x1b[0m Not now   \x1b[90m[d]\x1b[0m Don't ask again       \x1b[36m│\x1b[0m");
+    eprintln!(
+        "\x1b[36m│\x1b[0m    Alacritty is GPU-accelerated with the lowest latency.    \x1b[36m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[36m│\x1b[0m    \x1b[32m[y]\x1b[0m Install   \x1b[90m[n]\x1b[0m Not now   \x1b[90m[d]\x1b[0m Don't ask again       \x1b[36m│\x1b[0m"
+    );
     eprintln!("\x1b[36m└─────────────────────────────────────────────────────────────┘\x1b[0m");
     eprint!("\x1b[36m  >\x1b[0m ");
     let _ = io::stderr().flush();
@@ -840,7 +868,9 @@ fn nudge_alacritty(state: &mut SetupHintsState) -> bool {
                         eprintln!("  Updating hotkey to use Alacritty...");
                         match create_hotkey_shortcut(true) {
                             Ok(()) => {
-                                eprintln!("  \x1b[32m✓\x1b[0m Hotkey updated: \x1b[1mAlt+;\x1b[0m → Alacritty + jcode");
+                                eprintln!(
+                                    "  \x1b[32m✓\x1b[0m Hotkey updated: \x1b[1mAlt+;\x1b[0m → Alacritty + jcode"
+                                );
                             }
                             Err(e) => {
                                 eprintln!("  \x1b[33m⚠\x1b[0m  Could not update hotkey: {}", e);
@@ -870,14 +900,26 @@ fn nudge_alacritty(state: &mut SetupHintsState) -> bool {
 /// Prompt the user to try out their new hotkey.
 fn prompt_try_it_out(installed_alacritty: bool) {
     eprintln!("\x1b[32m┌─────────────────────────────────────────────────────────────┐\x1b[0m");
-    eprintln!("\x1b[32m│\x1b[0m \x1b[1m✨ All set! Try it out:\x1b[0m                                     \x1b[32m│\x1b[0m");
-    eprintln!("\x1b[32m│\x1b[0m                                                             \x1b[32m│\x1b[0m");
-    eprintln!("\x1b[32m│\x1b[0m    Press \x1b[1mAlt+;\x1b[0m from anywhere to launch jcode.                \x1b[32m│\x1b[0m");
+    eprintln!(
+        "\x1b[32m│\x1b[0m \x1b[1m✨ All set! Try it out:\x1b[0m                                     \x1b[32m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[32m│\x1b[0m                                                             \x1b[32m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[32m│\x1b[0m    Press \x1b[1mAlt+;\x1b[0m from anywhere to launch jcode.                \x1b[32m│\x1b[0m"
+    );
     if installed_alacritty {
-        eprintln!("\x1b[32m│\x1b[0m    It will open in \x1b[1mAlacritty\x1b[0m for maximum performance.    \x1b[32m│\x1b[0m");
+        eprintln!(
+            "\x1b[32m│\x1b[0m    It will open in \x1b[1mAlacritty\x1b[0m for maximum performance.    \x1b[32m│\x1b[0m"
+        );
     }
-    eprintln!("\x1b[32m│\x1b[0m                                                             \x1b[32m│\x1b[0m");
-    eprintln!("\x1b[32m│\x1b[0m    \x1b[90m(Starting jcode normally in 3 seconds...)\x1b[0m                 \x1b[32m│\x1b[0m");
+    eprintln!(
+        "\x1b[32m│\x1b[0m                                                             \x1b[32m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[32m│\x1b[0m    \x1b[90m(Starting jcode normally in 3 seconds...)\x1b[0m                 \x1b[32m│\x1b[0m"
+    );
     eprintln!("\x1b[32m└─────────────────────────────────────────────────────────────┘\x1b[0m");
     eprintln!();
 
@@ -904,20 +946,34 @@ fn nudge_macos_ghostty(state: &mut SetupHintsState) -> Option<String> {
     }
 
     eprintln!("\x1b[36m┌─────────────────────────────────────────────────────────────┐\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m \x1b[1m💡 Better macOS terminal for jcode: Ghostty\x1b[0m                \x1b[36m│\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m");
+    eprintln!(
+        "\x1b[36m│\x1b[0m \x1b[1m💡 Better macOS terminal for jcode: Ghostty\x1b[0m                \x1b[36m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m"
+    );
     eprintln!(
         "\x1b[36m│\x1b[0m    Current terminal: {:<37} \x1b[36m│\x1b[0m",
         format!("{}.", terminal.label())
     );
     if ghostty_installed {
-        eprintln!("\x1b[36m│\x1b[0m    Ghostty is installed, but you are not using it now.      \x1b[36m│\x1b[0m");
+        eprintln!(
+            "\x1b[36m│\x1b[0m    Ghostty is installed, but you are not using it now.      \x1b[36m│\x1b[0m"
+        );
     } else {
-        eprintln!("\x1b[36m│\x1b[0m    Ghostty offers fast rendering and great jcode UX.         \x1b[36m│\x1b[0m");
+        eprintln!(
+            "\x1b[36m│\x1b[0m    Ghostty offers fast rendering and great jcode UX.         \x1b[36m│\x1b[0m"
+        );
     }
-    eprintln!("\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m    Let jcode guide you through setup right now?             \x1b[36m│\x1b[0m");
-    eprintln!("\x1b[36m│\x1b[0m    \x1b[32m[y]\x1b[0m Yes      \x1b[90m[n]\x1b[0m Not now      \x1b[90m[d]\x1b[0m Don't ask again    \x1b[36m│\x1b[0m");
+    eprintln!(
+        "\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[36m│\x1b[0m    Let jcode guide you through setup right now?             \x1b[36m│\x1b[0m"
+    );
+    eprintln!(
+        "\x1b[36m│\x1b[0m    \x1b[32m[y]\x1b[0m Yes      \x1b[90m[n]\x1b[0m Not now      \x1b[90m[d]\x1b[0m Don't ask again    \x1b[36m│\x1b[0m"
+    );
     eprintln!("\x1b[36m└─────────────────────────────────────────────────────────────┘\x1b[0m");
     eprint!("\x1b[36m  >\x1b[0m ");
     let _ = io::stderr().flush();

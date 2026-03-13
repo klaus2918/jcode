@@ -3,7 +3,7 @@ use crate::message::ToolCall;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 const MAX_PARALLEL: usize = 10;
@@ -43,6 +43,7 @@ impl ToolCallInput {
 /// Try to fix common LLM mistakes in batch tool_calls:
 /// - Parameters placed at the same level as "tool" instead of nested under "parameters"
 /// - "name" used instead of "tool" for the tool name key
+/// - "arguments", "args", or "input" used instead of "parameters"
 fn normalize_batch_input(mut input: Value) -> Value {
     if let Some(calls) = input.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
         for call in calls.iter_mut() {
@@ -51,6 +52,15 @@ fn normalize_batch_input(mut input: Value) -> Value {
                 if !obj.contains_key("tool") {
                     if let Some(name_val) = obj.remove("name") {
                         obj.insert("tool".to_string(), name_val);
+                    }
+                }
+
+                if !obj.contains_key("parameters") {
+                    for alias in ["arguments", "args", "input"] {
+                        if let Some(alias_val) = obj.remove(alias) {
+                            obj.insert("parameters".to_string(), alias_val);
+                            break;
+                        }
                     }
                 }
 
@@ -84,7 +94,9 @@ impl Tool for BatchTool {
 
     fn description(&self) -> &str {
         "Execute multiple tools in parallel. Maximum 10 tool calls. \
-         Cannot batch the 'batch' tool itself. Returns results for each tool call."
+         Cannot batch the 'batch' tool itself. Returns results for each tool call. \
+         Each sub-call may use either {\"tool\": \"read\", \"file_path\": \"...\"} \
+         or {\"tool\": \"read\", \"parameters\": {\"file_path\": \"...\"}}."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -97,7 +109,8 @@ impl Tool for BatchTool {
                     "description": "Array of tool calls to execute in parallel",
                     "items": {
                         "type": "object",
-                        "required": ["tool", "parameters"],
+                        "required": ["tool"],
+                        "description": "Preferred shape: {\"tool\": \"read\", \"file_path\": \"src/main.rs\"}. Also accepts {\"tool\": \"read\", \"parameters\": {\"file_path\": \"src/main.rs\"}}.",
                         "properties": {
                             "tool": {
                                 "type": "string",
@@ -105,9 +118,11 @@ impl Tool for BatchTool {
                             },
                             "parameters": {
                                 "type": "object",
-                                "description": "Parameters for the tool"
+                                "description": "Optional explicit parameter object. You may also place tool arguments directly on the sub-call object.",
+                                "additionalProperties": true
                             }
-                        }
+                        },
+                        "additionalProperties": true
                     },
                     "minItems": 1,
                     "maxItems": 10
@@ -317,5 +332,56 @@ mod tests {
         assert_eq!(parsed.tool_calls[0].tool, "read");
         assert_eq!(parsed.tool_calls[1].tool, "read");
         assert_eq!(parsed.tool_calls[2].tool, "grep");
+    }
+
+    #[test]
+    fn test_normalize_arguments_aliases_to_parameters() {
+        let input = json!({
+            "tool_calls": [
+                {"tool": "read", "arguments": {"file_path": "a.rs"}},
+                {"tool": "read", "args": {"file_path": "b.rs"}},
+                {"tool": "read", "input": {"file_path": "c.rs"}}
+            ]
+        });
+
+        let normalized = normalize_batch_input(input);
+        let parsed: BatchInput = serde_json::from_value(normalized).unwrap();
+
+        assert_eq!(parsed.tool_calls.len(), 3);
+        assert_eq!(
+            parsed.tool_calls[0].parameters.as_ref().unwrap()["file_path"],
+            "a.rs"
+        );
+        assert_eq!(
+            parsed.tool_calls[1].parameters.as_ref().unwrap()["file_path"],
+            "b.rs"
+        );
+        assert_eq!(
+            parsed.tool_calls[2].parameters.as_ref().unwrap()["file_path"],
+            "c.rs"
+        );
+    }
+
+    #[test]
+    fn test_schema_only_requires_tool() {
+        let schema = BatchTool::new(Registry {
+            tools: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            skills: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::skill::SkillRegistry::default(),
+            )),
+            compaction: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::compaction::CompactionManager::new(),
+            )),
+        })
+        .parameters_schema();
+
+        assert_eq!(
+            schema["properties"]["tool_calls"]["items"]["required"],
+            json!(["tool"])
+        );
+        assert_eq!(
+            schema["properties"]["tool_calls"]["items"]["additionalProperties"],
+            json!(true)
+        );
     }
 }

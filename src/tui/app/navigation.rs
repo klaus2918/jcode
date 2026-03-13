@@ -129,11 +129,7 @@ impl App {
         }
         let current = self.diagram_index.min(count - 1);
         let next = if direction < 0 {
-            if current == 0 {
-                count - 1
-            } else {
-                current - 1
-            }
+            if current == 0 { count - 1 } else { current - 1 }
         } else if current + 1 >= count {
             0
         } else {

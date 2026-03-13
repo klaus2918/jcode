@@ -7,7 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -1189,9 +1189,10 @@ mod tests {
             .execute(input, ctx)
             .await
             .expect_err("non-ambient session should be rejected");
-        assert!(err
-            .to_string()
-            .contains("request_permission is only available to ambient sessions"));
+        assert!(
+            err.to_string()
+                .contains("request_permission is only available to ambient sessions")
+        );
     }
 
     #[test]

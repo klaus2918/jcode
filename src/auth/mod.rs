@@ -7,9 +7,9 @@ pub mod gemini;
 pub mod google;
 pub mod oauth;
 
-use crate::provider_catalog::openrouter_like_api_key_sources;
 use crate::provider_catalog::LoginProviderAuthStateKey;
 use crate::provider_catalog::LoginProviderDescriptor;
+use crate::provider_catalog::openrouter_like_api_key_sources;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::Instant;
@@ -602,9 +602,9 @@ mod tests {
 
     fn restore_env_var(key: &str, previous: Option<OsString>) {
         if let Some(previous) = previous {
-            std::env::set_var(key, previous);
+            crate::env::set_var(key, previous);
         } else {
-            std::env::remove_var(key);
+            crate::env::remove_var(key);
         }
     }
 
@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn command_candidates_adds_extension_on_windows() {
-        let _ = std::env::set_var("PATHEXT", ".EXE;.BAT");
+        let _ = crate::env::set_var("PATHEXT", ".EXE;.BAT");
         let candidates = command_candidates("testcmd");
         if cfg!(windows) {
             let normalized: Vec<String> = candidates
@@ -800,8 +800,8 @@ mod tests {
         let prev_chutes = std::env::var_os("CHUTES_API_KEY");
         let prev_opencode = std::env::var_os("OPENCODE_API_KEY");
 
-        std::env::set_var("CHUTES_API_KEY", "chutes-test-key");
-        std::env::remove_var("OPENCODE_API_KEY");
+        crate::env::set_var("CHUTES_API_KEY", "chutes-test-key");
+        crate::env::remove_var("OPENCODE_API_KEY");
         AuthStatus::invalidate_cache();
 
         let status = AuthStatus::check();
@@ -831,8 +831,8 @@ mod tests {
         let prev_cli_path = std::env::var_os("JCODE_CURSOR_CLI_PATH");
         let temp = tempfile::TempDir::new().expect("create temp dir");
 
-        std::env::set_var("CURSOR_API_KEY", "cursor-test-key");
-        std::env::set_var(
+        crate::env::set_var("CURSOR_API_KEY", "cursor-test-key");
+        crate::env::set_var(
             "JCODE_CURSOR_CLI_PATH",
             temp.path().join("missing-cursor-agent"),
         );
@@ -858,8 +858,8 @@ mod tests {
             "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then\n  echo \"Authenticated\\nAccount: test@example.com\"\n  exit 0\nfi\nexit 1\n",
         );
 
-        std::env::remove_var("CURSOR_API_KEY");
-        std::env::set_var("JCODE_CURSOR_CLI_PATH", &mock_cli);
+        crate::env::remove_var("CURSOR_API_KEY");
+        crate::env::set_var("JCODE_CURSOR_CLI_PATH", &mock_cli);
         AuthStatus::invalidate_cache();
 
         let status = AuthStatus::check();
@@ -878,8 +878,8 @@ mod tests {
         let prev_key = std::env::var(key_var).ok();
         let prev_file = std::env::var(file_var).ok();
 
-        std::env::set_var(key_var, "GROQ_API_KEY");
-        std::env::set_var(file_var, "groq.env");
+        crate::env::set_var(key_var, "GROQ_API_KEY");
+        crate::env::set_var(file_var, "groq.env");
 
         let source = crate::provider_catalog::configured_api_key_source(
             key_var,
@@ -893,14 +893,14 @@ mod tests {
         );
 
         if let Some(v) = prev_key {
-            std::env::set_var(key_var, v);
+            crate::env::set_var(key_var, v);
         } else {
-            std::env::remove_var(key_var);
+            crate::env::remove_var(key_var);
         }
         if let Some(v) = prev_file {
-            std::env::set_var(file_var, v);
+            crate::env::set_var(file_var, v);
         } else {
-            std::env::remove_var(file_var);
+            crate::env::remove_var(file_var);
         }
     }
 
@@ -912,8 +912,8 @@ mod tests {
         let prev_key = std::env::var(key_var).ok();
         let prev_file = std::env::var(file_var).ok();
 
-        std::env::set_var(key_var, "bad-key");
-        std::env::set_var(file_var, "../bad.env");
+        crate::env::set_var(key_var, "bad-key");
+        crate::env::set_var(file_var, "../bad.env");
 
         let source = crate::provider_catalog::configured_api_key_source(
             key_var,
@@ -924,14 +924,14 @@ mod tests {
         assert!(source.is_none());
 
         if let Some(v) = prev_key {
-            std::env::set_var(key_var, v);
+            crate::env::set_var(key_var, v);
         } else {
-            std::env::remove_var(key_var);
+            crate::env::remove_var(key_var);
         }
         if let Some(v) = prev_file {
-            std::env::set_var(file_var, v);
+            crate::env::set_var(file_var, v);
         } else {
-            std::env::remove_var(file_var);
+            crate::env::remove_var(file_var);
         }
     }
 }

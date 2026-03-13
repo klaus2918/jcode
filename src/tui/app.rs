@@ -9,7 +9,7 @@ use crate::config::config;
 use crate::id;
 use crate::mcp::McpManager;
 use crate::message::{
-    ContentBlock, Message, Role, StreamEvent, ToolCall, TOOL_OUTPUT_MISSING_TEXT,
+    ContentBlock, Message, Role, StreamEvent, TOOL_OUTPUT_MISSING_TEXT, ToolCall,
 };
 use crate::provider::Provider;
 use crate::session::Session;

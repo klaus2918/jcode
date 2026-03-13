@@ -3,17 +3,17 @@
 use super::info_widget;
 use super::markdown;
 use super::ui_diff::{
-    collect_diff_lines, diff_add_color, diff_change_counts_for_tool, diff_del_color,
-    generate_diff_lines_from_tool_input, tint_span_with_diff_color, DiffLineKind, ParsedDiffLine,
+    DiffLineKind, ParsedDiffLine, collect_diff_lines, diff_add_color, diff_change_counts_for_tool,
+    diff_del_color, generate_diff_lines_from_tool_input, tint_span_with_diff_color,
 };
 use super::visual_debug::{
     self, FrameCaptureBuilder, ImageRegionCapture, InfoWidgetCapture, InfoWidgetSummary,
     MarginsCapture, MessageCapture, RenderTimingCapture, WidgetPlacementCapture,
 };
-use super::{is_unexpected_cache_miss, DisplayMessage, ProcessingStatus, TuiState};
+use super::{DisplayMessage, ProcessingStatus, TuiState, is_unexpected_cache_miss};
 use crate::message::ToolCall;
 use ratatui::{prelude::*, widgets::Paragraph};
-use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque, hash_map::DefaultHasher};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -58,7 +58,7 @@ use file_diff_ui::active_file_diff_context;
 use file_diff_ui::draw_file_diff_view;
 #[cfg(test)]
 use file_diff_ui::{
-    file_content_signature, file_diff_cache, FileDiffCacheKey, FileDiffViewCacheEntry,
+    FileDiffCacheKey, FileDiffViewCacheEntry, file_content_signature, file_diff_cache,
 };
 pub(crate) use header::capitalize;
 #[cfg(test)]
@@ -1761,8 +1761,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     // Calculate input height based on the same wrapping logic used for rendering
     // (max 10 lines visible, scrolls if more).
-    let base_input_height = input_ui::wrapped_input_line_count(app, chat_area.width, next_prompt)
-        .min(10) as u16;
+    let base_input_height =
+        input_ui::wrapped_input_line_count(app, chat_area.width, next_prompt).min(10) as u16;
     // Add 1 line for command suggestions when typing /, or for Shift+Enter hint when processing
     let suggestions = app.command_suggestions();
     let has_slash_input = app.input().trim_start().starts_with('/');

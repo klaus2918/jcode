@@ -148,7 +148,7 @@ mod macos {
     use std::mem;
 
     // libproc bindings
-    extern "C" {
+    unsafe extern "C" {
         fn proc_pidinfo(
             pid: i32,
             flavor: i32,

@@ -2,8 +2,8 @@ use super::{EventStream, Provider};
 use crate::auth::codex::CodexCredentials;
 use crate::auth::oauth;
 use crate::message::{
-    ContentBlock, Message as ChatMessage, Role, StreamEvent, ToolDefinition,
-    TOOL_OUTPUT_MISSING_TEXT,
+    ContentBlock, Message as ChatMessage, Role, StreamEvent, TOOL_OUTPUT_MISSING_TEXT,
+    ToolDefinition,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -20,12 +20,12 @@ use std::sync::{Arc, LazyLock};
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
@@ -167,6 +167,7 @@ pub struct OpenAIProvider {
     prompt_cache_retention: Option<String>,
     max_output_tokens: Option<u32>,
     reasoning_effort: Arc<RwLock<Option<String>>>,
+    service_tier: Arc<RwLock<Option<String>>>,
     transport_mode: Arc<RwLock<OpenAITransportMode>>,
     websocket_cooldowns: Arc<RwLock<HashMap<String, Instant>>>,
     websocket_failure_streaks: Arc<RwLock<HashMap<String, u32>>>,
@@ -215,6 +216,12 @@ impl OpenAIProvider {
             .openai_reasoning_effort
             .as_deref()
             .and_then(Self::normalize_reasoning_effort);
+        let service_tier = Self::load_service_tier(
+            crate::config::config()
+                .provider
+                .openai_service_tier
+                .as_deref(),
+        );
         let transport_mode = OpenAITransportMode::from_config(
             crate::config::config().provider.openai_transport.as_deref(),
         );
@@ -227,6 +234,7 @@ impl OpenAIProvider {
             prompt_cache_retention,
             max_output_tokens,
             reasoning_effort: Arc::new(RwLock::new(reasoning_effort)),
+            service_tier: Arc::new(RwLock::new(service_tier)),
             transport_mode: Arc::new(RwLock::new(transport_mode)),
             websocket_cooldowns: Arc::clone(&WEBSOCKET_COOLDOWNS),
             websocket_failure_streaks: Arc::clone(&WEBSOCKET_FAILURE_STREAKS),
@@ -288,6 +296,39 @@ impl OpenAIProvider {
         }
     }
 
+    fn normalize_service_tier(raw: &str) -> Result<Option<String>> {
+        let value = raw.trim().to_ascii_lowercase();
+        if value.is_empty() {
+            return Ok(None);
+        }
+
+        match value.as_str() {
+            "fast" | "priority" => Ok(Some("priority".to_string())),
+            "flex" => Ok(Some("flex".to_string())),
+            "default" | "auto" | "none" | "off" => Ok(None),
+            other => anyhow::bail!(
+                "Unsupported OpenAI service tier '{}'; expected priority|fast|flex|default|off",
+                other
+            ),
+        }
+    }
+
+    fn load_service_tier(raw: Option<&str>) -> Option<String> {
+        let Some(raw) = raw else {
+            return None;
+        };
+        match Self::normalize_service_tier(raw) {
+            Ok(value) => value,
+            Err(err) => {
+                crate::logging::warn(&format!(
+                    "{}; ignoring configured service tier override",
+                    err
+                ));
+                None
+            }
+        }
+    }
+
     fn load_max_output_tokens() -> Option<u32> {
         let raw = std::env::var("JCODE_OPENAI_MAX_OUTPUT_TOKENS").ok();
         let parsed = Self::parse_max_output_tokens(raw.as_deref());
@@ -328,6 +369,7 @@ impl OpenAIProvider {
         is_chatgpt_mode: bool,
         max_output_tokens: Option<u32>,
         reasoning_effort: Option<&str>,
+        service_tier: Option<&str>,
         prompt_cache_key: Option<&str>,
         prompt_cache_retention: Option<&str>,
     ) -> Value {
@@ -351,6 +393,10 @@ impl OpenAIProvider {
 
         if let Some(effort) = reasoning_effort {
             request["reasoning"] = serde_json::json!({ "effort": effort });
+        }
+
+        if let Some(service_tier) = service_tier {
+            request["service_tier"] = serde_json::json!(service_tier);
         }
 
         if !is_chatgpt_mode {
@@ -1630,6 +1676,7 @@ impl Provider for OpenAIProvider {
             (instructions, is_chatgpt)
         };
         let reasoning_effort = self.reasoning_effort.read().await.clone();
+        let service_tier = self.service_tier.read().await.clone();
         let request = Self::build_response_request(
             &model_id,
             instructions,
@@ -1638,6 +1685,7 @@ impl Provider for OpenAIProvider {
             is_chatgpt_mode,
             self.max_output_tokens,
             reasoning_effort.as_deref(),
+            service_tier.as_deref(),
             self.prompt_cache_key.as_deref(),
             self.prompt_cache_retention.as_deref(),
         );
@@ -1930,6 +1978,27 @@ impl Provider for OpenAIProvider {
         vec!["none", "low", "medium", "high", "xhigh"]
     }
 
+    fn service_tier(&self) -> Option<String> {
+        self.service_tier.try_read().ok().and_then(|g| g.clone())
+    }
+
+    fn set_service_tier(&self, service_tier: &str) -> Result<()> {
+        let normalized = Self::normalize_service_tier(service_tier)?;
+        match self.service_tier.try_write() {
+            Ok(mut guard) => {
+                *guard = normalized;
+                Ok(())
+            }
+            Err(_) => Err(anyhow::anyhow!(
+                "Cannot change service tier while a request is in progress"
+            )),
+        }
+    }
+
+    fn available_service_tiers(&self) -> Vec<&'static str> {
+        vec!["priority", "flex"]
+    }
+
     fn transport(&self) -> Option<String> {
         self.transport_mode
             .try_read()
@@ -1982,6 +2051,7 @@ impl Provider for OpenAIProvider {
             prompt_cache_retention: self.prompt_cache_retention.clone(),
             max_output_tokens: self.max_output_tokens,
             reasoning_effort: Arc::new(RwLock::new(self.reasoning_effort())),
+            service_tier: Arc::new(RwLock::new(self.service_tier())),
             transport_mode: Arc::clone(&self.transport_mode),
             websocket_cooldowns: Arc::clone(&self.websocket_cooldowns),
             websocket_failure_streaks: Arc::clone(&self.websocket_failure_streaks),
@@ -2138,6 +2208,12 @@ async fn stream_response(
     let _ = tx
         .send(Ok(StreamEvent::ConnectionPhase {
             phase: ConnectionPhase::WaitingForResponse,
+        }))
+        .await;
+
+    let _ = tx
+        .send(Ok(StreamEvent::ConnectionType {
+            connection: "https/sse".to_string(),
         }))
         .await;
 
@@ -2638,7 +2714,7 @@ async fn try_persistent_ws_continuation(
                         "timed out waiting for {} websocket activity on persistent WS ({}s)",
                         websocket_activity_timeout_kind(saw_api_activity),
                         timeout_secs
-                    ))
+                    ));
                 }
             };
 
@@ -3320,11 +3396,7 @@ fn websocket_next_activity_timeout_secs(
 }
 
 fn websocket_activity_timeout_kind(saw_api_activity: bool) -> &'static str {
-    if saw_api_activity {
-        "next"
-    } else {
-        "first"
-    }
+    if saw_api_activity { "next" } else { "first" }
 }
 
 fn normalize_transport_model(model: &str) -> Option<String> {
@@ -3475,13 +3547,13 @@ mod tests {
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var_os(key);
-            std::env::set_var(key, value);
+            crate::env::set_var(key, value);
             Self { key, previous }
         }
 
         fn set_path(key: &'static str, value: &std::path::Path) -> Self {
             let previous = std::env::var_os(key);
-            std::env::set_var(key, value);
+            crate::env::set_var(key, value);
             Self { key, previous }
         }
     }
@@ -3489,9 +3561,9 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(previous) = &self.previous {
-                std::env::set_var(self.key, previous);
+                crate::env::set_var(self.key, previous);
             } else {
-                std::env::remove_var(self.key);
+                crate::env::remove_var(self.key);
             }
         }
     }
@@ -3911,6 +3983,7 @@ mod tests {
             Some("xhigh"),
             Some("unused"),
             Some("unused"),
+            None,
         );
 
         assert_eq!(request["model"], serde_json::json!("gpt-5.4"));
@@ -3929,6 +4002,7 @@ mod tests {
             &[],
             true,
             Some(DEFAULT_MAX_OUTPUT_TOKENS),
+            None,
             None,
             None,
             None,
@@ -4087,26 +4161,32 @@ mod tests {
         let cooldowns = Arc::new(RwLock::new(HashMap::new()));
         let model = "gpt-5.3-codex";
 
-        assert!(websocket_cooldown_remaining(&cooldowns, model)
-            .await
-            .is_none());
+        assert!(
+            websocket_cooldown_remaining(&cooldowns, model)
+                .await
+                .is_none()
+        );
 
         set_websocket_cooldown(&cooldowns, model).await;
         let remaining = websocket_cooldown_remaining(&cooldowns, model).await;
         assert!(remaining.is_some());
 
         clear_websocket_cooldown(&cooldowns, model).await;
-        assert!(websocket_cooldown_remaining(&cooldowns, model)
-            .await
-            .is_none());
+        assert!(
+            websocket_cooldown_remaining(&cooldowns, model)
+                .await
+                .is_none()
+        );
 
         {
             let mut guard = cooldowns.write().await;
             guard.insert(model.to_string(), Instant::now() - Duration::from_secs(1));
         }
-        assert!(websocket_cooldown_remaining(&cooldowns, model)
-            .await
-            .is_none());
+        assert!(
+            websocket_cooldown_remaining(&cooldowns, model)
+                .await
+                .is_none()
+        );
         assert!(!cooldowns.read().await.contains_key(model));
     }
 
@@ -4159,9 +4239,11 @@ mod tests {
         assert!(remaining2 <= cooldown2);
 
         record_websocket_success(&cooldowns, &streaks, model).await;
-        assert!(websocket_cooldown_remaining(&cooldowns, model)
-            .await
-            .is_none());
+        assert!(
+            websocket_cooldown_remaining(&cooldowns, model)
+                .await
+                .is_none()
+        );
         let normalized = normalize_transport_model(model).expect("normalized model");
         assert!(!streaks.read().await.contains_key(&normalized));
     }
@@ -4302,9 +4384,11 @@ mod tests {
         let canonical = "gpt-5.4";
 
         record_websocket_fallback(&cooldowns, &streaks, canonical).await;
-        assert!(websocket_cooldown_remaining(&cooldowns, canonical)
-            .await
-            .is_some());
+        assert!(
+            websocket_cooldown_remaining(&cooldowns, canonical)
+                .await
+                .is_some()
+        );
 
         record_websocket_success(&cooldowns, &streaks, " GPT-5.4 ").await;
 
@@ -4332,6 +4416,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(request["stream"], serde_json::json!(true));
         assert_eq!(request["store"], serde_json::json!(false));
@@ -4346,6 +4431,7 @@ mod tests {
             &[],
             false,
             Some(DEFAULT_MAX_OUTPUT_TOKENS),
+            None,
             None,
             None,
             None,
@@ -4386,6 +4472,7 @@ mod tests {
             Some("high"),
             None,
             None,
+            None,
         );
 
         let obj = request.as_object_mut().expect("request is object");
@@ -4415,6 +4502,7 @@ mod tests {
             &[serde_json::json!({"type": "function", "name": "bash"})],
             false,
             Some(DEFAULT_MAX_OUTPUT_TOKENS),
+            None,
             None,
             None,
             None,
@@ -4679,8 +4767,8 @@ mod tests {
         assert_eq!(api_tools.len(), 1);
         assert_eq!(api_tools[0]["strict"], serde_json::json!(false));
         assert_eq!(
-            api_tools[0]["parameters"]["properties"]["tool_calls"]["items"]["properties"]
-                ["parameters"]["type"],
+            api_tools[0]["parameters"]["properties"]["tool_calls"]["items"]["properties"]["parameters"]
+                ["type"],
             serde_json::json!("object")
         );
     }

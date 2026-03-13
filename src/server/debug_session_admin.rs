@@ -1,14 +1,14 @@
 use super::{
+    SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
     broadcast_swarm_status, create_headless_session, record_swarm_event,
-    remove_session_interrupt_queue, SessionInterruptQueues, SwarmEvent, SwarmEventType,
-    SwarmMember, VersionedPlan,
+    remove_session_interrupt_queue,
 };
 use crate::agent::Agent;
 use crate::provider::Provider;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 fn parse_create_session_command(cmd: &str) -> Option<(Option<String>, bool)> {
     if cmd == "create_session" {

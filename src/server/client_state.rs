@@ -1,6 +1,6 @@
 use super::server_has_newer_binary;
 use crate::agent::Agent;
-use crate::protocol::{encode_event, ServerEvent};
+use crate::protocol::{ServerEvent, encode_event};
 use crate::provider::Provider;
 use crate::transport::WriteHalf;
 use anyhow::Result;

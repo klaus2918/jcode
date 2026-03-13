@@ -7,8 +7,8 @@ use crate::auth;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
@@ -316,9 +316,10 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
         Err(e) => {
             let err = anthropic_usage_error(format!("Failed to fetch usage data: {}", e));
             store_anthropic_usage(cache_key, err.clone());
-            anyhow::bail!(err
-                .last_error
-                .unwrap_or_else(|| "Failed to fetch usage data".into()));
+            anyhow::bail!(
+                err.last_error
+                    .unwrap_or_else(|| "Failed to fetch usage data".into())
+            );
         }
     };
 

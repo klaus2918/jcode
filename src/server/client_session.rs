@@ -1,9 +1,9 @@
 use super::client_state::send_history;
 use super::{
+    ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmMember, VersionedPlan,
     broadcast_swarm_status, register_session_interrupt_queue, remove_plan_participant,
     remove_session_channel_subscriptions, remove_session_interrupt_queue, rename_plan_participant,
-    rename_session_interrupt_queue, swarm_id_for_dir, update_member_status, ClientConnectionInfo,
-    SessionInterruptQueues, SwarmEvent, SwarmMember, VersionedPlan,
+    rename_session_interrupt_queue, swarm_id_for_dir, update_member_status,
 };
 use crate::agent::Agent;
 use crate::message::ContentBlock;
@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 fn session_was_interrupted_by_reload(agent: &Agent) -> bool {
     let messages = agent.messages();
@@ -555,7 +555,7 @@ mod tests {
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::{mpsc, Mutex, RwLock};
+    use tokio::sync::{Mutex, RwLock, mpsc};
 
     struct MockProvider;
 
@@ -676,7 +676,7 @@ mod tests {
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("temp dir");
         let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-        std::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+        crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
 
         mark_remote_reload_started("reload-test");
 
@@ -687,9 +687,9 @@ mod tests {
 
         crate::server::clear_reload_marker();
         if let Some(prev_runtime) = prev_runtime {
-            std::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
         } else {
-            std::env::remove_var("JCODE_RUNTIME_DIR");
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
         }
     }
 
@@ -698,7 +698,7 @@ mod tests {
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("temp dir");
         let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-        std::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+        crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
 
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         rt.block_on(async {
@@ -739,9 +739,9 @@ mod tests {
 
         crate::server::clear_reload_marker();
         if let Some(prev_runtime) = prev_runtime {
-            std::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
         } else {
-            std::env::remove_var("JCODE_RUNTIME_DIR");
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
         }
     }
 

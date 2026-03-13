@@ -1,6 +1,6 @@
 use super::{
-    ctrl_bracket_fallback_to_esc, input, parse_rate_limit_error, spawn_in_new_terminal, App,
-    DisplayMessage, ProcessingStatus, SendAction,
+    App, DisplayMessage, ProcessingStatus, SendAction, ctrl_bracket_fallback_to_esc, input,
+    parse_rate_limit_error, spawn_in_new_terminal,
 };
 use crate::bus::BusEvent;
 use crate::message::ToolCall;
@@ -462,8 +462,8 @@ pub(super) async fn handle_terminal_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        should_attempt_reload_recovery, should_wait_for_reload_socket, RemoteRunState,
-        RELOAD_RECOVERY_SPAWN_AFTER, RELOAD_SOCKET_WAIT_WINDOW,
+        RELOAD_RECOVERY_SPAWN_AFTER, RELOAD_SOCKET_WAIT_WINDOW, RemoteRunState,
+        should_attempt_reload_recovery, should_wait_for_reload_socket,
     };
     use std::time::{Duration, Instant};
 
@@ -920,9 +920,7 @@ pub(super) async fn handle_post_connect(
 
             let continuation_msg = format!(
                 "Reload succeeded ({} → {}).{} Continue immediately from where you left off. Do not ask the user what to do next. Do not summarize the reload.",
-                ctx.version_before,
-                ctx.version_after,
-                task_info
+                ctx.version_before, ctx.version_after, task_info
             );
 
             crate::logging::info(&format!(
@@ -2238,7 +2236,13 @@ pub(super) fn handle_remote_char_input(app: &mut App, c: char) {
 }
 
 fn queue_message_for_reconnect(app: &mut App) {
-    if app.input.trim().is_empty() {
+    let trimmed = app.input.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    if trimmed.starts_with('/') {
+        app.set_status_notice("Commands are not queued while disconnected");
         return;
     }
 
@@ -2490,7 +2494,7 @@ pub(super) async fn handle_remote_key(
                 return Ok(());
             }
             KeyCode::Char('v') => {
-                app.paste_image_from_clipboard();
+                app.paste_from_clipboard();
                 return Ok(());
             }
             _ => {}
@@ -2605,7 +2609,7 @@ pub(super) async fn handle_remote_key(
                 return Ok(());
             }
             KeyCode::Char('v') => {
-                app.paste_image_from_clipboard();
+                app.paste_from_clipboard();
                 return Ok(());
             }
             KeyCode::Tab | KeyCode::Char('t') => {

@@ -4,7 +4,7 @@
 //! and Sixel graphics (xterm, foot, mlterm, WezTerm).
 //! Falls back to a simple placeholder if no image protocol is available.
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;

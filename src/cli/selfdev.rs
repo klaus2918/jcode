@@ -27,7 +27,7 @@ async fn wait_for_reloading_server(timeout: std::time::Duration) -> bool {
 
 pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) -> Result<()> {
     startup_profile::mark("run_self_dev_enter");
-    std::env::set_var(CLIENT_SELFDEV_ENV, "1");
+    crate::env::set_var(CLIENT_SELFDEV_ENV, "1");
 
     let repo_dir =
         build::get_repo_dir().ok_or_else(|| anyhow::anyhow!("Could not find jcode repository"))?;
@@ -85,7 +85,7 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
     }
 
     if is_resume {
-        std::env::set_var("JCODE_RESUMING", "1");
+        crate::env::set_var("JCODE_RESUMING", "1");
     }
 
     let mut server_running = super::dispatch::server_is_running().await;
@@ -94,7 +94,9 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
         {
             match state.phase {
                 crate::server::ReloadPhase::Starting => {
-                    logging::info("Reload state=starting while resuming self-dev session; waiting for existing server to come back");
+                    logging::info(
+                        "Reload state=starting while resuming self-dev session; waiting for existing server to come back",
+                    );
                     server_running =
                         wait_for_reloading_server(std::time::Duration::from_secs(20)).await;
                 }
@@ -150,8 +152,8 @@ mod tests {
             let prev_home = std::env::var_os("JCODE_HOME");
             let prev_test_session = std::env::var_os("JCODE_TEST_SESSION");
 
-            std::env::set_var("JCODE_HOME", temp_home.path());
-            std::env::set_var("JCODE_TEST_SESSION", "1");
+            crate::env::set_var("JCODE_HOME", temp_home.path());
+            crate::env::set_var("JCODE_TEST_SESSION", "1");
 
             Ok(Self {
                 _lock: lock,
@@ -165,15 +167,15 @@ mod tests {
     impl Drop for TestEnvGuard {
         fn drop(&mut self) {
             if let Some(prev_home) = &self.prev_home {
-                std::env::set_var("JCODE_HOME", prev_home);
+                crate::env::set_var("JCODE_HOME", prev_home);
             } else {
-                std::env::remove_var("JCODE_HOME");
+                crate::env::remove_var("JCODE_HOME");
             }
 
             if let Some(prev_test_session) = &self.prev_test_session {
-                std::env::set_var("JCODE_TEST_SESSION", prev_test_session);
+                crate::env::set_var("JCODE_TEST_SESSION", prev_test_session);
             } else {
-                std::env::remove_var("JCODE_TEST_SESSION");
+                crate::env::remove_var("JCODE_TEST_SESSION");
             }
         }
     }

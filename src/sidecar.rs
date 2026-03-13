@@ -35,8 +35,7 @@ const OAUTH_BETA_HEADERS: &str = "oauth-2025-04-20,claude-code-20250219";
 
 /// Claude Code identity block required for OAuth direct API access
 const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
-const CLAUDE_CODE_JCODE_NOTICE: &str =
-    "You are jcode, powered by Claude Code. You are a third-party CLI, not the official Claude Code CLI.";
+const CLAUDE_CODE_JCODE_NOTICE: &str = "You are jcode, powered by Claude Code. You are a third-party CLI, not the official Claude Code CLI.";
 
 /// Maximum tokens for sidecar responses (keep small for speed/cost)
 const DEFAULT_MAX_TOKENS: u32 = 1024;
@@ -553,13 +552,13 @@ mod tests {
     impl EnvVarGuard {
         fn set_path(key: &'static str, value: &std::path::Path) -> Self {
             let previous = std::env::var_os(key);
-            std::env::set_var(key, value);
+            crate::env::set_var(key, value);
             Self { key, previous }
         }
 
         fn unset(key: &'static str) -> Self {
             let previous = std::env::var_os(key);
-            std::env::remove_var(key);
+            crate::env::remove_var(key);
             Self { key, previous }
         }
     }
@@ -567,9 +566,9 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(previous) = &self.previous {
-                std::env::set_var(self.key, previous);
+                crate::env::set_var(self.key, previous);
             } else {
-                std::env::remove_var(self.key);
+                crate::env::remove_var(self.key);
             }
         }
     }

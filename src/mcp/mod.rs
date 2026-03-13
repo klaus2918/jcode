@@ -15,6 +15,6 @@ mod tool;
 
 pub use client::{McpClient, McpHandle};
 pub use manager::McpManager;
-pub use pool::{get_shared_pool, init_shared_pool, SharedMcpPool};
+pub use pool::{SharedMcpPool, get_shared_pool, init_shared_pool};
 pub use protocol::*;
-pub use tool::{create_mcp_tools, McpTool};
+pub use tool::{McpTool, create_mcp_tools};

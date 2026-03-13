@@ -1,8 +1,8 @@
-use super::{SwarmEvent, SwarmEventType, MAX_EVENT_HISTORY};
+use super::{MAX_EVENT_HISTORY, SwarmEvent, SwarmEventType};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 pub(super) async fn maybe_handle_event_query_command(
     cmd: &str,

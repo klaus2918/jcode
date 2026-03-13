@@ -1,16 +1,16 @@
 use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
+    SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
     broadcast_swarm_plan, broadcast_swarm_status, create_headless_session, record_swarm_event,
     record_swarm_event_for_session, remove_plan_participant, remove_session_channel_subscriptions,
-    remove_session_interrupt_queue, truncate_detail, update_member_status, SessionInterruptQueues,
-    SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
+    remove_session_interrupt_queue, truncate_detail, update_member_status,
 };
 use crate::agent::Agent;
 use crate::protocol::ServerEvent;
 use crate::provider::Provider;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_comm_spawn(

@@ -1,6 +1,6 @@
 use super::{
-    commands, ctrl_bracket_fallback_to_esc, is_context_limit_error, remote, App, ContentBlock,
-    DisplayMessage, Message, ProcessingStatus, Role, SendAction, SkillRegistry,
+    App, ContentBlock, DisplayMessage, Message, ProcessingStatus, Role, SendAction, SkillRegistry,
+    commands, ctrl_bracket_fallback_to_esc, is_context_limit_error, remote,
 };
 use anyhow::Result;
 use crossterm::event::{EventStream, KeyCode, KeyModifiers};
@@ -38,12 +38,28 @@ pub(super) fn paste_image_from_clipboard(app: &mut App) {
     app.set_status_notice("No image in clipboard");
 }
 
+pub(super) fn paste_from_clipboard(app: &mut App) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        if let Ok(text) = clipboard.get_text() {
+            handle_paste(app, text);
+            return;
+        }
+    }
+
+    if let Some((media_type, base64_data)) = super::clipboard_image() {
+        attach_image(app, media_type, base64_data);
+        return;
+    }
+
+    app.set_status_notice("No text or image in clipboard");
+}
+
 pub(super) fn handle_paste(app: &mut App, text: String) {
     // Note: clipboard_image() is NOT checked here. Bracketed paste events from the
     // terminal always deliver text. Checking clipboard_image() here caused a bug where
     // text pastes were misidentified as images when the clipboard also had image data
     // (common on Wayland where apps advertise multiple MIME types). Image pasting is
-    // handled by paste_image_from_clipboard() (Ctrl+V / Alt+V) instead.
+    // handled by explicit clipboard shortcuts instead (Ctrl+V smart-pastes, Alt+V forces image).
     if let Some(url) = super::extract_image_url(&text) {
         crate::logging::info(&format!("Downloading image from pasted URL: {}", url));
         app.set_status_notice("Downloading image...");
@@ -200,7 +216,7 @@ pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Char('v') => {
-            paste_image_from_clipboard(app);
+            paste_from_clipboard(app);
             true
         }
         KeyCode::Tab | KeyCode::Char('t') => {
@@ -701,7 +717,7 @@ fn paste_placeholder(content: &str) -> String {
 impl App {
     pub(super) fn handle_key_event(&mut self, event: crossterm::event::KeyEvent) {
         // Record the event if recording is active
-        use crate::tui::test_harness::{record_event, TestEvent};
+        use crate::tui::test_harness::{TestEvent, record_event};
         let modifiers: Vec<String> = {
             let mut mods = vec![];
             if event.modifiers.contains(KeyModifiers::CONTROL) {
@@ -899,9 +915,16 @@ impl App {
 
     /// Try to paste an image from the clipboard. Checks native image data first,
     /// then falls back to HTML clipboard for <img> URLs, then arboard text.
-    /// Used by both Ctrl+V and Alt+V handlers in both local and remote mode.
+    /// Used by Alt+V handlers in both local and remote mode.
     pub(super) fn paste_image_from_clipboard(&mut self) {
         paste_image_from_clipboard(self);
+    }
+
+    /// Try to paste whatever is in the clipboard.
+    /// Prefers text when available, otherwise falls back to image data.
+    /// Used by Ctrl+V handlers in both local and remote mode.
+    pub(super) fn paste_from_clipboard(&mut self) {
+        paste_from_clipboard(self);
     }
 
     /// Queue a message to be sent later
@@ -1018,13 +1041,23 @@ impl App {
                 finish the work, update the todo list to reflect what is done, or ask for user input if genuinely blocked."
             }
             "reload" => "`/reload`\nReload to a newer binary if one is available.",
-            "restart" => "`/restart`\nRestart jcode with the current binary. Session is preserved.\nUseful after config changes, MCP server updates, or env var changes.",
+            "restart" => {
+                "`/restart`\nRestart jcode with the current binary. Session is preserved.\nUseful after config changes, MCP server updates, or env var changes."
+            }
             "rebuild" => "`/rebuild`\nRun full update flow (git pull + cargo build + tests).",
-            "split" => "`/split`\nSplit the current session into a new window. Clones the full conversation history so both sessions continue from the same point.",
-            "resume" | "sessions" => "`/resume`\nOpen the interactive session picker. Browse and search all sessions, preview conversation history, and open any session in a new terminal window.\n\nPress `Esc` to return to your current session.",
+            "split" => {
+                "`/split`\nSplit the current session into a new window. Clones the full conversation history so both sessions continue from the same point."
+            }
+            "resume" | "sessions" => {
+                "`/resume`\nOpen the interactive session picker. Browse and search all sessions, preview conversation history, and open any session in a new terminal window.\n\nPress `Esc` to return to your current session."
+            }
             "info" => "`/info`\nShow session metadata and token usage.",
-            "usage" => "`/usage`\nFetch and display subscription usage limits for connected providers. Today this shows OAuth provider windows (Anthropic, OpenAI/ChatGPT); jcode subscription budget reporting is scaffolded but not yet backed by a live billing service.",
-            "subscription" => "`/subscription`\nShow curated jcode subscription status for this session, including router config, runtime mode, curated models, and planned tier budget scaffolding.",
+            "usage" => {
+                "`/usage`\nFetch and display subscription usage limits for connected providers. Today this shows OAuth provider windows (Anthropic, OpenAI/ChatGPT); jcode subscription budget reporting is scaffolded but not yet backed by a live billing service."
+            }
+            "subscription" => {
+                "`/subscription`\nShow curated jcode subscription status for this session, including router config, runtime mode, curated models, and planned tier budget scaffolding."
+            }
             "version" => "`/version`\nShow jcode version/build details.",
             "changelog" => "`/changelog`\nShow recent changes embedded in this build.",
             "quit" => "`/quit`\nExit jcode.",
@@ -1040,9 +1073,7 @@ impl App {
             "save" => {
                 "`/save`\nBookmark the current session so it appears at the top of `/resume`.\n\n`/save <label>`\nBookmark with a custom label for easy identification.\n\nSaved sessions are shown in a dedicated \"Saved\" section in the session picker."
             }
-            "unsave" => {
-                "`/unsave`\nRemove the bookmark from the current session."
-            }
+            "unsave" => "`/unsave`\nRemove the bookmark from the current session.",
             "client-reload" if self.is_remote => {
                 "`/client-reload`\nForce client binary reload in remote mode."
             }

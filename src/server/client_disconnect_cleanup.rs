@@ -1,14 +1,14 @@
 use super::{
-    record_swarm_event, remove_session_channel_subscriptions, remove_session_from_swarm,
-    remove_session_interrupt_queue, update_member_status, ClientConnectionInfo, ClientDebugState,
-    SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
+    ClientConnectionInfo, ClientDebugState, SessionInterruptQueues, SwarmEvent, SwarmEventType,
+    SwarmMember, VersionedPlan, record_swarm_event, remove_session_channel_subscriptions,
+    remove_session_from_swarm, remove_session_interrupt_queue, update_member_status,
 };
 use crate::agent::{Agent, InterruptSignal};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 const RELOAD_DISCONNECT_MARKER_MAX_AGE: Duration = Duration::from_secs(30);
 
@@ -183,31 +183,25 @@ pub(super) async fn cleanup_client_connection(
 
 #[cfg(test)]
 mod tests {
-    use super::{disconnect_disposition, DisconnectDisposition};
+    use super::{DisconnectDisposition, disconnect_disposition};
 
     #[test]
     fn idle_disconnect_is_closed() {
-        assert_eq!(
-            disconnect_disposition(false),
-            DisconnectDisposition::Closed
-        );
+        assert_eq!(disconnect_disposition(false), DisconnectDisposition::Closed);
     }
 
     #[test]
     fn running_disconnect_without_reload_is_crash() {
         let _guard = crate::storage::lock_test_env();
         crate::server::clear_reload_marker();
-        assert_eq!(
-            disconnect_disposition(true),
-            DisconnectDisposition::Crashed
-        );
+        assert_eq!(disconnect_disposition(true), DisconnectDisposition::Crashed);
     }
 
     #[test]
     fn running_disconnect_during_reload_is_expected() {
         let _guard = crate::storage::lock_test_env();
         let runtime = tempfile::TempDir::new().expect("create runtime dir");
-        std::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+        crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
         crate::server::clear_reload_marker();
         crate::server::write_reload_state(
             "test-request",
@@ -220,6 +214,6 @@ mod tests {
             DisconnectDisposition::Reloading
         );
         crate::server::clear_reload_marker();
-        std::env::remove_var("JCODE_RUNTIME_DIR");
+        crate::env::remove_var("JCODE_RUNTIME_DIR");
     }
 }

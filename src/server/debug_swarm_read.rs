@@ -1,6 +1,6 @@
 use super::{
-    git_common_dir_for, swarm_id_for_dir, FileAccess, ServerIdentity, SharedContext, SwarmMember,
-    VersionedPlan,
+    FileAccess, ServerIdentity, SharedContext, SwarmMember, VersionedPlan, git_common_dir_for,
+    swarm_id_for_dir,
 };
 use crate::agent::Agent;
 use anyhow::Result;

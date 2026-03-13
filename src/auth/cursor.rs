@@ -155,7 +155,7 @@ pub fn save_api_key(key: &str) -> Result<()> {
     std::fs::write(&file_path, &content)?;
     crate::platform::set_permissions_owner_only(&file_path)?;
 
-    std::env::set_var("CURSOR_API_KEY", key);
+    crate::env::set_var("CURSOR_API_KEY", key);
     Ok(())
 }
 
@@ -294,12 +294,12 @@ mod tests {
     fn has_cursor_api_key_from_env() {
         let key = "CURSOR_API_KEY";
         let guard = std::env::var(key).ok();
-        std::env::set_var(key, "env_test_key");
+        crate::env::set_var(key, "env_test_key");
         let result = std::env::var(key).unwrap();
         assert_eq!(result, "env_test_key");
         match guard {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
+            Some(v) => crate::env::set_var(key, v),
+            None => crate::env::remove_var(key),
         }
     }
 
@@ -308,7 +308,7 @@ mod tests {
         let _guard = crate::storage::lock_test_env();
         let prev_home = std::env::var_os("JCODE_HOME");
         let temp = TempDir::new().unwrap();
-        std::env::set_var("JCODE_HOME", temp.path());
+        crate::env::set_var("JCODE_HOME", temp.path());
 
         let paths = cursor_vscdb_paths();
         assert!(!paths.is_empty());
@@ -317,9 +317,9 @@ mod tests {
         }
 
         if let Some(prev_home) = prev_home {
-            std::env::set_var("JCODE_HOME", prev_home);
+            crate::env::set_var("JCODE_HOME", prev_home);
         } else {
-            std::env::remove_var("JCODE_HOME");
+            crate::env::remove_var("JCODE_HOME");
         }
     }
 
@@ -417,10 +417,12 @@ mod tests {
         let db = create_mock_vscdb(dir.path(), &[("other/key", "value")]);
         let result = read_vscdb_key(&db, "cursorAuth/accessToken");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("not found or empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not found or empty")
+        );
     }
 
     #[test]

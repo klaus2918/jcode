@@ -649,10 +649,7 @@ impl App {
 
                 let continuation_msg = format!(
                     "Reload succeeded ({} → {}).{} Session restored with {} turns. Continue immediately from where you left off. Do not ask the user what to do next. Do not summarize the reload.",
-                    ctx.version_before,
-                    ctx.version_after,
-                    task_info,
-                    total_turns
+                    ctx.version_before, ctx.version_after, task_info, total_turns
                 );
 
                 crate::logging::info(&format!(

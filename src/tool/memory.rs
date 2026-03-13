@@ -5,7 +5,7 @@ use crate::memory::{MemoryCategory, MemoryEntry, MemoryManager};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct MemoryTool {
     manager: MemoryManager,
@@ -188,7 +188,7 @@ impl Tool for MemoryTool {
                             None => {
                                 return Err(anyhow::anyhow!(
                                     "query required for semantic/cascade mode"
-                                ))
+                                ));
                             }
                         };
                         memory::set_state(MemoryState::ToolAction {

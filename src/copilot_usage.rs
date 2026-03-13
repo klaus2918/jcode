@@ -124,7 +124,7 @@ pub fn get_usage() -> CopilotUsageTracker {
 
 #[cfg(test)]
 mod tests {
-    use super::{usage_path, AllTimeUsage, CopilotUsageTracker, DayUsage, MonthUsage, TRACKER};
+    use super::{AllTimeUsage, CopilotUsageTracker, DayUsage, MonthUsage, TRACKER, usage_path};
     use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
 
@@ -146,7 +146,7 @@ mod tests {
     impl EnvVarGuard {
         fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
             let prev = std::env::var_os(key);
-            std::env::set_var(key, value);
+            crate::env::set_var(key, value);
             Self { key, prev }
         }
     }
@@ -154,9 +154,9 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(prev) = &self.prev {
-                std::env::set_var(self.key, prev);
+                crate::env::set_var(self.key, prev);
             } else {
-                std::env::remove_var(self.key);
+                crate::env::remove_var(self.key);
             }
         }
     }

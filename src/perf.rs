@@ -254,11 +254,7 @@ fn detect_load() -> (Option<f64>, Option<usize>) {
     let load = {
         let mut loadavg: [libc::c_double; 3] = [0.0; 3];
         let n = unsafe { libc::getloadavg(loadavg.as_mut_ptr(), 1) };
-        if n >= 1 {
-            Some(loadavg[0])
-        } else {
-            None
-        }
+        if n >= 1 { Some(loadavg[0]) } else { None }
     };
     let cpus = std::thread::available_parallelism().ok().map(|n| n.get());
     (load, cpus)

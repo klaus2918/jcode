@@ -13,7 +13,7 @@ use crate::storage;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -193,7 +193,7 @@ fn search_sessions_blocking(
                         continue;
                     }
 
-                    if let Some(ref wd) = wd_lower {
+                    if let Some(wd) = wd_lower {
                         if !contains_case_insensitive_bytes(&raw, wd.as_bytes()) {
                             continue;
                         }

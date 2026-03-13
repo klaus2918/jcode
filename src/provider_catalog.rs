@@ -182,6 +182,16 @@ pub const CEREBRAS_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     default_model: Some("qwen-3-coder-480b"),
 };
 
+pub const ALIBABA_CODING_PLAN_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "alibaba-coding-plan",
+    display_name: "Alibaba Cloud Coding Plan",
+    api_base: "https://coding.dashscope.aliyuncs.com/v1",
+    api_key_env: "BAILIAN_CODING_PLAN_API_KEY",
+    env_file: "alibaba-coding-plan.env",
+    setup_url: "https://www.alibabacloud.com/help/en/model-studio/coding-plan-quickstart",
+    default_model: Some("qwen3-coder-plus"),
+};
+
 pub const OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "openai-compatible",
     display_name: "OpenAI-compatible",
@@ -192,12 +202,13 @@ pub const OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfi
     default_model: None,
 };
 
-const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 6] = [
+const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 7] = [
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
     ZAI_PROFILE,
     CHUTES_PROFILE,
     CEREBRAS_PROFILE,
+    ALIBABA_CODING_PLAN_PROFILE,
     OPENAI_COMPAT_PROFILE,
 ];
 
@@ -331,6 +342,19 @@ pub const CEREBRAS_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescri
     order: LoginProviderSurfaceOrder::new(Some(9), Some(8), Some(9), Some(8), Some(8)),
 };
 
+pub const ALIBABA_CODING_PLAN_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "alibaba-coding-plan",
+    display_name: "Alibaba Cloud Coding Plan",
+    auth_kind: LoginProviderAuthKind::ApiKey,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "API key",
+    aliases: &["bailian", "aliyun-bailian", "coding-plan", "alibaba-coding"],
+    menu_detail: "API key, dedicated Alibaba coding endpoint",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(ALIBABA_CODING_PLAN_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(10), Some(9), Some(10), Some(9), Some(9)),
+};
+
 pub const OPENAI_COMPAT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "openai-compatible",
     display_name: "OpenAI-compatible",
@@ -409,7 +433,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-const LOGIN_PROVIDERS: [LoginProviderDescriptor; 16] = [
+const LOGIN_PROVIDERS: [LoginProviderDescriptor; 17] = [
     CLAUDE_LOGIN_PROVIDER,
     OPENAI_LOGIN_PROVIDER,
     JCODE_LOGIN_PROVIDER,
@@ -420,6 +444,7 @@ const LOGIN_PROVIDERS: [LoginProviderDescriptor; 16] = [
     ZAI_LOGIN_PROVIDER,
     CHUTES_LOGIN_PROVIDER,
     CEREBRAS_LOGIN_PROVIDER,
+    ALIBABA_CODING_PLAN_LOGIN_PROVIDER,
     OPENAI_COMPAT_LOGIN_PROVIDER,
     CURSOR_LOGIN_PROVIDER,
     COPILOT_LOGIN_PROVIDER,
@@ -568,16 +593,16 @@ pub fn apply_openai_compatible_profile_env(profile: Option<OpenAiCompatibleProfi
     ];
 
     for var in vars {
-        std::env::remove_var(var);
+        crate::env::remove_var(var);
     }
 
     if let Some(profile) = profile {
         let resolved = resolve_openai_compatible_profile(profile);
-        std::env::set_var("JCODE_OPENROUTER_API_BASE", &resolved.api_base);
-        std::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", &resolved.api_key_env);
-        std::env::set_var("JCODE_OPENROUTER_ENV_FILE", &resolved.env_file);
-        std::env::set_var("JCODE_OPENROUTER_CACHE_NAMESPACE", &resolved.id);
-        std::env::set_var("JCODE_OPENROUTER_PROVIDER_FEATURES", "0");
+        crate::env::set_var("JCODE_OPENROUTER_API_BASE", &resolved.api_base);
+        crate::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", &resolved.api_key_env);
+        crate::env::set_var("JCODE_OPENROUTER_ENV_FILE", &resolved.env_file);
+        crate::env::set_var("JCODE_OPENROUTER_CACHE_NAMESPACE", &resolved.id);
+        crate::env::set_var("JCODE_OPENROUTER_PROVIDER_FEATURES", "0");
     }
 }
 
@@ -824,9 +849,9 @@ mod tests {
         fn drop(&mut self) {
             for (key, value) in &self.vars {
                 if let Some(value) = value {
-                    std::env::set_var(key, value);
+                    crate::env::set_var(key, value);
                 } else {
-                    std::env::remove_var(key);
+                    crate::env::remove_var(key);
                 }
             }
         }
@@ -881,6 +906,10 @@ mod tests {
             Some("cerebras")
         );
         assert_eq!(
+            resolve_login_provider("bailian").map(|provider| provider.id),
+            Some("alibaba-coding-plan")
+        );
+        assert_eq!(
             resolve_login_provider("gmail").map(|provider| provider.id),
             Some("google")
         );
@@ -913,7 +942,7 @@ mod tests {
             Some("claude")
         );
         assert_eq!(
-            resolve_login_selection("13", &providers).map(|provider| provider.id),
+            resolve_login_selection("14", &providers).map(|provider| provider.id),
             Some("cursor")
         );
         assert_eq!(
@@ -943,11 +972,11 @@ mod tests {
             Some("azure")
         );
         assert_eq!(
-            resolve_login_selection("15", &providers).map(|provider| provider.id),
+            resolve_login_selection("16", &providers).map(|provider| provider.id),
             Some("gemini")
         );
         assert_eq!(
-            resolve_login_selection("16", &providers).map(|provider| provider.id),
+            resolve_login_selection("17", &providers).map(|provider| provider.id),
             Some("google")
         );
     }
@@ -961,10 +990,10 @@ mod tests {
             "JCODE_OPENAI_COMPAT_API_KEY_NAME",
             "JCODE_OPENAI_COMPAT_ENV_FILE",
         ]);
-        std::env::remove_var("JCODE_OPENROUTER_API_KEY_NAME");
-        std::env::remove_var("JCODE_OPENROUTER_ENV_FILE");
-        std::env::remove_var("JCODE_OPENAI_COMPAT_API_KEY_NAME");
-        std::env::remove_var("JCODE_OPENAI_COMPAT_ENV_FILE");
+        crate::env::remove_var("JCODE_OPENROUTER_API_KEY_NAME");
+        crate::env::remove_var("JCODE_OPENROUTER_ENV_FILE");
+        crate::env::remove_var("JCODE_OPENAI_COMPAT_API_KEY_NAME");
+        crate::env::remove_var("JCODE_OPENAI_COMPAT_ENV_FILE");
 
         let sources = openrouter_like_api_key_sources();
         drop(guard);
@@ -991,10 +1020,10 @@ mod tests {
             "JCODE_OPENAI_COMPAT_ENV_FILE",
         ]);
 
-        std::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", "ALT_OPENROUTER_KEY");
-        std::env::set_var("JCODE_OPENROUTER_ENV_FILE", "alt-openrouter.env");
-        std::env::set_var("JCODE_OPENAI_COMPAT_API_KEY_NAME", "ALT_COMPAT_KEY");
-        std::env::set_var("JCODE_OPENAI_COMPAT_ENV_FILE", "alt-compat.env");
+        crate::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", "ALT_OPENROUTER_KEY");
+        crate::env::set_var("JCODE_OPENROUTER_ENV_FILE", "alt-openrouter.env");
+        crate::env::set_var("JCODE_OPENAI_COMPAT_API_KEY_NAME", "ALT_COMPAT_KEY");
+        crate::env::set_var("JCODE_OPENAI_COMPAT_ENV_FILE", "alt-compat.env");
 
         let sources = openrouter_like_api_key_sources();
         assert!(sources.contains(&(
@@ -1014,18 +1043,22 @@ mod tests {
             "JCODE_OPENAI_COMPAT_ENV_FILE",
         ]);
 
-        std::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", "bad-key-name");
-        std::env::set_var("JCODE_OPENROUTER_ENV_FILE", "../bad.env");
-        std::env::set_var("JCODE_OPENAI_COMPAT_API_KEY_NAME", "bad key");
-        std::env::set_var("JCODE_OPENAI_COMPAT_ENV_FILE", "../bad-compat.env");
+        crate::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", "bad-key-name");
+        crate::env::set_var("JCODE_OPENROUTER_ENV_FILE", "../bad.env");
+        crate::env::set_var("JCODE_OPENAI_COMPAT_API_KEY_NAME", "bad key");
+        crate::env::set_var("JCODE_OPENAI_COMPAT_ENV_FILE", "../bad-compat.env");
 
         let sources = openrouter_like_api_key_sources();
-        assert!(!sources
-            .iter()
-            .any(|(key, _)| key == "bad-key-name" || key == "bad key"));
-        assert!(!sources
-            .iter()
-            .any(|(_, file)| file == "../bad.env" || file == "../bad-compat.env"));
+        assert!(
+            !sources
+                .iter()
+                .any(|(key, _)| key == "bad-key-name" || key == "bad key")
+        );
+        assert!(
+            !sources
+                .iter()
+                .any(|(_, file)| file == "../bad.env" || file == "../bad-compat.env")
+        );
     }
 
     #[test]
@@ -1038,13 +1071,13 @@ mod tests {
             "JCODE_OPENAI_COMPAT_DEFAULT_MODEL",
         ]);
 
-        std::env::set_var(
+        crate::env::set_var(
             "JCODE_OPENAI_COMPAT_API_BASE",
             "https://api.groq.com/openai/v1/",
         );
-        std::env::set_var("JCODE_OPENAI_COMPAT_API_KEY_NAME", "GROQ_API_KEY");
-        std::env::set_var("JCODE_OPENAI_COMPAT_ENV_FILE", "groq.env");
-        std::env::set_var("JCODE_OPENAI_COMPAT_DEFAULT_MODEL", "openai/gpt-oss-120b");
+        crate::env::set_var("JCODE_OPENAI_COMPAT_API_KEY_NAME", "GROQ_API_KEY");
+        crate::env::set_var("JCODE_OPENAI_COMPAT_ENV_FILE", "groq.env");
+        crate::env::set_var("JCODE_OPENAI_COMPAT_DEFAULT_MODEL", "openai/gpt-oss-120b");
 
         let resolved = resolve_openai_compatible_profile(OPENAI_COMPAT_PROFILE);
         assert_eq!(resolved.api_base, "https://api.groq.com/openai/v1");
@@ -1065,9 +1098,9 @@ mod tests {
             "JCODE_OPENAI_COMPAT_ENV_FILE",
         ]);
 
-        std::env::set_var("JCODE_OPENAI_COMPAT_API_BASE", "http://example.com/v1");
-        std::env::set_var("JCODE_OPENAI_COMPAT_API_KEY_NAME", "bad-key-name");
-        std::env::set_var("JCODE_OPENAI_COMPAT_ENV_FILE", "../bad.env");
+        crate::env::set_var("JCODE_OPENAI_COMPAT_API_BASE", "http://example.com/v1");
+        crate::env::set_var("JCODE_OPENAI_COMPAT_API_KEY_NAME", "bad-key-name");
+        crate::env::set_var("JCODE_OPENAI_COMPAT_ENV_FILE", "../bad.env");
 
         let resolved = resolve_openai_compatible_profile(OPENAI_COMPAT_PROFILE);
         assert_eq!(resolved.api_base, OPENAI_COMPAT_PROFILE.api_base);
@@ -1083,8 +1116,8 @@ mod tests {
         std::fs::create_dir_all(config_root.join("jcode")).expect("config dir");
 
         let _guard = EnvGuard::save(&["XDG_CONFIG_HOME", "OPENCODE_API_KEY"]);
-        std::env::set_var("XDG_CONFIG_HOME", &config_root);
-        std::env::set_var("OPENCODE_API_KEY", "env-secret");
+        crate::env::set_var("XDG_CONFIG_HOME", &config_root);
+        crate::env::set_var("OPENCODE_API_KEY", "env-secret");
         std::fs::write(
             config_root.join("jcode").join("opencode.env"),
             "OPENCODE_API_KEY=file-secret\n",
@@ -1105,8 +1138,8 @@ mod tests {
         std::fs::create_dir_all(config_root.join("jcode")).expect("config dir");
 
         let _guard = EnvGuard::save(&["XDG_CONFIG_HOME", "OPENCODE_API_KEY"]);
-        std::env::set_var("XDG_CONFIG_HOME", &config_root);
-        std::env::remove_var("OPENCODE_API_KEY");
+        crate::env::set_var("XDG_CONFIG_HOME", &config_root);
+        crate::env::remove_var("OPENCODE_API_KEY");
         std::fs::write(
             config_root.join("jcode").join("opencode.env"),
             "OPENCODE_API_KEY=file-secret\n",

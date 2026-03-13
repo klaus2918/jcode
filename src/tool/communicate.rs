@@ -8,7 +8,7 @@ use crate::transport::SyncStream;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 
 const REQUEST_ID: u64 = 1;
@@ -458,7 +458,9 @@ impl Tool for CommunicateTool {
                 };
 
                 match send_request(request) {
-                    Ok(ServerEvent::CommContext { entries, .. }) => Ok(format_context_entries(&entries)),
+                    Ok(ServerEvent::CommContext { entries, .. }) => {
+                        Ok(format_context_entries(&entries))
+                    }
                     Ok(response) => {
                         ensure_success(&response)?;
                         Ok(ToolOutput::new("No shared context found."))
@@ -555,7 +557,9 @@ impl Tool for CommunicateTool {
                 };
 
                 match send_request(request) {
-                    Ok(ServerEvent::CommMembers { members, .. }) => Ok(format_members(&ctx, &members)),
+                    Ok(ServerEvent::CommMembers { members, .. }) => {
+                        Ok(format_members(&ctx, &members))
+                    }
                     Ok(response) => {
                         ensure_success(&response)?;
                         Ok(ToolOutput::new("No agents found."))
@@ -657,7 +661,10 @@ impl Tool for CommunicateTool {
                     Ok(ServerEvent::CommSpawnResponse { new_session_id, .. })
                         if !new_session_id.is_empty() =>
                     {
-                        Ok(ToolOutput::new(format!("Spawned new agent: {}", new_session_id)))
+                        Ok(ToolOutput::new(format!(
+                            "Spawned new agent: {}",
+                            new_session_id
+                        )))
                     }
                     Ok(response) => {
                         ensure_success(&response)?;
@@ -693,9 +700,9 @@ impl Tool for CommunicateTool {
                 let target_raw = params.target_session.ok_or_else(|| {
                     anyhow::anyhow!("'target_session' is required for assign_role action")
                 })?;
-                let role = params.role.ok_or_else(|| {
-                    anyhow::anyhow!("'role' is required for assign_role action")
-                })?;
+                let role = params
+                    .role
+                    .ok_or_else(|| anyhow::anyhow!("'role' is required for assign_role action"))?;
 
                 // Resolve "current" to the caller's own session ID
                 let target = if target_raw == "current" {
@@ -886,10 +893,7 @@ impl Tool for CommunicateTool {
                         ensure_success(&response)?;
                         Ok(ToolOutput::new("Await completed."))
                     }
-                    Err(e) => Err(anyhow::anyhow!(
-                        "Failed to await members: {}",
-                        e
-                    )),
+                    Err(e) => Err(anyhow::anyhow!("Failed to await members: {}", e)),
                 }
             }
 

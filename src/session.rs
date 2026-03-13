@@ -630,10 +630,7 @@ impl Session {
         });
     }
 
-    pub fn record_swarm_status_event(
-        &mut self,
-        members: Vec<crate::protocol::SwarmMemberStatus>,
-    ) {
+    pub fn record_swarm_status_event(&mut self, members: Vec<crate::protocol::SwarmMemberStatus>) {
         let kind = StoredReplayEventKind::SwarmStatus { members };
         if self
             .replay_events
@@ -883,7 +880,7 @@ mod tests {
     impl EnvVarGuard {
         fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
             let prev = std::env::var_os(key);
-            std::env::set_var(key, value);
+            crate::env::set_var(key, value);
             Self { key, prev }
         }
     }
@@ -891,9 +888,9 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(prev) = &self.prev {
-                std::env::set_var(self.key, prev);
+                crate::env::set_var(self.key, prev);
             } else {
-                std::env::remove_var(self.key);
+                crate::env::remove_var(self.key);
             }
         }
     }
@@ -1139,8 +1136,8 @@ mod tests {
             "swarm_test".to_string(),
             1,
             vec![crate::plan::PlanItem {
-                content:
-                    "OPENROUTER_API_KEY=sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789".to_string(),
+                content: "OPENROUTER_API_KEY=sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"
+                    .to_string(),
                 status: "pending".to_string(),
                 priority: "high".to_string(),
                 id: "task-1".to_string(),
@@ -1173,9 +1170,11 @@ mod tests {
 
         match &redacted.replay_events[2].kind {
             StoredReplayEventKind::SwarmPlan { items, reason, .. } => {
-                assert!(items[0]
-                    .content
-                    .contains("OPENROUTER_API_KEY=[REDACTED_SECRET]"));
+                assert!(
+                    items[0]
+                        .content
+                        .contains("OPENROUTER_API_KEY=[REDACTED_SECRET]")
+                );
                 assert!(
                     !items[0]
                         .content

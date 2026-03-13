@@ -1,10 +1,10 @@
 use super::{Tool, ToolContext, ToolOutput};
 use crate::bus::{Bus, BusEvent, TodoEvent};
-use crate::todo::{load_todos, save_todos, TodoItem};
+use crate::todo::{TodoItem, load_todos, save_todos};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct TodoWriteTool;
 pub struct TodoReadTool;

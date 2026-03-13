@@ -3,10 +3,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_RESULTS: usize = 100;
 const MAX_LINE_LEN: usize = 2000;

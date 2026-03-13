@@ -2,7 +2,7 @@
 
 use crate::auth::claude as claude_auth;
 use anyhow::Result;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, IsTerminal, Write};
@@ -1157,7 +1157,7 @@ mod tests {
     impl EnvVarGuard {
         fn set(key: &'static str, value: &std::path::Path) -> Self {
             let previous = std::env::var_os(key);
-            std::env::set_var(key, value);
+            crate::env::set_var(key, value);
             Self { key, previous }
         }
     }
@@ -1165,9 +1165,9 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(previous) = &self.previous {
-                std::env::set_var(self.key, previous);
+                crate::env::set_var(self.key, previous);
             } else {
-                std::env::remove_var(self.key);
+                crate::env::remove_var(self.key);
             }
         }
     }
@@ -1504,10 +1504,12 @@ mod tests {
 
         let result = handle.await.unwrap();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("OAuth provider returned error"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("OAuth provider returned error")
+        );
     }
 
     /// Helper: start a mock HTTP server that captures the request and returns a
@@ -2176,10 +2178,12 @@ mod tests {
         let url = format!("http://127.0.0.1:{}/v1/oauth/token", port);
         let result = refresh_tokens_at_url(&url, "expired_token").await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Token refresh failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Token refresh failed")
+        );
     }
 
     // ========================

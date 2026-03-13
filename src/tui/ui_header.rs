@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
 use super::{
-    binary_age, dim_color, header_animation_color, header_chrome_color, header_fade_color,
-    header_fade_t, header_icon_color, header_name_color, header_session_color,
-    is_running_stable_release, semver, shorten_model_name, TuiState,
+    TuiState, binary_age, dim_color, header_animation_color, header_chrome_color,
+    header_fade_color, header_fade_t, header_icon_color, header_name_color, header_session_color,
+    is_running_stable_release, semver, shorten_model_name,
 };
-use crate::tui::connection_type_icon;
 use crate::auth::{AuthState, AuthStatus};
 use crate::tui::color_support::rgb;
+use crate::tui::connection_type_icon;
 use ratatui::prelude::*;
 
 pub(crate) fn capitalize(s: &str) -> String {

@@ -2,8 +2,8 @@ use super::picker_ui::format_elapsed;
 use super::tools_ui::get_tool_summary;
 use super::visual_debug::{self, FrameCaptureBuilder};
 use super::{
-    accent_color, ai_color, animated_tool_color, asap_color, dim_color, is_unexpected_cache_miss,
-    pending_color, queued_color, rainbow_prompt_color, user_color, ProcessingStatus, TuiState,
+    ProcessingStatus, TuiState, accent_color, ai_color, animated_tool_color, asap_color, dim_color,
+    is_unexpected_cache_miss, pending_color, queued_color, rainbow_prompt_color, user_color,
 };
 use crate::message::ConnectionPhase;
 use crate::tui::color_support::rgb;
@@ -12,11 +12,7 @@ use ratatui::{prelude::*, widgets::Paragraph};
 
 pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
     let (icon, _) = send_mode_indicator(app);
-    if icon.is_empty() {
-        0
-    } else {
-        icon.len() + 1
-    }
+    if icon.is_empty() { 0 } else { icon.len() + 1 }
 }
 
 pub(super) fn input_prompt(app: &dyn TuiState) -> (&'static str, Color) {
@@ -34,7 +30,11 @@ pub(super) fn input_prompt_len(app: &dyn TuiState, next_prompt: usize) -> usize 
     next_prompt.to_string().chars().count() + prompt_char.chars().count()
 }
 
-pub(super) fn wrapped_input_line_count(app: &dyn TuiState, area_width: u16, next_prompt: usize) -> usize {
+pub(super) fn wrapped_input_line_count(
+    app: &dyn TuiState,
+    area_width: u16,
+    next_prompt: usize,
+) -> usize {
     let reserved_width = send_mode_reserved_width(app);
     let prompt_len = input_prompt_len(app, next_prompt);
     let line_width = (area_width as usize).saturating_sub(prompt_len + reserved_width);
@@ -827,7 +827,7 @@ pub(super) fn draw_input(
         )));
     }
 
-    if let Some(ref mut capture) = debug_capture {
+    if let Some(capture) = debug_capture {
         capture.rendered_text.input_area = input_text.to_string();
         if let Some(hint) = &hint_line {
             capture.rendered_text.input_hint = Some(hint.clone());

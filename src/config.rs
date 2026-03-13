@@ -398,6 +398,8 @@ pub struct ProviderConfig {
     pub openai_reasoning_effort: Option<String>,
     /// OpenAI transport mode (auto|websocket|https)
     pub openai_transport: Option<String>,
+    /// OpenAI service tier override (priority|flex)
+    pub openai_service_tier: Option<String>,
     /// Copilot premium request mode: "normal", "one", or "zero"
     /// "zero" means all requests are free (no premium requests consumed)
     pub copilot_premium: Option<String>,
@@ -410,6 +412,7 @@ impl Default for ProviderConfig {
             default_provider: None,
             openai_reasoning_effort: Some("high".to_string()),
             openai_transport: None,
+            openai_service_tier: None,
             copilot_premium: None,
         }
     }
@@ -845,6 +848,12 @@ impl Config {
                 self.provider.openai_transport = Some(trimmed);
             }
         }
+        if let Ok(v) = std::env::var("JCODE_OPENAI_SERVICE_TIER") {
+            let trimmed = v.trim().to_string();
+            if !trimmed.is_empty() {
+                self.provider.openai_service_tier = Some(trimmed);
+            }
+        }
 
         // Copilot premium mode: env var overrides config
         // If set in config but not in env, propagate config -> env
@@ -857,7 +866,7 @@ impl Config {
                 _ => "",
             };
             if !env_val.is_empty() {
-                std::env::set_var("JCODE_COPILOT_PREMIUM", env_val);
+                crate::env::set_var("JCODE_COPILOT_PREMIUM", env_val);
             }
         }
     }
@@ -1028,6 +1037,9 @@ update_channel = "stable"
 openai_reasoning_effort = "high"
 # OpenAI transport mode (auto|websocket|https)
 # openai_transport = "auto"
+# OpenAI service tier override (priority|flex)
+# Set `priority` to match Codex /fast behavior (higher speed, higher usage)
+# openai_service_tier = "priority"
 # Copilot premium mode: "normal" (default), "one" (first msg only), "zero" (all free)
 # Set to "zero" if you have premium Copilot and want free requests
 # copilot_premium = "zero"
@@ -1157,6 +1169,7 @@ desktop_notifications = true
 - Default provider: {}
 - OpenAI reasoning effort: {}
 - OpenAI transport: {}
+- OpenAI service tier: {}
 
 **Gateway:**
 - Enabled: {}
@@ -1239,6 +1252,10 @@ desktop_notifications = true
                 .openai_transport
                 .as_deref()
                 .unwrap_or("(auto)"),
+            self.provider
+                .openai_service_tier
+                .as_deref()
+                .unwrap_or("(default)"),
             self.gateway.enabled,
             self.gateway.bind_addr,
             self.gateway.port,

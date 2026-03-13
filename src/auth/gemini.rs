@@ -537,11 +537,7 @@ fn parse_command_spec(raw: &str) -> Option<Vec<String>> {
         parts.push(current);
     }
 
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts)
-    }
+    if parts.is_empty() { None } else { Some(parts) }
 }
 
 #[cfg(test)]
@@ -557,15 +553,15 @@ mod tests {
     impl Drop for GeminiOauthEnvReset {
         fn drop(&mut self) {
             if let Some(value) = &self.prev_client_id {
-                std::env::set_var(GEMINI_CLIENT_ID_ENV, value);
+                crate::env::set_var(GEMINI_CLIENT_ID_ENV, value);
             } else {
-                std::env::remove_var(GEMINI_CLIENT_ID_ENV);
+                crate::env::remove_var(GEMINI_CLIENT_ID_ENV);
             }
 
             if let Some(value) = &self.prev_client_secret {
-                std::env::set_var(GEMINI_CLIENT_SECRET_ENV, value);
+                crate::env::set_var(GEMINI_CLIENT_SECRET_ENV, value);
             } else {
-                std::env::remove_var(GEMINI_CLIENT_SECRET_ENV);
+                crate::env::remove_var(GEMINI_CLIENT_SECRET_ENV);
             }
         }
     }
@@ -575,11 +571,11 @@ mod tests {
             prev_client_id: std::env::var(GEMINI_CLIENT_ID_ENV).ok(),
             prev_client_secret: std::env::var(GEMINI_CLIENT_SECRET_ENV).ok(),
         };
-        std::env::set_var(
+        crate::env::set_var(
             GEMINI_CLIENT_ID_ENV,
             "test-gemini-client.apps.googleusercontent.com",
         );
-        std::env::set_var(GEMINI_CLIENT_SECRET_ENV, "test-gemini-client-secret");
+        crate::env::set_var(GEMINI_CLIENT_SECRET_ENV, "test-gemini-client-secret");
         reset
     }
 
@@ -649,8 +645,8 @@ mod tests {
     #[test]
     fn uses_hardcoded_credentials_when_env_missing() {
         let _guard = lock_test_env();
-        std::env::remove_var(GEMINI_CLIENT_ID_ENV);
-        std::env::remove_var(GEMINI_CLIENT_SECRET_ENV);
+        crate::env::remove_var(GEMINI_CLIENT_ID_ENV);
+        crate::env::remove_var(GEMINI_CLIENT_SECRET_ENV);
 
         // Should succeed with hardcoded credentials
         let url = build_manual_auth_url(GEMINI_MANUAL_REDIRECT_URI, "challenge-123", "state-123")
@@ -658,8 +654,11 @@ mod tests {
         assert!(url.contains("codeassist.google.com%2Fauthcode"));
         assert!(url.contains("code_challenge=challenge-123"));
         // Should contain the hardcoded client ID
-        assert!(url
-            .contains("681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"));
+        assert!(
+            url.contains(
+                "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+            )
+        );
     }
 
     #[test]
@@ -667,7 +666,7 @@ mod tests {
         let _guard = lock_test_env();
         let temp = tempfile::TempDir::new().expect("tempdir");
         let prev_home = std::env::var_os("JCODE_HOME");
-        std::env::set_var("JCODE_HOME", temp.path());
+        crate::env::set_var("JCODE_HOME", temp.path());
 
         let cli_path = gemini_cli_oauth_path().expect("cli path");
         std::fs::create_dir_all(cli_path.parent().unwrap()).expect("create cli dir");
@@ -683,9 +682,9 @@ mod tests {
         assert_eq!(tokens.expires_at, 4102444800000);
 
         if let Some(prev_home) = prev_home {
-            std::env::set_var("JCODE_HOME", prev_home);
+            crate::env::set_var("JCODE_HOME", prev_home);
         } else {
-            std::env::remove_var("JCODE_HOME");
+            crate::env::remove_var("JCODE_HOME");
         }
     }
 }

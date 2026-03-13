@@ -119,6 +119,22 @@ impl App {
         &self.input
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_queue_mode_for_test(&mut self, enabled: bool) {
+        self.queue_mode = enabled;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_diff_mode_for_test(&mut self, mode: crate::config::DiffDisplayMode) {
+        self.diff_mode = mode;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_input_for_test(&mut self, input: impl Into<String>) {
+        self.input = input.into();
+        self.cursor_pos = self.input.len();
+    }
+
     pub(super) fn fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
         if needle.is_empty() {
             return Some(0);
@@ -514,11 +530,7 @@ impl App {
         self.last_api_completed = Some(Instant::now());
         self.last_turn_input_tokens = {
             let input = self.streaming_input_tokens;
-            if input > 0 {
-                Some(input)
-            } else {
-                None
-            }
+            if input > 0 { Some(input) } else { None }
         };
 
         if let Some(footer) = self.build_turn_footer(duration) {

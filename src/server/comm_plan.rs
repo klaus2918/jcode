@@ -1,7 +1,7 @@
 use super::{
+    SessionInterruptQueues, SharedContext, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
     broadcast_swarm_plan, queue_soft_interrupt_for_session, record_swarm_event,
-    summarize_plan_items, SessionInterruptQueues, SharedContext, SwarmEvent, SwarmEventType,
-    SwarmMember, VersionedPlan,
+    summarize_plan_items,
 };
 use crate::agent::Agent;
 use crate::plan::PlanItem;
@@ -9,7 +9,7 @@ use crate::protocol::{NotificationType, ServerEvent};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_comm_propose_plan(

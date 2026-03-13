@@ -217,7 +217,8 @@ impl App {
                     let truncated = manager.emergency_truncate_with(&mut self.messages);
                     return Some(format!(
                         "⚡ Emergency compaction: dropped {} old messages and truncated {} tool result(s) (context was at {:.0}%). You can continue.",
-                        dropped, truncated,
+                        dropped,
+                        truncated,
                         usage * 100.0
                     ));
                 }

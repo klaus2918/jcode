@@ -1,15 +1,15 @@
 use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
-    broadcast_swarm_status, remove_session_channel_subscriptions, remove_session_from_swarm,
-    swarm_id_for_dir, truncate_detail, update_member_status, SwarmEvent, SwarmMember,
-    VersionedPlan,
+    SwarmEvent, SwarmMember, VersionedPlan, broadcast_swarm_status,
+    remove_session_channel_subscriptions, remove_session_from_swarm, swarm_id_for_dir,
+    truncate_detail, update_member_status,
 };
 use crate::agent::{Agent, StreamError};
 use crate::protocol::{FeatureToggle, NotificationType, ServerEvent};
 use crate::session::Session;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 pub(super) async fn handle_set_feature(
     id: u64,

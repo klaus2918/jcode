@@ -575,7 +575,7 @@ mod tests {
         let _guard = crate::storage::lock_test_env();
         let prev_home = std::env::var_os("JCODE_HOME");
         let temp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("JCODE_HOME", temp.path());
+        crate::env::set_var("JCODE_HOME", temp.path());
 
         let project_dir = temp.path().join("external/.claude/projects/demo");
         std::fs::create_dir_all(&project_dir).unwrap();
@@ -589,9 +589,9 @@ mod tests {
         assert_eq!(projects, vec![project_dir.join("sessions-index.json")]);
 
         if let Some(prev_home) = prev_home {
-            std::env::set_var("JCODE_HOME", prev_home);
+            crate::env::set_var("JCODE_HOME", prev_home);
         } else {
-            std::env::remove_var("JCODE_HOME");
+            crate::env::remove_var("JCODE_HOME");
         }
     }
 }

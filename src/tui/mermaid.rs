@@ -23,9 +23,9 @@ use mermaid_rs_renderer::{
 };
 use ratatui::prelude::*;
 use ratatui_image::{
+    CropOptions, Resize, StatefulImage,
     picker::{Picker, ProtocolType},
     protocol::StatefulProtocol,
-    CropOptions, Resize, StatefulImage,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};

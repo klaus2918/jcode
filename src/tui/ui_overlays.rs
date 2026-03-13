@@ -3,8 +3,8 @@ use super::{
     header_icon_color, header_name_color, header_session_color, pending_color, queued_color, rgb,
     tool_color, user_bg, user_color, user_text,
 };
-use crate::tui::info_widget::WidgetPlacement;
 use crate::tui::TuiState;
+use crate::tui::info_widget::WidgetPlacement;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph},
@@ -291,6 +291,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(key_entry("Ctrl+Up", "Retrieve pending message for editing"));
     lines.push(key_entry("Ctrl+Tab / Ctrl+T", "Toggle queue mode"));
     lines.push(key_entry("Ctrl+R", "Recover from missing tool outputs"));
+    lines.push(key_entry("Ctrl+V", "Paste clipboard (text or image)"));
     lines.push(key_entry("Alt+V", "Paste image from clipboard"));
     lines.push(key_entry("Alt+Left / Right", "Cycle reasoning effort"));
 

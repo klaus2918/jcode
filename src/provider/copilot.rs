@@ -1,12 +1,12 @@
 use super::{EventStream, Provider};
 use crate::auth::copilot as copilot_auth;
 use crate::message::{
-    ContentBlock, Message as ChatMessage, Role, StreamEvent, ToolDefinition,
-    TOOL_OUTPUT_MISSING_TEXT,
+    ContentBlock, Message as ChatMessage, Role, StreamEvent, TOOL_OUTPUT_MISSING_TEXT,
+    ToolDefinition,
 };
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -951,7 +951,9 @@ impl Provider for CopilotApiProvider {
             anyhow::bail!("Copilot model cannot be empty");
         }
         if trimmed.contains("[1m]") {
-            anyhow::bail!("1M context window models are not supported via Copilot. Use the Anthropic API directly.");
+            anyhow::bail!(
+                "1M context window models are not supported via Copilot. Use the Anthropic API directly."
+            );
         }
         if let Ok(mut current) = self.model.try_write() {
             *current = trimmed.to_string();

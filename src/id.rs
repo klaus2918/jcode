@@ -215,7 +215,7 @@ pub fn new_memorable_session_id() -> (String, String) {
 pub fn extract_session_name(session_id: &str) -> Option<&str> {
     if session_id.starts_with("session_") {
         let rest = &session_id[8..]; // Skip "session_"
-                                     // Find the last underscore (before timestamp)
+        // Find the last underscore (before timestamp)
         if let Some(pos) = rest.rfind('_') {
             return Some(&rest[..pos]);
         }

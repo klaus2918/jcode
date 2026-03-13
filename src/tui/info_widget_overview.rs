@@ -1,5 +1,5 @@
 use super::info_widget::{
-    context_entries, AuthMethod, InfoWidgetData, UsageProvider, MAX_MEMORY_EVENTS,
+    AuthMethod, InfoWidgetData, MAX_MEMORY_EVENTS, UsageProvider, context_entries,
 };
 
 pub(crate) const MAX_CONTEXT_LINES: usize = 5;
@@ -126,19 +126,11 @@ fn compact_context_height(data: &InfoWidgetData) -> u16 {
 }
 
 fn compact_todos_height(data: &InfoWidgetData) -> u16 {
-    if data.todos.is_empty() {
-        0
-    } else {
-        2
-    }
+    if data.todos.is_empty() { 0 } else { 2 }
 }
 
 fn compact_queue_height(data: &InfoWidgetData) -> u16 {
-    if data.queue_mode.is_some() {
-        1
-    } else {
-        0
-    }
+    if data.queue_mode.is_some() { 1 } else { 0 }
 }
 
 fn compact_memory_height(data: &InfoWidgetData) -> u16 {
@@ -259,7 +251,7 @@ fn expanded_memory_height(data: &InfoWidgetData) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_page_layout, InfoPageKind};
+    use super::{InfoPageKind, compute_page_layout};
     use crate::prompt::ContextInfo;
     use crate::todo::TodoItem;
     use crate::tui::info_widget::InfoWidgetData;
@@ -302,13 +294,17 @@ mod tests {
 
         assert!(layout.pages.len() >= 2);
         assert!(layout.show_dots);
-        assert!(layout
-            .pages
-            .iter()
-            .any(|page| page.kind == InfoPageKind::ContextExpanded));
-        assert!(layout
-            .pages
-            .iter()
-            .any(|page| page.kind == InfoPageKind::TodosExpanded));
+        assert!(
+            layout
+                .pages
+                .iter()
+                .any(|page| page.kind == InfoPageKind::ContextExpanded)
+        );
+        assert!(
+            layout
+                .pages
+                .iter()
+                .any(|page| page.kind == InfoPageKind::TodosExpanded)
+        );
     }
 }

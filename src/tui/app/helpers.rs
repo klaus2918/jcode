@@ -712,11 +712,7 @@ fn gather_git_info_inner() -> Option<GitInfo> {
         .and_then(|o| {
             if o.status.success() {
                 let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if b.is_empty() {
-                    None
-                } else {
-                    Some(b)
-                }
+                if b.is_empty() { None } else { Some(b) }
             } else {
                 None
             }

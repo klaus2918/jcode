@@ -2,7 +2,7 @@ use super::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::auth::google;
 use crate::gmail::{self, GmailClient, MessageFormat};
@@ -180,7 +180,12 @@ impl Tool for GmailTool {
                             ));
                         }
                         Err(e) => {
-                            results.push(format!("{}. [error fetching {}: {}]", i + 1, msg_ref.id, e));
+                            results.push(format!(
+                                "{}. [error fetching {}: {}]",
+                                i + 1,
+                                msg_ref.id,
+                                e
+                            ));
                         }
                     }
                 }
@@ -191,7 +196,11 @@ impl Tool for GmailTool {
                     format!("Recent messages ({} shown):", results.len())
                 };
 
-                Ok(ToolOutput::new(format!("{}\n\n{}", header, results.join("\n\n"))))
+                Ok(ToolOutput::new(format!(
+                    "{}\n\n{}",
+                    header,
+                    results.join("\n\n")
+                )))
             }
 
             "read" => {
@@ -275,7 +284,10 @@ impl Tool for GmailTool {
                         .messages_total
                         .map(|t| format!(" [{} total]", t))
                         .unwrap_or_default();
-                    results.push(format!("- {} (id: {}){}{}", label.name, label.id, unread, total));
+                    results.push(format!(
+                        "- {} (id: {}){}{}",
+                        label.name, label.id, unread, total
+                    ));
                 }
                 Ok(ToolOutput::new(format!("Labels:\n{}", results.join("\n"))))
             }
@@ -311,7 +323,7 @@ impl Tool for GmailTool {
                     return Ok(ToolOutput::new(
                         "Send is not available. Your Gmail access is configured as Read & Draft Only (API-level restriction).\n\
                          The draft has been created - open Gmail to send it manually.\n\
-                         To enable sending, run `jcode login google --upgrade`."
+                         To enable sending, run `jcode login google --upgrade`.",
                     ));
                 }
 
@@ -356,14 +368,13 @@ impl Tool for GmailTool {
                     return Ok(ToolOutput::new(
                         "Send is not available. Your Gmail access is configured as Read & Draft Only (API-level restriction).\n\
                          Open Gmail to send the draft manually.\n\
-                         To enable sending, run `jcode login google --upgrade`."
+                         To enable sending, run `jcode login google --upgrade`.",
                     ));
                 }
 
-                let draft_id = params
-                    .draft_id
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("'draft_id' is required for send_draft action"))?;
+                let draft_id = params.draft_id.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("'draft_id' is required for send_draft action")
+                })?;
 
                 if params.confirmed != Some(true) {
                     return Ok(ToolOutput::new(format!(
@@ -385,7 +396,7 @@ impl Tool for GmailTool {
                 if !tokens.tier.can_delete() {
                     return Ok(ToolOutput::new(
                         "Trash is not available. Your Gmail access is configured as Read & Draft Only (API-level restriction).\n\
-                         To enable delete, run `jcode login google --upgrade`."
+                         To enable delete, run `jcode login google --upgrade`.",
                     ));
                 }
 

@@ -1,6 +1,6 @@
 use anyhow::Result;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -152,7 +152,7 @@ mod tests {
         let _guard = lock_test_env();
         let prev_home = std::env::var_os("JCODE_HOME");
         let temp = tempfile::TempDir::new().expect("create temp dir");
-        std::env::set_var("JCODE_HOME", temp.path());
+        crate::env::set_var("JCODE_HOME", temp.path());
 
         let resolved = user_home_path(".codex/auth.json").expect("resolve user home path");
         assert_eq!(
@@ -164,9 +164,9 @@ mod tests {
         );
 
         if let Some(prev_home) = prev_home {
-            std::env::set_var("JCODE_HOME", prev_home);
+            crate::env::set_var("JCODE_HOME", prev_home);
         } else {
-            std::env::remove_var("JCODE_HOME");
+            crate::env::remove_var("JCODE_HOME");
         }
     }
 }

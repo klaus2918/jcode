@@ -9,15 +9,15 @@ use crate::message::Role;
 use crate::registry::{self, ServerInfo};
 use crate::session::{self, CrashedSessionsInfo, Session, SessionStatus};
 use crate::storage;
-use crate::tui::{markdown, DisplayMessage};
+use crate::tui::{DisplayMessage, markdown};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 use serde::Deserialize;
 use std::cmp::Reverse;
@@ -935,11 +935,7 @@ impl SessionPicker {
         let now = std::time::Instant::now();
         let amount = if let Some(last) = self.last_mouse_scroll {
             let gap = now.duration_since(last);
-            if gap.as_millis() < 50 {
-                1
-            } else {
-                3
-            }
+            if gap.as_millis() < 50 { 1 } else { 3 }
         } else {
             3
         };

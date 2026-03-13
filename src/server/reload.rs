@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, watch, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, watch};
 
 const DEFAULT_RELOAD_GRACE_MS: u64 = 150;
 
@@ -436,7 +436,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Instant;
-    use tokio::sync::{mpsc, watch, RwLock};
+    use tokio::sync::{RwLock, mpsc, watch};
 
     fn member(session_id: &str, status: &str) -> SwarmMember {
         let (event_tx, _event_rx) = mpsc::unbounded_channel();

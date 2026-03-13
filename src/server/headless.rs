@@ -2,8 +2,8 @@ use crate::agent::Agent;
 use crate::protocol::ServerEvent;
 use crate::provider::Provider;
 use crate::server::{
-    broadcast_swarm_status, register_session_interrupt_queue, swarm_id_for_dir,
-    SessionInterruptQueues, SwarmMember, VersionedPlan,
+    SessionInterruptQueues, SwarmMember, VersionedPlan, broadcast_swarm_status,
+    register_session_interrupt_queue, swarm_id_for_dir,
 };
 use crate::tool::Registry;
 use anyhow::Result;

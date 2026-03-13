@@ -6,7 +6,7 @@
 
 use super::color_support::rgb;
 use super::info_widget_overview::{
-    compute_page_layout, InfoPageKind, MAX_CONTEXT_LINES, MAX_TODO_LINES,
+    InfoPageKind, MAX_CONTEXT_LINES, MAX_TODO_LINES, compute_page_layout,
 };
 use crate::ambient::AmbientStatus;
 use crate::memory_graph::EdgeKind;
@@ -1075,25 +1075,15 @@ pub(crate) fn calculate_widget_height(
             1 // Just the bar
         }
         WidgetKind::MemoryActivity => {
-            let Some(info) = &data.memory_info else {
+            if data.memory_info.is_none() {
                 return 0;
             };
-            let mut h = 1u16; // Title
-            if info.total_count > 0 {
-                h += 1; // Project/global + topology summary
-                if !info.by_category.is_empty() {
-                    h += 1; // Category summary
-                }
+            let lines =
+                render_memory_widget(data, Rect::new(0, 0, width.saturating_sub(2), max_height));
+            if lines.is_empty() {
+                return 0;
             }
-            if info.activity.is_some() {
-                h += 1; // State line
-                h += info
-                    .activity
-                    .as_ref()
-                    .map(|a| a.recent_events.len().min(3) as u16)
-                    .unwrap_or(0);
-            }
-            h
+            lines.len() as u16
         }
         WidgetKind::SwarmStatus => {
             let Some(info) = &data.swarm_info else {
@@ -1707,67 +1697,86 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
     let Some(info) = &data.memory_info else {
         return Vec::new();
     };
+    if inner.width == 0 || inner.height == 0 {
+        return Vec::new();
+    }
     if info.total_count == 0 && info.activity.is_none() {
         return Vec::new();
     }
 
     let mut lines: Vec<Line> = Vec::new();
+    let max_width = inner.width.saturating_sub(10) as usize;
+    let dim = rgb(100, 100, 110);
+    let text_color = rgb(160, 160, 170);
+    let label_color = rgb(140, 140, 150);
 
-    // Title with count
     lines.push(Line::from(vec![
         Span::styled("🧠 ", Style::default().fg(rgb(200, 150, 255))),
         Span::styled(
-            format!("{} memories", info.total_count),
+            truncate_smart(
+                &format!("{} memories", info.total_count),
+                inner.width as usize,
+            ),
             Style::default().fg(rgb(180, 180, 190)),
         ),
     ]));
 
-    if info.total_count > 0 {
-        let mut stats_parts = Vec::new();
-        if info.project_count > 0 {
-            stats_parts.push(format!("{} project", info.project_count));
-        }
-        if info.global_count > 0 {
-            stats_parts.push(format!("{} global", info.global_count));
-        }
-        let nodes_edges = format!("{}n {}e", info.graph_nodes.len(), info.graph_edges.len());
-        if !stats_parts.is_empty() {
-            stats_parts.push(nodes_edges);
-        } else {
-            stats_parts = vec![nodes_edges];
-        }
-        lines.push(Line::from(vec![Span::styled(
-            truncate_smart(
-                &stats_parts.join(" · "),
-                inner.width.saturating_sub(2) as usize,
-            ),
-            Style::default().fg(rgb(130, 130, 140)),
-        )]));
+    if let Some(activity) = &info.activity {
+        if let Some(pipeline) = &activity.pipeline {
+            let pipeline_spans = vec![
+                Span::styled("Pipeline ", Style::default().fg(label_color)),
+                memory_step_badge("S", &pipeline.search),
+                Span::raw(" "),
+                memory_step_badge("V", &pipeline.verify),
+                Span::raw(" "),
+                memory_step_badge("I", &pipeline.inject),
+                Span::raw(" "),
+                memory_step_badge("M", &pipeline.maintain),
+            ];
+            lines.push(Line::from(pipeline_spans));
 
-        if !info.by_category.is_empty() {
-            let mut categories: Vec<(&String, &usize)> = info.by_category.iter().collect();
-            categories.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-            let cat_text = categories
-                .into_iter()
-                .take(4)
-                .map(|(name, count)| {
-                    let label = match name.as_str() {
-                        "fact" => "facts",
-                        "preference" => "prefs",
-                        "entity" => "entities",
-                        "correction" => "corrections",
-                        other => other,
-                    };
-                    format!("{}:{}", label, count)
+            if let Some(active_line) = memory_active_line(activity, max_width) {
+                lines.push(active_line);
+            }
+
+            if let Some(step_line) = memory_primary_step_line(pipeline, max_width) {
+                lines.push(step_line);
+            }
+        } else if let Some(active_line) = memory_active_line(activity, max_width) {
+            lines.push(active_line);
+        }
+
+        let remaining = inner.height.saturating_sub(lines.len() as u16);
+        if remaining > 0 {
+            let interesting: Vec<&MemoryEvent> = activity
+                .recent_events
+                .iter()
+                .filter(|e| {
+                    !matches!(
+                        e.kind,
+                        MemoryEventKind::EmbeddingStarted
+                            | MemoryEventKind::SidecarStarted
+                            | MemoryEventKind::SidecarNotRelevant
+                            | MemoryEventKind::SidecarComplete { .. }
+                    )
                 })
-                .collect::<Vec<_>>()
-                .join(" ");
-            let cat_text = truncate_smart(&cat_text, inner.width.saturating_sub(2) as usize);
+                .take(1)
+                .collect();
 
-            lines.push(Line::from(vec![Span::styled(
-                cat_text,
-                Style::default().fg(rgb(105, 105, 115)),
-            )]));
+            for event in interesting {
+                let age = format_age(event.timestamp.elapsed());
+                let (icon, text, color) =
+                    format_event_for_expanded(event, max_width.saturating_sub(4));
+                if text.is_empty() {
+                    continue;
+                }
+                lines.push(Line::from(vec![
+                    Span::styled("Last ", Style::default().fg(label_color)),
+                    Span::styled(format!("{} ", icon), Style::default().fg(color)),
+                    Span::styled(text, Style::default().fg(text_color)),
+                    Span::styled(format!(" {}", age), Style::default().fg(dim)),
+                ]));
+            }
         }
     }
 
@@ -1779,122 +1788,150 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
         ));
     }
 
-    // Activity state if active
-    if let Some(activity) = &info.activity {
-        let max_width = inner.width.saturating_sub(4) as usize;
-        let dim = rgb(100, 100, 110);
-        let text_color = rgb(160, 160, 170);
-        let label_color = rgb(140, 140, 150);
-
-        if let Some(pipeline) = &activity.pipeline {
-            let steps: Vec<(
-                &str,
-                &StepStatus,
-                Option<&StepResult>,
-                Option<(usize, usize)>,
-            )> = vec![
-                (
-                    "search",
-                    &pipeline.search,
-                    pipeline.search_result.as_ref(),
-                    None,
-                ),
-                (
-                    "verify",
-                    &pipeline.verify,
-                    pipeline.verify_result.as_ref(),
-                    pipeline.verify_progress,
-                ),
-                (
-                    "inject",
-                    &pipeline.inject,
-                    pipeline.inject_result.as_ref(),
-                    None,
-                ),
-                (
-                    "maintain",
-                    &pipeline.maintain,
-                    pipeline.maintain_result.as_ref(),
-                    None,
-                ),
-            ];
-
-            for (name, status, result, progress) in steps {
-                if matches!(status, StepStatus::Skipped | StepStatus::Pending) {
-                    continue;
-                }
-                let (icon, icon_color) = match status {
-                    StepStatus::Running => ("⠋", rgb(255, 200, 100)),
-                    StepStatus::Done => ("✓", rgb(100, 200, 100)),
-                    StepStatus::Error => ("!", rgb(255, 100, 100)),
-                    _ => ("○", rgb(80, 80, 90)),
-                };
-                let mut spans: Vec<Span> = vec![
-                    Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
-                    Span::styled(format!("{} ", name), Style::default().fg(label_color)),
-                ];
-                if let Some(res) = result {
-                    spans.push(Span::styled(
-                        truncate_smart(&res.summary, max_width.saturating_sub(12)),
-                        Style::default().fg(text_color),
-                    ));
-                } else if matches!(status, StepStatus::Running) {
-                    if let Some((done, total)) = progress {
-                        spans.push(Span::styled(
-                            format!("{}/{}...", done, total),
-                            Style::default().fg(rgb(255, 200, 100)),
-                        ));
-                    }
-                }
-                lines.push(Line::from(spans));
-            }
-        } else {
-            match &activity.state {
-                MemoryState::Extracting { reason } => {
-                    let elapsed = format_age(activity.state_since.elapsed());
-                    lines.push(Line::from(vec![
-                        Span::styled("🧠 ", Style::default().fg(rgb(200, 150, 255))),
-                        Span::styled(
-                            truncate_smart(
-                                &format!("extracting ({}) {}", reason, elapsed),
-                                max_width,
-                            ),
-                            Style::default().fg(text_color),
-                        ),
-                    ]));
-                }
-                MemoryState::Idle => {}
-                _ => {}
-            }
-        }
-
-        let max_events = (inner.height.saturating_sub(lines.len() as u16) as usize).min(3);
-        let interesting: Vec<&MemoryEvent> = activity
-            .recent_events
-            .iter()
-            .filter(|e| {
-                !matches!(
-                    e.kind,
-                    MemoryEventKind::EmbeddingStarted
-                        | MemoryEventKind::SidecarStarted
-                        | MemoryEventKind::SidecarNotRelevant
-                        | MemoryEventKind::SidecarComplete { .. }
-                )
-            })
-            .take(max_events)
-            .collect();
-        for event in interesting {
-            let age = format_age(event.timestamp.elapsed());
-            let (icon, text, color) = format_event_for_expanded(event, max_width.saturating_sub(8));
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {} ", icon), Style::default().fg(color)),
-                Span::styled(text, Style::default().fg(label_color)),
-                Span::styled(format!(" {}", age), Style::default().fg(dim)),
-            ]));
-        }
-    }
-
+    lines.truncate(inner.height as usize);
     lines
+}
+
+fn memory_step_badge(label: &'static str, status: &StepStatus) -> Span<'static> {
+    let (icon, color) = match status {
+        StepStatus::Pending => ("·", rgb(100, 100, 110)),
+        StepStatus::Running => ("⟳", rgb(255, 200, 100)),
+        StepStatus::Done => ("✓", rgb(100, 200, 100)),
+        StepStatus::Error => ("!", rgb(255, 100, 100)),
+        StepStatus::Skipped => ("-", rgb(100, 100, 110)),
+    };
+    Span::styled(format!("{}{}", label, icon), Style::default().fg(color))
+}
+
+fn memory_active_line(activity: &MemoryActivity, max_width: usize) -> Option<Line<'static>> {
+    let text = match &activity.state {
+        MemoryState::Idle => None,
+        MemoryState::Embedding => Some("embedding search".to_string()),
+        MemoryState::SidecarChecking { count } => Some(format!("checking {} candidate(s)", count)),
+        MemoryState::FoundRelevant { count } => Some(format!("found {} relevant", count)),
+        MemoryState::Extracting { reason } => Some(format!("extracting {}", reason)),
+        MemoryState::Maintaining { phase } => Some(if phase.trim().is_empty() {
+            "maintaining graph".to_string()
+        } else {
+            format!("maintaining {}", phase)
+        }),
+        MemoryState::ToolAction { action, detail } => Some(if detail.trim().is_empty() {
+            action.clone()
+        } else {
+            format!("{} {}", action, detail)
+        }),
+    }?;
+
+    Some(Line::from(vec![
+        Span::styled("Active ", Style::default().fg(rgb(140, 140, 150))),
+        Span::styled(
+            truncate_smart(&text, max_width),
+            Style::default().fg(rgb(160, 160, 170)),
+        ),
+    ]))
+}
+
+fn memory_primary_step_line(pipeline: &PipelineState, max_width: usize) -> Option<Line<'static>> {
+    let step = [
+        (
+            "search",
+            &pipeline.search,
+            pipeline.search_result.as_ref(),
+            None,
+        ),
+        (
+            "verify",
+            &pipeline.verify,
+            pipeline.verify_result.as_ref(),
+            pipeline.verify_progress,
+        ),
+        (
+            "inject",
+            &pipeline.inject,
+            pipeline.inject_result.as_ref(),
+            None,
+        ),
+        (
+            "maintain",
+            &pipeline.maintain,
+            pipeline.maintain_result.as_ref(),
+            None,
+        ),
+    ]
+    .into_iter()
+    .find(|(_, status, _, _)| matches!(status, StepStatus::Running | StepStatus::Error))
+    .or_else(|| {
+        [
+            (
+                "search",
+                &pipeline.search,
+                pipeline.search_result.as_ref(),
+                None,
+            ),
+            (
+                "verify",
+                &pipeline.verify,
+                pipeline.verify_result.as_ref(),
+                pipeline.verify_progress,
+            ),
+            (
+                "inject",
+                &pipeline.inject,
+                pipeline.inject_result.as_ref(),
+                None,
+            ),
+            (
+                "maintain",
+                &pipeline.maintain,
+                pipeline.maintain_result.as_ref(),
+                None,
+            ),
+        ]
+        .into_iter()
+        .rev()
+        .find(|(_, status, result, _)| {
+            matches!(status, StepStatus::Done)
+                && result.as_ref().is_some_and(|r| !r.summary.is_empty())
+        })
+    })?;
+
+    let (name, status, result, progress) = step;
+    let status_text = match status {
+        StepStatus::Running => {
+            if let Some((done, total)) = progress {
+                format!("{} {}/{}", name, done, total)
+            } else {
+                name.to_string()
+            }
+        }
+        StepStatus::Error => format!("{} failed", name),
+        StepStatus::Done => result
+            .map(|res| {
+                if res.summary.trim().is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{} {}", name, res.summary)
+                }
+            })
+            .unwrap_or_else(|| name.to_string()),
+        StepStatus::Pending => format!("{} pending", name),
+        StepStatus::Skipped => format!("{} skipped", name),
+    };
+
+    let color = match status {
+        StepStatus::Running => rgb(255, 200, 100),
+        StepStatus::Error => rgb(255, 100, 100),
+        StepStatus::Done => rgb(160, 160, 170),
+        StepStatus::Pending | StepStatus::Skipped => rgb(120, 120, 130),
+    };
+
+    Some(Line::from(vec![
+        Span::styled("Step   ", Style::default().fg(rgb(140, 140, 150))),
+        Span::styled(
+            truncate_smart(&status_text, max_width),
+            Style::default().fg(color),
+        ),
+    ]))
 }
 
 fn render_memory_topology_lines(info: &MemoryInfo, inner: Rect) -> Vec<Line<'static>> {
@@ -3035,12 +3072,12 @@ fn render_tips_widget(inner: Rect) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        calculate_placements, occasional_status_tip, render_memory_topology_lines,
-        render_memory_widget, render_model_widget, truncate_smart, BackgroundInfo, GraphEdge,
-        GraphNode, InfoWidgetData, Margins, MemoryInfo, SwarmInfo, UsageInfo, UsageProvider,
-        WidgetKind,
+        BackgroundInfo, GraphEdge, GraphNode, InfoWidgetData, Margins, MemoryInfo, SwarmInfo,
+        UsageInfo, UsageProvider, WidgetKind, calculate_placements, occasional_status_tip,
+        render_memory_topology_lines, render_memory_widget, render_model_widget, truncate_smart,
     };
     use ratatui::layout::Rect;
+    use std::collections::HashMap;
 
     #[test]
     fn truncate_smart_handles_unicode() {
@@ -3127,9 +3164,43 @@ mod tests {
             ..Default::default()
         };
 
-        // Memory widget is text-only.
+        // Header + topology lines should fill the available height when idle.
         let lines = render_memory_widget(&data, Rect::new(0, 0, 24, 5));
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn memory_widget_shows_total_only_not_breakdown_counts() {
+        let mut by_category = HashMap::new();
+        by_category.insert("fact".to_string(), 5);
+        by_category.insert("preference".to_string(), 2);
+
+        let data = InfoWidgetData {
+            memory_info: Some(MemoryInfo {
+                total_count: 7,
+                project_count: 4,
+                global_count: 3,
+                by_category,
+                graph_nodes: vec![node("fact", "release build", 2), node("tag", "rust", 1)],
+                graph_edges: vec![edge(0, 1, "has_tag")],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let text = render_memory_widget(&data, Rect::new(0, 0, 28, 6))
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_lowercase();
+
+        assert!(text.contains("7 memories"));
+        assert!(!text.contains("project"));
+        assert!(!text.contains("global"));
+        assert!(!text.contains("facts:"));
+        assert!(!text.contains("prefs:"));
     }
 
     #[test]
@@ -3158,10 +3229,12 @@ mod tests {
 
         let subgraph = super::select_contextual_subgraph(&info, 3, 6).expect("subgraph");
         assert_eq!(subgraph.nodes.len(), 3);
-        assert!(subgraph
-            .nodes
-            .iter()
-            .any(|n| n.label.contains("core build flow")));
+        assert!(
+            subgraph
+                .nodes
+                .iter()
+                .any(|n| n.label.contains("core build flow"))
+        );
     }
 
     #[test]

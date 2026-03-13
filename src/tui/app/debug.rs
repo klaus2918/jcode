@@ -545,8 +545,8 @@ impl App {
         self.processing_started = None;
         self.status_notice = None;
 
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let mut errors: Vec<String> = Vec::new();
         let mut steps: Vec<serde_json::Value> = Vec::new();
@@ -1022,7 +1022,7 @@ impl App {
             // Capture current visual state
             use crate::tui::visual_debug;
             visual_debug::enable(); // Ensure enabled
-                                    // Force a frame dump to file and return path
+            // Force a frame dump to file and return path
             match visual_debug::dump_to_file() {
                 Ok(path) => format!("screen: {}", path.display()),
                 Err(e) => format!("screen error: {}", e),
@@ -1292,7 +1292,7 @@ impl App {
             }
         } else if cmd.starts_with("bundle-start:") {
             let name = cmd.strip_prefix("bundle-start:").unwrap_or("test");
-            std::env::set_var("JCODE_TEST_BUNDLE", name);
+            crate::env::set_var("JCODE_TEST_BUNDLE", name);
             format!("OK: test bundle '{}' started", name)
         } else if cmd == "bundle-save" {
             use crate::tui::test_harness::TestBundle;
@@ -1443,7 +1443,7 @@ impl App {
 
             // The actual exec happens in main.rs when run() returns
             // We store the binary path in an env var for the reload handler
-            std::env::set_var("JCODE_MIGRATE_BINARY", stable_binary);
+            crate::env::set_var("JCODE_MIGRATE_BINARY", stable_binary);
 
             crate::logging::info(&format!("Migrating to stable version {}...", version));
             self.set_status_notice(format!("Migrating to stable {}...", version));

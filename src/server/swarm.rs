@@ -1,4 +1,4 @@
-use super::{SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan, MAX_EVENT_HISTORY};
+use super::{MAX_EVENT_HISTORY, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan};
 use crate::agent::Agent;
 use crate::plan::PlanItem;
 use crate::protocol::{NotificationType, ServerEvent};
@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 pub(super) async fn broadcast_swarm_status(
     swarm_id: &str,
@@ -558,7 +558,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
     use std::time::Instant;
-    use tokio::sync::{mpsc, RwLock};
+    use tokio::sync::{RwLock, mpsc};
 
     fn plan_item(id: &str, content: &str) -> PlanItem {
         PlanItem {
@@ -687,11 +687,13 @@ mod tests {
                 .map(String::as_str),
             Some("worker")
         );
-        assert!(swarm_plans
-            .read()
-            .await
-            .get("swarm-1")
-            .is_some_and(|plan| plan.participants.contains("worker")));
+        assert!(
+            swarm_plans
+                .read()
+                .await
+                .get("swarm-1")
+                .is_some_and(|plan| plan.participants.contains("worker"))
+        );
         assert_eq!(
             swarm_members
                 .read()

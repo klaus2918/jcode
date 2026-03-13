@@ -1,13 +1,13 @@
 use super::{
+    ClientConnectionInfo, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
     broadcast_swarm_plan, broadcast_swarm_status, queue_soft_interrupt_for_session,
-    record_swarm_event, truncate_detail, update_member_status, ClientConnectionInfo, SwarmEvent,
-    SwarmEventType, SwarmMember, VersionedPlan,
+    record_swarm_event, truncate_detail, update_member_status,
 };
 use crate::agent::Agent;
 use crate::protocol::{AwaitedMemberStatus, NotificationType, ServerEvent};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_comm_assign_role(

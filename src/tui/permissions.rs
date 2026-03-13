@@ -4,11 +4,11 @@ use anyhow::Result;
 use chrono::Utc;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
-    Frame,
 };
 use serde_json::{Map, Value};
 use std::io::IsTerminal;
@@ -567,7 +567,7 @@ impl PermissionsApp {
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                break Ok(())
+                                break Ok(());
                             }
                             KeyCode::Up | KeyCode::Char('k') => self.previous(),
                             KeyCode::Down | KeyCode::Char('j') => self.next(),

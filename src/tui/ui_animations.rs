@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
 use super::dim_color;
-use crate::tui::{color_support::rgb, TuiState, STARTUP_ANIMATION_WINDOW};
+use crate::tui::{STARTUP_ANIMATION_WINDOW, TuiState, color_support::rgb};
 use ratatui::{prelude::*, widgets::Paragraph};
 use std::cell::RefCell;
-use std::collections::{hash_map::DefaultHasher, HashSet};
+use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 

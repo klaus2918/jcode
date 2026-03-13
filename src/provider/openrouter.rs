@@ -11,8 +11,8 @@
 
 use super::{EventStream, Provider};
 use crate::message::{
-    CacheControl, ContentBlock, Message, Role, StreamEvent, ToolDefinition,
-    TOOL_OUTPUT_MISSING_TEXT,
+    CacheControl, ContentBlock, Message, Role, StreamEvent, TOOL_OUTPUT_MISSING_TEXT,
+    ToolDefinition,
 };
 use crate::provider_catalog::{
     is_safe_env_file_name, is_safe_env_key_name, load_api_key_from_env_or_config,
@@ -32,7 +32,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskContext, Poll};
 use std::time::Instant;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 /// Maximum number of retries for transient errors
@@ -201,9 +201,7 @@ fn configured_auth_header_mode() -> AuthHeaderMode {
     };
 
     match raw.as_str() {
-        "authorization" | "authorization-bearer" | "bearer" => {
-            AuthHeaderMode::AuthorizationBearer
-        }
+        "authorization" | "authorization-bearer" | "bearer" => AuthHeaderMode::AuthorizationBearer,
         "api-key" | "apikey" => AuthHeaderMode::ApiKey,
         other => {
             crate::logging::warn(&format!(
@@ -224,13 +222,18 @@ fn configured_dynamic_bearer_provider() -> Option<String> {
 
 #[derive(Debug, Clone)]
 enum ProviderAuth {
-    AuthorizationBearer { token: String, label: String },
+    AuthorizationBearer {
+        token: String,
+        label: String,
+    },
     HeaderValue {
         header_name: HeaderName,
         value: String,
         label: String,
     },
-    AzureEntra { label: String },
+    AzureEntra {
+        label: String,
+    },
 }
 
 impl ProviderAuth {
@@ -1135,7 +1138,10 @@ impl OpenRouterProvider {
 
     /// Check if OPENROUTER_API_KEY is available (env var or config file)
     pub fn has_credentials() -> bool {
-        if matches!(configured_dynamic_bearer_provider().as_deref(), Some("azure")) {
+        if matches!(
+            configured_dynamic_bearer_provider().as_deref(),
+            Some("azure")
+        ) {
             return crate::auth::azure::has_configuration();
         }
         Self::get_api_key().is_some()
@@ -2661,15 +2667,15 @@ mod tests {
     fn test_configured_api_base_accepts_https() {
         let _lock = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("JCODE_OPENROUTER_API_BASE").ok();
-        std::env::set_var(
+        crate::env::set_var(
             "JCODE_OPENROUTER_API_BASE",
             "https://api.groq.com/openai/v1/",
         );
         assert_eq!(configured_api_base(), "https://api.groq.com/openai/v1");
         if let Some(value) = prev {
-            std::env::set_var("JCODE_OPENROUTER_API_BASE", value);
+            crate::env::set_var("JCODE_OPENROUTER_API_BASE", value);
         } else {
-            std::env::remove_var("JCODE_OPENROUTER_API_BASE");
+            crate::env::remove_var("JCODE_OPENROUTER_API_BASE");
         }
     }
 
@@ -2677,12 +2683,12 @@ mod tests {
     fn test_configured_api_base_rejects_insecure_http_remote() {
         let _lock = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("JCODE_OPENROUTER_API_BASE").ok();
-        std::env::set_var("JCODE_OPENROUTER_API_BASE", "http://example.com/v1");
+        crate::env::set_var("JCODE_OPENROUTER_API_BASE", "http://example.com/v1");
         assert_eq!(configured_api_base(), DEFAULT_API_BASE);
         if let Some(value) = prev {
-            std::env::set_var("JCODE_OPENROUTER_API_BASE", value);
+            crate::env::set_var("JCODE_OPENROUTER_API_BASE", value);
         } else {
-            std::env::remove_var("JCODE_OPENROUTER_API_BASE");
+            crate::env::remove_var("JCODE_OPENROUTER_API_BASE");
         }
     }
 

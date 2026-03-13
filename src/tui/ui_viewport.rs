@@ -449,12 +449,17 @@ pub(super) fn draw_messages(
                     let is_long = text_chars.len() > content_width;
 
                     let preview_lines: Vec<Line<'static>> = if !is_long {
-                        vec![Line::from(vec![
-                            Span::styled(num_str.clone(), dim_style.fg(dim_color()).bg(user_bg())),
-                            Span::styled("› ", dim_style.fg(user_color()).bg(user_bg())),
-                            Span::styled(text_flat, dim_style.fg(user_text()).bg(user_bg())),
-                        ])
-                        .alignment(align)]
+                        vec![
+                            Line::from(vec![
+                                Span::styled(
+                                    num_str.clone(),
+                                    dim_style.fg(dim_color()).bg(user_bg()),
+                                ),
+                                Span::styled("› ", dim_style.fg(user_color()).bg(user_bg())),
+                                Span::styled(text_flat, dim_style.fg(user_text()).bg(user_bg())),
+                            ])
+                            .alignment(align),
+                        ]
                     } else {
                         let half = content_width.max(4);
                         let head: String =
@@ -541,11 +546,7 @@ fn compute_prompt_preview_line_count(
     let content_width = area_width.saturating_sub(prefix_len as u16 + 2) as usize;
     let text_flat = prompt_text.replace('\n', " ");
     let display_width = UnicodeWidthStr::width(text_flat.as_str());
-    if display_width > content_width {
-        2
-    } else {
-        1
-    }
+    if display_width > content_width { 2 } else { 1 }
 }
 
 fn compute_max_scroll_with_prompt_preview(

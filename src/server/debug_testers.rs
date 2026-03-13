@@ -234,7 +234,7 @@ mod tests {
                 .tempdir()
                 .expect("create temp home");
             let prev_home = std::env::var_os("JCODE_HOME");
-            std::env::set_var("JCODE_HOME", temp_home.path());
+            crate::env::set_var("JCODE_HOME", temp_home.path());
             Self {
                 _lock: lock,
                 prev_home,
@@ -246,9 +246,9 @@ mod tests {
     impl Drop for TestHomeGuard {
         fn drop(&mut self) {
             if let Some(prev_home) = &self.prev_home {
-                std::env::set_var("JCODE_HOME", prev_home);
+                crate::env::set_var("JCODE_HOME", prev_home);
             } else {
-                std::env::remove_var("JCODE_HOME");
+                crate::env::remove_var("JCODE_HOME");
             }
         }
     }
@@ -274,16 +274,20 @@ mod tests {
     #[test]
     fn load_testers_returns_empty_for_missing_or_empty_manifest() {
         let _guard = TestHomeGuard::new();
-        assert!(load_testers()
-            .expect("missing manifest returns empty")
-            .is_empty());
+        assert!(
+            load_testers()
+                .expect("missing manifest returns empty")
+                .is_empty()
+        );
 
         let manifest_path = crate::storage::jcode_dir()
             .expect("jcode dir")
             .join("testers.json");
         std::fs::write(&manifest_path, "").expect("write empty manifest");
-        assert!(load_testers()
-            .expect("empty manifest returns empty")
-            .is_empty());
+        assert!(
+            load_testers()
+                .expect("empty manifest returns empty")
+                .is_empty()
+        );
     }
 }
