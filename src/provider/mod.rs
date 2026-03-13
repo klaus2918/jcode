@@ -5,6 +5,7 @@ pub mod cli_common;
 pub mod copilot;
 pub mod cursor;
 pub mod gemini;
+pub mod jcode;
 pub mod openai;
 pub mod openrouter;
 
@@ -933,6 +934,7 @@ fn provider_key_from_hint(provider_hint: Option<&str>) -> Option<&'static str> {
         "openai" => Some("openai"),
         "openrouter" => Some("openrouter"),
         "copilot" | "github copilot" => Some("copilot"),
+        "gemini" | "google gemini" => Some("gemini"),
         _ => None,
     }
 }
@@ -1612,6 +1614,8 @@ pub fn provider_for_model_with_hint(
         Some("claude")
     } else if model.starts_with("gpt-") {
         Some("openai")
+    } else if model.starts_with("gemini-") {
+        Some("gemini")
     } else {
         None
     }
@@ -3457,6 +3461,13 @@ mod tests {
     }
 
     #[test]
+    fn test_provider_for_model_gemini() {
+        assert_eq!(provider_for_model("gemini-2.5-pro"), Some("gemini"));
+        assert_eq!(provider_for_model("gemini-2.5-flash"), Some("gemini"));
+        assert_eq!(provider_for_model("gemini-3-pro-preview"), Some("gemini"));
+    }
+
+    #[test]
     fn test_provider_for_model_openrouter() {
         // OpenRouter uses provider/model format
         assert_eq!(
@@ -3522,6 +3533,10 @@ mod tests {
         let copilot = resolve_model_capabilities("gpt-5.4", Some("copilot"));
         assert_eq!(copilot.provider.as_deref(), Some("copilot"));
         assert_eq!(copilot.context_window, Some(128_000));
+
+        let gemini = resolve_model_capabilities("gemini-2.5-pro", Some("gemini"));
+        assert_eq!(gemini.provider.as_deref(), Some("gemini"));
+        assert_eq!(gemini.context_window, Some(1_000_000));
     }
 
     #[test]

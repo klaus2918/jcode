@@ -7,6 +7,7 @@ enum WidgetProviderKind {
     OpenAI,
     OpenRouter,
     Copilot,
+    Gemini,
     Unknown,
 }
 
@@ -15,6 +16,7 @@ impl WidgetProviderKind {
         match raw.map(|s| s.trim().to_ascii_lowercase()) {
             Some(provider) if provider == "openrouter" => Self::OpenRouter,
             Some(provider) if provider == "copilot" => Self::Copilot,
+            Some(provider) if provider == "gemini" => Self::Gemini,
             Some(provider) if provider == "openai" => Self::OpenAI,
             Some(provider) if provider == "claude" => Self::Anthropic,
             _ => Self::Unknown,
@@ -79,6 +81,13 @@ impl App {
             },
             WidgetProviderKind::OpenRouter => crate::tui::info_widget::AuthMethod::OpenRouterApiKey,
             WidgetProviderKind::Copilot => crate::tui::info_widget::AuthMethod::CopilotOAuth,
+            WidgetProviderKind::Gemini => {
+                if crate::auth::gemini::has_cached_auth() {
+                    crate::tui::info_widget::AuthMethod::GeminiOAuth
+                } else {
+                    crate::tui::info_widget::AuthMethod::Unknown
+                }
+            }
             WidgetProviderKind::Unknown => crate::tui::info_widget::AuthMethod::Unknown,
         }
     }
@@ -165,6 +174,7 @@ impl App {
                     available: openai_usage.has_limits(),
                 })
             }
+            WidgetProviderKind::Gemini => None,
             WidgetProviderKind::OpenRouter => Some(crate::tui::info_widget::UsageInfo {
                 provider: crate::tui::info_widget::UsageProvider::CostBased,
                 five_hour: 0.0,

@@ -438,6 +438,8 @@ pub enum AuthMethod {
     OpenRouterApiKey,
     /// GitHub Copilot OAuth
     CopilotOAuth,
+    /// Google Gemini OAuth
+    GeminiOAuth,
 }
 
 /// Subscription usage info for the info widget
@@ -2471,6 +2473,7 @@ fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
             AuthMethod::OpenAIApiKey => ("🔑", "API Key", rgb(180, 180, 190)),
             AuthMethod::OpenRouterApiKey => ("🔑", "API Key", rgb(140, 180, 255)),
             AuthMethod::CopilotOAuth => ("🔐", "OAuth", rgb(110, 200, 140)),
+            AuthMethod::GeminiOAuth => ("🔐", "OAuth", rgb(120, 190, 255)),
             AuthMethod::Unknown => unreachable!(),
         };
 
@@ -4258,6 +4261,7 @@ fn render_model_info(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
                 AuthMethod::OpenAIApiKey => ("🔑", "API Key", rgb(180, 180, 190)),
                 AuthMethod::OpenRouterApiKey => ("🔑", "API Key", rgb(140, 180, 255)),
                 AuthMethod::CopilotOAuth => ("🔐", "OAuth", rgb(110, 200, 140)),
+                AuthMethod::GeminiOAuth => ("🔐", "OAuth", rgb(120, 190, 255)),
                 AuthMethod::Unknown => unreachable!(),
             };
             if !detail_spans.is_empty() {

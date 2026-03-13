@@ -36,6 +36,43 @@ fn create_test_app() -> App {
     app
 }
 
+fn create_gemini_test_app() -> App {
+    struct GeminiMockProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for GeminiMockProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::message::ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<crate::provider::EventStream> {
+            unimplemented!("Mock provider")
+        }
+
+        fn name(&self) -> &str {
+            "gemini"
+        }
+
+        fn model(&self) -> String {
+            "gemini-2.5-pro".to_string()
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(GeminiMockProvider)
+        }
+    }
+
+    let provider: Arc<dyn Provider> = Arc::new(GeminiMockProvider);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+    let mut app = App::new(provider, registry);
+    app.queue_mode = false;
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app
+}
+
 #[test]
 fn test_help_topic_shows_command_details() {
     let mut app = create_test_app();
@@ -2370,6 +2407,45 @@ fn test_info_widget_remote_model_falls_back_to_model_provider_detection() {
         data.usage_info.as_ref().map(|info| info.provider),
         Some(crate::tui::info_widget::UsageProvider::OpenAI)
     );
+}
+
+#[test]
+fn test_info_widget_local_gemini_shows_oauth_auth_method() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    std::env::set_var("JCODE_HOME", temp.path());
+
+    let path = crate::auth::gemini::tokens_path().expect("gemini tokens path");
+    crate::storage::write_json_secret(
+        &path,
+        &serde_json::json!({
+            "access_token": "at-123",
+            "refresh_token": "rt-456",
+            "expires_at": 4102444800000i64,
+            "email": "user@example.com"
+        }),
+    )
+    .expect("write gemini tokens");
+    crate::auth::AuthStatus::invalidate_cache();
+
+    let app = create_gemini_test_app();
+    let data = crate::tui::TuiState::info_widget_data(&app);
+
+    assert_eq!(data.provider_name.as_deref(), Some("gemini"));
+    assert_eq!(data.model.as_deref(), Some("gemini-2.5-pro"));
+    assert_eq!(
+        data.auth_method,
+        crate::tui::info_widget::AuthMethod::GeminiOAuth
+    );
+    assert!(data.usage_info.is_none());
+
+    if let Some(prev_home) = prev_home {
+        std::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        std::env::remove_var("JCODE_HOME");
+    }
+    crate::auth::AuthStatus::invalidate_cache();
 }
 
 #[test]

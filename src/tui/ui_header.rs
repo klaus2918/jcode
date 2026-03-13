@@ -177,13 +177,25 @@ pub(super) fn build_auth_status_line(auth: &AuthStatus, max_width: usize) -> Lin
         provider_label("openai", auth.openai, None)
     };
 
+    let gemini_label = if auth.gemini != AuthState::NotConfigured {
+        provider_label("gemini", auth.gemini, Some("oauth"))
+    } else {
+        provider_label("gemini", auth.gemini, None)
+    };
+
+    let gemini_compact_label = if auth.gemini != AuthState::NotConfigured {
+        provider_label("ge", auth.gemini, Some("oauth"))
+    } else {
+        provider_label("ge", auth.gemini, None)
+    };
+
     let full_specs: Vec<(String, AuthState)> = vec![
         (anthropic_label, auth.anthropic.state),
         ("openrouter".to_string(), auth.openrouter),
         (openai_label, auth.openai),
         (provider_label("cursor", auth.cursor, None), auth.cursor),
         (provider_label("copilot", auth.copilot, None), auth.copilot),
-        (provider_label("gemini", auth.gemini, None), auth.gemini),
+        (gemini_label, auth.gemini),
         (
             provider_label("antigravity", auth.antigravity, None),
             auth.antigravity,
@@ -199,7 +211,7 @@ pub(super) fn build_auth_status_line(auth: &AuthStatus, max_width: usize) -> Lin
         (provider_label("oa", auth.openai, None), auth.openai),
         (provider_label("cu", auth.cursor, None), auth.cursor),
         (provider_label("cp", auth.copilot, None), auth.copilot),
-        (provider_label("ge", auth.gemini, None), auth.gemini),
+        (gemini_compact_label, auth.gemini),
         (
             provider_label("ag", auth.antigravity, None),
             auth.antigravity,
