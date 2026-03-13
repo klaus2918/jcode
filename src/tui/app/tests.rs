@@ -3296,6 +3296,51 @@ fn test_scroll_render_scrolled_up() {
 }
 
 #[test]
+fn test_prompt_preview_reserves_rows_without_overwriting_visible_history() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.display_messages = vec![
+        DisplayMessage {
+            role: "user".to_string(),
+            content: "This is a deliberately long prompt preview that should wrap into two preview rows at the top of the viewport".to_string(),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        },
+        DisplayMessage {
+            role: "assistant".to_string(),
+            content: App::build_scroll_test_content(0, 20, None),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        },
+    ];
+    app.bump_display_messages_version();
+    app.scroll_offset = 0;
+    app.auto_scroll_paused = false;
+    app.is_processing = false;
+    app.streaming_text.clear();
+    app.status = ProcessingStatus::Idle;
+    app.session.short_name = Some("test".to_string());
+
+    let backend = ratatui::backend::TestBackend::new(40, 8);
+    let mut terminal =
+        ratatui::Terminal::new(backend).expect("failed to create test terminal");
+
+    let text = render_and_snap(&app, &mut terminal);
+
+    assert!(text.contains("1›"), "expected sticky prompt preview, got:\n{}", text);
+    assert!(text.contains("..."), "expected two-line preview truncation, got:\n{}", text);
+    assert!(
+        text.contains("Intro line 20"),
+        "latest visible content should remain visible below preview, got:\n{}",
+        text
+    );
+}
+
+#[test]
 fn test_scroll_top_does_not_snap_to_bottom() {
     let _render_lock = scroll_render_test_lock();
     let (mut app, mut terminal) = create_scroll_test_app(80, 25, 1, 24);

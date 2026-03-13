@@ -86,8 +86,13 @@ pub(super) fn draw_messages(
     let user_prompt_texts = &prepared.user_prompt_texts;
 
     let total_lines = wrapped_lines.len();
-    let visible_height = area.height as usize;
-    let max_scroll = total_lines.saturating_sub(visible_height);
+    let viewport_height = area.height as usize;
+    let max_scroll = compute_max_scroll_with_prompt_preview(
+        total_lines,
+        wrapped_user_prompt_starts,
+        user_prompt_texts,
+        area,
+    );
 
     LAST_MAX_SCROLL.store(max_scroll, Ordering::Relaxed);
     update_user_prompt_positions(wrapped_user_prompt_starts);
@@ -98,20 +103,6 @@ pub(super) fn draw_messages(
     } else {
         max_scroll
     };
-
-    let active_file_context = if app.diff_mode().is_file() {
-        active_file_diff_context(prepared, scroll, visible_height)
-    } else {
-        None
-    };
-
-    let margins = compute_visible_margins(
-        wrapped_lines,
-        wrapped_user_indices,
-        scroll,
-        area,
-        app.centered_mode(),
-    );
 
     let prompt_preview_lines = if crate::config::config().display.prompt_preview && scroll > 0 {
         compute_prompt_preview_line_count(
@@ -124,14 +115,39 @@ pub(super) fn draw_messages(
         0u16
     };
 
-    let mut margins = margins;
-    for row in 0..(prompt_preview_lines as usize) {
-        if row < margins.right_widths.len() {
-            margins.right_widths[row] = 0;
-        }
-        if row < margins.left_widths.len() {
-            margins.left_widths[row] = 0;
-        }
+    let content_area = Rect {
+        x: area.x,
+        y: area.y.saturating_add(prompt_preview_lines),
+        width: area.width,
+        height: area.height.saturating_sub(prompt_preview_lines),
+    };
+    let visible_height = content_area.height as usize;
+
+    let active_file_context = if app.diff_mode().is_file() {
+        active_file_diff_context(prepared, scroll, visible_height)
+    } else {
+        None
+    };
+
+    let content_margins = compute_visible_margins(
+        wrapped_lines,
+        wrapped_user_indices,
+        scroll,
+        content_area,
+        app.centered_mode(),
+    );
+    let mut margins = info_widget::Margins {
+        right_widths: vec![0; prompt_preview_lines as usize],
+        left_widths: vec![0; prompt_preview_lines as usize],
+        centered: content_margins.centered,
+    };
+    margins.right_widths.extend(content_margins.right_widths);
+    margins.left_widths.extend(content_margins.left_widths);
+    while margins.right_widths.len() < viewport_height {
+        margins.right_widths.push(0);
+    }
+    while margins.left_widths.len() < viewport_height {
+        margins.left_widths.push(0);
     }
 
     let visible_end = (scroll + visible_height).min(wrapped_lines.len());
@@ -301,7 +317,7 @@ pub(super) fn draw_messages(
         }
     }
 
-    frame.render_widget(Paragraph::new(visible_lines), area);
+    frame.render_widget(Paragraph::new(visible_lines), content_area);
 
     let centered = app.centered_mode();
     let diagram_mode = app.diagram_mode();
@@ -324,14 +340,14 @@ pub(super) fn draw_messages(
 
                 if marker_visible {
                     let screen_y = (abs_idx - scroll) as u16;
-                    let available_height = (visible_height as u16).saturating_sub(screen_y);
+                    let available_height = content_area.height.saturating_sub(screen_y);
                     let render_height = (total_height as u16).min(available_height);
 
                     if render_height > 0 {
                         let image_area = Rect {
-                            x: area.x,
-                            y: area.y + screen_y,
-                            width: area.width,
+                            x: content_area.x,
+                            y: content_area.y + screen_y,
+                            width: content_area.width,
                             height: render_height,
                         };
                         let rows = crate::tui::mermaid::render_image_widget(
@@ -359,9 +375,9 @@ pub(super) fn draw_messages(
 
                     if render_height > 0 {
                         let image_area = Rect {
-                            x: area.x,
-                            y: area.y + screen_y,
-                            width: area.width,
+                            x: content_area.x,
+                            y: content_area.y + screen_y,
+                            width: content_area.width,
                             height: render_height,
                         };
                         crate::tui::mermaid::render_image_widget(
@@ -380,7 +396,7 @@ pub(super) fn draw_messages(
     let right_x = area.x + area.width.saturating_sub(1);
     for &line_idx in &wrapped_user_indices[visible_user_start..visible_user_end] {
         if line_idx >= scroll && line_idx < scroll + visible_height {
-            let screen_y = area.y + (line_idx - scroll) as u16;
+            let screen_y = content_area.y + (line_idx - scroll) as u16;
             let bar_area = Rect {
                 x: right_x,
                 y: screen_y,
@@ -524,10 +540,39 @@ fn compute_prompt_preview_line_count(
     let prefix_len = num_str.len() + 2;
     let content_width = area_width.saturating_sub(prefix_len as u16 + 2) as usize;
     let text_flat = prompt_text.replace('\n', " ");
-    let char_count = text_flat.chars().count();
-    if char_count > content_width {
+    let display_width = UnicodeWidthStr::width(text_flat.as_str());
+    if display_width > content_width {
         2
     } else {
         1
     }
+}
+
+fn compute_max_scroll_with_prompt_preview(
+    total_lines: usize,
+    wrapped_user_prompt_starts: &[usize],
+    user_prompt_texts: &[String],
+    area: Rect,
+) -> usize {
+    let mut max_scroll = total_lines.saturating_sub(area.height as usize);
+    if max_scroll == 0 || !crate::config::config().display.prompt_preview {
+        return max_scroll;
+    }
+
+    for _ in 0..4 {
+        let prompt_preview_lines = compute_prompt_preview_line_count(
+            wrapped_user_prompt_starts,
+            user_prompt_texts,
+            max_scroll,
+            area.width,
+        );
+        let content_height = area.height.saturating_sub(prompt_preview_lines) as usize;
+        let adjusted = total_lines.saturating_sub(content_height);
+        if adjusted == max_scroll {
+            break;
+        }
+        max_scroll = adjusted;
+    }
+
+    max_scroll
 }
