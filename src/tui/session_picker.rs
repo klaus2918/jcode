@@ -640,6 +640,10 @@ enum PaneFocus {
     Preview,
 }
 
+const PREVIEW_SCROLL_STEP: u16 = 3;
+const PREVIEW_PAGE_SCROLL: u16 = PREVIEW_SCROLL_STEP * 3;
+const SESSION_PAGE_STEP_COUNT: usize = 3;
+
 /// An item in the picker list - either a server header or a session
 #[derive(Clone)]
 pub enum PickerItem {
@@ -1176,6 +1180,87 @@ impl SessionPicker {
         self.rebuild_items();
     }
 
+    fn focus_previous_step(&mut self) {
+        match self.focus {
+            PaneFocus::Sessions => self.previous(),
+            PaneFocus::Preview => self.scroll_preview_up(PREVIEW_SCROLL_STEP),
+        }
+    }
+
+    fn focus_next_step(&mut self) {
+        match self.focus {
+            PaneFocus::Sessions => self.next(),
+            PaneFocus::Preview => self.scroll_preview_down(PREVIEW_SCROLL_STEP),
+        }
+    }
+
+    fn focus_previous_page(&mut self) {
+        match self.focus {
+            PaneFocus::Sessions => {
+                for _ in 0..SESSION_PAGE_STEP_COUNT {
+                    self.previous();
+                }
+            }
+            PaneFocus::Preview => self.scroll_preview_up(PREVIEW_PAGE_SCROLL),
+        }
+    }
+
+    fn focus_next_page(&mut self) {
+        match self.focus {
+            PaneFocus::Sessions => {
+                for _ in 0..SESSION_PAGE_STEP_COUNT {
+                    self.next();
+                }
+            }
+            PaneFocus::Preview => self.scroll_preview_down(PREVIEW_PAGE_SCROLL),
+        }
+    }
+
+    fn handle_focus_navigation_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        match code {
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.focus = PaneFocus::Sessions;
+                true
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.focus = PaneFocus::Preview;
+                true
+            }
+            KeyCode::Tab => {
+                self.focus = match self.focus {
+                    PaneFocus::Sessions => PaneFocus::Preview,
+                    PaneFocus::Preview => PaneFocus::Sessions,
+                };
+                true
+            }
+            KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
+                self.focus_next_page();
+                true
+            }
+            KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
+                self.focus_previous_page();
+                true
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.focus_next_step();
+                true
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.focus_previous_step();
+                true
+            }
+            KeyCode::Char('J') | KeyCode::PageDown => {
+                self.focus_next_page();
+                true
+            }
+            KeyCode::Char('K') | KeyCode::PageUp => {
+                self.focus_previous_page();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Handle a key event when used as an overlay inside the main TUI.
     /// Returns:
     /// - `Some(PickerResult::Selected(id))` if user selected a session
@@ -1254,42 +1339,13 @@ impl SessionPicker {
             KeyCode::Char('s') => {
                 self.toggle_saved_only();
             }
-            KeyCode::Char('h') | KeyCode::Left => {
-                self.focus = PaneFocus::Sessions;
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
-                self.focus = PaneFocus::Preview;
-            }
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    PaneFocus::Sessions => PaneFocus::Preview,
-                    PaneFocus::Preview => PaneFocus::Sessions,
-                };
-            }
-            KeyCode::Down | KeyCode::Char('j') => match self.focus {
-                PaneFocus::Sessions => self.next(),
-                PaneFocus::Preview => self.scroll_preview_down(3),
-            },
-            KeyCode::Up | KeyCode::Char('k') => match self.focus {
-                PaneFocus::Sessions => self.previous(),
-                PaneFocus::Preview => self.scroll_preview_up(3),
-            },
-            KeyCode::Char('J') => self.scroll_preview_down(3),
-            KeyCode::Char('K') => self.scroll_preview_up(3),
-            KeyCode::PageDown => {
-                self.scroll_preview_down(3);
-                self.scroll_preview_down(3);
-                self.scroll_preview_down(3);
-            }
-            KeyCode::PageUp => {
-                self.scroll_preview_up(3);
-                self.scroll_preview_up(3);
-                self.scroll_preview_up(3);
-            }
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                 return Ok(OverlayAction::Close);
             }
             _ => {}
+        }
+        if self.handle_focus_navigation_key(code, modifiers) {
+            return Ok(OverlayAction::Continue);
         }
         Ok(OverlayAction::Continue)
     }
@@ -2216,72 +2272,7 @@ impl SessionPicker {
                             KeyCode::Char('s') => {
                                 self.toggle_saved_only();
                             }
-                            KeyCode::Char('h') | KeyCode::Left => {
-                                self.focus = PaneFocus::Sessions;
-                            }
-                            KeyCode::Char('l') | KeyCode::Right => {
-                                self.focus = PaneFocus::Preview;
-                            }
-                            KeyCode::Tab => {
-                                self.focus = match self.focus {
-                                    PaneFocus::Sessions => PaneFocus::Preview,
-                                    PaneFocus::Preview => PaneFocus::Sessions,
-                                };
-                            }
-                            KeyCode::Down => {
-                                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                                    self.scroll_preview_down(3);
-                                } else {
-                                    match self.focus {
-                                        PaneFocus::Sessions => self.next(),
-                                        PaneFocus::Preview => self.scroll_preview_down(3),
-                                    }
-                                }
-                            }
-                            KeyCode::Up => {
-                                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                                    self.scroll_preview_up(3);
-                                } else {
-                                    match self.focus {
-                                        PaneFocus::Sessions => self.previous(),
-                                        PaneFocus::Preview => self.scroll_preview_up(3),
-                                    }
-                                }
-                            }
-                            KeyCode::Char('j') | KeyCode::Char('J') => {
-                                let force_preview = key.modifiers.contains(KeyModifiers::SHIFT)
-                                    || matches!(key.code, KeyCode::Char('J'));
-                                if force_preview {
-                                    self.scroll_preview_down(3);
-                                } else {
-                                    match self.focus {
-                                        PaneFocus::Sessions => self.next(),
-                                        PaneFocus::Preview => self.scroll_preview_down(3),
-                                    }
-                                }
-                            }
-                            KeyCode::Char('k') | KeyCode::Char('K') => {
-                                let force_preview = key.modifiers.contains(KeyModifiers::SHIFT)
-                                    || matches!(key.code, KeyCode::Char('K'));
-                                if force_preview {
-                                    self.scroll_preview_up(3);
-                                } else {
-                                    match self.focus {
-                                        PaneFocus::Sessions => self.previous(),
-                                        PaneFocus::Preview => self.scroll_preview_up(3),
-                                    }
-                                }
-                            }
-                            KeyCode::PageDown => {
-                                self.scroll_preview_down(3);
-                                self.scroll_preview_down(3);
-                                self.scroll_preview_down(3);
-                            }
-                            KeyCode::PageUp => {
-                                self.scroll_preview_up(3);
-                                self.scroll_preview_up(3);
-                                self.scroll_preview_up(3);
-                            }
+                            code if self.handle_focus_navigation_key(code, key.modifiers) => {}
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 break Ok(None);
                             }
@@ -2525,5 +2516,73 @@ mod tests {
         picker.search_query = "not-in-preview".to_string();
         picker.rebuild_items();
         assert!(picker.sessions.is_empty());
+    }
+
+    #[test]
+    fn test_mouse_scroll_only_affects_hovered_pane_without_changing_focus() {
+        let s1 = make_session("session_1", "one", false, SessionStatus::Closed);
+        let s2 = make_session("session_2", "two", false, SessionStatus::Closed);
+        let s3 = make_session("session_3", "three", false, SessionStatus::Closed);
+        let mut picker = SessionPicker::new(vec![s1, s2, s3]);
+
+        picker.focus = PaneFocus::Preview;
+        picker.scroll_offset = 7;
+        picker.last_list_area = Some(Rect::new(0, 0, 20, 10));
+        picker.last_preview_area = Some(Rect::new(20, 0, 20, 10));
+
+        picker.handle_overlay_mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::empty(),
+        });
+
+        assert_eq!(picker.focus, PaneFocus::Preview);
+        assert_eq!(picker.scroll_offset, 0);
+        assert_eq!(
+            picker.selected_session().map(|s| s.id.as_str()),
+            Some("session_2")
+        );
+    }
+
+    #[test]
+    fn test_keyboard_scroll_uses_sessions_focus_for_paging() {
+        let s1 = make_session("session_1", "one", false, SessionStatus::Closed);
+        let s2 = make_session("session_2", "two", false, SessionStatus::Closed);
+        let s3 = make_session("session_3", "three", false, SessionStatus::Closed);
+        let s4 = make_session("session_4", "four", false, SessionStatus::Closed);
+        let mut picker = SessionPicker::new(vec![s1, s2, s3, s4]);
+
+        picker.focus = PaneFocus::Sessions;
+        picker.scroll_offset = 6;
+
+        let result = picker.handle_overlay_key(KeyCode::PageDown, KeyModifiers::empty());
+
+        assert!(matches!(result, Ok(OverlayAction::Continue)));
+        assert_eq!(picker.focus, PaneFocus::Sessions);
+        assert_eq!(picker.scroll_offset, 0);
+        assert_eq!(
+            picker.selected_session().map(|s| s.id.as_str()),
+            Some("session_4")
+        );
+    }
+
+    #[test]
+    fn test_keyboard_scroll_uses_preview_focus_for_paging() {
+        let s1 = make_session("session_1", "one", false, SessionStatus::Closed);
+        let s2 = make_session("session_2", "two", false, SessionStatus::Closed);
+        let mut picker = SessionPicker::new(vec![s1, s2]);
+
+        picker.focus = PaneFocus::Preview;
+
+        let result = picker.handle_overlay_key(KeyCode::PageDown, KeyModifiers::empty());
+
+        assert!(matches!(result, Ok(OverlayAction::Continue)));
+        assert_eq!(picker.focus, PaneFocus::Preview);
+        assert_eq!(picker.scroll_offset, PREVIEW_PAGE_SCROLL);
+        assert_eq!(
+            picker.selected_session().map(|s| s.id.as_str()),
+            Some("session_1")
+        );
     }
 }
