@@ -315,6 +315,27 @@ async fn manual_login(verifier: &str, challenge: &str, state: &str) -> Result<Ge
     Ok(tokens)
 }
 
+pub async fn exchange_callback_input(
+    verifier: &str,
+    input: &str,
+    expected_state: Option<&str>,
+    redirect_uri: &str,
+) -> Result<GeminiTokens> {
+    let code = if let Some(expected_state) = expected_state {
+        let (code, callback_state) = crate::auth::oauth::parse_callback_input_with_state(input)?;
+        if callback_state != expected_state {
+            anyhow::bail!(
+                "OAuth state mismatch. Start Gemini login again and use the latest callback URL."
+            );
+        }
+        code
+    } else {
+        input.trim().to_string()
+    };
+
+    exchange_authorization_code(&code, verifier, redirect_uri).await
+}
+
 async fn exchange_authorization_code(
     code: &str,
     verifier: &str,
@@ -384,7 +405,7 @@ pub async fn fetch_email(access_token: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("Google profile did not include an email address"))
 }
 
-fn build_auth_url(redirect_uri: &str, challenge: &str, state: &str) -> String {
+pub fn build_auth_url(redirect_uri: &str, challenge: &str, state: &str) -> String {
     let scope = GEMINI_SCOPES.join(" ");
     let client_id = gemini_client_id();
     format!(

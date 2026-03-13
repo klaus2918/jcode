@@ -19,6 +19,12 @@ pub(super) enum PendingLogin {
         expected_state: String,
         redirect_uri: String,
     },
+    /// Waiting for user to paste a Gemini OAuth callback URL/query or auth code.
+    Gemini {
+        verifier: String,
+        expected_state: Option<String>,
+        redirect_uri: String,
+    },
     /// Waiting for user to paste an API key for an OpenAI-compatible provider.
     ApiKeyProfile {
         provider: String,
@@ -180,12 +186,7 @@ impl App {
             }
             crate::provider_catalog::LoginProviderTarget::Cursor => self.start_cursor_login(),
             crate::provider_catalog::LoginProviderTarget::Copilot => self.start_copilot_login(),
-            crate::provider_catalog::LoginProviderTarget::Gemini => {
-                self.push_display_message(DisplayMessage::error(
-                    "Gemini login is only available from the CLI right now. Run `jcode login --provider gemini`."
-                        .to_string(),
-                ));
-            }
+            crate::provider_catalog::LoginProviderTarget::Gemini => self.start_gemini_login(),
             crate::provider_catalog::LoginProviderTarget::Antigravity => {
                 self.start_antigravity_login()
             }
@@ -662,6 +663,124 @@ impl App {
         Ok("Successfully logged in to OpenAI!".to_string())
     }
 
+    fn start_gemini_login(&mut self) {
+        let (verifier, challenge) = crate::auth::oauth::generate_pkce_public();
+        let state = crate::auth::oauth::generate_state_public();
+
+        let callback_listener = crate::auth::oauth::bind_callback_listener(0).ok();
+        let maybe_redirect_uri = callback_listener
+            .as_ref()
+            .and_then(|listener| listener.local_addr().ok())
+            .map(|addr| format!("http://127.0.0.1:{}/oauth2callback", addr.port()));
+
+        let (auth_url, pending_state, redirect_uri) = if let Some(redirect_uri) = maybe_redirect_uri {
+            (
+                crate::auth::gemini::build_auth_url(&redirect_uri, &challenge, &state),
+                Some(state.clone()),
+                redirect_uri,
+            )
+        } else {
+            (
+                crate::auth::gemini::build_auth_url(
+                    "https://codeassist.google.com/authcode",
+                    &challenge,
+                    &state,
+                ),
+                None,
+                "https://codeassist.google.com/authcode".to_string(),
+            )
+        };
+
+        let qr_section = crate::login_qr::markdown_section(
+            &auth_url,
+            "Scan this on another device if this machine has no browser, then paste the callback URL or authorization code here:",
+        )
+        .map(|section| format!("\n\n{section}"))
+        .unwrap_or_default();
+
+        let browser_opened = open::that(&auth_url).is_ok();
+        let callback_available = callback_listener.is_some() && pending_state.is_some();
+
+        if let (Some(listener), Some(expected_state)) = (callback_listener, pending_state.clone()) {
+            let verifier_clone = verifier.clone();
+            let redirect_clone = redirect_uri.clone();
+            tokio::spawn(async move {
+                let code = tokio::time::timeout(
+                    std::time::Duration::from_secs(300),
+                    crate::auth::oauth::wait_for_callback_async_on_listener(listener, &expected_state),
+                )
+                .await
+                .map_err(|_| "Login timed out after 5 minutes. Please try again.".to_string())
+                .and_then(|result| result.map_err(|e| format!("Callback failed: {}", e)));
+
+                match code {
+                    Ok(code) => match crate::auth::gemini::exchange_callback_input(
+                        &verifier_clone,
+                        &code,
+                        Some(&expected_state),
+                        &redirect_clone,
+                    )
+                    .await
+                    {
+                        Ok(tokens) => {
+                            let msg = if let Some(email) = tokens.email {
+                                format!("Successfully logged in to Gemini! (account: {})", email)
+                            } else {
+                                "Successfully logged in to Gemini!".to_string()
+                            };
+                            Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                                provider: "gemini".to_string(),
+                                success: true,
+                                message: msg,
+                            }));
+                        }
+                        Err(e) => {
+                            crate::logging::info(&format!(
+                                "Gemini automatic callback did not complete: {}",
+                                e
+                            ));
+                        }
+                    },
+                    Err(e) => {
+                        crate::logging::info(&format!(
+                            "Gemini automatic callback did not complete: {}",
+                            e
+                        ));
+                    }
+                }
+            });
+        }
+
+        let callback_line = if callback_available {
+            format!(
+                "Waiting for callback on `{}`... (this will complete automatically)\n",
+                redirect_uri
+            )
+        } else {
+            "Finish login in any browser, then paste the callback URL or authorization code here.\n".to_string()
+        };
+        let browser_line = if browser_opened {
+            String::new()
+        } else {
+            "This machine could not open a browser automatically.\n".to_string()
+        };
+
+        self.push_display_message(DisplayMessage::system(format!(
+            "**Gemini OAuth Login**\n\n\
+             Opening browser for authentication...\n\n\
+             If the browser didn't open, visit:\n{}\n\n\
+             {}{}\
+             Or paste the full callback URL, query string, or authorization code here to finish.{}",
+            auth_url, browser_line, callback_line, qr_section
+        )));
+        self.set_status_notice("Login: waiting…");
+        self.pending_login = Some(PendingLogin::Gemini {
+            verifier,
+            expected_state: pending_state,
+            redirect_uri,
+        });
+    }
+
     fn start_openrouter_login(&mut self) {
         self.start_api_key_login(
             "OpenRouter",
@@ -1089,6 +1208,47 @@ impl App {
                 });
                 self.push_display_message(DisplayMessage::system(
                     "Exchanging OpenAI callback for tokens...".to_string(),
+                ));
+            }
+            PendingLogin::Gemini {
+                verifier,
+                expected_state,
+                redirect_uri,
+            } => {
+                self.set_status_notice("Login: exchanging...");
+                let input_owned = input.clone();
+                tokio::spawn(async move {
+                    match crate::auth::gemini::exchange_callback_input(
+                        &verifier,
+                        input_owned.trim(),
+                        expected_state.as_deref(),
+                        &redirect_uri,
+                    )
+                    .await
+                    {
+                        Ok(tokens) => {
+                            let msg = if let Some(email) = tokens.email {
+                                format!("Successfully logged in to Gemini! (account: {})", email)
+                            } else {
+                                "Successfully logged in to Gemini!".to_string()
+                            };
+                            Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                                provider: "gemini".to_string(),
+                                success: true,
+                                message: msg,
+                            }));
+                        }
+                        Err(e) => {
+                            Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                                provider: "gemini".to_string(),
+                                success: false,
+                                message: format!("Gemini login failed: {}", e),
+                            }));
+                        }
+                    }
+                });
+                self.push_display_message(DisplayMessage::system(
+                    "Exchanging Gemini callback for tokens...".to_string(),
                 ));
             }
             PendingLogin::ApiKeyProfile {
