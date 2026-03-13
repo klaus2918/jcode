@@ -31,6 +31,9 @@ workflows:
         script: |
           cd ios
           xcodegen generate
+          echo "=== Generated Info.plist ==="
+          cat Sources/JCodeMobile/Info.plist
+          echo "=== End Info.plist ==="
       - name: Set up code signing
         script: |
           keychain initialize
