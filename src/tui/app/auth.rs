@@ -673,24 +673,36 @@ impl App {
             .and_then(|listener| listener.local_addr().ok())
             .map(|addr| format!("http://127.0.0.1:{}/oauth2callback", addr.port()));
 
-        let (auth_url, pending_state, redirect_uri): (String, Option<String>, String) =
+        let auth_setup: anyhow::Result<(String, Option<String>, String)> =
             if let Some(redirect_uri) = maybe_redirect_uri {
-                (
-                    crate::auth::gemini::build_web_auth_url(&redirect_uri, &state),
-                    Some(state.clone()),
-                    redirect_uri,
-                )
+                crate::auth::gemini::build_web_auth_url(&redirect_uri, &state)
+                    .map(|auth_url| (auth_url, Some(state.clone()), redirect_uri))
             } else {
-                (
-                    crate::auth::gemini::build_manual_auth_url(
-                        "https://codeassist.google.com/authcode",
-                        &challenge,
-                        &state,
-                    ),
-                    None,
-                    "https://codeassist.google.com/authcode".to_string(),
+                crate::auth::gemini::build_manual_auth_url(
+                    "https://codeassist.google.com/authcode",
+                    &challenge,
+                    &state,
                 )
+                .map(|auth_url| {
+                    (
+                        auth_url,
+                        None,
+                        "https://codeassist.google.com/authcode".to_string(),
+                    )
+                })
             };
+
+        let (auth_url, pending_state, redirect_uri) = match auth_setup {
+            Ok(values) => values,
+            Err(e) => {
+                self.push_display_message(DisplayMessage::error(format!(
+                    "Gemini login is unavailable: {}",
+                    e
+                )));
+                self.set_status_notice("Login: failed");
+                return;
+            }
+        };
 
         let qr_section = crate::login_qr::markdown_section(
             &auth_url,
