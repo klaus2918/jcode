@@ -452,7 +452,7 @@ mod socket_tests {
 
 #[cfg(test)]
 mod startup_tests {
-    use super::Server;
+    use super::{is_server_ready, Server};
     use crate::message::{Message, ToolDefinition};
     use crate::provider::{EventStream, Provider};
     use crate::transport::Listener;
@@ -502,6 +502,18 @@ mod startup_tests {
                 .to_string()
                 .contains("Refusing to replace active server socket"),
             "unexpected error: {error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_server_ready_returns_false_immediately_for_missing_socket() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp.path().join("missing.sock");
+
+        assert!(
+            !is_server_ready(&socket_path).await,
+            "missing socket should not report ready"
         );
     }
 }
@@ -750,10 +762,16 @@ pub async fn wait_for_server_ready(path: &std::path::Path, timeout: Duration) ->
     );
 }
 
+async fn probe_server_ready(path: &std::path::Path) -> bool {
+    if !crate::transport::is_socket_path(path) {
+        return false;
+    }
+
+    connect_socket(path).await.is_ok()
+}
+
 pub async fn is_server_ready(path: &std::path::Path) -> bool {
-    wait_for_server_ready(path, Duration::from_millis(300))
-        .await
-        .is_ok()
+    probe_server_ready(path).await
 }
 
 #[cfg(unix)]
