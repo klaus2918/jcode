@@ -1479,6 +1479,8 @@ impl App {
                 "queued_messages": self.queued_messages.len(),
                 "provider_session_id": self.provider_session_id,
                 "model": self.provider.name(),
+                "connection_type": self.connection_type,
+                "remote_transport": self.remote_transport,
                 "diagram_mode": format!("{:?}", self.diagram_mode),
                 "diagram_pane_enabled": self.diagram_pane_enabled,
                 "diagram_pane_position": format!("{:?}", self.diagram_pane_position),

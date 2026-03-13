@@ -2933,6 +2933,12 @@ async fn stream_response_websocket_persistent(
         }
     };
 
+    let _ = tx
+        .send(Ok(StreamEvent::ConnectionType {
+            connection: "websocket/persistent".to_string(),
+        }))
+        .await;
+
     let mut request_event = request;
     if !request_event.is_object() {
         return Err(OpenAIStreamFailure::Other(anyhow::anyhow!(

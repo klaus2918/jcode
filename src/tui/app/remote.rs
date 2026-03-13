@@ -1238,6 +1238,8 @@ async fn handle_debug_command(app: &mut App, cmd: &str, remote: &mut RemoteConne
             "provider_session_id": app.provider_session_id,
             "provider_name": app.remote_provider_name.clone(),
             "model": app.remote_provider_model.as_deref().unwrap_or(app.provider.name()),
+            "connection_type": app.connection_type.clone(),
+            "remote_transport": app.remote_transport.clone(),
             "diagram_mode": format!("{:?}", app.diagram_mode),
             "diagram_focus": app.diagram_focus,
             "diagram_index": app.diagram_index,
