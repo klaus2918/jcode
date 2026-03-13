@@ -383,6 +383,10 @@ pub async fn connect_socket(path: &std::path::Path) -> Result<Stream> {
     }
 }
 
+async fn socket_has_live_listener(path: &std::path::Path) -> bool {
+    crate::transport::is_socket_path(path) && Stream::connect(path).await.is_ok()
+}
+
 #[cfg(test)]
 mod socket_tests {
     use super::{
@@ -434,6 +438,62 @@ mod socket_tests {
         std::thread::sleep(Duration::from_millis(5));
         assert!(!reload_marker_active(Duration::ZERO));
         assert!(!marker.exists(), "stale reload marker should be cleaned up");
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::Server;
+    use crate::message::{Message, ToolDefinition};
+    use crate::provider::{EventStream, Provider};
+    use crate::transport::Listener;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct TestProvider;
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<EventStream> {
+            unimplemented!("test provider")
+        }
+
+        fn name(&self) -> &str {
+            "test"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(TestProvider)
+        }
+    }
+
+    #[tokio::test]
+    async fn server_run_refuses_to_replace_live_socket() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp.path().join("jcode.sock");
+        let debug_socket_path = temp.path().join("jcode-debug.sock");
+        let _listener = Listener::bind(&socket_path).expect("bind existing live socket");
+        let provider: Arc<dyn Provider> = Arc::new(TestProvider);
+        let server = Server::new_with_paths(provider, socket_path, debug_socket_path);
+
+        let error = server
+            .run()
+            .await
+            .expect_err("should refuse live socket takeover");
+        assert!(
+            error
+                .to_string()
+                .contains("Refusing to replace active server socket"),
+            "unexpected error: {error:#}"
+        );
     }
 }
 
@@ -1417,6 +1477,13 @@ impl Server {
         // Ensure socket directory exists (for named sockets like /run/user/1000/jcode/)
         if let Some(parent) = self.socket_path.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+
+        if socket_has_live_listener(&self.socket_path).await {
+            anyhow::bail!(
+                "Refusing to replace active server socket at {}",
+                self.socket_path.display()
+            );
         }
 
         // Remove existing sockets (uses transport abstraction for cross-platform cleanup)
