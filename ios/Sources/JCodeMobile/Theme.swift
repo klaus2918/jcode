@@ -4,41 +4,53 @@ enum JC {
     // MARK: - Colors
 
     enum Colors {
-        static let background = Color(red: 0.06, green: 0.06, blue: 0.08)
-        static let surface = Color(red: 0.10, green: 0.10, blue: 0.12)
-        static let surfaceElevated = Color(red: 0.14, green: 0.14, blue: 0.16)
-        static let surfaceHover = Color(red: 0.18, green: 0.18, blue: 0.20)
+        static let background = Color.black
+        static let surface = Color(red: 0.03, green: 0.03, blue: 0.06)
+        static let surfaceElevated = Color(red: 0.07, green: 0.07, blue: 0.10)
+        static let surfaceHover = Color(red: 0.11, green: 0.11, blue: 0.14)
 
-        static let border = Color.white.opacity(0.08)
-        static let borderSubtle = Color.white.opacity(0.04)
-        static let borderFocused = Color(red: 0.30, green: 0.85, blue: 0.65).opacity(0.5)
+        static let border = Color.white.opacity(0.04)
+        static let borderSubtle = Color.white.opacity(0.03)
+        static let borderFocused = Color(red: 0.71, green: 0.49, blue: 1.0).opacity(0.4)
 
-        static let accent = Color(red: 0.30, green: 0.85, blue: 0.65)
-        static let accentDim = Color(red: 0.30, green: 0.85, blue: 0.65).opacity(0.15)
-        static let accentGlow = Color(red: 0.30, green: 0.85, blue: 0.65).opacity(0.3)
+        static let accent = Color(red: 0.71, green: 0.49, blue: 1.0)
+        static let accentDim = Color(red: 0.71, green: 0.49, blue: 1.0).opacity(0.12)
+        static let accentGlow = Color(red: 0.71, green: 0.49, blue: 1.0).opacity(0.3)
+
+        static let blue = Color(red: 0.30, green: 0.62, blue: 1.0)
+        static let green = Color(red: 0.0, green: 0.90, blue: 0.46)
+        static let pink = Color(red: 1.0, green: 0.36, blue: 0.67)
+        static let cyan = Color(red: 0.0, green: 0.90, blue: 1.0)
+        static let amber = Color(red: 1.0, green: 0.67, blue: 0.0)
+        static let red = Color(red: 1.0, green: 0.24, blue: 0.35)
 
         static let textPrimary = Color.white.opacity(0.92)
-        static let textSecondary = Color.white.opacity(0.55)
-        static let textTertiary = Color.white.opacity(0.35)
-        static let textOnAccent = Color(red: 0.06, green: 0.06, blue: 0.08)
+        static let textSecondary = Color.white.opacity(0.45)
+        static let textTertiary = Color.white.opacity(0.22)
+        static let textOnAccent = Color.black
 
-        static let userBubble = Color(red: 0.30, green: 0.85, blue: 0.65).opacity(0.12)
-        static let assistantBubble = Color(red: 0.14, green: 0.14, blue: 0.16)
-        static let systemBubble = Color.orange.opacity(0.10)
+        static let userText = blue
+        static let aiText = Color.white.opacity(0.86)
+        static let systemText = pink.opacity(0.7)
+        static let toolText = Color.white.opacity(0.22)
 
-        static let statusOnline = Color(red: 0.30, green: 0.85, blue: 0.65)
-        static let statusConnecting = Color.orange
-        static let statusOffline = Color(red: 0.85, green: 0.30, blue: 0.35)
+        static let userBubble = Color(red: 0.30, green: 0.62, blue: 1.0).opacity(0.10)
+        static let assistantBubble = Color(red: 0.07, green: 0.07, blue: 0.10)
+        static let systemBubble = Color(red: 1.0, green: 0.36, blue: 0.67).opacity(0.08)
 
-        static let toolStreaming = Color.orange
-        static let toolRunning = Color(red: 0.40, green: 0.70, blue: 1.0)
-        static let toolDone = Color(red: 0.30, green: 0.85, blue: 0.65)
-        static let toolFailed = Color(red: 0.85, green: 0.30, blue: 0.35)
+        static let statusOnline = green
+        static let statusConnecting = amber
+        static let statusOffline = red
 
-        static let codeBackground = Color(red: 0.08, green: 0.08, blue: 0.10)
-        static let codeBorder = Color.white.opacity(0.06)
+        static let toolStreaming = amber
+        static let toolRunning = cyan
+        static let toolDone = green
+        static let toolFailed = red
 
-        static let destructive = Color(red: 0.85, green: 0.30, blue: 0.35)
+        static let codeBackground = Color(red: 0.04, green: 0.04, blue: 0.06)
+        static let codeBorder = Color.white.opacity(0.04)
+
+        static let destructive = red
     }
 
     // MARK: - Typography
@@ -58,6 +70,10 @@ enum JC {
         static let monoCaption = Font.system(size: 10, weight: .regular, design: .monospaced)
 
         static let prompt = Font.system(size: 16, weight: .medium, design: .monospaced)
+
+        static let stream = Font.system(size: 14, weight: .regular)
+        static let streamMono = Font.system(size: 12, weight: .regular, design: .monospaced)
+        static let streamSmall = Font.system(size: 11, weight: .regular, design: .monospaced)
     }
 
     // MARK: - Spacing
@@ -119,6 +135,7 @@ struct AccentButton: ButtonStyle {
             .padding(.vertical, JC.Spacing.md)
             .background(JC.Colors.accent)
             .clipShape(RoundedRectangle(cornerRadius: JC.Radius.md, style: .continuous))
+            .shadow(color: JC.Colors.accentGlow, radius: 12, y: 4)
             .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
             .animation(JC.Animation.quick, value: configuration.isPressed)
     }
@@ -175,6 +192,7 @@ struct StatusDot: View {
         Circle()
             .fill(color)
             .frame(width: 8, height: 8)
+            .shadow(color: color.opacity(0.6), radius: 6)
             .overlay(
                 Circle()
                     .stroke(color.opacity(0.4), lineWidth: 2)

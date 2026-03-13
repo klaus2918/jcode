@@ -283,10 +283,7 @@ struct MainView: View {
                 JC.Colors.background.ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    ChatHeaderBar(showSettings: $showSettings)
-                    Divider().overlay(JC.Colors.border)
-                    ChatMessageList()
-                    Divider().overlay(JC.Colors.border)
+                    StreamView()
                     ChatInputBar()
                 }
             }
@@ -297,129 +294,26 @@ struct MainView: View {
     }
 }
 
-// MARK: - Chat Header
+// MARK: - Stream View (flat text, no bubbles)
 
-struct ChatHeaderBar: View {
-    @EnvironmentObject private var model: AppModel
-    @Binding var showSettings: Bool
-
-    var body: some View {
-        HStack(spacing: JC.Spacing.md) {
-            Button { showSettings = true } label: {
-                HStack(spacing: JC.Spacing.sm) {
-                    StatusDot(
-                        color: statusColor,
-                        animated: model.connectionState == .connecting
-                    )
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(model.serverName.isEmpty ? "jcode" : model.serverName)
-                            .font(JC.Fonts.headline)
-                            .foregroundStyle(JC.Colors.textPrimary)
-                        Text(subtitle)
-                            .font(JC.Fonts.monoCaption)
-                            .foregroundStyle(JC.Colors.textTertiary)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            if model.isProcessing {
-                TypingIndicator()
-            }
-
-            if !model.modelName.isEmpty {
-                PillBadge(text: shortModelName)
-            }
-        }
-        .padding(.horizontal, JC.Spacing.lg)
-        .padding(.vertical, JC.Spacing.md)
-        .background(JC.Colors.surface)
-    }
-
-    private var statusColor: Color {
-        switch model.connectionState {
-        case .connected: JC.Colors.statusOnline
-        case .connecting: JC.Colors.statusConnecting
-        case .disconnected: JC.Colors.statusOffline
-        }
-    }
-
-    private var subtitle: String {
-        switch model.connectionState {
-        case .connected:
-            if !model.serverVersion.isEmpty {
-                return model.serverVersion
-            }
-            return "Connected"
-        case .connecting:
-            return "Connecting..."
-        case .disconnected:
-            return "Offline"
-        }
-    }
-
-    private var shortModelName: String {
-        let name = model.modelName
-        if let slash = name.lastIndex(of: "/") {
-            return String(name[name.index(after: slash)...])
-        }
-        if name.count > 20 {
-            return String(name.prefix(18)) + "..."
-        }
-        return name
-    }
-}
-
-// MARK: - Typing Indicator
-
-struct TypingIndicator: View {
-    @State private var phase: Int = 0
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<3) { i in
-                Circle()
-                    .fill(JC.Colors.accent)
-                    .frame(width: 5, height: 5)
-                    .scaleEffect(phase == i ? 1.3 : 0.7)
-                    .opacity(phase == i ? 1.0 : 0.4)
-            }
-        }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.4).repeatForever(autoreverses: true)) {
-                phase = 1
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                withAnimation(.easeInOut(duration: 0.4).repeatForever(autoreverses: true)) {
-                    phase = 2
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Chat Message List
-
-struct ChatMessageList: View {
+struct StreamView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: JC.Spacing.lg) {
+                LazyVStack(alignment: .leading, spacing: 2) {
                     if model.messages.isEmpty && model.connectionState == .connected {
                         emptyState
                     }
 
                     ForEach(model.messages) { message in
-                        MessageRow(message: message)
+                        StreamEntry(message: message)
                             .id(message.id)
                     }
                 }
-                .padding(JC.Spacing.lg)
+                .padding(.horizontal, JC.Spacing.lg)
+                .padding(.vertical, JC.Spacing.md)
             }
             .background(JC.Colors.background)
             .onChange(of: model.messages.count) {
@@ -433,20 +327,15 @@ struct ChatMessageList: View {
 
     private var emptyState: some View {
         VStack(spacing: JC.Spacing.md) {
-            Spacer().frame(height: 80)
-
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 40))
-                .foregroundStyle(JC.Colors.textTertiary)
-
-            Text("Start a conversation")
-                .font(JC.Fonts.headline)
-                .foregroundStyle(JC.Colors.textSecondary)
-
-            Text("Type a message below to get started.")
+            Spacer().frame(height: 120)
+            Text("jcode")
+                .font(.system(size: 28, weight: .bold))
+                .foregroundStyle(JC.Colors.accent)
+            Text("Send a message to start.")
                 .font(JC.Fonts.callout)
                 .foregroundStyle(JC.Colors.textTertiary)
         }
+        .frame(maxWidth: .infinity)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -458,27 +347,13 @@ struct ChatMessageList: View {
     }
 }
 
-// MARK: - Message Row
+// MARK: - Stream Entry (single message)
 
-struct MessageRow: View {
+struct StreamEntry: View {
     let message: AppModel.ChatEntry
 
     var body: some View {
-        VStack(alignment: alignment, spacing: JC.Spacing.sm) {
-            HStack(spacing: JC.Spacing.xs) {
-                if message.role == .user {
-                    Spacer()
-                }
-
-                Text(roleLabel)
-                    .font(JC.Fonts.caption2)
-                    .foregroundStyle(JC.Colors.textTertiary)
-
-                if message.role != .user {
-                    Spacer()
-                }
-            }
-
+        VStack(alignment: .leading, spacing: 2) {
             if !message.images.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: JC.Spacing.sm) {
@@ -496,184 +371,156 @@ struct MessageRow: View {
                 }
             }
 
-            if message.role == .assistant && !message.text.isEmpty {
-                MarkdownText(text: message.text)
-                    .padding(JC.Spacing.md)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(JC.Colors.assistantBubble)
-                    .clipShape(RoundedRectangle(cornerRadius: JC.Radius.md, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: JC.Radius.md, style: .continuous)
-                            .stroke(JC.Colors.border, lineWidth: 1)
-                    )
-            } else if message.role == .system {
-                HStack(spacing: JC.Spacing.sm) {
-                    Image(systemName: "info.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(JC.Colors.statusConnecting)
+            if !message.text.isEmpty {
+                switch message.role {
+                case .user:
                     Text(message.text)
-                        .font(JC.Fonts.callout)
-                        .foregroundStyle(JC.Colors.textSecondary)
+                        .font(JC.Fonts.stream)
+                        .foregroundStyle(JC.Colors.userText)
+                        .textSelection(.enabled)
+                case .assistant:
+                    MarkdownText(text: message.text)
+                case .system:
+                    Text(message.text)
+                        .font(.system(size: 12))
+                        .foregroundStyle(JC.Colors.systemText)
                 }
-                .padding(JC.Spacing.md)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(JC.Colors.systemBubble)
-                .clipShape(RoundedRectangle(cornerRadius: JC.Radius.md, style: .continuous))
-            } else if !message.text.isEmpty || message.images.isEmpty {
-                Text(message.text.isEmpty ? "..." : message.text)
-                    .font(JC.Fonts.body)
-                    .textSelection(.enabled)
-                    .foregroundStyle(JC.Colors.textPrimary)
-                    .padding(JC.Spacing.md)
-                    .frame(maxWidth: 520, alignment: .leading)
-                    .background(JC.Colors.userBubble)
-                    .clipShape(RoundedRectangle(cornerRadius: JC.Radius.md, style: .continuous))
             }
 
             if !message.toolCalls.isEmpty {
-                VStack(spacing: JC.Spacing.sm) {
-                    ForEach(message.toolCalls, id: \.id) { tool in
-                        ToolCardView(tool: tool)
-                    }
-                }
+                ToolChainView(tools: message.toolCalls)
             }
         }
-        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Tool Chain (collapsible)
+
+struct ToolChainView: View {
+    let tools: [ToolCallInfo]
+    @State private var isExpanded = false
+
+    private var allDone: Bool {
+        tools.allSatisfy { $0.state == .done || $0.state == .failed }
     }
 
-    private var alignment: HorizontalAlignment {
-        message.role == .user ? .trailing : .leading
+    private var hasLive: Bool {
+        tools.contains { $0.state == .streaming || $0.state == .executing }
     }
 
-    private var roleLabel: String {
-        switch message.role {
-        case .assistant: "jcode"
-        case .system: "System"
-        case .user: "You"
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if allDone {
+                Button {
+                    withAnimation(JC.Animation.quick) { isExpanded.toggle() }
+                } label: {
+                    HStack(spacing: JC.Spacing.xs) {
+                        Circle()
+                            .fill(tools.contains(where: { $0.state == .failed }) ? JC.Colors.red : JC.Colors.green)
+                            .frame(width: 5, height: 5)
+                            .shadow(color: (tools.contains(where: { $0.state == .failed }) ? JC.Colors.red : JC.Colors.green).opacity(0.6), radius: 4)
+
+                        Text(tools.map(\.name).joined(separator: ", "))
+                            .font(JC.Fonts.streamSmall)
+                            .foregroundStyle(JC.Colors.toolText)
+                            .lineLimit(1)
+
+                        Text("\(tools.count) tool\(tools.count == 1 ? "" : "s")")
+                            .font(JC.Fonts.streamSmall)
+                            .foregroundStyle(JC.Colors.textTertiary)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                if isExpanded {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(tools, id: \.id) { tool in
+                            ToolDetailLine(tool: tool)
+                        }
+                    }
+                    .padding(.leading, 14)
+                    .overlay(
+                        Rectangle()
+                            .fill(JC.Colors.border)
+                            .frame(width: 1),
+                        alignment: .leading
+                    )
+                    .padding(.top, 2)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(tools, id: \.id) { tool in
+                        ToolDetailLine(tool: tool)
+                    }
+                }
+                .padding(.leading, 10)
+                .overlay(
+                    Rectangle()
+                        .fill(JC.Colors.amber.opacity(0.2))
+                        .frame(width: 1),
+                    alignment: .leading
+                )
+            }
         }
     }
 }
 
-// MARK: - Tool Card
+// MARK: - Tool Detail Line
 
-struct ToolCardView: View {
+struct ToolDetailLine: View {
     let tool: ToolCallInfo
-    @State private var isExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(JC.Animation.standard) {
-                    isExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: JC.Spacing.sm) {
-                    Image(systemName: toolIcon)
-                        .font(.system(size: 12))
-                        .foregroundStyle(stateColor)
-                        .frame(width: 20)
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: JC.Spacing.xs) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 5, height: 5)
+                    .shadow(color: dotColor.opacity(0.6), radius: 3)
 
-                    Text(tool.name)
-                        .font(JC.Fonts.mono)
-                        .foregroundStyle(JC.Colors.textPrimary)
-                        .lineLimit(1)
+                Text(tool.name)
+                    .font(JC.Fonts.streamSmall)
+                    .foregroundStyle(JC.Colors.toolText)
 
-                    Spacer()
-
-                    if tool.state == .executing || tool.state == .streaming {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .tint(stateColor)
-                    }
-
-                    PillBadge(text: stateLabel, color: stateColor)
-
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                if !tool.input.isEmpty {
+                    Text(tool.input)
+                        .font(JC.Fonts.streamSmall)
                         .foregroundStyle(JC.Colors.textTertiary)
+                        .lineLimit(1)
                 }
-                .padding(.horizontal, JC.Spacing.md)
-                .padding(.vertical, JC.Spacing.sm + 2)
+
+                if tool.state == .executing || tool.state == .streaming {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(JC.Colors.amber)
+                }
             }
-            .buttonStyle(.plain)
 
-            if isExpanded {
-                Divider().overlay(JC.Colors.border)
+            if let output = tool.output, !output.isEmpty {
+                Text(output)
+                    .font(JC.Fonts.streamSmall)
+                    .foregroundStyle(JC.Colors.textTertiary)
+                    .lineLimit(3)
+                    .padding(.leading, 14)
+            }
 
-                VStack(alignment: .leading, spacing: JC.Spacing.sm) {
-                    if !tool.input.isEmpty {
-                        VStack(alignment: .leading, spacing: JC.Spacing.xs) {
-                            Text("INPUT")
-                                .font(JC.Fonts.monoCaption)
-                                .foregroundStyle(JC.Colors.textTertiary)
-                            Text(tool.input)
-                                .font(JC.Fonts.monoSmall)
-                                .foregroundStyle(JC.Colors.textSecondary)
-                                .lineLimit(15)
-                                .textSelection(.enabled)
-                        }
-                    }
-
-                    if let output = tool.output, !output.isEmpty {
-                        VStack(alignment: .leading, spacing: JC.Spacing.xs) {
-                            Text("OUTPUT")
-                                .font(JC.Fonts.monoCaption)
-                                .foregroundStyle(JC.Colors.textTertiary)
-                            Text(output)
-                                .font(JC.Fonts.monoSmall)
-                                .foregroundStyle(JC.Colors.textPrimary)
-                                .lineLimit(15)
-                                .textSelection(.enabled)
-                        }
-                    }
-
-                    if let error = tool.error, !error.isEmpty {
-                        HStack(spacing: JC.Spacing.xs) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.caption2)
-                            Text(error)
-                                .font(JC.Fonts.monoSmall)
-                        }
-                        .foregroundStyle(JC.Colors.toolFailed)
-                    }
-                }
-                .padding(JC.Spacing.md)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(JC.Colors.codeBackground)
+            if let error = tool.error, !error.isEmpty {
+                Text(error)
+                    .font(JC.Fonts.streamSmall)
+                    .foregroundStyle(JC.Colors.red)
+                    .lineLimit(3)
+                    .padding(.leading, 14)
             }
         }
-        .background(JC.Colors.surface)
-        .clipShape(RoundedRectangle(cornerRadius: JC.Radius.sm, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: JC.Radius.sm, style: .continuous)
-                .stroke(JC.Colors.border, lineWidth: 1)
-        )
     }
 
-    private var toolIcon: String {
+    private var dotColor: Color {
         switch tool.state {
-        case .streaming: "arrow.down.circle"
-        case .executing: "gearshape.2"
-        case .done: "checkmark.circle.fill"
-        case .failed: "xmark.circle.fill"
-        }
-    }
-
-    private var stateLabel: String {
-        switch tool.state {
-        case .streaming: "streaming"
-        case .executing: "running"
-        case .done: "done"
-        case .failed: "failed"
-        }
-    }
-
-    private var stateColor: Color {
-        switch tool.state {
-        case .streaming: JC.Colors.toolStreaming
-        case .executing: JC.Colors.toolRunning
-        case .done: JC.Colors.toolDone
-        case .failed: JC.Colors.toolFailed
+        case .streaming, .executing: JC.Colors.amber
+        case .done: JC.Colors.green
+        case .failed: JC.Colors.red
         }
     }
 }

@@ -9,8 +9,8 @@ struct MarkdownText: View {
                 switch block {
                 case .paragraph(let text):
                     Text(inlineMarkdown(text))
-                        .font(JC.Fonts.body)
-                        .foregroundStyle(JC.Colors.textPrimary)
+                        .font(JC.Fonts.stream)
+                        .foregroundStyle(JC.Colors.aiText)
                         .textSelection(.enabled)
 
                 case .code(let language, let code):
