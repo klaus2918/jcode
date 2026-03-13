@@ -602,6 +602,9 @@ pub enum ServerEvent {
         /// Whether the session was interrupted mid-generation (crashed/disconnected while processing)
         #[serde(skip_serializing_if = "Option::is_none")]
         was_interrupted: Option<bool>,
+        /// Last observed actual connection type for this session (e.g. websocket, https/sse)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        connection_type: Option<String>,
         /// Upstream provider (e.g., which provider OpenRouter routed to, or calculated preference)
         #[serde(skip_serializing_if = "Option::is_none")]
         upstream_provider: Option<String>,
@@ -1017,7 +1020,8 @@ mod tests {
             "messages":[],
             "provider_name":"openai",
             "provider_model":"gpt-5.4",
-            "available_models":["gpt-5.4"]
+            "available_models":["gpt-5.4"],
+            "connection_type":"websocket"
         }"#;
         let decoded: ServerEvent = serde_json::from_str(json).unwrap();
         match decoded {
@@ -1025,12 +1029,14 @@ mod tests {
                 provider_name,
                 provider_model,
                 available_models,
+                connection_type,
                 compaction_mode,
                 ..
             } => {
                 assert_eq!(provider_name.as_deref(), Some("openai"));
                 assert_eq!(provider_model.as_deref(), Some("gpt-5.4"));
                 assert_eq!(available_models, vec!["gpt-5.4"]);
+                assert_eq!(connection_type.as_deref(), Some("websocket"));
                 assert_eq!(compaction_mode, crate::config::CompactionMode::Reactive);
             }
             _ => panic!("wrong event type"),

@@ -1757,6 +1757,7 @@ pub(super) fn handle_server_event(
             server_icon,
             server_has_update,
             was_interrupted,
+            connection_type,
             upstream_provider,
             reasoning_effort,
             compaction_mode,
@@ -1801,7 +1802,6 @@ pub(super) fn handle_server_event(
                 app.swarm_plan_items.clear();
                 app.swarm_plan_version = None;
                 app.swarm_plan_swarm_id = None;
-                app.connection_type = None;
                 remote.reset_call_output_tokens_seen();
             }
             if let Some(name) = provider_name {
@@ -1813,6 +1813,9 @@ pub(super) fn handle_server_event(
             }
             if upstream_provider.is_some() {
                 app.upstream_provider = upstream_provider;
+            }
+            if connection_type.is_some() {
+                app.connection_type = connection_type;
             }
             app.remote_reasoning_effort = reasoning_effort;
             app.remote_compaction_mode = Some(compaction_mode);

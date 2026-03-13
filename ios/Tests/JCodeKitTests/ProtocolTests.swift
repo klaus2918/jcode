@@ -135,7 +135,7 @@ do {
     let json = """
     {"type":"history","id":1,"session_id":"fox","messages":[{"role":"user","content":"hi"}],
      "provider_name":"claude","provider_model":"claude-sonnet-4-20250514",
-     "server_version":"v0.4.1","server_name":"blazing","server_icon":"🔥"}
+     "server_version":"v0.4.1","server_name":"blazing","server_icon":"🔥","connection_type":"websocket"}
     """
     let event = try decodeEvent(json)
     if case .history(let p) = event {
@@ -147,6 +147,7 @@ do {
         assertEqual(p.serverName, "blazing")
         assertEqual(p.serverIcon, "🔥")
         assertEqual(p.serverVersion, "v0.4.1")
+        assertEqual(p.connectionType, "websocket")
     } else { check(false, "Expected history") }
 }
 

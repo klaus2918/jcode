@@ -50,6 +50,7 @@ public struct ServerInfo: Sendable {
     public var serverVersion: String?
     public var providerName: String?
     public var providerModel: String?
+    public var connectionType: String?
     public var availableModels: [String] = []
     public var allSessions: [String] = []
     public var isCanary: Bool = false
@@ -197,6 +198,7 @@ public actor JCodeClient {
             serverInfo.serverVersion = payload.serverVersion
             serverInfo.providerName = payload.providerName
             serverInfo.providerModel = payload.providerModel
+            serverInfo.connectionType = payload.connectionType
             serverInfo.availableModels = payload.availableModels
             serverInfo.allSessions = payload.allSessions
             serverInfo.isCanary = payload.isCanary ?? false

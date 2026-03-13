@@ -333,6 +333,7 @@ public struct HistoryPayload: Decodable, Sendable {
     public let serverIcon: String?
     public let serverHasUpdate: Bool?
     public let wasInterrupted: Bool?
+    public let connectionType: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -352,6 +353,7 @@ public struct HistoryPayload: Decodable, Sendable {
         case serverIcon = "server_icon"
         case serverHasUpdate = "server_has_update"
         case wasInterrupted = "was_interrupted"
+        case connectionType = "connection_type"
     }
 
     public init(from decoder: Decoder) throws {
@@ -377,6 +379,7 @@ public struct HistoryPayload: Decodable, Sendable {
         serverIcon = try container.decodeIfPresent(String.self, forKey: .serverIcon)
         serverHasUpdate = try container.decodeIfPresent(Bool.self, forKey: .serverHasUpdate)
         wasInterrupted = try container.decodeIfPresent(Bool.self, forKey: .wasInterrupted)
+        connectionType = try container.decodeIfPresent(String.self, forKey: .connectionType)
     }
 }
 

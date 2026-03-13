@@ -1207,6 +1207,10 @@ impl Agent {
             .or_else(|| self.provider.preferred_provider())
     }
 
+    pub fn last_connection_type(&self) -> Option<String> {
+        self.last_connection_type.clone()
+    }
+
     pub fn provider_name(&self) -> String {
         self.provider.name().to_string()
     }

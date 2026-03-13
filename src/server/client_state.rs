@@ -79,6 +79,7 @@ pub(super) async fn send_history(
         available_model_routes,
         tool_names,
         upstream_provider,
+        connection_type,
         reasoning_effort,
         compaction_mode,
     ) = {
@@ -93,6 +94,7 @@ pub(super) async fn send_history(
             agent_guard.model_routes(),
             agent_guard.tool_names().await,
             agent_guard.last_upstream_provider(),
+            agent_guard.last_connection_type(),
             provider.reasoning_effort(),
             agent_guard.compaction_mode().await,
         )
@@ -149,6 +151,7 @@ pub(super) async fn send_history(
             server_icon: Some(server_icon.to_string()),
             server_has_update: Some(server_has_newer_binary()),
             was_interrupted,
+            connection_type,
             upstream_provider,
             reasoning_effort,
             compaction_mode,

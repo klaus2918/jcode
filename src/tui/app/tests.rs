@@ -2146,6 +2146,7 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
             server_icon: None,
             server_has_update: None,
             was_interrupted: Some(true),
+            connection_type: Some("websocket".to_string()),
             upstream_provider: None,
             reasoning_effort: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
@@ -2154,6 +2155,7 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
     );
 
     assert!(app.display_messages().len() >= 2);
+    assert_eq!(app.connection_type.as_deref(), Some("websocket"));
     let system_msg = app
         .display_messages()
         .iter()
@@ -2202,6 +2204,7 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
             server_icon: None,
             server_has_update: None,
             was_interrupted: None,
+            connection_type: Some("https/sse".to_string()),
             upstream_provider: None,
             reasoning_effort: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
@@ -2210,6 +2213,7 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
     );
 
     assert!(app.queued_messages().is_empty());
+    assert_eq!(app.connection_type.as_deref(), Some("https/sse"));
     assert!(!app
         .display_messages()
         .iter()
@@ -2254,6 +2258,7 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
             server_icon: None,
             server_has_update: None,
             was_interrupted: Some(true),
+            connection_type: Some("websocket".to_string()),
             upstream_provider: None,
             reasoning_effort: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
@@ -2268,6 +2273,7 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
         .collect();
     assert_eq!(assistant_messages.len(), 1);
     assert_eq!(assistant_messages[0].content, "local restored state");
+    assert_eq!(app.connection_type.as_deref(), Some("websocket"));
     assert!(app.queued_messages().is_empty());
 }
 
