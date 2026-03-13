@@ -44,6 +44,76 @@ function Write-Info($msg) { Write-Host $msg -ForegroundColor Blue }
 function Write-Err($msg) { Write-Host "error: $msg" -ForegroundColor Red; exit 1 }
 function Write-Warn($msg) { Write-Host "warning: $msg" -ForegroundColor Yellow }
 
+function Stop-ProcessTree([int]$ProcessId) {
+    try {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ParentProcessId -eq $ProcessId } |
+            ForEach-Object { Stop-ProcessTree -ProcessId $_.ProcessId }
+    } catch {}
+
+    try {
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+function Invoke-ProcessWithTimeout {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+        [Parameter(Mandatory = $true)][string]$FriendlyName,
+        [switch]$CaptureOutput
+    )
+
+    $startParams = @{
+        FilePath = $FilePath
+        ArgumentList = $ArgumentList
+        PassThru = $true
+        NoNewWindow = $true
+    }
+
+    $stdoutPath = $null
+    $stderrPath = $null
+    if ($CaptureOutput) {
+        $stdoutPath = Join-Path $env:TEMP ("jcode-{0}-{1}-stdout.log" -f $FriendlyName, [guid]::NewGuid().ToString('N'))
+        $stderrPath = Join-Path $env:TEMP ("jcode-{0}-{1}-stderr.log" -f $FriendlyName, [guid]::NewGuid().ToString('N'))
+        $startParams.RedirectStandardOutput = $stdoutPath
+        $startParams.RedirectStandardError = $stderrPath
+    }
+
+    $process = Start-Process @startParams
+    $timedOut = -not ($process | Wait-Process -Timeout $TimeoutSeconds -PassThru -ErrorAction SilentlyContinue)
+    if ($timedOut) {
+        Stop-ProcessTree -ProcessId $process.Id
+        return [pscustomobject]@{
+            TimedOut = $true
+            ExitCode = $null
+            StdoutPath = $stdoutPath
+            StderrPath = $stderrPath
+        }
+    }
+
+    $process.Refresh()
+    return [pscustomobject]@{
+        TimedOut = $false
+        ExitCode = $process.ExitCode
+        StdoutPath = $stdoutPath
+        StderrPath = $stderrPath
+    }
+}
+
+function Write-LogTail([string]$Path, [string]$Label) {
+    if (-not $Path -or -not (Test-Path $Path)) {
+        return
+    }
+
+    $lines = Get-Content -Path $Path -Tail 40 -ErrorAction SilentlyContinue
+    if ($lines -and $lines.Count -gt 0) {
+        Write-Warn "$Label (last 40 lines):"
+        $lines | ForEach-Object { Write-Host $_ }
+    }
+}
+
 function Test-CommandExists([string]$CommandName) {
     return [bool](Get-Command $CommandName -ErrorAction SilentlyContinue)
 }
@@ -100,9 +170,14 @@ function Install-Alacritty {
         "--disable-interactivity"
     )
 
-    & winget @wingetArgs
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warn "Alacritty install failed (winget exit code: $LASTEXITCODE)"
+    $wingetResult = Invoke-ProcessWithTimeout -FilePath "winget" -ArgumentList $wingetArgs -TimeoutSeconds 180 -FriendlyName "winget-install"
+    if ($wingetResult.TimedOut) {
+        Write-Warn "Alacritty install timed out after 180 seconds; skipping automatic setup"
+        return $false
+    }
+
+    if ($wingetResult.ExitCode -ne 0) {
+        Write-Warn "Alacritty install failed (winget exit code: $($wingetResult.ExitCode))"
         return $false
     }
 
@@ -231,7 +306,7 @@ function Install-JcodeHotkey([string]$JcodeExePath) {
     $vbsPath = Join-Path $HotkeyDir "jcode-hotkey-launcher.vbs"
     $vbsContent = @(
         'Set objShell = CreateObject("WScript.Shell")',
-        "objShell.Run \"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"\"$ps1Path\"\"\", 0, False"
+        ('objShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{0}""", 0, False' -f $ps1Path)
     ) -join "`r`n"
     Set-Content -Path $vbsPath -Value $vbsContent -Encoding ASCII
 
@@ -244,7 +319,7 @@ function Install-JcodeHotkey([string]$JcodeExePath) {
         '$shell = New-Object -ComObject WScript.Shell',
         "`$shortcut = `$shell.CreateShortcut('$startupShortcutPath')",
         "`$shortcut.TargetPath = 'wscript.exe'",
-        "`$shortcut.Arguments = '\"$escapedVbsPath\"'",
+        ("`$shortcut.Arguments = '""{0}""'" -f $escapedVbsPath),
         "`$shortcut.Description = 'jcode Alt+; hotkey listener'",
         '`$shortcut.WindowStyle = 7',
         '`$shortcut.Save()',
@@ -258,7 +333,8 @@ function Install-JcodeHotkey([string]$JcodeExePath) {
         return $false
     }
 
-    & powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process wscript.exe -ArgumentList '""$vbsPath""' -WindowStyle Hidden" | Out-Null
+    $launchHotkeyCommand = "Start-Process wscript.exe -ArgumentList '""{0}""' -WindowStyle Hidden" -f $vbsPath
+    & powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command $launchHotkeyCommand | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "Hotkey will start on next login, but could not be launched immediately"
     }
@@ -354,8 +430,18 @@ if ($DownloadMode -eq "tar") {
     git clone --depth 1 --branch $Version "https://github.com/$Repo.git" $SrcDir
     if ($LASTEXITCODE -ne 0) { Write-Err "Failed to clone $Repo at $Version" }
 
-    cargo build --release --manifest-path (Join-Path $SrcDir "Cargo.toml")
-    if ($LASTEXITCODE -ne 0) { Write-Err "cargo build failed" }
+    Write-Info "Building jcode from source (this can take several minutes)..."
+    $cargoResult = Invoke-ProcessWithTimeout -FilePath "cargo" -ArgumentList @("build", "--release", "--manifest-path", (Join-Path $SrcDir "Cargo.toml")) -TimeoutSeconds 1800 -FriendlyName "cargo-build" -CaptureOutput
+    if ($cargoResult.TimedOut) {
+        Write-LogTail -Path $cargoResult.StdoutPath -Label "cargo stdout"
+        Write-LogTail -Path $cargoResult.StderrPath -Label "cargo stderr"
+        Write-Err "cargo build timed out after 1800 seconds"
+    }
+    if ($cargoResult.ExitCode -ne 0) {
+        Write-LogTail -Path $cargoResult.StdoutPath -Label "cargo stdout"
+        Write-LogTail -Path $cargoResult.StderrPath -Label "cargo stderr"
+        Write-Err "cargo build failed (exit code: $($cargoResult.ExitCode))"
+    }
 
     $BuiltBin = Join-Path $SrcDir "target\release\jcode.exe"
     if (-not (Test-Path $BuiltBin)) { Write-Err "Built binary not found at $BuiltBin" }
