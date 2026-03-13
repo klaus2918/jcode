@@ -19,6 +19,43 @@ pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
     }
 }
 
+pub(super) fn input_prompt(app: &dyn TuiState) -> (&'static str, Color) {
+    if app.is_processing() {
+        ("… ", queued_color())
+    } else if app.active_skill().is_some() {
+        ("» ", accent_color())
+    } else {
+        ("> ", user_color())
+    }
+}
+
+pub(super) fn input_prompt_len(app: &dyn TuiState, next_prompt: usize) -> usize {
+    let (prompt_char, _) = input_prompt(app);
+    next_prompt.to_string().chars().count() + prompt_char.chars().count()
+}
+
+pub(super) fn wrapped_input_line_count(app: &dyn TuiState, area_width: u16, next_prompt: usize) -> usize {
+    let reserved_width = send_mode_reserved_width(app);
+    let prompt_len = input_prompt_len(app, next_prompt);
+    let line_width = (area_width as usize).saturating_sub(prompt_len + reserved_width);
+    if line_width == 0 {
+        return 1;
+    }
+
+    let num_str = next_prompt.to_string();
+    let (prompt_char, caret_color) = input_prompt(app);
+    let (lines, _, _) = wrap_input_text(
+        app.input(),
+        app.cursor_pos(),
+        line_width,
+        &num_str,
+        prompt_char,
+        caret_color,
+        prompt_len,
+    );
+    lines.len().max(1)
+}
+
 pub(super) fn pending_prompt_count(app: &dyn TuiState) -> usize {
     let pending_count = if app.is_processing() {
         app.pending_soft_interrupts().len()
@@ -706,15 +743,9 @@ pub(super) fn draw_input(
     let has_slash_input = input_text.trim_start().starts_with('/');
     let has_suggestions = !suggestions.is_empty() && (has_slash_input || !app.is_processing());
 
-    let (prompt_char, caret_color) = if app.is_processing() {
-        ("… ", queued_color())
-    } else if app.active_skill().is_some() {
-        ("» ", accent_color())
-    } else {
-        ("> ", user_color())
-    };
+    let (prompt_char, caret_color) = input_prompt(app);
     let num_str = format!("{}", next_prompt);
-    let prompt_len = num_str.chars().count() + prompt_char.chars().count();
+    let prompt_len = input_prompt_len(app, next_prompt);
     let reserved_width = send_mode_reserved_width(app);
     let line_width = (area.width as usize).saturating_sub(prompt_len + reserved_width);
 

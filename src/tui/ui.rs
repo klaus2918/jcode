@@ -1751,10 +1751,18 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let pending_count = input_ui::pending_prompt_count(app);
     let queued_height = pending_count.min(3) as u16;
 
-    // Calculate input height based on content (max 10 lines visible, scrolls if more)
-    let reserved_width = input_ui::send_mode_reserved_width(app) as u16;
-    let available_width = chat_area.width.saturating_sub(3 + reserved_width) as usize;
-    let base_input_height = calculate_input_lines(app.input(), available_width).min(10) as u16;
+    // Count user messages to show next prompt number
+    let user_count = app
+        .display_messages()
+        .iter()
+        .filter(|m| m.role == "user")
+        .count();
+    let next_prompt = user_count + 1;
+
+    // Calculate input height based on the same wrapping logic used for rendering
+    // (max 10 lines visible, scrolls if more).
+    let base_input_height = input_ui::wrapped_input_line_count(app, chat_area.width, next_prompt)
+        .min(10) as u16;
     // Add 1 line for command suggestions when typing /, or for Shift+Enter hint when processing
     let suggestions = app.command_suggestions();
     let has_slash_input = app.input().trim_start().starts_with('/');
@@ -1774,13 +1782,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         0
     };
     let input_height = base_input_height + hint_line_height;
-
-    // Count user messages to show next prompt number
-    let user_count = app
-        .display_messages()
-        .iter()
-        .filter(|m| m.role == "user")
-        .count();
 
     let total_start = Instant::now();
     if let Some(ref mut capture) = debug_capture {
@@ -2614,6 +2615,250 @@ fn rect_within_bounds(rect: Rect, bounds: Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::session_picker;
+
+    #[derive(Default)]
+    struct TestState {
+        input: String,
+        cursor_pos: usize,
+        display_messages: Vec<DisplayMessage>,
+        queued_messages: Vec<String>,
+        pending_soft_interrupts: Vec<String>,
+        interleave_message: Option<String>,
+        status: ProcessingStatus,
+        queue_mode: bool,
+        active_skill: Option<String>,
+        centered_mode: bool,
+        picker_state: Option<crate::tui::PickerState>,
+    }
+
+    impl crate::tui::TuiState for TestState {
+        fn display_messages(&self) -> &[DisplayMessage] {
+            &self.display_messages
+        }
+        fn display_messages_version(&self) -> u64 {
+            0
+        }
+        fn streaming_text(&self) -> &str {
+            ""
+        }
+        fn input(&self) -> &str {
+            &self.input
+        }
+        fn cursor_pos(&self) -> usize {
+            self.cursor_pos
+        }
+        fn is_processing(&self) -> bool {
+            !matches!(self.status, ProcessingStatus::Idle)
+        }
+        fn queued_messages(&self) -> &[String] {
+            &self.queued_messages
+        }
+        fn interleave_message(&self) -> Option<&str> {
+            self.interleave_message.as_deref()
+        }
+        fn pending_soft_interrupts(&self) -> &[String] {
+            &self.pending_soft_interrupts
+        }
+        fn scroll_offset(&self) -> usize {
+            0
+        }
+        fn auto_scroll_paused(&self) -> bool {
+            false
+        }
+        fn provider_name(&self) -> String {
+            "mock".to_string()
+        }
+        fn provider_model(&self) -> String {
+            "mock-model".to_string()
+        }
+        fn upstream_provider(&self) -> Option<String> {
+            None
+        }
+        fn connection_type(&self) -> Option<String> {
+            None
+        }
+        fn mcp_servers(&self) -> Vec<(String, usize)> {
+            Vec::new()
+        }
+        fn available_skills(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn streaming_tokens(&self) -> (u64, u64) {
+            (0, 0)
+        }
+        fn streaming_cache_tokens(&self) -> (Option<u64>, Option<u64>) {
+            (None, None)
+        }
+        fn output_tps(&self) -> Option<f32> {
+            None
+        }
+        fn streaming_tool_calls(&self) -> Vec<ToolCall> {
+            Vec::new()
+        }
+        fn elapsed(&self) -> Option<Duration> {
+            None
+        }
+        fn status(&self) -> ProcessingStatus {
+            self.status.clone()
+        }
+        fn command_suggestions(&self) -> Vec<(String, &'static str)> {
+            Vec::new()
+        }
+        fn active_skill(&self) -> Option<String> {
+            self.active_skill.clone()
+        }
+        fn subagent_status(&self) -> Option<String> {
+            None
+        }
+        fn batch_progress(&self) -> Option<crate::bus::BatchProgress> {
+            None
+        }
+        fn time_since_activity(&self) -> Option<Duration> {
+            None
+        }
+        fn total_session_tokens(&self) -> Option<(u64, u64)> {
+            None
+        }
+        fn is_remote_mode(&self) -> bool {
+            false
+        }
+        fn is_canary(&self) -> bool {
+            false
+        }
+        fn is_replay(&self) -> bool {
+            false
+        }
+        fn diff_mode(&self) -> crate::config::DiffDisplayMode {
+            crate::config::DiffDisplayMode::Inline
+        }
+        fn current_session_id(&self) -> Option<String> {
+            None
+        }
+        fn session_display_name(&self) -> Option<String> {
+            None
+        }
+        fn server_display_name(&self) -> Option<String> {
+            None
+        }
+        fn server_display_icon(&self) -> Option<String> {
+            None
+        }
+        fn server_sessions(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn connected_clients(&self) -> Option<usize> {
+            None
+        }
+        fn status_notice(&self) -> Option<String> {
+            None
+        }
+        fn animation_elapsed(&self) -> f32 {
+            0.0
+        }
+        fn rate_limit_remaining(&self) -> Option<Duration> {
+            None
+        }
+        fn queue_mode(&self) -> bool {
+            self.queue_mode
+        }
+        fn has_stashed_input(&self) -> bool {
+            false
+        }
+        fn context_info(&self) -> crate::prompt::ContextInfo {
+            Default::default()
+        }
+        fn context_limit(&self) -> Option<usize> {
+            None
+        }
+        fn client_update_available(&self) -> bool {
+            false
+        }
+        fn server_update_available(&self) -> Option<bool> {
+            None
+        }
+        fn info_widget_data(&self) -> info_widget::InfoWidgetData {
+            Default::default()
+        }
+        fn render_streaming_markdown(&self, _width: usize) -> Vec<Line<'static>> {
+            Vec::new()
+        }
+        fn centered_mode(&self) -> bool {
+            self.centered_mode
+        }
+        fn auth_status(&self) -> crate::auth::AuthStatus {
+            Default::default()
+        }
+        fn update_cost(&mut self) {}
+        fn diagram_mode(&self) -> crate::config::DiagramDisplayMode {
+            Default::default()
+        }
+        fn diagram_focus(&self) -> bool {
+            false
+        }
+        fn diagram_index(&self) -> usize {
+            0
+        }
+        fn diagram_scroll(&self) -> (i32, i32) {
+            (0, 0)
+        }
+        fn diagram_pane_ratio(&self) -> u8 {
+            50
+        }
+        fn diagram_pane_animating(&self) -> bool {
+            false
+        }
+        fn diagram_pane_enabled(&self) -> bool {
+            false
+        }
+        fn diagram_pane_position(&self) -> crate::config::DiagramPanePosition {
+            Default::default()
+        }
+        fn diagram_zoom(&self) -> u8 {
+            100
+        }
+        fn diff_pane_scroll(&self) -> usize {
+            0
+        }
+        fn diff_pane_focus(&self) -> bool {
+            false
+        }
+        fn pin_images(&self) -> bool {
+            false
+        }
+        fn diff_line_wrap(&self) -> bool {
+            true
+        }
+        fn picker_state(&self) -> Option<&crate::tui::PickerState> {
+            self.picker_state.as_ref()
+        }
+        fn changelog_scroll(&self) -> Option<usize> {
+            None
+        }
+        fn help_scroll(&self) -> Option<usize> {
+            None
+        }
+        fn session_picker_overlay(
+            &self,
+        ) -> Option<&std::cell::RefCell<session_picker::SessionPicker>> {
+            None
+        }
+        fn working_dir(&self) -> Option<String> {
+            None
+        }
+        fn now_millis(&self) -> u64 {
+            0
+        }
+        fn copy_badge_ui(&self) -> crate::tui::CopyBadgeUiState {
+            Default::default()
+        }
+        fn suggestion_prompts(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+        fn cache_ttl_status(&self) -> Option<crate::tui::CacheTtlInfo> {
+            None
+        }
+    }
 
     fn reset_prompt_viewport_state_for_test() {
         let mut state = match prompt_viewport_state().lock() {
@@ -2945,6 +3190,31 @@ mod tests {
         assert_eq!(lines.len(), 4);
         assert_eq!(cursor_line, 3); // on 'd' line
         assert_eq!(cursor_col, 0);
+    }
+
+    #[test]
+    fn test_wrapped_input_line_count_respects_two_digit_prompt_width() {
+        let mut app = TestState {
+            input: "abcdefghijk".to_string(),
+            cursor_pos: "abcdefghijk".len(),
+            ..Default::default()
+        };
+        for _ in 0..9 {
+            app.display_messages.push(DisplayMessage {
+                role: "user".to_string(),
+                content: "previous".to_string(),
+                tool_calls: Vec::new(),
+                duration_secs: None,
+                title: None,
+                tool_data: None,
+            });
+        }
+
+        // Old layout math effectively used width 11 here (14 total - hardcoded prompt width 3),
+        // which incorrectly fit this input on a single line. The real prompt is "10> ", width 4,
+        // so the wrapped renderer only has 10 columns and must use 2 lines.
+        assert_eq!(calculate_input_lines(app.input(), 11), 1);
+        assert_eq!(input_ui::wrapped_input_line_count(&app, 14, 10), 2);
     }
 
     #[test]
