@@ -430,14 +430,16 @@ pub(super) async fn handle_comm_message(
                     message: notification_msg.clone(),
                 });
 
-                let _ = queue_soft_interrupt_for_session(
-                    session_id,
-                    notification_msg.clone(),
-                    false,
-                    soft_interrupt_queues,
-                    sessions,
-                )
-                .await;
+                if !target_has_client {
+                    let _ = queue_soft_interrupt_for_session(
+                        session_id,
+                        notification_msg.clone(),
+                        false,
+                        soft_interrupt_queues,
+                        sessions,
+                    )
+                    .await;
+                }
 
                 if target_is_headless && !target_has_client {
                     let target_session = session_id.clone();
@@ -567,5 +569,183 @@ pub(super) async fn handle_comm_message(
             message: "Not in a swarm. Use a git repository to enable swarm features.".to_string(),
             retry_after_secs: None,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_comm_message;
+    use crate::agent::Agent;
+    use crate::message::{Message, ToolDefinition};
+    use crate::protocol::{NotificationType, ServerEvent};
+    use crate::provider::{EventStream, Provider};
+    use crate::server::{ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmMember};
+    use crate::tool::Registry;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, atomic::AtomicU64};
+    use std::time::Instant;
+    use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+
+    struct TestProvider;
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<EventStream> {
+            unimplemented!("test provider")
+        }
+
+        fn name(&self) -> &str {
+            "test"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(TestProvider)
+        }
+    }
+
+    async fn test_agent() -> Arc<Mutex<Agent>> {
+        let provider: Arc<dyn Provider> = Arc::new(TestProvider);
+        let registry = Registry::new(provider.clone()).await;
+        Arc::new(Mutex::new(Agent::new(provider, registry)))
+    }
+
+    #[tokio::test]
+    async fn comm_message_does_not_queue_soft_interrupt_for_connected_session() {
+        let sender = test_agent().await;
+        let target = test_agent().await;
+
+        let sender_id = sender.lock().await.session_id().to_string();
+        let target_id = target.lock().await.session_id().to_string();
+        let target_queue = target.lock().await.soft_interrupt_queue();
+
+        let sessions = Arc::new(RwLock::new(HashMap::from([
+            (sender_id.clone(), sender.clone()),
+            (target_id.clone(), target.clone()),
+        ])));
+        let soft_interrupt_queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
+
+        let (sender_event_tx, _sender_event_rx) = mpsc::unbounded_channel();
+        let (target_event_tx, mut target_event_rx) = mpsc::unbounded_channel();
+        let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+
+        let swarm_id = "swarm-test".to_string();
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([
+            (
+                sender_id.clone(),
+                SwarmMember {
+                    session_id: sender_id.clone(),
+                    event_tx: sender_event_tx,
+                    working_dir: None,
+                    swarm_id: Some(swarm_id.clone()),
+                    swarm_enabled: true,
+                    status: "ready".to_string(),
+                    detail: None,
+                    friendly_name: Some("falcon".to_string()),
+                    role: "coordinator".to_string(),
+                    joined_at: Instant::now(),
+                    last_status_change: Instant::now(),
+                    is_headless: false,
+                },
+            ),
+            (
+                target_id.clone(),
+                SwarmMember {
+                    session_id: target_id.clone(),
+                    event_tx: target_event_tx,
+                    working_dir: None,
+                    swarm_id: Some(swarm_id.clone()),
+                    swarm_enabled: true,
+                    status: "ready".to_string(),
+                    detail: None,
+                    friendly_name: Some("bear".to_string()),
+                    role: "agent".to_string(),
+                    joined_at: Instant::now(),
+                    last_status_change: Instant::now(),
+                    is_headless: false,
+                },
+            ),
+        ])));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
+            swarm_id.clone(),
+            HashSet::from([sender_id.clone(), target_id.clone()]),
+        )])));
+        let channel_subscriptions = Arc::new(RwLock::new(HashMap::from([(
+            swarm_id.clone(),
+            HashMap::from([(
+                "religion-debate".to_string(),
+                HashSet::from([target_id.clone()]),
+            )]),
+        )])));
+        let event_history: Arc<RwLock<Vec<SwarmEvent>>> = Arc::new(RwLock::new(Vec::new()));
+        let event_counter = Arc::new(AtomicU64::new(0));
+        let (swarm_event_tx, _) = broadcast::channel(16);
+        let client_connections = Arc::new(RwLock::new(HashMap::from([(
+            "client-1".to_string(),
+            ClientConnectionInfo {
+                client_id: "client-1".to_string(),
+                session_id: target_id.clone(),
+                connected_at: Instant::now(),
+                last_seen: Instant::now(),
+            },
+        )])));
+
+        handle_comm_message(
+            1,
+            sender_id.clone(),
+            "hello".to_string(),
+            None,
+            Some("religion-debate".to_string()),
+            &client_event_tx,
+            &sessions,
+            &soft_interrupt_queues,
+            &swarm_members,
+            &swarms_by_id,
+            &channel_subscriptions,
+            &event_history,
+            &event_counter,
+            &swarm_event_tx,
+            &client_connections,
+        )
+        .await;
+
+        match target_event_rx.recv().await.expect("target notification") {
+            ServerEvent::Notification {
+                from_session,
+                from_name,
+                notification_type,
+                message,
+            } => {
+                assert_eq!(from_session, sender_id);
+                assert_eq!(from_name.as_deref(), Some("falcon"));
+                match notification_type {
+                    NotificationType::Message { scope, channel } => {
+                        assert_eq!(scope.as_deref(), Some("channel"));
+                        assert_eq!(channel.as_deref(), Some("religion-debate"));
+                    }
+                    other => panic!("unexpected notification type: {:?}", other),
+                }
+                assert_eq!(message, "#religion-debate from falcon: hello");
+            }
+            other => panic!("unexpected event: {:?}", other),
+        }
+
+        match client_event_rx.recv().await.expect("done event") {
+            ServerEvent::Done { id } => assert_eq!(id, 1),
+            other => panic!("unexpected client event: {:?}", other),
+        }
+
+        let pending = target_queue.lock().expect("target queue lock");
+        assert!(
+            pending.is_empty(),
+            "connected interactive session should not get synthetic user-message interrupt"
+        );
     }
 }
