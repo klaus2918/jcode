@@ -39,9 +39,14 @@ public struct PairingClient: Sendable {
         return components.url!
     }
 
+    private static let insecureSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        return URLSession(configuration: config, delegate: InsecureDelegate.shared, delegateQueue: nil)
+    }()
+
     public func checkHealth() async throws -> HealthResponse {
         let url = baseURL.appendingPathComponent("health")
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await Self.insecureSession.data(from: url)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw PairingError.serverUnreachable
         }
@@ -69,7 +74,7 @@ public struct PairingClient: Sendable {
         }
         request.httpBody = try JSONEncoder().encode(body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await Self.insecureSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw PairingError.serverUnreachable
         }
@@ -84,6 +89,16 @@ public struct PairingClient: Sendable {
             let err = try? JSONDecoder().decode(PairError.self, from: data)
             throw PairingError.serverError(err?.error ?? "HTTP \(http.statusCode)")
         }
+    }
+}
+
+final class InsecureDelegate: NSObject, URLSessionDelegate, Sendable {
+    static let shared = InsecureDelegate()
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge
+    ) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        (.useCredential, URLCredential(trust: challenge.protectionSpace.serverTrust!))
     }
 }
 
