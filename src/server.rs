@@ -1489,24 +1489,33 @@ impl Server {
             }
         });
 
-        // Preload embedding model in background so first memory recall is fast
-        tokio::task::spawn_blocking(|| {
-            let start = std::time::Instant::now();
-            match crate::embedding::get_embedder() {
-                Ok(_) => {
-                    crate::logging::info(&format!(
-                        "Embedding model preloaded in {}ms",
-                        start.elapsed().as_millis()
-                    ));
+        // Preload the embedding model in background so warm startups get fast
+        // memory recall. On a cold install, skip eager preload because the
+        // first-time model download can make the first spawned client look hung
+        // while the daemon finishes bootstrapping.
+        if crate::embedding::is_model_available() {
+            tokio::task::spawn_blocking(|| {
+                let start = std::time::Instant::now();
+                match crate::embedding::get_embedder() {
+                    Ok(_) => {
+                        crate::logging::info(&format!(
+                            "Embedding model preloaded in {}ms",
+                            start.elapsed().as_millis()
+                        ));
+                    }
+                    Err(e) => {
+                        crate::logging::info(&format!(
+                            "Embedding model preload failed (non-fatal): {}",
+                            e
+                        ));
+                    }
                 }
-                Err(e) => {
-                    crate::logging::info(&format!(
-                        "Embedding model preload failed (non-fatal): {}",
-                        e
-                    ));
-                }
-            }
-        });
+            });
+        } else {
+            crate::logging::info(
+                "Embedding model not installed yet; skipping eager preload during server startup",
+            );
+        }
 
         // Spawn reload monitor (event-driven via in-process channel).
         // In the unified server design, self-dev sessions share the main server,
