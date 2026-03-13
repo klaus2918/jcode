@@ -631,12 +631,12 @@ pub fn set_socket_path(path: &str) {
     std::env::set_var("JCODE_SOCKET", path);
 }
 
-/// Spawn a server child process and wait until it signals readiness (socket bound).
+/// Spawn a server child process and wait until it signals readiness.
 ///
 /// Creates an anonymous pipe, passes the write-end fd to the child via
-/// `JCODE_READY_FD`, and awaits a single byte on the read end.  The server
-/// calls `signal_ready_fd()` after `Listener::bind()`, so the future resolves
-/// the instant the socket is accepting connections -- no polling needed.
+/// `JCODE_READY_FD`, and awaits a single byte on the read end. The server
+/// calls `signal_ready_fd()` once its accept loops are spawned, so the future
+/// resolves only after the daemon can start servicing client requests.
 ///
 /// Falls back to a short poll loop if the pipe read times out (e.g. server
 /// built without ready-fd support, or crash before bind).
@@ -702,18 +702,18 @@ pub async fn spawn_server_notify(cmd: &mut std::process::Command) -> Result<std:
             crate::logging::info(
                 "Server closed ready pipe without signalling; falling back to poll",
             );
-            poll_for_socket(&socket_path(), Duration::from_secs(5)).await?;
+            wait_for_server_ready(&socket_path(), Duration::from_secs(5)).await?;
         }
         Ok(Err(e)) => {
             crate::logging::info(&format!(
                 "Ready pipe read error: {}; falling back to poll",
                 e
             ));
-            poll_for_socket(&socket_path(), Duration::from_secs(5)).await?;
+            wait_for_server_ready(&socket_path(), Duration::from_secs(5)).await?;
         }
         Err(_) => {
             crate::logging::info("Timed out waiting for server ready signal; falling back to poll");
-            poll_for_socket(&socket_path(), Duration::from_secs(5)).await?;
+            wait_for_server_ready(&socket_path(), Duration::from_secs(5)).await?;
         }
     }
 
@@ -730,16 +730,30 @@ pub async fn spawn_server_notify(cmd: &mut std::process::Command) -> Result<std:
     Ok(child)
 }
 
-/// Simple poll loop waiting for the socket file to become connectable.
-async fn poll_for_socket(path: &std::path::Path, timeout: Duration) -> Result<()> {
+/// Wait until a server socket is connectable and responds to a ping.
+pub async fn wait_for_server_ready(path: &std::path::Path, timeout: Duration) -> Result<()> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if crate::transport::is_socket_path(path) && Stream::connect(path).await.is_ok() {
-            return Ok(());
+        if crate::transport::is_socket_path(path) {
+            if let Ok(mut client) = Client::connect_with_path(path.to_path_buf()).await {
+                match tokio::time::timeout(Duration::from_millis(250), client.ping()).await {
+                    Ok(Ok(true)) => return Ok(()),
+                    Ok(Ok(false)) | Ok(Err(_)) | Err(_) => {}
+                }
+            }
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    anyhow::bail!("Timed out waiting for socket {}", path.display());
+    anyhow::bail!(
+        "Timed out waiting for responsive server socket {}",
+        path.display()
+    );
+}
+
+pub async fn is_server_ready(path: &std::path::Path) -> bool {
+    wait_for_server_ready(path, Duration::from_millis(300))
+        .await
+        .is_ok()
 }
 
 #[cfg(unix)]
@@ -779,8 +793,8 @@ const EMBEDDING_IDLE_CHECK_SECS: u64 = 30;
 const EMBEDDING_IDLE_UNLOAD_DEFAULT_SECS: u64 = 15 * 60;
 
 /// Write a single byte to the fd in `JCODE_READY_FD` and close it.
-/// Called after socket bind so the parent process knows the server is
-/// accepting connections.  The env var is cleared afterwards so child
+/// Called after startup plumbing is ready so the parent process knows the
+/// server can accept and service client requests. The env var is cleared so child
 /// processes (e.g. tool subprocesses) don't inherit a stale fd.
 fn signal_ready_fd() {
     #[cfg(unix)]
@@ -1527,12 +1541,6 @@ impl Server {
         let _ = crate::platform::set_permissions_owner_only(&self.socket_path);
         let _ = crate::platform::set_permissions_owner_only(&self.debug_socket_path);
 
-        // Signal readiness to parent process via JCODE_READY_FD (if set).
-        // The parent creates a pipe and passes the write-end fd number so we
-        // can notify it the moment the socket is bound, avoiding poll-based
-        // startup detection.
-        signal_ready_fd();
-
         // Set logging context for this server
         crate::logging::set_server(&self.identity.name);
 
@@ -1965,6 +1973,10 @@ impl Server {
         });
 
         crate::logging::info("Accept loop tasks spawned");
+
+        // Signal readiness to the spawning client only after the accept loops
+        // are live, so a "ready" server can immediately handle requests.
+        signal_ready_fd();
 
         // Spawn WebSocket gateway for iOS/web clients (if enabled)
         let _gateway_handle = self.spawn_gateway();

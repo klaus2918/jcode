@@ -155,12 +155,12 @@ fn should_attempt_reload_recovery(state: &RemoteRunState) -> bool {
         && disconnect_elapsed(state) >= RELOAD_RECOVERY_SPAWN_AFTER
 }
 
-async fn socket_is_connectable(path: &Path) -> bool {
-    crate::transport::is_socket_path(path) && crate::transport::Stream::connect(path).await.is_ok()
+async fn socket_is_ready(path: &Path) -> bool {
+    crate::server::is_server_ready(path).await
 }
 
 async fn wait_for_socket_ready(path: &Path, timeout: Duration) -> bool {
-    if socket_is_connectable(path).await {
+    if socket_is_ready(path).await {
         return true;
     }
 
@@ -178,12 +178,12 @@ async fn wait_for_socket_ready(path: &Path, timeout: Duration) -> bool {
         tokio::select! {
             saw_event = &mut dir_event, if !dir_event_done => {
                 dir_event_done = true;
-                if saw_event && socket_is_connectable(path).await {
+                if saw_event && socket_is_ready(path).await {
                     return true;
                 }
             }
             _ = probe_interval.tick() => {
-                if socket_is_connectable(path).await {
+                if socket_is_ready(path).await {
                     return true;
                 }
             }
