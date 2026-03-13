@@ -275,7 +275,10 @@ struct JCTextField: View {
 
 struct MainView: View {
     @EnvironmentObject private var model: AppModel
+    @StateObject private var speech = SpeechRecognizer()
     @State private var showSettings = false
+    @State private var floatingAttachments: [ImageAttachment] = []
+    @State private var showFloatingCamera = false
 
     var body: some View {
         NavigationStack {
@@ -284,13 +287,99 @@ struct MainView: View {
 
                 VStack(spacing: 0) {
                     StreamView()
-                    ChatInputBar()
+                    ChatInputBar(externalAttachments: $floatingAttachments)
                 }
+
+                FloatingActions(
+                    speech: speech,
+                    showCamera: $showFloatingCamera,
+                    draftMessage: $model.draftMessage
+                )
             }
             .sheet(isPresented: $showSettings) {
                 SettingsSheet()
             }
+            .fullScreenCover(isPresented: $showFloatingCamera) {
+                CameraPickerView { image in
+                    if let attachment = ImageAttachment.from(image: image) {
+                        floatingAttachments.append(attachment)
+                    }
+                }
+            }
         }
+    }
+}
+
+// MARK: - Floating Action Buttons (middle-right)
+
+struct FloatingActions: View {
+    @ObservedObject var speech: SpeechRecognizer
+    @Binding var showCamera: Bool
+    @Binding var draftMessage: String
+
+    @State private var prefixBeforeDictation = ""
+
+    var body: some View {
+        VStack(spacing: JC.Spacing.md) {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                FloatingActionButton(
+                    icon: "camera.fill",
+                    color: JC.Colors.cyan,
+                    isActive: false
+                ) {
+                    showCamera = true
+                }
+            }
+
+            FloatingActionButton(
+                icon: speech.isRecording ? "waveform" : "mic.fill",
+                color: JC.Colors.pink,
+                isActive: speech.isRecording
+            ) {
+                if !speech.isRecording {
+                    prefixBeforeDictation = draftMessage
+                }
+                speech.toggleRecording()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+        .padding(.trailing, JC.Spacing.md)
+        .onChange(of: speech.transcript) { _, newValue in
+            guard speech.isRecording, !newValue.isEmpty else { return }
+            if prefixBeforeDictation.isEmpty {
+                draftMessage = newValue
+            } else {
+                draftMessage = prefixBeforeDictation + " " + newValue
+            }
+        }
+    }
+}
+
+struct FloatingActionButton: View {
+    let icon: String
+    let color: Color
+    let isActive: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(isActive ? .white : color)
+                .frame(width: 48, height: 48)
+                .background(
+                    Circle()
+                        .fill(isActive ? color : color.opacity(0.15))
+                )
+                .overlay(
+                    Circle()
+                        .stroke(color.opacity(isActive ? 0 : 0.3), lineWidth: 1)
+                )
+                .shadow(color: isActive ? color.opacity(0.5) : .clear, radius: 8)
+                .scaleEffect(isActive ? 1.08 : 1.0)
+                .animation(JC.Animation.quick, value: isActive)
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -529,10 +618,15 @@ struct ToolDetailLine: View {
 
 struct ChatInputBar: View {
     @EnvironmentObject private var model: AppModel
+    @Binding var externalAttachments: [ImageAttachment]
     @State private var showInterruptSheet = false
     @State private var interruptMessage = ""
     @State private var attachments: [ImageAttachment] = []
     @FocusState private var inputFocused: Bool
+
+    private var allAttachments: [ImageAttachment] {
+        attachments + externalAttachments
+    }
 
     var body: some View {
         VStack(spacing: JC.Spacing.sm) {
@@ -578,17 +672,22 @@ struct ChatInputBar: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if !attachments.isEmpty {
-                AttachmentStrip(attachments: $attachments)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            if !allAttachments.isEmpty {
+                AttachmentStrip(attachments: Binding(
+                    get: { allAttachments },
+                    set: { newValue in
+                        attachments = []
+                        externalAttachments = []
+                        for item in newValue {
+                            attachments.append(item)
+                        }
+                    }
+                ))
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             HStack(alignment: .bottom, spacing: JC.Spacing.sm) {
                 PhotoPickerButton(attachments: $attachments)
-
-                if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                    CameraButton(attachments: $attachments)
-                }
 
                 HStack(spacing: 0) {
                     TextField("Message jcode...", text: $model.draftMessage, axis: .vertical)
@@ -607,8 +706,10 @@ struct ChatInputBar: View {
                 )
 
                 Button {
-                    let images = attachments.map { ($0.mediaType, $0.base64Data) }
+                    let all = allAttachments
+                    let images = all.map { ($0.mediaType, $0.base64Data) }
                     attachments.removeAll()
+                    externalAttachments.removeAll()
                     Task { await model.sendDraft(images: images) }
                 } label: {
                     Image(systemName: "arrow.up")
@@ -640,7 +741,7 @@ struct ChatInputBar: View {
 
     private var canSend: Bool {
         model.connectionState == .connected &&
-        (!model.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
+        (!model.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !allAttachments.isEmpty)
     }
 }
 
