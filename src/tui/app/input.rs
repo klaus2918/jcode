@@ -1236,7 +1236,7 @@ impl App {
                     self.last_stream_error = None;
                 }
                 Err(e) => {
-                    let err_str = e.to_string();
+                    let err_str = crate::util::format_error_chain(&e);
                     if is_context_limit_error(&err_str) {
                         if self
                             .try_auto_compact_and_retry(terminal, event_stream)

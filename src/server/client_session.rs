@@ -527,7 +527,10 @@ pub(super) async fn handle_resume_session(
         Err(error) => {
             let _ = client_event_tx.send(ServerEvent::Error {
                 id,
-                message: format!("Failed to restore session: {}", error),
+                message: format!(
+                    "Failed to restore session: {}",
+                    crate::util::format_error_chain(&error)
+                ),
                 retry_after_secs: None,
             });
         }

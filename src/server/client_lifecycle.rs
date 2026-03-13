@@ -456,7 +456,7 @@ pub(super) async fn handle_client(
                             }
                             let _ = client_event_tx.send(ServerEvent::Error {
                                 id: done_id,
-                                message: e.to_string(),
+                                message: crate::util::format_error_chain(&e),
                                 retry_after_secs,
                             });
                         }

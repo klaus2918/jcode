@@ -227,6 +227,8 @@ struct VertexGenerateContentResponse {
     #[serde(default)]
     candidates: Option<Vec<GeminiCandidate>>,
     #[serde(default)]
+    prompt_feedback: Option<GeminiPromptFeedback>,
+    #[serde(default)]
     usage_metadata: Option<GeminiUsageMetadata>,
 }
 
@@ -237,6 +239,17 @@ struct GeminiCandidate {
     content: Option<GeminiContent>,
     #[serde(default)]
     finish_reason: Option<String>,
+    #[serde(default)]
+    finish_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiPromptFeedback {
+    #[serde(default)]
+    block_reason: Option<String>,
+    #[serde(default)]
+    block_reason_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -589,10 +602,43 @@ impl Provider for GeminiProvider {
                     .await;
             }
 
-            let candidate = response
-                .response
-                .and_then(|response| response.candidates)
-                .and_then(|candidates| candidates.into_iter().next());
+            let response_body = response.response;
+
+            let candidate = response_body
+                .as_ref()
+                .and_then(|response| response.candidates.as_ref())
+                .and_then(|candidates| candidates.first())
+                .cloned();
+
+            if candidate.is_none() {
+                if let Some(feedback) = response_body
+                    .as_ref()
+                    .and_then(|response| response.prompt_feedback.as_ref())
+                {
+                    let block_reason = feedback.block_reason.as_deref().unwrap_or("unspecified");
+                    let detail = feedback
+                        .block_reason_message
+                        .as_deref()
+                        .filter(|msg| !msg.trim().is_empty())
+                        .map(|msg| format!(": {}", msg.trim()))
+                        .unwrap_or_default();
+                    let _ = tx
+                        .send(Err(anyhow::anyhow!(
+                            "Gemini blocked the prompt ({}){}",
+                            block_reason,
+                            detail
+                        )))
+                        .await;
+                    return;
+                }
+
+                let _ = tx
+                    .send(Err(anyhow::anyhow!(
+                        "Gemini returned no candidates for generateContent"
+                    )))
+                    .await;
+                return;
+            }
 
             let mut stop_reason = None;
             if let Some(candidate) = candidate {
@@ -600,6 +646,28 @@ impl Provider for GeminiProvider {
                     .finish_reason
                     .clone()
                     .map(|reason| reason.to_lowercase());
+                if candidate.content.is_none()
+                    && matches!(
+                        candidate.finish_reason.as_deref(),
+                        Some("SAFETY" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" | "RECITATION")
+                    )
+                {
+                    let reason = candidate.finish_reason.as_deref().unwrap_or("unknown");
+                    let detail = candidate
+                        .finish_message
+                        .as_deref()
+                        .filter(|msg| !msg.trim().is_empty())
+                        .map(|msg| format!(": {}", msg.trim()))
+                        .unwrap_or_default();
+                    let _ = tx
+                        .send(Err(anyhow::anyhow!(
+                            "Gemini stopped without content ({}){}",
+                            reason,
+                            detail
+                        )))
+                        .await;
+                    return;
+                }
                 if let Some(content) = candidate.content {
                     for part in content.parts {
                         if let Some(text) = part.text {
@@ -939,5 +1007,48 @@ mod tests {
         let built = build_tools(&defs).unwrap();
         assert_eq!(built.len(), 1);
         assert_eq!(built[0].function_declarations[0].name, "read");
+    }
+
+    #[test]
+    fn parses_prompt_feedback_block_reason() {
+        let response: VertexGenerateContentResponse = serde_json::from_value(json!({
+            "promptFeedback": {
+                "blockReason": "PROHIBITED_CONTENT",
+                "blockReasonMessage": "Prompt violated policy"
+            }
+        }))
+        .expect("parse prompt feedback");
+
+        let feedback = response.prompt_feedback.expect("missing prompt feedback");
+        assert_eq!(feedback.block_reason.as_deref(), Some("PROHIBITED_CONTENT"));
+        assert_eq!(
+            feedback.block_reason_message.as_deref(),
+            Some("Prompt violated policy")
+        );
+    }
+
+    #[test]
+    fn parses_candidate_finish_message() {
+        let response: VertexGenerateContentResponse = serde_json::from_value(json!({
+            "candidates": [
+                {
+                    "finishReason": "SAFETY",
+                    "finishMessage": "Response blocked by safety filters"
+                }
+            ]
+        }))
+        .expect("parse candidate");
+
+        let candidate = response
+            .candidates
+            .expect("missing candidates")
+            .into_iter()
+            .next()
+            .expect("missing first candidate");
+        assert_eq!(candidate.finish_reason.as_deref(), Some("SAFETY"));
+        assert_eq!(
+            candidate.finish_message.as_deref(),
+            Some("Response blocked by safety filters")
+        );
     }
 }

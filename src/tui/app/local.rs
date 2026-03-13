@@ -16,7 +16,7 @@ pub(super) async fn process_turn_with_input(
             app.last_stream_error = None;
         }
         Err(error) => {
-            let err_str = error.to_string();
+            let err_str = crate::util::format_error_chain(&error);
             if is_context_limit_error(&err_str) {
                 if !app.try_auto_compact_and_retry(terminal, event_stream).await {
                     app.handle_turn_error(err_str);

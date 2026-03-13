@@ -323,7 +323,7 @@ pub(super) async fn handle_agent_task(
                 .and_then(|stream_error| stream_error.retry_after_secs);
             let _ = client_event_tx.send(ServerEvent::Error {
                 id,
-                message: e.to_string(),
+                message: crate::util::format_error_chain(&e),
                 retry_after_secs,
             });
         }

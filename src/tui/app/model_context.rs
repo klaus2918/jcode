@@ -333,7 +333,7 @@ impl App {
                                     true
                                 }
                                 Err(e) => {
-                                    self.handle_turn_error(e.to_string());
+                                    self.handle_turn_error(crate::util::format_error_chain(&e));
                                     false
                                 }
                             };
@@ -367,7 +367,7 @@ impl App {
                                         true
                                     }
                                     Err(e) => {
-                                        self.handle_turn_error(e.to_string());
+                                        self.handle_turn_error(crate::util::format_error_chain(&e));
                                         false
                                     }
                                 };
@@ -407,7 +407,7 @@ impl App {
                                         true
                                     }
                                     Err(e) => {
-                                        self.handle_turn_error(e.to_string());
+                                        self.handle_turn_error(crate::util::format_error_chain(&e));
                                         false
                                     }
                                 };
@@ -494,7 +494,7 @@ impl App {
                 true
             }
             Err(e) => {
-                self.handle_turn_error(e.to_string());
+                self.handle_turn_error(crate::util::format_error_chain(&e));
                 false
             }
         }
