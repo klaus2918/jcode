@@ -294,6 +294,14 @@ fn resume_invocation_args(session_id: &str, socket: Option<&str>) -> Vec<String>
     args
 }
 
+fn resumed_window_title(session_id: &str) -> String {
+    let session_name = crate::id::extract_session_name(session_id)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| session_id.to_string());
+    let icon = crate::id::session_icon(&session_name);
+    format!("{} jcode {}", icon, session_name)
+}
+
 #[cfg(unix)]
 pub(super) fn spawn_in_new_terminal(
     exe: &Path,
@@ -332,7 +340,8 @@ pub(super) fn spawn_in_new_terminal(
 
         match term.as_str() {
             "kitty" => {
-                cmd.args(["--title", "jcode split", "-e"])
+                let title = resumed_window_title(session_id);
+                cmd.args(["--title", &title, "-e"])
                     .arg(exe)
                     .args(resume_invocation_args(session_id, socket));
             }
