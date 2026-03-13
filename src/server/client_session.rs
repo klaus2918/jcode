@@ -1,10 +1,9 @@
 use super::client_state::send_history;
-use super::reload::{do_server_reload_with_progress, normalize_model_arg, provider_cli_arg};
 use super::{
     broadcast_swarm_status, register_session_interrupt_queue, remove_plan_participant,
     remove_session_channel_subscriptions, remove_session_interrupt_queue, rename_plan_participant,
-    rename_session_interrupt_queue, socket_path, swarm_id_for_dir, update_member_status,
-    ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmMember, VersionedPlan,
+    rename_session_interrupt_queue, swarm_id_for_dir, update_member_status, ClientConnectionInfo,
+    SessionInterruptQueues, SwarmEvent, SwarmMember, VersionedPlan,
 };
 use crate::agent::Agent;
 use crate::message::ContentBlock;
@@ -337,41 +336,21 @@ pub(super) async fn handle_reload(
     mark_remote_reload_started(&request_id);
     let _ = client_event_tx.send(ServerEvent::Reloading { new_socket: None });
 
-    let (provider_arg, model_arg) = {
+    let (triggering_session, prefer_selfdev_binary) = {
         let agent_guard = agent.lock().await;
         (
-            provider_cli_arg(&agent_guard.provider_name()),
-            normalize_model_arg(agent_guard.provider_model()),
+            Some(agent_guard.session_id().to_string()),
+            agent_guard.is_canary(),
         )
     };
+    let hash = env!("JCODE_GIT_HASH").to_string();
+    let signal_request_id =
+        crate::server::send_reload_signal(hash, triggering_session, prefer_selfdev_binary);
 
-    let is_selfdev_session = {
-        let agent_guard = agent.lock().await;
-        agent_guard.is_canary()
-    };
-
-    let progress_tx = client_event_tx.clone();
-    let socket_arg = socket_path().to_string_lossy().to_string();
-    tokio::spawn(async move {
-        if let Err(error) = do_server_reload_with_progress(
-            progress_tx.clone(),
-            request_id.clone(),
-            provider_arg,
-            model_arg,
-            socket_arg,
-            is_selfdev_session,
-        )
-        .await
-        {
-            let _ = progress_tx.send(ServerEvent::ReloadProgress {
-                step: "error".to_string(),
-                message: format!("Reload failed: {}", error),
-                success: Some(false),
-                output: None,
-            });
-            crate::logging::error(&format!("Reload failed: {}", error));
-        }
-    });
+    crate::logging::info(&format!(
+        "Queued reload signal {} from remote client request {}",
+        signal_request_id, request_id
+    ));
 
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }
@@ -560,18 +539,20 @@ pub(super) async fn handle_resume_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        mark_remote_reload_started, rename_shutdown_signal, session_was_interrupted_by_reload,
+        handle_reload, mark_remote_reload_started, rename_shutdown_signal,
+        session_was_interrupted_by_reload,
     };
     use crate::agent::{Agent, InterruptSignal};
     use crate::message::ContentBlock;
     use crate::message::{Message, ToolDefinition};
+    use crate::protocol::ServerEvent;
     use crate::provider::{EventStream, Provider};
     use crate::tool::Registry;
     use anyhow::Result;
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
+    use tokio::sync::{mpsc, Mutex, RwLock};
 
     struct MockProvider;
 
@@ -601,6 +582,14 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let _guard = rt.enter();
         let registry = rt.block_on(Registry::new(provider.clone()));
+        build_test_agent(provider, registry, messages)
+    }
+
+    fn build_test_agent(
+        provider: Arc<dyn Provider>,
+        registry: Registry,
+        messages: Vec<crate::session::StoredMessage>,
+    ) -> Agent {
         let mut session =
             crate::session::Session::create_with_id("session_test_reload".to_string(), None, None);
         session.model = Some("mock".to_string());
@@ -692,6 +681,58 @@ mod tests {
             .expect("reload state should exist");
         assert_eq!(state.request_id, "reload-test");
         assert_eq!(state.phase, crate::server::ReloadPhase::Starting);
+
+        crate::server::clear_reload_marker();
+        if let Some(prev_runtime) = prev_runtime {
+            std::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            std::env::remove_var("JCODE_RUNTIME_DIR");
+        }
+    }
+
+    #[test]
+    fn handle_reload_queues_signal_for_canary_session() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        std::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let mut rx = crate::server::subscribe_reload_signal_for_tests();
+            let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+            let registry = Registry::new(provider.clone()).await;
+            let mut agent = build_test_agent(provider, registry, Vec::new());
+            agent.set_canary("self-dev");
+            let agent = Arc::new(Mutex::new(agent));
+            let (tx, mut events) = mpsc::unbounded_channel::<ServerEvent>();
+
+            handle_reload(7, &agent, &tx).await;
+
+            let reloading = events.recv().await.expect("reloading event");
+            assert!(matches!(reloading, ServerEvent::Reloading { .. }));
+            let done = events.recv().await.expect("done event");
+            assert!(matches!(done, ServerEvent::Done { id: 7 }));
+
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.changed())
+                .await
+                .expect("reload signal timeout")
+                .expect("reload signal should be delivered");
+            let signal = rx
+                .borrow_and_update()
+                .clone()
+                .expect("reload signal payload should exist");
+            assert_eq!(
+                signal.triggering_session.as_deref(),
+                Some("session_test_reload")
+            );
+            assert!(signal.prefer_selfdev_binary);
+            assert_eq!(signal.hash, env!("JCODE_GIT_HASH"));
+
+            let state = crate::server::recent_reload_state(std::time::Duration::from_secs(5))
+                .expect("reload state should exist");
+            assert_eq!(state.phase, crate::server::ReloadPhase::Starting);
+        });
 
         crate::server::clear_reload_marker();
         if let Some(prev_runtime) = prev_runtime {
