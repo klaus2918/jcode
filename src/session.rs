@@ -931,8 +931,7 @@ mod tests {
 
         session.save().expect("save session with compaction state");
 
-        let loaded =
-            Session::load("session_compaction_persist_test").expect("load saved session");
+        let loaded = Session::load("session_compaction_persist_test").expect("load saved session");
         assert_eq!(loaded.compaction, session.compaction);
     }
 

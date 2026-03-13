@@ -21,8 +21,7 @@ fn gemini_client_id() -> String {
 }
 
 fn gemini_client_secret() -> String {
-    std::env::var("GEMINI_CLIENT_SECRET")
-        .unwrap_or_else(|_| GEMINI_OAUTH_CLIENT_SECRET.to_string())
+    std::env::var("GEMINI_CLIENT_SECRET").unwrap_or_else(|_| GEMINI_OAUTH_CLIENT_SECRET.to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

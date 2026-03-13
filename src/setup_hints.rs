@@ -1080,7 +1080,8 @@ fn run_macos_hotkey_listener() -> Result<()> {
     use std::process::Command;
 
     let launch_script = mac_hotkey_support_dir()?.join("launch_jcode.sh");
-    let manager = GlobalHotKeyManager::new().context("failed to initialize global hotkey manager")?;
+    let manager =
+        GlobalHotKeyManager::new().context("failed to initialize global hotkey manager")?;
     let hotkey = HotKey::new(Some(Modifiers::ALT), Code::Semicolon);
     manager
         .register(hotkey)

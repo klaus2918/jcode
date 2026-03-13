@@ -298,23 +298,25 @@ impl GeminiProvider {
             metadata: metadata.clone(),
             mode: None,
         };
-        let load_res: LoadCodeAssistResponse = match self.post_json("loadCodeAssist", &load_req).await {
-            Ok(response) => response,
-            Err(err) if is_vpc_sc_error(&err) => LoadCodeAssistResponse {
-                current_tier: Some(GeminiUserTier {
-                    id: Some("standard-tier".to_string()),
-                    name: None,
-                    is_default: None,
-                }),
-                allowed_tiers: None,
-                ineligible_tiers: None,
-                cloudaicompanion_project: None,
-                paid_tier: None,
-            },
-            Err(err) => {
-                return Err(err).context("Gemini Code Assist setup failed during loadCodeAssist")
-            }
-        };
+        let load_res: LoadCodeAssistResponse =
+            match self.post_json("loadCodeAssist", &load_req).await {
+                Ok(response) => response,
+                Err(err) if is_vpc_sc_error(&err) => LoadCodeAssistResponse {
+                    current_tier: Some(GeminiUserTier {
+                        id: Some("standard-tier".to_string()),
+                        name: None,
+                        is_default: None,
+                    }),
+                    allowed_tiers: None,
+                    ineligible_tiers: None,
+                    cloudaicompanion_project: None,
+                    paid_tier: None,
+                },
+                Err(err) => {
+                    return Err(err)
+                        .context("Gemini Code Assist setup failed during loadCodeAssist")
+                }
+            };
 
         validate_load_code_assist_response(&load_res)?;
 

@@ -707,38 +707,43 @@ impl App {
             tokio::spawn(async move {
                 let code = tokio::time::timeout(
                     std::time::Duration::from_secs(300),
-                    crate::auth::oauth::wait_for_callback_async_on_listener(listener, &expected_state),
+                    crate::auth::oauth::wait_for_callback_async_on_listener(
+                        listener,
+                        &expected_state,
+                    ),
                 )
                 .await
                 .map_err(|_| "Login timed out after 5 minutes. Please try again.".to_string())
                 .and_then(|result| result.map_err(|e| format!("Callback failed: {}", e)));
 
                 match code {
-                    Ok(code) => match crate::auth::gemini::exchange_callback_code(
-                        &code,
-                        &redirect_clone,
-                    )
-                    .await
-                    {
-                        Ok(tokens) => {
-                            let msg = if let Some(email) = tokens.email {
-                                format!("Successfully logged in to Gemini! (account: {})", email)
-                            } else {
-                                "Successfully logged in to Gemini!".to_string()
-                            };
-                            Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
-                                provider: "gemini".to_string(),
-                                success: true,
-                                message: msg,
-                            }));
+                    Ok(code) => {
+                        match crate::auth::gemini::exchange_callback_code(&code, &redirect_clone)
+                            .await
+                        {
+                            Ok(tokens) => {
+                                let msg = if let Some(email) = tokens.email {
+                                    format!(
+                                        "Successfully logged in to Gemini! (account: {})",
+                                        email
+                                    )
+                                } else {
+                                    "Successfully logged in to Gemini!".to_string()
+                                };
+                                Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                                    provider: "gemini".to_string(),
+                                    success: true,
+                                    message: msg,
+                                }));
+                            }
+                            Err(e) => {
+                                crate::logging::info(&format!(
+                                    "Gemini automatic callback did not complete: {}",
+                                    e
+                                ));
+                            }
                         }
-                        Err(e) => {
-                            crate::logging::info(&format!(
-                                "Gemini automatic callback did not complete: {}",
-                                e
-                            ));
-                        }
-                    },
+                    }
                     Err(e) => {
                         crate::logging::info(&format!(
                             "Gemini automatic callback did not complete: {}",
@@ -755,7 +760,8 @@ impl App {
                 redirect_uri
             )
         } else {
-            "Finish login in any browser, then paste the callback URL or authorization code here.\n".to_string()
+            "Finish login in any browser, then paste the callback URL or authorization code here.\n"
+                .to_string()
         };
         let browser_line = if browser_opened {
             String::new()
