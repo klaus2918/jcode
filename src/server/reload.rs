@@ -76,6 +76,7 @@ pub(super) fn do_server_reload() -> Result<()> {
 
 pub(super) async fn do_server_reload_with_progress(
     tx: mpsc::UnboundedSender<crate::protocol::ServerEvent>,
+    request_id: String,
     provider_arg: Option<String>,
     model_arg: Option<String>,
     socket_arg: String,
@@ -186,6 +187,12 @@ pub(super) async fn do_server_reload_with_progress(
         cmd.arg("--model").arg(model);
     }
     let err = crate::platform::replace_process(&mut cmd);
+    crate::server::write_reload_state(
+        &request_id,
+        env!("JCODE_VERSION"),
+        crate::server::ReloadPhase::Failed,
+        Some(err.to_string()),
+    );
 
     Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err))
 }

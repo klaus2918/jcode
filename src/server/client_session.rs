@@ -40,6 +40,15 @@ fn session_was_interrupted_by_reload(agent: &Agent) -> bool {
     })
 }
 
+fn mark_remote_reload_started(request_id: &str) {
+    crate::server::write_reload_state(
+        request_id,
+        env!("JCODE_VERSION"),
+        crate::server::ReloadPhase::Starting,
+        None,
+    );
+}
+
 async fn rename_shutdown_signal(
     shutdown_signals: &Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
     old_session_id: &str,
@@ -324,6 +333,8 @@ pub(super) async fn handle_reload(
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
+    let request_id = crate::id::new_id("reload");
+    mark_remote_reload_started(&request_id);
     let _ = client_event_tx.send(ServerEvent::Reloading { new_socket: None });
 
     let (provider_arg, model_arg) = {
@@ -344,6 +355,7 @@ pub(super) async fn handle_reload(
     tokio::spawn(async move {
         if let Err(error) = do_server_reload_with_progress(
             progress_tx.clone(),
+            request_id.clone(),
             provider_arg,
             model_arg,
             socket_arg,
@@ -547,7 +559,9 @@ pub(super) async fn handle_resume_session(
 
 #[cfg(test)]
 mod tests {
-    use super::{rename_shutdown_signal, session_was_interrupted_by_reload};
+    use super::{
+        mark_remote_reload_started, rename_shutdown_signal, session_was_interrupted_by_reload,
+    };
     use crate::agent::{Agent, InterruptSignal};
     use crate::message::ContentBlock;
     use crate::message::{Message, ToolDefinition};
@@ -663,6 +677,28 @@ mod tests {
         }]);
 
         assert!(!session_was_interrupted_by_reload(&agent));
+    }
+
+    #[test]
+    fn mark_remote_reload_started_writes_starting_marker() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        std::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
+        mark_remote_reload_started("reload-test");
+
+        let state = crate::server::recent_reload_state(std::time::Duration::from_secs(5))
+            .expect("reload state should exist");
+        assert_eq!(state.request_id, "reload-test");
+        assert_eq!(state.phase, crate::server::ReloadPhase::Starting);
+
+        crate::server::clear_reload_marker();
+        if let Some(prev_runtime) = prev_runtime {
+            std::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            std::env::remove_var("JCODE_RUNTIME_DIR");
+        }
     }
 
     #[tokio::test]

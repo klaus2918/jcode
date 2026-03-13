@@ -23,6 +23,7 @@ pub(super) struct RemoteRunState {
     pub initial_server_start: bool,
     pub last_disconnect_reason: Option<String>,
     pub server_reload_in_progress: bool,
+    pub reload_recovery_attempted: bool,
 }
 
 fn format_disconnect_reason(reason: &RemoteDisconnectReason) -> String {
@@ -98,15 +99,35 @@ pub(super) enum RemoteEventOutcome {
 }
 
 const RELOAD_SOCKET_WAIT_TIMEOUT: Duration = Duration::from_millis(800);
-const RELOAD_SOCKET_WAIT_WINDOW: Duration = Duration::from_secs(10);
+const RELOAD_SOCKET_WAIT_WINDOW: Duration = Duration::from_secs(30);
 const RELOAD_SOCKET_PROBE_INTERVAL: Duration = Duration::from_millis(25);
+const RELOAD_SOCKET_RETRY_DELAY: Duration = Duration::from_millis(250);
+const RELOAD_RECOVERY_SPAWN_AFTER: Duration = Duration::from_secs(5);
+const RELOAD_MARKER_MAX_AGE: Duration = Duration::from_secs(30);
+
+fn reload_marker_active() -> bool {
+    crate::server::reload_marker_active(RELOAD_MARKER_MAX_AGE)
+}
+
+fn reload_handoff_active(state: &RemoteRunState) -> bool {
+    state.server_reload_in_progress || reload_marker_active()
+}
+
+fn disconnect_elapsed(state: &RemoteRunState) -> Duration {
+    state
+        .disconnect_start
+        .map(|start| start.elapsed())
+        .unwrap_or_default()
+}
 
 pub(super) fn should_wait_for_reload_socket(state: &RemoteRunState) -> bool {
-    state.server_reload_in_progress
-        && state
-            .disconnect_start
-            .map(|start| start.elapsed() < RELOAD_SOCKET_WAIT_WINDOW)
-            .unwrap_or(true)
+    reload_handoff_active(state) && disconnect_elapsed(state) < RELOAD_SOCKET_WAIT_WINDOW
+}
+
+fn should_attempt_reload_recovery(state: &RemoteRunState) -> bool {
+    reload_handoff_active(state)
+        && !state.reload_recovery_attempted
+        && disconnect_elapsed(state) >= RELOAD_RECOVERY_SPAWN_AFTER
 }
 
 async fn socket_is_connectable(path: &Path) -> bool {
@@ -141,6 +162,56 @@ async fn wait_for_socket_ready(path: &Path, timeout: Duration) -> bool {
                     return true;
                 }
             }
+        }
+    }
+}
+
+async fn recover_reloading_server(
+    app: &mut App,
+    terminal: &mut DefaultTerminal,
+    state: &mut RemoteRunState,
+) -> Result<bool> {
+    if !should_attempt_reload_recovery(state) || crate::cli::dispatch::server_is_running().await {
+        return Ok(false);
+    }
+
+    state.reload_recovery_attempted = true;
+    state.last_disconnect_reason = Some("reload stalled; starting replacement server".to_string());
+
+    let content =
+        reconnect_status_message(app, state, "reload stalled; starting replacement server");
+    if let Some(idx) = state.disconnect_msg_idx {
+        if idx < app.display_messages.len() {
+            app.display_messages[idx].content = content;
+        }
+    } else {
+        app.push_display_message(DisplayMessage::system(content));
+        state.disconnect_msg_idx = Some(app.display_messages.len() - 1);
+    }
+    terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
+
+    crate::logging::warn("Reload reconnect stalled; spawning a replacement shared server");
+
+    match crate::cli::dispatch::spawn_server(&crate::cli::provider_init::ProviderChoice::Auto, None)
+        .await
+    {
+        Ok(()) => {
+            state.initial_server_start = true;
+            state.last_disconnect_reason =
+                Some("replacement server started; reconnecting".to_string());
+            crate::logging::info("Replacement shared server started after stalled reload");
+            Ok(true)
+        }
+        Err(error) => {
+            state.last_disconnect_reason = Some(format!(
+                "reload recovery failed while starting server: {}",
+                error
+            ));
+            crate::logging::error(&format!(
+                "Failed to start replacement server after stalled reload: {}",
+                error
+            ));
+            Ok(false)
         }
     }
 }
@@ -365,6 +436,79 @@ pub(super) async fn handle_terminal_event(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{
+        should_attempt_reload_recovery, should_wait_for_reload_socket, RemoteRunState,
+        RELOAD_RECOVERY_SPAWN_AFTER, RELOAD_SOCKET_WAIT_WINDOW,
+    };
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn reload_socket_wait_stays_enabled_during_handoff_window() {
+        let state = RemoteRunState {
+            server_reload_in_progress: true,
+            disconnect_start: Some(Instant::now() - Duration::from_secs(2)),
+            ..RemoteRunState::default()
+        };
+
+        assert!(should_wait_for_reload_socket(&state));
+    }
+
+    #[test]
+    fn reload_socket_wait_expires_after_window() {
+        let state = RemoteRunState {
+            server_reload_in_progress: true,
+            disconnect_start: Some(
+                Instant::now() - RELOAD_SOCKET_WAIT_WINDOW - Duration::from_secs(1),
+            ),
+            ..RemoteRunState::default()
+        };
+
+        assert!(!should_wait_for_reload_socket(&state));
+    }
+
+    #[test]
+    fn reload_recovery_waits_for_stall_threshold() {
+        let state = RemoteRunState {
+            server_reload_in_progress: true,
+            disconnect_start: Some(
+                Instant::now() - RELOAD_RECOVERY_SPAWN_AFTER + Duration::from_millis(250),
+            ),
+            ..RemoteRunState::default()
+        };
+
+        assert!(!should_attempt_reload_recovery(&state));
+    }
+
+    #[test]
+    fn reload_recovery_triggers_after_stall_threshold() {
+        let state = RemoteRunState {
+            server_reload_in_progress: true,
+            disconnect_start: Some(
+                Instant::now() - RELOAD_RECOVERY_SPAWN_AFTER - Duration::from_millis(250),
+            ),
+            ..RemoteRunState::default()
+        };
+
+        assert!(should_attempt_reload_recovery(&state));
+    }
+
+    #[test]
+    fn reload_recovery_only_attempts_once_per_disconnect_window() {
+        let state = RemoteRunState {
+            server_reload_in_progress: true,
+            reload_recovery_attempted: true,
+            disconnect_start: Some(
+                Instant::now() - RELOAD_RECOVERY_SPAWN_AFTER - Duration::from_secs(1),
+            ),
+            ..RemoteRunState::default()
+        };
+
+        assert!(!should_attempt_reload_recovery(&state));
+    }
+}
+
 pub(super) async fn handle_bus_event(
     app: &mut App,
     remote: &mut RemoteConnection,
@@ -423,6 +567,7 @@ pub(super) async fn connect_with_retry(
             state.disconnect_start = None;
             state.last_disconnect_reason = None;
             state.server_reload_in_progress = false;
+            state.reload_recovery_attempted = false;
             Ok(ConnectOutcome::Connected(remote))
         }
         Err(e) => {
@@ -472,8 +617,13 @@ pub(super) async fn connect_with_retry(
             }
             terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
 
+            if recover_reloading_server(app, terminal, state).await? {
+                return Ok(ConnectOutcome::Retry);
+            }
+
             let reload_socket_wait = should_wait_for_reload_socket(state);
             let mut use_backoff_sleep = !reload_socket_wait;
+            let mut use_reload_retry_sleep = false;
             if reload_socket_wait {
                 crate::logging::info("Reconnect wait: waiting for reload socket readiness");
                 let socket_path = crate::server::socket_path();
@@ -486,10 +636,34 @@ pub(super) async fn connect_with_retry(
                             if ready {
                                 break;
                             }
-                            crate::logging::info("Reconnect wait: reload socket readiness timed out; falling back to backoff");
-                            use_backoff_sleep = true;
+                            if should_wait_for_reload_socket(state) {
+                                crate::logging::info("Reconnect wait: reload socket readiness timed out; keeping fast retry cadence");
+                                use_reload_retry_sleep = true;
+                            } else {
+                                crate::logging::info("Reconnect wait: reload socket readiness timed out; falling back to backoff");
+                                use_backoff_sleep = true;
+                            }
                             break;
                         }
+                        event = event_stream.next() => {
+                            if handle_terminal_event_while_disconnected(
+                                app,
+                                terminal,
+                                event,
+                            )? {
+                                return Ok(ConnectOutcome::Quit);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if use_reload_retry_sleep {
+                let sleep = tokio::time::sleep(RELOAD_SOCKET_RETRY_DELAY);
+                tokio::pin!(sleep);
+                loop {
+                    tokio::select! {
+                        _ = &mut sleep => break,
                         event = event_stream.next() => {
                             if handle_terminal_event_while_disconnected(
                                 app,
@@ -800,6 +974,7 @@ pub(super) async fn handle_remote_event(
         RemoteRead::Event(ServerEvent::Reloading { new_socket }) => {
             let _ = new_socket;
             state.server_reload_in_progress = true;
+            state.reload_recovery_attempted = false;
             state.last_disconnect_reason = Some("server reload in progress".to_string());
             let _ = handle_server_event(app, ServerEvent::Reloading { new_socket: None }, remote);
             process_remote_followups(app, remote).await;
@@ -866,6 +1041,7 @@ pub(super) fn handle_disconnect(
     app.status = ProcessingStatus::Idle;
     state.disconnect_start = Some(Instant::now());
     state.reconnect_attempts = state.reconnect_attempts.max(1);
+    state.reload_recovery_attempted = false;
     app.push_display_message(DisplayMessage {
         role: "system".to_string(),
         content: reconnect_status_message(app, state, &detail),

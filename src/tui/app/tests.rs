@@ -2040,6 +2040,11 @@ fn test_handle_server_event_compaction_mode_changed_updates_remote_mode() {
 
 #[test]
 fn test_reload_socket_wait_enabled_only_during_recent_reload_disconnect() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+    std::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
     let mut state = remote::RemoteRunState {
         server_reload_in_progress: true,
         disconnect_start: Some(std::time::Instant::now()),
@@ -2050,17 +2055,63 @@ fn test_reload_socket_wait_enabled_only_during_recent_reload_disconnect() {
 
     state.server_reload_in_progress = false;
     assert!(!remote::should_wait_for_reload_socket(&state));
+
+    if let Some(prev_runtime) = prev_runtime {
+        std::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+    } else {
+        std::env::remove_var("JCODE_RUNTIME_DIR");
+    }
 }
 
 #[test]
 fn test_reload_socket_wait_disabled_for_old_disconnects() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+    std::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
     let state = remote::RemoteRunState {
         server_reload_in_progress: true,
-        disconnect_start: Some(std::time::Instant::now() - std::time::Duration::from_secs(11)),
+        disconnect_start: Some(std::time::Instant::now() - std::time::Duration::from_secs(31)),
         ..Default::default()
     };
 
     assert!(!remote::should_wait_for_reload_socket(&state));
+
+    if let Some(prev_runtime) = prev_runtime {
+        std::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+    } else {
+        std::env::remove_var("JCODE_RUNTIME_DIR");
+    }
+}
+
+#[test]
+fn test_reload_socket_wait_enabled_by_reload_marker() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+    std::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
+    crate::server::write_reload_state(
+        "reload-marker-test",
+        "test-hash",
+        crate::server::ReloadPhase::Starting,
+        None,
+    );
+
+    let state = remote::RemoteRunState {
+        disconnect_start: Some(std::time::Instant::now()),
+        ..Default::default()
+    };
+
+    assert!(remote::should_wait_for_reload_socket(&state));
+
+    crate::server::clear_reload_marker();
+    if let Some(prev_runtime) = prev_runtime {
+        std::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+    } else {
+        std::env::remove_var("JCODE_RUNTIME_DIR");
+    }
 }
 
 #[test]
