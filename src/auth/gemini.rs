@@ -227,7 +227,7 @@ pub async fn login() -> Result<GeminiTokens> {
         if let Ok(listener) = super::oauth::bind_callback_listener(0) {
             let port = listener.local_addr()?.port();
             let redirect_uri = format!("http://127.0.0.1:{port}/oauth2callback");
-            let auth_url = build_auth_url(&redirect_uri, &challenge, &state);
+            let auth_url = build_web_auth_url(&redirect_uri, &state);
 
             eprintln!("\nOpening browser for Gemini login...\n");
             eprintln!("If the browser didn't open, visit:\n{}\n", auth_url);
@@ -252,7 +252,7 @@ pub async fn login() -> Result<GeminiTokens> {
                 .await
                 {
                     Ok(Ok(code)) => {
-                        let tokens = exchange_authorization_code(&code, &verifier, &redirect_uri)
+                        let tokens = exchange_authorization_code(&code, None, &redirect_uri)
                             .await
                             .context("Gemini token exchange failed")?;
                         save_tokens(&tokens)?;
@@ -287,7 +287,7 @@ async fn manual_login(verifier: &str, challenge: &str, state: &str) -> Result<Ge
         );
     }
 
-    let auth_url = build_auth_url(GEMINI_MANUAL_REDIRECT_URI, challenge, state);
+    let auth_url = build_manual_auth_url(GEMINI_MANUAL_REDIRECT_URI, challenge, state);
     eprintln!("\nManual Gemini auth required.\n");
     eprintln!("Open this URL in your browser:\n\n{}\n", auth_url);
     if let Some(qr) = crate::login_qr::indented_section(
@@ -308,7 +308,7 @@ async fn manual_login(verifier: &str, challenge: &str, state: &str) -> Result<Ge
         anyhow::bail!("No authorization code provided.");
     }
 
-    let tokens = exchange_authorization_code(&code, verifier, GEMINI_MANUAL_REDIRECT_URI)
+    let tokens = exchange_authorization_code(&code, Some(verifier), GEMINI_MANUAL_REDIRECT_URI)
         .await
         .context("Gemini token exchange failed")?;
     save_tokens(&tokens)?;
@@ -333,25 +333,28 @@ pub async fn exchange_callback_input(
         input.trim().to_string()
     };
 
-    exchange_authorization_code(&code, verifier, redirect_uri).await
+    exchange_authorization_code(&code, Some(verifier), redirect_uri).await
 }
 
 async fn exchange_authorization_code(
     code: &str,
-    verifier: &str,
+    verifier: Option<&str>,
     redirect_uri: &str,
 ) -> Result<GeminiTokens> {
     let client = reqwest::Client::new();
+    let mut form = vec![
+        ("grant_type", "authorization_code".to_string()),
+        ("client_id", gemini_client_id()),
+        ("client_secret", gemini_client_secret()),
+        ("code", code.trim().to_string()),
+        ("redirect_uri", redirect_uri.to_string()),
+    ];
+    if let Some(verifier) = verifier {
+        form.push(("code_verifier", verifier.to_string()));
+    }
     let resp = client
         .post(GOOGLE_TOKEN_URL)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", &gemini_client_id()),
-            ("client_secret", &gemini_client_secret()),
-            ("code", code.trim()),
-            ("code_verifier", verifier),
-            ("redirect_uri", redirect_uri),
-        ])
+        .form(&form)
         .send()
         .await
         .context("Failed to exchange Gemini authorization code")?;
@@ -405,7 +408,20 @@ pub async fn fetch_email(access_token: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("Google profile did not include an email address"))
 }
 
-pub fn build_auth_url(redirect_uri: &str, challenge: &str, state: &str) -> String {
+pub fn build_web_auth_url(redirect_uri: &str, state: &str) -> String {
+    let scope = GEMINI_SCOPES.join(" ");
+    let client_id = gemini_client_id();
+    format!(
+        "{base}?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope={scope}&state={state}&access_type=offline",
+        base = GOOGLE_AUTHORIZE_URL,
+        client_id = urlencoding::encode(&client_id),
+        redirect_uri = urlencoding::encode(redirect_uri),
+        scope = urlencoding::encode(&scope),
+        state = urlencoding::encode(state),
+    )
+}
+
+pub fn build_manual_auth_url(redirect_uri: &str, challenge: &str, state: &str) -> String {
     let scope = GEMINI_SCOPES.join(" ");
     let client_id = gemini_client_id();
     format!(
@@ -557,11 +573,20 @@ mod tests {
     }
 
     #[test]
-    fn build_auth_url_contains_expected_redirect_uri() {
-        let url = build_auth_url(GEMINI_MANUAL_REDIRECT_URI, "challenge-123", "state-123");
+    fn build_manual_auth_url_contains_expected_redirect_uri() {
+        let url = build_manual_auth_url(GEMINI_MANUAL_REDIRECT_URI, "challenge-123", "state-123");
         assert!(url.contains("codeassist.google.com%2Fauthcode"));
         assert!(url.contains("code_challenge=challenge-123"));
         assert!(url.contains("state=state-123"));
+    }
+
+    #[test]
+    fn build_web_auth_url_omits_pkce_parameters() {
+        let url = build_web_auth_url("http://127.0.0.1:45619/oauth2callback", "state-123");
+        assert!(url.contains("127.0.0.1%3A45619%2Foauth2callback"));
+        assert!(url.contains("state=state-123"));
+        assert!(!url.contains("code_challenge="));
+        assert!(!url.contains("code_verifier="));
     }
 
     #[test]
