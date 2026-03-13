@@ -1096,9 +1096,33 @@ impl App {
     }
 
     pub(super) fn handle_login_input(&mut self, pending: PendingLogin, input: String) {
-        if input.is_empty() || input == "/cancel" {
+        let trimmed = input.trim();
+        if trimmed == "/cancel" {
             self.push_display_message(DisplayMessage::system("Login cancelled.".to_string()));
             return;
+        }
+
+        if trimmed.is_empty() {
+            self.push_display_message(DisplayMessage::system(
+                "Login still in progress. Complete it in your browser, or paste the callback URL / authorization code here. Type `/cancel` to abort.".to_string(),
+            ));
+            self.pending_login = Some(pending);
+            return;
+        }
+
+        match &pending {
+            PendingLogin::OpenAi { .. }
+            | PendingLogin::Gemini {
+                expected_state: Some(_),
+                ..
+            } if !looks_like_oauth_callback_input(trimmed) => {
+                self.push_display_message(DisplayMessage::system(
+                    "Still waiting for the browser callback. Paste the full callback URL or query string if you want to finish manually, or keep waiting for the automatic redirect.".to_string(),
+                ));
+                self.pending_login = Some(pending);
+                return;
+            }
+            _ => {}
         }
 
         match pending {
@@ -1499,6 +1523,15 @@ impl App {
         std::env::set_var(key_name, key);
         Ok(())
     }
+}
+
+fn looks_like_oauth_callback_input(input: &str) -> bool {
+    let input = input.trim();
+    input.starts_with("http://")
+        || input.starts_with("https://")
+        || input.starts_with('?')
+        || input.contains("code=")
+        || input.contains("state=")
 }
 
 pub(super) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {

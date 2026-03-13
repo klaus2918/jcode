@@ -2,6 +2,20 @@ use qr2term::render::{QrDark, QrLight};
 
 const QUIET_ZONE_WIDTH: usize = 2;
 
+fn env_truthy(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| {
+            let trimmed = value.trim();
+            !trimmed.is_empty() && trimmed != "0" && !trimmed.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
+fn qr_rendering_enabled() -> bool {
+    env_truthy("JCODE_SHOW_LOGIN_QR") || env_truthy("JCODE_LOGIN_QR")
+}
+
 pub fn render_unicode_qr(data: &str) -> Result<String, qr2term::QrError> {
     let mut matrix = qr2term::qr::Qr::from(data)?.to_matrix();
     matrix.surround(QUIET_ZONE_WIDTH, QrLight);
@@ -36,11 +50,17 @@ pub fn render_unicode_qr(data: &str) -> Result<String, qr2term::QrError> {
 }
 
 pub fn markdown_section(data: &str, heading: &str) -> Option<String> {
+    if !qr_rendering_enabled() {
+        return None;
+    }
     let qr = render_unicode_qr(data).ok()?;
     Some(format!("{heading}\n\n```text\n{qr}\n```"))
 }
 
 pub fn indented_section(data: &str, heading: &str, indent: &str) -> Option<String> {
+    if !qr_rendering_enabled() {
+        return None;
+    }
     let qr = render_unicode_qr(data).ok()?;
     let mut out = String::new();
     out.push_str(heading);
@@ -56,6 +76,7 @@ pub fn indented_section(data: &str, heading: &str, indent: &str) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::lock_test_env;
 
     #[test]
     fn render_unicode_qr_uses_block_glyphs_without_ansi() {
@@ -67,19 +88,34 @@ mod tests {
 
     #[test]
     fn markdown_section_wraps_qr_in_code_block() {
+        let _guard = lock_test_env();
+        std::env::set_var("JCODE_SHOW_LOGIN_QR", "1");
         let section =
             markdown_section("https://example.com/login", "Scan this on another device:").unwrap();
         assert!(section.starts_with("Scan this on another device:\n\n```text\n"));
         assert!(section.ends_with("\n```"));
+        std::env::remove_var("JCODE_SHOW_LOGIN_QR");
     }
 
     #[test]
     fn indented_section_prefixes_each_line() {
+        let _guard = lock_test_env();
+        std::env::set_var("JCODE_SHOW_LOGIN_QR", "1");
         let section = indented_section("https://example.com/login", "Scan:", "    ").unwrap();
         assert!(section.starts_with("Scan:\n\n    "));
         assert!(section
             .lines()
             .skip(2)
             .all(|line| line.is_empty() || line.starts_with("    ")));
+        std::env::remove_var("JCODE_SHOW_LOGIN_QR");
+    }
+
+    #[test]
+    fn qr_sections_are_disabled_by_default() {
+        let _guard = lock_test_env();
+        std::env::remove_var("JCODE_SHOW_LOGIN_QR");
+        std::env::remove_var("JCODE_LOGIN_QR");
+        assert!(markdown_section("https://example.com/login", "Scan:").is_none());
+        assert!(indented_section("https://example.com/login", "Scan:", "    ").is_none());
     }
 }
