@@ -1059,7 +1059,8 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
 
             Event::Rule => {
                 flush_current_line(&mut lines, &mut current_spans);
-                let rule = Span::styled("─".repeat(RULE_LEN), Style::default().fg(md_dim_color()));
+                let width = max_width.unwrap_or(RULE_LEN);
+                let rule = Span::styled("─".repeat(width), Style::default().fg(md_dim_color()));
                 lines.push(with_blockquote_prefix(Line::from(rule), blockquote_depth));
             }
 
@@ -2007,7 +2008,8 @@ pub fn render_markdown_lazy(
 
             Event::Rule => {
                 flush_current_line(&mut lines, &mut current_spans);
-                let rule = Span::styled("─".repeat(RULE_LEN), Style::default().fg(md_dim_color()));
+                let width = max_width.unwrap_or(RULE_LEN);
+                let rule = Span::styled("─".repeat(width), Style::default().fg(md_dim_color()));
                 lines.push(with_blockquote_prefix(Line::from(rule), blockquote_depth));
             }
 
