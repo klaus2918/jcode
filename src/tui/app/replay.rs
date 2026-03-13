@@ -1,6 +1,6 @@
 use super::{App, DisplayMessage, ProcessingStatus, RunResult};
 use crate::replay::{PaneReplayInput, ReplayEvent, TimelineEvent};
-use crate::tui::backend::RemoteConnection;
+use crate::tui::backend::{RemoteEventState, ReplayRemoteState};
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
@@ -19,7 +19,7 @@ pub(super) async fn run_replay(
     let mut event_stream = EventStream::new();
     let mut redraw_period = super::super::redraw_interval(&app);
     let mut redraw_interval = interval(redraw_period);
-    let mut remote = RemoteConnection::dummy();
+    let mut remote = ReplayRemoteState::default();
 
     let replay_events = crate::replay::timeline_to_replay_events(&timeline);
     let mut event_index: usize = 0;
@@ -263,7 +263,7 @@ fn handle_swarm_replay_input(
 
 struct SwarmReplayPane {
     app: App,
-    remote: RemoteConnection,
+    remote: ReplayRemoteState,
     event_schedule: Vec<(f64, ReplayEvent)>,
     event_cursor: usize,
     replay_turn_id: u64,
@@ -272,13 +272,13 @@ struct SwarmReplayPane {
 impl SwarmReplayPane {
     fn new(input: PaneReplayInput, centered_override: Option<bool>) -> Self {
         let event_schedule = schedule_replay_events(&input.timeline);
-        let mut app = App::new_for_replay(input.session);
+        let mut app = App::new_for_replay_silent(input.session);
         if let Some(centered) = centered_override {
             app.set_centered(centered);
         }
         Self {
             app,
-            remote: RemoteConnection::dummy(),
+            remote: ReplayRemoteState::default(),
             event_schedule,
             event_cursor: 0,
             replay_turn_id: 0,
@@ -391,7 +391,7 @@ fn blit_buffer(dst: &mut Buffer, area: Rect, src: &Buffer) {
 
 pub(super) fn apply_replay_event(
     app: &mut App,
-    remote: &mut RemoteConnection,
+    remote: &mut impl RemoteEventState,
     replay_event: &ReplayEvent,
     replay_turn_id: &mut u64,
     replay_processing_started_ms: Option<f64>,

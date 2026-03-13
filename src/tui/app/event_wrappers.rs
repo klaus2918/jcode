@@ -5,7 +5,7 @@ impl App {
     pub(super) fn handle_server_event(
         &mut self,
         event: crate::protocol::ServerEvent,
-        remote: &mut backend::RemoteConnection,
+        remote: &mut impl backend::RemoteEventState,
     ) -> bool {
         remote::handle_server_event(self, event, remote)
     }

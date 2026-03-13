@@ -194,7 +194,7 @@ impl App {
 
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend)?;
-        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        let mut remote = crate::tui::backend::ReplayRemoteState::default();
 
         let frame_duration_ms: f64 = 1000.0 / fps as f64;
         let mut frames: Vec<(f64, ratatui::buffer::Buffer)> = Vec::new();

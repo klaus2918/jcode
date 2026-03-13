@@ -6,7 +6,7 @@ use crate::bus::BusEvent;
 use crate::message::ToolCall;
 use crate::protocol::{NotificationType, ServerEvent};
 use crate::tool::selfdev::ReloadContext;
-use crate::tui::backend::{RemoteConnection, RemoteDisconnectReason, RemoteRead};
+use crate::tui::backend::{RemoteConnection, RemoteDisconnectReason, RemoteEventState, RemoteRead};
 use crate::tui::ui::capitalize;
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseEvent};
@@ -1344,7 +1344,7 @@ pub(super) async fn begin_remote_send(
 pub(super) fn handle_server_event(
     app: &mut App,
     event: ServerEvent,
-    remote: &mut RemoteConnection,
+    remote: &mut impl RemoteEventState,
 ) -> bool {
     if app.is_processing {
         app.last_stream_activity = Some(Instant::now());
@@ -1759,6 +1759,7 @@ pub(super) fn handle_server_event(
             connection_type,
             upstream_provider,
             reasoning_effort,
+            service_tier,
             compaction_mode,
             ..
         } => {
@@ -1818,6 +1819,7 @@ pub(super) fn handle_server_event(
                 app.connection_type = connection_type;
             }
             app.remote_reasoning_effort = reasoning_effort;
+            app.remote_service_tier = service_tier;
             app.remote_compaction_mode = Some(compaction_mode);
             app.remote_available_models = available_models;
             app.remote_model_routes = available_model_routes;
@@ -1994,6 +1996,36 @@ pub(super) fn handle_server_event(
                     label
                 )));
                 app.set_status_notice(format!("Effort: {}", label));
+            }
+            false
+        }
+        ServerEvent::ServiceTierChanged {
+            service_tier,
+            error,
+            ..
+        } => {
+            if let Some(err) = error {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to set fast mode: {}",
+                    err
+                )));
+            } else {
+                app.remote_service_tier = service_tier.clone();
+                let enabled = service_tier.as_deref() == Some("priority");
+                let label = service_tier
+                    .as_deref()
+                    .map(super::service_tier_display_label)
+                    .unwrap_or("Standard");
+                let applies_next_request = app.is_processing;
+                app.push_display_message(DisplayMessage::system(super::fast_mode_success_message(
+                    enabled,
+                    label,
+                    applies_next_request,
+                )));
+                app.set_status_notice(super::fast_mode_status_notice(
+                    enabled,
+                    applies_next_request,
+                ));
             }
             false
         }
@@ -2237,14 +2269,34 @@ pub(super) fn handle_remote_char_input(app: &mut App, c: char) {
     app.sync_model_picker_preview_from_input();
 }
 
+fn handle_disconnected_local_command(app: &mut App, trimmed: &str) -> bool {
+    let handled = super::commands::handle_help_command(app, trimmed)
+        || super::commands::handle_session_command(app, trimmed)
+        || super::commands::handle_config_command(app, trimmed)
+        || super::state_ui::handle_info_command(app, trimmed)
+        || super::auth::handle_auth_command(app, trimmed)
+        || (trimmed == "/restart" && super::tui_lifecycle::handle_dev_command(app, trimmed));
+
+    if handled {
+        app.input.clear();
+        app.cursor_pos = 0;
+        app.sync_model_picker_preview_from_input();
+    }
+
+    handled
+}
+
 fn queue_message_for_reconnect(app: &mut App) {
-    let trimmed = app.input.trim();
+    let trimmed = app.input.trim().to_string();
     if trimmed.is_empty() {
         return;
     }
 
     if trimmed.starts_with('/') {
-        app.set_status_notice("Commands are not queued while disconnected");
+        if handle_disconnected_local_command(app, &trimmed) {
+            return;
+        }
+        app.set_status_notice("This command requires a live connection");
         return;
     }
 
@@ -2883,6 +2935,55 @@ pub(super) async fn handle_remote_key(
                         return Ok(());
                     }
                     remote.set_reasoning_effort(level).await?;
+                    return Ok(());
+                }
+
+                if matches!(trimmed, "/fast" | "/fast status") {
+                    let current = app.remote_service_tier.as_deref();
+                    let status = if current == Some("priority") {
+                        "on"
+                    } else {
+                        "off"
+                    };
+                    let current_label = current
+                        .map(super::service_tier_display_label)
+                        .unwrap_or("Standard");
+                    app.push_display_message(DisplayMessage::system(format!(
+                        "Fast mode is {}.\nCurrent tier: {}\nUse `/fast on` or `/fast off`.",
+                        status, current_label
+                    )));
+                    return Ok(());
+                }
+
+                if let Some(mode) = trimmed.strip_prefix("/fast ") {
+                    let mode = mode.trim().to_ascii_lowercase();
+                    let service_tier = match mode.as_str() {
+                        "on" => "priority",
+                        "off" => "off",
+                        "status" => {
+                            let current = app.remote_service_tier.as_deref();
+                            let status = if current == Some("priority") {
+                                "on"
+                            } else {
+                                "off"
+                            };
+                            let current_label = current
+                                .map(super::service_tier_display_label)
+                                .unwrap_or("Standard");
+                            app.push_display_message(DisplayMessage::system(format!(
+                                "Fast mode is {}.\nCurrent tier: {}",
+                                status, current_label
+                            )));
+                            return Ok(());
+                        }
+                        _ => {
+                            app.push_display_message(DisplayMessage::error(
+                                "Usage: /fast [on|off|status]",
+                            ));
+                            return Ok(());
+                        }
+                    };
+                    remote.set_service_tier(service_tier).await?;
                     return Ok(());
                 }
 

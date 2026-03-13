@@ -175,6 +175,7 @@ impl App {
             remote_provider_name: None,
             remote_provider_model: None,
             remote_reasoning_effort: None,
+            remote_service_tier: None,
             remote_transport: None,
             remote_compaction_mode: None,
             remote_available_models: Vec::new(),
@@ -192,6 +193,7 @@ impl App {
             is_remote: false,
             server_spawning: false,
             is_replay: false,
+            suppress_terminal_title_updates: false,
             replay_elapsed_override: None,
             replay_processing_started_ms: None,
             tool_result_ids: HashSet::new(),
@@ -325,6 +327,14 @@ impl App {
 
     /// Create an App instance for replay mode (playing back a saved session)
     pub fn new_for_replay(session: crate::session::Session) -> Self {
+        Self::new_for_replay_with_title(session, true)
+    }
+
+    pub(crate) fn new_for_replay_silent(session: crate::session::Session) -> Self {
+        Self::new_for_replay_with_title(session, false)
+    }
+
+    fn new_for_replay_with_title(session: crate::session::Session, set_title: bool) -> Self {
         let provider: Arc<dyn Provider> = Arc::new(NullProvider);
         let registry = Registry::empty();
         let mut app = Self::new(provider, registry);
@@ -363,7 +373,8 @@ impl App {
         app.remote_provider_name = Some(provider_name.to_string());
 
         app.session = session;
-        if !session_name.is_empty() {
+        app.suppress_terminal_title_updates = !set_title;
+        if set_title && !session_name.is_empty() {
             let icon = crate::id::session_icon(&session_name);
             let _ = crossterm::execute!(
                 std::io::stdout(),
@@ -379,6 +390,9 @@ impl App {
     }
 
     pub(super) fn update_terminal_title(&self) {
+        if self.suppress_terminal_title_updates {
+            return;
+        }
         let session_id = if self.is_remote {
             self.remote_session_id
                 .as_deref()

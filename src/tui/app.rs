@@ -289,6 +289,7 @@ pub struct App {
     remote_provider_name: Option<String>,
     remote_provider_model: Option<String>,
     remote_reasoning_effort: Option<String>,
+    remote_service_tier: Option<String>,
     remote_transport: Option<String>,
     remote_compaction_mode: Option<crate::config::CompactionMode>,
     remote_available_models: Vec<String>,
@@ -318,6 +319,8 @@ pub struct App {
     server_spawning: bool,
     // Whether running in replay mode (readonly playback of a saved session)
     pub is_replay: bool,
+    // Suppress terminal title updates for off-screen/silent replay instances.
+    suppress_terminal_title_updates: bool,
     /// Override for elapsed time during headless video replay.
     pub replay_elapsed_override: Option<Duration>,
     /// Sim-time at which processing started (video replay only)
