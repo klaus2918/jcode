@@ -372,7 +372,7 @@ pub(super) fn spawn_in_new_terminal(
             _ => continue,
         }
 
-        if cmd.spawn().is_ok() {
+        if crate::platform::spawn_detached(&mut cmd).is_ok() {
             return Ok(true);
         }
     }

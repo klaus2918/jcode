@@ -135,6 +135,37 @@ pub fn atomic_symlink_swap(src: &Path, dst: &Path, temp: &Path) -> std::io::Resu
     Ok(())
 }
 
+/// Spawn a process detached from the current client session.
+///
+/// This is used for launching new terminal windows (for `/resume`, `/split`,
+/// crash restore, etc.) so the new client survives if the invoking jcode
+/// process exits or its terminal closes.
+pub fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
+
+    cmd.spawn()
+}
+
 /// Replace the current process with a new command (exec on Unix).
 ///
 /// On Unix, this calls exec() which never returns on success.
@@ -154,5 +185,38 @@ pub fn replace_process(cmd: &mut std::process::Command) -> std::io::Error {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(e) => e,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn spawn_detached_creates_new_session() {
+        use tempfile::NamedTempFile;
+
+        let output = NamedTempFile::new().expect("temp file");
+        let output_path = output.path().to_string_lossy().to_string();
+        let parent_sid = unsafe { libc::getsid(0) };
+
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg("ps -o sid= -p $$ > \"$JCODE_TEST_OUTPUT\"")
+            .env("JCODE_TEST_OUTPUT", &output_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        let mut child = super::spawn_detached(&mut cmd).expect("spawn detached child");
+        let status = child.wait().expect("wait for child");
+        assert!(status.success(), "child should exit successfully");
+
+        let child_sid = std::fs::read_to_string(&output_path)
+            .expect("read child sid")
+            .trim()
+            .parse::<u32>()
+            .expect("parse child sid");
+
+        assert_eq!(child_sid, child.id(), "detached child should lead its own session");
+        assert_ne!(child_sid as i32, parent_sid, "detached child should not share parent session");
     }
 }
