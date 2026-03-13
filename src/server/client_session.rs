@@ -40,6 +40,21 @@ fn session_was_interrupted_by_reload(agent: &Agent) -> bool {
     })
 }
 
+async fn rename_shutdown_signal(
+    shutdown_signals: &Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
+    old_session_id: &str,
+    new_session_id: &str,
+) {
+    if old_session_id == new_session_id {
+        return;
+    }
+
+    let mut signals = shutdown_signals.write().await;
+    if let Some(signal) = signals.remove(old_session_id) {
+        signals.insert(new_session_id.to_string(), signal);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_clear_session(
     id: u64,
@@ -360,6 +375,7 @@ pub(super) async fn handle_resume_session(
     provider: &Arc<dyn Provider>,
     registry: &Registry,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    shutdown_signals: &Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
@@ -447,6 +463,7 @@ pub(super) async fn handle_resume_session(
                 sessions_guard.remove(&old_session_id);
                 sessions_guard.insert(session_id.clone(), Arc::clone(agent));
             }
+            rename_shutdown_signal(shutdown_signals, &old_session_id, &session_id).await;
             rename_session_interrupt_queue(soft_interrupt_queues, &old_session_id, &session_id)
                 .await;
             {
@@ -530,15 +547,17 @@ pub(super) async fn handle_resume_session(
 
 #[cfg(test)]
 mod tests {
-    use super::session_was_interrupted_by_reload;
-    use crate::agent::Agent;
+    use super::{rename_shutdown_signal, session_was_interrupted_by_reload};
+    use crate::agent::{Agent, InterruptSignal};
     use crate::message::ContentBlock;
     use crate::message::{Message, ToolDefinition};
     use crate::provider::{EventStream, Provider};
     use crate::tool::Registry;
     use anyhow::Result;
     use async_trait::async_trait;
+    use std::collections::HashMap;
     use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     struct MockProvider;
 
@@ -644,5 +663,24 @@ mod tests {
         }]);
 
         assert!(!session_was_interrupted_by_reload(&agent));
+    }
+
+    #[tokio::test]
+    async fn rename_shutdown_signal_moves_registration_to_restored_session() {
+        let signal = InterruptSignal::new();
+        let shutdown_signals = Arc::new(RwLock::new(HashMap::from([(
+            "session_old".to_string(),
+            signal.clone(),
+        )])));
+
+        rename_shutdown_signal(&shutdown_signals, "session_old", "session_restored").await;
+
+        let signals = shutdown_signals.read().await;
+        assert!(!signals.contains_key("session_old"));
+        let renamed = signals
+            .get("session_restored")
+            .expect("restored session should retain shutdown signal");
+        renamed.fire();
+        assert!(signal.is_set());
     }
 }

@@ -688,6 +688,7 @@ pub(super) async fn handle_client(
                     &provider,
                     &registry,
                     &sessions,
+                    &shutdown_signals,
                     &soft_interrupt_queues,
                     &client_connections,
                     &swarm_members,
