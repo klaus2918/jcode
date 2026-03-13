@@ -543,6 +543,36 @@ struct ClaudeUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn test_sidecar_fast_model() {
@@ -551,18 +581,29 @@ mod tests {
 
     #[test]
     fn test_backend_selection_prefers_openai() {
-        // OpenAI is preferred when creds exist (both direct API and ChatGPT mode).
-        // ChatGPT mode uses streaming SSE; direct API uses non-streaming JSON.
-        let has_openai = crate::auth::codex::load_credentials().is_ok();
-        let has_claude = crate::auth::claude::load_credentials().is_ok();
+        // Make backend selection deterministic by isolating credentials.
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
+
+        let external_dir = temp.path().join("external");
+        std::fs::create_dir_all(external_dir.join(".codex")).expect("create codex dir");
+        std::fs::create_dir_all(external_dir.join(".claude")).expect("create claude dir");
+
+        std::fs::write(
+            external_dir.join(".codex").join("auth.json"),
+            r#"{"OPENAI_API_KEY":"sk-test-key-123"}"#,
+        )
+        .expect("write codex auth");
+        std::fs::write(
+            external_dir.join(".claude").join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"claude-access","refreshToken":"claude-refresh","expiresAt":4102444800000}}"#,
+        )
+        .expect("write claude auth");
 
         let sidecar = Sidecar::new();
-        if has_openai {
-            assert_eq!(sidecar.backend, SidecarBackend::OpenAI);
-            assert_eq!(sidecar.model, SIDECAR_OPENAI_MODEL);
-        } else if has_claude {
-            assert_eq!(sidecar.backend, SidecarBackend::Claude);
-            assert_eq!(sidecar.model, SIDECAR_CLAUDE_MODEL);
-        }
+        assert_eq!(sidecar.backend, SidecarBackend::OpenAI);
+        assert_eq!(sidecar.model, SIDECAR_OPENAI_MODEL);
     }
 }

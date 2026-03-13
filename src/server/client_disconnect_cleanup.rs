@@ -195,6 +195,7 @@ mod tests {
 
     #[test]
     fn running_disconnect_without_reload_is_crash() {
+        let _guard = crate::storage::lock_test_env();
         crate::server::clear_reload_marker();
         assert_eq!(
             disconnect_disposition(true),
@@ -204,6 +205,10 @@ mod tests {
 
     #[test]
     fn running_disconnect_during_reload_is_expected() {
+        let _guard = crate::storage::lock_test_env();
+        let runtime = tempfile::TempDir::new().expect("create runtime dir");
+        std::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+        crate::server::clear_reload_marker();
         crate::server::write_reload_state(
             "test-request",
             "test-hash",
@@ -215,5 +220,6 @@ mod tests {
             DisconnectDisposition::Reloading
         );
         crate::server::clear_reload_marker();
+        std::env::remove_var("JCODE_RUNTIME_DIR");
     }
 }

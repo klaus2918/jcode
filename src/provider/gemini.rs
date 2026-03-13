@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
@@ -273,7 +274,7 @@ impl GeminiProvider {
     pub fn new() -> Self {
         let model = std::env::var("JCODE_GEMINI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
         Self {
-            client: crate::provider::shared_http_client(),
+            client: gemini_http_client(),
             model: Arc::new(RwLock::new(model)),
             state: Arc::new(Mutex::new(None)),
         }
@@ -402,15 +403,43 @@ impl GeminiProvider {
     ) -> Result<T> {
         let tokens = gemini_auth::load_or_refresh_tokens().await?;
         let url = format!("{}:{method}", Self::base_url());
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(tokens.access_token)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(body)
-            .send()
-            .await
-            .with_context(|| format!("Gemini request to {} failed", url))?;
+        let body_value = serde_json::to_value(body).context("Failed to serialize Gemini request body")?;
+        let mut last_error: Option<anyhow::Error> = None;
+        let mut resp = None;
+        for attempt in 0..2 {
+            let client = if attempt == 0 {
+                self.client.clone()
+            } else {
+                gemini_http_client()
+            };
+            match client
+                .post(&url)
+                .bearer_auth(&tokens.access_token)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .json(&body_value)
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    resp = Some(response);
+                    break;
+                }
+                Err(err) if attempt == 0 && is_transient_gemini_transport_error(&err) => {
+                    last_error = Some(err.into());
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| format!("Gemini request to {} failed", url));
+                }
+            }
+        }
+        let resp = match resp {
+            Some(resp) => resp,
+            None => {
+                let err = last_error.unwrap_or_else(|| anyhow::anyhow!("Gemini request failed"));
+                return Err(err).with_context(|| format!("Gemini request to {} failed", url));
+            }
+        };
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -431,14 +460,42 @@ impl GeminiProvider {
     async fn get_operation<T: DeserializeOwned>(&self, name: &str) -> Result<T> {
         let tokens = gemini_auth::load_or_refresh_tokens().await?;
         let url = format!("{}/{}", Self::base_url(), name.trim_start_matches('/'));
-        let resp = self
-            .client
-            .get(&url)
-            .bearer_auth(tokens.access_token)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .send()
-            .await
-            .with_context(|| format!("Gemini request to {} failed", url))?;
+        let mut last_error: Option<anyhow::Error> = None;
+        let mut resp = None;
+        for attempt in 0..2 {
+            let client = if attempt == 0 {
+                self.client.clone()
+            } else {
+                gemini_http_client()
+            };
+            match client
+                .get(&url)
+                .bearer_auth(&tokens.access_token)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    resp = Some(response);
+                    break;
+                }
+                Err(err) if attempt == 0 && is_transient_gemini_transport_error(&err) => {
+                    last_error = Some(err.into());
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| format!("Gemini request to {} failed", url));
+                }
+            }
+        }
+        let resp = match resp {
+            Some(resp) => resp,
+            None => {
+                let err = last_error
+                    .unwrap_or_else(|| anyhow::anyhow!("Gemini operation lookup failed"));
+                return Err(err).with_context(|| format!("Gemini request to {} failed", url));
+            }
+        };
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -755,6 +812,28 @@ impl Clone for GeminiProvider {
 
 fn is_vpc_sc_error(err: &anyhow::Error) -> bool {
     err.to_string().contains("SECURITY_POLICY_VIOLATED")
+}
+
+fn gemini_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("jcode/1.0 (gemini)")
+        .http1_only()
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(0)
+        .tcp_keepalive(Some(Duration::from_secs(30)))
+        .build()
+        .unwrap_or_else(|_| crate::provider::shared_http_client())
+}
+
+fn is_transient_gemini_transport_error(err: &reqwest::Error) -> bool {
+    let lower = err.to_string().to_ascii_lowercase();
+    err.is_connect()
+        || err.is_timeout()
+        || lower.contains("unexpected eof")
+        || lower.contains("connection reset")
+        || lower.contains("broken pipe")
+        || lower.contains("tls handshake eof")
 }
 
 fn client_metadata(project_id: Option<String>) -> ClientMetadata {
