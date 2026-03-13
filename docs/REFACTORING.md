@@ -2,6 +2,8 @@
 
 This document defines the safe, incremental path for refactoring jcode while preserving behavior.
 
+See also: [`docs/CODE_QUALITY_10_10_PLAN.md`](CODE_QUALITY_10_10_PLAN.md) for the code-quality target, phased uplift program, and initial hotspot refactor list.
+
 ## Goals
 
 - Keep existing sessions and user workflows stable during refactors.
