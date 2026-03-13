@@ -20,15 +20,17 @@
         </div>
         <div class="model-tag mono">sonnet-4</div>
       </div>
-      <div class="messages">
-        <div class="msg msg-system">Connected over Tailscale</div>
-        <div class="msg msg-user">Summarize the reload path and check build status.</div>
-        <div class="msg msg-assistant">Checked the server reload flow and verified selfdev hooks. Tightening the handoff next.</div>
-        <div class="tool mono">
-          <div class="tool-header"><div class="tool-dot"></div>selfdev</div>
-          <div class="tool-output">{"action":"status"}</div>
-        </div>
-        <div class="msg msg-assistant">Prepared a mobile-first concept for the iOS client handoff.</div>
+      <div class="chat-stream">
+        <div class="line line-system">Connected over Tailscale</div>
+        <div class="line line-user">Summarize the reload path and check build status.</div>
+        <div class="line line-ai">Checked the server reload flow and verified selfdev hooks. Tightening the handoff next.</div>
+        <div class="line line-tool mono"><span class="tool-indicator">●</span> selfdev <span class="tool-meta">{"action":"status"}</span></div>
+        <div class="line line-tool-out mono">v0.4.2-dev (a3a5f32) canary=active</div>
+        <div class="line line-ai">Build is current. Prepared a mobile-first concept for the iOS client handoff.</div>
+        <div class="line line-user">Make the chat view more compact, like a markdown doc.</div>
+        <div class="line line-ai">Done. Stripped bubbles, using color-coded lines with no wasted space.</div>
+        <div class="line line-tool mono"><span class="tool-indicator">●</span> file_write <span class="tool-meta">chat.html</span></div>
+        <div class="line line-tool-out mono">created 40 lines</div>
       </div>
       <div class="composer-bar">
         <div class="compose-field">Message…</div>
