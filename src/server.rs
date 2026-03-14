@@ -68,6 +68,31 @@ pub struct FileAccess {
     pub summary: Option<String>,
 }
 
+fn latest_peer_touches(
+    accesses: &[FileAccess],
+    current_session_id: &str,
+    swarm_session_ids: &HashSet<String>,
+) -> Vec<FileAccess> {
+    let mut latest_by_session: HashMap<&str, &FileAccess> = HashMap::new();
+
+    for access in accesses.iter().filter(|access| {
+        access.session_id != current_session_id && swarm_session_ids.contains(&access.session_id)
+    }) {
+        latest_by_session
+            .entry(&access.session_id)
+            .and_modify(|existing| {
+                if access.timestamp > existing.timestamp {
+                    *existing = access;
+                }
+            })
+            .or_insert(access);
+    }
+
+    let mut latest: Vec<FileAccess> = latest_by_session.into_values().cloned().collect();
+    latest.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+    latest
+}
+
 /// Information about a session in a swarm
 #[derive(Clone, Debug)]
 pub struct SwarmMember {
@@ -1109,6 +1134,71 @@ mod queue_tests {
     }
 }
 
+#[cfg(test)]
+mod file_activity_tests {
+    use super::{FileAccess, latest_peer_touches};
+    use crate::bus::FileOp;
+    use std::collections::HashSet;
+    use std::time::{Duration, Instant, SystemTime};
+
+    fn access(session_id: &str, op: FileOp, age_ms: u64) -> FileAccess {
+        let now = Instant::now();
+        FileAccess {
+            session_id: session_id.to_string(),
+            op,
+            timestamp: now
+                .checked_sub(Duration::from_millis(age_ms))
+                .unwrap_or(now),
+            absolute_time: SystemTime::now(),
+            summary: None,
+        }
+    }
+
+    #[test]
+    fn latest_peer_touches_includes_previous_readers_for_modification_alerts() {
+        let swarm_session_ids = HashSet::from([
+            "current".to_string(),
+            "reader".to_string(),
+            "writer".to_string(),
+        ]);
+        let accesses = vec![
+            access("reader", FileOp::Read, 20),
+            access("current", FileOp::Edit, 10),
+            access("writer", FileOp::Write, 5),
+        ];
+
+        let latest = latest_peer_touches(&accesses, "current", &swarm_session_ids);
+
+        assert_eq!(latest.len(), 2);
+        assert!(
+            latest
+                .iter()
+                .any(|entry| entry.session_id == "reader" && entry.op == FileOp::Read)
+        );
+        assert!(
+            latest
+                .iter()
+                .any(|entry| entry.session_id == "writer" && entry.op == FileOp::Write)
+        );
+    }
+
+    #[test]
+    fn latest_peer_touches_deduplicates_to_most_recent_touch_per_peer() {
+        let swarm_session_ids = HashSet::from(["current".to_string(), "peer".to_string()]);
+        let accesses = vec![
+            access("peer", FileOp::Read, 30),
+            access("peer", FileOp::Edit, 5),
+            access("current", FileOp::Write, 1),
+        ];
+
+        let latest = latest_peer_touches(&accesses, "current", &swarm_session_ids);
+
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].session_id, "peer");
+        assert_eq!(latest[0].op, FileOp::Edit);
+    }
+}
+
 /// Set custom socket path (sets JCODE_SOCKET env var)
 pub fn set_socket_path(path: &str) {
     crate::env::set_var("JCODE_SOCKET", path);
@@ -1841,11 +1931,12 @@ impl Server {
                         }
                     };
 
-                    // Only check for conflicts when someone writes/edits (reads never conflict)
-                    let is_write = matches!(touch.op, FileOp::Write | FileOp::Edit);
-                    if is_write {
+                    // Only notify on modifications; plain reads are tracked for later context
+                    // but should not proactively alert the swarm.
+                    let is_modification = matches!(touch.op, FileOp::Write | FileOp::Edit);
+                    if is_modification {
                         crate::logging::info(&format!(
-                            "[conflict-check] WRITE by {} on {}, swarm_peers: {:?}",
+                            "[file-activity] modification by {} on {}, swarm_peers: {:?}",
                             &session_id[..8.min(session_id.len())],
                             path.display(),
                             swarm_session_ids
@@ -1854,62 +1945,45 @@ impl Server {
                                 .collect::<Vec<_>>()
                         ));
                     }
-                    let previous_touches: Vec<FileAccess> = if is_write {
+                    let previous_touches: Vec<FileAccess> = if is_modification {
                         let touches = file_touches.read().await;
                         if let Some(accesses) = touches.get(&path) {
-                            let result: Vec<FileAccess> = accesses
-                                .iter()
-                                .filter(|a| {
-                                    a.session_id != session_id
-                                        && swarm_session_ids.contains(&a.session_id)
-                                        && matches!(a.op, FileOp::Write | FileOp::Edit)
-                                })
-                                .cloned()
-                                .collect();
+                            let swarm_session_ids_set: HashSet<String> =
+                                swarm_session_ids.iter().cloned().collect();
+                            let result =
+                                latest_peer_touches(accesses, &session_id, &swarm_session_ids_set);
                             crate::logging::info(&format!(
-                                "[conflict-check] {} prev write-touches from peers ({} total accesses)",
+                                "[file-activity] {} prior peer touches ({} total accesses)",
                                 result.len(),
                                 accesses.len()
                             ));
                             result
                         } else {
-                            crate::logging::info("[conflict-check] no touches for this path yet");
+                            crate::logging::info("[file-activity] no touches for this path yet");
                             vec![]
                         }
                     } else {
                         vec![]
                     };
 
-                    // If there are previous write conflicts from swarm members, send alerts
+                    // If swarm peers previously touched this file, notify both sides so they
+                    // can coordinate before the work diverges further.
                     if !previous_touches.is_empty() {
                         crate::logging::info(&format!(
-                            "[conflict-check] CONFLICT on {} — sending alerts",
+                            "[file-activity] {} touched by peers before modification — sending alerts",
                             path.display()
                         ));
                         let members = swarm_members.read().await;
                         let current_member = members.get(&session_id);
                         let current_name = current_member.and_then(|m| m.friendly_name.clone());
-                        // Deduplicate previous touches by session (keep latest per agent)
-                        let mut unique_by_session: std::collections::HashMap<&str, &FileAccess> =
-                            std::collections::HashMap::new();
-                        for prev in &previous_touches {
-                            unique_by_session
-                                .entry(&prev.session_id)
-                                .and_modify(|existing| {
-                                    if prev.timestamp > existing.timestamp {
-                                        *existing = prev;
-                                    }
-                                })
-                                .or_insert(prev);
-                        }
 
-                        // Alert the current agent about previous writers (one per agent)
+                        // Alert the current agent about previous peer touches (one per agent).
                         if let Some(member) = current_member {
-                            for prev in unique_by_session.values() {
+                            for prev in &previous_touches {
                                 let prev_member = members.get(&prev.session_id);
                                 let prev_name = prev_member.and_then(|m| m.friendly_name.clone());
                                 let alert_msg = format!(
-                                    "⚠️ File conflict: {} — {} previously {} this file{}",
+                                    "⚠️ File activity: {} — {} previously {} this file{}",
                                     path.display(),
                                     prev_name.as_deref().unwrap_or(&prev.session_id[..8]),
                                     prev.op.as_str(),
@@ -1940,23 +2014,18 @@ impl Server {
                                 .await
                                 {
                                     crate::logging::warn(&format!(
-                                        "Failed to queue file-conflict soft interrupt for session {}",
+                                        "Failed to queue file-activity soft interrupt for session {}",
                                         session_id
                                     ));
                                 }
                             }
                         }
 
-                        // Alert previous agents about the current touch (one per agent)
-                        let mut notified_sessions: std::collections::HashSet<&str> =
-                            std::collections::HashSet::new();
+                        // Alert previous agents about the current modification.
                         for prev in &previous_touches {
-                            if !notified_sessions.insert(&prev.session_id) {
-                                continue;
-                            }
                             if let Some(prev_member) = members.get(&prev.session_id) {
                                 let alert_msg = format!(
-                                    "⚠️ File conflict: {} — {} just {} this file you previously worked with{}",
+                                    "⚠️ File activity: {} — {} just {} this file you previously worked with{}",
                                     path.display(),
                                     current_name
                                         .as_deref()
@@ -1990,7 +2059,7 @@ impl Server {
                                 .await
                                 {
                                     crate::logging::warn(&format!(
-                                        "Failed to queue file-conflict soft interrupt for session {}",
+                                        "Failed to queue file-activity soft interrupt for session {}",
                                         prev.session_id
                                     ));
                                 }
