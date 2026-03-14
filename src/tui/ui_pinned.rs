@@ -112,6 +112,10 @@ struct PinnedImagePlacement {
     rows: u16,
 }
 
+const SIDE_PANEL_INLINE_IMAGE_MIN_ROWS: u16 = 4;
+const SIDE_PANEL_FOLLOWING_CONTENT_PREVIEW_MIN_ROWS: u16 = 6;
+const SIDE_PANEL_FOLLOWING_CONTENT_PREVIEW_MAX_ROWS: u16 = 10;
+
 static PINNED_CACHE: OnceLock<Mutex<PinnedCacheState>> = OnceLock::new();
 static SIDE_PANEL_RENDER_CACHE: OnceLock<Mutex<SidePanelRenderCacheState>> = OnceLock::new();
 
@@ -680,7 +684,7 @@ pub(super) fn draw_side_panel_markdown(
                 placement.hash,
                 img_area,
                 frame.buffer_mut(),
-                false,
+                centered,
                 false,
             );
         }
@@ -730,10 +734,18 @@ fn render_side_panel_markdown_cached(
     };
     let mut text_lines: Vec<Line<'static>> = Vec::new();
     let mut image_placements: Vec<PinnedImagePlacement> = Vec::new();
-    for line in rendered_markdown {
+    for (idx, line) in rendered_markdown.iter().enumerate() {
         if has_protocol {
-            if let Some(hash) = mermaid::parse_image_placeholder(&line) {
-                let img_rows = estimate_side_panel_image_rows(hash, inner);
+            if let Some(hash) = mermaid::parse_image_placeholder(line) {
+                let has_following_content = rendered_markdown.iter().skip(idx + 1).any(|future| {
+                    mermaid::parse_image_placeholder(future).is_none() && future.width() > 0
+                });
+                let img_rows = estimate_side_panel_image_rows(
+                    hash,
+                    inner,
+                    text_lines.len(),
+                    has_following_content,
+                );
                 image_placements.push(PinnedImagePlacement {
                     after_text_line: text_lines.len(),
                     hash,
@@ -745,7 +757,7 @@ fn render_side_panel_markdown_cached(
                 continue;
             }
         }
-        text_lines.push(align_if_unset(line, align));
+        text_lines.push(align_if_unset(line.clone(), align));
     }
 
     if text_lines.is_empty() {
@@ -772,9 +784,19 @@ fn render_side_panel_markdown_cached(
     rendered
 }
 
-fn estimate_side_panel_image_rows(hash: u64, inner: Rect) -> u16 {
+fn estimate_side_panel_image_rows(
+    hash: u64,
+    inner: Rect,
+    lines_before_image: usize,
+    has_following_content: bool,
+) -> u16 {
     let Some((_, width, height)) = mermaid::get_cached_png(hash) else {
-        return inner.height.min(12).max(4);
+        return clamp_side_panel_image_rows(
+            inner.height.min(12).max(SIDE_PANEL_INLINE_IMAGE_MIN_ROWS),
+            inner.height,
+            lines_before_image,
+            has_following_content,
+        );
     };
 
     let diagram = info_widget::DiagramInfo {
@@ -784,7 +806,66 @@ fn estimate_side_panel_image_rows(hash: u64, inner: Rect) -> u16 {
         label: None,
     };
     let needed = super::diagram_pane::estimate_pinned_diagram_pane_height(&diagram, inner.width, 4);
-    needed.saturating_sub(2).max(4).min(inner.height.max(4))
+    clamp_side_panel_image_rows(
+        needed
+            .saturating_sub(2)
+            .max(SIDE_PANEL_INLINE_IMAGE_MIN_ROWS)
+            .min(inner.height.max(SIDE_PANEL_INLINE_IMAGE_MIN_ROWS)),
+        inner.height,
+        lines_before_image,
+        has_following_content,
+    )
+}
+
+fn clamp_side_panel_image_rows(
+    estimated_rows: u16,
+    inner_height: u16,
+    lines_before_image: usize,
+    has_following_content: bool,
+) -> u16 {
+    let min_rows = SIDE_PANEL_INLINE_IMAGE_MIN_ROWS.min(inner_height.max(1));
+    let max_rows = inner_height.max(min_rows);
+    let estimated_rows = estimated_rows.max(min_rows).min(max_rows);
+
+    if !has_following_content {
+        return estimated_rows;
+    }
+
+    let preceding_rows = u16::try_from(lines_before_image).unwrap_or(u16::MAX);
+    let desired_preview_rows = ((inner_height as u32) / 3)
+        .max(SIDE_PANEL_FOLLOWING_CONTENT_PREVIEW_MIN_ROWS as u32)
+        .min(SIDE_PANEL_FOLLOWING_CONTENT_PREVIEW_MAX_ROWS as u32)
+        as u16;
+    let preview_rows = desired_preview_rows.min(inner_height.saturating_sub(1));
+    let max_rows_for_image = inner_height
+        .saturating_sub(preceding_rows)
+        .saturating_sub(preview_rows)
+        .max(min_rows);
+
+    estimated_rows.min(max_rows_for_image)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_side_panel_image_rows_leaves_room_for_following_content() {
+        let rows = clamp_side_panel_image_rows(18, 16, 2, true);
+        assert_eq!(rows, 8);
+    }
+
+    #[test]
+    fn clamp_side_panel_image_rows_preserves_estimate_without_following_content() {
+        let rows = clamp_side_panel_image_rows(18, 16, 2, false);
+        assert_eq!(rows, 16);
+    }
+
+    #[test]
+    fn clamp_side_panel_image_rows_keeps_minimum_image_presence() {
+        let rows = clamp_side_panel_image_rows(10, 5, 1, true);
+        assert_eq!(rows, 4);
+    }
 }
 
 #[allow(dead_code)]
