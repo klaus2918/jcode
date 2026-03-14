@@ -713,30 +713,6 @@ impl Tool for ScheduleTool {
         json!({
             "type": "object",
             "required": ["task"],
-            "anyOf": [
-                {
-                    "type": "object",
-                    "required": ["wake_in_minutes"],
-                    "properties": {
-                        "wake_in_minutes": {
-                            "type": "integer",
-                            "description": "Minutes from now to execute the task. Use this or wake_at."
-                        }
-                    },
-                    "additionalProperties": false
-                },
-                {
-                    "type": "object",
-                    "required": ["wake_at"],
-                    "properties": {
-                        "wake_at": {
-                            "type": "string",
-                            "description": "ISO 8601 timestamp for when to execute (e.g. '2025-03-15T09:00:00Z'). Use this or wake_in_minutes."
-                        }
-                    },
-                    "additionalProperties": false
-                }
-            ],
             "properties": {
                 "task": {
                     "type": "string",
@@ -1262,30 +1238,14 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_tool_schema_requires_a_time_field() {
+    fn test_schedule_tool_schema_avoids_top_level_combinators() {
         let tool = ScheduleTool::new();
         let schema = tool.parameters_schema();
 
-        let any_of = schema
-            .get("anyOf")
-            .and_then(|v| v.as_array())
-            .expect("schedule schema should define anyOf time requirement");
-
-        assert!(any_of.iter().any(|entry| {
-            entry
-                .get("required")
-                .and_then(|v| v.as_array())
-                .map(|required| required.iter().any(|field| field == "wake_in_minutes"))
-                .unwrap_or(false)
-        }));
-
-        assert!(any_of.iter().any(|entry| {
-            entry
-                .get("required")
-                .and_then(|v| v.as_array())
-                .map(|required| required.iter().any(|field| field == "wake_at"))
-                .unwrap_or(false)
-        }));
+        assert_eq!(schema.get("type"), Some(&json!("object")));
+        assert!(schema.get("anyOf").is_none());
+        assert!(schema.get("oneOf").is_none());
+        assert!(schema.get("allOf").is_none());
     }
 
     #[tokio::test]
