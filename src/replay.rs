@@ -816,6 +816,9 @@ pub fn auto_edit_timeline(timeline: &[TimelineEvent], opts: &AutoEditOpts) -> Ve
     // Track tool nesting for compressing tool_start→tool_done spans
     let mut tool_depth: u32 = 0;
     let mut tool_span_start_t: Option<u64> = None;
+    // Track the end of the most recent top-level tool span so we can
+    // compress any long idle wait before the assistant resumes.
+    let mut last_tool_done_t: Option<u64> = None;
 
     // Track done→user_message gaps
     let mut last_done_t: Option<u64> = None;
@@ -825,6 +828,20 @@ pub fn auto_edit_timeline(timeline: &[TimelineEvent], opts: &AutoEditOpts) -> Ve
     for event in timeline {
         let orig_t = event.t;
         let mut new_t = (orig_t as i64 + time_shift).max(0) as u64;
+
+        // If the assistant sat idle for a long time after a tool completed
+        // (for example during a selfdev reload), compress that post-tool gap
+        // before the next later event.
+        if let Some(tool_done_t) = last_tool_done_t {
+            if orig_t > tool_done_t {
+                let gap = orig_t.saturating_sub(tool_done_t);
+                if gap > opts.response_delay_max_ms {
+                    time_shift -= (gap - opts.response_delay_max_ms) as i64;
+                    new_t = (orig_t as i64 + time_shift).max(0) as u64;
+                }
+                last_tool_done_t = None;
+            }
+        }
 
         match &event.kind {
             TimelineEventKind::Thinking { duration } => {
@@ -879,6 +896,7 @@ pub fn auto_edit_timeline(timeline: &[TimelineEvent], opts: &AutoEditOpts) -> Ve
                             new_t = (orig_t as i64 + time_shift).max(0) as u64;
                         }
                     }
+                    last_tool_done_t = Some(orig_t);
                 }
             }
             TimelineEventKind::Done => {
@@ -1503,6 +1521,58 @@ mod tests {
         assert!(
             edited[5].t > tool_done_t,
             "Events after tool_done should still be ordered"
+        );
+    }
+
+    #[test]
+    fn test_auto_edit_compresses_post_tool_idle_gap() {
+        let events = vec![
+            TimelineEvent {
+                t: 0,
+                kind: TimelineEventKind::UserMessage { text: "hi".into() },
+            },
+            TimelineEvent {
+                t: 500,
+                kind: TimelineEventKind::Thinking { duration: 800 },
+            },
+            TimelineEvent {
+                t: 1500,
+                kind: TimelineEventKind::ToolStart {
+                    name: "selfdev".into(),
+                    input: serde_json::json!({"action": "reload"}),
+                },
+            },
+            TimelineEvent {
+                t: 2500,
+                kind: TimelineEventKind::ToolDone {
+                    name: "selfdev".into(),
+                    output: "Reload initiated. Process restarting...".into(),
+                    is_error: false,
+                },
+            },
+            TimelineEvent {
+                t: 48000,
+                kind: TimelineEventKind::Thinking { duration: 800 },
+            },
+            TimelineEvent {
+                t: 49000,
+                kind: TimelineEventKind::StreamText {
+                    text: "Reloaded.".into(),
+                    speed: 80,
+                },
+            },
+        ];
+
+        let opts = AutoEditOpts::default();
+        let edited = auto_edit_timeline(&events, &opts);
+
+        let tool_done_t = edited[3].t;
+        let resumed_t = edited[4].t;
+        let gap = resumed_t - tool_done_t;
+        assert!(
+            gap <= opts.response_delay_max_ms,
+            "Gap after tool completion should be compressed to ≤{}ms, got {gap}ms",
+            opts.response_delay_max_ms
         );
     }
 
