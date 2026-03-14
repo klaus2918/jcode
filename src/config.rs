@@ -442,7 +442,7 @@ pub struct AmbientConfig {
     pub proactive_work: bool,
     /// Proactive work branch prefix (default: "ambient/")
     pub work_branch_prefix: String,
-    /// Show ambient cycle in a terminal window (default: false)
+    /// Show ambient cycle in a terminal window (default: true)
     pub visible: bool,
 }
 
@@ -459,7 +459,7 @@ impl Default for AmbientConfig {
             pause_on_active_session: true,
             proactive_work: true,
             work_branch_prefix: "ambient/".to_string(),
-            visible: false,
+            visible: true,
         }
     }
 }
@@ -1066,8 +1066,8 @@ pause_on_active_session = true
 proactive_work = true
 # Branch prefix for proactive work
 work_branch_prefix = "ambient/"
-# Show ambient cycle in a terminal window (default: false)
-# visible = false
+# Show ambient cycle in a terminal window (default: true)
+# visible = true
 
 [gateway]
 # Enable WebSocket gateway for iOS/web clients
@@ -1363,4 +1363,14 @@ fn parse_env_list(raw: &str) -> Vec<String> {
         .filter(|part| !part.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AmbientConfig;
+
+    #[test]
+    fn test_ambient_visible_defaults_to_true() {
+        assert!(AmbientConfig::default().visible);
+    }
 }
