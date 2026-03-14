@@ -13,7 +13,7 @@ use syntect::highlighting::{Style as SynStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::{DiagramDisplayMode, config};
+use crate::config::{config, DiagramDisplayMode, MarkdownSpacingMode};
 use crate::tui::mermaid;
 use crate::tui::ui::{CopyTargetKind, RawCopyTarget};
 
@@ -62,6 +62,8 @@ thread_local! {
     /// Whether code blocks should be horizontally centered within available width.
     /// Set to true in centered mode, false in left-aligned mode.
     static CENTER_CODE_BLOCKS: Cell<bool> = const { Cell::new(true) };
+    /// Optional test/debug override for markdown spacing mode.
+    static MARKDOWN_SPACING_MODE_OVERRIDE: Cell<Option<MarkdownSpacingMode>> = const { Cell::new(None) };
 }
 
 pub fn set_diagram_mode_override(mode: Option<DiagramDisplayMode>) {
@@ -81,6 +83,31 @@ fn effective_diagram_mode() -> DiagramDisplayMode {
         }
     }
     config().display.diagram_mode
+}
+
+fn effective_markdown_spacing_mode() -> MarkdownSpacingMode {
+    MARKDOWN_SPACING_MODE_OVERRIDE
+        .with(|mode| mode.get().unwrap_or(config().display.markdown_spacing))
+}
+
+fn with_markdown_spacing_mode_override<T>(
+    mode: Option<MarkdownSpacingMode>,
+    f: impl FnOnce() -> T,
+) -> T {
+    MARKDOWN_SPACING_MODE_OVERRIDE.with(|ctx| {
+        let prev = ctx.replace(mode);
+        struct ResetGuard<'a> {
+            cell: &'a Cell<Option<MarkdownSpacingMode>>,
+            prev: Option<MarkdownSpacingMode>,
+        }
+        impl Drop for ResetGuard<'_> {
+            fn drop(&mut self) {
+                self.cell.set(self.prev);
+            }
+        }
+        let _guard = ResetGuard { cell: ctx, prev };
+        f()
+    })
 }
 
 fn with_streaming_render_context<T>(f: impl FnOnce() -> T) -> T {
@@ -110,6 +137,76 @@ pub fn set_center_code_blocks(centered: bool) {
 
 pub fn center_code_blocks() -> bool {
     CENTER_CODE_BLOCKS.with(|ctx| ctx.get())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkdownBlockKind {
+    Heading,
+    Paragraph,
+    List,
+    BlockQuote,
+    DefinitionList,
+    CodeBlock,
+    DisplayMath,
+    Rule,
+    HtmlBlock,
+    Table,
+}
+
+fn spacing_separates_after(kind: MarkdownBlockKind, mode: MarkdownSpacingMode) -> bool {
+    match mode {
+        MarkdownSpacingMode::Compact => !matches!(kind, MarkdownBlockKind::Heading),
+        MarkdownSpacingMode::Document => true,
+    }
+}
+
+fn line_is_blank(line: &Line<'_>) -> bool {
+    line.spans.is_empty()
+        || line
+            .spans
+            .iter()
+            .all(|span| span.content.as_ref().is_empty())
+}
+
+fn push_blank_separator(lines: &mut Vec<Line<'static>>) {
+    if lines.last().map(line_is_blank).unwrap_or(false) {
+        return;
+    }
+    lines.push(Line::default());
+}
+
+fn push_block_separator(
+    lines: &mut Vec<Line<'static>>,
+    kind: MarkdownBlockKind,
+    mode: MarkdownSpacingMode,
+) {
+    if spacing_separates_after(kind, mode) {
+        push_blank_separator(lines);
+    }
+}
+
+fn normalize_block_separators(lines: &mut Vec<Line<'static>>) {
+    let mut normalized = Vec::with_capacity(lines.len());
+    let mut previous_blank = true;
+
+    for line in lines.drain(..) {
+        let is_blank = line_is_blank(&line);
+        if is_blank {
+            if previous_blank {
+                continue;
+            }
+            normalized.push(Line::default());
+        } else {
+            normalized.push(line);
+        }
+        previous_blank = is_blank;
+    }
+
+    while normalized.last().map(line_is_blank).unwrap_or(false) {
+        normalized.pop();
+    }
+
+    *lines = normalized;
 }
 
 struct HighlightCache {
@@ -439,6 +536,36 @@ fn flush_current_line_with_alignment(
     }
 }
 
+fn center_left_aligned_runs(lines: &mut [Line<'static>], width: usize) {
+    if width == 0 {
+        return;
+    }
+
+    let mut run_start: Option<usize> = None;
+    for idx in 0..=lines.len() {
+        let in_run = idx < lines.len()
+            && lines[idx].alignment == Some(Alignment::Left)
+            && !lines[idx].spans.is_empty();
+
+        match (run_start, in_run) {
+            (None, true) => run_start = Some(idx),
+            (Some(start), false) => {
+                let run = &mut lines[start..idx];
+                let max_line_width = run.iter().map(Line::width).max().unwrap_or(0);
+                let pad = width.saturating_sub(max_line_width) / 2;
+                if pad > 0 {
+                    let pad_str = " ".repeat(pad);
+                    for line in run {
+                        line.spans.insert(0, Span::raw(pad_str.clone()));
+                    }
+                }
+                run_start = None;
+            }
+            _ => {}
+        }
+    }
+}
+
 fn structured_markdown_alignment(
     blockquote_depth: usize,
     list_stack: &[ListRenderState],
@@ -700,6 +827,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
     let mut current_spans: Vec<Span<'static>> = Vec::new();
     let side_only = diagram_side_only();
     let streaming_mode = streaming_render_context_enabled();
+    let spacing_mode = effective_markdown_spacing_mode();
 
     // Style stack for nested formatting
     let mut bold = false;
@@ -779,6 +907,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                         })
                         .collect();
                     lines.push(Line::from(heading_spans));
+                    push_block_separator(&mut lines, MarkdownBlockKind::Heading, spacing_mode);
                 }
                 heading_level = None;
             }
@@ -818,7 +947,13 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     ),
                 );
                 blockquote_depth = blockquote_depth.saturating_sub(1);
-                lines.push(Line::default());
+                if blockquote_depth == 0
+                    && list_stack.is_empty()
+                    && !in_definition_list
+                    && !in_footnote_definition
+                {
+                    push_block_separator(&mut lines, MarkdownBlockKind::BlockQuote, spacing_mode);
+                }
             }
 
             Event::Start(Tag::List(start)) => {
@@ -840,6 +975,13 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     ),
                 );
                 list_stack.pop();
+                if blockquote_depth == 0
+                    && list_stack.is_empty()
+                    && !in_definition_list
+                    && !in_footnote_definition
+                {
+                    push_block_separator(&mut lines, MarkdownBlockKind::List, spacing_mode);
+                }
             }
 
             Event::Start(Tag::Link { dest_url, .. }) => {
@@ -939,7 +1081,13 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     ),
                 );
                 in_definition_list = false;
-                lines.push(Line::default());
+                if blockquote_depth == 0 && list_stack.is_empty() && !in_footnote_definition {
+                    push_block_separator(
+                        &mut lines,
+                        MarkdownBlockKind::DefinitionList,
+                        spacing_mode,
+                    );
+                }
             }
             Event::Start(Tag::DefinitionListTitle) => {
                 flush_current_line_with_alignment(
@@ -1059,69 +1207,40 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     let highlighted =
                         highlight_code_cached(&code_block_content, code_block_lang.as_deref());
 
-                    // Calculate the max width of code lines for centering
                     let lang_label = code_block_lang.as_deref().unwrap_or("");
-                    let header_width = 3 + lang_label.len(); // "┌─ " + lang
-                    let code_widths: Vec<usize> = highlighted
-                        .iter()
-                        .map(|l| {
-                            2 + l
-                                .spans
-                                .iter()
-                                .map(|s| s.content.chars().count())
-                                .sum::<usize>()
-                        }) // "│ " + content
-                        .collect();
-                    let max_code_width = code_widths.iter().copied().max().unwrap_or(0);
-                    let block_width = header_width.max(max_code_width).max(2); // at least "└─"
-
-                    // Calculate padding to center the block (only in centered mode)
-                    let padding = if center_code_blocks() {
-                        if let Some(mw) = max_width {
-                            if block_width < mw {
-                                (mw - block_width) / 2
-                            } else {
-                                0
-                            }
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    };
-                    let pad_str: String = " ".repeat(padding);
-
-                    // Add header with padding
+                    // Add header
                     lines.push(
                         Line::from(Span::styled(
-                            format!("{}┌─ {} ", pad_str, lang_label),
+                            format!("┌─ {} ", lang_label),
                             Style::default().fg(md_dim_color()),
                         ))
                         .left_aligned(),
                     );
 
-                    // Add code lines with padding
+                    // Add code lines
                     for hl_line in highlighted {
-                        let mut spans = vec![Span::styled(
-                            format!("{}│ ", pad_str),
-                            Style::default().fg(md_dim_color()),
-                        )];
+                        let mut spans =
+                            vec![Span::styled("│ ", Style::default().fg(md_dim_color()))];
                         spans.extend(hl_line.spans);
                         lines.push(Line::from(spans).left_aligned());
                     }
 
-                    // Add footer with padding
+                    // Add footer
                     lines.push(
-                        Line::from(Span::styled(
-                            format!("{}└─", pad_str),
-                            Style::default().fg(md_dim_color()),
-                        ))
-                        .left_aligned(),
+                        Line::from(Span::styled("└─", Style::default().fg(md_dim_color())))
+                            .left_aligned(),
                     );
                 }
                 in_code_block = false;
                 code_block_lang = None;
                 code_block_content.clear();
+                if blockquote_depth == 0
+                    && list_stack.is_empty()
+                    && !in_definition_list
+                    && !in_footnote_definition
+                {
+                    push_block_separator(&mut lines, MarkdownBlockKind::CodeBlock, spacing_mode);
+                }
             }
 
             Event::Code(code) => {
@@ -1186,6 +1305,17 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 } else {
                     for line in math_display_lines(&math) {
                         lines.push(with_blockquote_prefix(line, blockquote_depth));
+                    }
+                    if blockquote_depth == 0
+                        && list_stack.is_empty()
+                        && !in_definition_list
+                        && !in_footnote_definition
+                    {
+                        push_block_separator(
+                            &mut lines,
+                            MarkdownBlockKind::DisplayMath,
+                            spacing_mode,
+                        );
                     }
                 }
             }
@@ -1258,6 +1388,13 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     Line::from(rule).left_aligned(),
                     blockquote_depth,
                 ));
+                if blockquote_depth == 0
+                    && list_stack.is_empty()
+                    && !in_definition_list
+                    && !in_footnote_definition
+                {
+                    push_block_separator(&mut lines, MarkdownBlockKind::Rule, spacing_mode);
+                }
             }
 
             Event::Html(html) => {
@@ -1278,6 +1415,13 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                         Line::from(span).left_aligned(),
                         blockquote_depth,
                     ));
+                }
+                if blockquote_depth == 0
+                    && list_stack.is_empty()
+                    && !in_definition_list
+                    && !in_footnote_definition
+                {
+                    push_block_separator(&mut lines, MarkdownBlockKind::HtmlBlock, spacing_mode);
                 }
             }
 
@@ -1338,8 +1482,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                         in_footnote_definition,
                     ),
                 );
-                // Add blank line after paragraph for visual separation
-                lines.push(Line::default());
+                push_block_separator(&mut lines, MarkdownBlockKind::Paragraph, spacing_mode);
             }
 
             Event::Start(Tag::Item) => {
@@ -1401,12 +1544,17 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 table_rows.clear();
             }
             Event::End(TagEnd::Table) => {
-                // Render the collected table with padding
+                // Render the collected table
                 if !table_rows.is_empty() {
-                    lines.push(Line::from("")); // Padding before table
                     let rendered = render_table(&table_rows, max_width);
                     lines.extend(rendered);
-                    lines.push(Line::from("")); // Padding after table
+                    if blockquote_depth == 0
+                        && list_stack.is_empty()
+                        && !in_definition_list
+                        && !in_footnote_definition
+                    {
+                        push_block_separator(&mut lines, MarkdownBlockKind::Table, spacing_mode);
+                    }
                 }
                 in_table = false;
                 table_rows.clear();
@@ -1543,6 +1691,14 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             in_footnote_definition,
         ),
     );
+
+    normalize_block_separators(&mut lines);
+
+    if center_code_blocks() {
+        if let Some(width) = max_width {
+            center_left_aligned_runs(&mut lines, width);
+        }
+    }
 
     if let Ok(mut state) = MARKDOWN_DEBUG.lock() {
         state.stats.total_renders += 1;
@@ -1886,6 +2042,7 @@ pub fn render_markdown_lazy(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
     let side_only = diagram_side_only();
+    let spacing_mode = effective_markdown_spacing_mode();
 
     // Style stack for nested formatting
     let mut bold = false;
@@ -1956,6 +2113,7 @@ pub fn render_markdown_lazy(
                         })
                         .collect();
                     lines.push(Line::from(heading_spans));
+                    push_block_separator(&mut lines, MarkdownBlockKind::Heading, spacing_mode);
                 }
                 heading_level = None;
             }
@@ -1994,7 +2152,13 @@ pub fn render_markdown_lazy(
                     ),
                 );
                 blockquote_depth = blockquote_depth.saturating_sub(1);
-                lines.push(Line::default());
+                if blockquote_depth == 0
+                    && list_stack.is_empty()
+                    && !in_definition_list
+                    && !in_footnote_definition
+                {
+                    push_block_separator(&mut lines, MarkdownBlockKind::BlockQuote, spacing_mode);
+                }
             }
 
             Event::Start(Tag::List(start)) => {
@@ -2016,6 +2180,13 @@ pub fn render_markdown_lazy(
                     ),
                 );
                 list_stack.pop();
+                if blockquote_depth == 0
+                    && list_stack.is_empty()
+                    && !in_definition_list
+                    && !in_footnote_definition
+                {
+                    push_block_separator(&mut lines, MarkdownBlockKind::List, spacing_mode);
+                }
             }
 
             Event::Start(Tag::Link { dest_url, .. }) => {
@@ -2115,7 +2286,13 @@ pub fn render_markdown_lazy(
                     ),
                 );
                 in_definition_list = false;
-                lines.push(Line::default());
+                if blockquote_depth == 0 && list_stack.is_empty() && !in_footnote_definition {
+                    push_block_separator(
+                        &mut lines,
+                        MarkdownBlockKind::DefinitionList,
+                        spacing_mode,
+                    );
+                }
             }
             Event::Start(Tag::DefinitionListTitle) => {
                 flush_current_line_with_alignment(
@@ -2219,55 +2396,20 @@ pub fn render_markdown_lazy(
                     // Check if this block is visible
                     let is_visible = ranges_overlap(block_range.clone(), visible_range.clone());
 
-                    // Calculate centering padding
                     let lang_label = code_block_lang.as_deref().unwrap_or("");
-                    let header_width = 3 + lang_label.len();
 
-                    let (highlighted, code_widths) = if is_visible {
+                    let highlighted = if is_visible {
                         let hl =
                             highlight_code_cached(&code_block_content, code_block_lang.as_deref());
-                        let widths: Vec<usize> = hl
-                            .iter()
-                            .map(|l| {
-                                2 + l
-                                    .spans
-                                    .iter()
-                                    .map(|s| s.content.chars().count())
-                                    .sum::<usize>()
-                            })
-                            .collect();
-                        (Some(hl), widths)
+                        Some(hl)
                     } else {
-                        // Estimate widths from raw content for placeholder
-                        let widths: Vec<usize> = code_block_content
-                            .lines()
-                            .map(|l| 2 + l.chars().count())
-                            .collect();
-                        (None, widths)
+                        None
                     };
 
-                    let max_code_width = code_widths.iter().copied().max().unwrap_or(0);
-                    let block_width = header_width.max(max_code_width).max(2);
-
-                    let padding = if center_code_blocks() {
-                        if let Some(mw) = max_width {
-                            if block_width < mw {
-                                (mw - block_width) / 2
-                            } else {
-                                0
-                            }
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    };
-                    let pad_str: String = " ".repeat(padding);
-
-                    // Add header with padding
+                    // Add header
                     lines.push(
                         Line::from(Span::styled(
-                            format!("{}┌─ {} ", pad_str, lang_label),
+                            format!("┌─ {} ", lang_label),
                             Style::default().fg(md_dim_color()),
                         ))
                         .left_aligned(),
@@ -2276,10 +2418,8 @@ pub fn render_markdown_lazy(
                     if let Some(hl_lines) = highlighted {
                         // Render highlighted code
                         for hl_line in hl_lines {
-                            let mut spans = vec![Span::styled(
-                                format!("{}│ ", pad_str),
-                                Style::default().fg(md_dim_color()),
-                            )];
+                            let mut spans =
+                                vec![Span::styled("│ ", Style::default().fg(md_dim_color()))];
                             spans.extend(hl_line.spans);
                             lines.push(Line::from(spans).left_aligned());
                         }
@@ -2288,27 +2428,29 @@ pub fn render_markdown_lazy(
                         let placeholder =
                             placeholder_code_block(&code_block_content, code_block_lang.as_deref());
                         for pl_line in placeholder {
-                            let mut spans = vec![Span::styled(
-                                format!("{}│ ", pad_str),
-                                Style::default().fg(md_dim_color()),
-                            )];
+                            let mut spans =
+                                vec![Span::styled("│ ", Style::default().fg(md_dim_color()))];
                             spans.extend(pl_line.spans);
                             lines.push(Line::from(spans).left_aligned());
                         }
                     }
 
-                    // Add footer with padding
+                    // Add footer
                     lines.push(
-                        Line::from(Span::styled(
-                            format!("{}└─", pad_str),
-                            Style::default().fg(md_dim_color()),
-                        ))
-                        .left_aligned(),
+                        Line::from(Span::styled("└─", Style::default().fg(md_dim_color())))
+                            .left_aligned(),
                     );
                 }
                 in_code_block = false;
                 code_block_lang = None;
                 code_block_content.clear();
+                if blockquote_depth == 0
+                    && list_stack.is_empty()
+                    && !in_definition_list
+                    && !in_footnote_definition
+                {
+                    push_block_separator(&mut lines, MarkdownBlockKind::CodeBlock, spacing_mode);
+                }
             }
 
             Event::Code(code) => {
@@ -2373,6 +2515,17 @@ pub fn render_markdown_lazy(
                 } else {
                     for line in math_display_lines(&math) {
                         lines.push(with_blockquote_prefix(line, blockquote_depth));
+                    }
+                    if blockquote_depth == 0
+                        && list_stack.is_empty()
+                        && !in_definition_list
+                        && !in_footnote_definition
+                    {
+                        push_block_separator(
+                            &mut lines,
+                            MarkdownBlockKind::DisplayMath,
+                            spacing_mode,
+                        );
                     }
                 }
             }
@@ -2444,6 +2597,13 @@ pub fn render_markdown_lazy(
                     Line::from(rule).left_aligned(),
                     blockquote_depth,
                 ));
+                if blockquote_depth == 0
+                    && list_stack.is_empty()
+                    && !in_definition_list
+                    && !in_footnote_definition
+                {
+                    push_block_separator(&mut lines, MarkdownBlockKind::Rule, spacing_mode);
+                }
             }
 
             Event::Html(html) => {
@@ -2464,6 +2624,13 @@ pub fn render_markdown_lazy(
                         Line::from(span).left_aligned(),
                         blockquote_depth,
                     ));
+                }
+                if blockquote_depth == 0
+                    && list_stack.is_empty()
+                    && !in_definition_list
+                    && !in_footnote_definition
+                {
+                    push_block_separator(&mut lines, MarkdownBlockKind::HtmlBlock, spacing_mode);
                 }
             }
 
@@ -2524,7 +2691,7 @@ pub fn render_markdown_lazy(
                         in_footnote_definition,
                     ),
                 );
-                lines.push(Line::default());
+                push_block_separator(&mut lines, MarkdownBlockKind::Paragraph, spacing_mode);
             }
 
             Event::Start(Tag::Item) => {
@@ -2583,10 +2750,15 @@ pub fn render_markdown_lazy(
             }
             Event::End(TagEnd::Table) => {
                 if !table_rows.is_empty() {
-                    lines.push(Line::from(""));
                     let rendered = render_table(&table_rows, max_width);
                     lines.extend(rendered);
-                    lines.push(Line::from(""));
+                    if blockquote_depth == 0
+                        && list_stack.is_empty()
+                        && !in_definition_list
+                        && !in_footnote_definition
+                    {
+                        push_block_separator(&mut lines, MarkdownBlockKind::Table, spacing_mode);
+                    }
                 }
                 in_table = false;
                 table_rows.clear();
@@ -2658,6 +2830,14 @@ pub fn render_markdown_lazy(
             in_footnote_definition,
         ),
     );
+
+    normalize_block_separators(&mut lines);
+
+    if center_code_blocks() {
+        if let Some(width) = max_width {
+            center_left_aligned_runs(&mut lines, width);
+        }
+    }
 
     lines
 }
@@ -2825,6 +3005,20 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    fn render_markdown_with_mode(text: &str, mode: MarkdownSpacingMode) -> Vec<Line<'static>> {
+        with_markdown_spacing_mode_override(Some(mode), || render_markdown(text))
+    }
+
+    fn render_markdown_with_width_and_mode(
+        text: &str,
+        width: usize,
+        mode: MarkdownSpacingMode,
+    ) -> Vec<Line<'static>> {
+        with_markdown_spacing_mode_override(Some(mode), || {
+            render_markdown_with_width(text, Some(width))
+        })
+    }
+
     fn lines_to_string(lines: &[Line<'_>]) -> String {
         lines
             .iter()
@@ -2876,11 +3070,9 @@ mod tests {
         let lines = render_markdown(md);
         let rendered: Vec<String> = lines.iter().map(line_to_string).collect();
 
-        assert!(
-            rendered
-                .iter()
-                .any(|l| l.contains('│') && l.contains('A') && l.contains('B'))
-        );
+        assert!(rendered
+            .iter()
+            .any(|l| l.contains('│') && l.contains('A') && l.contains('B')));
         assert!(rendered.iter().any(|l| l.contains('─') && l.contains('┼')));
     }
 
@@ -3046,7 +3238,10 @@ mod tests {
             "<div>html</div>"
         );
 
+        let saved = center_code_blocks();
+        set_center_code_blocks(true);
         let lines = render_markdown_with_width(md, Some(40));
+        set_center_code_blocks(saved);
 
         let expected = [
             "• [x] done",
@@ -3107,6 +3302,66 @@ mod tests {
         assert!(rendered.contains("────────────────"));
         assert!(rendered.contains("<span>"));
         assert!(rendered.contains("</span>"));
+    }
+
+    #[test]
+    fn test_compact_spacing_keeps_heading_tight_but_separates_list_from_next_heading() {
+        let md = "# Intro\nBody\n\n- one\n- two\n\n# Next\nBody";
+        let rendered: Vec<String> = render_markdown_with_mode(md, MarkdownSpacingMode::Compact)
+            .iter()
+            .map(line_to_string)
+            .collect();
+
+        assert_eq!(
+            rendered,
+            vec!["Intro", "Body", "", "• one", "• two", "", "Next", "Body"]
+        );
+    }
+
+    #[test]
+    fn test_document_spacing_adds_heading_separation() {
+        let md = "# Intro\nBody\n\n- one\n- two\n\n# Next\nBody";
+        let rendered: Vec<String> = render_markdown_with_mode(md, MarkdownSpacingMode::Document)
+            .iter()
+            .map(line_to_string)
+            .collect();
+
+        assert_eq!(
+            rendered,
+            vec!["Intro", "", "Body", "", "• one", "• two", "", "Next", "", "Body"]
+        );
+    }
+
+    #[test]
+    fn test_compact_spacing_separates_code_block_from_following_heading_without_trailing_blank() {
+        let md = "```rust\nfn main() {}\n```\n\n# Next";
+        let rendered: Vec<String> = render_markdown_with_mode(md, MarkdownSpacingMode::Compact)
+            .iter()
+            .map(line_to_string)
+            .collect();
+
+        assert_eq!(
+            rendered,
+            vec!["┌─ rust ", "│ fn main() {}", "└─", "", "Next"]
+        );
+    }
+
+    #[test]
+    fn test_document_spacing_keeps_table_single_spaced_between_blocks() {
+        let md = "Before\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nAfter";
+        let rendered: Vec<String> =
+            render_markdown_with_width_and_mode(md, 40, MarkdownSpacingMode::Document)
+                .iter()
+                .map(line_to_string)
+                .collect();
+
+        let table_start = rendered
+            .iter()
+            .position(|line| line.contains('│') && line.contains('A') && line.contains('B'))
+            .expect("table header line");
+        assert_eq!(rendered[table_start - 1], "");
+        assert_eq!(rendered[table_start + 3], "");
+        assert_eq!(rendered.last().map(String::as_str), Some("After"));
     }
 
     #[test]

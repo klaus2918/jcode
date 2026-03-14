@@ -260,6 +260,26 @@ pub enum DiagramPanePosition {
     Top,
 }
 
+/// How much vertical spacing to use when rendering markdown blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkdownSpacingMode {
+    /// Compact chat/TUI-oriented spacing.
+    #[default]
+    Compact,
+    /// Document-style spacing between top-level blocks.
+    Document,
+}
+
+impl MarkdownSpacingMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "Compact",
+            Self::Document => "Document",
+        }
+    }
+}
+
 /// Display/UI configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -281,6 +301,8 @@ pub struct DisplayConfig {
     pub show_thinking: bool,
     /// How to display mermaid diagrams (none/margin/pinned, default: pinned)
     pub diagram_mode: DiagramDisplayMode,
+    /// Markdown block spacing style (compact/document, default: compact)
+    pub markdown_spacing: MarkdownSpacingMode,
     /// Pin read images to side pane (default: true)
     pub pin_images: bool,
     /// Show startup animation (default: false)
@@ -315,6 +337,7 @@ impl Default for DisplayConfig {
             centered: true,
             show_thinking: false,
             diagram_mode: DiagramDisplayMode::default(),
+            markdown_spacing: MarkdownSpacingMode::default(),
             startup_animation: false,
             idle_animation: true,
             prompt_entry_animation: true,
@@ -667,6 +690,15 @@ impl Config {
                 self.display.show_thinking = parsed;
             }
         }
+        if let Ok(v) = std::env::var("JCODE_MARKDOWN_SPACING") {
+            match v.trim().to_lowercase().as_str() {
+                "compact" => self.display.markdown_spacing = MarkdownSpacingMode::Compact,
+                "document" | "doc" => {
+                    self.display.markdown_spacing = MarkdownSpacingMode::Document;
+                }
+                _ => {}
+            }
+        }
         if let Ok(v) = std::env::var("JCODE_STARTUP_ANIMATION") {
             if let Some(parsed) = parse_env_bool(&v) {
                 self.display.startup_animation = parsed;
@@ -989,6 +1021,9 @@ debug_socket = false
 # Show thinking/reasoning content (default: false)
 show_thinking = false
 
+# Markdown spacing style: "compact" (chat/TUI) or "document" (docs-like)
+# markdown_spacing = "compact"
+
 # Show startup animation (default: false)
 startup_animation = false
 
@@ -1146,6 +1181,7 @@ desktop_notifications = true
 
 **Display:**
 - Diff mode: {}
+- Markdown spacing: {}
 - Pin images: {}
 - Diff line wrap: {}
 - Queue mode: {}
@@ -1213,6 +1249,7 @@ desktop_notifications = true
             self.keybindings.scroll_prompt_down,
             self.keybindings.scroll_bookmark,
             self.display.diff_mode.label(),
+            self.display.markdown_spacing.label(),
             self.display.pin_images,
             self.display.diff_line_wrap,
             self.display.queue_mode,
