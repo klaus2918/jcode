@@ -736,6 +736,8 @@ impl App {
             "**OpenAI OAuth Login** (account: `{}`)\n\n\
              Opening browser for authentication...\n\n\
              If the browser didn't open, visit:\n{}\n\n\
+             **Note:** Wait a few seconds for the page to fully load before clicking Continue. \
+             OpenAI's verification system may briefly disable the button.\n\n\
              {}{}\
              Or paste the full callback URL or query string here to finish from another device.{}",
             label, auth_url, browser_line, callback_line, qr_section
