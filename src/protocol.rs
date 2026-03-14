@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::bus::BatchProgress;
 use crate::message::ToolCall;
 use crate::plan::PlanItem;
+use crate::side_panel::SidePanelSnapshot;
 
 /// A message in conversation history (for sync)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +128,10 @@ pub enum Request {
     /// Set reasoning effort for OpenAI models (none|low|medium|high|xhigh)
     #[serde(rename = "set_reasoning_effort")]
     SetReasoningEffort { id: u64, effort: String },
+
+    /// Set service tier for OpenAI models (priority|fast|flex|off)
+    #[serde(rename = "set_service_tier")]
+    SetServiceTier { id: u64, service_tier: String },
 
     /// Set connection transport for OpenAI models (auto|https|websocket)
     #[serde(rename = "set_transport")]
@@ -462,6 +467,9 @@ pub enum ServerEvent {
     SoftInterruptInjected {
         /// The injected message content
         content: String,
+        /// Optional display role override for the injected content (e.g. "system")
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_role: Option<String>,
         /// Which injection point: "A" (after stream), "B" (no tools),
         /// "C" (between tools), "D" (after all tools)
         point: String,
@@ -611,10 +619,20 @@ pub enum ServerEvent {
         /// Reasoning effort for OpenAI models
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_effort: Option<String>,
+        /// Service tier override for OpenAI models
+        #[serde(skip_serializing_if = "Option::is_none")]
+        service_tier: Option<String>,
         /// Active compaction mode for this session
         #[serde(default)]
         compaction_mode: crate::config::CompactionMode,
+        /// Session-scoped side panel pages and active focus state
+        #[serde(default, skip_serializing_if = "crate::side_panel::snapshot_is_empty")]
+        side_panel: SidePanelSnapshot,
     },
+
+    /// Side panel state changed for the active session
+    #[serde(rename = "side_panel_state")]
+    SidePanelState { snapshot: SidePanelSnapshot },
 
     /// Server is reloading (clients should reconnect)
     #[serde(rename = "reloading")]
@@ -656,6 +674,16 @@ pub enum ServerEvent {
         id: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
+    /// Service tier changed (response to set_service_tier)
+    #[serde(rename = "service_tier_changed")]
+    ServiceTierChanged {
+        id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        service_tier: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -896,6 +924,7 @@ impl Request {
             Request::CycleModel { id, .. } => *id,
             Request::SetModel { id, .. } => *id,
             Request::SetReasoningEffort { id, .. } => *id,
+            Request::SetServiceTier { id, .. } => *id,
             Request::SetTransport { id, .. } => *id,
             Request::SetPremiumMode { id, .. } => *id,
             Request::SetFeature { id, .. } => *id,
@@ -1031,6 +1060,7 @@ mod tests {
                 available_models,
                 connection_type,
                 compaction_mode,
+                side_panel,
                 ..
             } => {
                 assert_eq!(provider_name.as_deref(), Some("openai"));
@@ -1038,6 +1068,7 @@ mod tests {
                 assert_eq!(available_models, vec!["gpt-5.4"]);
                 assert_eq!(connection_type.as_deref(), Some("websocket"));
                 assert_eq!(compaction_mode, crate::config::CompactionMode::Reactive);
+                assert!(!side_panel.has_pages());
             }
             _ => panic!("wrong event type"),
         }

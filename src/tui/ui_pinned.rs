@@ -565,6 +565,136 @@ pub(super) fn draw_pinned_content_cached(
     }
 }
 
+pub(super) fn draw_side_panel_markdown(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: &crate::side_panel::SidePanelSnapshot,
+    scroll: usize,
+    focused: bool,
+) {
+    use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+
+    if area.width < 10 || area.height < 3 {
+        return;
+    }
+
+    let Some(page) = snapshot.focused_page() else {
+        return;
+    };
+
+    let page_index = snapshot
+        .pages
+        .iter()
+        .position(|candidate| candidate.id == page.id)
+        .map(|idx| idx + 1)
+        .unwrap_or(1);
+    let page_count = snapshot.pages.len();
+
+    let mut title_parts = vec![Span::styled(" side ", Style::default().fg(tool_color()))];
+    title_parts.push(Span::styled(
+        page.title.clone(),
+        Style::default()
+            .fg(rgb(180, 200, 255))
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    ));
+    title_parts.push(Span::styled(
+        format!(" {}/{} ", page_index, page_count),
+        Style::default().fg(dim_color()),
+    ));
+
+    let border_color = if focused { tool_color() } else { dim_color() };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(Line::from(title_parts));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let saved_override = markdown::get_diagram_mode_override();
+    let saved_centered = markdown::center_code_blocks();
+    markdown::set_diagram_mode_override(Some(crate::config::DiagramDisplayMode::None));
+    markdown::set_center_code_blocks(false);
+    let rendered = markdown::render_markdown_with_width(&page.content, Some(inner.width as usize));
+    markdown::set_center_code_blocks(saved_centered);
+    markdown::set_diagram_mode_override(saved_override);
+
+    let has_protocol = mermaid::protocol_type().is_some();
+    let mut text_lines: Vec<Line<'static>> = Vec::new();
+    let mut image_placements: Vec<PinnedImagePlacement> = Vec::new();
+    for line in rendered {
+        if has_protocol {
+            if let Some(hash) = mermaid::parse_image_placeholder(&line) {
+                let img_rows = inner.height.min(12).max(4);
+                image_placements.push(PinnedImagePlacement {
+                    after_text_line: text_lines.len(),
+                    hash,
+                    rows: img_rows,
+                });
+                for _ in 0..img_rows {
+                    text_lines.push(Line::from(""));
+                }
+                continue;
+            }
+        }
+        text_lines.push(line);
+    }
+
+    if text_lines.is_empty() {
+        text_lines.push(Line::from(Span::styled(
+            "No side panel content yet",
+            Style::default().fg(dim_color()),
+        )));
+    }
+
+    PINNED_PANE_TOTAL_LINES.store(text_lines.len(), Ordering::Relaxed);
+    let max_scroll = text_lines.len().saturating_sub(inner.height as usize);
+    let clamped_scroll = scroll.min(max_scroll);
+    LAST_DIFF_PANE_EFFECTIVE_SCROLL.store(clamped_scroll, Ordering::Relaxed);
+
+    let visible_lines: Vec<Line<'static>> = text_lines
+        .iter()
+        .skip(clamped_scroll)
+        .take(inner.height as usize)
+        .cloned()
+        .collect();
+    frame.render_widget(Paragraph::new(visible_lines), inner);
+
+    if has_protocol {
+        for placement in &image_placements {
+            let text_y = placement.after_text_line as u16;
+            if text_y < clamped_scroll as u16 {
+                continue;
+            }
+            let y_in_inner = text_y.saturating_sub(clamped_scroll as u16);
+            if y_in_inner >= inner.height {
+                continue;
+            }
+            let avail_rows = inner.height.saturating_sub(y_in_inner).min(placement.rows);
+            if avail_rows < 2 {
+                continue;
+            }
+            let img_area = Rect {
+                x: inner.x,
+                y: inner.y + y_in_inner,
+                width: inner.width,
+                height: avail_rows,
+            };
+            mermaid::render_image_widget_fit(
+                placement.hash,
+                img_area,
+                frame.buffer_mut(),
+                false,
+                false,
+            );
+        }
+    }
+}
+
 #[allow(dead_code)]
 fn draw_pinned_content(
     frame: &mut Frame,

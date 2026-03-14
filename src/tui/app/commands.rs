@@ -13,6 +13,7 @@ pub(super) fn reset_current_session(app: &mut App) {
     let mut session = Session::create(None, None);
     session.model = Some(app.provider.model());
     app.session = session;
+    app.side_panel = crate::side_panel::SidePanelSnapshot::default();
     app.provider_session_id = None;
 }
 

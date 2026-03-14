@@ -596,15 +596,17 @@ impl crate::tui::TuiState for App {
             None
         };
 
-        let (model, reasoning_effort) = if self.is_remote || self.is_replay {
+        let (model, reasoning_effort, service_tier) = if self.is_remote || self.is_replay {
             (
                 self.remote_provider_model.clone(),
                 self.remote_reasoning_effort.clone(),
+                self.remote_service_tier.clone(),
             )
         } else {
             (
                 Some(self.provider.model()),
                 self.provider.reasoning_effort(),
+                self.provider.service_tier(),
             )
         };
 
@@ -806,6 +808,7 @@ impl crate::tui::TuiState for App {
             context_limit: Some(self.context_limit as usize),
             model,
             reasoning_effort,
+            service_tier,
             session_count,
             session_name,
             client_count,
@@ -927,6 +930,9 @@ impl crate::tui::TuiState for App {
     }
     fn diff_pane_focus(&self) -> bool {
         self.diff_pane_focus
+    }
+    fn side_panel(&self) -> &crate::side_panel::SidePanelSnapshot {
+        &self.side_panel
     }
     fn pin_images(&self) -> bool {
         self.pin_images

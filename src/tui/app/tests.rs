@@ -1,6 +1,7 @@
 use super::*;
 use crate::tui::TuiState;
 use ratatui::layout::Rect;
+use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
 // Mock provider for testing
 struct MockProvider;
@@ -28,6 +29,58 @@ impl Provider for MockProvider {
 
 fn create_test_app() -> App {
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+    let mut app = App::new(provider, registry);
+    app.queue_mode = false;
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app
+}
+
+#[derive(Clone)]
+struct FastMockProvider {
+    service_tier: StdArc<StdMutex<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for FastMockProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[crate::message::ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        unimplemented!("FastMockProvider")
+    }
+
+    fn name(&self) -> &str {
+        "mock"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+
+    fn service_tier(&self) -> Option<String> {
+        self.service_tier.lock().unwrap().clone()
+    }
+
+    fn set_service_tier(&self, service_tier: &str) -> anyhow::Result<()> {
+        let normalized = match service_tier.trim().to_ascii_lowercase().as_str() {
+            "priority" | "fast" => Some("priority".to_string()),
+            "off" | "default" | "auto" | "none" => None,
+            other => anyhow::bail!("unsupported service tier {other}"),
+        };
+        *self.service_tier.lock().unwrap() = normalized;
+        Ok(())
+    }
+}
+
+fn create_fast_test_app() -> App {
+    let provider: Arc<dyn Provider> = Arc::new(FastMockProvider {
+        service_tier: StdArc::new(StdMutex::new(None)),
+    });
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new(provider, registry);
@@ -120,6 +173,29 @@ fn test_compact_mode_status_shows_local_mode() {
 
     let last = app.display_messages().last().expect("missing response");
     assert!(last.content.contains("Compaction mode: **proactive**"));
+}
+
+#[test]
+fn test_fast_on_while_processing_mentions_next_request_locally() {
+    let mut app = create_fast_test_app();
+    app.is_processing = true;
+    app.input = "/fast on".to_string();
+
+    app.submit_input();
+
+    let last = app
+        .display_messages()
+        .last()
+        .expect("missing fast mode response");
+    assert_eq!(last.role, "system");
+    assert_eq!(
+        last.content,
+        "✓ Fast mode on (Fast)\nApplies to the next request/turn. The current in-flight request keeps its existing tier."
+    );
+    assert_eq!(
+        app.status_notice(),
+        Some("Fast: on (next request)".to_string())
+    );
 }
 
 #[test]
@@ -1858,7 +1934,9 @@ fn test_handle_server_event_history_clears_connection_type_on_session_change_whe
             connection_type: None,
             upstream_provider: None,
             reasoning_effort: None,
+            service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,
     );
@@ -1900,7 +1978,9 @@ fn test_handle_server_event_history_preserves_connection_type_for_same_session_w
             connection_type: None,
             upstream_provider: None,
             reasoning_effort: None,
+            service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,
     );
@@ -1991,6 +2071,31 @@ fn test_handle_server_event_interrupted_clears_stream_state_and_sets_idle() {
         .expect("missing interrupted message");
     assert_eq!(last.role, "system");
     assert_eq!(last.content, "Interrupted");
+}
+
+#[test]
+fn test_handle_server_event_soft_interrupt_injected_system_renders_system_message() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::SoftInterruptInjected {
+            content: "[Background Task Completed]\nTask: abc123 (bash)".to_string(),
+            display_role: Some("system".to_string()),
+            point: "D".to_string(),
+            tools_skipped: None,
+        },
+        &mut remote,
+    );
+
+    let last = app
+        .display_messages()
+        .last()
+        .expect("missing injected message");
+    assert_eq!(last.role, "system");
+    assert!(last.content.contains("Background Task Completed"));
 }
 
 #[test]
@@ -2133,6 +2238,37 @@ fn test_handle_server_event_compaction_mode_changed_updates_remote_mode() {
 }
 
 #[test]
+fn test_handle_server_event_service_tier_changed_mentions_next_request_when_streaming() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.is_processing = true;
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::ServiceTierChanged {
+            id: 7,
+            service_tier: Some("priority".to_string()),
+            error: None,
+        },
+        &mut remote,
+    );
+
+    assert_eq!(app.remote_service_tier, Some("priority".to_string()));
+    assert_eq!(
+        app.status_notice(),
+        Some("Fast: on (next request)".to_string())
+    );
+
+    let last = app.display_messages().last().expect("missing response");
+    assert_eq!(
+        last.content,
+        "✓ Fast mode on (Fast)\nApplies to the next request/turn. The current in-flight request keeps its existing tier."
+    );
+}
+
+#[test]
 fn test_reload_socket_wait_enabled_only_during_recent_reload_disconnect() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("create temp dir");
@@ -2243,7 +2379,9 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
             connection_type: Some("websocket".to_string()),
             upstream_provider: None,
             reasoning_effort: None,
+            service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,
     );
@@ -2302,7 +2440,9 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
             connection_type: Some("https/sse".to_string()),
             upstream_provider: None,
             reasoning_effort: None,
+            service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,
     );
@@ -2314,6 +2454,105 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
             .iter()
             .any(|m| m.content.contains("interrupted"))
     );
+}
+
+#[test]
+fn test_handle_server_event_history_restores_side_panel_snapshot() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    let side_panel = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: "/tmp/plan.md".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            content: "# Plan\n```mermaid\nflowchart LR\nA-->B\n```".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::History {
+            id: 1,
+            session_id: "ses_side_panel_history".to_string(),
+            messages: vec![],
+            provider_name: Some("claude".to_string()),
+            provider_model: Some("claude-sonnet-4-20250514".to_string()),
+            available_models: vec![],
+            available_model_routes: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            total_tokens: None,
+            all_sessions: vec![],
+            client_count: None,
+            is_canary: None,
+            server_version: None,
+            server_name: None,
+            server_icon: None,
+            server_has_update: None,
+            was_interrupted: None,
+            connection_type: Some("websocket".to_string()),
+            upstream_provider: None,
+            reasoning_effort: None,
+            service_tier: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
+            side_panel: side_panel.clone(),
+        },
+        &mut remote,
+    );
+
+    assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("plan"));
+    assert_eq!(app.side_panel.pages.len(), 1);
+    assert_eq!(
+        app.side_panel.focused_page().map(|page| page.title.as_str()),
+        Some("Plan")
+    );
+}
+
+#[test]
+fn test_handle_server_event_side_panel_state_updates_snapshot() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("old".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "old".to_string(),
+            title: "Old".to_string(),
+            file_path: "/tmp/old.md".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            content: "old".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+    app.diff_pane_scroll = 7;
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::SidePanelState {
+            snapshot: crate::side_panel::SidePanelSnapshot {
+                focused_page_id: Some("new".to_string()),
+                pages: vec![crate::side_panel::SidePanelPage {
+                    id: "new".to_string(),
+                    title: "New".to_string(),
+                    file_path: "/tmp/new.md".to_string(),
+                    format: crate::side_panel::SidePanelPageFormat::Markdown,
+                    content: "# New".to_string(),
+                    updated_at_ms: 2,
+                }],
+            },
+        },
+        &mut remote,
+    );
+
+    assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("new"));
+    assert_eq!(app.side_panel.pages.len(), 1);
+    assert_eq!(app.diff_pane_scroll, 0);
 }
 
 #[test]
@@ -2357,7 +2596,9 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
             connection_type: Some("websocket".to_string()),
             upstream_provider: None,
             reasoning_effort: None,
+            service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,
     );
@@ -2857,6 +3098,71 @@ fn test_remote_typing_resumes_bottom_follow_mode() {
 }
 
 #[test]
+fn test_local_alt_s_toggles_typing_scroll_lock() {
+    let mut app = create_test_app();
+
+    app.handle_key(KeyCode::Char('s'), KeyModifiers::ALT)
+        .unwrap();
+    assert_eq!(
+        app.status_notice(),
+        Some("Typing scroll lock: ON — typing stays at current chat position".to_string())
+    );
+
+    app.handle_key(KeyCode::Char('s'), KeyModifiers::ALT)
+        .unwrap();
+    assert_eq!(
+        app.status_notice(),
+        Some("Typing scroll lock: OFF — typing follows chat bottom".to_string())
+    );
+}
+
+#[test]
+fn test_remote_typing_scroll_lock_preserves_scroll_position() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.scroll_offset = 7;
+    app.auto_scroll_paused = true;
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('s'), KeyModifiers::ALT, &mut remote))
+        .unwrap();
+    app.handle_remote_char_input('x');
+
+    assert_eq!(app.input, "x");
+    assert_eq!(app.cursor_pos, 1);
+    assert_eq!(app.scroll_offset, 7);
+    assert!(
+        app.auto_scroll_paused,
+        "typing scroll lock should preserve paused scroll state"
+    );
+}
+
+#[test]
+fn test_remote_typing_scroll_lock_can_be_toggled_back_off() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.scroll_offset = 7;
+    app.auto_scroll_paused = true;
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('s'), KeyModifiers::ALT, &mut remote))
+        .unwrap();
+    rt.block_on(app.handle_remote_key(KeyCode::Char('s'), KeyModifiers::ALT, &mut remote))
+        .unwrap();
+    app.handle_remote_char_input('x');
+
+    assert_eq!(app.scroll_offset, 0);
+    assert!(
+        !app.auto_scroll_paused,
+        "typing should resume following chat bottom after disabling the lock"
+    );
+}
+
+#[test]
 fn test_reconnect_target_prefers_remote_session_id() {
     let mut app = create_test_app();
     app.resume_session_id = Some("ses_resume_idle".to_string());
@@ -3245,18 +3551,32 @@ fn test_disconnected_key_handler_allows_typing_and_queueing() {
 }
 
 #[test]
-fn test_disconnected_key_handler_does_not_queue_commands() {
+fn test_disconnected_key_handler_restart_runs_locally() {
     let mut app = create_test_app();
-    app.input = "/reload".to_string();
+    app.input = "/restart".to_string();
     app.cursor_pos = app.input.len();
 
     remote::handle_disconnected_key(&mut app, KeyCode::Enter, KeyModifiers::empty()).unwrap();
 
-    assert_eq!(app.input, "/reload");
+    assert!(app.input.is_empty());
+    assert!(app.restart_requested.is_some());
+    assert!(app.should_quit);
+    assert!(app.queued_messages().is_empty());
+}
+
+#[test]
+fn test_disconnected_key_handler_does_not_queue_server_commands() {
+    let mut app = create_test_app();
+    app.input = "/server-reload".to_string();
+    app.cursor_pos = app.input.len();
+
+    remote::handle_disconnected_key(&mut app, KeyCode::Enter, KeyModifiers::empty()).unwrap();
+
+    assert_eq!(app.input, "/server-reload");
     assert!(app.queued_messages().is_empty());
     assert_eq!(
         app.status_notice(),
-        Some("Commands are not queued while disconnected".to_string())
+        Some("This command requires a live connection".to_string())
     );
 }
 

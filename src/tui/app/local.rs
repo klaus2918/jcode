@@ -1,6 +1,7 @@
 use super::{App, DisplayMessage, ProcessingStatus, is_context_limit_error};
 use crate::bus::{BackgroundTaskCompleted, BackgroundTaskStatus, BusEvent};
 use crate::message::{ContentBlock, Message, Role};
+use crate::session::StoredDisplayRole;
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use ratatui::DefaultTerminal;
@@ -90,6 +91,11 @@ pub(super) fn handle_bus_event(app: &mut App, bus_event: std::result::Result<Bus
         Ok(BusEvent::CompactionFinished) => {
             app.poll_compaction_completion();
         }
+        Ok(BusEvent::SidePanelUpdated(update)) => {
+            if update.session_id == app.session.id {
+                app.set_side_panel_snapshot(update.snapshot);
+            }
+        }
         _ => {}
     }
 }
@@ -140,12 +146,13 @@ fn handle_background_task_completed(app: &mut App, task: BackgroundTaskCompleted
             }],
             timestamp: Some(chrono::Utc::now()),
         });
-        app.session.add_message(
+        app.session.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
-                text: format!("[Background task {} completed]", task.task_id),
+                text: format_background_task_notification(&task),
                 cache_control: None,
             }],
+            Some(StoredDisplayRole::System),
         );
         let _ = app.session.save();
     }

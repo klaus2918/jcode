@@ -230,6 +230,7 @@ impl App {
             diff_pane_scroll: 0,
             diff_pane_focus: false,
             diff_pane_auto_scroll: true,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
             pin_images: display.pin_images,
             picker_state: None,
             pending_model_switch: None,
@@ -238,6 +239,7 @@ impl App {
             centered_toggle_keys: keybind::load_centered_toggle_key(),
             scroll_keys: keybind::load_scroll_keys(),
             scroll_bookmark: None,
+            typing_scroll_lock: false,
             stashed_input: None,
             status_notice: None,
             interleave_message: None,
@@ -587,6 +589,8 @@ impl App {
             self.update_context_limit_for_model(&active_model);
             // Mark session as active now that it's being used again
             self.session.mark_active();
+            self.side_panel =
+                crate::side_panel::snapshot_for_session(session_id).unwrap_or_default();
             crate::telemetry::begin_resumed_session(self.provider.name(), &active_model);
             crate::logging::info(&format!("Restored session: {}", session_id));
 

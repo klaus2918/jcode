@@ -21,8 +21,8 @@ use super::comm_session::{handle_comm_spawn, handle_comm_stop};
 use super::comm_sync::{handle_comm_read_context, handle_comm_resync_plan, handle_comm_summary};
 use super::provider_control::{
     handle_cycle_model, handle_notify_auth_changed, handle_set_compaction_mode, handle_set_model,
-    handle_set_premium_mode, handle_set_reasoning_effort, handle_set_transport,
-    handle_switch_anthropic_account,
+    handle_set_premium_mode, handle_set_reasoning_effort, handle_set_service_tier,
+    handle_set_transport, handle_switch_anthropic_account,
 };
 use super::{
     ClientConnectionInfo, ClientDebugState, FileAccess, SessionInterruptQueues, SharedContext,
@@ -30,7 +30,7 @@ use super::{
     enqueue_soft_interrupt, record_swarm_event, register_session_interrupt_queue, swarm_id_for_dir,
     truncate_detail, update_member_status,
 };
-use crate::agent::{Agent, InterruptSignal, SoftInterruptQueue, StreamError};
+use crate::agent::{Agent, InterruptSignal, SoftInterruptQueue, SoftInterruptSource, StreamError};
 use crate::bus::{Bus, BusEvent};
 use crate::id;
 use crate::protocol::{NotificationType, Request, ServerEvent, decode_request, encode_event};
@@ -368,7 +368,18 @@ pub(super) async fn handle_client(
                                 task.task_id,
                             );
                             let agent_guard = agent.lock().await;
-                            agent_guard.queue_soft_interrupt(notification, false);
+                            agent_guard.queue_soft_interrupt(
+                                notification,
+                                false,
+                                SoftInterruptSource::System,
+                            );
+                        }
+                    }
+                    Ok(BusEvent::SidePanelUpdated(update)) => {
+                        if update.session_id == client_session_id {
+                            let _ = client_event_tx.send(ServerEvent::SidePanelState {
+                                snapshot: update.snapshot,
+                            });
                         }
                     }
                     _ => {}
@@ -563,7 +574,14 @@ pub(super) async fn handle_client(
                 content,
                 urgent,
             } => {
-                queue_soft_interrupt(id, content, urgent, &soft_interrupt_queue, &client_event_tx);
+                queue_soft_interrupt(
+                    id,
+                    content,
+                    urgent,
+                    SoftInterruptSource::User,
+                    &soft_interrupt_queue,
+                    &client_event_tx,
+                );
             }
 
             Request::CancelSoftInterrupts { id } => {
@@ -727,6 +745,10 @@ pub(super) async fn handle_client(
 
             Request::SetReasoningEffort { id, effort } => {
                 handle_set_reasoning_effort(id, effort, &agent, &client_event_tx).await;
+            }
+
+            Request::SetServiceTier { id, service_tier } => {
+                handle_set_service_tier(id, service_tier, &agent, &client_event_tx).await;
             }
 
             Request::SetTransport { id, transport } => {
@@ -1349,10 +1371,11 @@ fn queue_soft_interrupt(
     id: u64,
     content: String,
     urgent: bool,
+    source: SoftInterruptSource,
     soft_interrupt_queue: &SoftInterruptQueue,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    let _ = enqueue_soft_interrupt(soft_interrupt_queue, content, urgent);
+    let _ = enqueue_soft_interrupt(soft_interrupt_queue, content, urgent, source);
     let _ = client_event_tx.send(ServerEvent::Ack { id });
 }
 

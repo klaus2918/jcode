@@ -23,6 +23,7 @@ mod patch;
 mod read;
 pub mod selfdev;
 mod session_search;
+mod side_panel;
 mod skill;
 mod task;
 mod todo;
@@ -222,6 +223,7 @@ impl Registry {
             let mut m = HashMap::new();
             Self::insert_tool(&mut m, "read", read::ReadTool::new());
             Self::insert_tool(&mut m, "write", write::WriteTool::new());
+            Self::insert_tool(&mut m, "side_panel", side_panel::SidePanelTool::new());
             Self::insert_tool(&mut m, "edit", edit::EditTool::new());
             Self::insert_tool(&mut m, "multiedit", multiedit::MultiEditTool::new());
             Self::insert_tool(&mut m, "patch", patch::PatchTool::new());
@@ -312,6 +314,12 @@ impl Registry {
                 def
             })
             .collect();
+
+        let batch_schema = batch::dynamic_batch_schema(&defs);
+        if let Some(batch_def) = defs.iter_mut().find(|def| def.name == "batch") {
+            batch_def.input_schema = batch_schema;
+        }
+
         // Sort by name for deterministic ordering - critical for prompt cache hits
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
@@ -756,6 +764,35 @@ mod tests {
             )
             .await;
         assert!(result.is_ok(), "file_grep should resolve to grep tool");
+    }
+
+    #[tokio::test]
+    async fn test_definitions_expand_batch_schema_from_tool_definitions() {
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+        let registry = Registry::new(provider).await;
+
+        let defs = registry.definitions(None).await;
+        let batch_def = defs
+            .iter()
+            .find(|def| def.name == "batch")
+            .expect("batch definition should exist");
+
+        let branches = batch_def.input_schema["properties"]["tool_calls"]["items"]["oneOf"]
+            .as_array()
+            .expect("batch schema should expand to oneOf branches");
+
+        let read_branch = branches
+            .iter()
+            .find(|branch| branch["properties"]["tool"]["const"] == "read")
+            .expect("batch schema should include read branch");
+
+        assert_eq!(read_branch["properties"]["file_path"]["type"], "string");
+        assert!(
+            read_branch["required"]
+                .as_array()
+                .map(|required| required.iter().any(|value| value == "tool"))
+                .unwrap_or(false)
+        );
     }
 
     #[tokio::test]

@@ -81,7 +81,9 @@ pub(super) async fn send_history(
         upstream_provider,
         connection_type,
         reasoning_effort,
+        service_tier,
         compaction_mode,
+        side_panel,
     ) = {
         let agent_guard = agent.lock().await;
         let provider = agent_guard.provider_handle();
@@ -96,7 +98,9 @@ pub(super) async fn send_history(
             agent_guard.last_upstream_provider(),
             agent_guard.last_connection_type(),
             provider.reasoning_effort(),
+            provider.service_tier(),
             agent_guard.compaction_mode().await,
+            crate::side_panel::snapshot_for_session(session_id).unwrap_or_default(),
         )
     };
 
@@ -154,7 +158,9 @@ pub(super) async fn send_history(
             connection_type,
             upstream_provider,
             reasoning_effort,
+            service_tier,
             compaction_mode,
+            side_panel,
         },
     )
     .await

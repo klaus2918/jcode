@@ -383,6 +383,7 @@ impl App {
                         id: id::new_id("message"),
                         role: Role::User,
                         content: vec![tool_block],
+                        display_role: None,
                         timestamp: Some(chrono::Utc::now()),
                         tool_duration_ms: None,
                         token_usage: None,
@@ -434,6 +435,8 @@ impl App {
         self.active_skill = None;
         self.provider_session_id = None;
         self.session = new_session;
+        self.side_panel =
+            crate::side_panel::snapshot_for_session(&self.session.id).unwrap_or_default();
 
         for msg in old_messages {
             let role = msg.role.clone();

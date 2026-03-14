@@ -386,6 +386,7 @@ pub struct App {
     diff_pane_scroll: usize,
     diff_pane_focus: bool,
     diff_pane_auto_scroll: bool,
+    side_panel: crate::side_panel::SidePanelSnapshot,
     // Pin read images to side pane
     pin_images: bool,
     // Interactive model/provider picker
@@ -400,6 +401,8 @@ pub struct App {
     scroll_keys: ScrollKeys,
     // Keybinding for centered-mode toggle
     centered_toggle_keys: CenteredToggleKeys,
+    // Keep the current chat viewport while typing instead of snapping to bottom.
+    typing_scroll_lock: bool,
     // Scroll bookmark: stashed scroll position for quick teleport back
     scroll_bookmark: Option<usize>,
     // Stashed input: saved via Ctrl+S for later retrieval

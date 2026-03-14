@@ -218,6 +218,11 @@ impl App {
                 .collect();
         }
 
+        if prefix.starts_with("/fast ") {
+            let modes = ["on", "off", "status"];
+            return modes.iter().map(|m| (format!("/fast {}", m), *m)).collect();
+        }
+
         if prefix.starts_with("/transport ") {
             let transports = ["auto", "https", "websocket"];
             return transports
@@ -268,6 +273,7 @@ impl App {
             ("/commands".into(), "Alias for /help"),
             ("/model".into(), "List or switch models"),
             ("/effort".into(), "Show/change reasoning effort (Alt+←/→)"),
+            ("/fast".into(), "Toggle OpenAI/Codex fast mode"),
             (
                 "/transport".into(),
                 "Show/change connection transport (auto/https/websocket)",
@@ -445,6 +451,7 @@ impl App {
             "/help"
                 | "/model"
                 | "/effort"
+                | "/fast"
                 | "/transport"
                 | "/login"
                 | "/auth"
@@ -870,6 +877,35 @@ impl App {
             self.set_status_notice("📌 Bookmark set — press again to return");
         }
         // If already at bottom with no bookmark, do nothing
+    }
+
+    pub(super) fn follow_chat_bottom_for_typing(&mut self) {
+        if !self.typing_scroll_lock {
+            self.follow_chat_bottom();
+        }
+    }
+
+    pub(super) fn set_side_panel_snapshot(
+        &mut self,
+        snapshot: crate::side_panel::SidePanelSnapshot,
+    ) {
+        let focused_before = self.side_panel.focused_page_id.clone();
+        let focused_after = snapshot.focused_page_id.clone();
+        self.side_panel = snapshot;
+        if focused_before != focused_after || self.diff_pane_scroll > 0 {
+            self.diff_pane_scroll = 0;
+            self.diff_pane_auto_scroll = true;
+        }
+    }
+
+    pub(super) fn toggle_typing_scroll_lock(&mut self) {
+        self.typing_scroll_lock = !self.typing_scroll_lock;
+        let status = if self.typing_scroll_lock {
+            "Typing scroll lock: ON — typing stays at current chat position"
+        } else {
+            "Typing scroll lock: OFF — typing follows chat bottom"
+        };
+        self.set_status_notice(status);
     }
 
     pub(super) fn toggle_centered_mode(&mut self) {

@@ -1761,6 +1761,7 @@ pub(super) fn handle_server_event(
             reasoning_effort,
             service_tier,
             compaction_mode,
+            side_panel,
             ..
         } => {
             let prev_session_id = app.remote_session_id.clone();
@@ -1821,6 +1822,7 @@ pub(super) fn handle_server_event(
             app.remote_reasoning_effort = reasoning_effort;
             app.remote_service_tier = service_tier;
             app.remote_compaction_mode = Some(compaction_mode);
+            app.set_side_panel_snapshot(side_panel);
             app.remote_available_models = available_models;
             app.remote_model_routes = available_model_routes;
             app.remote_skills = skills;
@@ -1887,6 +1889,10 @@ pub(super) fn handle_server_event(
                 );
             }
 
+            false
+        }
+        ServerEvent::SidePanelState { snapshot } => {
+            app.set_side_panel_snapshot(snapshot);
             false
         }
         ServerEvent::SwarmStatus { members } => {
@@ -2067,6 +2073,7 @@ pub(super) fn handle_server_event(
         }
         ServerEvent::SoftInterruptInjected {
             content,
+            display_role,
             point: _,
             tools_skipped,
         } => {
@@ -2087,8 +2094,9 @@ pub(super) fn handle_server_event(
                 app.push_turn_footer(duration);
             }
             app.pending_soft_interrupts.clear();
+            let role = display_role.unwrap_or_else(|| "user".to_string());
             app.push_display_message(DisplayMessage {
-                role: "user".to_string(),
+                role,
                 content: content.clone(),
                 tool_calls: vec![],
                 duration_secs: None,
@@ -2256,7 +2264,7 @@ pub(super) fn handle_remote_char_input(app: &mut App, c: char) {
                 if !prompt.starts_with('/') {
                     app.input = prompt.clone();
                     app.cursor_pos = app.input.len();
-                    app.follow_chat_bottom();
+                    app.follow_chat_bottom_for_typing();
                     return;
                 }
             }
@@ -2264,7 +2272,7 @@ pub(super) fn handle_remote_char_input(app: &mut App, c: char) {
     }
     app.input.insert(app.cursor_pos, c);
     app.cursor_pos += c.len_utf8();
-    app.follow_chat_bottom();
+    app.follow_chat_bottom_for_typing();
     app.reset_tab_completion();
     app.sync_model_picker_preview_from_input();
 }
@@ -2508,6 +2516,10 @@ pub(super) async fn handle_remote_key(
         }
         return Ok(());
     }
+    if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('s')) {
+        app.toggle_typing_scroll_lock();
+        return Ok(());
+    }
     if app.centered_toggle_keys.toggle.matches(code, modifiers) {
         app.toggle_centered_mode();
         return Ok(());
@@ -2585,6 +2597,11 @@ pub(super) async fn handle_remote_key(
 
     if app.centered_toggle_keys.toggle.matches(code, modifiers) {
         app.toggle_centered_mode();
+        return Ok(());
+    }
+
+    if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('s')) {
+        app.toggle_typing_scroll_lock();
         return Ok(());
     }
 

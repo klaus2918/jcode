@@ -1443,6 +1443,11 @@ impl App {
                                         self.batch_progress = Some(progress);
                                     }
                                 }
+                                Ok(BusEvent::SidePanelUpdated(update)) => {
+                                    if update.session_id == self.session.id {
+                                        self.set_side_panel_snapshot(update.snapshot);
+                                    }
+                                }
                                 _ => {}
                             }
                         }

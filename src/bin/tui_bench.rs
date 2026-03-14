@@ -439,6 +439,11 @@ impl TuiState for BenchState {
     fn diff_pane_focus(&self) -> bool {
         self.diff_pane_focus
     }
+    fn side_panel(&self) -> &jcode::side_panel::SidePanelSnapshot {
+        static EMPTY: std::sync::LazyLock<jcode::side_panel::SidePanelSnapshot> =
+            std::sync::LazyLock::new(jcode::side_panel::SidePanelSnapshot::default);
+        &EMPTY
+    }
     fn pin_images(&self) -> bool {
         false
     }

@@ -69,7 +69,9 @@ pub(crate) use messages::{
     render_assistant_message, render_swarm_message, render_system_message, render_tool_message,
 };
 use picker_ui::draw_picker_line;
-use pinned_ui::{collect_pinned_content_cached, draw_pinned_content_cached};
+use pinned_ui::{
+    collect_pinned_content_cached, draw_pinned_content_cached, draw_side_panel_markdown,
+};
 use tools_ui::summarize_batch_running_tools_compact;
 #[cfg(test)]
 use viewport::compute_visible_margins;
@@ -1684,6 +1686,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     };
 
     let diff_mode = app.diff_mode();
+    let has_side_panel_content = app.side_panel().focused_page().is_some();
     let pin_images = app.pin_images();
     let collect_diffs = diff_mode.is_pinned();
     let has_pinned_content = if collect_diffs || pin_images {
@@ -1716,7 +1719,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                 .unwrap_or(false)
         });
 
-    let needs_side_pane = has_pinned_content || has_file_diff_edits;
+    let needs_side_pane = has_side_panel_content || has_pinned_content || has_file_diff_edits;
 
     let (chat_area, diff_pane_area) = if needs_side_pane {
         const MIN_DIFF_WIDTH: u16 = 30;
@@ -1944,7 +1947,20 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     if let Some(diff_area) = diff_pane_area {
-        if has_file_diff_edits {
+        if has_side_panel_content {
+            if let Some(ref mut capture) = debug_capture {
+                capture
+                    .render_order
+                    .push("draw_side_panel_markdown".to_string());
+            }
+            draw_side_panel_markdown(
+                frame,
+                diff_area,
+                app.side_panel(),
+                app.diff_pane_scroll(),
+                app.diff_pane_focus(),
+            );
+        } else if has_file_diff_edits {
             if let Some(ref mut capture) = debug_capture {
                 capture.render_order.push("draw_file_diff_view".to_string());
             }
@@ -2826,6 +2842,11 @@ mod tests {
         }
         fn diff_pane_focus(&self) -> bool {
             false
+        }
+        fn side_panel(&self) -> &crate::side_panel::SidePanelSnapshot {
+            static EMPTY: std::sync::LazyLock<crate::side_panel::SidePanelSnapshot> =
+                std::sync::LazyLock::new(crate::side_panel::SidePanelSnapshot::default);
+            &EMPTY
         }
         fn pin_images(&self) -> bool {
             false

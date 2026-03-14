@@ -164,6 +164,8 @@ pub trait TuiState {
     fn diff_pane_scroll(&self) -> usize;
     /// Whether the pinned diff pane is focused
     fn diff_pane_focus(&self) -> bool;
+    /// Session-scoped side panel state managed by the side_panel tool
+    fn side_panel(&self) -> &crate::side_panel::SidePanelSnapshot;
     /// Whether to pin read images to a side pane
     fn pin_images(&self) -> bool;
     /// Whether to wrap lines in the pinned diff pane
