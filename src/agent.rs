@@ -13,7 +13,9 @@ use crate::message::{
 };
 use crate::protocol::{HistoryMessage, ServerEvent};
 use crate::provider::{NativeToolResult, Provider};
-use crate::session::{EnvSnapshot, GitState, Session, SessionStatus, StoredMessage};
+use crate::session::{
+    EnvSnapshot, GitState, Session, SessionStatus, StoredDisplayRole, StoredMessage,
+};
 use crate::skill::SkillRegistry;
 use crate::tool::{Registry, ToolContext, ToolExecutionMode};
 use anyhow::Result;
@@ -109,6 +111,35 @@ pub struct SoftInterruptMessage {
     pub content: String,
     /// If true, can skip remaining tools when injected at point C
     pub urgent: bool,
+    pub source: SoftInterruptSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoftInterruptSource {
+    User,
+    System,
+}
+
+impl SoftInterruptSource {
+    fn session_display_role(self) -> Option<StoredDisplayRole> {
+        match self {
+            Self::User => None,
+            Self::System => Some(StoredDisplayRole::System),
+        }
+    }
+
+    fn protocol_display_role(self) -> Option<String> {
+        match self {
+            Self::User => None,
+            Self::System => Some("system".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct InjectedSoftInterrupt {
+    content: String,
+    source: SoftInterruptSource,
 }
 
 /// Thread-safe soft interrupt queue that can be accessed without holding the agent lock
@@ -179,7 +210,7 @@ enum NoToolCallOutcome {
     Break,
     ContinueWithoutEvent,
     ContinueWithSoftInterrupt {
-        content: String,
+        injected: Vec<InjectedSoftInterrupt>,
         point: &'static str,
     },
 }
@@ -187,7 +218,7 @@ enum NoToolCallOutcome {
 enum PostToolInterruptOutcome {
     NoInterrupt,
     SoftInterrupt {
-        content: String,
+        injected: Vec<InjectedSoftInterrupt>,
         point: &'static str,
     },
 }
@@ -414,6 +445,22 @@ impl Agent {
         id
     }
 
+    fn add_message_with_display_role(
+        &mut self,
+        role: Role,
+        content: Vec<ContentBlock>,
+        display_role: Option<StoredDisplayRole>,
+    ) -> String {
+        let id = self
+            .session
+            .add_message_with_display_role(role, content, display_role);
+        let compaction = self.registry.compaction();
+        if let Ok(mut manager) = compaction.try_write() {
+            manager.notify_message_added();
+        }
+        id
+    }
+
     fn add_message_with_duration(
         &mut self,
         role: Role,
@@ -605,6 +652,7 @@ impl Agent {
                         id: id::new_id("message"),
                         role: Role::User,
                         content: vec![tool_block],
+                        display_role: None,
                         timestamp: Some(chrono::Utc::now()),
                         tool_duration_ms: None,
                         token_usage: None,
@@ -641,9 +689,13 @@ impl Agent {
 
     /// Queue a soft interrupt message to be injected at the next safe point.
     /// This method can be called even while the agent is processing (uses separate lock).
-    pub fn queue_soft_interrupt(&self, content: String, urgent: bool) {
+    pub fn queue_soft_interrupt(&self, content: String, urgent: bool, source: SoftInterruptSource) {
         if let Ok(mut queue) = self.soft_interrupt_queue.lock() {
-            queue.push(SoftInterruptMessage { content, urgent });
+            queue.push(SoftInterruptMessage {
+                content,
+                urgent,
+                source,
+            });
         }
     }
 
@@ -777,32 +829,60 @@ impl Agent {
 
     /// Inject all pending soft interrupt messages into the conversation.
     /// Returns the combined message content and clears the queue.
-    fn inject_soft_interrupts(&mut self) -> Option<String> {
+    fn inject_soft_interrupts(&mut self) -> Vec<InjectedSoftInterrupt> {
         let messages: Vec<SoftInterruptMessage> = {
-            let mut queue = self.soft_interrupt_queue.lock().ok()?;
+            let mut queue = match self.soft_interrupt_queue.lock() {
+                Ok(queue) => queue,
+                Err(_) => return Vec::new(),
+            };
             if queue.is_empty() {
-                return None;
+                return Vec::new();
             }
             queue.drain(..).collect()
         };
 
-        let combined: String = messages
-            .into_iter()
-            .map(|m| m.content)
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let mut injected = Vec::new();
+        let mut current_source: Option<SoftInterruptSource> = None;
+        let mut current_parts: Vec<String> = Vec::new();
 
-        // Add as user message to conversation
-        self.add_message(
-            Role::User,
-            vec![ContentBlock::Text {
-                text: combined.clone(),
-                cache_control: None,
-            }],
-        );
+        let flush_group = |agent: &mut Self,
+                           injected: &mut Vec<InjectedSoftInterrupt>,
+                           source: SoftInterruptSource,
+                           parts: &mut Vec<String>| {
+            if parts.is_empty() {
+                return;
+            }
+            let content = parts.join("\n\n");
+            parts.clear();
+            agent.add_message_with_display_role(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: content.clone(),
+                    cache_control: None,
+                }],
+                source.session_display_role(),
+            );
+            injected.push(InjectedSoftInterrupt { content, source });
+        };
+
+        for message in messages {
+            match current_source {
+                Some(source) if source != message.source => {
+                    flush_group(self, &mut injected, source, &mut current_parts);
+                    current_source = Some(message.source);
+                }
+                None => current_source = Some(message.source),
+                _ => {}
+            }
+            current_parts.push(message.content);
+        }
+
+        if let Some(source) = current_source {
+            flush_group(self, &mut injected, source, &mut current_parts);
+        }
+
         let _ = self.session.save();
-
-        Some(combined)
+        injected
     }
 
     fn parse_text_wrapped_tool_call(
@@ -1010,9 +1090,10 @@ impl Agent {
             return Ok(NoToolCallOutcome::ContinueWithoutEvent);
         }
         logging::info("Turn complete - no tool calls");
-        if let Some(content) = self.inject_soft_interrupts() {
+        let injected = self.inject_soft_interrupts();
+        if !injected.is_empty() {
             return Ok(NoToolCallOutcome::ContinueWithSoftInterrupt {
-                content,
+                injected,
                 point: "B",
             });
         }
@@ -1020,14 +1101,32 @@ impl Agent {
     }
 
     fn take_post_tool_soft_interrupt(&mut self) -> PostToolInterruptOutcome {
-        if let Some(content) = self.inject_soft_interrupts() {
+        let injected = self.inject_soft_interrupts();
+        if !injected.is_empty() {
             PostToolInterruptOutcome::SoftInterrupt {
-                content,
+                injected,
                 point: "D",
             }
         } else {
             PostToolInterruptOutcome::NoInterrupt
         }
+    }
+
+    fn build_soft_interrupt_events(
+        injected: Vec<InjectedSoftInterrupt>,
+        point: &'static str,
+        tools_skipped: Option<usize>,
+    ) -> Vec<ServerEvent> {
+        injected
+            .into_iter()
+            .enumerate()
+            .map(|(idx, interrupt)| ServerEvent::SoftInterruptInjected {
+                content: interrupt.content,
+                display_role: interrupt.source.protocol_display_role(),
+                point: point.to_string(),
+                tools_skipped: if idx == 0 { tools_skipped } else { None },
+            })
+            .collect()
     }
 
     pub fn session_id(&self) -> &str {
@@ -2596,11 +2695,14 @@ impl Agent {
                 println!();
             }
 
-            // Check for soft interrupts (e.g. Telegram messages) and inject as user messages
-            if let Some(content) = self.inject_soft_interrupts() {
+            // Check for soft interrupts (e.g. Telegram messages) and inject them for the next turn
+            let injected = self.inject_soft_interrupts();
+            if !injected.is_empty() {
+                let total_chars: usize = injected.iter().map(|item| item.content.len()).sum();
                 logging::info(&format!(
-                    "Soft interrupt injected into headless turn ({} chars)",
-                    content.len()
+                    "Soft interrupt injected into headless turn ({} message(s), {} chars)",
+                    injected.len(),
+                    total_chars
                 ));
             }
         }
@@ -3126,12 +3228,10 @@ impl Agent {
                 )? {
                     NoToolCallOutcome::Break => break,
                     NoToolCallOutcome::ContinueWithoutEvent => continue,
-                    NoToolCallOutcome::ContinueWithSoftInterrupt { content, point } => {
-                        let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
-                            content,
-                            point: point.to_string(),
-                            tools_skipped: None,
-                        });
+                    NoToolCallOutcome::ContinueWithSoftInterrupt { injected, point } => {
+                        for event in Self::build_soft_interrupt_events(injected, point, None) {
+                            let _ = event_tx.send(event);
+                        }
                         continue;
                     }
                 }
@@ -3147,12 +3247,11 @@ impl Agent {
                 tool_calls.retain(|tc| JCODE_NATIVE_TOOLS.contains(&tc.name.as_str()));
                 if tool_calls.is_empty() {
                     // === INJECTION POINT D: After provider-handled tools, before next API call ===
-                    if let Some(content) = self.inject_soft_interrupts() {
-                        let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
-                            content,
-                            point: "D".to_string(),
-                            tools_skipped: None,
-                        });
+                    let injected = self.inject_soft_interrupts();
+                    if !injected.is_empty() {
+                        for event in Self::build_soft_interrupt_events(injected, "D", None) {
+                            let _ = event_tx.send(event);
+                        }
                         // Don't break - continue loop to process injected message
                         continue;
                     }
@@ -3177,12 +3276,13 @@ impl Agent {
                         );
                     }
                     let tools_remaining = tool_count - tool_index;
-                    if let Some(content) = self.inject_soft_interrupts() {
-                        let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
-                            content,
-                            point: "C".to_string(),
-                            tools_skipped: Some(tools_remaining),
-                        });
+                    let injected = self.inject_soft_interrupts();
+                    if !injected.is_empty() {
+                        for event in
+                            Self::build_soft_interrupt_events(injected, "C", Some(tools_remaining))
+                        {
+                            let _ = event_tx.send(event);
+                        }
                         // Add note about skipped tools for the AI
                         self.add_message(
                             Role::User,
@@ -3303,14 +3403,12 @@ impl Agent {
             // === INJECTION POINT D: All tools done, before next API call ===
             // This is the safest point for non-urgent injection since all tool_results
             // have been added and the conversation is in a valid state.
-            if let PostToolInterruptOutcome::SoftInterrupt { content, point } =
+            if let PostToolInterruptOutcome::SoftInterrupt { injected, point } =
                 self.take_post_tool_soft_interrupt()
             {
-                let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
-                    content,
-                    point: point.to_string(),
-                    tools_skipped: None,
-                });
+                for event in Self::build_soft_interrupt_events(injected, point, None) {
+                    let _ = event_tx.send(event);
+                }
             }
         }
 
@@ -3845,12 +3943,10 @@ impl Agent {
                 )? {
                     NoToolCallOutcome::Break => break,
                     NoToolCallOutcome::ContinueWithoutEvent => continue,
-                    NoToolCallOutcome::ContinueWithSoftInterrupt { content, point } => {
-                        let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
-                            content,
-                            point: point.to_string(),
-                            tools_skipped: None,
-                        });
+                    NoToolCallOutcome::ContinueWithSoftInterrupt { injected, point } => {
+                        for event in Self::build_soft_interrupt_events(injected, point, None) {
+                            let _ = event_tx.send(event);
+                        }
                         continue;
                     }
                 }
@@ -3887,12 +3983,11 @@ impl Agent {
                 tool_calls.retain(|tc| JCODE_NATIVE_TOOLS.contains(&tc.name.as_str()));
                 if tool_calls.is_empty() {
                     // === INJECTION POINT D: After provider-handled tools, before next API call ===
-                    if let Some(content) = self.inject_soft_interrupts() {
-                        let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
-                            content,
-                            point: "D".to_string(),
-                            tools_skipped: None,
-                        });
+                    let injected = self.inject_soft_interrupts();
+                    if !injected.is_empty() {
+                        for event in Self::build_soft_interrupt_events(injected, "D", None) {
+                            let _ = event_tx.send(event);
+                        }
                         // Don't break - continue loop to process injected message
                         continue;
                     }
@@ -3917,12 +4012,13 @@ impl Agent {
                         );
                     }
                     let tools_remaining = tool_count - tool_index;
-                    if let Some(content) = self.inject_soft_interrupts() {
-                        let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
-                            content,
-                            point: "C".to_string(),
-                            tools_skipped: Some(tools_remaining),
-                        });
+                    let injected = self.inject_soft_interrupts();
+                    if !injected.is_empty() {
+                        for event in
+                            Self::build_soft_interrupt_events(injected, "C", Some(tools_remaining))
+                        {
+                            let _ = event_tx.send(event);
+                        }
                         // Add note about skipped tools for the AI
                         self.add_message(
                             Role::User,
@@ -4175,14 +4271,12 @@ impl Agent {
             // === INJECTION POINT D: All tools done, before next API call ===
             // This is the safest point for non-urgent injection since all tool_results
             // have been added and the conversation is in a valid state.
-            if let PostToolInterruptOutcome::SoftInterrupt { content, point } =
+            if let PostToolInterruptOutcome::SoftInterrupt { injected, point } =
                 self.take_post_tool_soft_interrupt()
             {
-                let _ = event_tx.send(ServerEvent::SoftInterruptInjected {
-                    content,
-                    point: point.to_string(),
-                    tools_skipped: None,
-                });
+                for event in Self::build_soft_interrupt_events(injected, point, None) {
+                    let _ = event_tx.send(event);
+                }
             }
         }
 

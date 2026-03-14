@@ -3,7 +3,7 @@ use super::{
     broadcast_swarm_plan, broadcast_swarm_status, queue_soft_interrupt_for_session,
     record_swarm_event, truncate_detail, update_member_status,
 };
-use crate::agent::Agent;
+use crate::agent::{Agent, SoftInterruptSource};
 use crate::protocol::{AwaitedMemberStatus, NotificationType, ServerEvent};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -240,6 +240,7 @@ pub(super) async fn handle_comm_assign_task(
         &target_session,
         notification.clone(),
         false,
+        SoftInterruptSource::System,
         soft_interrupt_queues,
         sessions,
     )

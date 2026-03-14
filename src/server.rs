@@ -39,7 +39,7 @@ use self::swarm::{
     remove_session_from_swarm, rename_plan_participant, run_swarm_message, summarize_plan_items,
     truncate_detail, update_member_status,
 };
-use crate::agent::{Agent, SoftInterruptQueue};
+use crate::agent::{Agent, SoftInterruptQueue, SoftInterruptSource};
 use crate::ambient_runner::AmbientRunnerHandle;
 use crate::build;
 use crate::bus::{Bus, BusEvent, FileOp};
@@ -56,7 +56,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+use tokio::sync::{Mutex, OnceCell, RwLock, broadcast, mpsc};
 
 /// Record of a file access by an agent
 #[derive(Clone, Debug)]
@@ -186,9 +186,14 @@ pub(super) fn enqueue_soft_interrupt(
     queue: &SoftInterruptQueue,
     content: String,
     urgent: bool,
+    source: SoftInterruptSource,
 ) -> bool {
     if let Ok(mut pending) = queue.lock() {
-        pending.push(crate::agent::SoftInterruptMessage { content, urgent });
+        pending.push(crate::agent::SoftInterruptMessage {
+            content,
+            urgent,
+            source,
+        });
         true
     } else {
         false
@@ -227,11 +232,12 @@ pub(super) async fn queue_soft_interrupt_for_session(
     session_id: &str,
     content: String,
     urgent: bool,
+    source: SoftInterruptSource,
     queues: &SessionInterruptQueues,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
 ) -> bool {
     if let Some(queue) = queues.read().await.get(session_id).cloned() {
-        return enqueue_soft_interrupt(&queue, content, urgent);
+        return enqueue_soft_interrupt(&queue, content, urgent, source);
     }
 
     let queue = {
@@ -246,7 +252,7 @@ pub(super) async fn queue_soft_interrupt_for_session(
 
     if let Some(queue) = queue {
         register_session_interrupt_queue(queues, session_id, queue.clone()).await;
-        enqueue_soft_interrupt(&queue, content, urgent)
+        enqueue_soft_interrupt(&queue, content, urgent, source)
     } else {
         false
     }
@@ -387,6 +393,16 @@ async fn socket_has_live_listener(path: &std::path::Path) -> bool {
     crate::transport::is_socket_path(path) && Stream::connect(path).await.is_ok()
 }
 
+/// Return true if a live server process is listening on the socket path.
+///
+/// This is intentionally weaker than [`is_server_ready`]: a live listener may
+/// still be finishing startup or be temporarily too busy to answer a ping
+/// within the short readiness timeout. Callers that must avoid spawning a
+/// duplicate daemon should prefer this check over a ping-only probe.
+pub async fn has_live_listener(path: &std::path::Path) -> bool {
+    socket_has_live_listener(path).await
+}
+
 #[cfg(unix)]
 fn mark_close_on_exec<T: std::os::fd::AsRawFd>(io: &T) {
     let fd = io.as_raw_fd();
@@ -459,6 +475,7 @@ mod startup_tests {
     use anyhow::Result;
     use async_trait::async_trait;
     use std::sync::Arc;
+    use std::time::Duration;
 
     struct TestProvider;
 
@@ -511,10 +528,11 @@ mod startup_tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let socket_path = temp.path().join("missing.sock");
 
-        assert!(
-            !is_server_ready(&socket_path).await,
-            "missing socket should not report ready"
-        );
+        let ready = tokio::time::timeout(Duration::from_millis(50), is_server_ready(&socket_path))
+            .await
+            .expect("missing socket probe should return quickly");
+
+        assert!(!ready, "missing socket should not report ready");
     }
 }
 
@@ -523,7 +541,7 @@ mod queue_tests {
     use super::{
         SessionInterruptQueues, queue_soft_interrupt_for_session, register_session_interrupt_queue,
     };
-    use crate::agent::Agent;
+    use crate::agent::{Agent, SoftInterruptSource};
     use crate::message::{Message, ToolDefinition};
     use crate::provider::{EventStream, Provider};
     use crate::tool::Registry;
@@ -585,6 +603,7 @@ mod queue_tests {
             &session_id,
             "queued while busy".to_string(),
             false,
+            SoftInterruptSource::User,
             &queues,
             &sessions,
         )
@@ -598,6 +617,7 @@ mod queue_tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].content, "queued while busy");
         assert!(!pending[0].urgent);
+        assert_eq!(pending[0].source, SoftInterruptSource::User);
     }
 
     #[tokio::test]
@@ -621,6 +641,7 @@ mod queue_tests {
             &session_id,
             "fallback lookup".to_string(),
             true,
+            SoftInterruptSource::System,
             &queues,
             &sessions,
         )
@@ -635,6 +656,7 @@ mod queue_tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].content, "fallback lookup");
         assert!(pending[0].urgent);
+        assert_eq!(pending[0].source, SoftInterruptSource::System);
     }
 }
 
@@ -1008,6 +1030,14 @@ fn embedding_idle_unload_secs() -> u64 {
         .unwrap_or(EMBEDDING_IDLE_UNLOAD_DEFAULT_SECS)
 }
 
+async fn get_shared_mcp_pool(
+    cell: &OnceCell<Arc<crate::mcp::SharedMcpPool>>,
+) -> Arc<crate::mcp::SharedMcpPool> {
+    cell.get_or_init(|| async { Arc::new(crate::mcp::SharedMcpPool::from_default_config()) })
+        .await
+        .clone()
+}
+
 fn server_update_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'static str)> {
     build::client_update_candidate(is_selfdev_session)
 }
@@ -1175,8 +1205,8 @@ pub struct Server {
     swarm_event_tx: broadcast::Sender<SwarmEvent>,
     /// Ambient mode runner handle (None if ambient is disabled)
     ambient_runner: Option<AmbientRunnerHandle>,
-    /// Shared MCP server pool (processes shared across sessions)
-    mcp_pool: Arc<crate::mcp::SharedMcpPool>,
+    /// Shared MCP server pool (processes shared across sessions), initialized lazily.
+    mcp_pool: Arc<OnceCell<Arc<crate::mcp::SharedMcpPool>>>,
     /// Graceful shutdown signals by session_id (stored outside agent mutex so they
     /// can be signaled without locking the agent during active tool execution)
     shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
@@ -1237,7 +1267,7 @@ impl Server {
             event_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             swarm_event_tx: broadcast::channel(256).0,
             ambient_runner,
-            mcp_pool: Arc::new(crate::mcp::SharedMcpPool::from_default_config()),
+            mcp_pool: Arc::new(OnceCell::new()),
             shutdown_signals: Arc::new(RwLock::new(HashMap::new())),
             soft_interrupt_queues: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -1453,6 +1483,7 @@ impl Server {
                                     &session_id,
                                     alert_msg.clone(),
                                     false,
+                                    SoftInterruptSource::System,
                                     &soft_interrupt_queues,
                                     &sessions,
                                 )
@@ -1502,6 +1533,7 @@ impl Server {
                                     &prev.session_id,
                                     alert_msg.clone(),
                                     false,
+                                    SoftInterruptSource::System,
                                     &soft_interrupt_queues,
                                     &sessions,
                                 )
@@ -1581,43 +1613,18 @@ impl Server {
         crate::logging::info(&format!("Server listening on {:?}", self.socket_path));
         crate::logging::info(&format!("Debug socket on {:?}", self.debug_socket_path));
 
-        // Write server git hash next to socket so clients can detect version mismatches
-        let hash_path = format!("{}.hash", self.socket_path.display());
-        let _ = std::fs::write(&hash_path, env!("JCODE_GIT_HASH"));
-
-        // Register server in the registry so session picker and clients can discover it.
-        // Do registration inline (fast) but defer cleanup to background (probes sockets).
-        {
-            let mut registry = crate::registry::ServerRegistry::load()
-                .await
-                .unwrap_or_default();
-            let info = crate::registry::ServerInfo {
-                id: self.identity.id.clone(),
-                name: self.identity.name.clone(),
-                icon: self.identity.icon.clone(),
-                socket: self.socket_path.clone(),
-                debug_socket: self.debug_socket_path.clone(),
-                git_hash: self.identity.git_hash.clone(),
-                version: self.identity.version.clone(),
-                pid: std::process::id(),
-                started_at: chrono::Utc::now().to_rfc3339(),
-                sessions: Vec::new(),
-            };
-            registry.register(info);
-            let _ = registry.save().await;
-            crate::logging::info(&format!(
-                "Registered as {} in server registry",
-                self.identity.display_name(),
-            ));
-        }
-
-        // Cleanup stale registry entries in background (probes sockets, can be slow)
-        tokio::spawn(async {
-            if let Ok(mut registry) = crate::registry::ServerRegistry::load().await {
-                let _ = registry.cleanup_stale().await;
-                let _ = registry.save().await;
-            }
-        });
+        let registry_info = crate::registry::ServerInfo {
+            id: self.identity.id.clone(),
+            name: self.identity.name.clone(),
+            icon: self.identity.icon.clone(),
+            socket: self.socket_path.clone(),
+            debug_socket: self.debug_socket_path.clone(),
+            git_hash: self.identity.git_hash.clone(),
+            version: self.identity.version.clone(),
+            pid: std::process::id(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            sessions: Vec::new(),
+        };
 
         // Preload the embedding model in background so warm startups get fast
         // memory recall. On a cold install, skip eager preload because the
@@ -1858,6 +1865,8 @@ impl Server {
                         *client_count.write().await += 1;
 
                         tokio::spawn(async move {
+                            let mcp_pool = get_shared_mcp_pool(&mcp_pool).await;
+
                             let result = handle_client(
                                 stream,
                                 sessions,
@@ -1957,10 +1966,12 @@ impl Server {
                         let server_identity = debug_server_identity.clone();
                         let server_start_time = debug_start_time;
                         let ambient_runner = debug_ambient_runner.clone();
-                        let mcp_pool = Some(debug_mcp_pool.clone());
+                        let mcp_pool = Arc::clone(&debug_mcp_pool);
                         let soft_interrupt_queues = Arc::clone(&debug_soft_interrupt_queues);
 
                         tokio::spawn(async move {
+                            let mcp_pool = Some(get_shared_mcp_pool(&mcp_pool).await);
+
                             if let Err(e) = handle_debug_client(
                                 stream,
                                 sessions,
@@ -2005,6 +2016,29 @@ impl Server {
         // Signal readiness to the spawning client only after the accept loops
         // are live, so a "ready" server can immediately handle requests.
         signal_ready_fd();
+
+        // Persist auxiliary discovery metadata after the server is already live.
+        let registry_identity = self.identity.display_name();
+        let registry_info_for_task = registry_info.clone();
+        tokio::spawn(async move {
+            let hash_path = format!("{}.hash", registry_info_for_task.socket.display());
+            let _ = std::fs::write(&hash_path, env!("JCODE_GIT_HASH"));
+
+            let mut registry = crate::registry::ServerRegistry::load()
+                .await
+                .unwrap_or_default();
+            registry.register(registry_info_for_task);
+            let _ = registry.save().await;
+            crate::logging::info(&format!(
+                "Registered as {} in server registry",
+                registry_identity,
+            ));
+
+            if let Ok(mut registry) = crate::registry::ServerRegistry::load().await {
+                let _ = registry.cleanup_stale().await;
+                let _ = registry.save().await;
+            }
+        });
 
         // Spawn WebSocket gateway for iOS/web clients (if enabled)
         let _gateway_handle = self.spawn_gateway();
@@ -2106,6 +2140,8 @@ impl Server {
                 ));
 
                 tokio::spawn(async move {
+                    let mcp_pool = get_shared_mcp_pool(&mcp_pool).await;
+
                     let result = handle_client(
                         gw_client.stream,
                         sessions,

@@ -128,11 +128,19 @@ pub struct StoredMessage {
     pub role: Role,
     pub content: Vec<ContentBlock>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_role: Option<StoredDisplayRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<StoredTokenUsage>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredDisplayRole {
+    System,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -565,7 +573,7 @@ impl Session {
     }
 
     pub fn add_message(&mut self, role: Role, content: Vec<ContentBlock>) -> String {
-        self.add_message_ext(role, content, None, None)
+        self.add_message_ext_with_display_role(role, content, None, None, None)
     }
 
     pub fn add_message_with_duration(
@@ -574,7 +582,16 @@ impl Session {
         content: Vec<ContentBlock>,
         tool_duration_ms: Option<u64>,
     ) -> String {
-        self.add_message_ext(role, content, tool_duration_ms, None)
+        self.add_message_ext_with_display_role(role, content, tool_duration_ms, None, None)
+    }
+
+    pub fn add_message_with_display_role(
+        &mut self,
+        role: Role,
+        content: Vec<ContentBlock>,
+        display_role: Option<StoredDisplayRole>,
+    ) -> String {
+        self.add_message_ext_with_display_role(role, content, None, None, display_role)
     }
 
     pub fn add_message_ext(
@@ -584,11 +601,23 @@ impl Session {
         tool_duration_ms: Option<u64>,
         token_usage: Option<StoredTokenUsage>,
     ) -> String {
+        self.add_message_ext_with_display_role(role, content, tool_duration_ms, token_usage, None)
+    }
+
+    pub fn add_message_ext_with_display_role(
+        &mut self,
+        role: Role,
+        content: Vec<ContentBlock>,
+        tool_duration_ms: Option<u64>,
+        token_usage: Option<StoredTokenUsage>,
+        display_role: Option<StoredDisplayRole>,
+    ) -> String {
         let id = new_id("message");
         self.messages.push(StoredMessage {
             id: id.clone(),
             role,
             content,
+            display_role,
             timestamp: Some(Utc::now()),
             tool_duration_ms,
             token_usage,
@@ -769,9 +798,12 @@ pub fn render_messages(session: &Session) -> Vec<RenderedMessage> {
     let mut tool_map: HashMap<String, ToolCall> = HashMap::new();
 
     for msg in &session.messages {
-        let role = match msg.role {
-            Role::User => "user",
-            Role::Assistant => "assistant",
+        let role = match msg.display_role {
+            Some(StoredDisplayRole::System) => "system",
+            None => match msg.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+            },
         };
         let mut text = String::new();
         let mut tool_calls: Vec<String> = Vec::new();
@@ -1211,6 +1243,29 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].tool_name, "bash");
         assert!(summaries[0].brief_output.contains("pwd"));
+    }
+
+    #[test]
+    fn test_render_messages_honors_system_display_role_override() {
+        let mut session = Session::create_with_id(
+            "session_display_role_test".to_string(),
+            None,
+            Some("display role test".to_string()),
+        );
+
+        session.add_message_with_display_role(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "[Background Task Completed]\nTask: abc123 (bash)".to_string(),
+                cache_control: None,
+            }],
+            Some(StoredDisplayRole::System),
+        );
+
+        let rendered = render_messages(&session);
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].role, "system");
+        assert!(rendered[0].content.contains("Background Task Completed"));
     }
 }
 

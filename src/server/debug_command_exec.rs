@@ -1,6 +1,6 @@
 use super::ServerIdentity;
 use super::debug_jobs::{DebugJob, maybe_start_async_debug_job};
-use crate::agent::Agent;
+use crate::agent::{Agent, SoftInterruptSource};
 use crate::build;
 use crate::mcp::McpConfig;
 use anyhow::Result;
@@ -122,7 +122,7 @@ pub(super) async fn execute_debug_command(
             return Err(anyhow::anyhow!("queue_interrupt: requires content"));
         }
         let agent = agent.lock().await;
-        agent.queue_soft_interrupt(content.to_string(), false);
+        agent.queue_soft_interrupt(content.to_string(), false, SoftInterruptSource::User);
         return Ok("queued".to_string());
     }
 
@@ -135,7 +135,7 @@ pub(super) async fn execute_debug_command(
             return Err(anyhow::anyhow!("queue_interrupt_urgent: requires content"));
         }
         let agent = agent.lock().await;
-        agent.queue_soft_interrupt(content.to_string(), true);
+        agent.queue_soft_interrupt(content.to_string(), true, SoftInterruptSource::User);
         return Ok("queued (urgent)".to_string());
     }
 
@@ -291,6 +291,7 @@ pub(super) async fn execute_debug_command(
         agent.queue_soft_interrupt(
             "[CANCELLED] Generation cancelled via debug socket".to_string(),
             true,
+            SoftInterruptSource::User,
         );
         return Ok(serde_json::json!({
             "status": "cancel_queued",

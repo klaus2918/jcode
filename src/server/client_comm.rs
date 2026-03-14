@@ -4,7 +4,7 @@ use super::{
     SwarmEventType, SwarmMember, queue_soft_interrupt_for_session, record_swarm_event,
     truncate_detail, update_member_status,
 };
-use crate::agent::Agent;
+use crate::agent::{Agent, SoftInterruptSource};
 use crate::protocol::{AgentInfo, ContextEntry, NotificationType, ServerEvent};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -435,6 +435,7 @@ pub(super) async fn handle_comm_message(
                         session_id,
                         notification_msg.clone(),
                         false,
+                        SoftInterruptSource::System,
                         soft_interrupt_queues,
                         sessions,
                     )

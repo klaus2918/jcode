@@ -3,7 +3,7 @@ use super::{
     broadcast_swarm_plan, queue_soft_interrupt_for_session, record_swarm_event,
     summarize_plan_items,
 };
-use crate::agent::Agent;
+use crate::agent::{Agent, SoftInterruptSource};
 use crate::plan::PlanItem;
 use crate::protocol::{NotificationType, ServerEvent};
 use std::collections::{HashMap, HashSet};
@@ -112,6 +112,7 @@ pub(super) async fn handle_comm_propose_plan(
                 &sid,
                 notification_msg.clone(),
                 false,
+                SoftInterruptSource::System,
                 soft_interrupt_queues,
                 sessions,
             )
@@ -210,6 +211,7 @@ pub(super) async fn handle_comm_propose_plan(
         &coordinator_id,
         notification_msg.clone(),
         false,
+        SoftInterruptSource::System,
         soft_interrupt_queues,
         sessions,
     )
@@ -231,6 +233,7 @@ pub(super) async fn handle_comm_propose_plan(
         &req_session_id,
         proposer_confirmation,
         false,
+        SoftInterruptSource::System,
         soft_interrupt_queues,
         sessions,
     )
@@ -367,6 +370,7 @@ pub(super) async fn handle_comm_approve_plan(
                     &sid,
                     message.clone(),
                     false,
+                    SoftInterruptSource::System,
                     soft_interrupt_queues,
                     sessions,
                 )
@@ -461,6 +465,7 @@ pub(super) async fn handle_comm_reject_plan(
             &proposer_session,
             message,
             false,
+            SoftInterruptSource::System,
             soft_interrupt_queues,
             sessions,
         )

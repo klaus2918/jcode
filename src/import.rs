@@ -444,6 +444,7 @@ pub fn import_session_from_file(path: &PathBuf, session_id: &str) -> Result<Sess
                 id: msg_id,
                 role,
                 content: content_blocks,
+                display_role: None,
                 timestamp: None,
                 tool_duration_ms: None,
                 token_usage: None,

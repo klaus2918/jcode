@@ -119,6 +119,7 @@ impl AmbientRunnerHandle {
                 q.push(crate::agent::SoftInterruptMessage {
                     content: format!("[{} message from user]\n{}", source, text),
                     urgent: false,
+                    source: crate::agent::SoftInterruptSource::User,
                 });
                 logging::info(&format!(
                     "{} message injected into active ambient cycle: {}",
