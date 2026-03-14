@@ -107,12 +107,21 @@ pub(super) struct ReloadReconnectHints {
 const RELOAD_MARKER_MAX_AGE: Duration = Duration::from_secs(30);
 
 fn persist_replay_display_message(app: &mut App, role: &str, title: Option<String>, content: &str) {
+    if app.is_remote {
+        // In remote mode, the server owns authoritative session history. Persisting the
+        // client's stale shadow copy can roll back newer turns after reconnect/reload.
+        return;
+    }
     app.session
         .record_replay_display_message(role.to_string(), title, content.to_string());
     let _ = app.session.save();
 }
 
 fn persist_swarm_status_snapshot(app: &mut App) {
+    if app.is_remote {
+        // Avoid clobbering the server-owned session file from a remote client's shadow copy.
+        return;
+    }
     app.session
         .record_swarm_status_event(app.remote_swarm_members.clone());
     let _ = app.session.save();
@@ -126,9 +135,29 @@ fn persist_swarm_plan_snapshot(
     participants: Vec<String>,
     reason: Option<String>,
 ) {
+    if app.is_remote {
+        // Avoid clobbering the server-owned session file from a remote client's shadow copy.
+        return;
+    }
     app.session
         .record_swarm_plan_event(swarm_id, version, items, participants, reason);
     let _ = app.session.save();
+}
+
+fn persist_remote_session_metadata<F>(app: &mut App, update: F) -> Result<()>
+where
+    F: FnOnce(&mut crate::session::Session),
+{
+    let session_id = app
+        .remote_session_id
+        .as_deref()
+        .or(app.resume_session_id.as_deref())
+        .unwrap_or(app.session.id.as_str());
+    let mut session = crate::session::Session::load(session_id)?;
+    update(&mut session);
+    session.save()?;
+    app.session = session;
+    Ok(())
 }
 
 fn reload_marker_active() -> bool {
@@ -2734,8 +2763,8 @@ pub(super) async fn handle_remote_key(
                         &app.provider.model(),
                         crate::telemetry::SessionEndReason::NormalExit,
                     );
-                    app.session.mark_closed();
-                    let _ = app.session.save();
+                    // In remote mode the shared server owns session lifecycle persistence.
+                    // Exiting this client should not overwrite the server's session file.
                     app.should_quit = true;
                     return Ok(());
                 }
@@ -3038,8 +3067,9 @@ pub(super) async fn handle_remote_key(
                     } else {
                         Some(label.to_string())
                     };
-                    app.session.mark_saved(label.clone());
-                    if let Err(e) = app.session.save() {
+                    if let Err(e) = persist_remote_session_metadata(app, |session| {
+                        session.mark_saved(label.clone());
+                    }) {
                         app.push_display_message(DisplayMessage::error(format!(
                             "Failed to save session: {}",
                             e
@@ -3064,8 +3094,9 @@ pub(super) async fn handle_remote_key(
                 }
 
                 if trimmed == "/unsave" {
-                    app.session.unmark_saved();
-                    if let Err(e) = app.session.save() {
+                    if let Err(e) = persist_remote_session_metadata(app, |session| {
+                        session.unmark_saved();
+                    }) {
                         app.push_display_message(DisplayMessage::error(format!(
                             "Failed to save session: {}",
                             e

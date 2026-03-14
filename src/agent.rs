@@ -1775,6 +1775,12 @@ impl Agent {
         ));
         self.seed_compaction_from_session();
         self.log_env_snapshot("resume");
+        if let Err(err) = self.session.save() {
+            logging::error(&format!(
+                "Failed to persist resumed session state for {}: {}",
+                session_id, err
+            ));
+        }
         logging::info(&format!(
             "Session restored: {} messages in session",
             self.session.messages.len()
