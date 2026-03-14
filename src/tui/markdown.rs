@@ -381,6 +381,7 @@ fn mermaid_sidebar_placeholder(text: &str) -> Line<'static> {
         text.to_string(),
         Style::default().fg(md_dim_color()),
     ))
+    .left_aligned()
 }
 
 fn apply_inline_decorations(mut style: Style, strike: bool, in_link: bool) -> Style {
@@ -409,13 +410,49 @@ fn with_blockquote_prefix(line: Line<'static>, blockquote_depth: usize) -> Line<
         "│ ".repeat(blockquote_depth),
         Style::default().fg(md_dim_color()),
     )];
+    let alignment = line.alignment;
     spans.extend(line.spans);
-    Line::from(spans)
+    let line = Line::from(spans);
+    match alignment {
+        Some(align) => line.alignment(align),
+        None => line.left_aligned(),
+    }
 }
 
 fn flush_current_line(lines: &mut Vec<Line<'static>>, current_spans: &mut Vec<Span<'static>>) {
     if !current_spans.is_empty() {
         lines.push(Line::from(std::mem::take(current_spans)));
+    }
+}
+
+fn flush_current_line_with_alignment(
+    lines: &mut Vec<Line<'static>>,
+    current_spans: &mut Vec<Span<'static>>,
+    alignment: Option<Alignment>,
+) {
+    if !current_spans.is_empty() {
+        let line = Line::from(std::mem::take(current_spans));
+        lines.push(match alignment {
+            Some(align) => line.alignment(align),
+            None => line,
+        });
+    }
+}
+
+fn structured_markdown_alignment(
+    blockquote_depth: usize,
+    list_stack: &[ListRenderState],
+    in_definition_list: bool,
+    in_footnote_definition: bool,
+) -> Option<Alignment> {
+    if blockquote_depth > 0
+        || !list_stack.is_empty()
+        || in_definition_list
+        || in_footnote_definition
+    {
+        Some(Alignment::Left)
+    } else {
+        None
     }
 }
 
@@ -481,20 +518,26 @@ fn math_inline_span(math: &str) -> Span<'static> {
 fn math_display_lines(math: &str) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let dim = Style::default().fg(md_dim_color());
-    out.push(Line::from(Span::styled("┌─ math ", dim)));
+    out.push(Line::from(Span::styled("┌─ math ", dim)).left_aligned());
     for line in math.lines() {
-        out.push(Line::from(vec![
-            Span::styled("│ ", dim),
-            Span::styled(line.to_string(), Style::default().fg(math_fg())),
-        ]));
+        out.push(
+            Line::from(vec![
+                Span::styled("│ ", dim),
+                Span::styled(line.to_string(), Style::default().fg(math_fg())),
+            ])
+            .left_aligned(),
+        );
     }
     if math.is_empty() {
-        out.push(Line::from(vec![
-            Span::styled("│ ", dim),
-            Span::styled("", Style::default().fg(math_fg())),
-        ]));
+        out.push(
+            Line::from(vec![
+                Span::styled("│ ", dim),
+                Span::styled("", Style::default().fg(math_fg())),
+            ])
+            .left_aligned(),
+        );
     }
-    out.push(Line::from(Span::styled("└─", dim)));
+    out.push(Line::from(Span::styled("└─", dim)).left_aligned());
     out
 }
 fn table_color() -> Color {
@@ -672,7 +715,9 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
     let mut in_image = false;
     let mut image_url: Option<String> = None;
     let mut image_alt = String::new();
+    let mut in_definition_list = false;
     let mut in_definition_item = false;
+    let mut in_footnote_definition = false;
 
     // Table state
     let mut in_table = false;
@@ -705,7 +750,16 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 dbg_headings += 1;
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 heading_level = Some(level as u8);
             }
             Event::End(TagEnd::Heading(_)) => {
@@ -740,11 +794,29 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
 
             Event::Start(Tag::BlockQuote(_)) => {
                 dbg_blockquotes += 1;
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 blockquote_depth += 1;
             }
             Event::End(TagEnd::BlockQuote(_)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 blockquote_depth = blockquote_depth.saturating_sub(1);
                 lines.push(Line::default());
             }
@@ -757,8 +829,17 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 list_stack.push(state);
             }
             Event::End(TagEnd::List(_)) => {
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 list_stack.pop();
-                flush_current_line(&mut lines, &mut current_spans);
             }
 
             Event::Start(Tag::Link { dest_url, .. }) => {
@@ -802,7 +883,17 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             }
 
             Event::Start(Tag::FootnoteDefinition(label)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
+                in_footnote_definition = true;
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 current_spans.push(Span::styled(
                     format!("[^{}]: ", label),
@@ -810,39 +901,114 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 ));
             }
             Event::End(TagEnd::FootnoteDefinition) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
+                in_footnote_definition = false;
             }
 
             Event::Start(Tag::DefinitionList) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
+                in_definition_list = true;
             }
             Event::End(TagEnd::DefinitionList) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
+                in_definition_list = false;
                 lines.push(Line::default());
             }
             Event::Start(Tag::DefinitionListTitle) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 current_spans.push(Span::styled("• ", Style::default().fg(md_dim_color())));
             }
             Event::End(TagEnd::DefinitionListTitle) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
             }
             Event::Start(Tag::DefinitionListDefinition) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 current_spans.push(Span::styled("  -> ", Style::default().fg(md_dim_color())));
                 in_definition_item = true;
             }
             Event::End(TagEnd::DefinitionListDefinition) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 in_definition_item = false;
             }
 
             Event::Start(Tag::CodeBlock(kind)) => {
                 dbg_code_blocks += 1;
                 // Flush current line before code block
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 in_code_block = true;
                 code_block_lang = match kind {
                     CodeBlockKind::Fenced(lang) if !lang.is_empty() => Some(lang.to_string()),
@@ -1003,7 +1169,16 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     image_alt.push_str("$$");
                     continue;
                 }
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 if in_table {
                     current_cell.push_str("$$");
                     current_cell.push_str(&math);
@@ -1053,23 +1228,56 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 if in_image {
                     image_alt.push(' ');
                 } else if !in_code_block {
-                    flush_current_line(&mut lines, &mut current_spans);
+                    flush_current_line_with_alignment(
+                        &mut lines,
+                        &mut current_spans,
+                        structured_markdown_alignment(
+                            blockquote_depth,
+                            &list_stack,
+                            in_definition_list,
+                            in_footnote_definition,
+                        ),
+                    );
                 }
             }
 
             Event::Rule => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 let width = max_width.unwrap_or(RULE_LEN);
                 let rule = Span::styled("─".repeat(width), Style::default().fg(md_dim_color()));
-                lines.push(with_blockquote_prefix(Line::from(rule), blockquote_depth));
+                lines.push(with_blockquote_prefix(
+                    Line::from(rule).left_aligned(),
+                    blockquote_depth,
+                ));
             }
 
             Event::Html(html) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 for raw in html.lines() {
                     let span =
                         Span::styled(raw.to_string(), Style::default().fg(html_fg()).italic());
-                    lines.push(with_blockquote_prefix(Line::from(span), blockquote_depth));
+                    lines.push(with_blockquote_prefix(
+                        Line::from(span).left_aligned(),
+                        blockquote_depth,
+                    ));
                 }
             }
 
@@ -1120,14 +1328,32 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 }
             }
             Event::End(TagEnd::Paragraph) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 // Add blank line after paragraph for visual separation
                 lines.push(Line::default());
             }
 
             Event::Start(Tag::Item) => {
                 dbg_list_items += 1;
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 let depth = list_stack.len().saturating_sub(1);
                 let indent = "  ".repeat(depth);
@@ -1145,14 +1371,32 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 current_spans.push(Span::styled(marker, Style::default().fg(md_dim_color())));
             }
             Event::End(TagEnd::Item) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
             }
 
             // Table handling
             Event::Start(Tag::Table(_)) => {
                 dbg_tables += 1;
                 // Flush any pending content
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 in_table = true;
                 table_rows.clear();
             }
@@ -1196,10 +1440,28 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             }
 
             Event::Start(Tag::MetadataBlock(_)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
             }
             Event::End(TagEnd::MetadataBlock(_)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
             }
 
             _ => {}
@@ -1271,9 +1533,16 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
     }
 
     // Flush remaining spans
-    if !current_spans.is_empty() {
-        lines.push(Line::from(current_spans));
-    }
+    flush_current_line_with_alignment(
+        &mut lines,
+        &mut current_spans,
+        structured_markdown_alignment(
+            blockquote_depth,
+            &list_stack,
+            in_definition_list,
+            in_footnote_definition,
+        ),
+    );
 
     if let Ok(mut state) = MARKDOWN_DEBUG.lock() {
         state.stats.total_renders += 1;
@@ -1427,7 +1696,7 @@ fn render_table(rows: &[Vec<String>], max_width: Option<usize>) -> Vec<Line<'sta
             spans.push(Span::styled(padded, style));
         }
 
-        lines.push(Line::from(spans));
+        lines.push(Line::from(spans).left_aligned());
 
         // Add separator after header row
         if row_idx == 0 {
@@ -1436,10 +1705,10 @@ fn render_table(rows: &[Vec<String>], max_width: Option<usize>) -> Vec<Line<'sta
                 .map(|&w| "─".repeat(w))
                 .collect::<Vec<_>>()
                 .join("─┼─");
-            lines.push(Line::from(Span::styled(
-                separator,
-                Style::default().fg(table_color()),
-            )));
+            lines.push(
+                Line::from(Span::styled(separator, Style::default().fg(table_color())))
+                    .left_aligned(),
+            );
         }
     }
 
@@ -1633,7 +1902,9 @@ pub fn render_markdown_lazy(
     let mut in_image = false;
     let mut image_url: Option<String> = None;
     let mut image_alt = String::new();
+    let mut in_definition_list = false;
     let mut in_definition_item = false;
+    let mut in_footnote_definition = false;
 
     // Table state
     let mut in_table = false;
@@ -1657,7 +1928,16 @@ pub fn render_markdown_lazy(
     for event in parser {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 heading_level = Some(level as u8);
             }
             Event::End(TagEnd::Heading(_)) => {
@@ -1690,11 +1970,29 @@ pub fn render_markdown_lazy(
             Event::End(TagEnd::Strikethrough) => strike = false,
 
             Event::Start(Tag::BlockQuote(_)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 blockquote_depth += 1;
             }
             Event::End(TagEnd::BlockQuote(_)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 blockquote_depth = blockquote_depth.saturating_sub(1);
                 lines.push(Line::default());
             }
@@ -1707,8 +2005,17 @@ pub fn render_markdown_lazy(
                 list_stack.push(state);
             }
             Event::End(TagEnd::List(_)) => {
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 list_stack.pop();
-                flush_current_line(&mut lines, &mut current_spans);
             }
 
             Event::Start(Tag::Link { dest_url, .. }) => {
@@ -1752,7 +2059,17 @@ pub fn render_markdown_lazy(
             }
 
             Event::Start(Tag::FootnoteDefinition(label)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
+                in_footnote_definition = true;
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 current_spans.push(Span::styled(
                     format!("[^{}]: ", label),
@@ -1760,37 +2077,112 @@ pub fn render_markdown_lazy(
                 ));
             }
             Event::End(TagEnd::FootnoteDefinition) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
+                in_footnote_definition = false;
             }
 
             Event::Start(Tag::DefinitionList) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
+                in_definition_list = true;
             }
             Event::End(TagEnd::DefinitionList) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
+                in_definition_list = false;
                 lines.push(Line::default());
             }
             Event::Start(Tag::DefinitionListTitle) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 current_spans.push(Span::styled("• ", Style::default().fg(md_dim_color())));
             }
             Event::End(TagEnd::DefinitionListTitle) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
             }
             Event::Start(Tag::DefinitionListDefinition) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 current_spans.push(Span::styled("  -> ", Style::default().fg(md_dim_color())));
                 in_definition_item = true;
             }
             Event::End(TagEnd::DefinitionListDefinition) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 in_definition_item = false;
             }
 
             Event::Start(Tag::CodeBlock(kind)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 in_code_block = true;
                 code_block_start_line = lines.len();
                 code_block_lang = match kind {
@@ -1964,7 +2356,16 @@ pub fn render_markdown_lazy(
                     image_alt.push_str("$$");
                     continue;
                 }
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 if in_table {
                     current_cell.push_str("$$");
                     current_cell.push_str(&math);
@@ -2013,23 +2414,56 @@ pub fn render_markdown_lazy(
                 if in_image {
                     image_alt.push(' ');
                 } else if !in_code_block {
-                    flush_current_line(&mut lines, &mut current_spans);
+                    flush_current_line_with_alignment(
+                        &mut lines,
+                        &mut current_spans,
+                        structured_markdown_alignment(
+                            blockquote_depth,
+                            &list_stack,
+                            in_definition_list,
+                            in_footnote_definition,
+                        ),
+                    );
                 }
             }
 
             Event::Rule => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 let width = max_width.unwrap_or(RULE_LEN);
                 let rule = Span::styled("─".repeat(width), Style::default().fg(md_dim_color()));
-                lines.push(with_blockquote_prefix(Line::from(rule), blockquote_depth));
+                lines.push(with_blockquote_prefix(
+                    Line::from(rule).left_aligned(),
+                    blockquote_depth,
+                ));
             }
 
             Event::Html(html) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 for raw in html.lines() {
                     let span =
                         Span::styled(raw.to_string(), Style::default().fg(html_fg()).italic());
-                    lines.push(with_blockquote_prefix(Line::from(span), blockquote_depth));
+                    lines.push(with_blockquote_prefix(
+                        Line::from(span).left_aligned(),
+                        blockquote_depth,
+                    ));
                 }
             }
 
@@ -2080,12 +2514,30 @@ pub fn render_markdown_lazy(
                 }
             }
             Event::End(TagEnd::Paragraph) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 lines.push(Line::default());
             }
 
             Event::Start(Tag::Item) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
                 let depth = list_stack.len().saturating_sub(1);
                 let indent = "  ".repeat(depth);
@@ -2103,11 +2555,29 @@ pub fn render_markdown_lazy(
                 current_spans.push(Span::styled(marker, Style::default().fg(md_dim_color())));
             }
             Event::End(TagEnd::Item) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
             }
 
             Event::Start(Tag::Table(_)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
                 in_table = true;
                 table_rows.clear();
             }
@@ -2150,19 +2620,44 @@ pub fn render_markdown_lazy(
             }
 
             Event::Start(Tag::MetadataBlock(_)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
             }
             Event::End(TagEnd::MetadataBlock(_)) => {
-                flush_current_line(&mut lines, &mut current_spans);
+                flush_current_line_with_alignment(
+                    &mut lines,
+                    &mut current_spans,
+                    structured_markdown_alignment(
+                        blockquote_depth,
+                        &list_stack,
+                        in_definition_list,
+                        in_footnote_definition,
+                    ),
+                );
             }
 
             _ => {}
         }
     }
 
-    if !current_spans.is_empty() {
-        lines.push(Line::from(current_spans));
-    }
+    flush_current_line_with_alignment(
+        &mut lines,
+        &mut current_spans,
+        structured_markdown_alignment(
+            blockquote_depth,
+            &list_stack,
+            in_definition_list,
+            in_footnote_definition,
+        ),
+    );
 
     lines
 }
@@ -2525,6 +3020,83 @@ mod tests {
         assert!(rendered.contains("[^a]: footnote body"));
         assert!(rendered.contains("Term"));
         assert!(rendered.contains("definition text"));
+    }
+
+    #[test]
+    fn test_plain_paragraph_alignment_remains_unset() {
+        let lines = render_markdown("plain paragraph");
+        let line = lines
+            .iter()
+            .find(|line| line_to_string(line).contains("plain paragraph"))
+            .expect("paragraph line");
+        assert_eq!(line.alignment, None);
+    }
+
+    #[test]
+    fn test_structured_markdown_lines_force_left_alignment() {
+        let md = concat!(
+            "- [x] done\n",
+            "1. numbered\n\n",
+            "> quoted\n\n",
+            "[^a]: footnote body\n\n",
+            "Term\n  : definition text\n\n",
+            "| A | B |\n| - | - |\n| 1 | 2 |\n\n",
+            "$$\nE = mc^2\n$$\n\n",
+            "---\n\n",
+            "<div>html</div>"
+        );
+
+        let lines = render_markdown_with_width(md, Some(40));
+
+        let expected = [
+            "• [x] done",
+            "1. numbered",
+            "│ quoted",
+            "[^a]: footnote body",
+            "• Term",
+            "  -> definition text",
+            "A │ B",
+            "─┼─",
+            "1 │ 2",
+            "┌─ math",
+            "│ E = mc^2",
+            "└─",
+            "────",
+            "<div>html</div>",
+        ];
+
+        for snippet in expected {
+            let line = lines
+                .iter()
+                .find(|line| line_to_string(line).contains(snippet))
+                .unwrap_or_else(|| panic!("missing line containing '{snippet}' in {lines:?}"));
+            assert_eq!(
+                line.alignment,
+                Some(Alignment::Left),
+                "expected left alignment for line containing '{snippet}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wrapped_left_aligned_list_items_stay_left_aligned() {
+        let lines = render_markdown("- this is a long list item that should wrap");
+        let wrapped = wrap_lines(lines, 12);
+
+        let non_empty: Vec<&Line<'_>> = wrapped
+            .iter()
+            .filter(|line| !line.spans.is_empty())
+            .collect();
+        assert!(
+            non_empty.len() >= 2,
+            "expected wrapped list item: {wrapped:?}"
+        );
+        assert!(
+            non_empty
+                .iter()
+                .all(|line| line.alignment == Some(Alignment::Left)),
+            "expected wrapped list lines to preserve left alignment: {wrapped:?}"
+        );
     }
 
     #[test]
