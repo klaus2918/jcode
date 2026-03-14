@@ -248,7 +248,7 @@ impl App {
 
         if prefix.starts_with("/account ") || prefix.starts_with("/accounts ") {
             let mut suggestions = vec![
-                ("/account list".into(), "List all Anthropic accounts"),
+                ("/account list".into(), "List Anthropic and OpenAI accounts"),
                 (
                     "/account add".into(),
                     "Add a new account (start OAuth login)",

@@ -333,6 +333,38 @@ fn test_account_openai_command_lists_openai_accounts() {
 }
 
 #[test]
+fn test_account_command_includes_openai_accounts() {
+    let _guard = crate::storage::lock_test_env();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    crate::auth::codex::upsert_account(crate::auth::codex::OpenAiAccount {
+        label: "work".to_string(),
+        access_token: "acc".to_string(),
+        refresh_token: "ref".to_string(),
+        id_token: None,
+        account_id: Some("acct_work".to_string()),
+        expires_at: Some(now_ms + 60_000),
+        email: Some("user@example.com".to_string()),
+    })
+    .unwrap();
+
+    let mut app = create_test_app();
+    app.input = "/account".to_string();
+    app.submit_input();
+
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing /account response");
+    assert_eq!(msg.role, "system");
+    assert!(msg.content.contains("**Anthropic Accounts:**"));
+    assert!(msg.content.contains("**OpenAI Accounts:**"));
+    assert!(msg.content.contains("work"));
+    assert!(msg.content.contains("u***r@example.com"));
+    assert!(msg.content.contains("acct_work"));
+}
+
+#[test]
 fn test_commands_alias_shows_help() {
     let mut app = create_test_app();
     app.input = "/commands".to_string();

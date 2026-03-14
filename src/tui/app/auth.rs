@@ -139,7 +139,7 @@ impl App {
             ));
         }
         message.push_str(
-            "\nUse `/login <provider>` to authenticate. `/login jcode` is for curated jcode subscription access; `/account` manages Anthropic accounts and `/account openai` manages OpenAI accounts.",
+            "\nUse `/login <provider>` to authenticate. `/login jcode` is for curated jcode subscription access; `/account` lists Anthropic + OpenAI accounts, and `/account openai` focuses on OpenAI accounts.",
         );
         self.push_display_message(DisplayMessage::system(message));
     }
@@ -442,17 +442,23 @@ impl App {
     }
 
     pub(super) fn show_accounts(&mut self) {
+        let anthropic = self.render_anthropic_accounts_markdown();
+        let openai = self.render_openai_accounts_markdown();
+        self.push_display_message(DisplayMessage::system(format!(
+            "{}\n\n{}",
+            anthropic, openai
+        )));
+    }
+
+    fn render_anthropic_accounts_markdown(&self) -> String {
         let accounts = crate::auth::claude::list_accounts().unwrap_or_default();
         let active_label = crate::auth::claude::active_account_label();
         let now_ms = chrono::Utc::now().timestamp_millis();
 
         if accounts.is_empty() {
-            self.push_display_message(DisplayMessage::system(
-                "**Anthropic Accounts:** none configured\n\n\
+            return "**Anthropic Accounts:** none configured\n\n\
                  Use `/account add <label>` to add an account, or `/login claude` for a default account."
-                    .to_string(),
-            ));
-            return;
+                .to_string();
         }
 
         let mut lines = vec!["**Anthropic Accounts:**\n".to_string()];
@@ -482,21 +488,24 @@ impl App {
         lines.push(String::new());
         lines.push("Commands: `/account switch <label>`, `/account add <label>`, `/account remove <label>`".to_string());
 
-        self.push_display_message(DisplayMessage::system(lines.join("\n")));
+        lines.join("\n")
     }
 
     pub(super) fn show_openai_accounts(&mut self) {
+        self.push_display_message(DisplayMessage::system(
+            self.render_openai_accounts_markdown(),
+        ));
+    }
+
+    fn render_openai_accounts_markdown(&self) -> String {
         let accounts = crate::auth::codex::list_accounts().unwrap_or_default();
         let active_label = crate::auth::codex::active_account_label();
         let now_ms = chrono::Utc::now().timestamp_millis();
 
         if accounts.is_empty() {
-            self.push_display_message(DisplayMessage::system(
-                "**OpenAI Accounts:** none configured\n\n\
+            return "**OpenAI Accounts:** none configured\n\n\
                  Use `/account openai add <label>` to add an account, or `/login openai` for a default account."
-                    .to_string(),
-            ));
-            return;
+                .to_string();
         }
 
         let mut lines = vec!["**OpenAI Accounts:**\n".to_string()];
@@ -529,7 +538,7 @@ impl App {
                 .to_string(),
         );
 
-        self.push_display_message(DisplayMessage::system(lines.join("\n")));
+        lines.join("\n")
     }
 
     pub(super) fn switch_account(&mut self, label: &str) {
