@@ -24,7 +24,7 @@ pub mod openai {
     pub const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
     pub const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
     pub const DEFAULT_PORT: u16 = 1455;
-    pub const SCOPES: &str = "openid profile email offline_access";
+    pub const SCOPES: &str = "openid profile email offline_access api.connectors.read api.connectors.invoke";
 
     pub fn redirect_uri(port: u16) -> String {
         format!("http://localhost:{}/auth/callback", port)
@@ -85,10 +85,24 @@ pub fn wait_for_callback(port: u16, expected_state: &str) -> Result<String> {
         let mut request_line = String::new();
         reader.read_line(&mut request_line)?;
 
+        let mut header_line = String::new();
+        loop {
+            header_line.clear();
+            reader.read_line(&mut header_line)?;
+            if header_line.trim().is_empty() {
+                break;
+            }
+        }
+
         let bad_request_response = |message: &str| {
-            format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<html><body><h1>Authentication not completed</h1><p>{}</p><p>You can close this tab and return to jcode.</p></body></html>",
+            let body = format!(
+                "<html><body><h1>Authentication not completed</h1><p>{}</p><p>You can close this tab and return to jcode.</p></body></html>",
                 message
+            );
+            format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
             )
         };
 
@@ -157,8 +171,12 @@ pub fn wait_for_callback(port: u16, expected_state: &str) -> Result<String> {
             continue;
         }
 
-        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
-            <html><body><h1>Success!</h1><p>You can close this window.</p></body></html>";
+        let body = "<html><body><h1>Success!</h1><p>You can close this window.</p></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
         stream.write_all(response.as_bytes())?;
 
         return Ok(code);
@@ -192,10 +210,24 @@ pub async fn wait_for_callback_async_on_listener(
         let mut request_line = String::new();
         reader.read_line(&mut request_line).await?;
 
+        let mut header_line = String::new();
+        loop {
+            header_line.clear();
+            reader.read_line(&mut header_line).await?;
+            if header_line.trim().is_empty() {
+                break;
+            }
+        }
+
         let bad_request_response = |message: &str| {
-            format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<html><body><h1>Authentication not completed</h1><p>{}</p><p>You can close this tab and return to jcode.</p></body></html>",
+            let body = format!(
+                "<html><body><h1>Authentication not completed</h1><p>{}</p><p>You can close this tab and return to jcode.</p></body></html>",
                 message
+            );
+            format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
             )
         };
 
@@ -279,8 +311,12 @@ pub async fn wait_for_callback_async_on_listener(
             continue;
         }
 
-        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
-            <html><body><h1>Success!</h1><p>You can close this window and return to jcode.</p></body></html>";
+        let body = "<html><body><h1>Success!</h1><p>You can close this window and return to jcode.</p></body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
         writer.write_all(response.as_bytes()).await?;
 
         return Ok(code);
