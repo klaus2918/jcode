@@ -1,5 +1,5 @@
 use super::picker_ui::format_elapsed;
-use super::tools_ui::get_tool_summary;
+use super::tools_ui::{get_tool_summary, summarize_batch_running_tools_compact};
 use super::visual_debug::{self, FrameCaptureBuilder};
 use super::{
     ProcessingStatus, TuiState, accent_color, ai_color, animated_tool_color, asap_color, dim_color,
@@ -185,23 +185,7 @@ fn batch_progress_state(
 }
 
 fn batch_running_summary(batch_prog: &crate::bus::BatchProgress) -> Option<String> {
-    let mut running = batch_prog.running.clone();
-    if running.is_empty() {
-        return None;
-    }
-    running.sort_by(|a, b| a.id.cmp(&b.id));
-    let first = &running[0];
-    let detail = get_tool_summary(first);
-    let label = if detail.is_empty() {
-        first.name.clone()
-    } else {
-        format!("{} ({})", first.name, detail)
-    };
-    if running.len() == 1 {
-        Some(label)
-    } else {
-        Some(format!("{} +{} more", label, running.len() - 1))
-    }
+    summarize_batch_running_tools_compact(&batch_prog.running)
 }
 
 fn append_batch_progress_spans(
@@ -585,6 +569,7 @@ mod tests {
                 completed: 1,
                 last_completed: Some("read".to_string()),
                 running: Vec::new(),
+                subcalls: Vec::new(),
             }),
             Some(3),
         );
@@ -608,6 +593,7 @@ mod tests {
                 completed: 3,
                 last_completed: Some("read".to_string()),
                 running: Vec::new(),
+                subcalls: Vec::new(),
             }),
             Some(3),
         );
@@ -635,16 +621,57 @@ mod tests {
                     input: serde_json::json!({"command": "cargo test -p jcode"}),
                     intent: None,
                 }],
+                subcalls: Vec::new(),
             }),
             Some(2),
         );
 
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content.as_ref(), " · 0/2 done");
-        assert_eq!(
-            spans[1].content.as_ref(),
-            " · running: bash ($ cargo test -p jcode)"
+        assert_eq!(spans[1].content.as_ref(), " · running: #1 bash");
+    }
+
+    #[test]
+    fn batch_progress_spans_show_multiple_running_subcalls() {
+        let mut spans = Vec::new();
+
+        append_batch_progress_spans(
+            &mut spans,
+            rgb(120, 130, 140),
+            Some(crate::bus::BatchProgress {
+                session_id: "s".to_string(),
+                tool_call_id: "tc".to_string(),
+                total: 3,
+                completed: 0,
+                last_completed: None,
+                running: vec![
+                    crate::message::ToolCall {
+                        id: "batch-2-grep".to_string(),
+                        name: "grep".to_string(),
+                        input: serde_json::json!({"pattern": "foo", "path": "src"}),
+                        intent: None,
+                    },
+                    crate::message::ToolCall {
+                        id: "batch-1-bash".to_string(),
+                        name: "bash".to_string(),
+                        input: serde_json::json!({"command": "cargo build --release --workspace"}),
+                        intent: None,
+                    },
+                    crate::message::ToolCall {
+                        id: "batch-3-read".to_string(),
+                        name: "read".to_string(),
+                        input: serde_json::json!({"file_path": "README.md"}),
+                        intent: None,
+                    },
+                ],
+                subcalls: Vec::new(),
+            }),
+            Some(3),
         );
+
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content.as_ref(), " · 0/3 done");
+        assert_eq!(spans[1].content.as_ref(), " · running: #1 bash +2");
     }
 }
 
