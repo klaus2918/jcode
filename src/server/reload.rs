@@ -1,20 +1,10 @@
 use crate::agent::Agent;
-use crate::server::SwarmMember;
+use crate::server::{SwarmEvent, SwarmEventType, SwarmMember};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, mpsc, watch};
-
-const DEFAULT_RELOAD_GRACE_MS: u64 = 150;
-
-fn reload_grace_period() -> std::time::Duration {
-    std::env::var("JCODE_RELOAD_GRACE_MS")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .map(std::time::Duration::from_millis)
-        .unwrap_or_else(|| std::time::Duration::from_millis(DEFAULT_RELOAD_GRACE_MS))
-}
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc, watch};
 
 fn prepare_server_exec(cmd: &mut std::process::Command, socket_path: &std::path::Path) {
     // The replacement daemon must own the published socket paths. Unlink them
@@ -254,6 +244,7 @@ pub(super) async fn await_reload_signal(
     sessions: Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
     swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
     shutdown_signals: Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
+    swarm_event_tx: broadcast::Sender<SwarmEvent>,
 ) {
     use std::process::Command as ProcessCommand;
 
@@ -288,7 +279,13 @@ pub(super) async fn await_reload_signal(
             continue;
         }
 
-        graceful_shutdown_sessions(&sessions, &swarm_members, &shutdown_signals).await;
+        graceful_shutdown_sessions(
+            &sessions,
+            &swarm_members,
+            &shutdown_signals,
+            &swarm_event_tx,
+        )
+        .await;
 
         let prefers_selfdev = signal.prefer_selfdev_binary;
 
@@ -340,6 +337,7 @@ pub(super) async fn graceful_shutdown_sessions(
     _sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     shutdown_signals: &Arc<RwLock<HashMap<String, crate::agent::InterruptSignal>>>,
+    swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {
     let actively_generating: Vec<String> = {
         let members = swarm_members.read().await;
@@ -392,16 +390,13 @@ pub(super) async fn graceful_shutdown_sessions(
         }
     }
 
-    let grace = reload_grace_period();
-    let deadline = tokio::time::Instant::now() + grace;
-    let mut poll_interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
+    let watched: std::collections::HashSet<String> = signalable_sessions.into_iter().collect();
+    let mut event_rx = swarm_event_tx.subscribe();
 
     loop {
-        poll_interval.tick().await;
-
-        let still_running: usize = {
+        let still_running: Vec<String> = {
             let members = swarm_members.read().await;
-            signalable_sessions
+            watched
                 .iter()
                 .filter(|id| {
                     members
@@ -409,21 +404,35 @@ pub(super) async fn graceful_shutdown_sessions(
                         .map(|m| m.status == "running")
                         .unwrap_or(false)
                 })
-                .count()
+                .cloned()
+                .collect()
         };
 
-        if still_running == 0 {
+        if still_running.is_empty() {
             crate::logging::info("Server: all sessions checkpointed, proceeding with reload");
             break;
         }
 
-        if tokio::time::Instant::now() >= deadline {
-            crate::logging::warn(&format!(
-                "Server: {} session(s) still generating after {}ms grace period, proceeding with reload anyway",
-                still_running,
-                grace.as_millis()
-            ));
-            break;
+        crate::logging::info(&format!(
+            "Server: waiting for {} session(s) to checkpoint before reload: {:?}",
+            still_running.len(),
+            still_running
+        ));
+
+        match event_rx.recv().await {
+            Ok(event) => match &event.event {
+                SwarmEventType::StatusChange { .. } if watched.contains(&event.session_id) => {}
+                SwarmEventType::MemberChange { action }
+                    if action == "left" && watched.contains(&event.session_id) => {}
+                _ => continue,
+            },
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => {
+                crate::logging::warn(
+                    "Server: swarm event channel closed while waiting for reload checkpoint",
+                );
+                break;
+            }
         }
     }
 }
@@ -432,11 +441,11 @@ pub(super) async fn graceful_shutdown_sessions(
 mod tests {
     use super::{graceful_shutdown_sessions, receive_reload_signal};
     use crate::agent::InterruptSignal;
-    use crate::server::{ReloadSignal, SwarmMember};
+    use crate::server::{ReloadSignal, SwarmEvent, SwarmEventType, SwarmMember};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Instant;
-    use tokio::sync::{RwLock, mpsc, watch};
+    use tokio::sync::{RwLock, broadcast, mpsc, watch};
 
     fn member(session_id: &str, status: &str) -> SwarmMember {
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
@@ -521,8 +530,51 @@ mod tests {
             ("initiator".to_string(), initiator_signal.clone()),
             ("peer".to_string(), peer_signal.clone()),
         ])));
+        let (swarm_event_tx, _) = broadcast::channel(8);
+        let swarm_members_for_task = swarm_members.clone();
+        let swarm_event_tx_for_task = swarm_event_tx.clone();
 
-        graceful_shutdown_sessions(&sessions, &swarm_members, &shutdown_signals).await;
+        let checkpoint_task = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            {
+                let mut members = swarm_members_for_task.write().await;
+                members.get_mut("initiator").expect("initiator").status = "ready".to_string();
+                members.get_mut("peer").expect("peer").status = "ready".to_string();
+            }
+            let _ = swarm_event_tx_for_task.send(SwarmEvent {
+                id: 1,
+                session_id: "initiator".to_string(),
+                session_name: None,
+                swarm_id: None,
+                event: SwarmEventType::StatusChange {
+                    old_status: "running".to_string(),
+                    new_status: "ready".to_string(),
+                },
+                timestamp: Instant::now(),
+                absolute_time: std::time::SystemTime::now(),
+            });
+            let _ = swarm_event_tx_for_task.send(SwarmEvent {
+                id: 2,
+                session_id: "peer".to_string(),
+                session_name: None,
+                swarm_id: None,
+                event: SwarmEventType::StatusChange {
+                    old_status: "running".to_string(),
+                    new_status: "ready".to_string(),
+                },
+                timestamp: Instant::now(),
+                absolute_time: std::time::SystemTime::now(),
+            });
+        });
+
+        graceful_shutdown_sessions(
+            &sessions,
+            &swarm_members,
+            &shutdown_signals,
+            &swarm_event_tx,
+        )
+        .await;
+        checkpoint_task.await.expect("checkpoint task");
 
         assert!(
             initiator_signal.is_set(),
@@ -546,8 +598,15 @@ mod tests {
             "idle".to_string(),
             idle_signal.clone(),
         )])));
+        let (swarm_event_tx, _) = broadcast::channel(8);
 
-        graceful_shutdown_sessions(&sessions, &swarm_members, &shutdown_signals).await;
+        graceful_shutdown_sessions(
+            &sessions,
+            &swarm_members,
+            &shutdown_signals,
+            &swarm_event_tx,
+        )
+        .await;
 
         assert!(
             !idle_signal.is_set(),
@@ -563,13 +622,212 @@ mod tests {
             member("orphan_running", "running"),
         )])));
         let shutdown_signals = Arc::new(RwLock::new(HashMap::new()));
+        let (swarm_event_tx, _) = broadcast::channel(8);
 
         let started = Instant::now();
-        graceful_shutdown_sessions(&sessions, &swarm_members, &shutdown_signals).await;
+        graceful_shutdown_sessions(
+            &sessions,
+            &swarm_members,
+            &shutdown_signals,
+            &swarm_event_tx,
+        )
+        .await;
 
         assert!(
             started.elapsed() < std::time::Duration::from_millis(100),
             "running sessions without shutdown signals should not consume the reload grace period"
         );
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_sessions_waits_until_target_status_change_arrives() {
+        let sessions = Arc::new(RwLock::new(HashMap::new()));
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([(
+            "target".to_string(),
+            member("target", "running"),
+        )])));
+        let signal = InterruptSignal::new();
+        let shutdown_signals = Arc::new(RwLock::new(HashMap::from([(
+            "target".to_string(),
+            signal.clone(),
+        )])));
+        let (swarm_event_tx, _) = broadcast::channel(8);
+
+        let mut waiter = tokio::spawn({
+            let sessions = sessions.clone();
+            let swarm_members = swarm_members.clone();
+            let shutdown_signals = shutdown_signals.clone();
+            let swarm_event_tx = swarm_event_tx.clone();
+            async move {
+                graceful_shutdown_sessions(
+                    &sessions,
+                    &swarm_members,
+                    &shutdown_signals,
+                    &swarm_event_tx,
+                )
+                .await;
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            signal.is_set(),
+            "running target should be interrupted promptly"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut waiter)
+                .await
+                .is_err(),
+            "reload shutdown should stay pending until target leaves running"
+        );
+
+        {
+            let mut members = swarm_members.write().await;
+            members.get_mut("target").expect("target").status = "ready".to_string();
+        }
+        let _ = swarm_event_tx.send(SwarmEvent {
+            id: 1,
+            session_id: "target".to_string(),
+            session_name: None,
+            swarm_id: None,
+            event: SwarmEventType::StatusChange {
+                old_status: "running".to_string(),
+                new_status: "ready".to_string(),
+            },
+            timestamp: Instant::now(),
+            absolute_time: std::time::SystemTime::now(),
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should complete after target checkpoint")
+            .expect("waiter task should succeed");
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_sessions_ignores_unrelated_events_until_target_leaves() {
+        let sessions = Arc::new(RwLock::new(HashMap::new()));
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([
+            ("target".to_string(), member("target", "running")),
+            ("other".to_string(), member("other", "running")),
+        ])));
+        let signal = InterruptSignal::new();
+        let shutdown_signals =
+            Arc::new(RwLock::new(HashMap::from([("target".to_string(), signal)])));
+        let (swarm_event_tx, _) = broadcast::channel(8);
+
+        let mut waiter = tokio::spawn({
+            let sessions = sessions.clone();
+            let swarm_members = swarm_members.clone();
+            let shutdown_signals = shutdown_signals.clone();
+            let swarm_event_tx = swarm_event_tx.clone();
+            async move {
+                graceful_shutdown_sessions(
+                    &sessions,
+                    &swarm_members,
+                    &shutdown_signals,
+                    &swarm_event_tx,
+                )
+                .await;
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        {
+            let mut members = swarm_members.write().await;
+            members.get_mut("other").expect("other").status = "ready".to_string();
+        }
+        let _ = swarm_event_tx.send(SwarmEvent {
+            id: 1,
+            session_id: "other".to_string(),
+            session_name: None,
+            swarm_id: None,
+            event: SwarmEventType::StatusChange {
+                old_status: "running".to_string(),
+                new_status: "ready".to_string(),
+            },
+            timestamp: Instant::now(),
+            absolute_time: std::time::SystemTime::now(),
+        });
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut waiter)
+                .await
+                .is_err(),
+            "unrelated status changes should not unblock reload shutdown"
+        );
+
+        {
+            let mut members = swarm_members.write().await;
+            members.get_mut("target").expect("target").status = "stopped".to_string();
+        }
+        let _ = swarm_event_tx.send(SwarmEvent {
+            id: 2,
+            session_id: "target".to_string(),
+            session_name: None,
+            swarm_id: None,
+            event: SwarmEventType::StatusChange {
+                old_status: "running".to_string(),
+                new_status: "stopped".to_string(),
+            },
+            timestamp: Instant::now(),
+            absolute_time: std::time::SystemTime::now(),
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should complete after target transition")
+            .expect("waiter task should succeed");
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_sessions_treats_member_left_as_unblocked() {
+        let sessions = Arc::new(RwLock::new(HashMap::new()));
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([(
+            "target".to_string(),
+            member("target", "running"),
+        )])));
+        let signal = InterruptSignal::new();
+        let shutdown_signals =
+            Arc::new(RwLock::new(HashMap::from([("target".to_string(), signal)])));
+        let (swarm_event_tx, _) = broadcast::channel(8);
+
+        let waiter = tokio::spawn({
+            let sessions = sessions.clone();
+            let swarm_members = swarm_members.clone();
+            let shutdown_signals = shutdown_signals.clone();
+            let swarm_event_tx = swarm_event_tx.clone();
+            async move {
+                graceful_shutdown_sessions(
+                    &sessions,
+                    &swarm_members,
+                    &shutdown_signals,
+                    &swarm_event_tx,
+                )
+                .await;
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        {
+            let mut members = swarm_members.write().await;
+            members.remove("target");
+        }
+        let _ = swarm_event_tx.send(SwarmEvent {
+            id: 1,
+            session_id: "target".to_string(),
+            session_name: None,
+            swarm_id: None,
+            event: SwarmEventType::MemberChange {
+                action: "left".to_string(),
+            },
+            timestamp: Instant::now(),
+            absolute_time: std::time::SystemTime::now(),
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should complete after member leaves")
+            .expect("waiter task should succeed");
     }
 }

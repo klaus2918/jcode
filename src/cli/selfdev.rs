@@ -11,18 +11,24 @@ pub fn client_selfdev_requested() -> bool {
     std::env::var(CLIENT_SELFDEV_ENV).is_ok()
 }
 
-async fn wait_for_reloading_server(timeout: std::time::Duration) -> bool {
-    let start = std::time::Instant::now();
-    while start.elapsed() < timeout {
-        if super::dispatch::server_is_running().await {
-            return true;
+async fn wait_for_reloading_server() -> bool {
+    match crate::server::await_reload_handoff(
+        &crate::server::socket_path(),
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    {
+        crate::server::ReloadWaitStatus::Ready => true,
+        crate::server::ReloadWaitStatus::Failed(detail) => {
+            logging::warn(&format!(
+                "Reload handoff failed while resuming self-dev session: {}",
+                detail.unwrap_or_else(|| "unknown reload failure".to_string())
+            ));
+            false
         }
-        if !crate::server::reload_marker_active(std::time::Duration::from_secs(30)) {
-            return false;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        crate::server::ReloadWaitStatus::Idle => false,
+        crate::server::ReloadWaitStatus::Waiting { .. } => false,
     }
-    super::dispatch::server_is_running().await
 }
 
 pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) -> Result<()> {
@@ -97,8 +103,7 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
                     logging::info(
                         "Reload state=starting while resuming self-dev session; waiting for existing server to come back",
                     );
-                    server_running =
-                        wait_for_reloading_server(std::time::Duration::from_secs(20)).await;
+                    server_running = wait_for_reloading_server().await;
                 }
                 crate::server::ReloadPhase::Failed => {
                     logging::warn(&format!(
@@ -128,6 +133,7 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
 }
 #[cfg(test)]
 mod tests {
+    use super::wait_for_reloading_server;
     use crate::{provider, session, storage, tool};
     use std::ffi::OsString;
     use std::sync::Arc;
@@ -314,5 +320,61 @@ mod tests {
                 .join("sessions")
                 .join(format!("{}.json", session_id)),
         );
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_reloading_server_returns_false_when_reload_failed() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_socket = std::env::var_os("JCODE_SOCKET");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        let socket_path = temp.path().join("jcode.sock");
+        crate::server::set_socket_path(socket_path.to_str().expect("utf8 socket path"));
+        crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+        crate::server::write_reload_state(
+            "reload-test",
+            "hash",
+            crate::server::ReloadPhase::Failed,
+            Some("boom".to_string()),
+        );
+
+        assert!(!wait_for_reloading_server().await);
+
+        crate::server::clear_reload_marker();
+        if let Some(prev_socket) = prev_socket {
+            crate::env::set_var("JCODE_SOCKET", prev_socket);
+        } else {
+            crate::env::remove_var("JCODE_SOCKET");
+        }
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_reloading_server_returns_true_for_live_listener() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_socket = std::env::var_os("JCODE_SOCKET");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        let socket_path = temp.path().join("jcode.sock");
+        crate::server::set_socket_path(socket_path.to_str().expect("utf8 socket path"));
+        crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+        let _listener = crate::transport::Listener::bind(&socket_path).expect("bind listener");
+
+        assert!(wait_for_reloading_server().await);
+
+        if let Some(prev_socket) = prev_socket {
+            crate::env::set_var("JCODE_SOCKET", prev_socket);
+        } else {
+            crate::env::remove_var("JCODE_SOCKET");
+        }
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
     }
 }

@@ -33,35 +33,58 @@ pub struct ReloadContext {
 }
 
 impl ReloadContext {
-    pub fn path() -> Result<std::path::PathBuf> {
+    fn sanitize_session_id(session_id: &str) -> String {
+        session_id
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
+    pub fn path_for_session(session_id: &str) -> Result<std::path::PathBuf> {
+        let sanitized = Self::sanitize_session_id(session_id);
+        Ok(storage::jcode_dir()?.join(format!("reload-context-{}.json", sanitized)))
+    }
+
+    fn legacy_path() -> Result<std::path::PathBuf> {
         Ok(storage::jcode_dir()?.join("reload-context.json"))
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::path()?;
+        let path = Self::path_for_session(&self.session_id)?;
         storage::write_json(&path, self)?;
         Ok(())
     }
 
     pub fn load() -> Result<Option<Self>> {
-        let path = Self::path()?;
-        if path.exists() {
-            let ctx: Self = storage::read_json(&path)?;
-            // Delete after loading (one-time use)
-            let _ = std::fs::remove_file(&path);
-            Ok(Some(ctx))
-        } else {
-            Ok(None)
+        let legacy = Self::legacy_path()?;
+        if !legacy.exists() {
+            return Ok(None);
         }
+        let ctx: Self = storage::read_json(&legacy)?;
+        let _ = std::fs::remove_file(&legacy);
+        Ok(Some(ctx))
     }
 
     /// Peek at context for a specific session without consuming it.
     pub fn peek_for_session(session_id: &str) -> Result<Option<Self>> {
-        let path = Self::path()?;
-        if !path.exists() {
+        let session_path = Self::path_for_session(session_id)?;
+        if session_path.exists() {
+            let ctx: Self = storage::read_json(&session_path)?;
+            return Ok(Some(ctx));
+        }
+
+        let legacy = Self::legacy_path()?;
+        if !legacy.exists() {
             return Ok(None);
         }
-        let ctx: Self = storage::read_json(&path)?;
+
+        let ctx: Self = storage::read_json(&legacy)?;
         if ctx.session_id == session_id {
             Ok(Some(ctx))
         } else {
@@ -71,13 +94,21 @@ impl ReloadContext {
 
     /// Load context only if it belongs to the given session; consumes on success.
     pub fn load_for_session(session_id: &str) -> Result<Option<Self>> {
-        let path = Self::path()?;
-        if !path.exists() {
+        let session_path = Self::path_for_session(session_id)?;
+        if session_path.exists() {
+            let ctx: Self = storage::read_json(&session_path)?;
+            let _ = std::fs::remove_file(&session_path);
+            return Ok(Some(ctx));
+        }
+
+        let legacy = Self::legacy_path()?;
+        if !legacy.exists() {
             return Ok(None);
         }
-        let ctx: Self = storage::read_json(&path)?;
+
+        let ctx: Self = storage::read_json(&legacy)?;
         if ctx.session_id == session_id {
-            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(&legacy);
             Ok(Some(ctx))
         } else {
             Ok(None)
@@ -227,7 +258,7 @@ impl SelfDevTool {
         };
         crate::logging::info(&format!(
             "Saving reload context to {:?}",
-            ReloadContext::path()
+            ReloadContext::path_for_session(session_id)
         ));
         if let Err(e) = reload_ctx.save() {
             crate::logging::error(&format!("Failed to save reload context: {}", e));
@@ -547,11 +578,49 @@ mod tests {
 
     #[test]
     fn test_reload_context_path() {
-        // Just verify the path function works
-        let path = ReloadContext::path();
+        // Just verify the session-scoped path function works
+        let path = ReloadContext::path_for_session("test-session-123");
         assert!(path.is_ok());
         let path = path.unwrap();
-        assert!(path.to_string_lossy().contains("reload-context.json"));
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains("reload-context-test-session-123.json"));
+    }
+
+    #[test]
+    fn test_reload_context_save_and_load_for_session_uses_session_scoped_file() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp_home = tempfile::TempDir::new().expect("temp home");
+        let _home_guard = EnvVarGuard::set("JCODE_HOME", temp_home.path());
+
+        let ctx = ReloadContext {
+            task_context: Some("Testing scoped reload context".to_string()),
+            version_before: "v0.1.100".to_string(),
+            version_after: "abc1234".to_string(),
+            session_id: "test-session-123".to_string(),
+            timestamp: "2025-01-20T00:00:00Z".to_string(),
+        };
+
+        ctx.save().expect("save reload context");
+
+        let path = ReloadContext::path_for_session("test-session-123").expect("context path");
+        assert!(
+            path.exists(),
+            "session-scoped reload context file should exist"
+        );
+
+        let peeked = ReloadContext::peek_for_session("test-session-123")
+            .expect("peek should succeed")
+            .expect("context should exist");
+        assert_eq!(peeked.session_id, "test-session-123");
+
+        let loaded = ReloadContext::load_for_session("test-session-123")
+            .expect("load should succeed")
+            .expect("context should exist");
+        assert_eq!(loaded.session_id, "test-session-123");
+        assert!(
+            !path.exists(),
+            "load_for_session should consume the context file"
+        );
     }
 
     #[test]

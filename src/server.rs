@@ -303,6 +303,15 @@ pub fn clear_reload_marker() {
     let _ = std::fs::remove_file(reload_marker_path());
 }
 
+fn clear_reload_marker_if_stale_for_pid(current_pid: u32) {
+    if let Some(state) = ReloadState::load() {
+        if state.phase == ReloadPhase::Starting && state.pid == current_pid {
+            return;
+        }
+        clear_reload_marker();
+    }
+}
+
 pub fn reload_marker_exists() -> bool {
     reload_marker_path().exists()
 }
@@ -347,6 +356,217 @@ pub fn write_reload_state(
         detail,
     }
     .write();
+}
+
+pub fn publish_reload_socket_ready() {
+    let Some(state) = ReloadState::load() else {
+        return;
+    };
+
+    let current_pid = std::process::id();
+    if state.phase == ReloadPhase::Starting && state.pid == current_pid {
+        write_reload_state(
+            &state.request_id,
+            &state.hash,
+            ReloadPhase::SocketReady,
+            state.detail.clone(),
+        );
+        crate::logging::info(&format!(
+            "Published reload socket-ready state for request {}",
+            state.request_id
+        ));
+    } else if state.pid != current_pid {
+        clear_reload_marker();
+    }
+}
+
+pub fn reload_process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        if rc == 0 {
+            return true;
+        }
+        let err = std::io::Error::last_os_error();
+        return matches!(err.raw_os_error(), Some(libc::EPERM));
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReloadWaitStatus {
+    Ready,
+    Waiting { pid: Option<u32> },
+    Failed(Option<String>),
+    Idle,
+}
+
+pub async fn inspect_reload_wait_status(
+    socket_path: &std::path::Path,
+    max_age: Duration,
+    last_known_pid: Option<u32>,
+) -> ReloadWaitStatus {
+    if is_server_ready(socket_path).await || has_live_listener(socket_path).await {
+        return ReloadWaitStatus::Ready;
+    }
+
+    if let Some(state) = recent_reload_state(max_age) {
+        return match state.phase {
+            ReloadPhase::SocketReady => ReloadWaitStatus::Ready,
+            ReloadPhase::Failed => ReloadWaitStatus::Failed(state.detail),
+            ReloadPhase::Starting => {
+                if reload_process_alive(state.pid) {
+                    ReloadWaitStatus::Waiting {
+                        pid: Some(state.pid),
+                    }
+                } else {
+                    ReloadWaitStatus::Failed(Some(format!(
+                        "reload process {} exited before becoming ready",
+                        state.pid
+                    )))
+                }
+            }
+        };
+    }
+
+    if let Some(pid) = last_known_pid {
+        if reload_process_alive(pid) {
+            return ReloadWaitStatus::Waiting { pid: Some(pid) };
+        }
+    }
+
+    ReloadWaitStatus::Idle
+}
+
+pub async fn await_reload_handoff(
+    socket_path: &std::path::Path,
+    max_age: Duration,
+) -> ReloadWaitStatus {
+    let mut last_known_pid = None;
+
+    loop {
+        match inspect_reload_wait_status(socket_path, max_age, last_known_pid).await {
+            ReloadWaitStatus::Waiting { pid } => {
+                last_known_pid = pid;
+                wait_for_reload_handoff_event(pid, socket_path).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+pub async fn wait_for_reload_handoff_event(
+    reloading_pid: Option<u32>,
+    socket_path: &std::path::Path,
+) {
+    #[cfg(target_os = "linux")]
+    {
+        let marker_path = reload_marker_path();
+        let socket_path = socket_path.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            wait_for_reload_handoff_event_blocking(&marker_path, &socket_path, reloading_pid)
+        })
+        .await;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (reloading_pid, socket_path);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_reload_handoff_event_blocking(
+    marker_path: &std::path::Path,
+    socket_path: &std::path::Path,
+    reloading_pid: Option<u32>,
+) {
+    use std::collections::HashSet;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut watch_paths: HashSet<std::path::PathBuf> = HashSet::new();
+    if let Some(parent) = marker_path.parent() {
+        watch_paths.insert(parent.to_path_buf());
+    }
+    if let Some(parent) = socket_path.parent() {
+        watch_paths.insert(parent.to_path_buf());
+    }
+    if let Some(pid) = reloading_pid {
+        let proc_path = std::path::PathBuf::from(format!("/proc/{pid}"));
+        if proc_path.exists() {
+            watch_paths.insert(proc_path);
+        }
+    }
+
+    if watch_paths.is_empty() {
+        return;
+    }
+
+    unsafe {
+        let fd = libc::inotify_init1(libc::IN_CLOEXEC);
+        if fd < 0 {
+            return;
+        }
+
+        let mask = (libc::IN_CREATE
+            | libc::IN_MOVED_TO
+            | libc::IN_ATTRIB
+            | libc::IN_MODIFY
+            | libc::IN_CLOSE_WRITE
+            | libc::IN_DELETE
+            | libc::IN_MOVE_SELF
+            | libc::IN_DELETE_SELF) as u32;
+
+        let mut has_watch = false;
+        for path in watch_paths {
+            let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+                continue;
+            };
+            if libc::inotify_add_watch(fd, path.as_ptr(), mask) >= 0 {
+                has_watch = true;
+            }
+        }
+
+        if !has_watch {
+            let _ = libc::close(fd);
+            return;
+        }
+
+        let mut poll_fd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+
+        loop {
+            let ready = libc::poll(&mut poll_fd, 1, -1);
+            if ready > 0 && (poll_fd.revents & libc::POLLIN) != 0 {
+                let mut buf = [0u8; 512];
+                let _ = libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len());
+                break;
+            }
+            if ready < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break;
+            }
+        }
+
+        let _ = libc::close(fd);
+    }
 }
 
 fn sibling_socket_path(path: &std::path::Path) -> Option<PathBuf> {
@@ -415,8 +635,10 @@ fn mark_close_on_exec<T: std::os::fd::AsRawFd>(io: &T) {
 #[cfg(test)]
 mod socket_tests {
     use super::{
-        ReloadPhase, cleanup_socket_pair, reload_marker_active, reload_marker_path,
-        sibling_socket_path, write_reload_state,
+        ReloadPhase, ReloadState, ReloadWaitStatus, await_reload_handoff, cleanup_socket_pair,
+        clear_reload_marker, inspect_reload_wait_status, publish_reload_socket_ready,
+        reload_marker_active, reload_marker_path, reload_process_alive, sibling_socket_path,
+        write_reload_state,
     };
     use std::time::Duration;
 
@@ -463,6 +685,233 @@ mod socket_tests {
         std::thread::sleep(Duration::from_millis(5));
         assert!(!reload_marker_active(Duration::ZERO));
         assert!(!marker.exists(), "stale reload marker should be cleaned up");
+    }
+
+    #[test]
+    fn publish_reload_socket_ready_updates_current_process_marker() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
+        write_reload_state(
+            "test-request",
+            "test-hash",
+            ReloadPhase::Starting,
+            Some("detail".to_string()),
+        );
+        publish_reload_socket_ready();
+
+        let state = ReloadState::load().expect("reload state should exist");
+        assert_eq!(state.phase, ReloadPhase::SocketReady);
+        assert_eq!(state.request_id, "test-request");
+        assert_eq!(state.hash, "test-hash");
+        assert_eq!(state.detail.as_deref(), Some("detail"));
+
+        clear_reload_marker();
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
+    }
+
+    #[test]
+    fn publish_reload_socket_ready_clears_marker_for_foreign_pid() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
+        ReloadState {
+            request_id: "test-request".to_string(),
+            hash: "test-hash".to_string(),
+            phase: ReloadPhase::Starting,
+            pid: std::process::id().saturating_add(1_000_000),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            detail: None,
+        }
+        .write();
+
+        publish_reload_socket_ready();
+        assert!(
+            ReloadState::load().is_none(),
+            "foreign reload marker should be cleared"
+        );
+
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
+    }
+
+    #[tokio::test]
+    async fn inspect_reload_wait_status_reports_ready_for_socket_ready_marker() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
+        write_reload_state("test-request", "test-hash", ReloadPhase::SocketReady, None);
+
+        let socket_path = temp.path().join("missing.sock");
+        let status = inspect_reload_wait_status(&socket_path, Duration::from_secs(30), None).await;
+        assert_eq!(status, ReloadWaitStatus::Ready);
+
+        clear_reload_marker();
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
+    }
+
+    #[tokio::test]
+    async fn inspect_reload_wait_status_reports_idle_without_marker_or_listener() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp.path().join("missing.sock");
+
+        let status = inspect_reload_wait_status(&socket_path, Duration::from_secs(30), None).await;
+        assert_eq!(status, ReloadWaitStatus::Idle);
+    }
+
+    #[tokio::test]
+    async fn inspect_reload_wait_status_uses_last_known_pid_when_marker_missing() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp.path().join("missing.sock");
+
+        let status = inspect_reload_wait_status(
+            &socket_path,
+            Duration::from_secs(30),
+            Some(std::process::id()),
+        )
+        .await;
+        assert_eq!(
+            status,
+            ReloadWaitStatus::Waiting {
+                pid: Some(std::process::id())
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn inspect_reload_wait_status_reports_failed_when_reload_pid_is_dead() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+        let dead_pid = std::process::id().saturating_add(1_000_000);
+        assert!(
+            !reload_process_alive(dead_pid),
+            "test requires a definitely-dead pid"
+        );
+
+        ReloadState {
+            request_id: "test-request".to_string(),
+            hash: "test-hash".to_string(),
+            phase: ReloadPhase::Starting,
+            pid: dead_pid,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            detail: None,
+        }
+        .write();
+
+        let socket_path = temp.path().join("missing.sock");
+        let status = inspect_reload_wait_status(&socket_path, Duration::from_secs(30), None).await;
+        assert!(matches!(status, ReloadWaitStatus::Failed(Some(_))));
+
+        clear_reload_marker();
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
+    }
+
+    #[tokio::test]
+    async fn await_reload_handoff_returns_ready_after_marker_transition() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
+        ReloadState {
+            request_id: "test-request".to_string(),
+            hash: "test-hash".to_string(),
+            phase: ReloadPhase::Starting,
+            pid: std::process::id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            detail: None,
+        }
+        .write();
+
+        tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            write_reload_state("test-request", "test-hash", ReloadPhase::SocketReady, None);
+        });
+
+        let socket_path = temp.path().join("missing.sock");
+        let status = tokio::time::timeout(
+            Duration::from_secs(2),
+            await_reload_handoff(&socket_path, Duration::from_secs(30)),
+        )
+        .await
+        .expect("await reload handoff should finish");
+        assert_eq!(status, ReloadWaitStatus::Ready);
+
+        clear_reload_marker();
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
+    }
+
+    #[tokio::test]
+    async fn await_reload_handoff_returns_failed_after_marker_transition() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
+        ReloadState {
+            request_id: "test-request".to_string(),
+            hash: "test-hash".to_string(),
+            phase: ReloadPhase::Starting,
+            pid: std::process::id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            detail: None,
+        }
+        .write();
+
+        tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            write_reload_state(
+                "test-request",
+                "test-hash",
+                ReloadPhase::Failed,
+                Some("boom".to_string()),
+            );
+        });
+
+        let socket_path = temp.path().join("missing.sock");
+        let status = tokio::time::timeout(
+            Duration::from_secs(2),
+            await_reload_handoff(&socket_path, Duration::from_secs(30)),
+        )
+        .await
+        .expect("await reload handoff should finish");
+        assert_eq!(status, ReloadWaitStatus::Failed(Some("boom".to_string())));
+
+        clear_reload_marker();
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
     }
 }
 
@@ -1594,8 +2043,9 @@ impl Server {
             mark_close_on_exec(&debug_listener);
         }
 
-        // We successfully rebound the socket pair, so any reload handoff is complete.
-        clear_reload_marker();
+        // Preserve an in-flight reload marker for exec-based reloads owned by this
+        // process, but clear stale markers from unrelated/stale processes.
+        clear_reload_marker_if_stale_for_pid(std::process::id());
 
         // Restrict socket files to owner-only so other local users cannot connect.
         let _ = crate::platform::set_permissions_owner_only(&self.socket_path);
@@ -1660,11 +2110,13 @@ impl Server {
         let signal_sessions = Arc::clone(&self.sessions);
         let signal_swarm_members = Arc::clone(&self.swarm_members);
         let signal_shutdown_signals = Arc::clone(&self.shutdown_signals);
+        let signal_swarm_event_tx = self.swarm_event_tx.clone();
         tokio::spawn(async move {
             await_reload_signal(
                 signal_sessions,
                 signal_swarm_members,
                 signal_shutdown_signals,
+                signal_swarm_event_tx,
             )
             .await;
         });
@@ -2015,6 +2467,7 @@ impl Server {
 
         // Signal readiness to the spawning client only after the accept loops
         // are live, so a "ready" server can immediately handle requests.
+        publish_reload_socket_ready();
         signal_ready_fd();
 
         // Persist auxiliary discovery metadata after the server is already live.
@@ -2360,6 +2813,20 @@ impl Client {
         let request = Request::ResumeSession {
             id,
             session_id: session_id.to_string(),
+        };
+        let json = serde_json::to_string(&request)? + "\n";
+        self.writer.write_all(json.as_bytes()).await?;
+        Ok(id)
+    }
+
+    pub async fn notify_session(&mut self, session_id: &str, message: &str) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let request = Request::NotifySession {
+            id,
+            session_id: session_id.to_string(),
+            message: message.to_string(),
         };
         let json = serde_json::to_string(&request)? + "\n";
         self.writer.write_all(json.as_bytes()).await?;
