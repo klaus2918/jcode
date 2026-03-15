@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use chrono::{Local, Utc};
+use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -25,6 +25,8 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<chrono::DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_duration_ms: Option<u64>,
 }
 
 /// Cache control metadata for prompt caching
@@ -84,6 +86,7 @@ impl Message {
                 cache_control: None,
             }],
             timestamp: Some(Utc::now()),
+            tool_duration_ms: None,
         }
     }
 
@@ -100,6 +103,7 @@ impl Message {
             role: Role::User,
             content,
             timestamp: Some(Utc::now()),
+            tool_duration_ms: None,
         }
     }
 
@@ -111,10 +115,20 @@ impl Message {
                 cache_control: None,
             }],
             timestamp: Some(Utc::now()),
+            tool_duration_ms: None,
         }
     }
 
     pub fn tool_result(tool_use_id: &str, content: &str, is_error: bool) -> Self {
+        Self::tool_result_with_duration(tool_use_id, content, is_error, None)
+    }
+
+    pub fn tool_result_with_duration(
+        tool_use_id: &str,
+        content: &str,
+        is_error: bool,
+        tool_duration_ms: Option<u64>,
+    ) -> Self {
         Self {
             role: Role::User,
             content: vec![ContentBlock::ToolResult {
@@ -123,18 +137,62 @@ impl Message {
                 is_error: if is_error { Some(true) } else { None },
             }],
             timestamp: Some(Utc::now()),
+            tool_duration_ms,
         }
     }
 
-    /// Format a timestamp as a compact local-time string for injection into message content.
+    /// Format a timestamp deterministically in UTC for injection into model-visible content.
     pub fn format_timestamp(ts: &chrono::DateTime<Utc>) -> String {
-        let local = ts.with_timezone(&Local);
-        local.format("%H:%M:%S").to_string()
+        ts.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }
+
+    pub fn format_duration(duration_ms: u64) -> String {
+        match duration_ms {
+            0..=999 => format!("{}ms", duration_ms),
+            1_000..=9_999 => format!("{:.1}s", duration_ms as f64 / 1000.0),
+            10_000..=59_999 => format!("{}s", duration_ms / 1000),
+            _ => {
+                let total_seconds = duration_ms / 1000;
+                let minutes = total_seconds / 60;
+                let seconds = total_seconds % 60;
+                if seconds == 0 {
+                    format!("{}m", minutes)
+                } else {
+                    format!("{}m {}s", minutes, seconds)
+                }
+            }
+        }
+    }
+
+    fn should_skip_timestamp_injection(&self) -> bool {
+        self.content.iter().find_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.trim_start()),
+            _ => None,
+        })
+        .is_some_and(|text| text.starts_with("<system-reminder>"))
+    }
+
+    fn tool_result_tag(&self, ts: &chrono::DateTime<Utc>) -> String {
+        match self.tool_duration_ms {
+            Some(duration_ms) => {
+                let duration_ms_i64 = i64::try_from(duration_ms).unwrap_or(i64::MAX);
+                let start_ts = ts
+                    .checked_sub_signed(chrono::Duration::milliseconds(duration_ms_i64))
+                    .unwrap_or(*ts);
+                format!(
+                    "[tool timing: start={} finish={} duration={}]",
+                    Self::format_timestamp(&start_ts),
+                    Self::format_timestamp(ts),
+                    Self::format_duration(duration_ms)
+                )
+            }
+            None => format!("[{}]", Self::format_timestamp(ts)),
+        }
     }
 
     /// Return a copy of messages with timestamps injected into user-role text content.
-    /// Tool results get `[HH:MM:SS]` prepended to content.
-    /// Text messages get `[HH:MM:SS]` prepended to the first text block.
+    /// Tool results get a stable UTC timing header prepended to content.
+    /// User text messages get a stable UTC timestamp prepended to the first text block.
     pub fn with_timestamps(messages: &[Message]) -> Vec<Message> {
         messages
             .iter()
@@ -142,20 +200,21 @@ impl Message {
                 let Some(ts) = msg.timestamp else {
                     return msg.clone();
                 };
-                if msg.role != Role::User {
+                if msg.role != Role::User || msg.should_skip_timestamp_injection() {
                     return msg.clone();
                 }
-                let tag = format!("[{}]", Self::format_timestamp(&ts));
+                let text_tag = format!("[{}]", Self::format_timestamp(&ts));
+                let tool_result_tag = msg.tool_result_tag(&ts);
                 let mut msg = msg.clone();
                 let mut tagged = false;
                 for block in &mut msg.content {
                     match block {
                         ContentBlock::Text { text, .. } if !tagged => {
-                            *text = format!("{} {}", tag, text);
+                            *text = format!("{} {}", text_tag, text);
                             tagged = true;
                         }
                         ContentBlock::ToolResult { content, .. } if !tagged => {
-                            *content = format!("{} {}", tag, content);
+                            *content = format!("{} {}", tool_result_tag, content);
                             tagged = true;
                         }
                         _ => {}
@@ -573,5 +632,84 @@ mod tests {
     fn redact_secrets_leaves_normal_output_unchanged() {
         let input = "Found 5 files\nNo auth errors\nDone.";
         assert_eq!(redact_secrets(input), input);
+    }
+
+    #[test]
+    fn format_timestamp_is_stable_utc_rfc3339() {
+        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:13.250Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(Message::format_timestamp(&ts), "2025-03-15T02:24:13.250Z");
+    }
+
+    #[test]
+    fn with_timestamps_prepends_utc_prefix_to_user_text() {
+        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:03Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let stamped = Message::with_timestamps(&[Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+            timestamp: Some(ts),
+            tool_duration_ms: None,
+        }]);
+        match &stamped[0].content[0] {
+            ContentBlock::Text { text, .. } => {
+                assert_eq!(text, "[2025-03-15T02:24:03.000Z] hello");
+            }
+            other => panic!("expected text block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_timestamps_adds_tool_timing_header_with_duration() {
+        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:13Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let stamped = Message::with_timestamps(&[Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "ok".to_string(),
+                is_error: None,
+            }],
+            timestamp: Some(ts),
+            tool_duration_ms: Some(3_200),
+        }]);
+        match &stamped[0].content[0] {
+            ContentBlock::ToolResult { content, .. } => {
+                assert_eq!(
+                    content,
+                    "[tool timing: start=2025-03-15T02:24:09.800Z finish=2025-03-15T02:24:13.000Z duration=3.2s] ok"
+                );
+            }
+            other => panic!("expected tool result block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_timestamps_skips_internal_system_reminders() {
+        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:13Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let original = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "<system-reminder>\ninternal\n</system-reminder>".to_string(),
+                cache_control: None,
+            }],
+            timestamp: Some(ts),
+            tool_duration_ms: None,
+        };
+        let stamped = Message::with_timestamps(&[original.clone()]);
+        match &stamped[0].content[0] {
+            ContentBlock::Text { text, .. } => {
+                assert_eq!(text, "<system-reminder>\ninternal\n</system-reminder>");
+            }
+            other => panic!("expected text block, got {other:?}"),
+        }
     }
 }

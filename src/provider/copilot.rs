@@ -1172,6 +1172,7 @@ mod tests {
             role,
             content: blocks,
             timestamp: None,
+            tool_duration_ms: None,
         }
     }
 

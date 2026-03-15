@@ -1574,6 +1574,7 @@ mod tests {
                     cache_control: None,
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1594,6 +1595,7 @@ mod tests {
                     },
                 ],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             // Missing tool_results for tool_123 and tool_456!
         ];
@@ -1647,6 +1649,7 @@ mod tests {
                     cache_control: None,
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1656,6 +1659,7 @@ mod tests {
                     input: serde_json::json!({"command": "ls"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             Message {
                 role: Role::User,
@@ -1665,6 +1669,7 @@ mod tests {
                     is_error: Some(false),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
         ];
 
@@ -2148,6 +2153,7 @@ mod tests {
                     cache_control: None,
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             Message {
                 role: Role::Assistant,
@@ -2157,6 +2163,7 @@ mod tests {
                     input: serde_json::json!({"command": "ls"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             Message {
                 role: Role::User,
@@ -2166,6 +2173,7 @@ mod tests {
                     is_error: None,
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
         ];
 
@@ -2199,6 +2207,7 @@ mod tests {
                     cache_control: None,
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             Message {
                 role: Role::Assistant,
@@ -2208,6 +2217,7 @@ mod tests {
                     input: serde_json::json!({"command": "crash"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
         ];
 

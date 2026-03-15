@@ -145,6 +145,7 @@ fn handle_background_task_completed(app: &mut App, task: BackgroundTaskCompleted
                 cache_control: None,
             }],
             timestamp: Some(chrono::Utc::now()),
+            tool_duration_ms: None,
         });
         app.session.add_message_with_display_role(
             Role::User,

@@ -375,6 +375,7 @@ impl App {
                     role: Role::Assistant,
                     content: content_blocks,
                     timestamp: Some(chrono::Utc::now()),
+                    tool_duration_ms: None,
                 });
                 let message_id = self.session.add_message(Role::Assistant, content_clone);
                 let _ = self.session.save();
@@ -444,7 +445,7 @@ impl App {
                     .unwrap_or_else(|| self.session.id.clone());
 
                 // Check if SDK already executed this tool
-                let (output, is_error, tool_title) =
+                let (output, is_error, tool_title, tool_duration_ms) =
                     if let Some((sdk_content, sdk_is_error)) = sdk_tool_results.remove(&tc.id) {
                         // Use SDK result
                         Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
@@ -459,7 +460,7 @@ impl App {
                             },
                             title: None,
                         }));
-                        (sdk_content, sdk_is_error, None)
+                        (sdk_content, sdk_is_error, None, None)
                     } else {
                         // Execute locally
                         let ctx = ToolContext {
@@ -480,7 +481,9 @@ impl App {
                             title: None,
                         }));
 
+                        let tool_start = Instant::now();
                         let result = self.registry.execute(&tc.name, tc.input.clone(), ctx).await;
+                        let tool_duration_ms = tool_start.elapsed().as_millis() as u64;
                         crate::telemetry::record_tool_call();
                         match result {
                             Ok(o) => {
@@ -492,7 +495,7 @@ impl App {
                                     status: ToolStatus::Completed,
                                     title: o.title.clone(),
                                 }));
-                                (o.output, false, o.title)
+                                (o.output, false, o.title, Some(tool_duration_ms))
                             }
                             Err(e) => {
                                 crate::telemetry::record_tool_failure();
@@ -504,7 +507,7 @@ impl App {
                                     status: ToolStatus::Error,
                                     title: None,
                                 }));
-                                (format!("Error: {}", e), true, None)
+                                (format!("Error: {}", e), true, None, Some(tool_duration_ms))
                             }
                         }
                     };
@@ -520,14 +523,20 @@ impl App {
                     dm.title = tool_title;
                 }
 
-                self.add_provider_message(Message::tool_result(&tc.id, &output, is_error));
-                self.session.add_message(
+                self.add_provider_message(Message::tool_result_with_duration(
+                    &tc.id,
+                    &output,
+                    is_error,
+                    tool_duration_ms,
+                ));
+                self.session.add_message_with_duration(
                     Role::User,
                     vec![ContentBlock::ToolResult {
                         tool_use_id: tc.id.clone(),
                         content: output.clone(),
                         is_error: if is_error { Some(true) } else { None },
                     }],
+                    tool_duration_ms,
                 );
                 let _ = self.session.save();
             }
@@ -746,6 +755,7 @@ impl App {
                                                     role: Role::Assistant,
                                                     content: content_blocks,
                                                     timestamp: Some(chrono::Utc::now()),
+                                                    tool_duration_ms: None,
                                                 });
                                                 self.session.add_message(Role::Assistant, content_clone);
                                                 let _ = self.session.save();
@@ -806,6 +816,7 @@ impl App {
                                                     role: Role::Assistant,
                                                     content: content_blocks,
                                                     timestamp: Some(chrono::Utc::now()),
+                                                    tool_duration_ms: None,
                                                 });
                                             }
                                             // Add display message for partial response
@@ -1181,6 +1192,7 @@ impl App {
                     role: Role::Assistant,
                     content: content_blocks,
                     timestamp: Some(chrono::Utc::now()),
+                    tool_duration_ms: None,
                 });
                 let message_id = self.session.add_message(Role::Assistant, content_clone);
                 let _ = self.session.save();
@@ -1285,6 +1297,7 @@ impl App {
                             is_error: if sdk_is_error { Some(true) } else { None },
                         }],
                         timestamp: Some(chrono::Utc::now()),
+                        tool_duration_ms: None,
                     });
                     self.session.add_message(
                         Role::User,
@@ -1322,6 +1335,7 @@ impl App {
                 let registry = self.registry.clone();
                 let tool_name = tc.name.clone();
                 let tool_input = tc.input.clone();
+                let tool_start = Instant::now();
                 let mut tool_future = std::pin::pin!(registry.execute(&tool_name, tool_input, ctx));
 
                 // Subscribe to bus for subagent status updates
@@ -1430,6 +1444,7 @@ impl App {
 
                 self.subagent_status = None; // Clear status after tool completes
                 self.batch_progress = None; // Clear batch progress after tool completes
+                let tool_duration_ms = tool_start.elapsed().as_millis() as u64;
                 let (output, is_error, tool_title) = match result {
                     Ok(o) => {
                         Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
@@ -1466,14 +1481,20 @@ impl App {
                     dm.title = tool_title;
                 }
 
-                self.add_provider_message(Message::tool_result(&tc.id, &output, is_error));
-                self.session.add_message(
+                self.add_provider_message(Message::tool_result_with_duration(
+                    &tc.id,
+                    &output,
+                    is_error,
+                    Some(tool_duration_ms),
+                ));
+                self.session.add_message_with_duration(
                     Role::User,
                     vec![ContentBlock::ToolResult {
                         tool_use_id: tc.id.clone(),
                         content: output.clone(),
                         is_error: if is_error { Some(true) } else { None },
                     }],
+                    Some(tool_duration_ms),
                 );
                 let _ = self.session.save();
             }

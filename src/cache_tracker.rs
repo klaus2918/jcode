@@ -205,6 +205,7 @@ mod tests {
                 cache_control: None,
             }],
             timestamp: None,
+            tool_duration_ms: None,
         }
     }
 

@@ -2602,6 +2602,7 @@ mod tests {
                     input: json!({"action": "list"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             Message::tool_result("tool-1", "ok", false),
             Message {
@@ -2612,6 +2613,7 @@ mod tests {
                     is_error: Some(true),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
         ];
 

@@ -1046,6 +1046,7 @@ mod tests {
                     input: json!({"path":"README.md"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             Message {
                 role: Role::User,
@@ -1055,6 +1056,7 @@ mod tests {
                     is_error: None,
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
         ];
 

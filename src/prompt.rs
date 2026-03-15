@@ -402,9 +402,11 @@ For testing UI changes, use the debug_socket tool to spawn testers and capture v
 fn build_env_context() -> Option<String> {
     let mut lines = vec!["# Environment".to_string()];
 
-    // Current date
-    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-    lines.push(format!("Date: {}", date));
+    // Current time reference for model-visible timestamps.
+    let now_utc = chrono::Utc::now();
+    lines.push(format!("Date: {}", now_utc.format("%Y-%m-%d")));
+    lines.push(format!("Time: {} UTC", now_utc.format("%H:%M:%S")));
+    lines.push("Timezone: UTC".to_string());
 
     // Working directory
     if let Ok(cwd) = std::env::current_dir() {
@@ -605,5 +607,12 @@ mod tests {
         } else {
             crate::env::remove_var("JCODE_HOME");
         }
+    }
+
+    #[test]
+    fn test_dynamic_system_prompt_includes_time_and_timezone() {
+        let (split, _info) = build_system_prompt_split(None, &[], false, None, None);
+        assert!(split.dynamic_part.contains("Time: "));
+        assert!(split.dynamic_part.contains("Timezone: UTC"));
     }
 }

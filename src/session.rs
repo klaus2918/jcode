@@ -167,6 +167,7 @@ impl StoredMessage {
             role: self.role.clone(),
             content: self.content.clone(),
             timestamp: self.timestamp,
+            tool_duration_ms: self.tool_duration_ms,
         }
     }
 

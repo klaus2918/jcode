@@ -740,6 +740,7 @@ pub trait Provider: Send + Sync {
                 cache_control: None,
             }],
             timestamp: None,
+            tool_duration_ms: None,
         }];
 
         let response = self.complete(&messages, &[], system, None).await?;

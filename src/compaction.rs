@@ -993,6 +993,7 @@ impl CompactionManager {
                     role: Role::User,
                     content: vec![summary_block],
                     timestamp: None,
+                    tool_duration_ms: None,
                 });
 
                 // Clone only the active (non-compacted) messages
@@ -1023,6 +1024,7 @@ impl CompactionManager {
                     role: Role::User,
                     content: vec![summary_block],
                     timestamp: None,
+                    tool_duration_ms: None,
                 }]
             }
             None => Vec::new(),
@@ -1448,6 +1450,7 @@ mod tests {
                 cache_control: None,
             }],
             timestamp: None,
+            tool_duration_ms: None,
         }
     }
 
@@ -1800,6 +1803,7 @@ mod tests {
                     input: serde_json::json!({"command": "ls"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             Message {
                 role: Role::User,
@@ -1809,6 +1813,7 @@ mod tests {
                     is_error: Some(false),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             make_text_message(Role::Assistant, "I see the files"),
             make_text_message(Role::User, "thanks"),
@@ -1853,6 +1858,7 @@ mod tests {
                     input: serde_json::json!({"command": "cat bigfile"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             Message {
                 role: Role::User,
@@ -1862,6 +1868,7 @@ mod tests {
                     is_error: Some(false),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             make_text_message(Role::Assistant, "that's a big file"),
         ];
@@ -1898,6 +1905,7 @@ mod tests {
                 is_error: Some(false),
             }],
             timestamp: None,
+            tool_duration_ms: None,
         }];
         manager.notify_message_added();
 

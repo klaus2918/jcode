@@ -3737,6 +3737,7 @@ mod tests {
                     cache_control: None,
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             ChatMessage {
                 role: Role::Assistant,
@@ -3746,6 +3747,7 @@ mod tests {
                     input: serde_json::json!({"command": "ls"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
         ];
 
@@ -3787,6 +3789,7 @@ mod tests {
                     input: serde_json::json!({"command": "ls"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             ChatMessage::tool_result("call_1", "ok", false),
         ];
@@ -3820,6 +3823,7 @@ mod tests {
                     input: serde_json::json!({"command": "ls"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
         ];
 
@@ -3865,6 +3869,7 @@ mod tests {
                     input: serde_json::json!({"file_path": "screenshot.png"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             ChatMessage {
                 role: Role::User,
@@ -3886,6 +3891,7 @@ mod tests {
                     },
                 ],
                 timestamp: None,
+                tool_duration_ms: None,
             },
         ];
 
@@ -3950,6 +3956,7 @@ mod tests {
                     input: serde_json::json!({"command": "pwd"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             ChatMessage {
                 role: Role::Assistant,
@@ -3959,6 +3966,7 @@ mod tests {
                     input: serde_json::json!({"command": "whoami"}),
                 }],
                 timestamp: None,
+                tool_duration_ms: None,
             },
             ChatMessage::tool_result("call_b", "done", false),
         ];

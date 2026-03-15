@@ -378,6 +378,7 @@ impl App {
                         role: Role::User,
                         content: vec![tool_block.clone()],
                         timestamp: None,
+                        tool_duration_ms: None,
                     };
                     let stored_message = crate::session::StoredMessage {
                         id: id::new_id("message"),
@@ -452,6 +453,7 @@ impl App {
                 role: role.clone(),
                 content: kept_blocks.clone(),
                 timestamp: None,
+                tool_duration_ms: None,
             });
             self.push_display_message(DisplayMessage {
                 role: match role {
