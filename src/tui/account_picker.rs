@@ -2,8 +2,14 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
+
+const MODAL_BG: Color = Color::Rgb(18, 21, 30);
+const PANEL_BG: Color = Color::Rgb(24, 28, 40);
+const PANEL_BORDER: Color = Color::Rgb(90, 95, 110);
+const PANEL_BORDER_ACTIVE: Color = Color::Rgb(120, 140, 190);
+const PANEL_BORDER_INACTIVE: Color = Color::Rgb(70, 75, 90);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountProviderKind {
@@ -291,7 +297,9 @@ impl AccountPicker {
 
     pub fn render(&self, frame: &mut Frame) {
         let area = centered_rect(82, 65, frame.area());
-        frame.render_widget(Clear, area);
+
+        let background = Block::default().style(Style::default().bg(MODAL_BG));
+        frame.render_widget(background, area);
 
         let block = Block::default()
             .title(format!(" {} ", self.title))
@@ -313,7 +321,8 @@ impl AccountPicker {
                 Span::styled(" close/clear filter ", Style::default().fg(Color::DarkGray)),
             ]))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(90, 95, 110)));
+            .style(Style::default().bg(MODAL_BG))
+            .border_style(Style::default().fg(PANEL_BORDER));
         frame.render_widget(block, area);
 
         let inner = Rect {
@@ -366,10 +375,11 @@ impl AccountPicker {
                 },
             ))
             .borders(Borders::ALL)
+            .style(Style::default().bg(PANEL_BG))
             .border_style(Style::default().fg(if self.focus == FocusPane::List {
-                Color::Rgb(120, 140, 190)
+                PANEL_BORDER_ACTIVE
             } else {
-                Color::Rgb(70, 75, 90)
+                PANEL_BORDER_INACTIVE
             }));
 
         let mut list_lines = Vec::new();
@@ -440,10 +450,11 @@ impl AccountPicker {
                 },
             ))
             .borders(Borders::ALL)
+            .style(Style::default().bg(PANEL_BG))
             .border_style(Style::default().fg(if self.focus == FocusPane::Action {
-                Color::Rgb(120, 140, 190)
+                PANEL_BORDER_ACTIVE
             } else {
-                Color::Rgb(70, 75, 90)
+                PANEL_BORDER_INACTIVE
             }));
 
         let detail_lines = if let Some(item) = self.selected_item() {
@@ -504,7 +515,8 @@ impl AccountPicker {
                     Style::default().fg(Color::White),
                 ),
             ]),
-        ]);
+        ])
+        .style(Style::default().bg(MODAL_BG));
         frame.render_widget(footer, rows[2]);
     }
 }
