@@ -155,6 +155,18 @@ pub struct LoginCompleted {
     pub message: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct InputShellCompleted {
+    pub session_id: String,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub output: String,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub truncated: bool,
+    pub failed_to_start: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SidePanelUpdated {
     pub session_id: String,
@@ -185,6 +197,8 @@ pub enum BusEvent {
     UsageReport(Vec<crate::usage::ProviderUsage>),
     /// OAuth/login flow completed in the background
     LoginCompleted(LoginCompleted),
+    /// Local `!cmd` shell command completed from the input line
+    InputShellCompleted(InputShellCompleted),
     /// Update check status from background thread
     UpdateStatus(UpdateStatus),
     /// External dictation command completed with transcript text

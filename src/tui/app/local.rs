@@ -1,5 +1,5 @@
 use super::{App, DisplayMessage, ProcessingStatus, is_context_limit_error};
-use crate::bus::{BackgroundTaskCompleted, BackgroundTaskStatus, BusEvent};
+use crate::bus::{BackgroundTaskCompleted, BackgroundTaskStatus, BusEvent, InputShellCompleted};
 use crate::message::{ContentBlock, Message, Role};
 use crate::session::StoredDisplayRole;
 use anyhow::Result;
@@ -78,6 +78,9 @@ pub(super) fn handle_bus_event(app: &mut App, bus_event: std::result::Result<Bus
     match bus_event {
         Ok(BusEvent::BackgroundTaskCompleted(task)) => {
             handle_background_task_completed(app, task);
+        }
+        Ok(BusEvent::InputShellCompleted(shell)) => {
+            handle_input_shell_completed(app, shell);
         }
         Ok(BusEvent::UsageReport(results)) => {
             app.handle_usage_report(results);
@@ -196,6 +199,69 @@ fn format_background_task_notification(task: &BackgroundTaskCompleted) -> String
         task.output_preview,
         task.task_id,
     )
+}
+
+fn sanitize_fenced_block(text: &str) -> String {
+    text.replace("```", "``\u{200b}`")
+}
+
+fn format_input_shell_result(shell: &InputShellCompleted) -> String {
+    let status = if shell.failed_to_start {
+        "✗ failed to start".to_string()
+    } else if shell.exit_code == Some(0) {
+        "✓ exit 0".to_string()
+    } else if let Some(code) = shell.exit_code {
+        format!("✗ exit {}", code)
+    } else {
+        "✗ terminated".to_string()
+    };
+
+    let mut meta = vec![
+        status,
+        crate::message::Message::format_duration(shell.duration_ms),
+    ];
+    if let Some(cwd) = shell.cwd.as_deref() {
+        meta.push(format!("cwd `{}`", cwd));
+    }
+    if shell.truncated {
+        meta.push("truncated".to_string());
+    }
+
+    let mut message = format!(
+        "**Local shell** · {}\n\n```bash\n{}\n```",
+        meta.join(" · "),
+        sanitize_fenced_block(&shell.command)
+    );
+
+    if shell.output.trim().is_empty() {
+        message.push_str("\n\n_No output._");
+    } else {
+        message.push_str(&format!(
+            "\n\n```text\n{}\n```",
+            sanitize_fenced_block(shell.output.trim_end())
+        ));
+    }
+
+    message
+}
+
+fn handle_input_shell_completed(app: &mut App, shell: InputShellCompleted) {
+    if shell.session_id != app.session.id {
+        return;
+    }
+
+    let status_notice = if shell.failed_to_start {
+        "Shell command failed to start".to_string()
+    } else if shell.exit_code == Some(0) {
+        "Local shell command completed".to_string()
+    } else if let Some(code) = shell.exit_code {
+        format!("Local shell command failed (exit {})", code)
+    } else {
+        "Local shell command terminated".to_string()
+    };
+
+    app.push_display_message(DisplayMessage::system(format_input_shell_result(&shell)));
+    app.set_status_notice(status_notice);
 }
 
 fn finish_turn(app: &mut App) {
