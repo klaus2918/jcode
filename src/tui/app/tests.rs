@@ -354,6 +354,35 @@ fn test_account_command_opens_account_picker() {
 }
 
 #[test]
+fn test_account_switch_shorthand_switches_openai_account_by_label() {
+    let _guard = crate::storage::lock_test_env();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    crate::auth::codex::upsert_account(crate::auth::codex::OpenAiAccount {
+        label: "openai2".to_string(),
+        access_token: "acc".to_string(),
+        refresh_token: "ref".to_string(),
+        id_token: None,
+        account_id: Some("acct_openai2".to_string()),
+        expires_at: Some(now_ms + 60_000),
+        email: Some("user2@example.com".to_string()),
+    })
+    .unwrap();
+
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        app.input = "/account switch openai2".to_string();
+        app.submit_input();
+
+        assert_eq!(
+            crate::auth::codex::active_account_label().as_deref(),
+            Some("openai2")
+        );
+    });
+}
+
+#[test]
 fn test_account_picker_prompt_new_openai_label_cancel_clears_prompt() {
     let mut app = create_test_app();
     app.prompt_new_account_label(crate::tui::account_picker::AccountProviderKind::OpenAi);
@@ -688,7 +717,7 @@ fn test_pinned_diagram_not_shown_when_terminal_too_narrow() {
 }
 
 #[test]
-fn test_mouse_scroll_over_diff_pane_scrolls_side_panel() {
+fn test_mouse_scroll_over_diff_pane_scrolls_side_panel_without_changing_focus() {
     let mut app = create_test_app();
     app.diff_mode = crate::config::DiffDisplayMode::File;
     app.diff_pane_scroll = 5;
@@ -709,12 +738,12 @@ fn test_mouse_scroll_over_diff_pane_scrolls_side_panel() {
     });
 
     assert_eq!(app.diff_pane_scroll, 8);
-    assert!(app.diff_pane_focus);
+    assert!(!app.diff_pane_focus);
     assert!(!app.diff_pane_auto_scroll);
 }
 
 #[test]
-fn test_mouse_scroll_over_tool_side_panel_scrolls_shared_right_pane() {
+fn test_mouse_scroll_over_tool_side_panel_scrolls_shared_right_pane_without_changing_focus() {
     let mut app = create_test_app();
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app.diff_pane_scroll = 5;
@@ -747,8 +776,48 @@ fn test_mouse_scroll_over_tool_side_panel_scrolls_shared_right_pane() {
 
     assert!(scroll_only, "right-pane wheel scroll should be deferrable");
     assert_eq!(app.diff_pane_scroll, 8);
-    assert!(app.diff_pane_focus);
+    assert!(!app.diff_pane_focus);
     assert!(!app.diff_pane_auto_scroll);
+}
+
+#[test]
+fn test_mouse_scroll_over_tool_side_panel_keeps_typing_in_chat() {
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app.diff_pane_scroll = 5;
+    app.diff_pane_focus = false;
+    app.diff_pane_auto_scroll = true;
+    app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: "".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            content: "hello".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+
+    crate::tui::ui::record_layout_snapshot(
+        Rect::new(0, 0, 40, 20),
+        None,
+        Some(Rect::new(40, 0, 20, 20)),
+    );
+
+    let scroll_only = app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 45,
+        row: 5,
+        modifiers: KeyModifiers::empty(),
+    });
+    assert!(scroll_only);
+    assert!(!app.diff_pane_focus);
+
+    app.handle_key(KeyCode::Char('x'), KeyModifiers::empty())
+        .expect("typing into chat should succeed");
+
+    assert_eq!(app.input, "x");
 }
 
 #[test]
@@ -1474,28 +1543,46 @@ fn test_ctrl_tab_toggles_queue_mode() {
 }
 
 #[test]
-fn test_shift_enter_opposite_send_mode() {
+fn test_shift_enter_inserts_newline() {
     let mut app = create_test_app();
     app.is_processing = true;
 
-    // Default immediate mode: Shift+Enter should queue
+    app.handle_key(KeyCode::Char('h'), KeyModifiers::empty())
+        .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+    app.handle_key(KeyCode::Char('i'), KeyModifiers::empty())
+        .unwrap();
+
+    assert_eq!(app.input(), "h\ni");
+    assert_eq!(app.queued_count(), 0);
+    assert_eq!(app.interleave_message.as_deref(), None);
+}
+
+#[test]
+fn test_ctrl_enter_opposite_send_mode() {
+    let mut app = create_test_app();
+    app.is_processing = true;
+
+    // Default immediate mode: Ctrl+Enter should queue
     app.handle_key(KeyCode::Char('h'), KeyModifiers::empty())
         .unwrap();
     app.handle_key(KeyCode::Char('i'), KeyModifiers::empty())
         .unwrap();
-    app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
+        .unwrap();
 
     assert_eq!(app.queued_count(), 1);
     assert_eq!(app.interleave_message.as_deref(), None);
     assert!(app.input().is_empty());
 
-    // Queue mode: Shift+Enter should interleave (sets interleave_message, not queued)
+    // Queue mode: Ctrl+Enter should interleave (sets interleave_message, not queued)
     app.queue_mode = true;
     app.handle_key(KeyCode::Char('y'), KeyModifiers::empty())
         .unwrap();
     app.handle_key(KeyCode::Char('o'), KeyModifiers::empty())
         .unwrap();
-    app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
+        .unwrap();
 
     // Interleave now sets interleave_message instead of adding to queue
     assert_eq!(app.queued_count(), 1); // Still just "hi" in queue
@@ -1623,7 +1710,7 @@ fn test_ctrl_up_edits_queued_message() {
 fn test_ctrl_up_prefers_pending_interleave_for_editing() {
     let mut app = create_test_app();
     app.is_processing = true;
-    app.queue_mode = false; // Enter=interleave, Shift+Enter=queue
+    app.queue_mode = false; // Enter=interleave, Ctrl+Enter=queue
 
     for c in "urgent".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
@@ -1636,7 +1723,8 @@ fn test_ctrl_up_prefers_pending_interleave_for_editing() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
             .unwrap();
     }
-    app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
+        .unwrap();
 
     assert_eq!(app.interleave_message.as_deref(), Some("urgent"));
     assert_eq!(app.queued_count(), 1);
@@ -1729,21 +1817,24 @@ fn test_multiple_queued_messages() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
             .unwrap();
     }
-    app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
+        .unwrap();
 
     // Queue second message
     for c in "second".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
             .unwrap();
     }
-    app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
+        .unwrap();
 
     // Queue third message
     for c in "third".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
             .unwrap();
     }
-    app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
+        .unwrap();
 
     assert_eq!(app.queued_count(), 3);
     assert_eq!(app.queued_messages()[0], "first");
@@ -1771,7 +1862,7 @@ fn test_queue_message_combines_on_send() {
 fn test_interleave_message_separate_from_queue() {
     let mut app = create_test_app();
     app.is_processing = true;
-    app.queue_mode = false; // Default mode: Enter=interleave, Shift+Enter=queue
+    app.queue_mode = false; // Default mode: Enter=interleave, Ctrl+Enter=queue
 
     // Type and submit via Enter (should interleave, not queue)
     for c in "urgent".chars() {
@@ -1790,7 +1881,8 @@ fn test_interleave_message_separate_from_queue() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
             .unwrap();
     }
-    app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
+        .unwrap();
 
     // Interleave unchanged, one message queued
     assert_eq!(app.interleave_message.as_deref(), Some("urgent"));
@@ -2134,6 +2226,32 @@ fn test_handle_server_event_updates_connection_type() {
     );
 
     assert_eq!(app.connection_type.as_deref(), Some("websocket"));
+}
+
+#[test]
+fn test_handle_server_event_transcript_replace_updates_input() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.input = "old draft".to_string();
+    app.cursor_pos = app.input.len();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::Transcript {
+            text: "new dictated text".to_string(),
+            mode: crate::protocol::TranscriptMode::Replace,
+        },
+        &mut remote,
+    );
+
+    assert_eq!(app.input, "new dictated text");
+    assert_eq!(app.cursor_pos, app.input.len());
+    assert_eq!(
+        app.status_notice(),
+        Some("Transcript replaced input".to_string())
+    );
 }
 
 #[test]
@@ -3887,6 +4005,161 @@ fn test_remote_copy_badge_shortcut_supported() {
 }
 
 #[test]
+fn test_copy_selection_mode_toggle_shows_notification() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = create_copy_test_app();
+
+    render_and_snap(&app, &mut terminal);
+    app.handle_key(KeyCode::Char('y'), KeyModifiers::ALT)
+        .unwrap();
+
+    assert!(app.copy_selection_mode);
+
+    let text = render_and_snap(&app, &mut terminal);
+    assert!(
+        text.contains("Selection mode") || text.contains("Enter/Y copy"),
+        "expected selection mode notification, got: {}",
+        text
+    );
+}
+
+#[test]
+fn test_copy_selection_select_all_uses_rendered_chat_text_without_copy_badges() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = create_copy_test_app();
+
+    render_and_snap(&app, &mut terminal);
+    app.handle_key(KeyCode::Char('y'), KeyModifiers::ALT)
+        .unwrap();
+    assert!(app.select_all_in_copy_mode());
+
+    let selected = app
+        .current_copy_selection_text()
+        .expect("expected selected transcript text");
+    assert!(selected.contains("Show me some code"));
+    assert!(selected.contains("fn main() {"));
+    assert!(selected.contains("println!(\"hello\");"));
+    assert!(
+        !selected.contains("[Alt]"),
+        "selection should use chat text, not copy badge chrome: {}",
+        selected
+    );
+}
+
+#[test]
+fn test_copy_selection_mouse_drag_extracts_expected_multiline_range() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = create_copy_test_app();
+
+    render_and_snap(&app, &mut terminal);
+    app.handle_key(KeyCode::Char('y'), KeyModifiers::ALT)
+        .unwrap();
+
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+    let (visible_start, visible_end) =
+        crate::tui::ui::copy_viewport_visible_range().expect("visible copy range");
+
+    let mut fn_line = None;
+    let mut print_line = None;
+    for abs_line in visible_start..visible_end {
+        let text = crate::tui::ui::copy_viewport_line_text(abs_line).unwrap_or_default();
+        if text.contains("fn main() {") {
+            fn_line = Some((abs_line, text.clone()));
+        }
+        if text.contains("println!(\"hello\");") {
+            print_line = Some((abs_line, text));
+        }
+    }
+
+    let (fn_line_idx, fn_text) = fn_line.expect("fn line");
+    let (print_line_idx, print_text) = print_line.expect("println line");
+    let fn_col = fn_text.find("fn main() {").expect("fn column") as u16;
+    let _print_end_col = (print_text.find(");").expect("print end") + 2) as u16;
+
+    let base_y = layout.messages_area.y;
+    let start_row = base_y + (fn_line_idx - visible_start) as u16;
+    let end_row = base_y + (print_line_idx - visible_start) as u16;
+
+    let start_x = (layout.messages_area.x..layout.messages_area.x + layout.messages_area.width)
+        .find(|&column| {
+            crate::tui::ui::copy_viewport_point_from_screen(column, start_row)
+                .map(|point| point.abs_line == fn_line_idx && point.column == fn_col as usize)
+                .unwrap_or(false)
+        })
+        .expect("screen x for selection start");
+
+    let end_x = (layout.messages_area.x..layout.messages_area.x + layout.messages_area.width)
+        .filter_map(|column| {
+            crate::tui::ui::copy_viewport_point_from_screen(column, end_row)
+                .filter(|point| point.abs_line == print_line_idx)
+                .map(|point| (column, point.column))
+        })
+        .max_by_key(|(_, mapped_col)| *mapped_col)
+        .map(|(column, _)| column)
+        .expect("screen x for selection end");
+
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: start_x,
+        row: start_row,
+        modifiers: KeyModifiers::empty(),
+    });
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: end_x,
+        row: end_row,
+        modifiers: KeyModifiers::empty(),
+    });
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: end_x,
+        row: end_row,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    let selected = app
+        .current_copy_selection_text()
+        .expect("expected multiline selection");
+    let range = app.normalized_copy_selection().expect("normalized range");
+    assert_eq!(range.start.abs_line, fn_line_idx);
+    assert_eq!(range.end.abs_line, print_line_idx);
+    assert!(
+        selected.contains("fn main() {"),
+        "selection missing fn line: {selected}"
+    );
+    assert!(
+        selected.contains("println!(\"hello\");"),
+        "selection missing println line: {selected}"
+    );
+    assert!(!app.copy_selection_dragging);
+}
+
+#[test]
+fn test_copy_selection_copy_action_uses_clipboard_hook_and_exits_mode() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = create_copy_test_app();
+    let copied = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let copied_for_closure = copied.clone();
+
+    render_and_snap(&app, &mut terminal);
+    app.handle_key(KeyCode::Char('y'), KeyModifiers::ALT)
+        .unwrap();
+    assert!(app.select_all_in_copy_mode());
+
+    let success = app.copy_current_selection_to_clipboard_with(|text| {
+        *copied_for_closure.lock().unwrap() = text.to_string();
+        true
+    });
+
+    assert!(success);
+    assert!(!app.copy_selection_mode);
+    assert!(app.copy_selection_anchor.is_none());
+    assert!(app.copy_selection_cursor.is_none());
+    assert!(copied.lock().unwrap().contains("println!(\"hello\");"));
+    assert_eq!(app.status_notice(), Some("Copied selection".to_string()));
+}
+
+#[test]
 fn test_copy_badge_modifier_highlights_while_held() {
     let _render_lock = scroll_render_test_lock();
     let (mut app, mut terminal) = create_copy_test_app();
@@ -3973,6 +4246,31 @@ fn test_disconnected_key_handler_allows_typing_and_queueing() {
 }
 
 #[test]
+fn test_disconnected_shift_enter_inserts_newline() {
+    let mut app = create_test_app();
+
+    remote::handle_disconnected_key(&mut app, KeyCode::Char('h'), KeyModifiers::empty()).unwrap();
+    remote::handle_disconnected_key(&mut app, KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+    remote::handle_disconnected_key(&mut app, KeyCode::Char('i'), KeyModifiers::empty()).unwrap();
+
+    assert_eq!(app.input(), "h\ni");
+    assert!(app.queued_messages().is_empty());
+}
+
+#[test]
+fn test_disconnected_ctrl_enter_queues_for_reconnect() {
+    let mut app = create_test_app();
+
+    remote::handle_disconnected_key(&mut app, KeyCode::Char('h'), KeyModifiers::empty()).unwrap();
+    remote::handle_disconnected_key(&mut app, KeyCode::Char('i'), KeyModifiers::empty()).unwrap();
+    remote::handle_disconnected_key(&mut app, KeyCode::Enter, KeyModifiers::CONTROL).unwrap();
+
+    assert!(app.input.is_empty());
+    assert_eq!(app.queued_messages().len(), 1);
+    assert_eq!(app.queued_messages()[0], "hi");
+}
+
+#[test]
 fn test_disconnected_key_handler_restart_runs_locally() {
     let mut app = create_test_app();
     app.input = "/restart".to_string();
@@ -4038,6 +4336,44 @@ fn test_remote_scroll_cmd_j_k_fallback() {
     rt.block_on(app.handle_remote_key(down_code, down_mods, &mut remote))
         .unwrap();
     assert!(app.scroll_offset <= after_up);
+}
+
+#[test]
+fn test_remote_shift_enter_inserts_newline() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('h'), KeyModifiers::empty(), &mut remote))
+        .unwrap();
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::SHIFT, &mut remote))
+        .unwrap();
+    rt.block_on(app.handle_remote_key(KeyCode::Char('i'), KeyModifiers::empty(), &mut remote))
+        .unwrap();
+
+    assert_eq!(app.input(), "h\ni");
+    assert!(app.queued_messages().is_empty());
+}
+
+#[test]
+fn test_remote_ctrl_enter_queues_while_processing() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.is_processing = true;
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('h'), KeyModifiers::empty(), &mut remote))
+        .unwrap();
+    rt.block_on(app.handle_remote_key(KeyCode::Char('i'), KeyModifiers::empty(), &mut remote))
+        .unwrap();
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::CONTROL, &mut remote))
+        .unwrap();
+
+    assert!(app.input().is_empty());
+    assert_eq!(app.queued_messages().len(), 1);
+    assert_eq!(app.queued_messages()[0], "hi");
 }
 
 #[test]

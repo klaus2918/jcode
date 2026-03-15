@@ -406,6 +406,9 @@ impl App {
             picker_cell.borrow_mut().handle_overlay_mouse(mouse);
             return false;
         }
+        if let Some(scroll_only) = self.handle_copy_selection_mouse(mouse) {
+            return scroll_only;
+        }
         self.normalize_diagram_state();
         let diagram_available = self.diagram_available();
         let layout = super::super::ui::last_layout_snapshot();
@@ -549,8 +552,9 @@ impl App {
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
             )
         {
+            // Treat wheel scrolling over the shared right pane as hover-only.
+            // Users often want to keep typing in chat while inspecting pinned content.
             let amt = self.mouse_scroll_amount();
-            self.set_diff_pane_focus(true);
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     let current = if self.diff_pane_scroll == usize::MAX {
