@@ -1735,6 +1735,21 @@ pub fn find_active_session_id_by_pid(pid: u32) -> Option<String> {
     None
 }
 
+/// List active session IDs currently tracked in ~/.jcode/active_pids.
+pub fn active_session_ids() -> Vec<String> {
+    let Some(dir) = active_pids_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect()
+}
+
 /// Find a session by ID or memorable name
 /// If the input doesn't look like a full session ID (doesn't contain underscore followed by digits),
 /// try to find a session whose short name matches.

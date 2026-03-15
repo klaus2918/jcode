@@ -2,6 +2,20 @@ use super::*;
 use crate::tui::{backend, core, is_unexpected_cache_miss, ui};
 
 impl App {
+    pub(super) fn active_client_session_id(&self) -> Option<&str> {
+        if self.is_remote {
+            self.remote_session_id.as_deref()
+        } else {
+            Some(self.session.id.as_str())
+        }
+    }
+
+    pub(super) fn note_client_focus(&self) {
+        if let Some(session_id) = self.active_client_session_id() {
+            let _ = crate::dictation::remember_last_focused_session(session_id);
+        }
+    }
+
     pub fn display_messages(&self) -> &[DisplayMessage] {
         &self.display_messages
     }

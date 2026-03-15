@@ -330,7 +330,11 @@ pub(super) async fn handle_terminal_event(
 ) -> Result<()> {
     let mut needs_redraw = false;
     match event {
+        Some(Ok(Event::FocusGained)) => {
+            app.note_client_focus();
+        }
         Some(Ok(Event::Key(key))) => {
+            app.note_client_focus();
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                 handle_remote_key(app, key.code, key.modifiers, remote).await?;
@@ -341,10 +345,12 @@ pub(super) async fn handle_terminal_event(
             }
         }
         Some(Ok(Event::Paste(text))) => {
+            app.note_client_focus();
             app.handle_paste(text);
             needs_redraw = true;
         }
         Some(Ok(Event::Mouse(mouse))) => {
+            app.note_client_focus();
             handle_mouse_event(app, mouse);
             needs_redraw = true;
         }
@@ -600,7 +606,11 @@ fn handle_terminal_event_while_disconnected(
     let mut needs_redraw = false;
 
     match event {
+        Some(Ok(Event::FocusGained)) => {
+            app.note_client_focus();
+        }
         Some(Ok(Event::Key(key))) => {
+            app.note_client_focus();
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                 handle_disconnected_key(app, key.code, key.modifiers)?;
@@ -608,10 +618,12 @@ fn handle_terminal_event_while_disconnected(
             needs_redraw = true;
         }
         Some(Ok(Event::Paste(text))) => {
+            app.note_client_focus();
             app.handle_paste(text);
             needs_redraw = true;
         }
         Some(Ok(Event::Mouse(mouse))) => {
+            app.note_client_focus();
             handle_mouse_event(app, mouse);
             needs_redraw = true;
         }
@@ -1636,6 +1648,7 @@ pub(super) fn handle_server_event(
             remote.set_session_id(session_id.clone());
             app.remote_session_id = Some(session_id.clone());
             crate::set_current_session(&session_id);
+            app.note_client_focus();
             app.update_terminal_title();
             false
         }
@@ -1702,6 +1715,7 @@ pub(super) fn handle_server_event(
             remote.set_session_id(session_id.clone());
             app.remote_session_id = Some(session_id.clone());
             crate::set_current_session(&session_id);
+            app.note_client_focus();
             let session_changed = prev_session_id.as_deref() != Some(session_id.as_str());
 
             if session_changed {

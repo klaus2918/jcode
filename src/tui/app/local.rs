@@ -112,7 +112,12 @@ fn apply_terminal_event(
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<bool> {
     match event {
+        Some(Ok(Event::FocusGained)) => {
+            app.note_client_focus();
+            Ok(false)
+        }
         Some(Ok(Event::Key(key))) => {
+            app.note_client_focus();
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                 app.handle_key(key.code, key.modifiers)?;
@@ -120,10 +125,12 @@ fn apply_terminal_event(
             Ok(true)
         }
         Some(Ok(Event::Paste(text))) => {
+            app.note_client_focus();
             app.handle_paste(text);
             Ok(true)
         }
         Some(Ok(Event::Mouse(mouse))) => {
+            app.note_client_focus();
             app.handle_mouse_event(mouse);
             Ok(true)
         }
