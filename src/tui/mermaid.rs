@@ -2824,28 +2824,93 @@ pub fn error_to_lines(error: &str) -> Vec<Line<'static>> {
 /// Terminal-friendly theme (works on dark backgrounds)
 fn terminal_theme() -> Theme {
     Theme {
-        background: "#00000000".to_string(), // Fully transparent (RGBA)
+        // Catppuccin-inspired pastel dark theme tuned for jcode's terminal UI.
+        // Uses transparent canvas so the rendered PNG integrates with the TUI,
+        // while keeping nodes/labels readable against dark panes.
+        background: "#00000000".to_string(),
+        font_family:
+            "Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif".to_string(),
+        font_size: 15.0,
         primary_color: "#313244".to_string(),
         primary_text_color: "#cdd6f4".to_string(),
-        primary_border_color: "#585b70".to_string(),
-        line_color: "#7f849c".to_string(),
+        primary_border_color: "#b4befe".to_string(),
+        line_color: "#74c7ec".to_string(),
         secondary_color: "#45475a".to_string(),
-        tertiary_color: "#313244".to_string(),
-        edge_label_background: "#00000000".to_string(),
-        cluster_background: "#18182580".to_string(),
-        cluster_border: "#45475a".to_string(),
-        font_family: "monospace".to_string(),
-        font_size: 18.0,
+        tertiary_color: "#1e1e2e".to_string(),
+        edge_label_background: "#1e1e2eee".to_string(),
+        cluster_background: "#181825d9".to_string(),
+        cluster_border: "#6c7086".to_string(),
         text_color: "#cdd6f4".to_string(),
-        // Sequence diagram colors (dark theme)
+        // Sequence diagram colors: soft surfaces with pastel borders so actor
+        // boxes, notes, and activations remain distinct without becoming loud.
         sequence_actor_fill: "#313244".to_string(),
-        sequence_actor_border: "#585b70".to_string(),
+        sequence_actor_border: "#89b4fa".to_string(),
         sequence_actor_line: "#7f849c".to_string(),
         sequence_note_fill: "#45475a".to_string(),
-        sequence_note_border: "#585b70".to_string(),
-        sequence_activation_fill: "#313244".to_string(),
-        sequence_activation_border: "#7f849c".to_string(),
-        ..Theme::modern()
+        sequence_note_border: "#f9e2af".to_string(),
+        sequence_activation_fill: "#1e1e2e".to_string(),
+        sequence_activation_border: "#cba6f7".to_string(),
+        // Git/journey/mindmap accent cycle.
+        git_colors: [
+            "#b4befe".to_string(), // lavender
+            "#89b4fa".to_string(), // blue
+            "#94e2d5".to_string(), // teal
+            "#a6e3a1".to_string(), // green
+            "#f9e2af".to_string(), // yellow
+            "#fab387".to_string(), // peach
+            "#eba0ac".to_string(), // maroon
+            "#f5c2e7".to_string(), // pink
+        ],
+        git_inv_colors: [
+            "#cba6f7".to_string(), // mauve
+            "#74c7ec".to_string(), // sapphire
+            "#89dceb".to_string(), // sky
+            "#94e2d5".to_string(), // teal
+            "#fab387".to_string(), // peach
+            "#f38ba8".to_string(), // red
+            "#eba0ac".to_string(), // maroon
+            "#f2cdcd".to_string(), // flamingo
+        ],
+        git_branch_label_colors: [
+            "#1e1e2e".to_string(),
+            "#1e1e2e".to_string(),
+            "#1e1e2e".to_string(),
+            "#1e1e2e".to_string(),
+            "#1e1e2e".to_string(),
+            "#1e1e2e".to_string(),
+            "#1e1e2e".to_string(),
+            "#1e1e2e".to_string(),
+        ],
+        git_commit_label_color: "#cdd6f4".to_string(),
+        git_commit_label_background: "#313244".to_string(),
+        git_tag_label_color: "#1e1e2e".to_string(),
+        git_tag_label_background: "#b4befe".to_string(),
+        git_tag_label_border: "#cba6f7".to_string(),
+        pie_colors: [
+            "#cba6f7".to_string(), // mauve
+            "#b4befe".to_string(), // lavender
+            "#89b4fa".to_string(), // blue
+            "#74c7ec".to_string(), // sapphire
+            "#89dceb".to_string(), // sky
+            "#94e2d5".to_string(), // teal
+            "#a6e3a1".to_string(), // green
+            "#f9e2af".to_string(), // yellow
+            "#fab387".to_string(), // peach
+            "#eba0ac".to_string(), // maroon
+            "#f38ba8".to_string(), // red
+            "#f5c2e7".to_string(), // pink
+        ],
+        pie_title_text_size: 24.0,
+        pie_title_text_color: "#cdd6f4".to_string(),
+        pie_section_text_size: 15.0,
+        pie_section_text_color: "#1e1e2e".to_string(),
+        pie_legend_text_size: 15.0,
+        pie_legend_text_color: "#bac2de".to_string(),
+        pie_stroke_color: "#181825".to_string(),
+        pie_stroke_width: 1.4,
+        pie_outer_stroke_width: 1.6,
+        pie_outer_stroke_color: "#45475a".to_string(),
+        pie_opacity: 0.92,
     }
 }
 
@@ -2936,6 +3001,67 @@ pub fn clear_image_state() {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn terminal_theme_uses_catppuccin_palette() {
+        let theme = terminal_theme();
+
+        assert_eq!(theme.background, "#00000000");
+        assert_eq!(theme.primary_color, "#313244");
+        assert_eq!(theme.primary_border_color, "#b4befe");
+        assert_eq!(theme.line_color, "#74c7ec");
+        assert_eq!(theme.cluster_background, "#181825d9");
+        assert_eq!(theme.sequence_note_border, "#f9e2af");
+        assert_eq!(theme.git_colors[0], "#b4befe");
+        assert_eq!(theme.git_inv_colors[0], "#cba6f7");
+        assert_eq!(theme.git_branch_label_colors[0], "#1e1e2e");
+        assert_eq!(theme.pie_colors[0], "#cba6f7");
+        assert_eq!(theme.pie_colors[11], "#f5c2e7");
+        assert_eq!(theme.pie_section_text_color, "#1e1e2e");
+        assert!(theme.font_family.contains("Inter"));
+        assert!(!theme.font_family.contains('"'));
+    }
+
+    #[test]
+    fn terminal_theme_renders_common_diagram_types() {
+        let _lock = mermaid_render_test_lock();
+        clear_cache().ok();
+
+        let samples = [
+            (
+                "flowchart",
+                "flowchart LR\n    A[User prompt] --> B{Agent loop}\n    B --> C[Tool call]\n    B --> D[Model reply]",
+            ),
+            (
+                "sequence",
+                "sequenceDiagram\n    participant U as User\n    participant J as jcode\n    U->>J: Render mermaid preview\n    J-->>U: Styled diagram",
+            ),
+            (
+                "pie",
+                "pie showData\n    title Activity\n    \"Total\" : 145\n    \"Weekly\" : 113\n    \"Today\" : 3",
+            ),
+            (
+                "gitGraph",
+                "gitGraph\n    commit id: \"init\"\n    branch feature\n    checkout feature\n    commit id: \"theme\"\n    checkout main\n    merge feature\n    commit id: \"preview\"",
+            ),
+        ];
+
+        for (name, content) in samples {
+            match render_mermaid_untracked(content, Some(80)) {
+                RenderResult::Image {
+                    path,
+                    width,
+                    height,
+                    ..
+                } => {
+                    assert!(path.exists(), "{name}: expected rendered PNG at {path:?}");
+                    assert!(width > 0, "{name}: expected non-zero width");
+                    assert!(height > 0, "{name}: expected non-zero height");
+                }
+                RenderResult::Error(err) => panic!("{name}: expected render success, got {err}"),
+            }
+        }
+    }
 
     fn write_test_png(path: &Path, width: u32, height: u32) {
         let img = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 0]));
