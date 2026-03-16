@@ -687,7 +687,33 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
         }
     };
 
+    if let Some(selection) = app.copy_selection_status() {
+        let pane_label = selection.pane.label();
+        let label = if selection.has_selection {
+            if selection.selected_lines > 1 {
+                format!(
+                    "{} selection · {} chars · {} lines · Enter/Y copy · Esc exit",
+                    pane_label, selection.selected_chars, selection.selected_lines
+                )
+            } else {
+                format!(
+                    "{} selection · {} chars · Enter/Y copy · Esc exit",
+                    pane_label, selection.selected_chars
+                )
+            }
+        } else if selection.dragging {
+            format!(
+                "{} selection · dragging… · Enter/Y copy · Esc exit",
+                pane_label
+            )
+        } else {
+            format!("{} selection · drag to copy", pane_label)
+        };
+        spans.push(Span::styled(label, Style::default().fg(rgb(140, 220, 200))));
+    }
+
     if let Some(notice) = app.status_notice() {
+        push_sep(&mut spans);
         spans.push(Span::styled(notice, Style::default().fg(accent_color())));
     }
 
@@ -843,9 +869,9 @@ pub(super) fn draw_input(
     } else if app.is_processing() && !input_text.is_empty() {
         hint_shown = true;
         let hint = if app.queue_mode() {
-            "  Shift+Enter to send now"
+            "  Ctrl+Enter to send now"
         } else {
-            "  Shift+Enter to queue"
+            "  Ctrl+Enter to queue"
         };
         hint_line = Some(hint.trim().to_string());
         lines.push(Line::from(Span::styled(

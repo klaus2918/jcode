@@ -212,8 +212,12 @@ pub(super) fn draw_messages(
         left_widths: vec![0; prompt_preview_lines as usize],
         centered: content_margins.centered,
     };
-    margins.right_widths.extend(content_margins.right_widths);
-    margins.left_widths.extend(content_margins.left_widths);
+    margins
+        .right_widths
+        .extend(content_margins.right_widths.clone());
+    margins
+        .left_widths
+        .extend(content_margins.left_widths.clone());
     while margins.right_widths.len() < viewport_height {
         margins.right_widths.push(0);
     }
@@ -225,7 +229,13 @@ pub(super) fn draw_messages(
     let copy_badge_ui = app.copy_badge_ui();
     let copy_badge_now = std::time::Instant::now();
 
-    record_copy_viewport_snapshot(wrapped_lines, scroll, visible_end, content_area, &[]);
+    record_copy_viewport_snapshot(
+        wrapped_lines,
+        scroll,
+        visible_end,
+        content_area,
+        &content_margins.left_widths,
+    );
 
     let mut visible_copy_targets: Vec<VisibleCopyTarget> = Vec::new();
     let mut badge_assignments: Vec<(usize, char)> = Vec::new();
@@ -390,35 +400,35 @@ pub(super) fn draw_messages(
         }
     }
 
-    if app.copy_selection_mode() {
-        if let Some(range) = app.copy_selection_range() {
-            let (start, end) = if (range.start.abs_line, range.start.column)
-                <= (range.end.abs_line, range.end.column)
-            {
-                (range.start, range.end)
-            } else {
-                (range.end, range.start)
-            };
+    if let Some(range) = app.copy_selection_range().filter(|range| {
+        range.start.pane == crate::tui::CopySelectionPane::Chat
+            && range.end.pane == crate::tui::CopySelectionPane::Chat
+    }) {
+        let (start, end) = if (range.start.abs_line, range.start.column)
+            <= (range.end.abs_line, range.end.column)
+        {
+            (range.start, range.end)
+        } else {
+            (range.end, range.start)
+        };
 
-            for abs_idx in
-                start.abs_line.max(scroll)..=end.abs_line.min(visible_end.saturating_sub(1))
-            {
-                let rel_idx = abs_idx.saturating_sub(scroll);
-                if let Some(line) = visible_lines.get_mut(rel_idx) {
-                    let start_col = if abs_idx == start.abs_line {
-                        start.column
-                    } else {
-                        0
-                    };
-                    let end_col = if abs_idx == end.abs_line {
-                        end.column
-                    } else {
-                        copy_viewport_line_text(abs_idx)
-                            .map(|text| UnicodeWidthStr::width(text.as_str()))
-                            .unwrap_or_else(|| line.width())
-                    };
-                    *line = highlight_line_selection(line, start_col, end_col);
-                }
+        for abs_idx in start.abs_line.max(scroll)..=end.abs_line.min(visible_end.saturating_sub(1))
+        {
+            let rel_idx = abs_idx.saturating_sub(scroll);
+            if let Some(line) = visible_lines.get_mut(rel_idx) {
+                let start_col = if abs_idx == start.abs_line {
+                    start.column
+                } else {
+                    0
+                };
+                let end_col = if abs_idx == end.abs_line {
+                    end.column
+                } else {
+                    copy_viewport_line_text(abs_idx)
+                        .map(|text| UnicodeWidthStr::width(text.as_str()))
+                        .unwrap_or_else(|| line.width())
+                };
+                *line = highlight_line_selection(line, start_col, end_col);
             }
         }
     }

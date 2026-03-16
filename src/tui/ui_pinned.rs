@@ -1,6 +1,115 @@
 use super::*;
 use crate::tui::mermaid;
 
+fn selection_bg_for(base_bg: Option<Color>) -> Color {
+    let fallback = rgb(32, 38, 48);
+    blend_color(base_bg.unwrap_or(fallback), accent_color(), 0.34)
+}
+
+fn selection_fg_for(base_fg: Option<Color>) -> Option<Color> {
+    base_fg.map(|fg| blend_color(fg, Color::White, 0.15))
+}
+
+fn highlight_line_selection(
+    line: &Line<'static>,
+    start_col: usize,
+    end_col: usize,
+) -> Line<'static> {
+    if end_col <= start_col {
+        return line.clone();
+    }
+
+    let mut rebuilt: Vec<Span<'static>> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_style: Option<Style> = None;
+    let mut col = 0usize;
+
+    let flush = |rebuilt: &mut Vec<Span<'static>>, text: &mut String, style: &mut Option<Style>| {
+        if !text.is_empty() {
+            let span = match style.take() {
+                Some(style) => Span::styled(std::mem::take(text), style),
+                None => Span::raw(std::mem::take(text)),
+            };
+            rebuilt.push(span);
+        }
+    };
+
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            let selected = if width == 0 {
+                col > start_col && col <= end_col
+            } else {
+                col < end_col && col.saturating_add(width) > start_col
+            };
+
+            let mut style = span.style;
+            if selected {
+                style = style.bg(selection_bg_for(style.bg));
+                if let Some(fg) = selection_fg_for(style.fg) {
+                    style = style.fg(fg);
+                }
+            }
+
+            if current_style == Some(style) {
+                current_text.push(ch);
+            } else {
+                flush(&mut rebuilt, &mut current_text, &mut current_style);
+                current_text.push(ch);
+                current_style = Some(style);
+            }
+
+            col = col.saturating_add(width);
+        }
+    }
+
+    flush(&mut rebuilt, &mut current_text, &mut current_style);
+
+    Line {
+        spans: rebuilt,
+        style: line.style,
+        alignment: line.alignment,
+    }
+}
+
+fn apply_side_selection_highlight(
+    app: &dyn TuiState,
+    visible_lines: &mut [Line<'static>],
+    scroll: usize,
+) {
+    let Some(range) = app.copy_selection_range().filter(|range| {
+        range.start.pane == crate::tui::CopySelectionPane::SidePane
+            && range.end.pane == crate::tui::CopySelectionPane::SidePane
+    }) else {
+        return;
+    };
+
+    let (start, end) =
+        if (range.start.abs_line, range.start.column) <= (range.end.abs_line, range.end.column) {
+            (range.start, range.end)
+        } else {
+            (range.end, range.start)
+        };
+
+    let visible_end = scroll.saturating_add(visible_lines.len());
+    for abs_idx in start.abs_line.max(scroll)..=end.abs_line.min(visible_end.saturating_sub(1)) {
+        let rel_idx = abs_idx.saturating_sub(scroll);
+        if let Some(line) = visible_lines.get_mut(rel_idx) {
+            let start_col = if abs_idx == start.abs_line {
+                start.column
+            } else {
+                0
+            };
+            let end_col = if abs_idx == end.abs_line {
+                end.column
+            } else {
+                line.width()
+            };
+            *line = highlight_line_selection(line, start_col, end_col);
+        }
+    }
+}
+
 /// Format tokens compactly (1.2M, 45K, 123)
 fn format_tokens_compact(tokens: u64) -> String {
     if tokens >= 1_000_000 {
@@ -312,6 +421,7 @@ fn get_image_dimensions_from_path(path: &std::path::Path) -> Option<(u32, u32)> 
 pub(super) fn draw_pinned_content_cached(
     frame: &mut Frame,
     area: Rect,
+    app: &dyn TuiState,
     scroll: usize,
     line_wrap: bool,
     focused: bool,
@@ -545,13 +655,20 @@ pub(super) fn draw_pinned_content_cached(
     let clamped_scroll = scroll.min(max_scroll);
     LAST_DIFF_PANE_EFFECTIVE_SCROLL.store(clamped_scroll, Ordering::Relaxed);
 
-    let visible_lines: Vec<Line<'static>> = rendered
+    let mut visible_lines: Vec<Line<'static>> = rendered
         .lines
         .iter()
         .skip(clamped_scroll)
         .take(inner.height as usize)
         .cloned()
         .collect();
+    record_side_pane_snapshot(
+        &rendered.lines,
+        clamped_scroll,
+        clamped_scroll + visible_lines.len(),
+        inner,
+    );
+    apply_side_selection_highlight(app, &mut visible_lines, clamped_scroll);
 
     let paragraph = if line_wrap {
         Paragraph::new(visible_lines).wrap(Wrap { trim: false })
@@ -595,6 +712,7 @@ pub(super) fn draw_pinned_content_cached(
 pub(super) fn draw_side_panel_markdown(
     frame: &mut Frame,
     area: Rect,
+    app: &dyn TuiState,
     snapshot: &crate::side_panel::SidePanelSnapshot,
     scroll: usize,
     focused: bool,
@@ -651,13 +769,20 @@ pub(super) fn draw_side_panel_markdown(
     let clamped_scroll = scroll.min(max_scroll);
     LAST_DIFF_PANE_EFFECTIVE_SCROLL.store(clamped_scroll, Ordering::Relaxed);
 
-    let visible_lines: Vec<Line<'static>> = rendered
+    let mut visible_lines: Vec<Line<'static>> = rendered
         .lines
         .iter()
         .skip(clamped_scroll)
         .take(inner.height as usize)
         .cloned()
         .collect();
+    record_side_pane_snapshot(
+        &rendered.lines,
+        clamped_scroll,
+        clamped_scroll + visible_lines.len(),
+        inner,
+    );
+    apply_side_selection_highlight(app, &mut visible_lines, clamped_scroll);
     frame.render_widget(Paragraph::new(visible_lines), inner);
 
     if has_protocol {
@@ -727,8 +852,10 @@ fn render_side_panel_markdown_cached(
     let saved_centered = markdown::center_code_blocks();
     markdown::set_diagram_mode_override(Some(crate::config::DiagramDisplayMode::None));
     markdown::set_center_code_blocks(centered);
-    let rendered_markdown =
-        markdown::render_markdown_with_width(&page.content, Some(inner.width as usize));
+    let rendered_markdown = wrap_side_panel_markdown_lines(
+        markdown::render_markdown_with_width(&page.content, Some(inner.width as usize)),
+        inner.width as usize,
+    );
     markdown::set_center_code_blocks(saved_centered);
     markdown::set_diagram_mode_override(saved_override);
 
@@ -787,6 +914,28 @@ fn render_side_panel_markdown_cached(
     cache.rendered = Some(rendered.clone());
 
     rendered
+}
+
+fn wrap_side_panel_markdown_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .flat_map(|line| {
+            if is_rendered_table_line(&line) {
+                vec![line]
+            } else {
+                markdown::wrap_line(line, width)
+            }
+        })
+        .collect()
+}
+
+fn is_rendered_table_line(line: &Line<'_>) -> bool {
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    text.contains(" │ ") || text.contains("─┼─")
 }
 
 fn estimate_side_panel_image_rows(
@@ -1041,6 +1190,70 @@ mod tests {
                 "image should not consume the full side-panel height when trailing text exists"
             );
         }
+    }
+
+    #[test]
+    fn render_side_panel_markdown_wraps_long_text_lines() {
+        let page = crate::side_panel::SidePanelPage {
+            id: "wrap_demo".to_string(),
+            title: "Wrap Demo".to_string(),
+            file_path: "wrap_demo.md".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            content: "This is a deliberately long side panel line that should wrap instead of overflowing the pane.".to_string(),
+            updated_at_ms: 1,
+        };
+
+        let rendered =
+            render_side_panel_markdown_cached(&page, Rect::new(0, 0, 18, 30), false, false);
+
+        let non_empty: Vec<&Line<'_>> = rendered
+            .lines
+            .iter()
+            .filter(|line| line.width() > 0)
+            .collect();
+
+        assert!(
+            non_empty.len() >= 2,
+            "expected long side panel text to wrap: {:?}",
+            rendered.lines
+        );
+        assert!(
+            non_empty.iter().all(|line| line.width() <= 18),
+            "expected wrapped side panel lines to fit width 18: {:?}",
+            rendered.lines
+        );
+    }
+
+    #[test]
+    fn render_side_panel_markdown_keeps_table_rows_intact() {
+        let page = crate::side_panel::SidePanelPage {
+            id: "table_demo".to_string(),
+            title: "Table Demo".to_string(),
+            file_path: "table_demo.md".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            content: "| # | Principle | Story Ready |\n| - | - | - |\n| 1 | Customer Obsession | unchecked |".to_string(),
+            updated_at_ms: 1,
+        };
+
+        let rendered =
+            render_side_panel_markdown_cached(&page, Rect::new(0, 0, 24, 20), false, false);
+        let text: Vec<String> = rendered
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        assert!(
+            text.iter().any(|line| line.contains("─┼─")),
+            "expected separator line to remain intact: {:?}",
+            text
+        );
+        assert!(
+            text.iter()
+                .any(|line| line.matches('│').count() == 2 && line.contains("Cust")),
+            "expected a single intact table row line: {:?}",
+            text
+        );
     }
 }
 

@@ -28,6 +28,43 @@ use ratatui::prelude::Frame;
 use ratatui::text::Line;
 use std::time::Duration;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopySelectionPane {
+    Chat,
+    SidePane,
+}
+
+impl CopySelectionPane {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Chat => "Chat",
+            Self::SidePane => "Side pane",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CopySelectionPoint {
+    pub pane: CopySelectionPane,
+    pub abs_line: usize,
+    pub column: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CopySelectionRange {
+    pub start: CopySelectionPoint,
+    pub end: CopySelectionPoint,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopySelectionStatus {
+    pub pane: CopySelectionPane,
+    pub has_selection: bool,
+    pub selected_chars: usize,
+    pub selected_lines: usize,
+    pub dragging: bool,
+}
+
 /// Enable Kitty keyboard protocol for unambiguous key reporting.
 /// Returns true if successfully enabled, false if the terminal doesn't support it.
 pub fn enable_keyboard_enhancement() -> bool {
@@ -116,6 +153,8 @@ pub trait TuiState {
     fn connected_clients(&self) -> Option<usize>;
     /// Short-lived notice shown in the status line (e.g., model switch, toggle diff)
     fn status_notice(&self) -> Option<String>;
+    /// Optional configured keybinding label for external dictation.
+    fn dictation_key_label(&self) -> Option<String>;
     /// Time since app started (for startup animations)
     fn animation_elapsed(&self) -> f32;
     /// Time remaining until rate limit resets (if rate limited)
@@ -187,6 +226,12 @@ pub trait TuiState {
     fn now_millis(&self) -> u64;
     /// UI state for live copy badge highlighting / feedback
     fn copy_badge_ui(&self) -> crate::tui::CopyBadgeUiState;
+    /// Whether modal in-app copy selection mode is active.
+    fn copy_selection_mode(&self) -> bool;
+    /// Current in-app copy selection range, if any.
+    fn copy_selection_range(&self) -> Option<CopySelectionRange>;
+    /// Persistent status for in-app copy selection mode.
+    fn copy_selection_status(&self) -> Option<CopySelectionStatus>;
     /// Suggestion prompts for new users (shown in initial empty state).
     /// Returns (label, prompt_text) pairs. Empty if user is experienced or not authenticated.
     fn suggestion_prompts(&self) -> Vec<(String, String)>;
@@ -194,6 +239,9 @@ pub trait TuiState {
     fn cache_ttl_status(&self) -> Option<CacheTtlInfo>;
     /// Whether the notification line has content to show
     fn has_notification(&self) -> bool {
+        if self.copy_selection_status().is_some() {
+            return true;
+        }
         if self.status_notice().is_some() {
             return true;
         }

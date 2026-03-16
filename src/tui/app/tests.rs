@@ -1848,7 +1848,10 @@ fn test_handle_server_event_input_shell_result_renders_markdown_blocks() {
     assert!(rendered.content.contains("pwd"));
     assert!(rendered.content.contains("```text"));
     assert!(rendered.content.contains("/tmp/project"));
-    assert_eq!(app.status_notice(), Some("Shell command completed".to_string()));
+    assert_eq!(
+        app.status_notice(),
+        Some("Shell command completed".to_string())
+    );
 }
 
 #[test]
@@ -4133,7 +4136,7 @@ fn test_copy_selection_mode_toggle_shows_notification() {
 
     let text = render_and_snap(&app, &mut terminal);
     assert!(
-        text.contains("Selection mode") || text.contains("Enter/Y copy"),
+        text.contains("Enter/Y copy") || text.contains("drag to copy"),
         "expected selection mode notification, got: {}",
         text
     );
@@ -5052,4 +5055,36 @@ fn test_scroll_round_trip() {
 
     // Verify we're back at the bottom and rendering still succeeds.
     let _text_restored = render_and_snap(&app, &mut terminal);
+}
+
+#[test]
+fn test_copy_selection_from_bottom_rebases_scroll_instead_of_jumping_to_top() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = create_scroll_test_app(80, 25, 0, 40);
+
+    let bottom_text = render_and_snap(&app, &mut terminal);
+    let max_scroll = crate::tui::ui::last_max_scroll();
+    assert!(max_scroll > 0, "expected scrollable history for selection test");
+    assert!(
+        !bottom_text.contains("Intro line 01"),
+        "bottom viewport should not start at top before selection"
+    );
+
+    app.handle_key(KeyCode::Char('y'), KeyModifiers::ALT)
+        .expect("enter copy mode");
+    app.handle_key(KeyCode::Right, KeyModifiers::empty())
+        .expect("move selection cursor");
+
+    assert!(app.copy_selection_mode, "copy selection mode should remain active");
+    assert!(app.auto_scroll_paused, "selection should pause auto-follow");
+    assert_eq!(
+        app.scroll_offset, max_scroll,
+        "selection should preserve the current bottom viewport when pausing auto-follow"
+    );
+
+    let selected_text = render_and_snap(&app, &mut terminal);
+    assert!(
+        !selected_text.contains("Intro line 01"),
+        "starting selection from bottom should not teleport to the top"
+    );
 }

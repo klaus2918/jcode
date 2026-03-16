@@ -293,14 +293,23 @@ impl App {
         if diagram_available {
             match code {
                 KeyCode::Left => {
+                    if !self.diagram_focus {
+                        return false;
+                    }
                     self.cycle_diagram(-1);
                     return true;
                 }
                 KeyCode::Right => {
+                    if !self.diagram_focus {
+                        return false;
+                    }
                     self.cycle_diagram(1);
                     return true;
                 }
                 KeyCode::Char('h') => {
+                    if !self.diagram_focus {
+                        return false;
+                    }
                     self.set_diagram_focus(false);
                     return true;
                 }
@@ -615,6 +624,22 @@ impl App {
         } else {
             self.scroll_offset = self.scroll_offset.saturating_sub(amount);
         }
+        self.auto_scroll_paused = true;
+    }
+
+    pub(super) fn pause_chat_auto_scroll(&mut self) {
+        if self.auto_scroll_paused {
+            return;
+        }
+
+        let max_scroll = super::super::ui::last_max_scroll();
+        let max = if max_scroll > 0 {
+            max_scroll
+        } else {
+            self.scroll_max_estimate()
+        };
+
+        self.scroll_offset = max.saturating_sub(self.scroll_offset.min(max));
         self.auto_scroll_paused = true;
     }
 
