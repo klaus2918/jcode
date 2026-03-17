@@ -101,21 +101,34 @@ pub(crate) fn render_assistant_message(
     _diff_mode: crate::config::DiffDisplayMode,
 ) -> Vec<Line<'static>> {
     let content_width = width as usize;
+    let centered = markdown::center_code_blocks();
     let mut lines = markdown::render_markdown_with_width(&msg.content, Some(content_width));
     if !msg.tool_calls.is_empty() {
-        lines.extend(render_assistant_tool_call_lines(&msg.tool_calls, content_width));
+        lines.extend(render_assistant_tool_call_lines(
+            &msg.tool_calls,
+            content_width,
+            centered,
+        ));
     }
     lines
 }
 
-fn render_assistant_tool_call_lines(tool_calls: &[String], width: usize) -> Vec<Line<'static>> {
+fn render_assistant_tool_call_lines(
+    tool_calls: &[String],
+    width: usize,
+    centered: bool,
+) -> Vec<Line<'static>> {
     if tool_calls.is_empty() {
         return Vec::new();
     }
 
     const TOOL_SEPARATOR: &str = " · ";
 
-    let label = if tool_calls.len() == 1 { "tool:" } else { "tools:" };
+    let label = if tool_calls.len() == 1 {
+        "tool:"
+    } else {
+        "tools:"
+    };
     let prefix = format!("  {} ", label);
     let continuation_prefix = " ".repeat(prefix.width());
     let prefix_width = prefix.width();
@@ -138,7 +151,11 @@ fn render_assistant_tool_call_lines(tool_calls: &[String], width: usize) -> Vec<
 
     for tool_name in tool_calls {
         let tool_width = tool_name.width();
-        let separator_width = if first_on_line { 0 } else { TOOL_SEPARATOR.width() };
+        let separator_width = if first_on_line {
+            0
+        } else {
+            TOOL_SEPARATOR.width()
+        };
 
         if !first_on_line
             && current_width.saturating_add(separator_width + tool_width) > available_width
@@ -160,6 +177,11 @@ fn render_assistant_tool_call_lines(tool_calls: &[String], width: usize) -> Vec<
     }
 
     flush_line(&mut lines, &mut current_spans);
+
+    if centered {
+        left_pad_lines_for_centered_mode(&mut lines, width as u16);
+    }
+
     lines
 }
 
@@ -598,6 +620,7 @@ mod tests {
 
     #[test]
     fn render_system_message_centered_mode_left_aligns_with_padding() {
+        let saved = crate::tui::markdown::center_code_blocks();
         crate::tui::markdown::set_center_code_blocks(true);
         let msg = DisplayMessage::system("Reload complete — continuing.");
 
@@ -617,12 +640,13 @@ mod tests {
                 "centered system lines should start with padding"
             );
         }
-
-        crate::tui::markdown::set_center_code_blocks(false);
+        crate::tui::markdown::set_center_code_blocks(saved);
     }
 
     #[test]
     fn render_assistant_message_wraps_tool_calls_with_hanging_indent() {
+        let saved = crate::tui::markdown::center_code_blocks();
+        crate::tui::markdown::set_center_code_blocks(false);
         let msg = DisplayMessage {
             role: "assistant".to_string(),
             content: "Done.".to_string(),
@@ -641,10 +665,18 @@ mod tests {
         let tool_lines: Vec<String> = lines
             .iter()
             .skip(1)
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
             .collect();
 
-        assert!(tool_lines.len() >= 2, "expected wrapped tool-call lines: {tool_lines:?}");
+        assert!(
+            tool_lines.len() >= 2,
+            "expected wrapped tool-call lines: {tool_lines:?}"
+        );
         assert!(
             tool_lines[0].contains("tools:"),
             "expected tool summary label on first line: {tool_lines:?}"
@@ -657,6 +689,55 @@ mod tests {
             tool_lines.iter().all(|line| line.width() <= 20),
             "wrapped tool-call lines should respect available width: {tool_lines:?}"
         );
+        crate::tui::markdown::set_center_code_blocks(saved);
+    }
+
+    #[test]
+    fn render_assistant_message_centers_tool_summary_as_a_block() {
+        let saved = crate::tui::markdown::center_code_blocks();
+        crate::tui::markdown::set_center_code_blocks(true);
+        let msg = DisplayMessage {
+            role: "assistant".to_string(),
+            content: "Done.".to_string(),
+            tool_calls: vec![
+                "read".to_string(),
+                "grep".to_string(),
+                "apply_patch".to_string(),
+                "batch".to_string(),
+            ],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        };
+
+        let lines = render_assistant_message(&msg, 28, crate::config::DiffDisplayMode::Off);
+        let tool_lines: Vec<String> = lines
+            .iter()
+            .skip(1)
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+
+        assert!(
+            tool_lines.len() >= 2,
+            "expected wrapped tool-call lines: {tool_lines:?}"
+        );
+        let first_pad = tool_lines[0].chars().take_while(|c| *c == ' ').count();
+        let second_pad = tool_lines[1].chars().take_while(|c| *c == ' ').count();
+        assert!(
+            first_pad > 0,
+            "tool summary should be centered as a block: {tool_lines:?}"
+        );
+        assert!(
+            second_pad > first_pad,
+            "continuation line should keep hanging indent inside centered block: {tool_lines:?}"
+        );
+
+        crate::tui::markdown::set_center_code_blocks(saved);
     }
 }
 
