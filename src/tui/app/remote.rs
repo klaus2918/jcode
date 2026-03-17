@@ -2270,6 +2270,7 @@ pub(super) fn handle_remote_char_input(app: &mut App, c: char) {
 fn handle_disconnected_local_command(app: &mut App, trimmed: &str) -> bool {
     let handled = super::commands::handle_help_command(app, trimmed)
         || super::commands::handle_session_command(app, trimmed)
+        || super::commands::handle_goals_command(app, trimmed)
         || super::commands::handle_config_command(app, trimmed)
         || super::state_ui::handle_info_command(app, trimmed)
         || super::auth::handle_auth_command(app, trimmed)
@@ -3347,6 +3348,10 @@ pub(super) async fn handle_remote_key(
                     app.push_display_message(DisplayMessage::error(
                         "Usage: /memory [on|off|status]".to_string(),
                     ));
+                    return Ok(());
+                }
+
+                if super::commands::handle_goals_command(app, trimmed) {
                     return Ok(());
                 }
 

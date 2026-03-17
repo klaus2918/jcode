@@ -1150,6 +1150,8 @@ struct CopyTarget {
 #[derive(Clone)]
 struct PreparedMessages {
     wrapped_lines: Vec<Line<'static>>,
+    raw_plain_lines: Vec<String>,
+    wrapped_line_map: Vec<WrappedLineMap>,
     wrapped_user_indices: Vec<usize>,
     /// Wrapped line indices where a user prompt line starts
     wrapped_user_prompt_starts: Vec<usize>,
@@ -1164,6 +1166,13 @@ struct PreparedMessages {
     /// Used by File diff mode to determine which edit is visible at current scroll
     edit_tool_ranges: Vec<EditToolRange>,
     copy_targets: Vec<CopyTarget>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WrappedLineMap {
+    pub(crate) raw_line: usize,
+    pub(crate) start_col: usize,
+    pub(crate) end_col: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -1471,6 +1480,8 @@ pub fn last_layout_snapshot() -> Option<LayoutSnapshot> {
 struct CopyViewportSnapshot {
     pane: crate::tui::CopySelectionPane,
     wrapped_plain_lines: Vec<String>,
+    raw_plain_lines: Vec<String>,
+    wrapped_line_map: Vec<WrappedLineMap>,
     scroll: usize,
     visible_end: usize,
     content_area: Rect,
@@ -1513,7 +1524,7 @@ pub(crate) fn clear_copy_viewport_snapshot() {
     }
 }
 
-fn line_plain_text(line: &Line<'_>) -> String {
+pub(crate) fn line_plain_text(line: &Line<'_>) -> String {
     line.spans
         .iter()
         .map(|span| span.content.as_ref())
@@ -1523,6 +1534,8 @@ fn line_plain_text(line: &Line<'_>) -> String {
 fn record_copy_pane_snapshot(
     pane: crate::tui::CopySelectionPane,
     wrapped_lines: &[Line<'static>],
+    raw_plain_lines: &[String],
+    wrapped_line_map: &[WrappedLineMap],
     scroll: usize,
     visible_end: usize,
     content_area: Rect,
@@ -1532,6 +1545,8 @@ fn record_copy_pane_snapshot(
         *copy_snapshot_slot_mut(&mut state, pane) = Some(CopyViewportSnapshot {
             pane,
             wrapped_plain_lines: wrapped_lines.iter().map(line_plain_text).collect(),
+            raw_plain_lines: raw_plain_lines.to_vec(),
+            wrapped_line_map: wrapped_line_map.to_vec(),
             scroll,
             visible_end,
             content_area,
@@ -1542,6 +1557,8 @@ fn record_copy_pane_snapshot(
 
 pub(crate) fn record_copy_viewport_snapshot(
     wrapped_lines: &[Line<'static>],
+    raw_plain_lines: &[String],
+    wrapped_line_map: &[WrappedLineMap],
     scroll: usize,
     visible_end: usize,
     content_area: Rect,
@@ -1550,6 +1567,8 @@ pub(crate) fn record_copy_viewport_snapshot(
     record_copy_pane_snapshot(
         crate::tui::CopySelectionPane::Chat,
         wrapped_lines,
+        raw_plain_lines,
+        wrapped_line_map,
         scroll,
         visible_end,
         content_area,
@@ -1582,6 +1601,8 @@ pub(crate) fn record_side_pane_snapshot(
     record_copy_pane_snapshot(
         crate::tui::CopySelectionPane::SidePane,
         wrapped_lines,
+        &[],
+        &[],
         scroll,
         visible_end,
         content_area,
@@ -1752,6 +1773,10 @@ pub(crate) fn copy_selection_text(range: crate::tui::CopySelectionRange) -> Opti
         return None;
     }
 
+    if let Some(text) = copy_selection_text_from_raw_lines(&snapshot, start, end) {
+        return Some(text);
+    }
+
     let mut out = Vec::new();
     for abs_line in start.abs_line..=end.abs_line {
         let text = &snapshot.wrapped_plain_lines[abs_line];
@@ -1778,6 +1803,71 @@ pub(crate) fn copy_selection_text(range: crate::tui::CopySelectionRange) -> Opti
     }
 
     Some(out.join("\n"))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RawSelectionPoint {
+    raw_line: usize,
+    column: usize,
+}
+
+fn copy_selection_text_from_raw_lines(
+    snapshot: &CopyViewportSnapshot,
+    start: crate::tui::CopySelectionPoint,
+    end: crate::tui::CopySelectionPoint,
+) -> Option<String> {
+    if snapshot.raw_plain_lines.is_empty() || snapshot.wrapped_line_map.is_empty() {
+        return None;
+    }
+
+    let start = raw_selection_point(snapshot, start)?;
+    let end = raw_selection_point(snapshot, end)?;
+    if start.raw_line >= snapshot.raw_plain_lines.len()
+        || end.raw_line >= snapshot.raw_plain_lines.len()
+    {
+        return None;
+    }
+
+    let mut out = Vec::new();
+    for raw_line in start.raw_line..=end.raw_line {
+        let text = &snapshot.raw_plain_lines[raw_line];
+        let line_width = line_display_width(text);
+        let start_col = if raw_line == start.raw_line {
+            clamp_display_col(text, start.column)
+        } else {
+            0
+        };
+        let end_col = if raw_line == end.raw_line {
+            clamp_display_col(text, end.column)
+        } else {
+            line_width
+        };
+
+        if end_col < start_col {
+            out.push(String::new());
+            continue;
+        }
+
+        let start_byte = display_col_to_byte_offset(text, start_col);
+        let end_byte = display_col_to_byte_offset(text, end_col);
+        out.push(text[start_byte..end_byte].to_string());
+    }
+
+    Some(out.join("\n"))
+}
+
+fn raw_selection_point(
+    snapshot: &CopyViewportSnapshot,
+    point: crate::tui::CopySelectionPoint,
+) -> Option<RawSelectionPoint> {
+    let wrapped_text = snapshot.wrapped_plain_lines.get(point.abs_line)?;
+    let map = snapshot.wrapped_line_map.get(point.abs_line)?;
+    let local_col = clamp_display_col(wrapped_text, point.column);
+    let segment_width = map.end_col.saturating_sub(map.start_col);
+    Some(RawSelectionPoint {
+        raw_line: map.raw_line,
+        column: map.start_col + local_col.min(segment_width),
+    })
 }
 
 fn profile_enabled() -> bool {
@@ -2707,6 +2797,19 @@ fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
         lines.push(auth_line.alignment(align));
     }
 
+    if let Some(goal_badge) = crate::goal::header_badge(
+        app.working_dir().as_deref().map(std::path::Path::new),
+        app.side_panel(),
+    ) {
+        lines.push(
+            Line::from(Span::styled(
+                goal_badge,
+                Style::default().fg(rgb(170, 200, 120)),
+            ))
+            .alignment(align),
+        );
+    }
+
     // Line 3+: Recent changes in a box (from git log, embedded at build time)
     // Each line is "hash:subject". We filter to only show commits since the user last saw updates.
     let new_entries = get_unseen_changelog_entries();
@@ -3300,6 +3403,8 @@ mod tests {
     fn test_active_file_diff_context_resolves_visible_edit() {
         let prepared = PreparedMessages {
             wrapped_lines: vec![Line::from("a"); 20],
+            raw_plain_lines: Vec::new(),
+            wrapped_line_map: Vec::new(),
             wrapped_user_indices: Vec::new(),
             wrapped_user_prompt_starts: Vec::new(),
             wrapped_user_prompt_ends: Vec::new(),
@@ -3346,6 +3451,8 @@ mod tests {
 
         let prepared_a = Arc::new(PreparedMessages {
             wrapped_lines: vec![Line::from("a")],
+            raw_plain_lines: Vec::new(),
+            wrapped_line_map: Vec::new(),
             wrapped_user_indices: Vec::new(),
             wrapped_user_prompt_starts: Vec::new(),
             wrapped_user_prompt_ends: Vec::new(),
@@ -3356,6 +3463,8 @@ mod tests {
         });
         let prepared_b = Arc::new(PreparedMessages {
             wrapped_lines: vec![Line::from("b")],
+            raw_plain_lines: Vec::new(),
+            wrapped_line_map: Vec::new(),
             wrapped_user_indices: Vec::new(),
             wrapped_user_prompt_starts: Vec::new(),
             wrapped_user_prompt_ends: Vec::new(),
@@ -3395,6 +3504,8 @@ mod tests {
             };
             let prepared = Arc::new(PreparedMessages {
                 wrapped_lines: vec![Line::from(format!("{idx}"))],
+                raw_plain_lines: Vec::new(),
+                wrapped_line_map: Vec::new(),
                 wrapped_user_indices: Vec::new(),
                 wrapped_user_prompt_starts: Vec::new(),
                 wrapped_user_prompt_ends: Vec::new(),

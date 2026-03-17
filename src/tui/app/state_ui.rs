@@ -323,6 +323,10 @@ impl App {
                 "Run configured external dictation command",
             ),
             ("/memory".into(), "Toggle memory feature (on/off/status)"),
+            (
+                "/goals".into(),
+                "Open goals overview / resume tracked goals",
+            ),
             ("/swarm".into(), "Toggle swarm feature (on/off/status)"),
             ("/version".into(), "Show current version"),
             ("/changelog".into(), "Show recent changes in this build"),
@@ -494,6 +498,7 @@ impl App {
                 | "/account"
                 | "/subscription"
                 | "/memory"
+                | "/goals"
                 | "/swarm"
                 | "/rewind"
                 | "/config"

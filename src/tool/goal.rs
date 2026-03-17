@@ -1,0 +1,360 @@
+use super::{Tool, ToolContext, ToolOutput};
+use anyhow::Result;
+use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+pub struct GoalTool;
+
+impl GoalTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GoalInput {
+    action: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    why: Option<String>,
+    #[serde(default)]
+    success_criteria: Option<Vec<String>>,
+    #[serde(default)]
+    milestones: Option<Vec<crate::goal::GoalMilestone>>,
+    #[serde(default)]
+    next_steps: Option<Vec<String>>,
+    #[serde(default)]
+    blockers: Option<Vec<String>>,
+    #[serde(default)]
+    current_milestone_id: Option<String>,
+    #[serde(default)]
+    progress_percent: Option<u8>,
+    #[serde(default)]
+    checkpoint_summary: Option<String>,
+    #[serde(default)]
+    display: Option<String>,
+}
+
+fn goal_step_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["id", "content"],
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "Stable step identifier within the milestone"
+            },
+            "content": {
+                "type": "string",
+                "description": "What needs to be done for this step"
+            },
+            "status": {
+                "type": "string",
+                "description": "Step status (default: pending)"
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn goal_milestone_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["id", "title"],
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "Stable milestone identifier"
+            },
+            "title": {
+                "type": "string",
+                "description": "Short milestone title"
+            },
+            "status": {
+                "type": "string",
+                "description": "Milestone status (default: pending)"
+            },
+            "steps": {
+                "type": "array",
+                "items": goal_step_schema(),
+                "description": "Optional checklist steps for this milestone"
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
+#[async_trait]
+impl Tool for GoalTool {
+    fn name(&self) -> &str {
+        "goal"
+    }
+
+    fn description(&self) -> &str {
+        "Manage persistent long-term goals. Use this to create, list, resume, inspect, or update goals that should survive across sessions. Goal details are not preloaded into context; call this tool when goal context becomes relevant."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "required": ["action"],
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "list", "show", "resume", "update", "checkpoint", "focus"],
+                    "description": "Goal action to perform"
+                },
+                "id": {"type": "string", "description": "Goal id for show/update/checkpoint/focus"},
+                "title": {"type": "string", "description": "Goal title for create/update"},
+                "scope": {"type": "string", "enum": ["project", "global"], "description": "Goal scope (default: project)"},
+                "status": {"type": "string", "enum": ["draft", "active", "paused", "blocked", "completed", "archived", "abandoned"], "description": "Goal status for update"},
+                "description": {"type": "string", "description": "Longer description"},
+                "why": {"type": "string", "description": "Why the goal matters"},
+                "success_criteria": {"type": "array", "items": {"type": "string"}, "description": "Success criteria list"},
+                "milestones": {"type": "array", "items": goal_milestone_schema(), "description": "Milestones for the goal"},
+                "next_steps": {"type": "array", "items": {"type": "string"}, "description": "Ordered next steps"},
+                "blockers": {"type": "array", "items": {"type": "string"}, "description": "Current blockers"},
+                "current_milestone_id": {"type": "string", "description": "Current milestone id"},
+                "progress_percent": {"type": "integer", "description": "Approximate progress percent"},
+                "checkpoint_summary": {"type": "string", "description": "Checkpoint/update summary"},
+                "display": {"type": "string", "enum": ["auto", "focus", "update_only", "none"], "description": "Side panel display behavior (default: auto)"}
+            }
+        })
+    }
+
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+        let params: GoalInput = serde_json::from_value(input)?;
+        let working_dir = ctx.working_dir.as_deref();
+        let display = params
+            .display
+            .as_deref()
+            .and_then(crate::goal::GoalDisplayMode::parse)
+            .unwrap_or(crate::goal::GoalDisplayMode::Auto);
+
+        match params.action.as_str() {
+            "list" => {
+                let goals = crate::goal::list_relevant_goals(working_dir)?;
+                Ok(ToolOutput::new(crate::goal::render_goals_overview(&goals))
+                    .with_title(format!("{} goals", goals.len()))
+                    .with_metadata(serde_json::to_value(&goals)?))
+            }
+            "create" => {
+                let title = params
+                    .title
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("title is required for create"))?;
+                let scope = params
+                    .scope
+                    .as_deref()
+                    .and_then(crate::goal::GoalScope::parse)
+                    .unwrap_or(crate::goal::GoalScope::Project);
+                let goal = crate::goal::create_goal(
+                    crate::goal::GoalCreateInput {
+                        id: params.id.clone(),
+                        title: title.to_string(),
+                        scope,
+                        description: params.description.clone(),
+                        why: params.why.clone(),
+                        success_criteria: params.success_criteria.unwrap_or_default(),
+                        milestones: params.milestones.unwrap_or_default(),
+                        next_steps: params.next_steps.unwrap_or_default(),
+                        blockers: params.blockers.unwrap_or_default(),
+                        current_milestone_id: params.current_milestone_id.clone(),
+                        progress_percent: params.progress_percent,
+                    },
+                    working_dir,
+                )?;
+                let metadata = serde_json::to_value(&goal)?;
+                let output = if display == crate::goal::GoalDisplayMode::None {
+                    ToolOutput::new(format!("Created goal `{}` ({})", goal.id, goal.title))
+                } else {
+                    crate::goal::write_goal_page(&ctx.session_id, working_dir, &goal, display)?;
+                    ToolOutput::new(format!(
+                        "Created goal `{}` ({}) and opened it in the side panel.",
+                        goal.id, goal.title
+                    ))
+                };
+                Ok(output
+                    .with_title(goal.title.clone())
+                    .with_metadata(metadata))
+            }
+            "show" | "focus" => {
+                let id = params
+                    .id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("id is required for show/focus"))?;
+                let Some(result) = crate::goal::open_goal_for_session(
+                    &ctx.session_id,
+                    working_dir,
+                    id,
+                    params.action == "focus" || display == crate::goal::GoalDisplayMode::Focus,
+                )?
+                else {
+                    anyhow::bail!("goal not found: {}", id);
+                };
+                Ok(
+                    ToolOutput::new(crate::goal::render_goal_detail(&result.goal))
+                        .with_title(result.goal.title.clone())
+                        .with_metadata(serde_json::to_value(&result.goal)?),
+                )
+            }
+            "resume" => {
+                let Some(result) = crate::goal::resume_goal_for_session(
+                    &ctx.session_id,
+                    working_dir,
+                    display == crate::goal::GoalDisplayMode::Focus,
+                )?
+                else {
+                    return Ok(ToolOutput::new("No resumable goals found."));
+                };
+                let mut output =
+                    format!("Resumed goal `{}` ({})", result.goal.id, result.goal.title);
+                if let Some(progress) = result.goal.progress_percent {
+                    output.push_str(&format!(" — {}%", progress));
+                }
+                if let Some(next_step) = result.goal.next_steps.first() {
+                    output.push_str(&format!("\nNext step: {}", next_step));
+                }
+                Ok(ToolOutput::new(output)
+                    .with_title(result.goal.title.clone())
+                    .with_metadata(serde_json::to_value(&result.goal)?))
+            }
+            "update" | "checkpoint" => {
+                let id = params
+                    .id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("id is required for update/checkpoint"))?;
+                let status = params
+                    .status
+                    .as_deref()
+                    .map(|value| {
+                        crate::goal::GoalStatus::parse(value)
+                            .ok_or_else(|| anyhow::anyhow!("invalid goal status: {}", value))
+                    })
+                    .transpose()?;
+                let goal = crate::goal::update_goal(
+                    id,
+                    params
+                        .scope
+                        .as_deref()
+                        .and_then(crate::goal::GoalScope::parse),
+                    working_dir,
+                    crate::goal::GoalUpdateInput {
+                        title: params.title.clone(),
+                        description: params.description.clone(),
+                        why: params.why.clone(),
+                        status,
+                        success_criteria: params.success_criteria.clone(),
+                        milestones: params.milestones.clone(),
+                        next_steps: params.next_steps.clone(),
+                        blockers: params.blockers.clone(),
+                        current_milestone_id: if params.current_milestone_id.is_some() {
+                            Some(params.current_milestone_id.clone())
+                        } else {
+                            None
+                        },
+                        progress_percent: if params.progress_percent.is_some() {
+                            Some(params.progress_percent)
+                        } else {
+                            None
+                        },
+                        checkpoint_summary: if params.action == "checkpoint" {
+                            params
+                                .checkpoint_summary
+                                .clone()
+                                .or(params.description.clone())
+                        } else {
+                            params.checkpoint_summary.clone()
+                        },
+                    },
+                )?
+                .ok_or_else(|| anyhow::anyhow!("goal not found: {}", id))?;
+                if display != crate::goal::GoalDisplayMode::None {
+                    crate::goal::write_goal_page(&ctx.session_id, working_dir, &goal, display)?;
+                }
+                Ok(
+                    ToolOutput::new(format!("Updated goal `{}` ({})", goal.id, goal.title))
+                        .with_title(goal.title.clone())
+                        .with_metadata(serde_json::to_value(&goal)?),
+                )
+            }
+            other => anyhow::bail!("unknown goal action: {}", other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn goal_tool_create_and_resume_round_trip() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("repo");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        let tool = GoalTool::new();
+        let ctx = ToolContext {
+            session_id: "ses_goal_tool".to_string(),
+            message_id: "msg1".to_string(),
+            tool_call_id: "tool1".to_string(),
+            working_dir: Some(project.clone()),
+            stdin_request_tx: None,
+            execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+        };
+
+        let create = tool
+            .execute(
+                json!({
+                    "action": "create",
+                    "title": "Ship mobile MVP",
+                    "scope": "project",
+                    "next_steps": ["finish reconnect flow"]
+                }),
+                ctx.clone(),
+            )
+            .await
+            .expect("create goal");
+        assert!(create.output.contains("Created goal"));
+
+        let resume = tool
+            .execute(json!({"action": "resume"}), ctx)
+            .await
+            .expect("resume goal");
+        assert!(resume.output.contains("Resumed goal"));
+        assert!(resume.output.contains("finish reconnect flow"));
+
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+    }
+
+    #[test]
+    fn test_goal_schema_milestones_define_items() {
+        let schema = GoalTool::new().parameters_schema();
+        let milestone_items = &schema["properties"]["milestones"]["items"];
+
+        assert_eq!(milestone_items["type"], "object");
+        assert_eq!(milestone_items["required"], json!(["id", "title"]));
+        assert_eq!(milestone_items["properties"]["steps"]["type"], "array");
+        assert_eq!(
+            milestone_items["properties"]["steps"]["items"]["required"],
+            json!(["id", "content"])
+        );
+    }
+}

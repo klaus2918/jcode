@@ -1247,6 +1247,9 @@ impl App {
                 "`/fast`\nShow whether OpenAI/Codex fast mode is enabled.\n\n`/fast on`\nEnable fast mode (`service_tier = \"priority\"`).\n\n`/fast off`\nDisable fast mode.\n\n`/fast status`\nShow current fast-mode status."
             }
             "memory" => "`/memory [on|off|status]`\nToggle memory features for this session.",
+            "goals" => {
+                "`/goals`\nOpen the goals overview in the side panel.\n\n`/goals resume`\nResume the most relevant active goal for this session/project.\n\n`/goals show <id>`\nOpen a specific goal in the side panel."
+            }
             "swarm" => "`/swarm [on|off|status]`\nToggle swarm features for this session.",
             "dictate" | "dictation" => {
                 "`/dictate`\nRun the configured external speech-to-text command and inject the transcript into jcode.\n\nConfigure `[dictation]` in `~/.jcode/config.toml`:\n- `command`: shell command that prints transcript to stdout\n- `mode`: `insert|append|replace|send`\n- `key`: optional hotkey (for example `alt+;`)\n- `timeout_secs`: max wait time"

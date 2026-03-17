@@ -1404,6 +1404,68 @@ impl MemoryManager {
         Ok(id)
     }
 
+    /// Insert or update a memory with a stable ID in the project graph.
+    /// Preserves existing inbound/outbound graph relationships while refreshing
+    /// content and tags.
+    pub fn upsert_project_memory(&self, entry: MemoryEntry) -> Result<String> {
+        let mut graph = self.load_project_graph()?;
+        let id = Self::upsert_memory_in_graph(&mut graph, entry);
+        self.save_project_graph(&graph)?;
+        Ok(id)
+    }
+
+    /// Insert or update a memory with a stable ID in the global graph.
+    /// Preserves existing inbound/outbound graph relationships while refreshing
+    /// content and tags.
+    pub fn upsert_global_memory(&self, entry: MemoryEntry) -> Result<String> {
+        let mut graph = self.load_global_graph()?;
+        let id = Self::upsert_memory_in_graph(&mut graph, entry);
+        self.save_global_graph(&graph)?;
+        Ok(id)
+    }
+
+    fn upsert_memory_in_graph(
+        graph: &mut crate::memory_graph::MemoryGraph,
+        mut entry: MemoryEntry,
+    ) -> String {
+        let id = entry.id.clone();
+        entry.ensure_embedding();
+
+        let Some(existing_snapshot) = graph.get_memory(&id).cloned() else {
+            return graph.add_memory(entry);
+        };
+
+        let old_tags: std::collections::HashSet<String> =
+            existing_snapshot.tags.iter().cloned().collect();
+        let new_tags: std::collections::HashSet<String> = entry.tags.iter().cloned().collect();
+
+        for tag in old_tags.difference(&new_tags) {
+            graph.untag_memory(&id, tag);
+        }
+        for tag in new_tags.difference(&old_tags) {
+            graph.tag_memory(&id, tag);
+        }
+
+        if let Some(existing) = graph.get_memory_mut(&id) {
+            let content_changed = existing.content != entry.content;
+            existing.category = entry.category;
+            existing.content = entry.content;
+            existing.tags = entry.tags;
+            existing.updated_at = entry.updated_at;
+            existing.source = entry.source;
+            existing.trust = entry.trust;
+            existing.active = entry.active;
+            existing.superseded_by = entry.superseded_by;
+            existing.confidence = entry.confidence;
+            if content_changed {
+                existing.embedding = None;
+                existing.ensure_embedding();
+            }
+        }
+
+        id
+    }
+
     fn find_duplicate_in_graph(
         graph: &crate::memory_graph::MemoryGraph,
         query_emb: &[f32],

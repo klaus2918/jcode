@@ -144,6 +144,80 @@ fn test_help_topic_shows_command_details() {
 }
 
 #[test]
+fn test_goals_command_opens_overview_in_side_panel() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("repo");
+    std::fs::create_dir_all(&project).expect("project dir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
+    crate::goal::create_goal(
+        crate::goal::GoalCreateInput {
+            title: "Ship mobile MVP".to_string(),
+            scope: crate::goal::GoalScope::Project,
+            ..crate::goal::GoalCreateInput::default()
+        },
+        Some(&project),
+    )
+    .expect("create goal");
+
+    let mut app = create_test_app();
+    app.session.working_dir = Some(project.display().to_string());
+    app.input = "/goals".to_string();
+    app.submit_input();
+
+    assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("goals"));
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing goals message");
+    assert!(msg.content.contains("Opened goals overview"));
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
+fn test_goals_show_command_focuses_goal_page() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("repo");
+    std::fs::create_dir_all(&project).expect("project dir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
+    let goal = crate::goal::create_goal(
+        crate::goal::GoalCreateInput {
+            title: "Ship mobile MVP".to_string(),
+            scope: crate::goal::GoalScope::Project,
+            ..crate::goal::GoalCreateInput::default()
+        },
+        Some(&project),
+    )
+    .expect("create goal");
+
+    let mut app = create_test_app();
+    app.session.working_dir = Some(project.display().to_string());
+    app.input = format!("/goals show {}", goal.id);
+    app.submit_input();
+
+    assert_eq!(
+        app.side_panel.focused_page_id.as_deref(),
+        Some(format!("goal.{}", goal.id).as_str())
+    );
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
 fn test_compact_mode_command_updates_local_session_mode() {
     let mut app = create_test_app();
 
@@ -4166,6 +4240,146 @@ fn test_copy_selection_select_all_uses_rendered_chat_text_without_copy_badges() 
 }
 
 #[test]
+fn test_copy_selection_reconstructs_wrapped_chat_lines_without_hard_wraps() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "assistant".to_string(),
+        content: "same physical device: i2c-ELAN900C:00 same vendor/product family: 04F3:4216"
+            .to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: None,
+    }];
+    app.bump_display_messages_version();
+
+    let backend = ratatui::backend::TestBackend::new(36, 20);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+
+    render_and_snap(&app, &mut terminal);
+    let (visible_start, visible_end) =
+        crate::tui::ui::copy_viewport_visible_range().expect("visible copy range");
+
+    let visible_lines: Vec<(usize, String)> = (visible_start..visible_end)
+        .filter_map(|abs_line| {
+            let text = crate::tui::ui::copy_viewport_line_text(abs_line)?;
+            (!text.is_empty()).then_some((abs_line, text))
+        })
+        .collect();
+    let (first_idx, _first_text) = visible_lines
+        .iter()
+        .find(|(_, text)| text.contains("i2c-ELAN900C:00"))
+        .expect("expected wrapped line containing device path");
+    let (second_idx, second_text) = visible_lines
+        .iter()
+        .find(|(idx, _)| *idx == *first_idx + 1)
+        .expect("expected adjacent wrapped continuation line");
+
+    app.copy_selection_anchor = Some(crate::tui::CopySelectionPoint {
+        pane: crate::tui::CopySelectionPane::Chat,
+        abs_line: *first_idx,
+        column: 0,
+    });
+    app.copy_selection_cursor = Some(crate::tui::CopySelectionPoint {
+        pane: crate::tui::CopySelectionPane::Chat,
+        abs_line: *second_idx,
+        column: unicode_width::UnicodeWidthStr::width(second_text.as_str()),
+    });
+
+    let selected = app
+        .current_copy_selection_text()
+        .expect("expected wrapped selection text");
+    assert!(
+        !selected.contains('\n'),
+        "wrapped chat copy should not include a hard newline: {selected:?}"
+    );
+    assert!(
+        selected.contains("i2c-ELAN900C:00"),
+        "selection should include the device path: {selected:?}"
+    );
+    assert!(
+        selected.contains("same vendor/product family"),
+        "selection should preserve the natural space across wrapped lines: {selected:?}"
+    );
+}
+
+#[test]
+fn test_copy_selection_centered_list_keeps_logical_list_text() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.set_centered(true);
+    app.display_messages = vec![DisplayMessage {
+        role: "assistant".to_string(),
+        content: concat!(
+            "A goal should support\n\n",
+            "1. Create a goal\n",
+            "\n",
+            "- title\n",
+            "- description / \"why this matters\"\n",
+            "- success criteria\n",
+        )
+        .to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: None,
+    }];
+    app.bump_display_messages_version();
+
+    let backend = ratatui::backend::TestBackend::new(28, 20);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+
+    render_and_snap(&app, &mut terminal);
+    let (visible_start, visible_end) =
+        crate::tui::ui::copy_viewport_visible_range().expect("visible copy range");
+    let visible_lines: Vec<(usize, String)> = (visible_start..visible_end)
+        .filter_map(|abs_line| {
+            let text = crate::tui::ui::copy_viewport_line_text(abs_line)?;
+            (!text.is_empty()).then_some((abs_line, text))
+        })
+        .collect();
+
+    let (start_idx, _) = visible_lines
+        .iter()
+        .find(|(_, text)| text.contains("1. Create a goal"))
+        .expect("numbered list line");
+    let (end_idx, end_text) = visible_lines
+        .iter()
+        .rev()
+        .find(|(_, text)| text.contains("success criteria") || text.contains("matters"))
+        .expect("last list line");
+
+    app.copy_selection_anchor = Some(crate::tui::CopySelectionPoint {
+        pane: crate::tui::CopySelectionPane::Chat,
+        abs_line: *start_idx,
+        column: 0,
+    });
+    app.copy_selection_cursor = Some(crate::tui::CopySelectionPoint {
+        pane: crate::tui::CopySelectionPane::Chat,
+        abs_line: *end_idx,
+        column: unicode_width::UnicodeWidthStr::width(end_text.as_str()),
+    });
+
+    let selected = app
+        .current_copy_selection_text()
+        .expect("expected selected list text");
+
+    assert!(
+        selected.contains("1. Create a goal"),
+        "numbered list item should be copied without centered padding: {selected:?}"
+    );
+    assert!(
+        selected.contains("• title"),
+        "bullet item should be copied without centered padding: {selected:?}"
+    );
+    assert!(
+        selected.contains("why this matters"),
+        "wrapped bullet item should copy logical text: {selected:?}"
+    );
+}
+
+#[test]
 fn test_copy_selection_mouse_drag_extracts_expected_multiline_range() {
     let _render_lock = scroll_render_test_lock();
     let (mut app, mut terminal) = create_copy_test_app();
@@ -5064,7 +5278,10 @@ fn test_copy_selection_from_bottom_rebases_scroll_instead_of_jumping_to_top() {
 
     let bottom_text = render_and_snap(&app, &mut terminal);
     let max_scroll = crate::tui::ui::last_max_scroll();
-    assert!(max_scroll > 0, "expected scrollable history for selection test");
+    assert!(
+        max_scroll > 0,
+        "expected scrollable history for selection test"
+    );
     assert!(
         !bottom_text.contains("Intro line 01"),
         "bottom viewport should not start at top before selection"
@@ -5075,7 +5292,10 @@ fn test_copy_selection_from_bottom_rebases_scroll_instead_of_jumping_to_top() {
     app.handle_key(KeyCode::Right, KeyModifiers::empty())
         .expect("move selection cursor");
 
-    assert!(app.copy_selection_mode, "copy selection mode should remain active");
+    assert!(
+        app.copy_selection_mode,
+        "copy selection mode should remain active"
+    );
     assert!(app.auto_scroll_paused, "selection should pause auto-follow");
     assert_eq!(
         app.scroll_offset, max_scroll,

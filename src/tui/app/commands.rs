@@ -152,6 +152,10 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
+    if handle_goals_command(app, trimmed) {
+        return true;
+    }
+
     if trimmed == "/swarm" || trimmed == "/swarm status" {
         let default_enabled = crate::config::config().features.swarm;
         app.push_display_message(DisplayMessage::system(format!(
@@ -360,6 +364,117 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     false
+}
+
+pub(super) fn handle_goals_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed == "/goals" {
+        match crate::goal::open_goals_overview_for_session(
+            active_session_id(app).as_str(),
+            active_working_dir(app).as_deref(),
+            true,
+        ) {
+            Ok(snapshot) => {
+                app.set_side_panel_snapshot(snapshot);
+                let count = crate::goal::list_relevant_goals(active_working_dir(app).as_deref())
+                    .map(|goals| goals.len())
+                    .unwrap_or(0);
+                app.push_display_message(DisplayMessage::system(format!(
+                    "Opened goals overview in the side panel ({} goal{}).",
+                    count,
+                    if count == 1 { "" } else { "s" }
+                )));
+                app.set_status_notice("Goals");
+            }
+            Err(e) => app.push_display_message(DisplayMessage::error(format!(
+                "Failed to open goals overview: {}",
+                e
+            ))),
+        }
+        return true;
+    }
+
+    if trimmed == "/goals resume" {
+        match crate::goal::resume_goal_for_session(
+            active_session_id(app).as_str(),
+            active_working_dir(app).as_deref(),
+            true,
+        ) {
+            Ok(Some(result)) => {
+                app.set_side_panel_snapshot(result.snapshot);
+                let mut msg = format!("Resumed goal **{}**.", result.goal.title);
+                if let Some(next_step) = result.goal.next_steps.first() {
+                    msg.push_str(&format!(" Next step: {}", next_step));
+                }
+                app.push_display_message(DisplayMessage::system(msg));
+                app.set_status_notice(format!("Goal: {}", result.goal.title));
+            }
+            Ok(None) => app.push_display_message(DisplayMessage::system(
+                "No resumable goals found for this session.".to_string(),
+            )),
+            Err(e) => app.push_display_message(DisplayMessage::error(format!(
+                "Failed to resume goal: {}",
+                e
+            ))),
+        }
+        return true;
+    }
+
+    if let Some(id) = trimmed.strip_prefix("/goals show ") {
+        let id = id.trim();
+        if id.is_empty() {
+            app.push_display_message(DisplayMessage::error(
+                "Usage: `/goals show <id>`".to_string(),
+            ));
+            return true;
+        }
+        match crate::goal::open_goal_for_session(
+            active_session_id(app).as_str(),
+            active_working_dir(app).as_deref(),
+            id,
+            true,
+        ) {
+            Ok(Some(result)) => {
+                app.set_side_panel_snapshot(result.snapshot);
+                app.push_display_message(DisplayMessage::system(format!(
+                    "Opened goal **{}** in the side panel.",
+                    result.goal.title
+                )));
+                app.set_status_notice(format!("Goal: {}", result.goal.title));
+            }
+            Ok(None) => {
+                app.push_display_message(DisplayMessage::error(format!("Goal not found: {}", id)))
+            }
+            Err(e) => app
+                .push_display_message(DisplayMessage::error(format!("Failed to open goal: {}", e))),
+        }
+        return true;
+    }
+
+    if trimmed.starts_with("/goals ") {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: `/goals`, `/goals resume`, or `/goals show <id>`".to_string(),
+        ));
+        return true;
+    }
+
+    false
+}
+
+fn active_session_id(app: &App) -> String {
+    if app.is_remote {
+        app.remote_session_id
+            .clone()
+            .unwrap_or_else(|| app.session.id.clone())
+    } else {
+        app.session.id.clone()
+    }
+}
+
+fn active_working_dir(app: &App) -> Option<std::path::PathBuf> {
+    app.session
+        .working_dir
+        .as_deref()
+        .map(std::path::PathBuf::from)
 }
 
 pub(super) fn handle_dictation_command(app: &mut App, trimmed: &str) -> bool {

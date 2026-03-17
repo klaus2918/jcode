@@ -412,6 +412,23 @@ pub(super) fn get_tool_summary_with_bash_limit(tool: &ToolCall, bash_max_chars: 
                 _ => action.to_string(),
             }
         }
+        "goal" => {
+            let action = tool
+                .input
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let id = tool.input.get("id").and_then(|v| v.as_str());
+            let title = tool.input.get("title").and_then(|v| v.as_str());
+            match (action, id, title) {
+                ("create", _, Some(title)) => format!("create '{}'", truncate(title, 30)),
+                ("show" | "focus" | "update" | "checkpoint", Some(id), _) => {
+                    format!("{} {}", action, truncate(id, 30))
+                }
+                ("resume", _, _) => "resume".to_string(),
+                _ => action.to_string(),
+            }
+        }
         "selfdev" => {
             let action = tool
                 .input

@@ -12,6 +12,7 @@ mod debug_socket;
 mod edit;
 mod glob;
 mod gmail;
+mod goal;
 mod grep;
 mod invalid;
 mod ls;
@@ -247,6 +248,7 @@ impl Registry {
                 session_search::SessionSearchTool::new(),
             );
             Self::insert_tool(&mut m, "memory", memory::MemoryTool::new());
+            Self::insert_tool(&mut m, "goal", goal::GoalTool::new());
             Self::insert_tool(&mut m, "gmail", gmail::GmailTool::new());
             Self::insert_tool(&mut m, "schedule", ambient::ScheduleTool::new());
             m
@@ -672,6 +674,7 @@ mod tests {
     use crate::message::{Message, ToolDefinition};
     use crate::provider::{EventStream, Provider};
     use async_trait::async_trait;
+    use serde_json::Value;
 
     struct MockProvider;
 
@@ -792,6 +795,58 @@ mod tests {
                 .as_array()
                 .map(|required| required.iter().any(|value| value == "tool"))
                 .unwrap_or(false)
+        );
+    }
+
+    fn schema_type_includes(schema: &Value, expected: &str) -> bool {
+        match schema.get("type") {
+            Some(Value::String(value)) => value == expected,
+            Some(Value::Array(values)) => values
+                .iter()
+                .any(|value| value.as_str().is_some_and(|value| value == expected)),
+            _ => false,
+        }
+    }
+
+    fn collect_schema_errors(schema: &Value, path: &str, errors: &mut Vec<String>) {
+        match schema {
+            Value::Object(map) => {
+                if schema_type_includes(schema, "array") && !map.contains_key("items") {
+                    errors.push(format!("{path}: array schema missing items"));
+                }
+
+                for (key, value) in map {
+                    collect_schema_errors(value, &format!("{path}.{key}"), errors);
+                }
+            }
+            Value::Array(values) => {
+                for (idx, value) in values.iter().enumerate() {
+                    collect_schema_errors(value, &format!("{path}[{idx}]"), errors);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tool_definitions_do_not_expose_invalid_array_schemas() {
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+        let registry = Registry::new(provider).await;
+
+        let defs = registry.definitions(None).await;
+        let mut errors = Vec::new();
+        for def in &defs {
+            collect_schema_errors(
+                &def.input_schema,
+                &format!("tool `{}`", def.name),
+                &mut errors,
+            );
+        }
+
+        assert!(
+            errors.is_empty(),
+            "tool definitions must not expose invalid schemas:\n{}",
+            errors.join("\n")
         );
     }
 
