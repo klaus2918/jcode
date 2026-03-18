@@ -79,6 +79,14 @@ pub fn known_providers() -> Vec<String> {
 
 /// Cache TTL in seconds (24 hours)
 const CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+/// Soft refresh TTL for the model catalog.
+///
+/// We keep the 24h disk cache for resilience/offline startup, but after this
+/// shorter interval we refresh in the background so new models appear quickly
+/// without blocking the picker UI.
+const MODEL_CATALOG_SOFT_REFRESH_SECS: u64 = 15 * 60;
+/// Minimum delay between background refresh attempts.
+const MODEL_CATALOG_REFRESH_RETRY_SECS: u64 = 60;
 /// Pin provider to preserve cache for this long after a cache hit
 const CACHE_PIN_TTL_SECS: u64 = 60 * 60;
 
@@ -497,6 +505,33 @@ struct DiskCache {
 struct ModelsCache {
     models: Vec<ModelInfo>,
     fetched: bool,
+    cached_at: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct ModelCatalogRefreshState {
+    in_flight: bool,
+    last_attempt_unix: Option<u64>,
+}
+
+fn current_unix_secs() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+fn load_disk_cache_entry() -> Option<DiskCache> {
+    let path = cache_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    let cache: DiskCache = serde_json::from_str(&content).ok()?;
+    let now = current_unix_secs()?;
+
+    if now.saturating_sub(cache.cached_at) < CACHE_TTL_SECS {
+        Some(cache)
+    } else {
+        None
+    }
 }
 
 /// Get the cache file path
@@ -511,21 +546,7 @@ fn cache_path() -> PathBuf {
 
 /// Load models from disk cache if valid
 fn load_disk_cache() -> Option<Vec<ModelInfo>> {
-    let path = cache_path();
-    let content = std::fs::read_to_string(&path).ok()?;
-    let cache: DiskCache = serde_json::from_str(&content).ok()?;
-
-    // Check if cache is still valid
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-
-    if now - cache.cached_at < CACHE_TTL_SECS {
-        Some(cache.models)
-    } else {
-        None
-    }
+    load_disk_cache_entry().map(|cache| cache.models)
 }
 
 pub fn load_model_pricing_disk_cache_public(model_id: &str) -> Option<ModelPricing> {
@@ -633,6 +654,52 @@ fn save_disk_cache(models: &[ModelInfo]) {
     if let Ok(content) = serde_json::to_string(&cache) {
         let _ = std::fs::write(&path, content);
     }
+}
+
+async fn fetch_models_from_api(
+    client: Client,
+    api_base: String,
+    auth: ProviderAuth,
+    models_cache: Arc<RwLock<ModelsCache>>,
+) -> Result<Vec<ModelInfo>> {
+    let url = format!("{}/models", api_base);
+    let response = auth
+        .apply(client.get(&url))
+        .await?
+        .send()
+        .await
+        .with_context(|| format!("Failed to fetch models from {}", api_base))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Model catalog API error ({}): {}", status, body);
+    }
+
+    #[derive(Deserialize)]
+    struct ModelsResponse {
+        data: Vec<ModelInfo>,
+    }
+
+    let models_response: ModelsResponse = response
+        .json()
+        .await
+        .context("Failed to parse models response")?;
+
+    save_disk_cache(&models_response.data);
+
+    if let Some(now) = current_unix_secs() {
+        let mut cache = models_cache.write().await;
+        cache.models = models_response.data.clone();
+        cache.fetched = true;
+        cache.cached_at = Some(now);
+    } else {
+        let mut cache = models_cache.write().await;
+        cache.models = models_response.data.clone();
+        cache.fetched = true;
+    }
+
+    Ok(models_response.data)
 }
 
 fn endpoints_cache_path(model: &str) -> PathBuf {
@@ -750,6 +817,7 @@ pub struct OpenRouterProvider {
     supports_model_catalog: bool,
     send_openrouter_headers: bool,
     models_cache: Arc<RwLock<ModelsCache>>,
+    model_catalog_refresh: Arc<Mutex<ModelCatalogRefreshState>>,
     /// Provider routing preferences
     provider_routing: Arc<RwLock<ProviderRouting>>,
     /// Pinned provider for this session (cache-aware)
@@ -810,10 +878,100 @@ impl OpenRouterProvider {
             supports_model_catalog,
             send_openrouter_headers,
             models_cache: Arc::new(RwLock::new(ModelsCache::default())),
+            model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
             provider_routing: Arc::new(RwLock::new(provider_routing)),
             provider_pin: Arc::new(Mutex::new(None)),
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
         })
+    }
+
+    fn should_background_refresh_model_catalog(&self, cache_age_secs: u64) -> bool {
+        if cache_age_secs < MODEL_CATALOG_SOFT_REFRESH_SECS {
+            return false;
+        }
+
+        let Some(now) = current_unix_secs() else {
+            return false;
+        };
+
+        let Ok(state) = self.model_catalog_refresh.lock() else {
+            return false;
+        };
+
+        if state.in_flight {
+            return false;
+        }
+
+        state
+            .last_attempt_unix
+            .map(|last| now.saturating_sub(last) >= MODEL_CATALOG_REFRESH_RETRY_SECS)
+            .unwrap_or(true)
+    }
+
+    fn begin_background_model_catalog_refresh(&self) -> bool {
+        let Some(now) = current_unix_secs() else {
+            return false;
+        };
+
+        let Ok(mut state) = self.model_catalog_refresh.lock() else {
+            return false;
+        };
+
+        if state.in_flight {
+            return false;
+        }
+
+        if let Some(last) = state.last_attempt_unix {
+            if now.saturating_sub(last) < MODEL_CATALOG_REFRESH_RETRY_SECS {
+                return false;
+            }
+        }
+
+        state.in_flight = true;
+        state.last_attempt_unix = Some(now);
+        true
+    }
+
+    fn finish_background_model_catalog_refresh(
+        refresh_state: &Arc<Mutex<ModelCatalogRefreshState>>,
+    ) {
+        if let Ok(mut state) = refresh_state.lock() {
+            state.in_flight = false;
+        }
+    }
+
+    fn maybe_schedule_model_catalog_refresh(&self, cache_age_secs: u64, context: &'static str) {
+        if !self.should_background_refresh_model_catalog(cache_age_secs)
+            || !self.begin_background_model_catalog_refresh()
+        {
+            return;
+        }
+
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            Self::finish_background_model_catalog_refresh(&self.model_catalog_refresh);
+            return;
+        };
+
+        let client = self.client.clone();
+        let api_base = self.api_base.clone();
+        let auth = self.auth.clone();
+        let models_cache = Arc::clone(&self.models_cache);
+        let refresh_state = Arc::clone(&self.model_catalog_refresh);
+
+        handle.spawn(async move {
+            match fetch_models_from_api(client, api_base, auth, models_cache).await {
+                Ok(models) => crate::logging::info(&format!(
+                    "Refreshed OpenRouter model catalog in background ({}): {} models",
+                    context,
+                    models.len()
+                )),
+                Err(e) => crate::logging::info(&format!(
+                    "Failed to refresh OpenRouter model catalog in background ({}): {}",
+                    context, e
+                )),
+            }
+            OpenRouterProvider::finish_background_model_catalog_refresh(&refresh_state);
+        });
     }
 
     /// Parse provider routing configuration from environment variables
@@ -1207,71 +1365,48 @@ impl OpenRouterProvider {
         {
             let cache = self.models_cache.read().await;
             if cache.fetched {
+                if let Some(cached_at) = cache
+                    .cached_at
+                    .and_then(|t| current_unix_secs().map(|now| now.saturating_sub(t)))
+                {
+                    self.maybe_schedule_model_catalog_refresh(cached_at, "memory cache");
+                }
                 return Ok(cache.models.clone());
             }
         }
 
         // Check disk cache
-        if let Some(models) = load_disk_cache() {
+        if let Some(cache_entry) = load_disk_cache_entry() {
+            let cache_age = current_unix_secs()
+                .map(|now| now.saturating_sub(cache_entry.cached_at))
+                .unwrap_or(0);
             let mut cache = self.models_cache.write().await;
-            cache.models = models.clone();
+            cache.models = cache_entry.models.clone();
             cache.fetched = true;
-            return Ok(models);
+            cache.cached_at = Some(cache_entry.cached_at);
+            drop(cache);
+            self.maybe_schedule_model_catalog_refresh(cache_age, "disk cache");
+            return Ok(cache_entry.models);
         }
 
-        // Fetch from API
-        let url = format!("{}/models", self.api_base);
-        let response = self
-            .auth
-            .apply(self.client.get(&url))
-            .await?
-            .send()
-            .await
-            .with_context(|| format!("Failed to fetch models from {}", self.api_base))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Model catalog API error ({}): {}", status, body);
-        }
-
-        #[derive(Deserialize)]
-        struct ModelsResponse {
-            data: Vec<ModelInfo>,
-        }
-
-        let models_response: ModelsResponse = response
-            .json()
-            .await
-            .context("Failed to parse models response")?;
-
-        // Save to disk cache
-        save_disk_cache(&models_response.data);
-
-        // Update in-memory cache
-        {
-            let mut cache = self.models_cache.write().await;
-            cache.models = models_response.data.clone();
-            cache.fetched = true;
-        }
-
-        Ok(models_response.data)
+        fetch_models_from_api(
+            self.client.clone(),
+            self.api_base.clone(),
+            self.auth.clone(),
+            Arc::clone(&self.models_cache),
+        )
+        .await
     }
 
     /// Force refresh the models cache from API
     pub async fn refresh_models(&self) -> Result<Vec<ModelInfo>> {
-        // Clear in-memory cache
-        {
-            let mut cache = self.models_cache.write().await;
-            cache.fetched = false;
-            cache.models.clear();
-        }
-
-        // Delete disk cache
-        let _ = std::fs::remove_file(cache_path());
-
-        // Fetch fresh
-        self.fetch_models().await
+        fetch_models_from_api(
+            self.client.clone(),
+            self.api_base.clone(),
+            self.auth.clone(),
+            Arc::clone(&self.models_cache),
+        )
+        .await
     }
 
     /// Fetch per-provider endpoint data for a model from OpenRouter API.
@@ -2089,16 +2224,26 @@ impl Provider for OpenRouterProvider {
 
         if let Ok(cache) = self.models_cache.try_read() {
             if cache.fetched && !cache.models.is_empty() {
+                if let Some(cache_age) = cache.cached_at.and_then(|cached_at| {
+                    current_unix_secs().map(|now| now.saturating_sub(cached_at))
+                }) {
+                    self.maybe_schedule_model_catalog_refresh(cache_age, "display memory cache");
+                }
                 return cache.models.iter().map(|m| m.id.clone()).collect();
             }
         }
 
-        if let Some(models) = load_disk_cache() {
+        if let Some(cache_entry) = load_disk_cache_entry() {
+            let cache_age = current_unix_secs()
+                .map(|now| now.saturating_sub(cache_entry.cached_at))
+                .unwrap_or(0);
             if let Ok(mut cache) = self.models_cache.try_write() {
-                cache.models = models.clone();
+                cache.models = cache_entry.models.clone();
                 cache.fetched = true;
+                cache.cached_at = Some(cache_entry.cached_at);
             }
-            return models.into_iter().map(|m| m.id).collect();
+            self.maybe_schedule_model_catalog_refresh(cache_age, "display disk cache");
+            return cache_entry.models.into_iter().map(|m| m.id).collect();
         }
 
         Vec::new()
@@ -2155,6 +2300,7 @@ impl Provider for OpenRouterProvider {
             supports_model_catalog: self.supports_model_catalog,
             send_openrouter_headers: self.send_openrouter_headers,
             models_cache: Arc::clone(&self.models_cache),
+            model_catalog_refresh: Arc::clone(&self.model_catalog_refresh),
             provider_routing: Arc::new(RwLock::new(
                 self.provider_routing
                     .try_read()
@@ -2747,6 +2893,26 @@ mod tests {
         }
     }
 
+    fn make_provider() -> OpenRouterProvider {
+        OpenRouterProvider {
+            client: crate::provider::shared_http_client(),
+            model: Arc::new(RwLock::new(DEFAULT_MODEL.to_string())),
+            api_base: DEFAULT_API_BASE.to_string(),
+            auth: ProviderAuth::AuthorizationBearer {
+                token: "test".to_string(),
+                label: DEFAULT_API_KEY_NAME.to_string(),
+            },
+            supports_provider_features: true,
+            supports_model_catalog: true,
+            send_openrouter_headers: true,
+            models_cache: Arc::new(RwLock::new(ModelsCache::default())),
+            model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
+            provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
+            provider_pin: Arc::new(Mutex::new(None)),
+            endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
     #[test]
     fn test_rank_providers_cache_priority() {
         let endpoints = vec![
@@ -2784,22 +2950,33 @@ mod tests {
     }
 
     #[test]
+    fn test_background_refresh_waits_for_soft_ttl() {
+        let provider = make_provider();
+
+        assert!(!provider.should_background_refresh_model_catalog(
+            MODEL_CATALOG_SOFT_REFRESH_SECS.saturating_sub(1)
+        ));
+        assert!(provider.should_background_refresh_model_catalog(MODEL_CATALOG_SOFT_REFRESH_SECS));
+    }
+
+    #[test]
+    fn test_background_refresh_is_throttled_between_attempts() {
+        let provider = make_provider();
+        assert!(provider.begin_background_model_catalog_refresh());
+        assert!(!provider.should_background_refresh_model_catalog(MODEL_CATALOG_SOFT_REFRESH_SECS));
+
+        OpenRouterProvider::finish_background_model_catalog_refresh(
+            &provider.model_catalog_refresh,
+        );
+
+        assert!(!provider.should_background_refresh_model_catalog(MODEL_CATALOG_SOFT_REFRESH_SECS));
+    }
+
+    #[test]
     fn test_kimi_routing_uses_endpoints_or_fallback() {
         let provider = OpenRouterProvider {
-            client: crate::provider::shared_http_client(),
             model: Arc::new(RwLock::new("moonshotai/kimi-k2.5".to_string())),
-            api_base: DEFAULT_API_BASE.to_string(),
-            auth: ProviderAuth::AuthorizationBearer {
-                token: "test".to_string(),
-                label: DEFAULT_API_KEY_NAME.to_string(),
-            },
-            supports_provider_features: true,
-            supports_model_catalog: true,
-            send_openrouter_headers: true,
-            models_cache: Arc::new(RwLock::new(ModelsCache::default())),
-            provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
-            provider_pin: Arc::new(Mutex::new(None)),
-            endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
+            ..make_provider()
         };
 
         let rt = tokio::runtime::Builder::new_current_thread()
