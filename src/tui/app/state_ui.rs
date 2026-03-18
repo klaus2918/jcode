@@ -280,9 +280,54 @@ impl App {
         commands
     }
 
+    fn model_suggestion_candidates(&self) -> Vec<(String, &'static str)> {
+        fn push_unique(
+            seen: &mut std::collections::HashSet<String>,
+            models: &mut Vec<String>,
+            model: String,
+        ) {
+            if !model.is_empty() && seen.insert(model.clone()) {
+                models.push(model);
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut models = Vec::new();
+
+        if self.is_remote {
+            if let Some(current) = self.remote_provider_model.clone() {
+                push_unique(&mut seen, &mut models, current);
+            }
+
+            let routes = if !self.remote_model_routes.is_empty() {
+                self.remote_model_routes.clone()
+            } else {
+                self.build_remote_model_routes_fallback()
+            };
+
+            for route in routes {
+                push_unique(&mut seen, &mut models, route.model);
+            }
+
+            for model in &self.remote_available_models {
+                push_unique(&mut seen, &mut models, model.clone());
+            }
+        } else {
+            push_unique(&mut seen, &mut models, self.provider.model());
+            for model in self.provider.available_models_display() {
+                push_unique(&mut seen, &mut models, model);
+            }
+        }
+
+        models
+            .into_iter()
+            .map(|model| (format!("/model {}", model), "Switch to model"))
+            .collect()
+    }
+
     /// Get command suggestions based on current input (or base input for cycling)
     pub(super) fn get_suggestions_for(&self, input: &str) -> Vec<(String, &'static str)> {
-        let input = input.trim();
+        let input = input.trim_start();
 
         // Only show suggestions when input starts with /
         if !input.starts_with('/') {
@@ -290,10 +335,19 @@ impl App {
         }
 
         let prefix = input.to_lowercase();
+        let prefix_trimmed = prefix.trim_end();
 
-        // /model opens the interactive picker — don't list individual models in autocomplete
-        if prefix == "/model" || prefix.starts_with("/model ") || prefix.starts_with("/models") {
-            return vec![("/model".into(), "Open model picker")];
+        if prefix.starts_with("/model ") || prefix.starts_with("/models ") {
+            let suggestions = self.model_suggestion_candidates();
+            if suggestions.is_empty() {
+                return vec![("/model".into(), "Open model picker")];
+            }
+            return self.rank_suggestions(input, suggestions);
+        }
+
+        // /model opens the interactive picker, and `/model <name>` supports direct completion.
+        if prefix_trimmed == "/model" || prefix_trimmed == "/models" {
+            return vec![("/model".into(), "Open model picker or type `/model <name>`")];
         }
 
         if prefix.starts_with("/help ") || prefix.starts_with("/? ") {

@@ -1334,6 +1334,42 @@ fn test_model_picker_preview_filter_parsing() {
 }
 
 #[test]
+fn test_model_command_suggestions_include_matching_models() {
+    let mut app = create_test_app();
+    configure_test_remote_models(&mut app);
+
+    let suggestions = app.get_suggestions_for("/model g52c");
+    assert_eq!(
+        suggestions.first().map(|(cmd, _)| cmd.as_str()),
+        Some("/model gpt-5.2-codex")
+    );
+}
+
+#[test]
+fn test_model_command_trailing_space_shows_model_suggestions() {
+    let mut app = create_test_app();
+    configure_test_remote_models(&mut app);
+
+    let suggestions = app.get_suggestions_for("/model ");
+    assert!(
+        suggestions
+            .iter()
+            .any(|(cmd, _)| cmd == "/model gpt-5.3-codex")
+    );
+}
+
+#[test]
+fn test_model_autocomplete_completes_unique_match() {
+    let mut app = create_test_app();
+    configure_test_remote_models(&mut app);
+    app.input = "/model g52c".to_string();
+    app.cursor_pos = app.input.len();
+
+    assert!(app.autocomplete());
+    assert_eq!(app.input(), "/model gpt-5.2-codex");
+}
+
+#[test]
 fn test_model_picker_preview_stays_open_and_updates_filter() {
     let mut app = create_test_app();
     configure_test_remote_models(&mut app);
