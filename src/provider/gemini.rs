@@ -1009,16 +1009,64 @@ fn build_tools(tools: &[ToolDefinition]) -> Option<Vec<GeminiTool>> {
             .map(|tool| GeminiFunctionDeclaration {
                 name: tool.name.clone(),
                 description: tool.description.clone(),
-                parameters: tool.input_schema.clone(),
+                parameters: gemini_compatible_schema(&tool.input_schema),
             })
             .collect(),
     }])
+}
+
+fn gemini_compatible_schema(schema: &Value) -> Value {
+    match schema {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, value) in map {
+                if key == "const" {
+                    out.insert(
+                        "enum".to_string(),
+                        Value::Array(vec![gemini_compatible_schema(value)]),
+                    );
+                } else {
+                    out.insert(key.clone(), gemini_compatible_schema(value));
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(gemini_compatible_schema).collect()),
+        _ => schema.clone(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::message::{ContentBlock, Message, Role};
+    use crate::provider::{EventStream, Provider};
+    use crate::tool::Registry;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct MockProvider;
+
+    #[async_trait]
+    impl Provider for MockProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> anyhow::Result<EventStream> {
+            unimplemented!("Mock provider")
+        }
+
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(MockProvider)
+        }
+    }
 
     #[test]
     fn available_models_include_gemini_defaults() {
@@ -1089,6 +1137,66 @@ mod tests {
         let built = build_tools(&defs).unwrap();
         assert_eq!(built.len(), 1);
         assert_eq!(built[0].function_declarations[0].name, "read");
+    }
+
+    fn schema_contains_key(schema: &Value, key: &str) -> bool {
+        match schema {
+            Value::Object(map) => {
+                map.contains_key(key) || map.values().any(|value| schema_contains_key(value, key))
+            }
+            Value::Array(items) => items.iter().any(|value| schema_contains_key(value, key)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn build_tools_rewrites_const_for_gemini_schema_compatibility() {
+        let defs = vec![ToolDefinition {
+            name: "batch".to_string(),
+            description: "Batch tools".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "tool_calls": {
+                        "type": "array",
+                        "items": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "tool": { "type": "string", "const": "read" },
+                                        "file_path": { "type": "string" }
+                                    },
+                                    "required": ["tool", "file_path"]
+                                }
+                            ]
+                        }
+                    }
+                }
+            }),
+        }];
+
+        let built = build_tools(&defs).expect("gemini tools");
+        let parameters = &built[0].function_declarations[0].parameters;
+
+        assert!(!schema_contains_key(parameters, "const"));
+        assert_eq!(
+            parameters["properties"]["tool_calls"]["items"]["oneOf"][0]["properties"]["tool"]
+                ["enum"],
+            json!(["read"])
+        );
+    }
+
+    #[tokio::test]
+    async fn build_tools_from_registry_definitions_omits_const_keywords() {
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+        let registry = Registry::new(provider).await;
+        let defs = registry.definitions(None).await;
+
+        let built = build_tools(&defs).expect("gemini tools");
+        let parameters = &built[0].function_declarations;
+
+        assert!(!schema_contains_key(&json!(parameters), "const"));
     }
 
     #[test]
