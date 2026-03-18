@@ -12,14 +12,7 @@ const STARTUP_ASCII_STATUS_FPS: f32 = 12.0;
 const STARTUP_ASCII_STATUS_SPINNER: &[&str] = &["|", "/", "-", "\\"];
 const LUMINANCE: &[u8] = b".,-~:;=!*#$@";
 
-const STARTUP_VARIANTS: &[&str] = &[
-    "donut",
-    "globe",
-    "cube",
-    "octahedron",
-    "lorenz",
-    "rabbit",
-];
+const STARTUP_VARIANTS: &[&str] = &["donut", "globe", "cube", "octahedron", "lorenz", "rabbit"];
 
 const IDLE_VARIANTS: &[&str] = &["donut", "knot", "three_rings", "black_hole"];
 

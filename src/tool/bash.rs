@@ -201,7 +201,9 @@ impl BashTool {
     ) -> Result<ToolOutput> {
         #[cfg(unix)]
         if self.supports_reload_persistence(ctx) {
-            return self.execute_reload_persistable_foreground(params, ctx).await;
+            return self
+                .execute_reload_persistable_foreground(params, ctx)
+                .await;
         }
 
         let timeout_ms = params.timeout.unwrap_or(DEFAULT_TIMEOUT_MS).min(600000);
@@ -358,8 +360,10 @@ impl BashTool {
 
     #[cfg(unix)]
     fn supports_reload_persistence(&self, ctx: &ToolContext) -> bool {
-        matches!(ctx.execution_mode, crate::tool::ToolExecutionMode::AgentTurn)
-            && ctx.stdin_request_tx.is_none()
+        matches!(
+            ctx.execution_mode,
+            crate::tool::ToolExecutionMode::AgentTurn
+        ) && ctx.stdin_request_tx.is_none()
             && ctx.graceful_shutdown_signal.is_some()
     }
 
@@ -382,9 +386,7 @@ impl BashTool {
             .append(true)
             .open(&info.output_file)?;
         let stderr = stdout.try_clone()?;
-        cmd.stdin(Stdio::null())
-            .stdout(stdout)
-            .stderr(stderr);
+        cmd.stdin(Stdio::null()).stdout(stdout).stderr(stderr);
         if let Some(ref dir) = ctx.working_dir {
             cmd.current_dir(dir);
         }
@@ -400,12 +402,14 @@ impl BashTool {
                     .unwrap_or_default();
                 let _ = tokio::fs::remove_file(&info.output_file).await;
                 let _ = tokio::fs::remove_file(&info.status_file).await;
-                return Ok(ToolOutput::new(format_command_output(output, status.code())).with_title(
-                    params
-                        .description
-                        .clone()
-                        .unwrap_or_else(|| params.command.clone()),
-                ));
+                return Ok(
+                    ToolOutput::new(format_command_output(output, status.code())).with_title(
+                        params
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| params.command.clone()),
+                    ),
+                );
             }
 
             if started.elapsed() >= timeout_duration {

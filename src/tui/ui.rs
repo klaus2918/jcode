@@ -1719,7 +1719,10 @@ fn copy_pane_line_text(pane: crate::tui::CopySelectionPane, abs_line: usize) -> 
         .cloned()
 }
 
-fn copy_pane_line_copy_start(pane: crate::tui::CopySelectionPane, abs_line: usize) -> Option<usize> {
+fn copy_pane_line_copy_start(
+    pane: crate::tui::CopySelectionPane,
+    abs_line: usize,
+) -> Option<usize> {
     copy_snapshot_for_pane(pane)?
         .wrapped_copy_offsets
         .get(abs_line)

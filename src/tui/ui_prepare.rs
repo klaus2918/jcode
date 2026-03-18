@@ -529,8 +529,7 @@ fn prepare_messages_inner(
                     + streaming_prepared.wrapped_copy_offsets.len(),
             );
             all_wrapped_copy_offsets.extend(header_prepared.wrapped_copy_offsets.iter().copied());
-            all_wrapped_copy_offsets
-                .extend(startup_prepared.wrapped_copy_offsets.iter().copied());
+            all_wrapped_copy_offsets.extend(startup_prepared.wrapped_copy_offsets.iter().copied());
             all_wrapped_copy_offsets.extend(body_prepared.wrapped_copy_offsets.iter().copied());
             all_wrapped_copy_offsets
                 .extend(batch_progress_prepared.wrapped_copy_offsets.iter().copied());
@@ -729,8 +728,9 @@ fn prepare_body_incremental(
                 let raw_line = new_raw_plain_lines.len();
                 new_raw_plain_lines.push(msg.content.clone());
                 let prompt_width = unicode_width::UnicodeWidthStr::width(msg.content.as_str());
-                let prefix_width = unicode_width::UnicodeWidthStr::width(prompt_num.to_string().as_str())
-                    + unicode_width::UnicodeWidthStr::width("› ");
+                let prefix_width =
+                    unicode_width::UnicodeWidthStr::width(prompt_num.to_string().as_str())
+                        + unicode_width::UnicodeWidthStr::width("› ");
                 new_lines.push(
                     Line::from(vec![
                         Span::styled(format!("{}", prompt_num), Style::default().fg(num_color)),
@@ -975,7 +975,8 @@ fn prepare_body_incremental(
                 let raw_line = new_raw_plain_lines.len();
                 new_raw_plain_lines.push(msg.content.clone());
                 let raw_width = unicode_width::UnicodeWidthStr::width(msg.content.as_str());
-                let prefix_width = unicode_width::UnicodeWidthStr::width(if centered { "✗ " } else { "  ✗ " });
+                let prefix_width =
+                    unicode_width::UnicodeWidthStr::width(if centered { "✗ " } else { "  ✗ " });
                 new_lines.push(
                     Line::from(vec![
                         Span::styled(
@@ -1181,8 +1182,9 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 let raw_line = raw_plain_lines.len();
                 raw_plain_lines.push(msg.content.clone());
                 let prompt_width = unicode_width::UnicodeWidthStr::width(msg.content.as_str());
-                let prefix_width = unicode_width::UnicodeWidthStr::width(prompt_num.to_string().as_str())
-                    + unicode_width::UnicodeWidthStr::width("› ");
+                let prefix_width =
+                    unicode_width::UnicodeWidthStr::width(prompt_num.to_string().as_str())
+                        + unicode_width::UnicodeWidthStr::width("› ");
                 lines.push(
                     Line::from(vec![
                         Span::styled(
@@ -1465,7 +1467,8 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 let raw_line = raw_plain_lines.len();
                 raw_plain_lines.push(msg.content.clone());
                 let raw_width = unicode_width::UnicodeWidthStr::width(msg.content.as_str());
-                let prefix_width = unicode_width::UnicodeWidthStr::width(if centered { "✗ " } else { "  ✗ " });
+                let prefix_width =
+                    unicode_width::UnicodeWidthStr::width(if centered { "✗ " } else { "  ✗ " });
                 lines.push(
                     Line::from(vec![
                         Span::styled(

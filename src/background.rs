@@ -541,7 +541,8 @@ impl BackgroundTaskManager {
                 let path = entry.path();
                 if path.extension().map(|e| e == "json").unwrap_or(false) {
                     if let Some(status) = self.read_status_file(&path).await {
-                        let reconciled = self.finalize_detached_status_if_needed(status, &path).await;
+                        let reconciled =
+                            self.finalize_detached_status_if_needed(status, &path).await;
                         results.push(reconciled);
                     }
                 }
@@ -557,7 +558,10 @@ impl BackgroundTaskManager {
     pub async fn status(&self, task_id: &str) -> Option<TaskStatusFile> {
         let status_path = self.status_path_for(task_id);
         let status = self.read_status_file(&status_path).await?;
-        Some(self.finalize_detached_status_if_needed(status, &status_path).await)
+        Some(
+            self.finalize_detached_status_if_needed(status, &status_path)
+                .await,
+        )
     }
 
     /// Get full output of a task

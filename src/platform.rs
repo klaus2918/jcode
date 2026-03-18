@@ -134,7 +134,7 @@ pub fn signal_detached_process_group(pid: u32, signal: i32) -> std::io::Result<(
         let _ = signal;
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
         };
         unsafe {
             let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);

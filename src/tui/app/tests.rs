@@ -4304,7 +4304,8 @@ fn test_copy_selection_full_user_prompt_line_skips_prompt_chrome() {
     let (prompt_idx, prompt_text) = (visible_start..visible_end)
         .find_map(|abs_line| {
             let text = crate::tui::ui::copy_viewport_line_text(abs_line)?;
-            text.contains("Show me some code").then_some((abs_line, text))
+            text.contains("Show me some code")
+                .then_some((abs_line, text))
         })
         .expect("expected visible user prompt line");
 
