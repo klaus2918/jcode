@@ -1098,6 +1098,7 @@ impl App {
 
         if let (Some(listener), Some(expected_state)) = (callback_listener, pending_state.clone()) {
             let redirect_clone = redirect_uri.clone();
+            let verifier_clone = verifier.clone();
             tokio::spawn(async move {
                 let code = tokio::time::timeout(
                     std::time::Duration::from_secs(300),
@@ -1112,8 +1113,12 @@ impl App {
 
                 match code {
                     Ok(code) => {
-                        match crate::auth::gemini::exchange_callback_code(&code, &redirect_clone)
-                            .await
+                        match crate::auth::gemini::exchange_callback_code(
+                            &code,
+                            &verifier_clone,
+                            &redirect_clone,
+                        )
+                        .await
                         {
                             Ok(tokens) => {
                                 let msg = if let Some(email) = tokens.email {
