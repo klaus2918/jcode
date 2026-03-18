@@ -803,6 +803,7 @@ fn env_override(name: &str) -> Option<String> {
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+        .or_else(|| load_env_value_from_env_or_config(name, OPENAI_COMPAT_PROFILE.env_file))
 }
 
 fn normalize_provider_input(input: &str) -> Option<String> {
@@ -1106,6 +1107,43 @@ mod tests {
         assert_eq!(resolved.api_base, OPENAI_COMPAT_PROFILE.api_base);
         assert_eq!(resolved.api_key_env, OPENAI_COMPAT_PROFILE.api_key_env);
         assert_eq!(resolved.env_file, OPENAI_COMPAT_PROFILE.env_file);
+    }
+
+    #[test]
+    fn matrix_openai_compatible_profile_overrides_read_from_env_file() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_root = temp.path().join("config");
+        std::fs::create_dir_all(config_root.join("jcode")).expect("config dir");
+
+        let _guard = EnvGuard::save(&[
+            "XDG_CONFIG_HOME",
+            "JCODE_OPENAI_COMPAT_API_BASE",
+            "JCODE_OPENAI_COMPAT_API_KEY_NAME",
+            "JCODE_OPENAI_COMPAT_ENV_FILE",
+            "JCODE_OPENAI_COMPAT_DEFAULT_MODEL",
+        ]);
+        crate::env::set_var("XDG_CONFIG_HOME", &config_root);
+        crate::env::remove_var("JCODE_OPENAI_COMPAT_API_BASE");
+        crate::env::remove_var("JCODE_OPENAI_COMPAT_API_KEY_NAME");
+        crate::env::remove_var("JCODE_OPENAI_COMPAT_ENV_FILE");
+        crate::env::remove_var("JCODE_OPENAI_COMPAT_DEFAULT_MODEL");
+        std::fs::write(
+            config_root.join("jcode").join(OPENAI_COMPAT_PROFILE.env_file),
+            concat!(
+                "JCODE_OPENAI_COMPAT_API_BASE=https://api.example.com/v1\n",
+                "JCODE_OPENAI_COMPAT_API_KEY_NAME=EXAMPLE_API_KEY\n",
+                "JCODE_OPENAI_COMPAT_ENV_FILE=example.env\n",
+                "JCODE_OPENAI_COMPAT_DEFAULT_MODEL=example/model\n",
+            ),
+        )
+        .expect("env file");
+
+        let resolved = resolve_openai_compatible_profile(OPENAI_COMPAT_PROFILE);
+        assert_eq!(resolved.api_base, "https://api.example.com/v1");
+        assert_eq!(resolved.api_key_env, "EXAMPLE_API_KEY");
+        assert_eq!(resolved.env_file, "example.env");
+        assert_eq!(resolved.default_model.as_deref(), Some("example/model"));
     }
 
     #[test]
