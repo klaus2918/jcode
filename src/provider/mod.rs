@@ -2538,21 +2538,23 @@ impl MultiProvider {
         let has_openrouter_creds = openrouter::OpenRouterProvider::has_credentials();
 
         // Check if we should use Claude CLI instead of direct API.
-        // Set JCODE_USE_CLAUDE_CLI=1 to use Claude Code CLI (deprecated legacy mode).
-        // Default is now direct Anthropic API for simpler session management.
+        // Set JCODE_USE_CLAUDE_CLI=1 to force the deprecated Claude CLI shell-out path.
+        // Default is direct Anthropic API.
         let use_claude_cli = std::env::var("JCODE_USE_CLAUDE_CLI")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         if use_claude_cli {
             crate::logging::warn(
-                "JCODE_USE_CLAUDE_CLI is deprecated. Direct Anthropic API transport is preferred.",
+                "JCODE_USE_CLAUDE_CLI is deprecated and will be removed. Direct Anthropic API transport is the default.",
             );
         }
 
         // Initialize providers based on available credentials
-        // Claude CLI provider (legacy - shells out to `claude` binary)
+        // Claude CLI provider (deprecated legacy mode - shells out to `claude` binary)
         let claude = if has_claude_creds && use_claude_cli {
-            crate::logging::info("Using Claude CLI provider (JCODE_USE_CLAUDE_CLI=1)");
+            crate::logging::info(
+                "Using deprecated Claude CLI provider (forced by JCODE_USE_CLAUDE_CLI=1)",
+            );
             Some(claude::ClaudeProvider::new())
         } else {
             None
