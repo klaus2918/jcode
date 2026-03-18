@@ -114,7 +114,12 @@ impl ServerRegistry {
         servers
     }
 
-    /// Clean up stale entries (servers that are no longer running or have been superseded)
+    /// Clean up stale entries (servers that are no longer running or have been superseded).
+    ///
+    /// Socket path ownership is managed by the server process itself. Registry
+    /// cleanup must not unlink those paths because a new live server can reuse
+    /// the same published socket after a reboot or reload while an older
+    /// registry entry still references it.
     pub async fn cleanup_stale(&mut self) -> Result<Vec<String>> {
         let mut removed = Vec::new();
 
@@ -124,8 +129,6 @@ impl ServerRegistry {
             if let Some(info) = self.servers.get(name) {
                 let pid = info.pid;
                 if !is_process_running(pid) {
-                    let _ = fs::remove_file(&info.socket).await;
-                    let _ = fs::remove_file(&info.debug_socket).await;
                     removed.push(name.clone());
                     self.servers.remove(name);
                 }
@@ -214,13 +217,6 @@ fn is_process_running(pid: u32) -> bool {
 /// Unregister a server from the registry
 pub async fn unregister_server(name: &str) -> Result<()> {
     let mut registry = ServerRegistry::load().await?;
-
-    // Clean up socket files
-    if let Some(info) = registry.find_by_name(name) {
-        let _ = fs::remove_file(&info.socket).await;
-        let _ = fs::remove_file(&info.debug_socket).await;
-    }
-
     registry.unregister(name);
     registry.save().await?;
     Ok(())
@@ -236,6 +232,9 @@ pub async fn list_servers() -> Result<Vec<ServerInfo>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::lock_test_env;
+    use crate::transport::Listener;
+    use std::ffi::OsString;
 
     fn test_server_info(name: &str) -> ServerInfo {
         ServerInfo {
@@ -266,5 +265,60 @@ mod tests {
 
         assert!(registry.find_by_name("blazing").is_some());
         assert!(registry.find_by_name("frozen").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cleanup_stale_preserves_live_socket_paths() {
+        let _guard = lock_test_env();
+        let temp_home = tempfile::tempdir().expect("temp home");
+        let prev_home: Option<OsString> = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp_home.path());
+
+        let temp_runtime = tempfile::tempdir().expect("temp runtime");
+        let socket = temp_runtime.path().join("jcode.sock");
+        let debug_socket = temp_runtime.path().join("jcode-debug.sock");
+        let _listener = Listener::bind(&socket).expect("bind live socket");
+        let _debug_listener = Listener::bind(&debug_socket).expect("bind live debug socket");
+        let dead_pid = {
+            let mut child = std::process::Command::new("sh")
+                .args(["-c", "exit 0"])
+                .spawn()
+                .expect("spawn short-lived child");
+            let pid = child.id();
+            let _ = child.wait().expect("wait for short-lived child");
+            pid
+        };
+
+        let mut registry = ServerRegistry::default();
+        registry.register(ServerInfo {
+            id: "server_old_1".to_string(),
+            name: "old".to_string(),
+            icon: "🪦".to_string(),
+            socket: socket.clone(),
+            debug_socket: debug_socket.clone(),
+            git_hash: "deadbeef".to_string(),
+            version: "v0.0.0".to_string(),
+            pid: dead_pid,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            sessions: Vec::new(),
+        });
+
+        let removed = registry.cleanup_stale().await.expect("cleanup stale");
+        assert_eq!(removed, vec!["old".to_string()]);
+        assert!(
+            socket.exists(),
+            "cleanup_stale must not unlink a live server socket path"
+        );
+        assert!(
+            debug_socket.exists(),
+            "cleanup_stale must not unlink a live debug socket path"
+        );
+
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
     }
 }
