@@ -207,6 +207,14 @@ fn summarize_ws_input(items: &[Value]) -> WsInputStats {
     stats
 }
 
+fn persistent_ws_idle_needs_healthcheck(idle_for: Duration) -> bool {
+    idle_for >= Duration::from_secs(WEBSOCKET_PERSISTENT_HEALTHCHECK_IDLE_SECS)
+}
+
+fn persistent_ws_idle_requires_reconnect(idle_for: Duration) -> bool {
+    idle_for >= Duration::from_secs(WEBSOCKET_PERSISTENT_IDLE_RECONNECT_SECS)
+}
+
 pub struct OpenAIProvider {
     client: Client,
     credentials: Arc<RwLock<CodexCredentials>>,

@@ -1066,7 +1066,7 @@ fn fit_image_area_with_font(
 fn clamp_side_panel_image_rows(
     estimated_rows: u16,
     inner_height: u16,
-    lines_before_image: usize,
+    _lines_before_image: usize,
     has_following_content: bool,
 ) -> u16 {
     let min_rows = SIDE_PANEL_INLINE_IMAGE_MIN_ROWS.min(inner_height.max(1));
@@ -1077,16 +1077,19 @@ fn clamp_side_panel_image_rows(
         return estimated_rows;
     }
 
-    let preceding_rows = u16::try_from(lines_before_image).unwrap_or(u16::MAX);
     let desired_preview_rows = ((inner_height as u32) / 3)
         .max(SIDE_PANEL_FOLLOWING_CONTENT_PREVIEW_MIN_ROWS as u32)
         .min(SIDE_PANEL_FOLLOWING_CONTENT_PREVIEW_MAX_ROWS as u32)
         as u16;
     let preview_rows = desired_preview_rows.min(inner_height.saturating_sub(1));
-    let max_rows_for_image = inner_height
-        .saturating_sub(preceding_rows)
-        .saturating_sub(preview_rows)
-        .max(min_rows);
+    // Important: this limit is about leaving a preview of *following* content
+    // visible in the current viewport. It must not depend on how many wrapped
+    // lines happened to appear earlier in the document, because those lines are
+    // scrolled away once the image is in view. Using total preceding lines here
+    // causes later diagrams in long side-panel pages to collapse to the minimum
+    // height (often 4 rows), which makes multi-chart dashboard pages nearly
+    // unreadable.
+    let max_rows_for_image = inner_height.saturating_sub(preview_rows).max(min_rows);
 
     estimated_rows.min(max_rows_for_image)
 }
@@ -1111,6 +1114,14 @@ mod tests {
     fn clamp_side_panel_image_rows_keeps_minimum_image_presence() {
         let rows = clamp_side_panel_image_rows(10, 5, 1, true);
         assert_eq!(rows, 4);
+    }
+
+    #[test]
+    fn clamp_side_panel_image_rows_ignores_preceding_document_length() {
+        let near_top = clamp_side_panel_image_rows(18, 16, 2, true);
+        let far_down_page = clamp_side_panel_image_rows(18, 16, 200, true);
+        assert_eq!(near_top, 10);
+        assert_eq!(far_down_page, near_top);
     }
 
     #[test]
@@ -1190,6 +1201,42 @@ mod tests {
                 "image should not consume the full side-panel height when trailing text exists"
             );
         }
+    }
+
+    #[test]
+    fn render_side_panel_markdown_late_mermaid_keeps_reasonable_rows() {
+        let mut content = String::new();
+        for i in 0..24 {
+            content.push_str(&format!("Paragraph {} before chart.\n\n", i + 1));
+        }
+        content.push_str(
+            "```mermaid\nxychart-beta\n    title \"Volume\"\n    x-axis [A, B, C, D]\n    y-axis \"Count\" 0 --> 100\n    bar [10, 50, 80, 30]\n```\n\nTail text after chart.\n",
+        );
+
+        let page = crate::side_panel::SidePanelPage {
+            id: "late_mermaid_demo".to_string(),
+            title: "Late Mermaid Demo".to_string(),
+            file_path: "late_mermaid_demo.md".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            content,
+            updated_at_ms: 1,
+        };
+
+        crate::tui::mermaid::set_video_export_mode(true);
+        let rendered =
+            render_side_panel_markdown_cached(&page, Rect::new(0, 0, 48, 30), true, true);
+        crate::tui::mermaid::set_video_export_mode(false);
+
+        let placement = rendered
+            .image_placements
+            .first()
+            .expect("expected mermaid image placement");
+
+        assert!(
+            placement.rows >= 8,
+            "late side-panel mermaid should not collapse to tiny height: {} rows",
+            placement.rows
+        );
     }
 
     #[test]
