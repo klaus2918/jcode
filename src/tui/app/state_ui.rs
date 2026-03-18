@@ -208,6 +208,78 @@ impl App {
             .collect()
     }
 
+    fn command_candidates(&self) -> Vec<(String, &'static str)> {
+        let mut commands: Vec<(String, &'static str)> = vec![
+            ("/help".into(), "Show help and keyboard shortcuts"),
+            ("/?".into(), "Alias for /help"),
+            ("/commands".into(), "Alias for /help"),
+            ("/model".into(), "List or switch models"),
+            ("/effort".into(), "Show/change reasoning effort (Alt+←/→)"),
+            ("/fast".into(), "Toggle OpenAI/Codex fast mode"),
+            (
+                "/transport".into(),
+                "Show/change connection transport (auto/https/websocket)",
+            ),
+            ("/clear".into(), "Clear conversation history"),
+            ("/rewind".into(), "Rewind conversation to previous message"),
+            ("/poke".into(), "Poke model to resume with incomplete todos"),
+            (
+                "/compact".into(),
+                "Compact context (summarize old messages)",
+            ),
+            ("/fix".into(), "Recover when the model cannot continue"),
+            (
+                "/dictate".into(),
+                "Run configured external dictation command",
+            ),
+            ("/memory".into(), "Toggle memory feature (on/off/status)"),
+            (
+                "/goals".into(),
+                "Open goals overview / resume tracked goals",
+            ),
+            ("/swarm".into(), "Toggle swarm feature (on/off/status)"),
+            ("/version".into(), "Show current version"),
+            ("/changelog".into(), "Show recent changes in this build"),
+            ("/info".into(), "Show session info and tokens"),
+            ("/usage".into(), "Show subscription usage limits"),
+            (
+                "/subscription".into(),
+                "Show jcode subscription status and account details",
+            ),
+            ("/config".into(), "Show or edit configuration"),
+            ("/reload".into(), "Smart reload (if newer binary exists)"),
+            ("/restart".into(), "Restart with current binary (no build)"),
+            ("/rebuild".into(), "Full rebuild (git pull + build + tests)"),
+            ("/update".into(), "Check for and install latest release"),
+            ("/resume".into(), "Open session picker"),
+            ("/save".into(), "Bookmark session for easy access"),
+            ("/unsave".into(), "Remove bookmark from session"),
+            ("/split".into(), "Split session into a new window"),
+            ("/quit".into(), "Exit jcode"),
+            ("/auth".into(), "Show authentication status"),
+            ("/cache".into(), "Toggle cache TTL between 5min and 1h"),
+            (
+                "/login".into(),
+                "Login to a provider (use `/login <provider>` for the full list)",
+            ),
+            (
+                "/account".into(),
+                "Manage Anthropic/OpenAI accounts (list/add/switch/remove)",
+            ),
+        ];
+
+        if self.is_remote {
+            commands.push(("/client-reload".into(), "Force reload client binary"));
+            commands.push(("/server-reload".into(), "Force reload server binary"));
+        }
+
+        for skill in self.skills.list() {
+            commands.push((format!("/{}", skill.name), "Activate skill"));
+        }
+
+        commands
+    }
+
     /// Get command suggestions based on current input (or base input for cycling)
     pub(super) fn get_suggestions_for(&self, input: &str) -> Vec<(String, &'static str)> {
         let input = input.trim();
@@ -224,40 +296,89 @@ impl App {
             return vec![("/model".into(), "Open model picker")];
         }
 
+        if prefix.starts_with("/help ") || prefix.starts_with("/? ") {
+            let base = if prefix.starts_with("/? ") {
+                "/?"
+            } else {
+                "/help"
+            };
+            let topics = self
+                .command_candidates()
+                .into_iter()
+                .map(|(cmd, help)| (format!("{} {}", base, cmd.trim_start_matches('/')), help))
+                .collect();
+            return self.rank_suggestions(input, topics);
+        }
+
         if prefix.starts_with("/effort ") {
             let efforts = ["none", "low", "medium", "high", "xhigh"];
-            return efforts
-                .iter()
-                .map(|e| (format!("/effort {}", e), effort_display_label(e)))
-                .collect();
+            return self.rank_suggestions(
+                input,
+                efforts
+                    .iter()
+                    .map(|e| (format!("/effort {}", e), effort_display_label(e)))
+                    .collect(),
+            );
         }
 
         if prefix.starts_with("/fast ") {
             let modes = ["on", "off", "status"];
-            return modes.iter().map(|m| (format!("/fast {}", m), *m)).collect();
+            return self.rank_suggestions(
+                input,
+                modes.iter().map(|m| (format!("/fast {}", m), *m)).collect(),
+            );
         }
 
         if prefix.starts_with("/transport ") {
             let transports = ["auto", "https", "websocket"];
-            return transports
-                .iter()
-                .map(|t| (format!("/transport {}", t), *t))
-                .collect();
+            return self.rank_suggestions(
+                input,
+                transports
+                    .iter()
+                    .map(|t| (format!("/transport {}", t), *t))
+                    .collect(),
+            );
+        }
+
+        if prefix.starts_with("/compact ") {
+            let suggestions = vec![
+                ("/compact mode".into(), "Show/change compaction mode"),
+                (
+                    "/compact mode status".into(),
+                    "Show the current compaction mode",
+                ),
+                ("/compact mode reactive".into(), "Use reactive compaction"),
+                ("/compact mode proactive".into(), "Use proactive compaction"),
+                ("/compact mode semantic".into(), "Use semantic compaction"),
+            ];
+            return self.rank_suggestions(input, suggestions);
         }
 
         if prefix.starts_with("/compact mode ") {
             let modes = ["reactive", "proactive", "semantic"];
-            return modes
-                .iter()
-                .map(|mode| (format!("/compact mode {}", mode), *mode))
-                .collect();
+            let mut suggestions: Vec<(String, &'static str)> = vec![(
+                "/compact mode status".into(),
+                "Show the current compaction mode",
+            )];
+            suggestions.extend(
+                modes
+                    .iter()
+                    .map(|mode| (format!("/compact mode {}", mode), *mode)),
+            );
+            return self.rank_suggestions(input, suggestions);
         }
 
         if prefix.starts_with("/login ") || prefix.starts_with("/auth ") {
-            return crate::provider_catalog::tui_login_providers()
+            let base = if prefix.starts_with("/auth ") {
+                "/auth"
+            } else {
+                "/login"
+            };
+            let suggestions = crate::provider_catalog::tui_login_providers()
                 .iter()
-                .map(|provider| (format!("/login {}", provider.id), provider.menu_detail))
+                .map(|provider| (format!("{} {}", base, provider.id), provider.menu_detail))
                 .collect();
+            return self.rank_suggestions(input, suggestions);
         }
 
         if prefix.starts_with("/account ") || prefix.starts_with("/accounts ") {
@@ -296,77 +417,82 @@ impl App {
                     ));
                 }
             }
-            return suggestions;
+            return self.rank_suggestions(input, suggestions);
         }
 
-        // Built-in commands
-        let mut commands: Vec<(String, &'static str)> = vec![
-            ("/help".into(), "Show help and keyboard shortcuts"),
-            ("/commands".into(), "Alias for /help"),
-            ("/model".into(), "List or switch models"),
-            ("/effort".into(), "Show/change reasoning effort (Alt+←/→)"),
-            ("/fast".into(), "Toggle OpenAI/Codex fast mode"),
-            (
-                "/transport".into(),
-                "Show/change connection transport (auto/https/websocket)",
-            ),
-            ("/clear".into(), "Clear conversation history"),
-            ("/rewind".into(), "Rewind conversation to previous message"),
-            ("/poke".into(), "Poke model to resume with incomplete todos"),
-            (
-                "/compact".into(),
-                "Compact context (summarize old messages)",
-            ),
-            ("/fix".into(), "Recover when the model cannot continue"),
-            (
-                "/dictate".into(),
-                "Run configured external dictation command",
-            ),
-            ("/memory".into(), "Toggle memory feature (on/off/status)"),
-            (
-                "/goals".into(),
-                "Open goals overview / resume tracked goals",
-            ),
-            ("/swarm".into(), "Toggle swarm feature (on/off/status)"),
-            ("/version".into(), "Show current version"),
-            ("/changelog".into(), "Show recent changes in this build"),
-            ("/info".into(), "Show session info and tokens"),
-            ("/usage".into(), "Show subscription usage limits"),
-            ("/reload".into(), "Smart reload (if newer binary exists)"),
-            ("/restart".into(), "Restart with current binary (no build)"),
-            ("/rebuild".into(), "Full rebuild (git pull + build + tests)"),
-            ("/update".into(), "Check for and install latest release"),
-            ("/resume".into(), "Open session picker"),
-            ("/save".into(), "Bookmark session for easy access"),
-            ("/unsave".into(), "Remove bookmark from session"),
-            ("/split".into(), "Split session into a new window"),
-            ("/quit".into(), "Exit jcode"),
-            ("/auth".into(), "Show authentication status"),
-            ("/cache".into(), "Toggle cache TTL between 5min and 1h"),
-            (
-                "/login".into(),
-                "Login to a provider (use `/login <provider>` for the full list)",
-            ),
-            (
-                "/account".into(),
-                "Manage Anthropic/OpenAI accounts (list/add/switch/remove)",
-            ),
-        ];
-
-        // Add client-reload and server-reload commands in remote mode
-        if self.is_remote {
-            commands.push(("/client-reload".into(), "Force reload client binary"));
-            commands.push(("/server-reload".into(), "Force reload server binary"));
+        if prefix.starts_with("/memory ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    ("/memory on".into(), "Enable memory for this session"),
+                    ("/memory off".into(), "Disable memory for this session"),
+                    ("/memory status".into(), "Show memory feature status"),
+                ],
+            );
         }
 
-        // Add skills as commands
-        let skills = self.skills.list();
-        for skill in skills {
-            commands.push((format!("/{}", skill.name), "Activate skill"));
+        if prefix.starts_with("/swarm ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    ("/swarm on".into(), "Enable swarm for this session"),
+                    ("/swarm off".into(), "Disable swarm for this session"),
+                    ("/swarm status".into(), "Show swarm feature status"),
+                ],
+            );
         }
 
-        // Filter by prefix match
-        self.rank_suggestions(&prefix, commands)
+        if prefix.starts_with("/subscription ") {
+            return self.rank_suggestions(
+                input,
+                vec![("/subscription status".into(), "Show subscription status")],
+            );
+        }
+
+        if prefix.starts_with("/config ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    ("/config init".into(), "Create a default config file"),
+                    ("/config create".into(), "Alias for /config init"),
+                    ("/config edit".into(), "Open the config file in $EDITOR"),
+                ],
+            );
+        }
+
+        if prefix.starts_with("/goals show ") {
+            let relevant_goals = crate::goal::list_relevant_goals(
+                self.session
+                    .working_dir
+                    .as_deref()
+                    .map(std::path::Path::new),
+            )
+            .unwrap_or_default();
+            let suggestions = relevant_goals
+                .into_iter()
+                .map(|goal| (format!("/goals show {}", goal.id), "Open this goal"))
+                .collect();
+            return self.rank_suggestions(input, suggestions);
+        }
+
+        if prefix.starts_with("/goals ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    ("/goals resume".into(), "Resume the current goal"),
+                    ("/goals show".into(), "Open a specific goal by id"),
+                ],
+            );
+        }
+
+        if prefix.starts_with("/rewind ") {
+            let suggestions = (1..=self.session.messages.len())
+                .map(|n| (format!("/rewind {}", n), "Rewind to this message"))
+                .collect();
+            return self.rank_suggestions(input, suggestions);
+        }
+
+        self.rank_suggestions(&prefix, self.command_candidates())
     }
 
     /// Get command suggestions based on current input
@@ -519,6 +645,7 @@ impl App {
         matches!(
             cmd.trim(),
             "/help"
+                | "/?"
                 | "/model"
                 | "/effort"
                 | "/fast"
@@ -526,11 +653,19 @@ impl App {
                 | "/login"
                 | "/auth"
                 | "/account"
+                | "/account switch"
+                | "/account remove"
+                | "/account openai"
+                | "/account openai switch"
+                | "/account openai remove"
                 | "/subscription"
                 | "/memory"
                 | "/goals"
+                | "/goals show"
                 | "/swarm"
                 | "/rewind"
+                | "/compact"
+                | "/compact mode"
                 | "/config"
                 | "/save"
                 | "/cache"

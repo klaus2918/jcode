@@ -1194,6 +1194,95 @@ fn test_fuzzy_command_suggestions() {
     assert!(suggestions.iter().any(|(cmd, _)| cmd == "/model"));
 }
 
+#[test]
+fn test_top_level_command_suggestions_include_config_and_subscription() {
+    let app = create_test_app();
+    let suggestions = app.get_suggestions_for("/con");
+    assert!(suggestions.iter().any(|(cmd, _)| cmd == "/config"));
+
+    let suggestions = app.get_suggestions_for("/sub");
+    assert!(suggestions.iter().any(|(cmd, _)| cmd == "/subscription"));
+}
+
+#[test]
+fn test_help_topic_suggestions_are_contextual() {
+    let app = create_test_app();
+    let suggestions = app.get_suggestions_for("/help fi");
+    assert_eq!(
+        suggestions.first().map(|(cmd, _)| cmd.as_str()),
+        Some("/help fix")
+    );
+}
+
+#[test]
+fn test_nested_command_suggestions_filter_partial_suffixes() {
+    let app = create_test_app();
+
+    let suggestions = app.get_suggestions_for("/config ed");
+    assert_eq!(
+        suggestions.first().map(|(cmd, _)| cmd.as_str()),
+        Some("/config edit")
+    );
+
+    let suggestions = app.get_suggestions_for("/compact mo se");
+    assert_eq!(
+        suggestions.first().map(|(cmd, _)| cmd.as_str()),
+        Some("/compact mode semantic")
+    );
+
+    let suggestions = app.get_suggestions_for("/memory st");
+    assert_eq!(
+        suggestions.first().map(|(cmd, _)| cmd.as_str()),
+        Some("/memory status")
+    );
+}
+
+#[test]
+fn test_autocomplete_adds_space_for_nested_argument_commands() {
+    let mut app = create_test_app();
+    app.input = "/goals sh".to_string();
+    app.cursor_pos = app.input.len();
+
+    assert!(app.autocomplete());
+    assert_eq!(app.input(), "/goals show ");
+}
+
+#[test]
+fn test_goals_show_suggestions_include_goal_ids() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("repo");
+    std::fs::create_dir_all(&project).expect("project dir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
+    let goal = crate::goal::create_goal(
+        crate::goal::GoalCreateInput {
+            title: "Ship mobile MVP".to_string(),
+            scope: crate::goal::GoalScope::Project,
+            ..crate::goal::GoalCreateInput::default()
+        },
+        Some(&project),
+    )
+    .expect("create goal");
+
+    let mut app = create_test_app();
+    app.session.working_dir = Some(project.display().to_string());
+
+    let suggestions = app.get_suggestions_for("/goals show ");
+    assert!(
+        suggestions
+            .iter()
+            .any(|(cmd, _)| cmd == &format!("/goals show {}", goal.id))
+    );
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
 fn configure_test_remote_models(app: &mut App) {
     app.is_remote = true;
     app.remote_provider_model = Some("gpt-5.3-codex".to_string());
