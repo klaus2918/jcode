@@ -48,6 +48,13 @@ const WEBSOCKET_FIRST_EVENT_TIMEOUT_SECS: u64 = 8;
 const WEBSOCKET_COMPLETION_TIMEOUT_SECS: u64 = 300;
 /// Maximum age of a persistent WebSocket connection before forcing reconnect
 const WEBSOCKET_PERSISTENT_MAX_AGE_SECS: u64 = 3000; // 50 min (server limit is 60 min)
+/// If a persistent socket sits idle this long, reconnect before reuse instead of
+/// discovering a dead socket on the next turn.
+const WEBSOCKET_PERSISTENT_IDLE_RECONNECT_SECS: u64 = 90;
+/// If a persistent socket has been idle for a while, send a lightweight ping
+/// before reuse so we can proactively detect half-closed connections.
+const WEBSOCKET_PERSISTENT_HEALTHCHECK_IDLE_SECS: u64 = 15;
+const WEBSOCKET_PERSISTENT_HEALTHCHECK_TIMEOUT_MS: u64 = 1500;
 const WEBSOCKET_MODEL_COOLDOWN_BASE_SECS: u64 = 600;
 const WEBSOCKET_MODEL_COOLDOWN_MAX_SECS: u64 = 3600;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 32_768;
@@ -153,10 +160,51 @@ struct PersistentWsState {
     ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
     last_response_id: String,
     connected_at: Instant,
+    last_activity_at: Instant,
     /// Number of messages sent in this conversation chain
     message_count: usize,
     /// Number of items we sent in the last full request (for detecting conversation changes)
     last_input_item_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct WsInputStats {
+    total_items: usize,
+    message_items: usize,
+    function_call_items: usize,
+    function_call_output_items: usize,
+    other_items: usize,
+}
+
+impl WsInputStats {
+    fn tool_callback_count(self) -> usize {
+        self.function_call_output_items
+    }
+
+    fn log_fields(self) -> String {
+        format!(
+            "items={} messages={} function_calls={} tool_outputs={} other={}",
+            self.total_items,
+            self.message_items,
+            self.function_call_items,
+            self.function_call_output_items,
+            self.other_items
+        )
+    }
+}
+
+fn summarize_ws_input(items: &[Value]) -> WsInputStats {
+    let mut stats = WsInputStats::default();
+    for item in items {
+        stats.total_items += 1;
+        match item.get("type").and_then(|value| value.as_str()) {
+            Some("message") => stats.message_items += 1,
+            Some("function_call") => stats.function_call_items += 1,
+            Some("function_call_output") => stats.function_call_output_items += 1,
+            _ => stats.other_items += 1,
+        }
+    }
+    stats
 }
 
 pub struct OpenAIProvider {
@@ -2643,11 +2691,13 @@ async fn try_persistent_ws_continuation(
         return PersistentWsResult::NotAvailable;
     }
 
+    let incremental_stats = summarize_ws_input(&incremental_items);
     let previous_response_id = state.last_response_id.clone();
     crate::logging::info(&format!(
-        "Persistent WS continuation: previous_response_id={}, incremental_items={} (was {} now {})",
+        "Persistent WS continuation: previous_response_id={} {} tool_callback={} (was {} now {})",
         previous_response_id,
-        incremental_items.len(),
+        incremental_stats.log_fields(),
+        incremental_stats.tool_callback_count() > 0,
         state.last_input_item_count,
         input_item_count,
     ));
@@ -2696,9 +2746,15 @@ async fn try_persistent_ws_continuation(
         .await;
 
     // Send the continuation request on the existing WebSocket
+    let send_started_at = Instant::now();
     if let Err(e) = state.ws_stream.send(WsMessage::Text(request_text)).await {
         return PersistentWsResult::Failed(format!("send error: {}", e));
     }
+    crate::logging::info(&format!(
+        "Persistent WS continuation request sent in {}ms ({})",
+        send_started_at.elapsed().as_millis(),
+        incremental_stats.log_fields(),
+    ));
 
     // Stream the response, extracting the new response_id
     let mut saw_text_delta = false;
@@ -2710,6 +2766,7 @@ async fn try_persistent_ws_continuation(
     let stream_started = Instant::now();
     let mut last_api_activity_at = stream_started;
     let mut saw_api_activity = false;
+    let mut logged_first_server_event = false;
 
     loop {
         if stream_started.elapsed() >= Duration::from_secs(WEBSOCKET_COMPLETION_TIMEOUT_SECS) {
@@ -2760,6 +2817,14 @@ async fn try_persistent_ws_continuation(
         match result {
             Ok(WsMessage::Text(text)) => {
                 let text = text.to_string();
+                if !logged_first_server_event {
+                    crate::logging::info(&format!(
+                        "Persistent WS first server event after {}ms ({})",
+                        stream_started.elapsed().as_millis(),
+                        incremental_stats.log_fields(),
+                    ));
+                    logged_first_server_event = true;
+                }
                 if is_websocket_fallback_notice(&text) {
                     return PersistentWsResult::Failed("server requested fallback".to_string());
                 }
@@ -2781,8 +2846,10 @@ async fn try_persistent_ws_continuation(
                             {
                                 new_response_id = Some(id.to_string());
                                 crate::logging::info(&format!(
-                                    "Persistent WS got new response_id: {}",
-                                    id
+                                    "Persistent WS got new response_id after {}ms: {} ({})",
+                                    stream_started.elapsed().as_millis(),
+                                    id,
+                                    incremental_stats.log_fields(),
                                 ));
                             }
                         }
@@ -2855,8 +2922,10 @@ async fn try_persistent_ws_continuation(
         state.last_input_item_count = input_item_count;
         state.message_count += 1;
         crate::logging::info(&format!(
-            "Persistent WS continuation success (chain length: {})",
-            state.message_count
+            "Persistent WS continuation success after {}ms (chain length: {}, {})",
+            stream_started.elapsed().as_millis(),
+            state.message_count,
+            incremental_stats.log_fields(),
         ));
         PersistentWsResult::Success
     } else {
@@ -2987,16 +3056,28 @@ async fn stream_response_websocket_persistent(
         obj.remove("background");
     }
 
+    let request_input_stats = request_event
+        .get("input")
+        .and_then(|value| value.as_array())
+        .map(|items| summarize_ws_input(items))
+        .unwrap_or_default();
+
     let request_text = serde_json::to_string(&request_event).map_err(|err| {
         OpenAIStreamFailure::Other(anyhow::anyhow!(
             "Failed to serialize OpenAI websocket request: {}",
             err
         ))
     })?;
+    let request_send_started_at = Instant::now();
     ws_stream
         .send(WsMessage::Text(request_text))
         .await
         .map_err(|err| OpenAIStreamFailure::Other(anyhow::anyhow!(err)))?;
+    crate::logging::info(&format!(
+        "Fresh WS request sent in {}ms ({})",
+        request_send_started_at.elapsed().as_millis(),
+        request_input_stats.log_fields(),
+    ));
 
     let mut saw_text_delta = false;
     let mut streaming_tool_calls = HashMap::new();
@@ -3008,6 +3089,7 @@ async fn stream_response_websocket_persistent(
     let mut pending: VecDeque<StreamEvent> = VecDeque::new();
     let mut response_id: Option<String> = None;
     let connected_at = Instant::now();
+    let mut logged_first_server_event = false;
 
     loop {
         if !saw_response_completed
@@ -3067,6 +3149,14 @@ async fn stream_response_websocket_persistent(
             Ok(message) => match message {
                 WsMessage::Text(text) => {
                     let text = text.to_string();
+                    if !logged_first_server_event {
+                        crate::logging::info(&format!(
+                            "Fresh WS first server event after {}ms ({})",
+                            ws_started_at.elapsed().as_millis(),
+                            request_input_stats.log_fields(),
+                        ));
+                        logged_first_server_event = true;
+                    }
                     if is_websocket_fallback_notice(&text) {
                         return Err(OpenAIStreamFailure::FallbackToHttps(anyhow::anyhow!(
                             "{} reported by websocket stream",
@@ -3086,8 +3176,10 @@ async fn stream_response_websocket_persistent(
                                 {
                                     response_id = Some(id.to_string());
                                     crate::logging::info(&format!(
-                                        "Fresh WS got response_id: {} (will save for continuation)",
-                                        id
+                                        "Fresh WS got response_id after {}ms: {} (will save for continuation; {})",
+                                        ws_started_at.elapsed().as_millis(),
+                                        id,
+                                        request_input_stats.log_fields(),
                                     ));
                                 }
                             }
@@ -3193,13 +3285,16 @@ async fn stream_response_websocket_persistent(
     if let Some(resp_id) = response_id {
         let mut guard = persistent_ws.lock().await;
         crate::logging::info(&format!(
-            "Saving persistent WS connection (response_id={}, items={})",
-            resp_id, input_item_count
+            "Saving persistent WS connection after {}ms (response_id={}, {})",
+            ws_started_at.elapsed().as_millis(),
+            resp_id,
+            request_input_stats.log_fields(),
         ));
         *guard = Some(PersistentWsState {
             ws_stream,
             last_response_id: resp_id,
             connected_at,
+            last_activity_at: Instant::now(),
             message_count: 1,
             last_input_item_count: input_item_count,
         });
@@ -3702,6 +3797,56 @@ mod tests {
 
         provider.set_model("gpt-5.1-codex-mini").unwrap();
         assert_eq!(provider.model(), "gpt-5.1-codex-mini");
+    }
+
+    #[test]
+    fn test_summarize_ws_input_counts_tool_outputs() {
+        let items = vec![
+            serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}]
+            }),
+            serde_json::json!({
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "bash",
+                "arguments": "{}"
+            }),
+            serde_json::json!({
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "ok"
+            }),
+            serde_json::json!({"type": "unknown"}),
+        ];
+
+        assert_eq!(
+            summarize_ws_input(&items),
+            WsInputStats {
+                total_items: 4,
+                message_items: 1,
+                function_call_items: 1,
+                function_call_output_items: 1,
+                other_items: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn test_persistent_ws_idle_policy_thresholds() {
+        assert!(!persistent_ws_idle_needs_healthcheck(Duration::from_secs(
+            5
+        )));
+        assert!(persistent_ws_idle_needs_healthcheck(Duration::from_secs(
+            WEBSOCKET_PERSISTENT_HEALTHCHECK_IDLE_SECS
+        )));
+        assert!(!persistent_ws_idle_requires_reconnect(Duration::from_secs(
+            30
+        )));
+        assert!(persistent_ws_idle_requires_reconnect(Duration::from_secs(
+            WEBSOCKET_PERSISTENT_IDLE_RECONNECT_SECS
+        )));
     }
 
     #[test]
