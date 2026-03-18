@@ -5,7 +5,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-const MODAL_BG: Color = Color::Rgb(18, 21, 30);
 const PANEL_BG: Color = Color::Rgb(24, 28, 40);
 const PANEL_BORDER: Color = Color::Rgb(90, 95, 110);
 const PANEL_BORDER_ACTIVE: Color = Color::Rgb(120, 140, 190);
@@ -298,9 +297,6 @@ impl AccountPicker {
     pub fn render(&self, frame: &mut Frame) {
         let area = centered_rect(82, 65, frame.area());
 
-        let background = Block::default().style(Style::default().bg(MODAL_BG));
-        frame.render_widget(background, area);
-
         let block = Block::default()
             .title(format!(" {} ", self.title))
             .title_bottom(Line::from(vec![
@@ -321,7 +317,6 @@ impl AccountPicker {
                 Span::styled(" close/clear filter ", Style::default().fg(Color::DarkGray)),
             ]))
             .borders(Borders::ALL)
-            .style(Style::default().bg(MODAL_BG))
             .border_style(Style::default().fg(PANEL_BORDER));
         frame.render_widget(block, area);
 
@@ -515,8 +510,7 @@ impl AccountPicker {
                     Style::default().fg(Color::White),
                 ),
             ]),
-        ])
-        .style(Style::default().bg(MODAL_BG));
+        ]);
         frame.render_widget(footer, rows[2]);
     }
 }
@@ -554,4 +548,37 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
+
+    #[test]
+    fn test_account_picker_preserves_underlying_background_outside_panels() {
+        let picker = AccountPicker::new(
+            " Accounts ",
+            vec![AccountPickerItem {
+                provider: AccountProviderKind::OpenAi,
+                kind: AccountPickerItemKind::NewAccount,
+            }],
+        );
+
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).expect("failed to create terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let fill = vec![Line::from("X".repeat(area.width as usize)); area.height as usize];
+                frame.render_widget(Paragraph::new(fill), area);
+                picker.render(frame);
+            })
+            .expect("draw failed");
+
+        let overlay = centered_rect(82, 65, Rect::new(0, 0, 40, 12));
+        let probe = &terminal.backend().buffer()[(overlay.x + overlay.width - 3, overlay.y + 2)];
+        assert_eq!(probe.symbol(), "X");
+        assert_ne!(probe.bg, Color::Rgb(18, 21, 30));
+    }
 }
