@@ -3,6 +3,7 @@ use std::process::Command as ProcessCommand;
 
 use crate::{build, logging, session, startup_profile};
 
+use super::output;
 use super::provider_init::ProviderChoice;
 
 pub const CLIENT_SELFDEV_ENV: &str = "JCODE_CLIENT_SELFDEV_MODE";
@@ -61,7 +62,7 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
         build::find_dev_binary(&repo_dir).unwrap_or_else(|| build::release_binary_path(&repo_dir));
 
     if should_build {
-        eprintln!("Building...");
+        output::stderr_info("Building...");
 
         let build_status = ProcessCommand::new("cargo")
             .args(["build", "--release"])
@@ -72,7 +73,7 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
             anyhow::bail!("Build failed");
         }
 
-        eprintln!("✓ Build complete");
+        output::stderr_info("✓ Build complete");
     }
 
     if !target_binary.exists() {
@@ -87,7 +88,7 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
     startup_profile::mark("selfdev_git_hash");
 
     if !is_resume {
-        eprintln!("Starting self-dev session with {}...", hash);
+        output::stderr_info(format!("Starting self-dev session with {}...", hash));
     } else {
         logging::info(&format!("Resuming self-dev session with {}...", hash));
     }
@@ -126,10 +127,10 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
     }
 
     if std::env::var("JCODE_RESUMING").is_err() && server_running {
-        eprintln!("Connecting to shared server...");
+        output::stderr_info("Connecting to shared server...");
     }
 
-    eprintln!("Starting self-dev TUI...");
+    output::stderr_info("Starting self-dev TUI...");
 
     super::tui_launch::run_tui_client(Some(session_id), None, !server_running).await
 }
