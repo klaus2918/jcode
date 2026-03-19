@@ -9,6 +9,56 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
+async fn awaited_member_statuses(
+    req_session_id: &str,
+    swarm_id: &str,
+    requested_ids: &[String],
+    target_status: &[String],
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+) -> Vec<AwaitedMemberStatus> {
+    let watch_ids: Vec<String> = if requested_ids.is_empty() {
+        let mut watch_ids: Vec<String> = {
+            let swarms = swarms_by_id.read().await;
+            swarms
+                .get(swarm_id)
+                .map(|sessions| {
+                    sessions
+                        .iter()
+                        .filter(|session_id| session_id.as_str() != req_session_id)
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        watch_ids.sort();
+        watch_ids
+    } else {
+        requested_ids.to_vec()
+    };
+
+    let members = swarm_members.read().await;
+    watch_ids
+        .iter()
+        .map(|session_id| {
+            let (name, status) = members
+                .get(session_id)
+                .map(|member| (member.friendly_name.clone(), member.status.clone()))
+                .unwrap_or((None, "unknown".to_string()));
+            let done = target_status.contains(&status)
+                || (status == "unknown"
+                    && (target_status.contains(&"stopped".to_string())
+                        || target_status.contains(&"completed".to_string())));
+            AwaitedMemberStatus {
+                session_id: session_id.clone(),
+                friendly_name: name,
+                status,
+                done,
+            }
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_comm_assign_role(
     id: u64,
@@ -440,23 +490,17 @@ pub(super) async fn handle_comm_await_members(
     };
 
     if let Some(swarm_id) = swarm_id {
-        let watch_ids: Vec<String> = if requested_ids.is_empty() {
-            let swarms = swarms_by_id.read().await;
-            swarms
-                .get(&swarm_id)
-                .map(|sessions| {
-                    sessions
-                        .iter()
-                        .filter(|session_id| *session_id != &req_session_id)
-                        .cloned()
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            requested_ids
-        };
+        let initial_statuses = awaited_member_statuses(
+            &req_session_id,
+            &swarm_id,
+            &requested_ids,
+            &target_status,
+            swarm_members,
+            swarms_by_id,
+        )
+        .await;
 
-        if watch_ids.is_empty() {
+        if initial_statuses.is_empty() {
             let _ = client_event_tx.send(ServerEvent::CommAwaitMembersResponse {
                 id,
                 completed: true,
@@ -468,38 +512,40 @@ pub(super) async fn handle_comm_await_members(
 
         let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(3600));
         let swarm_members_clone = swarm_members.clone();
+        let swarms_by_id_clone = swarms_by_id.clone();
         let mut event_rx = swarm_event_tx.subscribe();
         let client_tx = client_event_tx.clone();
+        let target_status_clone = target_status.clone();
+        let requested_ids_clone = requested_ids.clone();
+        let req_session_id_clone = req_session_id.clone();
+        let swarm_id_clone = swarm_id.clone();
 
         tokio::spawn(async move {
             let deadline = tokio::time::Instant::now() + timeout;
 
             loop {
-                let (all_done, member_statuses) = {
-                    let members = swarm_members_clone.read().await;
-                    let statuses: Vec<AwaitedMemberStatus> = watch_ids
-                        .iter()
-                        .map(|session_id| {
-                            let (name, status) = members
-                                .get(session_id)
-                                .map(|member| (member.friendly_name.clone(), member.status.clone()))
-                                .unwrap_or((None, "unknown".to_string()));
-                            let done = target_status.contains(&status)
-                                || (status == "unknown"
-                                    && (target_status.contains(&"stopped".to_string())
-                                        || target_status.contains(&"completed".to_string())));
-                            AwaitedMemberStatus {
-                                session_id: session_id.clone(),
-                                friendly_name: name,
-                                status,
-                                done,
-                            }
-                        })
-                        .collect();
-                    (statuses.iter().all(|status| status.done), statuses)
-                };
+                let member_statuses = awaited_member_statuses(
+                    &req_session_id_clone,
+                    &swarm_id_clone,
+                    &requested_ids_clone,
+                    &target_status_clone,
+                    &swarm_members_clone,
+                    &swarms_by_id_clone,
+                )
+                .await;
+                let all_done = member_statuses.iter().all(|status| status.done);
 
                 if all_done {
+                    if member_statuses.is_empty() {
+                        let _ = client_tx.send(ServerEvent::CommAwaitMembersResponse {
+                            id,
+                            completed: true,
+                            members: vec![],
+                            summary: "No other members in swarm to wait for.".to_string(),
+                        });
+                        return;
+                    }
+
                     let done_names: Vec<String> = member_statuses
                         .iter()
                         .map(|member| {
@@ -544,15 +590,16 @@ pub(super) async fn handle_comm_await_members(
 
                 match tokio::time::timeout(remaining, event_rx.recv()).await {
                     Ok(Ok(event)) => {
-                        if let SwarmEventType::StatusChange { .. } = &event.event {
-                            if watch_ids.contains(&event.session_id) {
-                                continue;
-                            }
+                        if event.swarm_id.as_deref() != Some(swarm_id_clone.as_str()) {
+                            continue;
                         }
-                        if let SwarmEventType::MemberChange { action } = &event.event {
-                            if action == "left" && watch_ids.contains(&event.session_id) {
+
+                        match &event.event {
+                            SwarmEventType::StatusChange { .. }
+                            | SwarmEventType::MemberChange { .. } => {
                                 continue;
                             }
+                            _ => {}
                         }
                     }
                     Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
@@ -575,6 +622,150 @@ pub(super) async fn handle_comm_await_members(
             message: "Not in a swarm. Use a git repository to enable swarm features.".to_string(),
             retry_after_secs: None,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_comm_await_members;
+    use crate::protocol::ServerEvent;
+    use crate::server::{SwarmEvent, SwarmEventType, SwarmMember};
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+    use std::time::{Instant, SystemTime};
+    use tokio::sync::{RwLock, broadcast, mpsc};
+
+    fn member(session_id: &str, swarm_id: &str, status: &str) -> SwarmMember {
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        SwarmMember {
+            session_id: session_id.to_string(),
+            event_tx,
+            working_dir: None,
+            swarm_id: Some(swarm_id.to_string()),
+            swarm_enabled: true,
+            status: status.to_string(),
+            detail: None,
+            friendly_name: Some(session_id.to_string()),
+            role: "agent".to_string(),
+            joined_at: Instant::now(),
+            last_status_change: Instant::now(),
+            is_headless: false,
+        }
+    }
+
+    fn swarm_event(session_id: &str, swarm_id: &str, event: SwarmEventType) -> SwarmEvent {
+        SwarmEvent {
+            id: 1,
+            session_id: session_id.to_string(),
+            session_name: Some(session_id.to_string()),
+            swarm_id: Some(swarm_id.to_string()),
+            event,
+            timestamp: Instant::now(),
+            absolute_time: SystemTime::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn await_members_includes_late_joiners_when_watching_swarm() {
+        let swarm_id = "swarm-a";
+        let requester = "req";
+        let initial_peer = "peer-1";
+        let late_peer = "peer-2";
+
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([
+            (requester.to_string(), member(requester, swarm_id, "ready")),
+            (
+                initial_peer.to_string(),
+                member(initial_peer, swarm_id, "running"),
+            ),
+        ])));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
+            swarm_id.to_string(),
+            HashSet::from([requester.to_string(), initial_peer.to_string()]),
+        )])));
+        let (swarm_event_tx, _swarm_event_rx) = broadcast::channel(32);
+
+        handle_comm_await_members(
+            1,
+            requester.to_string(),
+            vec!["completed".to_string()],
+            vec![],
+            Some(2),
+            &client_tx,
+            &swarm_members,
+            &swarms_by_id,
+            &swarm_event_tx,
+        )
+        .await;
+
+        {
+            let mut members = swarm_members.write().await;
+            members.insert(
+                late_peer.to_string(),
+                member(late_peer, swarm_id, "running"),
+            );
+        }
+        {
+            let mut swarms = swarms_by_id.write().await;
+            swarms
+                .get_mut(swarm_id)
+                .expect("swarm exists")
+                .insert(late_peer.to_string());
+        }
+        let _ = swarm_event_tx.send(swarm_event(
+            late_peer,
+            swarm_id,
+            SwarmEventType::MemberChange {
+                action: "joined".to_string(),
+            },
+        ));
+
+        {
+            let mut members = swarm_members.write().await;
+            members
+                .get_mut(initial_peer)
+                .expect("initial peer exists")
+                .status = "completed".to_string();
+        }
+        let _ = swarm_event_tx.send(swarm_event(
+            initial_peer,
+            swarm_id,
+            SwarmEventType::StatusChange {
+                old_status: "running".to_string(),
+                new_status: "completed".to_string(),
+            },
+        ));
+
+        {
+            let mut members = swarm_members.write().await;
+            members.get_mut(late_peer).expect("late peer exists").status = "completed".to_string();
+        }
+        let _ = swarm_event_tx.send(swarm_event(
+            late_peer,
+            swarm_id,
+            SwarmEventType::StatusChange {
+                old_status: "running".to_string(),
+                new_status: "completed".to_string(),
+            },
+        ));
+
+        let response = tokio::time::timeout(std::time::Duration::from_secs(1), client_rx.recv())
+            .await
+            .expect("response should arrive")
+            .expect("channel should stay open");
+
+        match response {
+            ServerEvent::CommAwaitMembersResponse {
+                completed, members, ..
+            } => {
+                assert!(completed, "await should complete after both peers finish");
+                let watched: HashSet<String> = members.into_iter().map(|m| m.session_id).collect();
+                assert!(watched.contains(initial_peer));
+                assert!(watched.contains(late_peer));
+            }
+            other => panic!("expected CommAwaitMembersResponse, got {other:?}"),
+        }
     }
 }
 
