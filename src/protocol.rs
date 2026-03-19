@@ -625,6 +625,8 @@ pub enum ServerEvent {
         id: u64,
         session_id: String,
         messages: Vec<HistoryMessage>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<crate::session::RenderedImage>,
         /// Provider name (e.g. "anthropic", "openai")
         #[serde(skip_serializing_if = "Option::is_none")]
         provider_name: Option<String>,

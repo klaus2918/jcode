@@ -760,6 +760,63 @@ pub fn load_env_value_from_env_or_config(env_key: &str, file_name: &str) -> Opti
     None
 }
 
+pub fn save_env_value_to_env_file(
+    env_key: &str,
+    file_name: &str,
+    value: Option<&str>,
+) -> anyhow::Result<()> {
+    if !is_safe_env_key_name(env_key) {
+        anyhow::bail!("Invalid variable name: {}", env_key);
+    }
+    if !is_safe_env_file_name(file_name) {
+        anyhow::bail!("Invalid env file name: {}", file_name);
+    }
+
+    let config_dir = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("No config directory found"))?
+        .join("jcode");
+    std::fs::create_dir_all(&config_dir)?;
+    crate::platform::set_directory_permissions_owner_only(&config_dir)?;
+
+    let file_path = config_dir.join(file_name);
+    let existing = std::fs::read_to_string(&file_path).unwrap_or_default();
+    let prefix = format!("{}=", env_key);
+
+    let mut lines = Vec::new();
+    let mut replaced = false;
+    for line in existing.lines() {
+        if line.starts_with(&prefix) {
+            replaced = true;
+            if let Some(value) = value {
+                lines.push(format!("{}={}", env_key, value));
+            }
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+
+    if !replaced {
+        if let Some(value) = value {
+            lines.push(format!("{}={}", env_key, value));
+        }
+    }
+
+    let mut content = lines.join("\n");
+    if !content.is_empty() {
+        content.push('\n');
+    }
+    std::fs::write(&file_path, &content)?;
+    crate::platform::set_permissions_owner_only(&file_path)?;
+
+    if let Some(value) = value {
+        crate::env::set_var(env_key, value);
+    } else {
+        crate::env::remove_var(env_key);
+    }
+
+    Ok(())
+}
+
 pub fn is_safe_env_key_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -1129,7 +1186,9 @@ mod tests {
         crate::env::remove_var("JCODE_OPENAI_COMPAT_ENV_FILE");
         crate::env::remove_var("JCODE_OPENAI_COMPAT_DEFAULT_MODEL");
         std::fs::write(
-            config_root.join("jcode").join(OPENAI_COMPAT_PROFILE.env_file),
+            config_root
+                .join("jcode")
+                .join(OPENAI_COMPAT_PROFILE.env_file),
             concat!(
                 "JCODE_OPENAI_COMPAT_API_BASE=https://api.example.com/v1\n",
                 "JCODE_OPENAI_COMPAT_API_KEY_NAME=EXAMPLE_API_KEY\n",

@@ -340,6 +340,7 @@ pub struct App {
     remote_session_id: Option<String>,
     // All sessions on the server (remote mode only)
     remote_sessions: Vec<String>,
+    remote_side_pane_images: Vec<crate::session::RenderedImage>,
     // Swarm member status snapshots (remote mode only)
     remote_swarm_members: Vec<crate::protocol::SwarmMemberStatus>,
     // Latest swarm plan snapshot (local or remote server event stream)

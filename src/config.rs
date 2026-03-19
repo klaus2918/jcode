@@ -1005,6 +1005,54 @@ impl Config {
         Ok(())
     }
 
+    /// Update just the default provider in the config file.
+    pub fn set_default_provider(provider: Option<&str>) -> anyhow::Result<()> {
+        let cfg = Self::load();
+        Self::set_default_model(cfg.provider.default_model.as_deref(), provider)
+    }
+
+    /// Update just the default model in the config file.
+    pub fn set_default_model_only(model: Option<&str>) -> anyhow::Result<()> {
+        let cfg = Self::load();
+        Self::set_default_model(model, cfg.provider.default_provider.as_deref())
+    }
+
+    /// Update the persisted OpenAI reasoning effort preference.
+    pub fn set_openai_reasoning_effort(value: Option<&str>) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.provider.openai_reasoning_effort = value.map(|s| s.to_string());
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved openai_reasoning_effort to config: {}",
+            value.unwrap_or("(none)")
+        ));
+        Ok(())
+    }
+
+    /// Update the persisted OpenAI transport preference.
+    pub fn set_openai_transport(value: Option<&str>) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.provider.openai_transport = value.map(|s| s.to_string());
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved openai_transport to config: {}",
+            value.unwrap_or("(none)")
+        ));
+        Ok(())
+    }
+
+    /// Update the persisted OpenAI service tier preference.
+    pub fn set_openai_service_tier(value: Option<&str>) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.provider.openai_service_tier = value.map(|s| s.to_string());
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved openai_service_tier to config: {}",
+            value.unwrap_or("(none)")
+        ));
+        Ok(())
+    }
+
     /// Create a default config file with comments
     pub fn create_default_config_file() -> anyhow::Result<PathBuf> {
         let path = Self::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;

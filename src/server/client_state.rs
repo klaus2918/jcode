@@ -74,6 +74,7 @@ pub(super) async fn send_history(
 ) -> Result<()> {
     let (
         messages,
+        images,
         is_canary,
         provider_name,
         provider_model,
@@ -91,6 +92,7 @@ pub(super) async fn send_history(
         let provider = agent_guard.provider_handle();
         (
             agent_guard.get_history(),
+            agent_guard.get_rendered_images(),
             agent_guard.is_canary(),
             agent_guard.provider_name(),
             agent_guard.provider_model(),
@@ -142,6 +144,7 @@ pub(super) async fn send_history(
             id,
             session_id: session_id.to_string(),
             messages,
+            images,
             provider_name: Some(provider_name),
             provider_model: Some(provider_model),
             available_models,

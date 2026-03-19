@@ -515,7 +515,10 @@ fn test_account_openai_compatible_settings_renders_provider_settings() {
     app.input = "/account openai-compatible settings".to_string();
     app.submit_input();
 
-    let msg = app.display_messages().last().expect("missing settings output");
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing settings output");
     assert_eq!(msg.role, "system");
     assert!(msg.content.contains("OpenAI-compatible"));
     assert!(msg.content.contains("API base"));
@@ -2777,6 +2780,7 @@ fn test_handle_server_event_history_clears_connection_type_on_session_change_whe
             id: 1,
             session_id: "session_new".to_string(),
             messages: vec![],
+            images: vec![],
             provider_name: Some("claude".to_string()),
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             available_models: vec![],
@@ -2821,6 +2825,7 @@ fn test_handle_server_event_history_preserves_connection_type_for_same_session_w
             id: 1,
             session_id: "session_same".to_string(),
             messages: vec![],
+            images: vec![],
             provider_name: Some("claude".to_string()),
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             available_models: vec![],
@@ -3309,6 +3314,7 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
                 tool_calls: None,
                 tool_data: None,
             }],
+            images: vec![],
             provider_name: Some("claude".to_string()),
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             available_models: vec![],
@@ -3370,6 +3376,7 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
                 tool_calls: None,
                 tool_data: None,
             }],
+            images: vec![],
             provider_name: Some("claude".to_string()),
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             available_models: vec![],
@@ -3453,6 +3460,7 @@ fn test_handle_server_event_history_restores_side_panel_snapshot() {
             id: 1,
             session_id: "ses_side_panel_history".to_string(),
             messages: vec![],
+            images: vec![],
             provider_name: Some("claude".to_string()),
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             available_models: vec![],
@@ -3625,6 +3633,7 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
                 tool_calls: None,
                 tool_data: None,
             }],
+            images: vec![],
             provider_name: Some("claude".to_string()),
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             available_models: vec![],
