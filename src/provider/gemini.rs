@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
@@ -14,13 +15,23 @@ use uuid::Uuid;
 
 const DEFAULT_MODEL: &str = "gemini-2.5-pro";
 const AVAILABLE_MODELS: &[&str] = &[
+    "gemini-3.1-pro-preview",
+    "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
     "gemini-1.5-pro",
     "gemini-1.5-flash",
 ];
-const FALLBACK_MODELS: &[&str] = &["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"];
+const FALLBACK_MODELS: &[&str] = &[
+    "gemini-3.1-pro-preview",
+    "gemini-3-pro-preview",
+    "gemini-2.5-pro",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+];
 const CODE_ASSIST_ENDPOINT: &str = "https://cloudcode-pa.googleapis.com";
 const CODE_ASSIST_API_VERSION: &str = "v1internal";
 const USER_TIER_FREE: &str = "free-tier";
@@ -269,6 +280,7 @@ pub struct GeminiProvider {
     client: reqwest::Client,
     model: Arc<RwLock<String>>,
     state: Arc<Mutex<Option<GeminiRuntimeState>>>,
+    fetched_models: Arc<RwLock<Vec<String>>>,
 }
 
 impl GeminiProvider {
@@ -278,6 +290,7 @@ impl GeminiProvider {
             client: gemini_http_client(),
             model: Arc::new(RwLock::new(model)),
             state: Arc::new(Mutex::new(None)),
+            fetched_models: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -301,18 +314,9 @@ impl GeminiProvider {
     }
 
     async fn setup_runtime_state(&self) -> Result<GeminiRuntimeState> {
-        let project_id_env = std::env::var("GOOGLE_CLOUD_PROJECT")
-            .ok()
-            .or_else(|| std::env::var("GOOGLE_CLOUD_PROJECT_ID").ok())
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-
+        let project_id_env = google_cloud_project_from_env();
         let metadata = client_metadata(project_id_env.clone());
-        let load_req = LoadCodeAssistRequest {
-            cloudaicompanion_project: project_id_env.clone(),
-            metadata: metadata.clone(),
-            mode: None,
-        };
+        let load_req = load_code_assist_request(project_id_env.clone(), metadata.clone());
         let load_res: LoadCodeAssistResponse =
             match self.post_json("loadCodeAssist", &load_req).await {
                 Ok(response) => response,
@@ -395,6 +399,34 @@ impl GeminiProvider {
             project_id,
             session_id: Uuid::new_v4().to_string(),
         })
+    }
+
+    async fn refresh_available_models(&self) -> Result<Vec<String>> {
+        let project_id_env = google_cloud_project_from_env();
+        let load_req = load_code_assist_request(
+            project_id_env.clone(),
+            client_metadata(project_id_env.clone()),
+        );
+        let response: Value = match self.post_json("loadCodeAssist", &load_req).await {
+            Ok(response) => response,
+            Err(err) if is_vpc_sc_error(&err) => Value::Null,
+            Err(err) => {
+                return Err(err)
+                    .context("Gemini model discovery failed during loadCodeAssist");
+            }
+        };
+
+        let models = extract_gemini_model_ids(&response);
+        if !models.is_empty() {
+            crate::logging::info(&format!(
+                "Discovered Gemini Code Assist models: {}",
+                models.join(", ")
+            ));
+            if let Ok(mut guard) = self.fetched_models.write() {
+                *guard = models.clone();
+            }
+        }
+        Ok(models)
     }
 
     async fn post_json<T: DeserializeOwned>(
@@ -594,6 +626,7 @@ impl Provider for GeminiProvider {
                     client: provider.client.clone(),
                     model: provider.model.clone(),
                     state: state_cache.clone(),
+                    fetched_models: provider.fetched_models.clone(),
                 };
                 match provider.ensure_state().await {
                     Ok(state) => state,
@@ -822,6 +855,35 @@ impl Provider for GeminiProvider {
         AVAILABLE_MODELS.to_vec()
     }
 
+    fn available_models_display(&self) -> Vec<String> {
+        let discovered = self
+            .fetched_models
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        if discovered.is_empty() {
+            return merge_gemini_model_lists(
+                AVAILABLE_MODELS
+                    .iter()
+                    .map(|model| (*model).to_string())
+                    .chain(std::iter::once(self.model()))
+                    .collect(),
+            );
+        }
+
+        merge_gemini_model_lists(
+            discovered
+                .into_iter()
+                .chain(std::iter::once(self.model()))
+                .collect(),
+        )
+    }
+
+    async fn prefetch_models(&self) -> Result<()> {
+        let _ = self.refresh_available_models().await?;
+        Ok(())
+    }
+
     fn supports_compaction(&self) -> bool {
         false
     }
@@ -831,6 +893,7 @@ impl Provider for GeminiProvider {
             client: self.client.clone(),
             model: Arc::new(RwLock::new(self.model())),
             state: self.state.clone(),
+            fetched_models: self.fetched_models.clone(),
         })
     }
 
@@ -846,6 +909,7 @@ impl Clone for GeminiProvider {
             client: self.client.clone(),
             model: self.model.clone(),
             state: self.state.clone(),
+            fetched_models: self.fetched_models.clone(),
         }
     }
 }
@@ -889,6 +953,82 @@ fn gemini_fallback_models(current_model: &str) -> Vec<&'static str> {
         .copied()
         .filter(|candidate| !candidate.eq_ignore_ascii_case(current_model))
         .collect()
+}
+
+fn google_cloud_project_from_env() -> Option<String> {
+    std::env::var("GOOGLE_CLOUD_PROJECT")
+        .ok()
+        .or_else(|| std::env::var("GOOGLE_CLOUD_PROJECT_ID").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn load_code_assist_request(
+    project_id: Option<String>,
+    metadata: ClientMetadata,
+) -> LoadCodeAssistRequest {
+    LoadCodeAssistRequest {
+        cloudaicompanion_project: project_id,
+        metadata,
+        mode: None,
+    }
+}
+
+fn merge_gemini_model_lists(models: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut preferred = Vec::new();
+
+    for known in AVAILABLE_MODELS {
+        if models.iter().any(|model| model == known) && seen.insert((*known).to_string()) {
+            preferred.push((*known).to_string());
+        }
+    }
+
+    let mut extras: Vec<String> = models
+        .into_iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| is_gemini_model_id(model) && seen.insert(model.clone()))
+        .collect();
+    extras.sort();
+    preferred.extend(extras);
+    preferred
+}
+
+fn extract_gemini_model_ids(value: &Value) -> Vec<String> {
+    let mut found = HashSet::new();
+    collect_gemini_model_ids(value, &mut found);
+    merge_gemini_model_lists(found.into_iter().collect())
+}
+
+fn collect_gemini_model_ids(value: &Value, found: &mut HashSet<String>) {
+    match value {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if is_gemini_model_id(trimmed) {
+                found.insert(trimmed.to_string());
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_gemini_model_ids(item, found);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values() {
+                collect_gemini_model_ids(item, found);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn is_gemini_model_id(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && trimmed.starts_with("gemini-")
+        && trimmed
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_'))
 }
 
 fn client_metadata(project_id: Option<String>) -> ClientMetadata {
@@ -1126,6 +1266,8 @@ mod tests {
     fn available_models_include_gemini_defaults() {
         let provider = GeminiProvider::new();
         let models = provider.available_models();
+        assert!(models.contains(&"gemini-3-pro-preview"));
+        assert!(models.contains(&"gemini-3.1-pro-preview"));
         assert!(models.contains(&"gemini-2.5-pro"));
         assert!(models.contains(&"gemini-2.5-flash"));
     }
@@ -1149,7 +1291,56 @@ mod tests {
     fn fallback_models_skip_current_model() {
         assert_eq!(
             gemini_fallback_models("gemini-2.5-flash"),
-            vec!["gemini-2.5-pro", "gemini-2.0-flash"]
+            vec![
+                "gemini-3.1-pro-preview",
+                "gemini-3-pro-preview",
+                "gemini-2.5-pro",
+                "gemini-3-flash-preview",
+                "gemini-2.0-flash",
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_gemini_model_ids_discovers_nested_models() {
+        let response = json!({
+            "routing": {
+                "manual": {
+                    "models": [
+                        {"id": "gemini-3-pro-preview"},
+                        {"name": "gemini-3.1-pro-preview"}
+                    ]
+                },
+                "auto": ["gemini-3-flash-preview", "not-a-model"]
+            }
+        });
+
+        assert_eq!(
+            extract_gemini_model_ids(&response),
+            vec![
+                "gemini-3.1-pro-preview".to_string(),
+                "gemini-3-pro-preview".to_string(),
+                "gemini-3-flash-preview".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn available_models_display_prefers_discovered_models_and_current_model() {
+        let provider = GeminiProvider::new();
+        provider.set_model("gemini-4-pro-preview").unwrap();
+        *provider.fetched_models.write().unwrap() = vec![
+            "gemini-3-flash-preview".to_string(),
+            "gemini-3-pro-preview".to_string(),
+        ];
+
+        assert_eq!(
+            provider.available_models_display(),
+            vec![
+                "gemini-3-pro-preview".to_string(),
+                "gemini-3-flash-preview".to_string(),
+                "gemini-4-pro-preview".to_string(),
+            ]
         );
     }
 
