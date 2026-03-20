@@ -74,6 +74,18 @@ public struct InterruptInfo: Sendable {
     }
 }
 
+public struct SoftInterruptInjectionInfo: Sendable {
+    public let content: String
+    public let point: String
+    public let toolsSkipped: Int?
+
+    public init(content: String, point: String, toolsSkipped: Int? = nil) {
+        self.content = content
+        self.point = point
+        self.toolsSkipped = toolsSkipped
+    }
+}
+
 @MainActor
 public protocol JCodeClientDelegate: AnyObject {
     func clientDidConnect(serverInfo: ServerInfo)
@@ -90,6 +102,7 @@ public protocol JCodeClientDelegate: AnyObject {
     func clientDidChangeModel(model: String, provider: String?)
     func clientDidReceiveHistory(messages: [HistoryMessage])
     func clientDidInterrupt(_ interrupt: InterruptInfo)
+    func clientDidInjectSoftInterrupt(_ info: SoftInterruptInjectionInfo)
 }
 
 @MainActor
@@ -100,6 +113,7 @@ public extension JCodeClientDelegate {
     func clientDidChangeModel(model: String, provider: String?) {}
     func clientDidReceiveHistory(messages: [HistoryMessage]) {}
     func clientDidInterrupt(_ interrupt: InterruptInfo) {}
+    func clientDidInjectSoftInterrupt(_ info: SoftInterruptInjectionInfo) {}
 }
 
 public actor JCodeClient {
@@ -256,9 +270,13 @@ public actor JCodeClient {
         case .interrupted:
             await callDelegate { $0.clientDidInterrupt(InterruptInfo()) }
 
+        case .softInterruptInjected(let content, let point, let toolsSkipped):
+            let info = SoftInterruptInjectionInfo(content: content, point: point, toolsSkipped: toolsSkipped)
+            await callDelegate { $0.clientDidInjectSoftInterrupt(info) }
+
         case .ack, .pong, .state, .reloading, .reloadProgress,
              .notification, .swarmStatus, .mcpStatus,
-             .softInterruptInjected, .memoryInjected,
+             .memoryInjected,
              .splitResponse, .compactResult, .stdinRequest, .unknown:
             break
         }

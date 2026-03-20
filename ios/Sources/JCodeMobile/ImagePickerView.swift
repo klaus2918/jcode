@@ -48,6 +48,7 @@ extension UIImage {
 
 struct PhotoPickerButton: View {
     @Binding var attachments: [ImageAttachment]
+    var isEnabled: Bool = true
     @State private var selectedItems: [PhotosPickerItem] = []
 
     var body: some View {
@@ -56,6 +57,8 @@ struct PhotoPickerButton: View {
                 .font(.system(size: 18))
                 .foregroundStyle(JC.Colors.textTertiary)
         }
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
         .onChange(of: selectedItems) {
             Task {
                 for item in selectedItems {
@@ -74,16 +77,20 @@ struct PhotoPickerButton: View {
 
 struct CameraButton: View {
     @Binding var attachments: [ImageAttachment]
+    var isEnabled: Bool = true
     @State private var showCamera = false
 
     var body: some View {
         Button {
+            guard isEnabled else { return }
             showCamera = true
         } label: {
             Image(systemName: "camera")
                 .font(.system(size: 18))
                 .foregroundStyle(JC.Colors.textTertiary)
         }
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
         .fullScreenCover(isPresented: $showCamera) {
             CameraPickerView { image in
                 if let attachment = ImageAttachment.from(image: image) {

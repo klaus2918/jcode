@@ -331,44 +331,71 @@ final class AppModel: ObservableObject {
         statusMessage = "Disconnected"
     }
 
-    func sendDraft(images: [(String, String)] = []) async {
+    @discardableResult
+    func sendDraft(images: [(String, String)] = []) async -> Bool {
         clearTransientMessages()
 
         guard connectionState == .connected else {
             errorMessage = "Not connected."
-            return
+            return false
         }
 
         let trimmed = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !images.isEmpty else {
-            return
+            return false
         }
 
         guard let client else {
             errorMessage = "Not connected."
-            return
+            return false
+        }
+
+        let isInterleaving = isProcessing
+
+        if isInterleaving && !images.isEmpty {
+            errorMessage = "Please wait for the current run to finish before sending images."
+            return false
+        }
+
+        if isInterleaving && trimmed.isEmpty {
+            errorMessage = "Type a message to send an update while the agent is running."
+            return false
         }
 
         do {
             messages.append(ChatEntry(role: .user, text: trimmed, images: images))
             draftMessage = ""
 
-            let assistantPlaceholder = ChatEntry(role: .assistant, text: "")
-            messages.append(assistantPlaceholder)
-            lastAssistantMessageId = assistantPlaceholder.id
-
-            if images.isEmpty {
-                try await client.send(trimmed)
+            if isInterleaving {
+                statusMessage = "Will update the current run at the next safe point."
+                try await client.interrupt(trimmed)
             } else {
-                try await client.send(trimmed, images: images)
+                let assistantPlaceholder = ChatEntry(role: .assistant, text: "")
+                messages.append(assistantPlaceholder)
+                lastAssistantMessageId = assistantPlaceholder.id
+
+                if images.isEmpty {
+                    try await client.send(trimmed)
+                } else {
+                    try await client.send(trimmed, images: images)
+                }
             }
+            return true
         } catch {
-            if let id = lastAssistantMessageId,
-               let idx = messages.firstIndex(where: { $0.id == id }) {
+            if !isInterleaving {
+                if let id = lastAssistantMessageId,
+                   let idx = messages.firstIndex(where: { $0.id == id }) {
+                    messages.remove(at: idx)
+                }
+                lastAssistantMessageId = messages.last(where: { $0.role == .assistant })?.id
+            }
+            if let idx = messages.lastIndex(where: { $0.role == .user && $0.text == trimmed && $0.images == images }) {
                 messages.remove(at: idx)
             }
-            lastAssistantMessageId = messages.last(where: { $0.role == .assistant })?.id
-            errorMessage = "Send failed: \(error.localizedDescription)"
+            errorMessage = isInterleaving
+                ? "Could not update the running agent: \(error.localizedDescription)"
+                : "Send failed: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -644,6 +671,14 @@ final class AppModel: ObservableObject {
         lastAssistantMessageId = nil
     }
 
+    fileprivate func onSoftInterruptInjected(_ info: SoftInterruptInjectionInfo) {
+        if let skipped = info.toolsSkipped, skipped > 0 {
+            statusMessage = "Updated current run. Skipped \(skipped) remaining tool(s)."
+        } else {
+            statusMessage = "Updated current run."
+        }
+    }
+
     fileprivate func onToolStart(_ tool: ToolCallInfo) {
         isProcessing = true
         attachTool(tool)
@@ -779,5 +814,10 @@ private final class ClientDelegate: JCodeClientDelegate {
     func clientDidInterrupt(_ interrupt: InterruptInfo) {
         guard guardCurrent() else { return }
         model.onInterrupted(interrupt)
+    }
+
+    func clientDidInjectSoftInterrupt(_ info: SoftInterruptInjectionInfo) {
+        guard guardCurrent() else { return }
+        model.onSoftInterruptInjected(info)
     }
 }

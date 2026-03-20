@@ -293,7 +293,8 @@ struct MainView: View {
                 FloatingActions(
                     speech: speech,
                     showCamera: $showFloatingCamera,
-                    draftMessage: $model.draftMessage
+                    draftMessage: $model.draftMessage,
+                    cameraEnabled: !model.isProcessing
                 )
             }
             .sheet(isPresented: $showSettings) {
@@ -316,6 +317,7 @@ struct FloatingActions: View {
     @ObservedObject var speech: SpeechRecognizer
     @Binding var showCamera: Bool
     @Binding var draftMessage: String
+    var cameraEnabled: Bool = true
 
     @State private var prefixBeforeDictation = ""
 
@@ -325,7 +327,8 @@ struct FloatingActions: View {
                 FloatingActionButton(
                     icon: "camera.fill",
                     color: JC.Colors.cyan,
-                    isActive: false
+                    isActive: false,
+                    isEnabled: cameraEnabled
                 ) {
                     showCamera = true
                 }
@@ -334,7 +337,8 @@ struct FloatingActions: View {
             FloatingActionButton(
                 icon: speech.isRecording ? "waveform" : "mic.fill",
                 color: JC.Colors.pink,
-                isActive: speech.isRecording
+                isActive: speech.isRecording,
+                isEnabled: true
             ) {
                 if !speech.isRecording {
                     prefixBeforeDictation = draftMessage
@@ -359,27 +363,29 @@ struct FloatingActionButton: View {
     let icon: String
     let color: Color
     let isActive: Bool
+    let isEnabled: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(isActive ? .white : color)
+                .foregroundStyle(isActive ? .white : color.opacity(isEnabled ? 1 : 0.45))
                 .frame(width: 48, height: 48)
                 .background(
                     Circle()
-                        .fill(isActive ? color : color.opacity(0.15))
+                        .fill(isActive ? color : color.opacity(isEnabled ? 0.15 : 0.08))
                 )
                 .overlay(
                     Circle()
-                        .stroke(color.opacity(isActive ? 0 : 0.3), lineWidth: 1)
+                        .stroke(color.opacity(isActive ? 0 : (isEnabled ? 0.3 : 0.15)), lineWidth: 1)
                 )
                 .shadow(color: isActive ? color.opacity(0.5) : .clear, radius: 8)
                 .scaleEffect(isActive ? 1.08 : 1.0)
                 .animation(JC.Animation.quick, value: isActive)
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
     }
 }
 
@@ -619,8 +625,6 @@ struct ToolDetailLine: View {
 struct ChatInputBar: View {
     @EnvironmentObject private var model: AppModel
     @Binding var externalAttachments: [ImageAttachment]
-    @State private var showInterruptSheet = false
-    @State private var interruptMessage = ""
     @State private var attachments: [ImageAttachment] = []
     @FocusState private var inputFocused: Bool
 
@@ -649,23 +653,6 @@ struct ChatInputBar: View {
                     }
                     .buttonStyle(.plain)
 
-                    Button {
-                        showInterruptSheet = true
-                    } label: {
-                        HStack(spacing: JC.Spacing.xs) {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 10))
-                            Text("Interrupt")
-                                .font(JC.Fonts.caption)
-                        }
-                        .foregroundStyle(JC.Colors.statusConnecting)
-                        .padding(.horizontal, JC.Spacing.md)
-                        .padding(.vertical, JC.Spacing.xs + 2)
-                        .background(JC.Colors.statusConnecting.opacity(0.12))
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-
                     Spacer()
                 }
                 .padding(.horizontal, JC.Spacing.xs)
@@ -687,7 +674,7 @@ struct ChatInputBar: View {
             }
 
             HStack(alignment: .bottom, spacing: JC.Spacing.sm) {
-                PhotoPickerButton(attachments: $attachments)
+                PhotoPickerButton(attachments: $attachments, isEnabled: !model.isProcessing)
 
                 HStack(spacing: 0) {
                     TextField("Message jcode...", text: $model.draftMessage, axis: .vertical)
@@ -706,11 +693,14 @@ struct ChatInputBar: View {
                 )
 
                 Button {
-                    let all = allAttachments
-                    let images = all.map { ($0.mediaType, $0.base64Data) }
-                    attachments.removeAll()
-                    externalAttachments.removeAll()
-                    Task { await model.sendDraft(images: images) }
+                    let pendingImages = allAttachments.map { ($0.mediaType, $0.base64Data) }
+                    Task {
+                        let sent = await model.sendDraft(images: pendingImages)
+                        if sent {
+                            attachments.removeAll()
+                            externalAttachments.removeAll()
+                        }
+                    }
                 } label: {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 14, weight: .bold))
@@ -728,74 +718,17 @@ struct ChatInputBar: View {
         .padding(.vertical, JC.Spacing.sm + 2)
         .background(JC.Colors.surface)
         .animation(JC.Animation.standard, value: model.isProcessing)
-        .sheet(isPresented: $showInterruptSheet) {
-            InterruptSheet(
-                message: $interruptMessage,
-                isPresented: $showInterruptSheet,
-                onSend: { msg in
-                    Task { await model.interruptAgent(msg) }
-                }
-            )
-        }
     }
 
     private var canSend: Bool {
-        model.connectionState == .connected &&
-        (!model.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !allAttachments.isEmpty)
-    }
-}
+        let hasText = !model.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasAttachments = !allAttachments.isEmpty
 
-// MARK: - Interrupt Sheet
-
-struct InterruptSheet: View {
-    @Binding var message: String
-    @Binding var isPresented: Bool
-    let onSend: (String) -> Void
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                JC.Colors.background.ignoresSafeArea()
-
-                VStack(spacing: JC.Spacing.lg) {
-                    TextField("What should the agent know?", text: $message, axis: .vertical)
-                        .font(JC.Fonts.body)
-                        .foregroundStyle(JC.Colors.textPrimary)
-                        .lineLimit(2...6)
-                        .padding(JC.Spacing.md)
-                        .background(JC.Colors.surfaceElevated)
-                        .clipShape(RoundedRectangle(cornerRadius: JC.Radius.sm))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: JC.Radius.sm)
-                                .stroke(JC.Colors.border, lineWidth: 1)
-                        )
-
-                    Spacer()
-                }
-                .padding(JC.Spacing.lg)
-            }
-            .navigationTitle("Interrupt Agent")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { isPresented = false }
-                        .foregroundStyle(JC.Colors.textSecondary)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Send") {
-                        let msg = message.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !msg.isEmpty else { return }
-                        onSend(msg)
-                        message = ""
-                        isPresented = false
-                    }
-                    .foregroundStyle(JC.Colors.accent)
-                    .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
+        guard model.connectionState == .connected else { return false }
+        if model.isProcessing {
+            return hasText && !hasAttachments
         }
-        .presentationDetents([.medium])
-        .presentationBackground(JC.Colors.background)
+        return hasText || hasAttachments
     }
 }
 
