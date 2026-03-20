@@ -62,6 +62,16 @@ pub struct SubagentStatus {
     pub model: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ManualToolCompleted {
+    pub session_id: String,
+    pub tool_call: ToolCall,
+    pub output: String,
+    pub is_error: bool,
+    pub title: Option<String>,
+    pub duration_ms: u64,
+}
+
 /// Progress update from a running batch tool call
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -182,6 +192,7 @@ pub enum BusEvent {
     ToolUpdated(ToolEvent),
     TodoUpdated(TodoEvent),
     SubagentStatus(SubagentStatus),
+    ManualToolCompleted(ManualToolCompleted),
     BatchProgress(BatchProgress),
     /// File was touched by an agent (for swarm conflict detection)
     FileTouch(FileTouch),

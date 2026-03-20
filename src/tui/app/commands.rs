@@ -1,6 +1,9 @@
 use super::{App, DisplayMessage, ProcessingStatus};
+use crate::bus::{Bus, BusEvent, ManualToolCompleted, ToolEvent, ToolStatus};
+use crate::id;
 use crate::message::{ContentBlock, Message, Role};
 use crate::session::Session;
+use std::path::PathBuf;
 use std::time::Instant;
 
 pub(super) fn reset_current_session(app: &mut App) {
@@ -15,6 +18,267 @@ pub(super) fn reset_current_session(app: &mut App) {
     app.session = session;
     app.side_panel = crate::side_panel::SidePanelSnapshot::default();
     app.provider_session_id = None;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManualSubagentSpec {
+    subagent_type: String,
+    model: Option<String>,
+    session_id: Option<String>,
+    prompt: String,
+}
+
+fn current_subagent_model_summary(app: &App) -> String {
+    match app.session.subagent_model.as_deref() {
+        Some(model) => format!("fixed `{}`", model),
+        None => format!("inherit current (`{}`)", app.provider.model()),
+    }
+}
+
+fn derive_subagent_description(prompt: &str) -> String {
+    let words: Vec<&str> = prompt.split_whitespace().take(4).collect();
+    if words.is_empty() {
+        "Manual subagent".to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
+fn parse_manual_subagent_spec(rest: &str) -> Result<ManualSubagentSpec, String> {
+    let mut iter = rest.split_whitespace().peekable();
+    let mut subagent_type = "general".to_string();
+    let mut model = None;
+    let mut session_id = None;
+    let mut prompt_tokens = Vec::new();
+
+    while let Some(token) = iter.next() {
+        match token {
+            "--type" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "Missing value for `--type`.".to_string())?;
+                subagent_type = value.to_string();
+            }
+            "--model" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "Missing value for `--model`.".to_string())?;
+                model = Some(value.to_string());
+            }
+            "--continue" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "Missing value for `--continue`.".to_string())?;
+                session_id = Some(value.to_string());
+            }
+            flag if flag.starts_with("--") => {
+                return Err(format!("Unknown flag `{}`.", flag));
+            }
+            prompt_start => {
+                prompt_tokens.push(prompt_start.to_string());
+                prompt_tokens.extend(iter.map(str::to_string));
+                break;
+            }
+        }
+    }
+
+    let prompt = prompt_tokens.join(" ").trim().to_string();
+    if prompt.is_empty() {
+        return Err("Missing prompt. Add text after `/subagent`.".to_string());
+    }
+
+    Ok(ManualSubagentSpec {
+        subagent_type,
+        model,
+        session_id,
+        prompt,
+    })
+}
+
+fn launch_manual_subagent(app: &mut App, spec: ManualSubagentSpec) {
+    let description = derive_subagent_description(&spec.prompt);
+    let tool_call = crate::message::ToolCall {
+        id: id::new_id("call"),
+        name: "subagent".to_string(),
+        input: serde_json::json!({
+            "description": description,
+            "prompt": spec.prompt,
+            "subagent_type": spec.subagent_type,
+            "model": spec.model,
+            "session_id": spec.session_id,
+            "command": "/subagent",
+        }),
+        intent: None,
+    };
+
+    app.push_display_message(DisplayMessage {
+        role: "tool".to_string(),
+        content: tool_call.name.clone(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(tool_call.clone()),
+    });
+
+    let content_blocks = vec![ContentBlock::ToolUse {
+        id: tool_call.id.clone(),
+        name: tool_call.name.clone(),
+        input: tool_call.input.clone(),
+    }];
+    app.add_provider_message(Message {
+        role: Role::Assistant,
+        content: content_blocks.clone(),
+        timestamp: Some(chrono::Utc::now()),
+        tool_duration_ms: None,
+    });
+    let message_id = app.session.add_message(Role::Assistant, content_blocks);
+    let _ = app.session.save();
+    app.subagent_status = Some("starting subagent".to_string());
+    app.set_status_notice("Running subagent");
+
+    let registry = app.registry.clone();
+    let session_id = app.session.id.clone();
+    let working_dir = app.session.working_dir.clone();
+    let tool_call_for_task = tool_call.clone();
+    tokio::spawn(async move {
+        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+            session_id: session_id.clone(),
+            message_id: message_id.clone(),
+            tool_call_id: tool_call_for_task.id.clone(),
+            tool_name: tool_call_for_task.name.clone(),
+            status: ToolStatus::Running,
+            title: None,
+        }));
+
+        let ctx = crate::tool::ToolContext {
+            session_id: session_id.clone(),
+            message_id: message_id.clone(),
+            tool_call_id: tool_call_for_task.id.clone(),
+            working_dir: working_dir.as_deref().map(PathBuf::from),
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: crate::tool::ToolExecutionMode::Direct,
+        };
+
+        let start = Instant::now();
+        let result = registry
+            .execute(
+                &tool_call_for_task.name,
+                tool_call_for_task.input.clone(),
+                ctx,
+            )
+            .await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        let (output, is_error, title, status) = match result {
+            Ok(output) => {
+                crate::telemetry::record_tool_call();
+                (output.output, false, output.title, ToolStatus::Completed)
+            }
+            Err(error) => {
+                crate::telemetry::record_tool_failure();
+                (format!("Error: {}", error), true, None, ToolStatus::Error)
+            }
+        };
+
+        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+            session_id: session_id.clone(),
+            message_id,
+            tool_call_id: tool_call_for_task.id.clone(),
+            tool_name: tool_call_for_task.name.clone(),
+            status,
+            title: title.clone(),
+        }));
+
+        Bus::global().publish(BusEvent::ManualToolCompleted(ManualToolCompleted {
+            session_id,
+            tool_call: tool_call_for_task,
+            output,
+            is_error,
+            title,
+            duration_ms,
+        }));
+    });
+}
+
+fn handle_subagent_model_command(app: &mut App, trimmed: &str) -> bool {
+    if !trimmed.starts_with("/subagent-model") {
+        return false;
+    }
+
+    if app.is_remote {
+        app.push_display_message(DisplayMessage::error(
+            "`/subagent-model` is currently only available in a local jcode TUI session."
+                .to_string(),
+        ));
+        return true;
+    }
+
+    let rest = trimmed
+        .strip_prefix("/subagent-model")
+        .unwrap_or_default()
+        .trim();
+
+    if rest.is_empty() || matches!(rest, "show" | "status") {
+        app.push_display_message(DisplayMessage::system(format!(
+            "Subagent model for this session: {}\n\nUse `/subagent-model <name>` to pin a model, or `/subagent-model inherit` to use the current model.",
+            current_subagent_model_summary(app)
+        )));
+        return true;
+    }
+
+    if matches!(rest, "inherit" | "reset" | "clear") {
+        app.session.subagent_model = None;
+        let _ = app.session.save();
+        app.push_display_message(DisplayMessage::system(format!(
+            "Subagent model reset to inherit the current model (`{}`).",
+            app.provider.model()
+        )));
+        app.set_status_notice("Subagent model: inherit");
+        return true;
+    }
+
+    app.session.subagent_model = Some(rest.to_string());
+    let _ = app.session.save();
+    app.push_display_message(DisplayMessage::system(format!(
+        "Subagent model pinned to `{}` for this session.",
+        rest
+    )));
+    app.set_status_notice(format!("Subagent model → {}", rest));
+    true
+}
+
+fn handle_subagent_command(app: &mut App, trimmed: &str) -> bool {
+    if !trimmed.starts_with("/subagent") || trimmed.starts_with("/subagent-model") {
+        return false;
+    }
+
+    if app.is_remote {
+        app.push_display_message(DisplayMessage::error(
+            "`/subagent` is currently only available in a local jcode TUI session.".to_string(),
+        ));
+        return true;
+    }
+
+    let rest = trimmed.strip_prefix("/subagent").unwrap_or_default().trim();
+    if rest.is_empty() {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: `/subagent [--type <kind>] [--model <name>] [--continue <session_id>] <prompt>`"
+                .to_string(),
+        ));
+        return true;
+    }
+
+    match parse_manual_subagent_spec(rest) {
+        Ok(spec) => launch_manual_subagent(app, spec),
+        Err(error) => {
+            app.push_display_message(DisplayMessage::error(format!(
+                "{}\nUsage: `/subagent [--type <kind>] [--model <name>] [--continue <session_id>] <prompt>`",
+                error
+            )));
+        }
+    }
+    true
 }
 
 pub(super) fn handle_help_command(app: &mut App, trimmed: &str) -> bool {
@@ -42,6 +306,10 @@ pub(super) fn handle_help_command(app: &mut App, trimmed: &str) -> bool {
 }
 
 pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
+    if handle_subagent_model_command(app, trimmed) || handle_subagent_command(app, trimmed) {
+        return true;
+    }
+
     if trimmed == "/clear" {
         reset_current_session(app);
         return true;
@@ -747,4 +1015,29 @@ pub(super) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
 
 pub(super) fn handle_dev_command(app: &mut App, trimmed: &str) -> bool {
     super::tui_lifecycle::handle_dev_command(app, trimmed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_manual_subagent_spec;
+
+    #[test]
+    fn parse_manual_subagent_spec_accepts_flags_and_prompt() {
+        let spec = parse_manual_subagent_spec(
+            "--type research --model gpt-5.4 --continue session_123 investigate this bug",
+        )
+        .expect("parse manual subagent spec");
+
+        assert_eq!(spec.subagent_type, "research");
+        assert_eq!(spec.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(spec.session_id.as_deref(), Some("session_123"));
+        assert_eq!(spec.prompt, "investigate this bug");
+    }
+
+    #[test]
+    fn parse_manual_subagent_spec_rejects_missing_prompt() {
+        let err = parse_manual_subagent_spec("--model gpt-5.4")
+            .expect_err("missing prompt should be rejected");
+        assert!(err.contains("Missing prompt"));
+    }
 }

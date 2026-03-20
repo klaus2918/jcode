@@ -23,6 +23,25 @@ impl SubagentTool {
     pub fn new(provider: Arc<dyn Provider>, registry: Registry) -> Self {
         Self { provider, registry }
     }
+
+    fn preferred_parent_subagent_model(parent_session_id: &str) -> Option<String> {
+        Session::load(parent_session_id)
+            .ok()
+            .and_then(|session| session.subagent_model)
+    }
+
+    fn resolve_model(
+        requested_model: Option<&str>,
+        existing_session_model: Option<&str>,
+        parent_subagent_model: Option<&str>,
+        provider_model: &str,
+    ) -> String {
+        requested_model
+            .or(existing_session_model)
+            .or(parent_subagent_model)
+            .unwrap_or(provider_model)
+            .to_string()
+    }
 }
 
 #[derive(Deserialize)]
@@ -91,16 +110,15 @@ impl Tool for SubagentTool {
         } else {
             Session::create(Some(ctx.session_id.clone()), Some(subagent_title(&params)))
         };
-        if let Some(model) = &params.model {
-            session.model = Some(model.clone());
-        } else if session.model.is_none() {
-            // By default, inherit the coordinator's active model.
-            session.model = Some(self.provider.model());
-        }
-        let resolved_model = session
-            .model
-            .clone()
-            .unwrap_or_else(|| self.provider.model());
+        let parent_subagent_model = Self::preferred_parent_subagent_model(&ctx.session_id);
+        let provider_model = self.provider.model();
+        let resolved_model = Self::resolve_model(
+            params.model.as_deref(),
+            session.model.as_deref(),
+            parent_subagent_model.as_deref(),
+            &provider_model,
+        );
+        session.model = Some(resolved_model.clone());
 
         if let Some(ref working_dir) = ctx.working_dir {
             session.working_dir = Some(working_dir.display().to_string());
@@ -237,6 +255,31 @@ mod tests {
         assert_eq!(
             subagent_display_title(&params, "gpt-5.4"),
             "Verify subagent model (general · gpt-5.4)"
+        );
+    }
+
+    #[test]
+    fn resolve_model_prefers_explicit_then_existing_then_parent_then_provider() {
+        assert_eq!(
+            super::SubagentTool::resolve_model(
+                Some("explicit"),
+                Some("existing"),
+                Some("parent"),
+                "provider"
+            ),
+            "explicit"
+        );
+        assert_eq!(
+            super::SubagentTool::resolve_model(None, Some("existing"), Some("parent"), "provider"),
+            "existing"
+        );
+        assert_eq!(
+            super::SubagentTool::resolve_model(None, None, Some("parent"), "provider"),
+            "parent"
+        );
+        assert_eq!(
+            super::SubagentTool::resolve_model(None, None, None, "provider"),
+            "provider"
         );
     }
 }

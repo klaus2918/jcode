@@ -1,5 +1,8 @@
 use super::{App, DisplayMessage, ProcessingStatus, is_context_limit_error};
-use crate::bus::{BackgroundTaskCompleted, BackgroundTaskStatus, BusEvent, InputShellCompleted};
+use crate::bus::{
+    BackgroundTaskCompleted, BackgroundTaskStatus, BusEvent, InputShellCompleted,
+    ManualToolCompleted,
+};
 use crate::message::{ContentBlock, Message, Role};
 use crate::session::StoredDisplayRole;
 use anyhow::Result;
@@ -105,7 +108,50 @@ pub(super) fn handle_bus_event(app: &mut App, bus_event: std::result::Result<Bus
                 app.set_side_panel_snapshot(update.snapshot);
             }
         }
+        Ok(BusEvent::ManualToolCompleted(result)) => {
+            handle_manual_tool_completed(app, result);
+        }
         _ => {}
+    }
+}
+
+fn handle_manual_tool_completed(app: &mut App, result: ManualToolCompleted) {
+    if result.session_id != app.session.id {
+        return;
+    }
+
+    if let Some(dm) = app.display_messages.iter_mut().rev().find(|dm| {
+        dm.tool_data.as_ref().map(|td| td.id.as_str()) == Some(result.tool_call.id.as_str())
+    }) {
+        dm.content = result.output.clone();
+        dm.title = result.title.clone();
+    }
+    app.bump_display_messages_version();
+
+    app.add_provider_message(Message::tool_result_with_duration(
+        &result.tool_call.id,
+        &result.output,
+        result.is_error,
+        Some(result.duration_ms),
+    ));
+    app.session.add_message_with_duration(
+        Role::User,
+        vec![ContentBlock::ToolResult {
+            tool_use_id: result.tool_call.id.clone(),
+            content: result.output.clone(),
+            is_error: if result.is_error { Some(true) } else { None },
+        }],
+        Some(result.duration_ms),
+    );
+    let _ = app.session.save();
+
+    if result.tool_call.name == "subagent" {
+        app.subagent_status = None;
+        app.set_status_notice(if result.is_error {
+            "Subagent failed"
+        } else {
+            "Subagent completed"
+        });
     }
 }
 

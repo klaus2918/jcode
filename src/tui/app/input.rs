@@ -713,6 +713,11 @@ pub(super) fn handle_modal_key(
         return Ok(true);
     }
 
+    if app.login_picker_overlay.is_some() {
+        app.handle_login_picker_key(code, modifiers)?;
+        return Ok(true);
+    }
+
     if app.account_picker_overlay.is_some() {
         if let Some(command) = app.next_account_picker_action(code, modifiers)? {
             app.handle_account_picker_command(command);
@@ -1269,6 +1274,12 @@ impl App {
             }
             "model" => {
                 "`/model`\nOpen model picker.\n\n`/model <name>`\nSwitch model.\n\n`/model <name>@<provider>`\nPin OpenRouter routing (`@auto` clears pin)."
+            }
+            "subagent" => {
+                "`/subagent <prompt>`\nLaunch a subagent immediately.\n\nOptional flags:\n- `--type <kind>` sets the subagent type (default `general`)\n- `--model <name>` overrides the subagent model for this run\n- `--continue <session_id>` resumes an existing subagent session"
+            }
+            "subagent-model" => {
+                "`/subagent-model`\nShow the current subagent model policy for this session.\n\n`/subagent-model <name>`\nPin a fixed model for future subagents in this session.\n\n`/subagent-model inherit`\nReset to using the current active model."
             }
             "effort" => {
                 "`/effort`\nShow current reasoning effort.\n\n`/effort <level>`\nSet reasoning effort (none|low|medium|high|xhigh).\n\nAlso: Alt+←/→ to cycle."

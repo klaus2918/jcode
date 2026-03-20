@@ -554,6 +554,16 @@ fn test_account_picker_prompt_new_openai_label_cancel_clears_prompt() {
 }
 
 #[test]
+fn test_login_command_opens_login_picker_overlay() {
+    let mut app = create_test_app();
+    app.input = "/login".to_string();
+    app.submit_input();
+
+    assert!(app.login_picker_overlay.is_some());
+    assert!(app.pending_login.is_none());
+}
+
+#[test]
 fn test_account_openai_compatible_settings_renders_provider_settings() {
     let mut app = create_test_app();
     app.input = "/account openai-compatible settings".to_string();
@@ -1582,6 +1592,38 @@ fn test_model_picker_preview_arrow_keys_navigate() {
 
     // Input should be preserved
     assert_eq!(app.input(), "/model");
+}
+
+#[test]
+fn test_subagent_model_command_sets_and_resets_session_preference() {
+    let mut app = create_test_app();
+
+    assert!(super::commands::handle_session_command(
+        &mut app,
+        "/subagent-model gpt-5.4"
+    ));
+    assert_eq!(app.session.subagent_model.as_deref(), Some("gpt-5.4"));
+
+    assert!(super::commands::handle_session_command(
+        &mut app,
+        "/subagent-model inherit"
+    ));
+    assert_eq!(app.session.subagent_model, None);
+}
+
+#[test]
+fn test_subagent_command_suggestions_include_manual_launch_and_model_policy() {
+    let app = create_test_app();
+
+    let subagent = app.get_suggestions_for("/subagent");
+    assert!(subagent.iter().any(|(cmd, _)| cmd == "/subagent "));
+
+    let model = app.get_suggestions_for("/subagent-model ");
+    assert!(
+        model
+            .iter()
+            .any(|(cmd, _)| cmd == "/subagent-model inherit")
+    );
 }
 
 fn configure_test_remote_models_with_copilot(app: &mut App) {
@@ -5339,6 +5381,44 @@ fn test_copy_badge_requires_prior_combo_progress() {
     assert!(
         state.key_is_active('s', now),
         "final key should light once alt+shift are active"
+    );
+}
+
+#[test]
+fn test_try_open_link_at_opens_clicked_url_and_sets_notice() {
+    crate::tui::ui::clear_copy_viewport_snapshot();
+    crate::tui::ui::record_copy_viewport_snapshot(
+        std::sync::Arc::new(vec!["Docs: https://example.com/docs".to_string()]),
+        std::sync::Arc::new(vec![0]),
+        std::sync::Arc::new(vec!["Docs: https://example.com/docs".to_string()]),
+        std::sync::Arc::new(vec![crate::tui::ui::WrappedLineMap {
+            raw_line: 0,
+            start_col: 0,
+            end_col: 30,
+        }]),
+        0,
+        1,
+        Rect::new(0, 0, 80, 5),
+        &[0],
+    );
+
+    let mut app = create_test_app();
+    let opened = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let opened_for_closure = opened.clone();
+
+    let handled = app.try_open_link_at_with(8, 0, |url| {
+        *opened_for_closure.lock().unwrap() = Some(url.to_string());
+        Ok::<(), &'static str>(())
+    });
+
+    assert!(handled);
+    assert_eq!(
+        *opened.lock().unwrap(),
+        Some("https://example.com/docs".to_string())
+    );
+    assert_eq!(
+        app.status_notice(),
+        Some("Opened link: https://example.com/docs".to_string())
     );
 }
 

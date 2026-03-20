@@ -214,6 +214,11 @@ impl App {
             ("/?".into(), "Alias for /help"),
             ("/commands".into(), "Alias for /help"),
             ("/model".into(), "List or switch models"),
+            ("/subagent".into(), "Launch a subagent manually"),
+            (
+                "/subagent-model".into(),
+                "Show/change subagent model policy",
+            ),
             ("/effort".into(), "Show/change reasoning effort (Alt+←/→)"),
             ("/fast".into(), "Toggle OpenAI/Codex fast mode"),
             (
@@ -345,6 +350,67 @@ impl App {
             return self.rank_suggestions(input, suggestions);
         }
 
+        if prefix.starts_with("/subagent-model ") {
+            let mut suggestions = vec![
+                (
+                    "/subagent-model inherit".into(),
+                    "Use the current active model",
+                ),
+                (
+                    "/subagent-model show".into(),
+                    "Show the current subagent model policy",
+                ),
+            ];
+            suggestions.extend(
+                self.model_suggestion_candidates()
+                    .into_iter()
+                    .map(|(cmd, _)| {
+                        (
+                            cmd.replacen("/model ", "/subagent-model ", 1),
+                            "Pin this subagent model",
+                        )
+                    }),
+            );
+            return self.rank_suggestions(input, suggestions);
+        }
+
+        if prefix_trimmed == "/subagent-model" {
+            return vec![
+                (
+                    "/subagent-model show".into(),
+                    "Show the current subagent model policy",
+                ),
+                (
+                    "/subagent-model inherit".into(),
+                    "Use the current active model",
+                ),
+            ];
+        }
+
+        if prefix.starts_with("/subagent ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    (
+                        "/subagent --type general ".into(),
+                        "Launch a general-purpose subagent",
+                    ),
+                    (
+                        "/subagent --model ".into(),
+                        "Launch a subagent with an explicit model",
+                    ),
+                    (
+                        "/subagent --continue ".into(),
+                        "Resume an existing subagent session",
+                    ),
+                ],
+            );
+        }
+
+        if prefix_trimmed == "/subagent" {
+            return vec![("/subagent ".into(), "Launch a subagent with a prompt")];
+        }
+
         // /model opens the interactive picker, and `/model <name>` supports direct completion.
         if prefix_trimmed == "/model" || prefix_trimmed == "/models" {
             return vec![("/model".into(), "Open model picker or type `/model <name>`")];
@@ -437,29 +503,57 @@ impl App {
 
         if prefix.starts_with("/account ") || prefix.starts_with("/accounts ") {
             let mut suggestions = vec![
-                ("/account list".into(), "List Anthropic and OpenAI accounts"),
+                ("/account list".into(), "Open all provider/account actions"),
                 (
-                    "/account add".into(),
-                    "Add a new account (start OAuth login)",
-                ),
-                ("/account switch".into(), "Switch active account"),
-                ("/account remove".into(), "Remove an account"),
-                ("/account openai".into(), "List all OpenAI accounts"),
-                (
-                    "/account openai add".into(),
-                    "Add a new OpenAI account (start OAuth login)",
+                    "/account switch".into(),
+                    "Switch active named account by label",
                 ),
                 (
-                    "/account openai switch".into(),
-                    "Switch active OpenAI account",
+                    "/account default-provider".into(),
+                    "Set preferred default provider",
                 ),
-                ("/account openai remove".into(), "Remove an OpenAI account"),
+                (
+                    "/account default-model".into(),
+                    "Set preferred default model",
+                ),
+                (
+                    "/account openai-compatible settings".into(),
+                    "Inspect custom OpenAI-compatible settings",
+                ),
+                (
+                    "/account openai-compatible api-base".into(),
+                    "Set custom OpenAI-compatible API base",
+                ),
             ];
+            for provider in crate::provider_catalog::login_providers() {
+                suggestions.push((
+                    format!("/account {}", provider.id),
+                    "Open this provider's account/settings actions",
+                ));
+                suggestions.push((
+                    format!("/account {} settings", provider.id),
+                    "Show provider-specific settings",
+                ));
+                suggestions.push((
+                    format!("/account {} login", provider.id),
+                    "Start or refresh login for this provider",
+                ));
+            }
+            suggestions.push(("/account claude add".into(), "Add a new Claude account"));
+            suggestions.push(("/account openai add".into(), "Add a new OpenAI account"));
+            suggestions.push((
+                "/account openai transport".into(),
+                "Set OpenAI transport preference",
+            ));
+            suggestions.push((
+                "/account openai effort".into(),
+                "Set OpenAI reasoning effort preference",
+            ));
             if let Ok(accounts) = crate::auth::claude::list_accounts() {
                 for account in accounts {
                     suggestions.push((
-                        format!("/account switch {}", account.label),
-                        "Switch to this account",
+                        format!("/account claude switch {}", account.label),
+                        "Switch to this Claude account",
                     ));
                 }
             }
@@ -707,9 +801,14 @@ impl App {
                 | "/login"
                 | "/auth"
                 | "/account"
+                | "/account claude"
                 | "/account switch"
-                | "/account remove"
                 | "/account openai"
+                | "/account openai-compatible"
+                | "/account default-provider"
+                | "/account default-model"
+                | "/account claude switch"
+                | "/account claude remove"
                 | "/account openai switch"
                 | "/account openai remove"
                 | "/subscription"

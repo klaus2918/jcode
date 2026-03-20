@@ -218,6 +218,9 @@ pub struct Session {
     /// Model identifier for this session (e.g., "gpt-5.2-codex")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Optional fixed model to use for subagents launched from this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_model: Option<String>,
     /// Whether this session is a canary session (testing new builds)
     #[serde(default)]
     pub is_canary: bool,
@@ -269,6 +272,7 @@ struct SessionJournalMeta {
     compaction: Option<StoredCompactionState>,
     provider_session_id: Option<String>,
     model: Option<String>,
+    subagent_model: Option<String>,
     is_canary: bool,
     testing_build: Option<String>,
     working_dir: Option<String>,
@@ -374,6 +378,7 @@ impl Session {
             compaction: self.compaction.clone(),
             provider_session_id: self.provider_session_id.clone(),
             model: self.model.clone(),
+            subagent_model: self.subagent_model.clone(),
             is_canary: self.is_canary,
             testing_build: self.testing_build.clone(),
             working_dir: self.working_dir.clone(),
@@ -445,6 +450,7 @@ impl Session {
     fn metadata_requires_snapshot(prev: &SessionJournalMeta, current: &SessionJournalMeta) -> bool {
         prev.parent_id != current.parent_id
             || prev.title != current.title
+            || prev.subagent_model != current.subagent_model
             || prev.is_canary != current.is_canary
             || prev.testing_build != current.testing_build
             || prev.working_dir != current.working_dir
@@ -462,6 +468,7 @@ impl Session {
         self.compaction = meta.compaction;
         self.provider_session_id = meta.provider_session_id;
         self.model = meta.model;
+        self.subagent_model = meta.subagent_model;
         self.is_canary = meta.is_canary;
         self.testing_build = meta.testing_build;
         self.working_dir = meta.working_dir;
@@ -541,6 +548,7 @@ impl Session {
             compaction: None,
             provider_session_id: None,
             model: None,
+            subagent_model: None,
             is_canary: false,
             testing_build: None,
             working_dir: std::env::current_dir()
@@ -576,6 +584,7 @@ impl Session {
             compaction: None,
             provider_session_id: None,
             model: None,
+            subagent_model: None,
             is_canary: false,
             testing_build: None,
             working_dir: std::env::current_dir()
