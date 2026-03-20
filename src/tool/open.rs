@@ -52,6 +52,20 @@ impl OpenAction {
             Self::Reveal => "reveal",
         }
     }
+
+    fn from_params(mode: Option<&str>, action: Option<&str>) -> Result<Self> {
+        if let (Some(mode), Some(action)) = (mode, action)
+            && mode != action
+        {
+            anyhow::bail!(
+                "Conflicting open parameters: mode='{}' and action='{}'. Use only 'mode', or provide matching values.",
+                mode,
+                action
+            );
+        }
+
+        Self::parse(mode.or(action))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +139,7 @@ impl Tool for OpenTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: OpenInput = serde_json::from_value(input)?;
-        let action = OpenAction::parse(params.mode.as_deref().or(params.action.as_deref()))?;
+        let action = OpenAction::from_params(params.mode.as_deref(), params.action.as_deref())?;
         let target = resolve_target(&params.target, &ctx)
             .with_context(|| format!("Invalid open target: {}", params.target))?;
 
@@ -468,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_allowed_url_accepts_supported_schemes() {
+    fn parse_target_accepts_supported_schemes() {
         let parsed = parse_target("https://example.com/docs").unwrap();
         assert!(
             matches!(parsed, Some(ParsedTarget::Url(url)) if url == "https://example.com/docs")
@@ -481,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_allowed_url_rejects_custom_scheme() {
+    fn parse_target_rejects_custom_scheme() {
         let err = parse_target("javascript:alert(1)").unwrap_err();
         assert!(
             err.to_string()
@@ -510,7 +524,7 @@ mod tests {
     #[test]
     fn resolve_target_rejects_missing_local_path() {
         let ctx = make_ctx();
-        let err = resolve_target("./definitely-missing-jcode-launch-target", &ctx).unwrap_err();
+        let err = resolve_target("./definitely-missing-jcode-open-target", &ctx).unwrap_err();
         assert!(err.to_string().contains("Target path does not exist"));
     }
 
@@ -543,6 +557,22 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("The reveal action only supports local filesystem paths")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_conflicting_mode_and_action() {
+        let tool = OpenTool::new();
+        let err = tool
+            .execute(
+                json!({"mode": "open", "action": "reveal", "target": "https://example.com"}),
+                make_ctx(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Conflicting open parameters: mode='open' and action='reveal'")
         );
     }
 
