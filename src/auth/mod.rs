@@ -1,3 +1,4 @@
+pub mod antigravity;
 pub mod azure;
 pub mod claude;
 pub mod codex;
@@ -50,7 +51,7 @@ pub struct AuthStatus {
     pub copilot: AuthState,
     /// Copilot has API token (from hosts.json/apps.json/GITHUB_TOKEN)
     pub copilot_has_api_token: bool,
-    /// Antigravity CLI available
+    /// Antigravity OAuth configured
     pub antigravity: AuthState,
     /// Gemini CLI available
     pub gemini: AuthState,
@@ -388,12 +389,16 @@ impl AuthStatus {
             AuthState::NotConfigured
         };
 
-        status.antigravity =
-            if command_available_from_env("JCODE_ANTIGRAVITY_CLI_PATH", "antigravity") {
-                AuthState::Available
-            } else {
-                AuthState::NotConfigured
-            };
+        status.antigravity = match antigravity::load_tokens() {
+            Ok(tokens) => {
+                if tokens.is_expired() {
+                    AuthState::Expired
+                } else {
+                    AuthState::Available
+                }
+            }
+            Err(_) => AuthState::NotConfigured,
+        };
 
         status.gemini = match gemini::load_tokens() {
             Ok(tokens) => {
@@ -518,12 +523,16 @@ impl AuthStatus {
             AuthState::NotConfigured
         };
 
-        status.antigravity =
-            if command_available_from_env("JCODE_ANTIGRAVITY_CLI_PATH", "antigravity") {
-                AuthState::Available
-            } else {
-                AuthState::NotConfigured
-            };
+        status.antigravity = match antigravity::load_tokens() {
+            Ok(tokens) => {
+                if tokens.is_expired() {
+                    AuthState::Expired
+                } else {
+                    AuthState::Available
+                }
+            }
+            Err(_) => AuthState::NotConfigured,
+        };
 
         status.gemini = match gemini::load_tokens() {
             Ok(tokens) => {

@@ -33,6 +33,12 @@ pub(super) enum PendingLogin {
         expected_state: Option<String>,
         redirect_uri: String,
     },
+    /// Waiting for user to paste an Antigravity OAuth callback URL/query.
+    Antigravity {
+        verifier: String,
+        expected_state: String,
+        redirect_uri: String,
+    },
     /// Waiting for user to paste an API key for an OpenAI-compatible provider.
     ApiKeyProfile {
         provider: String,
@@ -1848,30 +1854,150 @@ impl App {
     }
 
     fn start_antigravity_login(&mut self) {
-        let binary = std::env::var("JCODE_ANTIGRAVITY_CLI_PATH")
-            .unwrap_or_else(|_| "antigravity".to_string());
+        let (verifier, challenge) = crate::auth::oauth::generate_pkce_public();
+        let expected_state = crate::auth::oauth::generate_state_public();
+        let port = crate::auth::antigravity::DEFAULT_PORT;
+        let redirect_uri = crate::auth::antigravity::redirect_uri(port);
 
-        self.push_display_message(DisplayMessage::system(format!(
-            "Starting Antigravity login...\n\nRunning `{} login`",
-            binary
-        )));
-        self.set_status_notice("Login: antigravity...");
-
-        match Self::run_external_login_command(&binary, &["login"]) {
-            Ok(()) => {
-                self.push_display_message(DisplayMessage::system(
-                    "✓ **Antigravity login command completed.**".to_string(),
-                ));
-                self.set_status_notice("Login: ✓ antigravity");
-            }
+        let auth_url = match crate::auth::antigravity::build_auth_url(
+            &redirect_uri,
+            &challenge,
+            &expected_state,
+        ) {
+            Ok(url) => url,
             Err(e) => {
                 self.push_display_message(DisplayMessage::error(format!(
-                    "Antigravity login failed: {}\n\nCheck `{}` is installed and run `{} login`.",
-                    e, binary, binary
+                    "Antigravity login is unavailable: {}",
+                    e
                 )));
-                self.set_status_notice("Login: antigravity failed");
+                self.set_status_notice("Login: failed");
+                return;
             }
+        };
+
+        let qr_section = crate::login_qr::markdown_section(
+            &auth_url,
+            "Scan this on another device if this machine has no browser, then paste the full callback URL or query string here:",
+        )
+        .map(|section| format!("\n\n{section}"))
+        .unwrap_or_default();
+
+        let callback_listener = crate::auth::oauth::bind_callback_listener(port).ok();
+        let callback_available = callback_listener.is_some();
+        let browser_opened = open::that(&auth_url).is_ok();
+
+        if let Some(listener) = callback_listener {
+            let verifier_clone = verifier.clone();
+            let expected_state_clone = expected_state.clone();
+            let redirect_clone = redirect_uri.clone();
+            tokio::spawn(async move {
+                let code = tokio::time::timeout(
+                    std::time::Duration::from_secs(300),
+                    crate::auth::oauth::wait_for_callback_async_on_listener(
+                        listener,
+                        &expected_state_clone,
+                    ),
+                )
+                .await
+                .map_err(|_| "Login timed out after 5 minutes. Please try again.".to_string())
+                .and_then(|result| result.map_err(|e| format!("Callback failed: {}", e)));
+
+                match code {
+                    Ok(code) => {
+                        match Self::antigravity_token_exchange(
+                            verifier_clone,
+                            code,
+                            Some(expected_state_clone),
+                            redirect_clone,
+                        )
+                        .await
+                        {
+                            Ok(msg) => {
+                                Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                                    provider: "antigravity".to_string(),
+                                    success: true,
+                                    message: msg,
+                                }));
+                            }
+                            Err(e) => {
+                                Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                                    provider: "antigravity".to_string(),
+                                    success: false,
+                                    message: format!("Antigravity login failed: {}", e),
+                                }));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::logging::info(&format!(
+                            "Antigravity automatic callback did not complete: {}",
+                            e
+                        ));
+                    }
+                }
+            });
         }
+
+        let callback_line = if callback_available {
+            format!(
+                "Waiting for callback on `{}`... (this will complete automatically)\n",
+                redirect_uri
+            )
+        } else {
+            format!(
+                "Local callback port `localhost:{}` is unavailable, so finish in any browser and paste the full callback URL or query string here.\n",
+                port
+            )
+        };
+        let browser_line = if browser_opened {
+            String::new()
+        } else {
+            "This machine could not open a browser automatically.\n".to_string()
+        };
+
+        self.push_display_message(DisplayMessage::system(format!(
+            "**Antigravity OAuth Login**\n\n\
+             Opening browser for authentication...\n\n\
+             If the browser didn't open, visit:\n{}\n\n\
+             {}{}\
+             Or paste the full callback URL or query string here to finish.{}",
+            auth_url, browser_line, callback_line, qr_section
+        )));
+        self.set_status_notice("Login: antigravity waiting…");
+        self.pending_login = Some(PendingLogin::Antigravity {
+            verifier,
+            expected_state,
+            redirect_uri,
+        });
+    }
+
+    async fn antigravity_token_exchange(
+        verifier: String,
+        input: String,
+        expected_state: Option<String>,
+        redirect_uri: String,
+    ) -> Result<String, String> {
+        let tokens = crate::auth::antigravity::exchange_callback_input(
+            &verifier,
+            input.trim(),
+            expected_state.as_deref(),
+            &redirect_uri,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let mut msg = if let Some(email) = tokens.email.as_deref() {
+            format!(
+                "Successfully logged in to Antigravity! (account: {})",
+                email
+            )
+        } else {
+            "Successfully logged in to Antigravity!".to_string()
+        };
+        if let Some(project_id) = tokens.project_id.as_deref() {
+            msg.push_str(&format!(" (project: {})", project_id));
+        }
+        Ok(msg)
     }
 
     fn run_external_login_command(program: &str, args: &[&str]) -> anyhow::Result<()> {
@@ -1952,12 +2078,26 @@ impl App {
         }
 
         match &pending {
-            PendingLogin::OpenAi { .. }
-            | PendingLogin::OpenAiAccount { .. }
-            | PendingLogin::Gemini {
+            PendingLogin::OpenAi { .. } | PendingLogin::OpenAiAccount { .. }
+                if !looks_like_oauth_callback_input(trimmed) =>
+            {
+                self.push_display_message(DisplayMessage::system(
+                    "Still waiting for the browser callback. Paste the full callback URL or query string if you want to finish manually, or keep waiting for the automatic redirect.".to_string(),
+                ));
+                self.pending_login = Some(pending);
+                return;
+            }
+            PendingLogin::Gemini {
                 expected_state: Some(_),
                 ..
             } if !looks_like_oauth_callback_input(trimmed) => {
+                self.push_display_message(DisplayMessage::system(
+                    "Still waiting for the browser callback. Paste the full callback URL or query string if you want to finish manually, or keep waiting for the automatic redirect.".to_string(),
+                ));
+                self.pending_login = Some(pending);
+                return;
+            }
+            PendingLogin::Antigravity { .. } if !looks_like_oauth_callback_input(trimmed) => {
                 self.push_display_message(DisplayMessage::system(
                     "Still waiting for the browser callback. Paste the full callback URL or query string if you want to finish manually, or keep waiting for the automatic redirect.".to_string(),
                 ));
@@ -2157,6 +2297,42 @@ impl App {
                 });
                 self.push_display_message(DisplayMessage::system(
                     "Exchanging Gemini callback for tokens...".to_string(),
+                ));
+            }
+            PendingLogin::Antigravity {
+                verifier,
+                expected_state,
+                redirect_uri,
+            } => {
+                self.set_status_notice("Login: exchanging...");
+                let input_owned = input.clone();
+                tokio::spawn(async move {
+                    match Self::antigravity_token_exchange(
+                        verifier,
+                        input_owned,
+                        Some(expected_state),
+                        redirect_uri,
+                    )
+                    .await
+                    {
+                        Ok(msg) => {
+                            Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                                provider: "antigravity".to_string(),
+                                success: true,
+                                message: msg,
+                            }));
+                        }
+                        Err(e) => {
+                            Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                                provider: "antigravity".to_string(),
+                                success: false,
+                                message: format!("Antigravity login failed: {}", e),
+                            }));
+                        }
+                    }
+                });
+                self.push_display_message(DisplayMessage::system(
+                    "Exchanging Antigravity callback for tokens...".to_string(),
                 ));
             }
             PendingLogin::ApiKeyProfile {
