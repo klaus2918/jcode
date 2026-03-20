@@ -154,6 +154,7 @@ impl App {
             last_api_completed: None,
             last_turn_input_tokens: None,
             pending_turn: false,
+            session_save_pending: false,
             streaming_tool_calls: Vec::new(),
             provider_session_id: None,
             cancel_requested: false,

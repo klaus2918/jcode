@@ -328,7 +328,6 @@ pub(super) async fn handle_terminal_event(
     remote: &mut RemoteConnection,
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<()> {
-    let mut needs_redraw = false;
     match event {
         Some(Ok(Event::FocusGained)) => {
             app.note_client_focus();
@@ -341,28 +340,24 @@ pub(super) async fn handle_terminal_event(
                 if let Some(spec) = app.pending_model_switch.take() {
                     let _ = remote.set_model(&spec).await;
                 }
-                needs_redraw = true;
             }
         }
         Some(Ok(Event::Paste(text))) => {
             app.note_client_focus();
             app.handle_paste(text);
-            needs_redraw = true;
         }
         Some(Ok(Event::Mouse(mouse))) => {
             app.note_client_focus();
             handle_mouse_event(app, mouse);
-            needs_redraw = true;
         }
         Some(Ok(Event::Resize(_, _))) => {
             let _ = terminal.clear();
-            needs_redraw = true;
         }
         _ => {}
     }
-    if needs_redraw {
-        terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
-    }
+    // The active remote loop redraws at the top of the next iteration, so an
+    // immediate draw here would duplicate the same full-frame render for every
+    // keypress.
     Ok(())
 }
 

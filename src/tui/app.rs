@@ -251,6 +251,8 @@ pub struct App {
     last_turn_input_tokens: Option<u64>,
     // Pending turn to process (allows UI to redraw before processing starts)
     pending_turn: bool,
+    // Local session file write to flush once the first "sending" frame is visible.
+    session_save_pending: bool,
     // Tool calls detected during streaming (shown in real-time with details)
     streaming_tool_calls: Vec<ToolCall>,
     // Provider-specific session ID for conversation resume

@@ -1902,6 +1902,7 @@ fn test_submit_input_adds_message() {
     // Check processing state
     assert!(app.is_processing());
     assert!(app.pending_turn);
+    assert!(app.session_save_pending);
     assert!(matches!(app.status(), ProcessingStatus::Sending));
     assert!(app.elapsed().is_some());
 

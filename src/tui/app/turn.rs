@@ -563,6 +563,10 @@ impl App {
                 redraw_interval = interval(redraw_period);
             }
 
+            self.status = ProcessingStatus::Sending;
+            terminal.draw(|frame| crate::tui::ui::draw(frame, self))?;
+            self.flush_pending_session_save();
+
             let repaired = self.repair_missing_tool_outputs();
             if repaired > 0 {
                 let message = format!(
@@ -597,9 +601,6 @@ impl App {
                 let age_ms = pending.computed_at.elapsed().as_millis() as u64;
                 self.show_injected_memory_context(&pending.prompt, pending.count, age_ms);
             }
-
-            self.status = ProcessingStatus::Sending;
-            terminal.draw(|frame| crate::tui::ui::draw(frame, self))?;
 
             crate::logging::info(&format!(
                 "TUI: API call starting ({} messages)",

@@ -1316,7 +1316,7 @@ impl App {
                 "`/auth`\nShow authentication status for all providers.\n\n`/login`\nInteractive provider selection - pick a provider to log into.\n\n`/login <provider>`\nStart login flow directly for any provider shown by `/login` or the `/login ` completions.\n\nUse `/login jcode` for curated jcode subscription access via your router, not OpenRouter BYOK."
             }
             "account" | "accounts" => {
-                "`/account`\nOpen the interactive account picker for Anthropic and OpenAI logins.\n\n`/account add <label>`\nAdd a new Anthropic account via OAuth login.\n\n`/account switch <label>`\nSwitch the active Anthropic account.\n\n`/account remove <label>`\nRemove an Anthropic account.\n\n`/account openai`\nOpen the interactive picker focused on OpenAI accounts.\n\n`/account openai add <label>`\nAdd a new OpenAI account via OAuth login.\n\n`/account openai switch <label>`\nSwitch the active OpenAI account.\n\n`/account openai remove <label>`\nRemove an OpenAI account."
+                "`/account`\nOpen the interactive account/provider management center.\n\n`/account <provider>`\nOpen the picker filtered to one provider (for example `claude`, `openai`, `copilot`, `gemini`, `openrouter`, `openai-compatible`).\n\n`/account <provider> settings`\nShow provider-specific account/settings details.\n\n`/account <provider> login`\nStart or refresh credentials for a provider.\n\n`/account claude add <label>` / `/account openai add <label>`\nCreate a new named OAuth account.\n\n`/account <provider> switch <label>`\nSwitch the active named account for multi-account providers.\n\n`/account <provider> remove <label>`\nRemove a named account.\n\n`/account default-provider <provider|auto>`\nSet the preferred default provider for future sessions.\n\n`/account default-model <model|clear>`\nSet the preferred default model for future sessions.\n\nOpenAI-specific settings: `/account openai transport ...`, `/account openai effort ...`, `/account openai fast on|off`.\n\nCustom provider settings: `/account openai-compatible api-base ...`, `api-key-name ...`, `env-file ...`, `default-model ...`."
             }
             "save" => {
                 "`/save`\nBookmark the current session so it appears at the top of `/resume`.\n\n`/save <label>`\nBookmark with a custom label for easy identification.\n\nSaved sessions are shown in a dedicated \"Saved\" section in the session picker."
@@ -1470,7 +1470,7 @@ impl App {
             self.session.add_message(Role::User, blocks);
         }
         crate::telemetry::record_turn();
-        let _ = self.session.save();
+        self.session_save_pending = true;
 
         // Set up processing state - actual processing happens after UI redraws
         self.is_processing = true;
@@ -1529,7 +1529,7 @@ impl App {
                     }],
                 );
             }
-            let _ = self.session.save();
+            self.session_save_pending = true;
             self.clear_streaming_render_state();
             self.stream_buffer.clear();
             self.thought_line_inserted = false;
@@ -1570,6 +1570,24 @@ impl App {
             }
             self.current_turn_system_reminder = None;
             // Loop will check if more messages were queued during this turn
+        }
+    }
+
+    pub(super) fn flush_pending_session_save(&mut self) {
+        if !self.session_save_pending {
+            return;
+        }
+
+        match self.session.save() {
+            Ok(()) => {
+                self.session_save_pending = false;
+            }
+            Err(error) => {
+                crate::logging::warn(&format!(
+                    "Failed to persist pending session save for {}: {}",
+                    self.session.id, error
+                ));
+            }
         }
     }
 }

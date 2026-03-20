@@ -62,15 +62,15 @@ pub(super) fn handle_terminal_event(
     terminal: &mut DefaultTerminal,
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<()> {
-    let mut needs_redraw = apply_terminal_event(app, terminal, event)?;
+    apply_terminal_event(app, terminal, event)?;
     while crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
         if let Ok(event) = crossterm::event::read() {
-            needs_redraw |= apply_terminal_event(app, terminal, Some(Ok(event)))?;
+            apply_terminal_event(app, terminal, Some(Ok(event)))?;
         }
     }
-    if needs_redraw {
-        terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
-    }
+    // The main run loop already draws once at the top of the next iteration.
+    // Avoid drawing again here, otherwise normal key input pays for two full
+    // renders back-to-back (event handler + loop-top draw).
     Ok(())
 }
 
