@@ -309,7 +309,7 @@ pub fn cleanup_old_logs() {
 
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() > max_len {
-        format!("{}...", &s[..max_len])
+        format!("{}...", crate::util::truncate_str(s, max_len))
     } else {
         s.to_string()
     }

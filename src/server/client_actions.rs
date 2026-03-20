@@ -7,6 +7,7 @@ use super::{
 use crate::agent::{Agent, SoftInterruptSource, StreamError};
 use crate::protocol::{FeatureToggle, NotificationType, ServerEvent};
 use crate::session::Session;
+use crate::util::truncate_str;
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -49,7 +50,7 @@ fn combine_input_shell_output(stdout: &[u8], stderr: &[u8]) -> (String, bool) {
     }
 
     let truncated = if output.len() > INPUT_SHELL_MAX_OUTPUT_LEN {
-        output.truncate(INPUT_SHELL_MAX_OUTPUT_LEN);
+        output = truncate_str(&output, INPUT_SHELL_MAX_OUTPUT_LEN).to_string();
         if !output.ends_with('\n') {
             output.push('\n');
         }
@@ -458,8 +459,10 @@ mod tests {
         )])));
         let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
         let swarm_coordinators = Arc::new(RwLock::new(HashMap::<String, String>::new()));
-        let channel_subscriptions =
-            Arc::new(RwLock::new(HashMap::<String, HashMap<String, HashSet<String>>>::new()));
+        let channel_subscriptions = Arc::new(RwLock::new(HashMap::<
+            String,
+            HashMap<String, HashSet<String>>,
+        >::new()));
         let swarm_plans = Arc::new(RwLock::new(HashMap::new()));
         let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
         let mut swarm_enabled = false;
@@ -502,7 +505,11 @@ mod tests {
         );
 
         let events: Vec<_> = std::iter::from_fn(|| client_event_rx.try_recv().ok()).collect();
-        assert!(events.iter().any(|event| matches!(event, ServerEvent::Done { id: 42 })));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ServerEvent::Done { id: 42 }))
+        );
         assert!(events.iter().all(|event| {
             !matches!(
                 event,

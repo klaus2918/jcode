@@ -371,7 +371,15 @@ pub(crate) fn render_tool_message(
         }
     }
 
-    let summary = tools_ui::get_tool_summary(tc);
+    let summary = if tc.name == "subagent" {
+        msg.title
+            .as_deref()
+            .filter(|title| !title.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| tools_ui::get_tool_summary(tc))
+    } else {
+        tools_ui::get_tool_summary(tc)
+    };
     let is_error = msg.content.starts_with("Error:")
         || msg.content.starts_with("error:")
         || msg.content.starts_with("Failed:");
@@ -738,6 +746,35 @@ mod tests {
         );
 
         crate::tui::markdown::set_center_code_blocks(saved);
+    }
+
+    #[test]
+    fn render_tool_message_prefers_subagent_title_with_model() {
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: "done".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: Some("Verify subagent model (general · gpt-5.4)".to_string()),
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_1".to_string(),
+                name: "subagent".to_string(),
+                input: serde_json::json!({
+                    "description": "Verify subagent model",
+                    "subagent_type": "general"
+                }),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 80, crate::config::DiffDisplayMode::Off);
+        let rendered: String = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(rendered.contains("subagent Verify subagent model (general · gpt-5.4)"));
     }
 }
 

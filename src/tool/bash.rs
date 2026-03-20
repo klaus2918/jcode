@@ -1,6 +1,7 @@
 use super::{StdinInputRequest, Tool, ToolContext, ToolOutput};
 use crate::background::TaskResult;
 use crate::stdin_detect::{self, StdinState};
+use crate::util::truncate_str;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -46,7 +47,7 @@ fn build_detached_shell_wrapper(command: &str) -> StdCommand {
 
 fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
     if output.len() > MAX_OUTPUT_LEN {
-        output.truncate(MAX_OUTPUT_LEN);
+        output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
         output.push_str("\n... (output truncated)");
     }
 
@@ -58,6 +59,19 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
         "Command completed successfully (no output)".to_string()
     } else {
         output
+    }
+}
+
+#[cfg(test)]
+mod utf8_truncation_tests {
+    use super::format_command_output;
+
+    #[test]
+    fn format_command_output_truncates_on_utf8_boundary() {
+        let input = format!("{}é", "a".repeat(29_999));
+        let output = format_command_output(input, None);
+        assert!(output.ends_with("\n... (output truncated)"));
+        assert!(output.starts_with(&"a".repeat(29_999)));
     }
 }
 

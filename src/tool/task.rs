@@ -14,8 +14,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
-const DEFAULT_SUBAGENT_MODEL: &str = "gpt-5.3-codex-spark";
-
 pub struct SubagentTool {
     provider: Arc<dyn Provider>,
     registry: Registry,
@@ -32,6 +30,8 @@ struct SubagentInput {
     description: String,
     prompt: String,
     subagent_type: String,
+    #[serde(default)]
+    model: Option<String>,
     #[serde(default)]
     session_id: Option<String>,
     #[serde(default)]
@@ -65,6 +65,10 @@ impl Tool for SubagentTool {
                     "type": "string",
                     "description": "The type of specialized agent to use for this task"
                 },
+                "model": {
+                    "type": "string",
+                    "description": "Optional model override for the subagent session"
+                },
                 "session_id": {
                     "type": "string",
                     "description": "Existing Task session to continue"
@@ -87,10 +91,16 @@ impl Tool for SubagentTool {
         } else {
             Session::create(Some(ctx.session_id.clone()), Some(subagent_title(&params)))
         };
-        if session.model.is_none() {
-            // Subagent/task workers default to the fast model unless explicitly pinned.
-            session.model = Some(DEFAULT_SUBAGENT_MODEL.to_string());
+        if let Some(model) = &params.model {
+            session.model = Some(model.clone());
+        } else if session.model.is_none() {
+            // By default, inherit the coordinator's active model.
+            session.model = Some(self.provider.model());
         }
+        let resolved_model = session
+            .model
+            .clone()
+            .unwrap_or_else(|| self.provider.model());
 
         if let Some(ref working_dir) = ctx.working_dir {
             session.working_dir = Some(working_dir.display().to_string());
@@ -186,10 +196,11 @@ impl Tool for SubagentTool {
         output.push_str("</subagent_metadata>");
 
         Ok(ToolOutput::new(output)
-            .with_title(params.description)
+            .with_title(subagent_display_title(&params, &resolved_model))
             .with_metadata(json!({
                 "summary": summary,
                 "sessionId": sub_session_id,
+                "model": resolved_model,
             })))
     }
 }
@@ -201,12 +212,31 @@ fn subagent_title(params: &SubagentInput) -> String {
     )
 }
 
+fn subagent_display_title(params: &SubagentInput, model: &str) -> String {
+    format!(
+        "{} ({} · {})",
+        params.description, params.subagent_type, model
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::DEFAULT_SUBAGENT_MODEL;
+    use super::{SubagentInput, subagent_display_title};
 
     #[test]
-    fn default_subagent_model_is_spark() {
-        assert_eq!(DEFAULT_SUBAGENT_MODEL, "gpt-5.3-codex-spark");
+    fn subagent_display_title_includes_type_and_model() {
+        let params = SubagentInput {
+            description: "Verify subagent model".to_string(),
+            prompt: "prompt".to_string(),
+            subagent_type: "general".to_string(),
+            model: None,
+            session_id: None,
+            command: None,
+        };
+
+        assert_eq!(
+            subagent_display_title(&params, "gpt-5.4"),
+            "Verify subagent model (general · gpt-5.4)"
+        );
     }
 }

@@ -1,4 +1,5 @@
 use super::{Tool, ToolContext, ToolOutput};
+use crate::util::truncate_str;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -121,7 +122,7 @@ impl Tool for CodeSearchTool {
                         if let Some(first) = result.content.first() {
                             let mut output = first.text.clone();
                             if output.len() > MAX_OUTPUT_LEN {
-                                output.truncate(MAX_OUTPUT_LEN);
+                                output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
                                 output.push_str("\n... (truncated)");
                             }
                             return Ok(ToolOutput::new(output)

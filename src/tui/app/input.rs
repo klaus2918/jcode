@@ -3,6 +3,7 @@ use super::{
     commands, ctrl_bracket_fallback_to_esc, is_context_limit_error, remote,
 };
 use crate::bus::{Bus, BusEvent, InputShellCompleted};
+use crate::util::truncate_str;
 use anyhow::Result;
 use crossterm::event::{EventStream, KeyCode, KeyModifiers};
 use ratatui::DefaultTerminal;
@@ -48,7 +49,7 @@ fn combine_shell_output(stdout: &[u8], stderr: &[u8]) -> (String, bool) {
     }
 
     let truncated = if output.len() > INPUT_SHELL_MAX_OUTPUT_LEN {
-        output.truncate(INPUT_SHELL_MAX_OUTPUT_LEN);
+        output = truncate_str(&output, INPUT_SHELL_MAX_OUTPUT_LEN).to_string();
         if !output.ends_with('\n') {
             output.push('\n');
         }
