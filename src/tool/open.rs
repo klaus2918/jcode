@@ -8,37 +8,39 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-const LAUNCH_GRACE_PERIOD_MS: u64 = 800;
+const OPEN_GRACE_PERIOD_MS: u64 = 800;
 const URL_SCHEMES: &[&str] = &["http", "https", "mailto", "file"];
 
-pub struct LaunchTool;
+pub struct OpenTool;
 
-impl LaunchTool {
+impl OpenTool {
     pub fn new() -> Self {
         Self
     }
 }
 
 #[derive(Debug, Deserialize)]
-struct LaunchInput {
+struct OpenInput {
+    #[serde(default)]
+    mode: Option<String>,
     #[serde(default)]
     action: Option<String>,
     target: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LaunchAction {
+enum OpenAction {
     Open,
     Reveal,
 }
 
-impl LaunchAction {
+impl OpenAction {
     fn parse(raw: Option<&str>) -> Result<Self> {
         match raw.unwrap_or("open") {
             "open" => Ok(Self::Open),
             "reveal" => Ok(Self::Reveal),
             other => anyhow::bail!(
-                "Unknown launch action: {}. Valid actions: open, reveal",
+                "Unknown open action: {}. Valid actions: open, reveal",
                 other
             ),
         }
@@ -50,6 +52,12 @@ impl LaunchAction {
             Self::Reveal => "reveal",
         }
     }
+}
+
+#[derive(Debug, Clone)]
+enum ParsedTarget {
+    Local(PathBuf),
+    Url(String),
 }
 
 #[derive(Debug, Clone)]
@@ -76,14 +84,14 @@ impl LocalTargetKind {
     }
 }
 
-struct LaunchOutcome {
+struct OpenOutcome {
     backend: String,
     message: String,
     metadata: Value,
 }
 
 #[async_trait]
-impl Tool for LaunchTool {
+impl Tool for OpenTool {
     fn name(&self) -> &str {
         "open"
     }
@@ -97,10 +105,15 @@ impl Tool for LaunchTool {
             "type": "object",
             "required": ["target"],
             "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["open", "reveal"],
+                    "description": "Preferred behavior selector. 'open' opens a file, folder, or URL in the default app. 'reveal' shows a local file or folder in the system file manager."
+                },
                 "action": {
                     "type": "string",
                     "enum": ["open", "reveal"],
-                    "description": "Open behavior. 'open' opens a file, folder, or URL in the default app. 'reveal' shows a local file or folder in the system file manager. Defaults to 'open'."
+                    "description": "Deprecated alias for 'mode'. 'open' opens a file, folder, or URL in the default app. 'reveal' shows a local file or folder in the system file manager. Defaults to 'open'."
                 },
                 "target": {
                     "type": "string",
@@ -111,14 +124,14 @@ impl Tool for LaunchTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: LaunchInput = serde_json::from_value(input)?;
-        let action = LaunchAction::parse(params.action.as_deref())?;
+        let params: OpenInput = serde_json::from_value(input)?;
+        let action = OpenAction::parse(params.mode.as_deref().or(params.action.as_deref()))?;
         let target = resolve_target(&params.target, &ctx)
             .with_context(|| format!("Invalid open target: {}", params.target))?;
 
         let outcome = match action {
-            LaunchAction::Open => launch_open(&target).await?,
-            LaunchAction::Reveal => launch_reveal(&target).await?,
+            OpenAction::Open => perform_open(&target).await?,
+            OpenAction::Reveal => perform_reveal(&target).await?,
         };
 
         Ok(ToolOutput::new(outcome.message)
@@ -133,12 +146,19 @@ fn resolve_target(target: &str, ctx: &ToolContext) -> Result<ResolvedTarget> {
         anyhow::bail!("target cannot be empty");
     }
 
-    if let Some(url) = parse_allowed_url(trimmed)? {
-        return Ok(ResolvedTarget::Url(url));
+    if let Some(parsed_target) = parse_target(trimmed)? {
+        return match parsed_target {
+            ParsedTarget::Url(url) => Ok(ResolvedTarget::Url(url)),
+            ParsedTarget::Local(path) => resolve_local_target(path),
+        };
     }
 
     let expanded = expand_home(trimmed)?;
     let resolved = ctx.resolve_path(Path::new(&expanded));
+    resolve_local_target(resolved)
+}
+
+fn resolve_local_target(resolved: PathBuf) -> Result<ResolvedTarget> {
     if !resolved.exists() {
         anyhow::bail!("Target path does not exist: {}", resolved.display());
     }
@@ -155,7 +175,7 @@ fn resolve_target(target: &str, ctx: &ToolContext) -> Result<ResolvedTarget> {
     })
 }
 
-fn parse_allowed_url(target: &str) -> Result<Option<String>> {
+fn parse_target(target: &str) -> Result<Option<ParsedTarget>> {
     let Some(colon_index) = target.find(':') else {
         return Ok(None);
     };
@@ -182,7 +202,18 @@ fn parse_allowed_url(target: &str) -> Result<Option<String>> {
 
     let parsed =
         url::Url::parse(target).with_context(|| format!("Failed to parse URL: {}", target))?;
-    Ok(Some(parsed.to_string()))
+
+    if lower == "file" {
+        let path = parsed.to_file_path().map_err(|_| {
+            anyhow::anyhow!(
+                "Failed to convert file URL to a local path: {}. Use a local path or a valid file:// URL.",
+                target
+            )
+        })?;
+        return Ok(Some(ParsedTarget::Local(path)));
+    }
+
+    Ok(Some(ParsedTarget::Url(parsed.to_string())))
 }
 
 fn expand_home(path: &str) -> Result<PathBuf> {
@@ -199,7 +230,7 @@ fn expand_home(path: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(path))
 }
 
-async fn launch_open(target: &ResolvedTarget) -> Result<LaunchOutcome> {
+async fn perform_open(target: &ResolvedTarget) -> Result<OpenOutcome> {
     let backend = open_target(target).await?;
     let (message, metadata) = match target {
         ResolvedTarget::Url(url) => (
@@ -233,14 +264,14 @@ async fn launch_open(target: &ResolvedTarget) -> Result<LaunchOutcome> {
         }
     };
 
-    Ok(LaunchOutcome {
+    Ok(OpenOutcome {
         backend,
         message,
         metadata,
     })
 }
 
-async fn launch_reveal(target: &ResolvedTarget) -> Result<LaunchOutcome> {
+async fn perform_reveal(target: &ResolvedTarget) -> Result<OpenOutcome> {
     let ResolvedTarget::Local { path, kind } = target else {
         anyhow::bail!("The reveal action only supports local filesystem paths");
     };
@@ -266,7 +297,7 @@ async fn launch_reveal(target: &ResolvedTarget) -> Result<LaunchOutcome> {
         )
     };
 
-    Ok(LaunchOutcome {
+    Ok(OpenOutcome {
         backend: backend.clone(),
         message,
         metadata: json!({
@@ -310,7 +341,7 @@ async fn open_target(target: &ResolvedTarget) -> Result<String> {
             ResolvedTarget::Local { path, .. } => open::that_detached(path),
             ResolvedTarget::Url(url) => open::that_detached(url),
         }
-        .context("Failed to launch with the system opener")?;
+        .context("Failed to open with the system opener")?;
         Ok("system opener".to_string())
     }
 }
@@ -392,7 +423,7 @@ async fn try_unix_openers(arg_sets: Vec<Vec<OsString>>) -> Result<String> {
     }
 
     anyhow::bail!(
-        "Failed to launch with the system opener: {}",
+        "Failed to open with the system opener: {}",
         failures.join("; ")
     )
 }
@@ -403,18 +434,16 @@ async fn spawn_with_grace(mut cmd: Command, backend: &str) -> Result<()> {
         .stderr(Stdio::null());
 
     let mut child = crate::platform::spawn_detached(&mut cmd)
-        .with_context(|| format!("Failed to launch via {}", backend))?;
+        .with_context(|| format!("Failed to open via {}", backend))?;
 
-    tokio::time::sleep(Duration::from_millis(LAUNCH_GRACE_PERIOD_MS)).await;
+    tokio::time::sleep(Duration::from_millis(OPEN_GRACE_PERIOD_MS)).await;
     if let Some(status) = child.try_wait()? {
         if !status.success() {
             match status.code() {
-                Some(code) => anyhow::bail!(
-                    "Launcher '{}' exited immediately with code {}",
-                    backend,
-                    code
-                ),
-                None => anyhow::bail!("Launcher '{}' exited immediately", backend),
+                Some(code) => {
+                    anyhow::bail!("Opener '{}' exited immediately with code {}", backend, code)
+                }
+                None => anyhow::bail!("Opener '{}' exited immediately", backend),
             }
         }
     }
@@ -440,20 +469,42 @@ mod tests {
 
     #[test]
     fn parse_allowed_url_accepts_supported_schemes() {
-        let parsed = parse_allowed_url("https://example.com/docs").unwrap();
-        assert_eq!(parsed.as_deref(), Some("https://example.com/docs"));
+        let parsed = parse_target("https://example.com/docs").unwrap();
+        assert!(
+            matches!(parsed, Some(ParsedTarget::Url(url)) if url == "https://example.com/docs")
+        );
 
-        let parsed_mailto = parse_allowed_url("mailto:test@example.com").unwrap();
-        assert_eq!(parsed_mailto.as_deref(), Some("mailto:test@example.com"));
+        let parsed_mailto = parse_target("mailto:test@example.com").unwrap();
+        assert!(
+            matches!(parsed_mailto, Some(ParsedTarget::Url(url)) if url == "mailto:test@example.com")
+        );
     }
 
     #[test]
     fn parse_allowed_url_rejects_custom_scheme() {
-        let err = parse_allowed_url("javascript:alert(1)").unwrap_err();
+        let err = parse_target("javascript:alert(1)").unwrap_err();
         assert!(
             err.to_string()
                 .contains("Unsupported URL scheme: javascript")
         );
+    }
+
+    #[test]
+    fn resolve_target_treats_file_url_as_local_path() {
+        let ctx = make_ctx();
+        let temp_file = std::env::temp_dir().join("jcode-open-tool-file-url.txt");
+        std::fs::write(&temp_file, "test").unwrap();
+
+        let file_url = url::Url::from_file_path(&temp_file).unwrap().to_string();
+        let resolved = resolve_target(&file_url, &ctx).unwrap();
+
+        assert!(matches!(
+            resolved,
+            ResolvedTarget::Local { path, kind: LocalTargetKind::File }
+            if path == temp_file
+        ));
+
+        let _ = std::fs::remove_file(&temp_file);
     }
 
     #[test]
@@ -465,10 +516,26 @@ mod tests {
 
     #[tokio::test]
     async fn execute_rejects_reveal_for_url() {
-        let tool = LaunchTool::new();
+        let tool = OpenTool::new();
         let err = tool
             .execute(
                 json!({"action": "reveal", "target": "https://example.com"}),
+                make_ctx(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("The reveal action only supports local filesystem paths")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_accepts_mode_alias() {
+        let tool = OpenTool::new();
+        let err = tool
+            .execute(
+                json!({"mode": "reveal", "target": "https://example.com"}),
                 make_ctx(),
             )
             .await

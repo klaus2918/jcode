@@ -333,8 +333,9 @@ pub(super) fn get_tool_summary_with_bash_limit(tool: &ToolCall, bash_max_chars: 
         "open" | "launch" => {
             let action = tool
                 .input
-                .get("action")
+                .get("mode")
                 .and_then(|v| v.as_str())
+                .or_else(|| tool.input.get("action").and_then(|v| v.as_str()))
                 .unwrap_or("open");
             let target = tool
                 .input
