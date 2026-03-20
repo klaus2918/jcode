@@ -1945,8 +1945,8 @@ impl App {
             )
         } else {
             format!(
-                "Local callback port `localhost:{}` is unavailable, so finish in any browser and paste the full callback URL or query string here.\n",
-                port
+                "Local callback port `{}` is unavailable, so finish in any browser and paste the full callback URL or query string here.\n",
+                redirect_uri
             )
         };
         let browser_line = if browser_opened {
@@ -1954,6 +1954,7 @@ impl App {
         } else {
             "This machine could not open a browser automatically.\n".to_string()
         };
+        let manual_hint = "If the browser ends on a loopback/callback error page, copy the full URL from the address bar and paste it here immediately.\n";
 
         self.push_display_message(DisplayMessage::system(format!(
             "**Antigravity OAuth Login**\n\n\

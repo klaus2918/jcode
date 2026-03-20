@@ -6,6 +6,7 @@ const GOOGLE_AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v1/userinfo?alt=json";
 pub const DEFAULT_PORT: u16 = 51121;
+const LOOPBACK_HOST: &str = "127.0.0.1";
 const REDIRECT_PATH: &str = "/oauth-callback";
 const CLIENT_ID_ENV: &str = "JCODE_ANTIGRAVITY_CLIENT_ID";
 const CLIENT_SECRET_ENV: &str = "JCODE_ANTIGRAVITY_CLIENT_SECRET";
@@ -28,6 +29,7 @@ const LOAD_ENDPOINTS: &[&str] = &[
     "https://daily-cloudcode-pa.sandbox.googleapis.com",
     "https://autopush-cloudcode-pa.sandbox.googleapis.com",
 ];
+const GOOGLE_OAUTH_USER_AGENT: &str = "google-api-nodejs-client/9.15.1";
 
 fn antigravity_client_id() -> String {
     std::env::var(CLIENT_ID_ENV).unwrap_or_else(|_| ANTIGRAVITY_CLIENT_ID.to_string())
@@ -145,6 +147,7 @@ pub async fn refresh_tokens(tokens: &AntigravityTokens) -> Result<AntigravityTok
     let client = reqwest::Client::new();
     let resp = client
         .post(GOOGLE_TOKEN_URL)
+        .header(reqwest::header::USER_AGENT, GOOGLE_OAUTH_USER_AGENT)
         .form(&vec![
             ("grant_type", "refresh_token".to_string()),
             ("client_id", antigravity_client_id()),
@@ -210,6 +213,9 @@ pub async fn login() -> Result<AntigravityTokens> {
                     "Waiting up to 300s for automatic callback on {}",
                     redirect_uri
                 );
+                eprintln!(
+                    "If the browser lands on a loopback error page instead of returning to jcode, copy the full URL from the address bar and re-run with NO_BROWSER=true to paste it manually."
+                );
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(300),
                     crate::auth::oauth::wait_for_callback_async_on_listener(listener, &state),
@@ -268,6 +274,9 @@ async fn manual_login(
     eprintln!(
         "After approving access, paste the full callback URL (or query string) here so jcode can verify the login state.\n"
     );
+    eprintln!(
+        "If the browser shows a local callback error, copy the full URL from the address bar before closing the tab.\n"
+    );
     eprint!("Callback URL: ");
     io::stdout().flush()?;
     let input = crate::cli::login::read_secret_line()?;
@@ -319,6 +328,7 @@ async fn exchange_authorization_code(
     let client = reqwest::Client::new();
     let resp = client
         .post(GOOGLE_TOKEN_URL)
+        .header(reqwest::header::USER_AGENT, GOOGLE_OAUTH_USER_AGENT)
         .form(&vec![
             ("grant_type", "authorization_code".to_string()),
             ("client_id", antigravity_client_id()),
@@ -363,6 +373,7 @@ pub async fn fetch_email(access_token: &str) -> Result<String> {
     let client = reqwest::Client::new();
     let resp = client
         .get(GOOGLE_USERINFO_URL)
+        .header(reqwest::header::USER_AGENT, GOOGLE_OAUTH_USER_AGENT)
         .bearer_auth(access_token)
         .send()
         .await
@@ -451,7 +462,7 @@ pub fn build_auth_url(redirect_uri: &str, challenge: &str, state: &str) -> Resul
 }
 
 pub fn redirect_uri(port: u16) -> String {
-    format!("http://localhost:{port}{REDIRECT_PATH}")
+    format!("http://{LOOPBACK_HOST}:{port}{REDIRECT_PATH}")
 }
 
 fn antigravity_headers(access_token: &str) -> Result<reqwest::header::HeaderMap> {
@@ -521,7 +532,7 @@ mod tests {
     #[test]
     fn build_auth_url_includes_antigravity_scope_and_redirect() {
         let url = build_auth_url(
-            "http://localhost:51121/oauth-callback",
+            "http://127.0.0.1:51121/oauth-callback",
             "challenge",
             "state",
         )
@@ -529,11 +540,19 @@ mod tests {
         assert!(url.contains(
             "client_id=REDACTED_ANTIGRAVITY_CLIENT_ID"
         ));
-        assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A51121%2Foauth-callback"));
+        assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A51121%2Foauth-callback"));
         assert!(url.contains("code_challenge=challenge"));
         assert!(url.contains("state=state"));
         assert!(url.contains("cloud-platform"));
         assert!(url.contains("experimentsandconfigs"));
+    }
+
+    #[test]
+    fn redirect_uri_uses_ipv4_loopback() {
+        assert_eq!(
+            redirect_uri(DEFAULT_PORT),
+            "http://127.0.0.1:51121/oauth-callback"
+        );
     }
 
     #[test]
