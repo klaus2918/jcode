@@ -236,7 +236,7 @@ impl Registry {
             Self::insert_tool(&mut m, "grep", grep::GrepTool::new());
             Self::insert_tool(&mut m, "ls", ls::LsTool::new());
             Self::insert_tool(&mut m, "bash", bash::BashTool::new());
-            Self::insert_tool(&mut m, "launch", launch::LaunchTool::new());
+            Self::insert_tool(&mut m, "open", launch::LaunchTool::new());
             Self::insert_tool(&mut m, "webfetch", webfetch::WebFetchTool::new());
             Self::insert_tool(&mut m, "websearch", websearch::WebSearchTool::new());
             Self::insert_tool(&mut m, "codesearch", codesearch::CodeSearchTool::new());
@@ -360,6 +360,7 @@ impl Registry {
     fn resolve_tool_name(name: &str) -> &str {
         match name {
             "task" | "task_runner" => "subagent",
+            "launch" => "open",
             "shell_exec" => "bash",
             "file_read" => "read",
             "file_write" => "write",
@@ -739,6 +740,7 @@ mod tests {
         assert_eq!(Registry::resolve_tool_name("shell_exec"), "bash");
         assert_eq!(Registry::resolve_tool_name("task_runner"), "subagent");
         assert_eq!(Registry::resolve_tool_name("task"), "subagent");
+        assert_eq!(Registry::resolve_tool_name("launch"), "open");
         assert_eq!(Registry::resolve_tool_name("todo_read"), "todoread");
         assert_eq!(Registry::resolve_tool_name("todo_write"), "todowrite");
         assert_eq!(Registry::resolve_tool_name("bash"), "bash");

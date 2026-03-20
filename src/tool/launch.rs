@@ -37,7 +37,10 @@ impl LaunchAction {
         match raw.unwrap_or("open") {
             "open" => Ok(Self::Open),
             "reveal" => Ok(Self::Reveal),
-            other => anyhow::bail!("Unknown launch action: {}. Valid actions: open, reveal", other),
+            other => anyhow::bail!(
+                "Unknown launch action: {}. Valid actions: open, reveal",
+                other
+            ),
         }
     }
 
@@ -82,11 +85,11 @@ struct LaunchOutcome {
 #[async_trait]
 impl Tool for LaunchTool {
     fn name(&self) -> &str {
-        "launch"
+        "open"
     }
 
     fn description(&self) -> &str {
-        "Launch something user-facing without waiting for it to exit. Supports opening files, directories, and URLs in the default app, or revealing local filesystem paths in the file manager."
+        "Open something user-facing without waiting for it to exit. Supports opening files, directories, and URLs in the default app, or revealing local filesystem paths in the file manager."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -97,11 +100,11 @@ impl Tool for LaunchTool {
                 "action": {
                     "type": "string",
                     "enum": ["open", "reveal"],
-                    "description": "Launch behavior. 'open' opens a file, folder, or URL in the default app. 'reveal' shows a local file or folder in the system file manager. Defaults to 'open'."
+                    "description": "Open behavior. 'open' opens a file, folder, or URL in the default app. 'reveal' shows a local file or folder in the system file manager. Defaults to 'open'."
                 },
                 "target": {
                     "type": "string",
-                    "description": "Local file path, directory path, or URL to launch. Relative paths are resolved from the current working directory. '~' is expanded to the home directory."
+                    "description": "Local file path, directory path, or URL to open. Relative paths are resolved from the current working directory. '~' is expanded to the home directory."
                 }
             }
         })
@@ -111,7 +114,7 @@ impl Tool for LaunchTool {
         let params: LaunchInput = serde_json::from_value(input)?;
         let action = LaunchAction::parse(params.action.as_deref())?;
         let target = resolve_target(&params.target, &ctx)
-            .with_context(|| format!("Invalid launch target: {}", params.target))?;
+            .with_context(|| format!("Invalid open target: {}", params.target))?;
 
         let outcome = match action {
             LaunchAction::Open => launch_open(&target).await?,
@@ -119,7 +122,7 @@ impl Tool for LaunchTool {
         };
 
         Ok(ToolOutput::new(outcome.message)
-            .with_title(format!("launch {}", action.as_str()))
+            .with_title(format!("open {}", action.as_str()))
             .with_metadata(outcome.metadata))
     }
 }
@@ -177,8 +180,8 @@ fn parse_allowed_url(target: &str) -> Result<Option<String>> {
         );
     }
 
-    let parsed = url::Url::parse(target)
-        .with_context(|| format!("Failed to parse URL: {}", target))?;
+    let parsed =
+        url::Url::parse(target).with_context(|| format!("Failed to parse URL: {}", target))?;
     Ok(Some(parsed.to_string()))
 }
 
@@ -187,9 +190,7 @@ fn expand_home(path: &str) -> Result<PathBuf> {
         return dirs::home_dir().context("Could not determine home directory for '~'");
     }
 
-    let rest = path
-        .strip_prefix("~/")
-        .or_else(|| path.strip_prefix("~\\"));
+    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
     if let Some(rest) = rest {
         let home = dirs::home_dir().context("Could not determine home directory for '~'")?;
         return Ok(home.join(rest));
@@ -246,9 +247,17 @@ async fn launch_reveal(target: &ResolvedTarget) -> Result<LaunchOutcome> {
 
     let (backend, selection_supported) = reveal_target(path, *kind).await?;
     let message = if *kind == LocalTargetKind::Directory {
-        format!("Opened folder {} in the file manager via {}.", path.display(), backend)
+        format!(
+            "Opened folder {} in the file manager via {}.",
+            path.display(),
+            backend
+        )
     } else if selection_supported {
-        format!("Revealed {} in the file manager via {}.", path.display(), backend)
+        format!(
+            "Revealed {} in the file manager via {}.",
+            path.display(),
+            backend
+        )
     } else {
         format!(
             "Opened the containing folder for {} via {}. File selection is not supported on this platform.",
@@ -441,9 +450,10 @@ mod tests {
     #[test]
     fn parse_allowed_url_rejects_custom_scheme() {
         let err = parse_allowed_url("javascript:alert(1)").unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Unsupported URL scheme: javascript"));
+        assert!(
+            err.to_string()
+                .contains("Unsupported URL scheme: javascript")
+        );
     }
 
     #[test]
@@ -463,9 +473,10 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("The reveal action only supports local filesystem paths"));
+        assert!(
+            err.to_string()
+                .contains("The reveal action only supports local filesystem paths")
+        );
     }
 
     #[test]

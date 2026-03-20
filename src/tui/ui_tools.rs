@@ -330,7 +330,7 @@ pub(super) fn get_tool_summary_with_bash_limit(tool: &ToolCall, bash_max_chars: 
             .and_then(|v| v.as_str())
             .map(|q| format!("'{}'", truncate(q, 40)))
             .unwrap_or_default(),
-        "launch" => {
+        "open" | "launch" => {
             let action = tool
                 .input
                 .get("action")
