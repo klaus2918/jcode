@@ -132,6 +132,7 @@ impl App {
             provider_session_id: None,
             cancel_requested: false,
             quit_pending: None,
+            last_resize_redraw: None,
             mcp_server_names: Vec::new(),
             stream_buffer: StreamBuffer::new(),
             thinking_start: None,
@@ -248,6 +249,7 @@ impl App {
             changelog_scroll: None,
             help_scroll: None,
             session_picker_overlay: None,
+            login_picker_overlay: None,
             account_picker_overlay: None,
         };
 
@@ -352,6 +354,7 @@ impl App {
             provider_session_id: None,
             cancel_requested: false,
             quit_pending: None,
+            last_resize_redraw: None,
             mcp_server_names: Vec::new(), // Vec<(name, tool_count)>
             stream_buffer: StreamBuffer::new(),
             thinking_start: None,
@@ -468,6 +471,7 @@ impl App {
             changelog_scroll: None,
             help_scroll: None,
             session_picker_overlay: None,
+            login_picker_overlay: None,
             account_picker_overlay: None,
         };
 
@@ -871,10 +875,16 @@ impl App {
                     .task_context
                     .map(|t| format!("\nTask context: {}", t))
                     .unwrap_or_default();
+                let background_task_note =
+                    super::reload_persisted_background_tasks_note(session_id);
 
                 let continuation_msg = format!(
-                    "Reload succeeded ({} → {}).{} Session restored with {} turns. Continue immediately from where you left off. Do not ask the user what to do next. Do not summarize the reload.",
-                    ctx.version_before, ctx.version_after, task_info, total_turns
+                    "Reload succeeded ({} → {}).{}{} Session restored with {} turns. Continue immediately from where you left off. Do not ask the user what to do next. Do not summarize the reload.",
+                    ctx.version_before,
+                    ctx.version_after,
+                    task_info,
+                    background_task_note,
+                    total_turns
                 );
 
                 crate::logging::info(&format!(

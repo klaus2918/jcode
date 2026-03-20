@@ -3,6 +3,7 @@ use crate::bus::{BusEvent, InputShellCompleted};
 use crate::tui::TuiState;
 use ratatui::layout::Rect;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 
 fn cleanup_background_task_files(task_id: &str) {
     let task_dir = std::env::temp_dir().join("jcode-bg-tasks");
@@ -137,6 +138,17 @@ fn create_gemini_test_app() -> App {
     app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app
+}
+
+#[test]
+fn test_resize_redraw_is_debounced() {
+    let mut app = create_test_app();
+
+    assert!(app.should_redraw_after_resize());
+    assert!(!app.should_redraw_after_resize());
+
+    app.last_resize_redraw = Some(Instant::now() - Duration::from_millis(40));
+    assert!(app.should_redraw_after_resize());
 }
 
 #[test]
@@ -318,6 +330,61 @@ fn test_fast_on_while_processing_mentions_next_request_locally() {
         app.status_notice(),
         Some("Fast: on (next request)".to_string())
     );
+}
+
+#[test]
+fn test_fast_default_on_saves_config_and_updates_session() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
+    let mut app = create_fast_test_app();
+    app.input = "/fast default on".to_string();
+
+    app.submit_input();
+
+    let cfg = crate::config::Config::load();
+    assert_eq!(
+        cfg.provider.openai_service_tier.as_deref(),
+        Some("priority")
+    );
+    assert_eq!(app.provider.service_tier().as_deref(), Some("priority"));
+    assert_eq!(app.status_notice(), Some("Fast mode: on".to_string()));
+    let last = app.display_messages().last().expect("missing response");
+    assert_eq!(last.content, "Saved OpenAI fast mode: **on**.");
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
+fn test_fast_status_shows_saved_default() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+    crate::config::Config::set_openai_service_tier(Some("priority")).expect("save fast default");
+
+    let mut app = create_fast_test_app();
+    app.input = "/fast status".to_string();
+
+    app.submit_input();
+
+    let last = app.display_messages().last().expect("missing response");
+    assert_eq!(
+        last.content,
+        "Fast mode is off.\nCurrent tier: Standard\nSaved default: on (Fast)\nUse `/fast on`, `/fast off`, or `/fast default on|off`."
+    );
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
 }
 
 #[test]

@@ -172,7 +172,7 @@ pub(super) async fn run_swarm_replay(
 
 fn handle_replay_input(
     app: &mut App,
-    terminal: &mut DefaultTerminal,
+    _terminal: &mut DefaultTerminal,
     event: Event,
     replay_done: bool,
     paused: &mut bool,
@@ -212,15 +212,13 @@ fn handle_replay_input(
         Event::Mouse(mouse) => {
             app.handle_mouse_event(mouse);
         }
-        Event::Resize(_, _) => {
-            let _ = terminal.clear();
-        }
+        Event::Resize(_, _) => {}
         _ => {}
     }
 }
 
 fn handle_swarm_replay_input(
-    terminal: &mut DefaultTerminal,
+    _terminal: &mut DefaultTerminal,
     event: Event,
     replay_done: bool,
     should_quit: &mut bool,
@@ -254,7 +252,6 @@ fn handle_swarm_replay_input(
             _ => {}
         },
         Event::Resize(_, _) => {
-            let _ = terminal.clear();
             *last_tick = Instant::now();
         }
         _ => {}

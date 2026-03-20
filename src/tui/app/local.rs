@@ -157,7 +157,7 @@ fn handle_manual_tool_completed(app: &mut App, result: ManualToolCompleted) {
 
 fn apply_terminal_event(
     app: &mut App,
-    terminal: &mut DefaultTerminal,
+    _terminal: &mut DefaultTerminal,
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<bool> {
     match event {
@@ -183,10 +183,7 @@ fn apply_terminal_event(
             app.handle_mouse_event(mouse);
             Ok(true)
         }
-        Some(Ok(Event::Resize(_, _))) => {
-            let _ = terminal.clear();
-            Ok(true)
-        }
+        Some(Ok(Event::Resize(_, _))) => Ok(true),
         _ => Ok(false),
     }
 }

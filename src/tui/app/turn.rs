@@ -667,8 +667,9 @@ impl App {
                                 }
                             }
                             Some(Ok(Event::Resize(_, _))) => {
-                                let _ = terminal.clear();
-                                self.redraw_now(terminal)?;
+                                if self.should_redraw_after_resize() {
+                                    self.redraw_now(terminal)?;
+                                }
                             }
                             _ => {}
                         }
@@ -871,8 +872,9 @@ impl App {
                                 }
                             }
                             Some(Ok(Event::Resize(_, _))) => {
-                                let _ = terminal.clear();
-                                self.redraw_now(terminal)?;
+                                if self.should_redraw_after_resize() {
+                                    self.redraw_now(terminal)?;
+                                }
                             }
                             _ => {}
                         }
@@ -1404,8 +1406,9 @@ impl App {
                                     }
                                 }
                                 Some(Ok(Event::Resize(_, _))) => {
-                                    let _ = terminal.clear();
-                                    self.redraw_now(terminal)?;
+                                    if self.should_redraw_after_resize() {
+                                        self.redraw_now(terminal)?;
+                                    }
                                 }
                                 _ => {}
                             }

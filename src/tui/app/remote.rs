@@ -324,7 +324,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
 
 pub(super) async fn handle_terminal_event(
     app: &mut App,
-    terminal: &mut DefaultTerminal,
+    _terminal: &mut DefaultTerminal,
     remote: &mut RemoteConnection,
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<()> {
@@ -350,9 +350,7 @@ pub(super) async fn handle_terminal_event(
             app.note_client_focus();
             handle_mouse_event(app, mouse);
         }
-        Some(Ok(Event::Resize(_, _))) => {
-            let _ = terminal.clear();
-        }
+        Some(Ok(Event::Resize(_, _))) => {}
         _ => {}
     }
     // The active remote loop redraws at the top of the next iteration, so an
@@ -629,8 +627,7 @@ fn handle_terminal_event_while_disconnected(
             needs_redraw = true;
         }
         Some(Ok(Event::Resize(_, _))) => {
-            let _ = terminal.clear();
-            needs_redraw = true;
+            needs_redraw = app.should_redraw_after_resize();
         }
         _ => {}
     }
@@ -3157,20 +3154,71 @@ pub(super) async fn handle_remote_key(
                     return Ok(());
                 }
 
+                if matches!(trimmed, "/fast default" | "/fast default status") {
+                    let default_tier = crate::config::Config::load().provider.openai_service_tier;
+                    let default_enabled = default_tier.as_deref() == Some("priority");
+                    let default_label = default_tier
+                        .as_deref()
+                        .map(super::service_tier_display_label)
+                        .unwrap_or("Standard");
+                    app.push_display_message(DisplayMessage::system(
+                        super::fast_mode_default_message(default_enabled, default_label),
+                    ));
+                    return Ok(());
+                }
+
+                if let Some(mode) = trimmed.strip_prefix("/fast default ") {
+                    let mode = mode.trim().to_ascii_lowercase();
+                    match mode.as_str() {
+                        "on" => {
+                            super::auth::save_openai_fast_setting_local(app, true);
+                            remote.set_service_tier("priority").await?;
+                        }
+                        "off" => {
+                            super::auth::save_openai_fast_setting_local(app, false);
+                            remote.set_service_tier("off").await?;
+                        }
+                        "status" => {
+                            let default_tier =
+                                crate::config::Config::load().provider.openai_service_tier;
+                            let default_enabled = default_tier.as_deref() == Some("priority");
+                            let default_label = default_tier
+                                .as_deref()
+                                .map(super::service_tier_display_label)
+                                .unwrap_or("Standard");
+                            app.push_display_message(DisplayMessage::system(
+                                super::fast_mode_default_message(default_enabled, default_label),
+                            ));
+                        }
+                        _ => {
+                            app.push_display_message(DisplayMessage::error(
+                                "Usage: /fast default [on|off|status]",
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
+
                 if matches!(trimmed, "/fast" | "/fast status") {
                     let current = app.remote_service_tier.as_deref();
-                    let status = if current == Some("priority") {
-                        "on"
-                    } else {
-                        "off"
-                    };
+                    let enabled = current == Some("priority");
                     let current_label = current
                         .map(super::service_tier_display_label)
                         .unwrap_or("Standard");
-                    app.push_display_message(DisplayMessage::system(format!(
-                        "Fast mode is {}.\nCurrent tier: {}\nUse `/fast on` or `/fast off`.",
-                        status, current_label
-                    )));
+                    let default_tier = crate::config::Config::load().provider.openai_service_tier;
+                    let default_enabled = default_tier.as_deref() == Some("priority");
+                    let default_label = default_tier
+                        .as_deref()
+                        .map(super::service_tier_display_label)
+                        .unwrap_or("Standard");
+                    app.push_display_message(DisplayMessage::system(
+                        super::fast_mode_overview_message(
+                            enabled,
+                            current_label,
+                            default_enabled,
+                            default_label,
+                        ),
+                    ));
                     return Ok(());
                 }
 
@@ -3181,23 +3229,30 @@ pub(super) async fn handle_remote_key(
                         "off" => "off",
                         "status" => {
                             let current = app.remote_service_tier.as_deref();
-                            let status = if current == Some("priority") {
-                                "on"
-                            } else {
-                                "off"
-                            };
+                            let enabled = current == Some("priority");
                             let current_label = current
                                 .map(super::service_tier_display_label)
                                 .unwrap_or("Standard");
-                            app.push_display_message(DisplayMessage::system(format!(
-                                "Fast mode is {}.\nCurrent tier: {}",
-                                status, current_label
-                            )));
+                            let default_tier =
+                                crate::config::Config::load().provider.openai_service_tier;
+                            let default_enabled = default_tier.as_deref() == Some("priority");
+                            let default_label = default_tier
+                                .as_deref()
+                                .map(super::service_tier_display_label)
+                                .unwrap_or("Standard");
+                            app.push_display_message(DisplayMessage::system(
+                                super::fast_mode_overview_message(
+                                    enabled,
+                                    current_label,
+                                    default_enabled,
+                                    default_label,
+                                ),
+                            ));
                             return Ok(());
                         }
                         _ => {
                             app.push_display_message(DisplayMessage::error(
-                                "Usage: /fast [on|off|status]",
+                                "Usage: /fast [on|off|status|default ...]",
                             ));
                             return Ok(());
                         }

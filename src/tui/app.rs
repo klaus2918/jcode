@@ -98,6 +98,25 @@ pub struct DisplayMessage {
     pub tool_data: Option<ToolCall>,
 }
 
+pub(super) fn reload_persisted_background_tasks_note(session_id: &str) -> String {
+    let tasks =
+        crate::background::global().persisted_detached_running_tasks_for_session(session_id);
+    if tasks.is_empty() {
+        return String::new();
+    }
+
+    let task_list = tasks
+        .iter()
+        .map(|task| format!("{} ({})", task.task_id, task.tool_name))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "\nPersisted background task(s) for this session are still running: {}. Do not rerun those commands. Check them first with the `bg` tool (`bg action=\"list\"`, `bg action=\"status\" task_id=...`, or `bg action=\"output\" task_id=...`).",
+        task_list
+    )
+}
+
 #[derive(Clone, Default)]
 pub struct CopyBadgeUiState {
     pub alt_active: bool,
@@ -261,6 +280,8 @@ pub struct App {
     cancel_requested: bool,
     // Quit confirmation: tracks when first Ctrl+C was pressed
     quit_pending: Option<Instant>,
+    // Debounce redraw storms while the terminal is being resized.
+    last_resize_redraw: Option<Instant>,
     // Cached MCP server names and tool counts (updated on connect/disconnect)
     mcp_server_names: Vec<(String, usize)>,
     // Semantic stream buffer for chunked output
@@ -466,6 +487,8 @@ pub struct App {
     help_scroll: Option<usize>,
     /// Session picker overlay (None = not visible)
     session_picker_overlay: Option<RefCell<super::session_picker::SessionPicker>>,
+    /// Login picker overlay (None = not visible)
+    login_picker_overlay: Option<RefCell<super::login_picker::LoginPicker>>,
     /// Account picker overlay (None = not visible)
     account_picker_overlay: Option<RefCell<super::account_picker::AccountPicker>>,
 }
