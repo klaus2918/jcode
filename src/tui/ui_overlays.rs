@@ -131,7 +131,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Set reasoning effort (none|low|medium|high|xhigh)",
     ));
     lines.push(help_entry(
-        "/fast [on|off|status]",
+        "/fast [on|off|status|default ...]",
         "Toggle OpenAI/Codex fast mode",
     ));
     lines.push(help_entry(
@@ -204,7 +204,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     ));
     lines.push(help_entry(
         "/account",
-        "Manage Anthropic/OpenAI OAuth accounts",
+        "Open combined Claude/OpenAI account picker",
     ));
     lines.push(help_entry(
         "/subscription",
@@ -299,6 +299,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Quit (press twice to confirm)",
     ));
     lines.push(key_entry("Ctrl+X", "Cut entire input line to clipboard"));
+    lines.push(key_entry(
+        "Ctrl+A",
+        "Copy visible chat viewport plus nearby context",
+    ));
     lines.push(key_entry("Ctrl+U", "Clear input line"));
     lines.push(key_entry("Ctrl+S", "Stash / pop input (save for later)"));
     lines.push(key_entry("Ctrl+Backspace", "Delete previous word in input"));

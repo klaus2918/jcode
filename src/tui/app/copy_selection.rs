@@ -3,6 +3,8 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEven
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 impl App {
+    const COPY_VIEWPORT_CONTEXT_LINES: usize = 4;
+
     pub(super) fn enter_copy_selection_mode(&mut self) {
         self.copy_selection_mode = true;
         self.copy_selection_dragging = false;
@@ -294,6 +296,74 @@ impl App {
         true
     }
 
+    pub(super) fn select_chat_viewport_context(&mut self) -> bool {
+        let (visible_start, visible_end) = match crate::tui::ui::copy_viewport_visible_range() {
+            Some(range) => range,
+            None => return false,
+        };
+        let Some(line_count) = crate::tui::ui::copy_viewport_line_count() else {
+            return false;
+        };
+        if line_count == 0 || visible_start >= visible_end {
+            return false;
+        }
+
+        let context = Self::COPY_VIEWPORT_CONTEXT_LINES;
+        let start_line = visible_start.saturating_sub(context);
+        let end_line = visible_end
+            .saturating_add(context)
+            .saturating_sub(1)
+            .min(line_count.saturating_sub(1));
+
+        self.copy_selection_anchor = Some(crate::tui::CopySelectionPoint {
+            pane: crate::tui::CopySelectionPane::Chat,
+            abs_line: start_line,
+            column: 0,
+        });
+        let end_point = crate::tui::CopySelectionPoint {
+            pane: crate::tui::CopySelectionPane::Chat,
+            abs_line: end_line,
+            column: crate::tui::ui::copy_viewport_line_text(end_line)
+                .map(|text| UnicodeWidthStr::width(text.as_str()))
+                .unwrap_or(0),
+        };
+        self.copy_selection_cursor = Some(end_point);
+        self.copy_selection_goal_column = Some(end_point.column);
+        self.note_copy_selection_activity(crate::tui::CopySelectionPane::Chat);
+        true
+    }
+
+    pub(super) fn copy_chat_viewport_context_to_clipboard(&mut self) -> bool {
+        self.copy_chat_viewport_context_to_clipboard_with(super::helpers::copy_to_clipboard)
+    }
+
+    pub(super) fn copy_chat_viewport_context_to_clipboard_with<F>(&mut self, copy_text: F) -> bool
+    where
+        F: FnOnce(&str) -> bool,
+    {
+        if !self.select_chat_viewport_context() {
+            self.set_status_notice("Nothing visible to copy");
+            self.exit_copy_selection_mode();
+            return false;
+        }
+
+        let text = self.current_copy_selection_text().unwrap_or_default();
+        if text.is_empty() {
+            self.set_status_notice("Nothing visible to copy");
+            self.exit_copy_selection_mode();
+            return false;
+        }
+
+        let success = copy_text(&text);
+        if success {
+            self.set_status_notice("Copied viewport context");
+        } else {
+            self.set_status_notice("Failed to copy viewport context");
+        }
+        self.exit_copy_selection_mode();
+        success
+    }
+
     pub(super) fn copy_current_selection_to_clipboard(&mut self) -> bool {
         self.copy_current_selection_to_clipboard_with(super::helpers::copy_to_clipboard)
     }
@@ -326,6 +396,10 @@ impl App {
         match code {
             KeyCode::Esc => {
                 self.exit_copy_selection_mode();
+                true
+            }
+            KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.copy_chat_viewport_context_to_clipboard();
                 true
             }
             KeyCode::Enter => {

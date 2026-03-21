@@ -798,6 +798,10 @@ pub(super) fn handle_global_control_shortcuts(
             app.recover_session_without_tools();
             true
         }
+        KeyCode::Char('a') if app.input.is_empty() => {
+            app.copy_chat_viewport_context_to_clipboard();
+            true
+        }
         KeyCode::Char('l') => true,
         _ => handle_control_key(app, code),
     }
