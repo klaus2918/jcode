@@ -53,6 +53,7 @@ struct LegacyAnthropicAuth {
 /// Runtime override for the active account label.
 /// This allows `/account switch <label>` to take effect without rewriting the file.
 static ACTIVE_ACCOUNT_OVERRIDE: RwLock<Option<String>> = RwLock::new(None);
+const ACCOUNT_LABEL_PREFIX: &str = "claude";
 
 pub fn set_active_account_override(label: Option<String>) {
     if let Ok(mut guard) = ACTIVE_ACCOUNT_OVERRIDE.write() {
@@ -62,6 +63,97 @@ pub fn set_active_account_override(label: Option<String>) {
 
 pub fn get_active_account_override() -> Option<String> {
     ACTIVE_ACCOUNT_OVERRIDE.read().ok().and_then(|g| g.clone())
+}
+
+pub fn primary_account_label() -> String {
+    canonical_account_label(1)
+}
+
+pub fn next_account_label() -> Result<String> {
+    let auth = load_auth_file()?;
+    Ok(canonical_account_label(auth.anthropic_accounts.len() + 1))
+}
+
+pub fn login_target_label(requested: Option<&str>) -> Result<String> {
+    let auth = load_auth_file()?;
+    if let Some(requested) = requested
+        .map(str::trim)
+        .filter(|requested| !requested.is_empty())
+    {
+        if auth
+            .anthropic_accounts
+            .iter()
+            .any(|account| account.label == requested)
+        {
+            return Ok(requested.to_string());
+        }
+        return Ok(canonical_account_label(auth.anthropic_accounts.len() + 1));
+    }
+
+    Ok(auth
+        .active_anthropic_account
+        .or_else(|| {
+            auth.anthropic_accounts
+                .first()
+                .map(|account| account.label.clone())
+        })
+        .unwrap_or_else(primary_account_label))
+}
+
+fn canonical_account_label(index: usize) -> String {
+    format!("{ACCOUNT_LABEL_PREFIX}-{index}")
+}
+
+fn relabel_accounts(auth: &mut JcodeAuthFile) -> bool {
+    let label_map = auth
+        .anthropic_accounts
+        .iter()
+        .enumerate()
+        .map(|(index, account)| (account.label.clone(), canonical_account_label(index + 1)))
+        .collect::<Vec<_>>();
+    let mut changed = false;
+
+    for (account, (_, canonical_label)) in auth.anthropic_accounts.iter_mut().zip(label_map.iter())
+    {
+        if account.label != *canonical_label {
+            account.label = canonical_label.clone();
+            changed = true;
+        }
+    }
+
+    let desired_active = if auth.anthropic_accounts.is_empty() {
+        None
+    } else {
+        auth.active_anthropic_account
+            .as_deref()
+            .and_then(|label| {
+                label_map
+                    .iter()
+                    .find(|(original, _)| original == label)
+                    .map(|(_, canonical)| canonical.clone())
+            })
+            .or_else(|| {
+                auth.anthropic_accounts
+                    .first()
+                    .map(|account| account.label.clone())
+            })
+    };
+
+    if auth.active_anthropic_account != desired_active {
+        auth.active_anthropic_account = desired_active;
+        changed = true;
+    }
+
+    if let Some(override_label) = get_active_account_override()
+        && let Some((_, canonical_label)) = label_map
+            .iter()
+            .find(|(original, _)| original == &override_label)
+        && override_label != *canonical_label
+    {
+        set_active_account_override(Some(canonical_label.clone()));
+    }
+
+    changed
 }
 
 // -- Claude Code credentials file format --
@@ -142,6 +234,13 @@ pub fn load_auth_file() -> Result<JcodeAuthFile> {
         }
     }
 
+    if relabel_accounts(&mut auth) {
+        crate::logging::info(
+            "Renaming Claude accounts to numbered labels (claude-1, claude-2, ...)",
+        );
+        save_auth_file(&auth)?;
+    }
+
     Ok(auth)
 }
 
@@ -190,17 +289,22 @@ pub fn set_active_account(label: &str) -> Result<()> {
 /// Add or update an account. Returns the label used.
 pub fn upsert_account(account: AnthropicAccount) -> Result<String> {
     let mut auth = load_auth_file()?;
-    let label = account.label.clone();
+    let requested_label = account.label.clone();
 
     if let Some(existing) = auth
         .anthropic_accounts
         .iter_mut()
-        .find(|a| a.label == label)
+        .find(|a| a.label == requested_label)
     {
         *existing = account;
-    } else {
-        auth.anthropic_accounts.push(account);
+        save_auth_file(&auth)?;
+        return Ok(requested_label);
     }
+
+    let label = canonical_account_label(auth.anthropic_accounts.len() + 1);
+    let mut account = account;
+    account.label = label.clone();
+    auth.anthropic_accounts.push(account);
 
     if auth.active_anthropic_account.is_none() || auth.anthropic_accounts.len() == 1 {
         auth.active_anthropic_account = Some(label.clone());
@@ -352,7 +456,7 @@ fn load_jcode_credentials() -> Result<ClaudeCredentials> {
 
     let active_label = get_active_account_override()
         .or(auth.active_anthropic_account)
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(primary_account_label);
 
     let account = auth
         .anthropic_accounts
@@ -503,6 +607,47 @@ mod tests {
                 .join("opencode")
                 .join("auth.json")
         );
+    }
+
+    #[test]
+    fn load_auth_file_renames_existing_labels_to_numbered_scheme() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+        set_active_account_override(None);
+
+        let auth_path = temp.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{
+                "anthropic_accounts": [
+                    {
+                        "label": "personal",
+                        "access": "acc_personal",
+                        "refresh": "ref_personal",
+                        "expires": 1000
+                    },
+                    {
+                        "label": "work",
+                        "access": "acc_work",
+                        "refresh": "ref_work",
+                        "expires": 2000
+                    }
+                ],
+                "active_anthropic_account": "work"
+            }"#,
+        )
+        .unwrap();
+
+        let auth = load_auth_file().unwrap();
+        assert_eq!(
+            auth.anthropic_accounts
+                .iter()
+                .map(|account| account.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["claude-1", "claude-2"]
+        );
+        assert_eq!(auth.active_anthropic_account.as_deref(), Some("claude-2"));
     }
 
     #[test]

@@ -149,13 +149,16 @@ fn parse_keybinding(raw: &str) -> Option<KeyBinding> {
         "insert" => KeyCode::Insert,
         "delete" => KeyCode::Delete,
         "backspace" => KeyCode::Backspace,
-        _ => {
-            if key.len() == 1 {
-                KeyCode::Char(key.chars().next().expect("non-empty key string"))
-            } else {
-                return None;
+        _ => match parse_function_key(key) {
+            Some(number) => KeyCode::F(number),
+            None => {
+                if key.len() == 1 {
+                    KeyCode::Char(key.chars().next().expect("non-empty key string"))
+                } else {
+                    return None;
+                }
             }
-        }
+        },
     };
 
     Some(KeyBinding { code, modifiers })
@@ -167,6 +170,11 @@ fn normalize_key(code: KeyCode, modifiers: KeyModifiers) -> (KeyCode, KeyModifie
     } else {
         (code, modifiers)
     }
+}
+
+fn parse_function_key(raw: &str) -> Option<u8> {
+    let number = raw.strip_prefix('f')?.parse::<u8>().ok()?;
+    (1..=24).contains(&number).then_some(number)
 }
 
 /// Configurable scroll keybindings
@@ -510,6 +518,7 @@ fn format_binding(binding: &KeyBinding) -> String {
         KeyCode::Insert => "Insert".to_string(),
         KeyCode::Delete => "Delete".to_string(),
         KeyCode::Backspace => "Backspace".to_string(),
+        KeyCode::F(number) => format!("F{}", number),
         KeyCode::Char(' ') => "Space".to_string(),
         KeyCode::Char(c) => c.to_ascii_uppercase().to_string(),
         _ => "Key".to_string(),
@@ -654,5 +663,14 @@ mod tests {
         let meta = parse_keybinding("meta+k").expect("meta+k should parse");
         assert_eq!(meta.code, KeyCode::Char('k'));
         assert!(meta.modifiers.contains(KeyModifiers::ALT));
+    }
+
+    #[test]
+    fn test_parse_function_keybinding_for_copilot_style_keys() {
+        let binding = parse_keybinding("ctrl+shift+f23").expect("f23 binding should parse");
+        assert_eq!(binding.code, KeyCode::F(23));
+        assert!(binding.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(binding.modifiers.contains(KeyModifiers::SHIFT));
+        assert_eq!(format_binding(&binding), "Ctrl+Shift+F23");
     }
 }

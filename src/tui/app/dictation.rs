@@ -38,6 +38,17 @@ impl App {
         true
     }
 
+    pub(crate) fn handle_empty_clipboard_paste(&mut self) -> bool {
+        let cfg = crate::config::config().dictation.clone();
+        if should_fallback_from_empty_clipboard(
+            cfg.command.as_str(),
+            self.dictation_key.binding.is_some(),
+        ) {
+            return self.handle_dictation_trigger();
+        }
+        false
+    }
+
     pub(crate) fn dictation_key_matches(&self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         self.dictation_key
             .binding
@@ -131,9 +142,13 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
+fn should_fallback_from_empty_clipboard(command: &str, has_explicit_dictation_key: bool) -> bool {
+    !has_explicit_dictation_key && !command.trim().is_empty()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::run_dictation_command;
+    use super::{run_dictation_command, should_fallback_from_empty_clipboard};
 
     #[tokio::test]
     async fn dictation_command_trims_trailing_newlines() {
@@ -141,5 +156,18 @@ mod tests {
             .await
             .expect("dictation command should succeed");
         assert_eq!(text, "hello from test");
+    }
+
+    #[test]
+    fn empty_clipboard_only_falls_back_when_dictation_is_configured_without_hotkey() {
+        assert!(should_fallback_from_empty_clipboard(
+            "~/.local/bin/live-transcribe",
+            false,
+        ));
+        assert!(!should_fallback_from_empty_clipboard("", false));
+        assert!(!should_fallback_from_empty_clipboard(
+            "~/.local/bin/live-transcribe",
+            true,
+        ));
     }
 }

@@ -758,12 +758,13 @@ pub async fn login_openai() -> Result<OAuthTokens> {
     exchange_openai_callback_input(&verifier, trimmed, &state, &redirect_uri).await
 }
 
-/// Save Claude tokens to jcode's credentials file (default account).
+/// Save Claude tokens to jcode's credentials file (active account or first numbered account).
 pub fn save_claude_tokens(tokens: &OAuthTokens) -> Result<()> {
-    save_claude_tokens_for_account(tokens, "default")
+    let label = claude_auth::login_target_label(None)?;
+    save_claude_tokens_for_account(tokens, &label)
 }
 
-/// Save Claude tokens for a named account.
+/// Save Claude tokens for a specific stored account label.
 pub fn save_claude_tokens_for_account(tokens: &OAuthTokens, label: &str) -> Result<()> {
     let account = claude_auth::AnthropicAccount {
         label: label.to_string(),
@@ -836,7 +837,7 @@ pub fn load_claude_tokens() -> Result<OAuthTokens> {
     anyhow::bail!("No Claude Max OAuth credentials found. Run 'jcode login --provider claude'.");
 }
 
-/// Load Claude tokens for a specific named account.
+/// Load Claude tokens for a specific stored account label.
 pub fn load_claude_tokens_for_account(label: &str) -> Result<OAuthTokens> {
     let creds = claude_auth::load_credentials_for_account(label)?;
     Ok(OAuthTokens {
@@ -885,7 +886,8 @@ pub async fn refresh_claude_tokens(refresh_token: &str) -> Result<OAuthTokens> {
     };
 
     // Save the refreshed tokens to the active account
-    let active_label = claude_auth::active_account_label().unwrap_or_else(|| "default".to_string());
+    let active_label =
+        claude_auth::active_account_label().unwrap_or_else(claude_auth::primary_account_label);
     save_claude_tokens_for_account(&oauth_tokens, &active_label)?;
 
     Ok(oauth_tokens)
@@ -938,10 +940,11 @@ pub async fn refresh_claude_tokens_for_account(
 
 /// Save OpenAI tokens to auth file
 pub fn save_openai_tokens(tokens: &OAuthTokens) -> Result<()> {
-    save_openai_tokens_for_account(tokens, "default")
+    let label = crate::auth::codex::login_target_label(None)?;
+    save_openai_tokens_for_account(tokens, &label)
 }
 
-/// Save OpenAI tokens for a named account.
+/// Save OpenAI tokens for a specific stored account label.
 pub fn save_openai_tokens_for_account(tokens: &OAuthTokens, label: &str) -> Result<()> {
     crate::auth::codex::upsert_account_from_tokens(
         label,
@@ -959,7 +962,7 @@ pub async fn refresh_openai_tokens(refresh_token: &str) -> Result<OAuthTokens> {
     refresh_openai_tokens_inner(refresh_token, active_label.as_deref()).await
 }
 
-/// Refresh OpenAI/Codex OAuth tokens for a specific named account.
+/// Refresh OpenAI/Codex OAuth tokens for a specific stored account label.
 pub async fn refresh_openai_tokens_for_account(
     refresh_token: &str,
     label: &str,

@@ -228,8 +228,8 @@ impl AnthropicProvider {
         if fresh_creds.expires_at < now + 300_000 && !fresh_creds.refresh_token.is_empty() {
             crate::logging::info("OAuth token expired or expiring soon, attempting refresh...");
 
-            let active_label =
-                auth::claude::active_account_label().unwrap_or_else(|| "default".to_string());
+            let active_label = auth::claude::active_account_label()
+                .unwrap_or_else(auth::claude::primary_account_label);
             match oauth::refresh_claude_tokens_for_account(
                 &fresh_creds.refresh_token,
                 &active_label,
@@ -833,7 +833,7 @@ async fn force_refresh_oauth_token(
     };
 
     let active_label =
-        auth::claude::active_account_label().unwrap_or_else(|| "default".to_string());
+        auth::claude::active_account_label().unwrap_or_else(auth::claude::primary_account_label);
     let refreshed = oauth::refresh_claude_tokens_for_account(&refresh_token, &active_label)
         .await
         .context("OAuth refresh endpoint rejected the refresh token")?;

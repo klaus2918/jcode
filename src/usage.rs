@@ -1813,7 +1813,7 @@ async fn fetch_usage() -> Result<UsageData> {
 
     let now = chrono::Utc::now().timestamp_millis();
     let active_label =
-        auth::claude::active_account_label().unwrap_or_else(|| "default".to_string());
+        auth::claude::active_account_label().unwrap_or_else(auth::claude::primary_account_label);
     let access_token = if creds.expires_at < now + 300_000 && !creds.refresh_token.is_empty() {
         match auth::oauth::refresh_claude_tokens_for_account(&creds.refresh_token, &active_label)
             .await

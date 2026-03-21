@@ -54,6 +54,7 @@ struct LegacyTokens {
 }
 
 static ACTIVE_ACCOUNT_OVERRIDE: RwLock<Option<String>> = RwLock::new(None);
+const ACCOUNT_LABEL_PREFIX: &str = "openai";
 
 pub fn set_active_account_override(label: Option<String>) {
     if let Ok(mut guard) = ACTIVE_ACCOUNT_OVERRIDE.write() {
@@ -66,6 +67,96 @@ pub fn get_active_account_override() -> Option<String> {
         .read()
         .ok()
         .and_then(|guard| guard.clone())
+}
+
+pub fn primary_account_label() -> String {
+    canonical_account_label(1)
+}
+
+pub fn next_account_label() -> Result<String> {
+    let auth = load_auth_file()?;
+    Ok(canonical_account_label(auth.openai_accounts.len() + 1))
+}
+
+pub fn login_target_label(requested: Option<&str>) -> Result<String> {
+    let auth = load_auth_file()?;
+    if let Some(requested) = requested
+        .map(str::trim)
+        .filter(|requested| !requested.is_empty())
+    {
+        if auth
+            .openai_accounts
+            .iter()
+            .any(|account| account.label == requested)
+        {
+            return Ok(requested.to_string());
+        }
+        return Ok(canonical_account_label(auth.openai_accounts.len() + 1));
+    }
+
+    Ok(auth
+        .active_openai_account
+        .or_else(|| {
+            auth.openai_accounts
+                .first()
+                .map(|account| account.label.clone())
+        })
+        .unwrap_or_else(primary_account_label))
+}
+
+fn canonical_account_label(index: usize) -> String {
+    format!("{ACCOUNT_LABEL_PREFIX}-{index}")
+}
+
+fn relabel_accounts(auth: &mut JcodeOpenAiAuthFile) -> bool {
+    let label_map = auth
+        .openai_accounts
+        .iter()
+        .enumerate()
+        .map(|(index, account)| (account.label.clone(), canonical_account_label(index + 1)))
+        .collect::<Vec<_>>();
+    let mut changed = false;
+
+    for (account, (_, canonical_label)) in auth.openai_accounts.iter_mut().zip(label_map.iter()) {
+        if account.label != *canonical_label {
+            account.label = canonical_label.clone();
+            changed = true;
+        }
+    }
+
+    let desired_active = if auth.openai_accounts.is_empty() {
+        None
+    } else {
+        auth.active_openai_account
+            .as_deref()
+            .and_then(|label| {
+                label_map
+                    .iter()
+                    .find(|(original, _)| original == label)
+                    .map(|(_, canonical)| canonical.clone())
+            })
+            .or_else(|| {
+                auth.openai_accounts
+                    .first()
+                    .map(|account| account.label.clone())
+            })
+    };
+
+    if auth.active_openai_account != desired_active {
+        auth.active_openai_account = desired_active;
+        changed = true;
+    }
+
+    if let Some(override_label) = get_active_account_override()
+        && let Some((_, canonical_label)) = label_map
+            .iter()
+            .find(|(original, _)| original == &override_label)
+        && override_label != *canonical_label
+    {
+        set_active_account_override(Some(canonical_label.clone()));
+    }
+
+    changed
 }
 
 fn jcode_auth_path() -> Result<PathBuf> {
@@ -102,6 +193,13 @@ pub fn load_auth_file() -> Result<JcodeOpenAiAuthFile> {
         if save_auth_file(&auth).is_ok() {
             let _ = clear_legacy_oauth_tokens();
         }
+    }
+
+    if relabel_accounts(&mut auth) {
+        crate::logging::info(
+            "Renaming OpenAI accounts to numbered labels (openai-1, openai-2, ...)",
+        );
+        save_auth_file(&auth)?;
     }
 
     Ok(auth)
@@ -152,17 +250,22 @@ pub fn set_active_account(label: &str) -> Result<()> {
 
 pub fn upsert_account(account: OpenAiAccount) -> Result<String> {
     let mut auth = load_auth_file()?;
-    let label = account.label.clone();
+    let requested_label = account.label.clone();
 
     if let Some(existing) = auth
         .openai_accounts
         .iter_mut()
-        .find(|existing| existing.label == label)
+        .find(|existing| existing.label == requested_label)
     {
         *existing = account;
-    } else {
-        auth.openai_accounts.push(account);
+        save_auth_file(&auth)?;
+        return Ok(requested_label);
     }
+
+    let label = canonical_account_label(auth.openai_accounts.len() + 1);
+    let mut account = account;
+    account.label = label.clone();
+    auth.openai_accounts.push(account);
 
     if auth.active_openai_account.is_none() || auth.openai_accounts.len() == 1 {
         auth.active_openai_account = Some(label.clone());
@@ -331,7 +434,7 @@ fn load_jcode_credentials() -> Result<CodexCredentials> {
 
     let active_label = get_active_account_override()
         .or(auth.active_openai_account)
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(primary_account_label);
 
     let account = auth
         .openai_accounts
@@ -602,6 +705,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "sk-env-test");
+        set_active_account_override(None);
 
         let creds = load_credentials().unwrap();
         assert_eq!(creds.access_token, "sk-env-test");
@@ -615,6 +719,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        set_active_account_override(None);
 
         upsert_account(OpenAiAccount {
             label: "personal".to_string(),
@@ -637,9 +742,9 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(active_account_label().as_deref(), Some("personal"));
-        set_active_account("work").unwrap();
-        assert_eq!(active_account_label().as_deref(), Some("work"));
+        assert_eq!(active_account_label().as_deref(), Some("openai-1"));
+        set_active_account("openai-2").unwrap();
+        assert_eq!(active_account_label().as_deref(), Some("openai-2"));
 
         let creds = load_credentials().unwrap();
         assert_eq!(creds.access_token, "at_work");
@@ -651,6 +756,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        set_active_account_override(None);
 
         let legacy_path = temp
             .path()
@@ -673,8 +779,8 @@ mod tests {
 
         let auth = load_auth_file().unwrap();
         assert_eq!(auth.openai_accounts.len(), 1);
-        assert_eq!(auth.openai_accounts[0].label, "default");
-        assert_eq!(auth.active_openai_account.as_deref(), Some("default"));
+        assert_eq!(auth.openai_accounts[0].label, "openai-1");
+        assert_eq!(auth.active_openai_account.as_deref(), Some("openai-1"));
         assert!(
             !legacy_path.exists(),
             "expected legacy OAuth file to be removed after migration"
@@ -686,6 +792,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        set_active_account_override(None);
 
         let legacy_path = temp
             .path()
@@ -714,5 +821,44 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&legacy_path).unwrap()).unwrap();
         assert!(legacy.tokens.is_none());
         assert_eq!(legacy.api_key.as_deref(), Some("sk-legacy"));
+    }
+
+    #[test]
+    fn load_auth_file_renames_existing_labels_to_numbered_scheme() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        set_active_account_override(None);
+
+        let auth_path = temp.path().join("openai-auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{
+                "openai_accounts": [
+                    {
+                        "label": "personal",
+                        "access_token": "at_personal",
+                        "refresh_token": "rt_personal"
+                    },
+                    {
+                        "label": "work",
+                        "access_token": "at_work",
+                        "refresh_token": "rt_work"
+                    }
+                ],
+                "active_openai_account": "work"
+            }"#,
+        )
+        .unwrap();
+
+        let auth = load_auth_file().unwrap();
+        assert_eq!(
+            auth.openai_accounts
+                .iter()
+                .map(|account| account.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["openai-1", "openai-2"]
+        );
+        assert_eq!(auth.active_openai_account.as_deref(), Some("openai-2"));
     }
 }
