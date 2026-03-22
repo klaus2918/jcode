@@ -1,7 +1,37 @@
+use super::state_ui::RestoredReloadInput;
 use super::*;
 use crate::tui::{backend, connection_type_icon, keybind, ui};
 
 impl App {
+    fn apply_restored_reload_input(&mut self, restored: RestoredReloadInput) {
+        self.input = restored.input;
+        self.cursor_pos = restored.cursor;
+        self.hidden_queued_system_messages = restored.hidden_queued_system_messages;
+        self.interleave_message = restored.interleave_message;
+        self.rate_limit_pending_message = restored.rate_limit_pending_message;
+        self.rate_limit_reset = restored.rate_limit_reset;
+
+        let mut queued_messages = restored.queued_messages;
+        let mut recovered_interrupts = restored.pending_soft_interrupts;
+        if !recovered_interrupts.is_empty() {
+            crate::logging::info(&format!(
+                "Recovered {} pending soft interrupt(s) after reload; re-queueing them for resend",
+                recovered_interrupts.len()
+            ));
+            if self.interleave_message.is_none() {
+                self.interleave_message = Some(recovered_interrupts.remove(0));
+            }
+            if !recovered_interrupts.is_empty() {
+                let mut recovered_queue = recovered_interrupts;
+                recovered_queue.append(&mut queued_messages);
+                queued_messages = recovered_queue;
+            }
+            self.set_status_notice("Recovered pending prompts after reload");
+        }
+
+        self.queued_messages = queued_messages;
+    }
+
     pub(super) async fn begin_remote_send(
         &mut self,
         remote: &mut backend::RemoteConnection,
@@ -216,11 +246,13 @@ impl App {
             pin_images: display.pin_images,
             picker_state: None,
             pending_model_switch: None,
+            pending_account_picker_selection: None,
             model_switch_keys: keybind::load_model_switch_keys(),
             effort_switch_keys: keybind::load_effort_switch_keys(),
             centered_toggle_keys: keybind::load_centered_toggle_key(),
             dictation_key: keybind::load_dictation_key(),
             scroll_keys: keybind::load_scroll_keys(),
+            dictation_session: None,
             dictation_in_flight: false,
             scroll_bookmark: None,
             typing_scroll_lock: false,
@@ -230,6 +262,7 @@ impl App {
             interleave_message: None,
             pending_soft_interrupts: Vec::new(),
             queue_mode: display.queue_mode,
+            pending_queued_dispatch: false,
             tab_completion_state: None,
             app_started: Instant::now(),
             client_binary_mtime: std::env::current_exe()
@@ -438,11 +471,13 @@ impl App {
             pin_images: display.pin_images,
             picker_state: None,
             pending_model_switch: None,
+            pending_account_picker_selection: None,
             model_switch_keys: keybind::load_model_switch_keys(),
             effort_switch_keys: keybind::load_effort_switch_keys(),
             centered_toggle_keys: keybind::load_centered_toggle_key(),
             dictation_key: keybind::load_dictation_key(),
             scroll_keys: keybind::load_scroll_keys(),
+            dictation_session: None,
             dictation_in_flight: false,
             scroll_bookmark: None,
             typing_scroll_lock: false,
@@ -452,6 +487,7 @@ impl App {
             interleave_message: None,
             pending_soft_interrupts: Vec::new(),
             queue_mode: display.queue_mode,
+            pending_queued_dispatch: false,
             tab_completion_state: None,
             app_started: Instant::now(),
             client_binary_mtime: std::env::current_exe()
@@ -518,13 +554,8 @@ impl App {
 
         // Load session to get canary status (for "client self-dev" badge)
         if let Some(ref session_id) = resume_session {
-            if let Some((input, cursor, queued_messages, hidden_queued_system_messages)) =
-                Self::restore_input_for_reload(session_id)
-            {
-                app.input = input;
-                app.cursor_pos = cursor;
-                app.queued_messages = queued_messages;
-                app.hidden_queued_system_messages = hidden_queued_system_messages;
+            if let Some(restored) = Self::restore_input_for_reload(session_id) {
+                app.apply_restored_reload_input(restored);
             }
         }
 
@@ -737,13 +768,8 @@ impl App {
 
     /// Restore a previous session (for hot-reload)
     pub fn restore_session(&mut self, session_id: &str) {
-        if let Some((input, cursor, queued_messages, hidden_queued_system_messages)) =
-            Self::restore_input_for_reload(session_id)
-        {
-            self.input = input;
-            self.cursor_pos = cursor;
-            self.queued_messages = queued_messages;
-            self.hidden_queued_system_messages = hidden_queued_system_messages;
+        if let Some(restored) = Self::restore_input_for_reload(session_id) {
+            self.apply_restored_reload_input(restored);
         }
         if let Ok(session) = Session::load(session_id) {
             // Count stats before restoring

@@ -585,7 +585,11 @@ fn test_account_command_opens_account_picker() {
             .borrow();
         let titles = picker.debug_filtered_titles();
         assert!(titles.iter().any(|title| title == "Add or replace account"));
-        assert!(titles.iter().any(|title| title == "Switch account `claude-1`"));
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == "Switch account `claude-1`")
+        );
         assert!(titles.iter().any(|title| title == "Switch account `work`"));
         assert!(!titles.iter().any(|title| title == "new Claude account"));
         assert!(!titles.iter().any(|title| title == "new OpenAI account"));
@@ -694,7 +698,10 @@ fn test_account_picker_preview_from_input_filters_accounts() {
                 .unwrap();
         }
 
-        assert!(app.picker_state.is_none(), "account preview should stay disabled");
+        assert!(
+            app.picker_state.is_none(),
+            "account preview should stay disabled"
+        );
         assert!(app.account_picker_overlay.is_none());
         assert_eq!(app.input(), "/account openai 2");
     });
@@ -735,8 +742,16 @@ fn test_account_command_combines_claude_and_openai_accounts() {
             .expect("account center should open")
             .borrow();
         let titles = picker.debug_filtered_titles();
-        assert!(titles.iter().any(|title| title == "Switch account `claude-1`"));
-        assert!(titles.iter().any(|title| title == "Switch account `openai-1`"));
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == "Switch account `claude-1`")
+        );
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == "Switch account `openai-1`")
+        );
         assert!(titles.iter().any(|title| title == "Add or replace account"));
     });
 }
@@ -3547,6 +3562,37 @@ fn test_handle_server_event_interrupted_clears_stream_state_and_sets_idle() {
 }
 
 #[test]
+fn test_remote_interrupted_defers_queued_followup_dispatch_by_one_cycle() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    app.is_processing = true;
+    app.status = ProcessingStatus::Streaming;
+    app.current_message_id = Some(42);
+    app.queued_messages.push("queued later".to_string());
+
+    app.handle_server_event(crate::protocol::ServerEvent::Interrupted, &mut remote);
+
+    assert!(app.pending_queued_dispatch);
+    assert_eq!(app.queued_messages(), &["queued later"]);
+    assert!(!app.is_processing);
+
+    rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
+    assert_eq!(app.queued_messages(), &["queued later"]);
+    assert!(!app.is_processing);
+
+    app.pending_queued_dispatch = false;
+    rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
+    assert!(app.queued_messages().is_empty());
+    assert!(app.is_processing);
+    assert!(matches!(app.status, ProcessingStatus::Sending));
+    assert!(app.current_message_id.is_some());
+}
+
+#[test]
 fn test_handle_server_event_tool_start_flushes_streaming_text_before_tool_message() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -5878,6 +5924,41 @@ fn test_ctrl_a_copies_chat_viewport_with_context_when_input_empty() {
     assert!(!app.copy_selection_mode);
     assert!(app.copy_selection_anchor.is_none());
     assert!(app.copy_selection_cursor.is_none());
+}
+
+#[test]
+fn test_alt_a_copies_chat_viewport_with_context_when_input_empty() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+
+    let lines = (1..=20)
+        .map(|idx| format!("line {idx:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.display_messages = vec![DisplayMessage {
+        role: "assistant".to_string(),
+        content: lines,
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: None,
+    }];
+    app.bump_display_messages_version();
+    app.scroll_offset = 4;
+    app.auto_scroll_paused = true;
+
+    let backend = ratatui::backend::TestBackend::new(40, 8);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    render_and_snap(&app, &mut terminal);
+
+    let handled = super::input::handle_alt_key(&mut app, KeyCode::Char('a'));
+    assert!(handled);
+    assert!(matches!(
+        app.status_notice().as_deref(),
+        Some("Copied viewport context")
+            | Some("Failed to copy viewport context")
+            | Some("Nothing visible to copy")
+    ));
 }
 
 #[test]

@@ -4,6 +4,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use std::collections::HashMap;
 
 const PANEL_BG: Color = Color::Rgb(24, 28, 40);
 const PANEL_BORDER: Color = Color::Rgb(90, 95, 110);
@@ -24,6 +25,12 @@ pub enum AccountProviderKind {
 #[derive(Debug, Clone)]
 pub enum AccountPickerCommand {
     SubmitInput(String),
+    OpenAccountCenter {
+        provider_filter: Option<String>,
+    },
+    OpenAddReplaceFlow {
+        provider_filter: Option<String>,
+    },
     PromptValue {
         prompt: String,
         command_prefix: String,
@@ -154,9 +161,157 @@ impl AccountPicker {
             .enumerate()
             .filter_map(|(idx, item)| item.matches_filter(&self.filter).then_some(idx))
             .collect();
+        let provider_order = self.provider_order();
+        self.filtered.sort_by(|left, right| {
+            let left_item = &self.items[*left];
+            let right_item = &self.items[*right];
+
+            provider_order
+                .get(&left_item.provider_id)
+                .cmp(&provider_order.get(&right_item.provider_id))
+                .then_with(|| action_section(left_item).cmp(&action_section(right_item)))
+                .then_with(|| left_item.title.cmp(&right_item.title))
+                .then_with(|| left.cmp(right))
+        });
         if self.selected >= self.filtered.len() {
             self.selected = self.filtered.len().saturating_sub(1);
         }
+    }
+
+    fn provider_order(&self) -> HashMap<String, usize> {
+        let mut order = HashMap::new();
+        let mut next = 0usize;
+        for item in &self.items {
+            if order.contains_key(&item.provider_id) {
+                continue;
+            }
+            let rank = if item.provider_id == "defaults" {
+                usize::MAX / 2
+            } else {
+                let current = next;
+                next += 1;
+                current
+            };
+            order.insert(item.provider_id.clone(), rank);
+        }
+        order
+    }
+
+    fn filtered_provider_switch_count(&self, provider_id: &str) -> usize {
+        self.filtered
+            .iter()
+            .filter(|idx| {
+                let item = &self.items[**idx];
+                item.provider_id == provider_id
+                    && matches!(action_section(item), ActionSection::Switch)
+            })
+            .count()
+    }
+
+    fn filtered_provider_secondary_count(&self, provider_id: &str) -> usize {
+        self.filtered
+            .iter()
+            .filter(|idx| {
+                let item = &self.items[**idx];
+                item.provider_id == provider_id
+                    && !matches!(action_section(item), ActionSection::Switch)
+            })
+            .count()
+    }
+
+    fn select_prev_provider_group(&mut self) {
+        let Some(current_idx) = self.filtered.get(self.selected).copied() else {
+            return;
+        };
+        let current_provider = self.items[current_idx].provider_id.as_str();
+        let mut target = None;
+
+        for pos in (0..self.selected).rev() {
+            let provider_id = self.items[self.filtered[pos]].provider_id.as_str();
+            if provider_id != current_provider {
+                target = Some(pos);
+                break;
+            }
+        }
+
+        let Some(mut pos) = target else {
+            return;
+        };
+        let provider_id = self.items[self.filtered[pos]].provider_id.clone();
+        while pos > 0 && self.items[self.filtered[pos - 1]].provider_id == provider_id {
+            pos -= 1;
+        }
+        self.selected = pos;
+    }
+
+    fn select_next_provider_group(&mut self) {
+        let Some(current_idx) = self.filtered.get(self.selected).copied() else {
+            return;
+        };
+        let current_provider = self.items[current_idx].provider_id.as_str();
+
+        for pos in (self.selected + 1)..self.filtered.len() {
+            let provider_id = self.items[self.filtered[pos]].provider_id.as_str();
+            if provider_id != current_provider {
+                self.selected = pos;
+                break;
+            }
+        }
+    }
+
+    fn provider_overview_line(&self) -> Line<'static> {
+        let mut seen = Vec::new();
+        let mut stats: HashMap<String, (String, usize, usize)> = HashMap::new();
+
+        for item in &self.items {
+            if matches!(item.provider_id.as_str(), "defaults" | "account-flow") {
+                continue;
+            }
+            if !stats.contains_key(&item.provider_id) {
+                seen.push(item.provider_id.clone());
+                stats.insert(
+                    item.provider_id.clone(),
+                    (item.provider_label.clone(), 0, 0),
+                );
+            }
+            if let Some((_, accounts, actions)) = stats.get_mut(&item.provider_id) {
+                if matches!(action_section(item), ActionSection::Switch) {
+                    *accounts += 1;
+                } else {
+                    *actions += 1;
+                }
+            }
+        }
+
+        let mut spans = vec![Span::styled("Providers ", Style::default().fg(MUTED_DARK))];
+        let mut first = true;
+        for provider_id in seen {
+            let Some((label, accounts, actions)) = stats.get(&provider_id) else {
+                continue;
+            };
+            if !first {
+                spans.push(Span::styled(" | ", Style::default().fg(MUTED_DARK)));
+            }
+            first = false;
+            let summary = if *accounts > 0 {
+                format!("{} {}", label, account_count_summary(*accounts))
+            } else {
+                format!(
+                    "{} {} control{}",
+                    label,
+                    actions,
+                    if *actions == 1 { "" } else { "s" }
+                )
+            };
+            spans.push(Span::styled(summary, provider_style(&provider_id)));
+        }
+        if first {
+            spans.push(Span::styled(
+                "No providers available",
+                Style::default().fg(MUTED),
+            ));
+        }
+        Line::from(spans)
     }
 
     pub fn handle_overlay_key(
@@ -185,6 +340,12 @@ impl AccountPicker {
             KeyCode::Down | KeyCode::Char('j') => {
                 let max = self.filtered.len().saturating_sub(1);
                 self.selected = (self.selected + 1).min(max);
+            }
+            KeyCode::Left => {
+                self.select_prev_provider_group();
+            }
+            KeyCode::Right => {
+                self.select_next_provider_group();
             }
             KeyCode::PageUp | KeyCode::Char('K') => {
                 self.selected = self.selected.saturating_sub(6);
@@ -230,7 +391,7 @@ impl AccountPicker {
             .title_bottom(Line::from(vec![
                 hotkey(" Enter "),
                 Span::styled(" run  ", Style::default().fg(MUTED_DARK)),
-                hotkey(" ↑↓ "),
+                hotkey(" Up/Down "),
                 Span::styled(" navigate  ", Style::default().fg(MUTED_DARK)),
                 hotkey(" type "),
                 Span::styled(" filter  ", Style::default().fg(MUTED_DARK)),
@@ -250,8 +411,8 @@ impl AccountPicker {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(4),
-                Constraint::Min(12),
+                Constraint::Length(7),
+                Constraint::Min(10),
                 Constraint::Length(2),
             ])
             .split(inner);
@@ -267,9 +428,9 @@ impl AccountPicker {
         self.render_detail_pane(frame, body[1]);
 
         let footer = Paragraph::new(Line::from(vec![
-            Span::styled("Tip ", Style::default().fg(MUTED_DARK)),
+            Span::styled("Focus ", Style::default().fg(MUTED_DARK)),
             Span::styled(
-                "Use `/account <provider> settings` for a full text view, or narrow this screen by typing a provider/account name.",
+                "saved accounts stay surfaced here; use Left/Right to jump provider groups, type to narrow further, or use `/account <provider> settings` for the full text view.",
                 Style::default().fg(MUTED),
             ),
         ]));
@@ -293,7 +454,7 @@ impl AccountPicker {
                 Span::styled("Filter ", Style::default().fg(MUTED_DARK)),
                 Span::styled(
                     if self.filter.is_empty() {
-                        "type provider, account, login, switch, or setting".to_string()
+                        "type provider or account name".to_string()
                     } else {
                         self.filter.clone()
                     },
@@ -304,10 +465,11 @@ impl AccountPicker {
                     },
                 ),
                 Span::styled(
-                    format!("  ·  {} results", self.filtered.len()),
+                    format!("  -  {} results", self.filtered.len()),
                     Style::default().fg(MUTED_DARK),
                 ),
             ]),
+            self.provider_overview_line(),
             self.summary_line(),
             self.defaults_line(),
         ];
@@ -317,9 +479,13 @@ impl AccountPicker {
 
     fn render_action_list(&self, frame: &mut Frame, area: Rect) {
         let title = if self.filtered.is_empty() {
-            " Actions ".to_string()
+            " Providers & Quick Actions ".to_string()
         } else {
-            format!(" Actions ({}/{}) ", self.selected + 1, self.filtered.len())
+            format!(
+                " Providers & Quick Actions ({}/{}) ",
+                self.selected + 1,
+                self.filtered.len()
+            )
         };
         let block = Block::default()
             .title(Span::styled(
@@ -332,7 +498,7 @@ impl AccountPicker {
         let list_inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let available_items = ((list_inner.height as usize).max(3) / 3).max(1);
+        let available_items = (list_inner.height as usize).max(1);
         let start = self
             .selected
             .saturating_sub(available_items.saturating_sub(1).min(available_items / 2));
@@ -345,7 +511,7 @@ impl AccountPicker {
                 Style::default().fg(Color::Gray).italic(),
             )));
             lines.push(Line::from(Span::styled(
-                "Try `openai`, `claude`, `login`, `switch`, `remove`, or `default`.",
+                "Try `openai`, `claude`, an account label, `login`, or `default`.",
                 Style::default().fg(MUTED),
             )));
         } else {
@@ -359,12 +525,8 @@ impl AccountPicker {
                     current_provider = Some(item.provider_id.as_str());
                     lines.push(provider_header_line(
                         &item.provider_label,
-                        self.filtered
-                            .iter()
-                            .filter(|candidate_idx| {
-                                self.items[**candidate_idx].provider_id == item.provider_id
-                            })
-                            .count(),
+                        self.filtered_provider_switch_count(&item.provider_id),
+                        self.filtered_provider_secondary_count(&item.provider_id),
                         &item.provider_id,
                     ));
                 }
@@ -374,32 +536,22 @@ impl AccountPicker {
                 } else {
                     Style::default()
                 };
-                let (kind_label, kind_color) = action_kind_badge(&item.command);
+                let (icon, icon_color) = action_icon(item);
+                let title = compact_item_title(item);
+                let meta_width = list_inner.width.saturating_sub(16) as usize;
+                let meta = truncate_with_ellipsis(&item.subtitle, meta_width);
                 lines.push(Line::from(vec![
                     Span::styled(
-                        if selected { "▸ " } else { "  " },
+                        if selected { "> " } else { "  " },
                         row_style.fg(Color::White),
                     ),
+                    Span::styled(format!("{} ", icon), row_style.fg(icon_color).bold()),
                     Span::styled(
-                        format!("[{}] ", kind_label),
-                        row_style.fg(kind_color).bold(),
+                        truncate_with_ellipsis(&title, 22),
+                        row_style.fg(Color::White),
                     ),
-                    Span::styled(item.title.clone(), row_style.fg(Color::White)),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::styled("  ", row_style),
-                    Span::styled(
-                        item.provider_label.clone(),
-                        row_style.patch(provider_style(&item.provider_id)),
-                    ),
-                    Span::styled(" · ", row_style.fg(MUTED_DARK)),
-                    Span::styled(
-                        truncate_with_ellipsis(
-                            &item.subtitle,
-                            list_inner.width.saturating_sub(6) as usize,
-                        ),
-                        row_style.fg(MUTED),
-                    ),
+                    Span::styled(" - ", row_style.fg(MUTED_DARK)),
+                    Span::styled(meta, row_style.fg(MUTED)),
                 ]));
             }
         }
@@ -431,64 +583,139 @@ impl AccountPicker {
             return;
         };
 
-        let (kind_label, kind_color) = action_kind_badge(&item.command);
-        let related_items: Vec<&AccountPickerItem> = self
+        let provider_items: Vec<&AccountPickerItem> = self
             .items
             .iter()
-            .filter(|candidate| {
-                candidate.provider_id == item.provider_id && candidate.title != item.title
-            })
-            .take(4)
+            .filter(|candidate| candidate.provider_id == item.provider_id)
             .collect();
+        let mut account_items: Vec<&AccountPickerItem> = provider_items
+            .iter()
+            .copied()
+            .filter(|candidate| matches!(action_section(candidate), ActionSection::Switch))
+            .collect();
+        account_items.sort_by(|left, right| {
+            account_is_active(right)
+                .cmp(&account_is_active(left))
+                .then_with(|| compact_item_title(left).cmp(&compact_item_title(right)))
+        });
+        let mut secondary_items: Vec<&AccountPickerItem> = provider_items
+            .iter()
+            .copied()
+            .filter(|candidate| !matches!(action_section(candidate), ActionSection::Switch))
+            .filter(|candidate| candidate.title != item.title)
+            .collect();
+        secondary_items.sort_by(|left, right| {
+            action_section(left)
+                .cmp(&action_section(right))
+                .then_with(|| compact_item_title(left).cmp(&compact_item_title(right)))
+        });
+        secondary_items.truncate(6);
+        let (kind_label, kind_color) = action_kind_badge(&item.command);
 
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("Action ", Style::default().fg(MUTED_DARK)),
-                Span::styled(item.title.clone(), Style::default().fg(Color::White).bold()),
+                Span::styled("Provider ", Style::default().fg(MUTED_DARK)),
+                Span::styled(
+                    item.provider_label.clone(),
+                    provider_style(&item.provider_id),
+                ),
             ]),
             Line::from(vec![
-                Span::styled("Type ", Style::default().fg(MUTED_DARK)),
-                Span::styled(kind_label, Style::default().fg(kind_color).bold()),
+                Span::styled("Saved accounts ", Style::default().fg(MUTED_DARK)),
+                Span::styled(
+                    account_count_summary(account_items.len()),
+                    Style::default().fg(Color::White).bold(),
+                ),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
-                "Current state",
+                "Quick switch",
                 Style::default().fg(MUTED_DARK).bold(),
-            )]),
-            Line::from(vec![Span::styled(
-                item.subtitle.clone(),
-                Style::default().fg(MUTED),
-            )]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Runs",
-                Style::default().fg(MUTED_DARK).bold(),
-            )]),
-            Line::from(vec![Span::styled(
-                command_preview(&item.command),
-                Style::default().fg(Color::White),
-            )]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "What happens",
-                Style::default().fg(MUTED_DARK).bold(),
-            )]),
-            Line::from(vec![Span::styled(
-                action_kind_help(&item.command),
-                Style::default().fg(MUTED),
             )]),
         ];
 
-        if !related_items.is_empty() {
+        if account_items.is_empty() {
+            lines.push(Line::from(vec![Span::styled(
+                "No saved accounts for this provider yet.",
+                Style::default().fg(MUTED),
+            )]));
+        } else {
+            for account in &account_items {
+                let is_selected = account.title == item.title;
+                let bullet = if account_is_active(account) { "*" } else { "o" };
+                let note = if is_selected { "  [selected]" } else { "" };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{} ", bullet),
+                        Style::default().fg(if account_is_active(account) {
+                            Color::Rgb(110, 214, 158)
+                        } else {
+                            MUTED_DARK
+                        }),
+                    ),
+                    Span::styled(
+                        compact_item_title(account),
+                        Style::default().fg(Color::White).bold(),
+                    ),
+                    Span::styled(
+                        note.to_string(),
+                        Style::default().fg(Color::Rgb(170, 210, 255)),
+                    ),
+                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    format!(
+                        "  {}",
+                        truncate_with_ellipsis(
+                            &account.subtitle,
+                            inner.width.saturating_sub(3) as usize,
+                        )
+                    ),
+                    Style::default().fg(MUTED),
+                )]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Selected action",
+            Style::default().fg(MUTED_DARK).bold(),
+        )]));
+        lines.push(Line::from(vec![
+            Span::styled(kind_label, Style::default().fg(kind_color).bold()),
+            Span::styled(" - ", Style::default().fg(MUTED_DARK)),
+            Span::styled(item.title.clone(), Style::default().fg(Color::White).bold()),
+        ]));
+        lines.push(Line::from(vec![Span::styled(
+            item.subtitle.clone(),
+            Style::default().fg(MUTED),
+        )]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Runs",
+            Style::default().fg(MUTED_DARK).bold(),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            command_preview(&item.command),
+            Style::default().fg(Color::White),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            action_kind_help(&item.command),
+            Style::default().fg(MUTED),
+        )]));
+
+        if !secondary_items.is_empty() {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
-                "Other actions here",
+                "Other controls",
                 Style::default().fg(MUTED_DARK).bold(),
             )]));
-            for related in related_items {
+            for related in secondary_items {
                 lines.push(Line::from(vec![
-                    Span::styled("• ", Style::default().fg(MUTED_DARK)),
-                    Span::styled(related.title.clone(), Style::default().fg(Color::White)),
+                    Span::styled("- ", Style::default().fg(MUTED_DARK)),
+                    Span::styled(
+                        compact_item_title(related),
+                        Style::default().fg(Color::White),
+                    ),
                 ]));
             }
         }
@@ -524,7 +751,7 @@ impl AccountPicker {
             if summary.named_account_count > 0 {
                 spans.push(Span::raw("  "));
                 spans.push(metric_span(
-                    "named accounts",
+                    "accounts",
                     summary.named_account_count,
                     Color::Rgb(196, 170, 255),
                 ));
@@ -556,9 +783,23 @@ impl AccountPicker {
             Span::styled("Defaults ", Style::default().fg(MUTED_DARK)),
             Span::styled("provider ", Style::default().fg(MUTED_DARK)),
             Span::styled(provider.to_string(), Style::default().fg(Color::White)),
-            Span::styled("  ·  model ", Style::default().fg(MUTED_DARK)),
+            Span::styled("  -  model ", Style::default().fg(MUTED_DARK)),
             Span::styled(model.to_string(), Style::default().fg(Color::White)),
         ])
+    }
+}
+
+#[cfg(test)]
+impl AccountPicker {
+    pub(crate) fn debug_filtered_titles(&self) -> Vec<String> {
+        self.filtered
+            .iter()
+            .map(|idx| self.items[*idx].title.clone())
+            .collect()
+    }
+
+    pub(crate) fn debug_selected_index(&self) -> usize {
+        self.selected
     }
 }
 
@@ -566,19 +807,135 @@ fn hotkey(text: &'static str) -> Span<'static> {
     Span::styled(text, Style::default().fg(Color::White).bg(Color::DarkGray))
 }
 
-fn provider_header_line(provider_label: &str, count: usize, provider_id: &str) -> Line<'static> {
+fn provider_header_line(
+    provider_label: &str,
+    account_count: usize,
+    secondary_count: usize,
+    provider_id: &str,
+) -> Line<'static> {
+    let summary = if account_count > 0 {
+        format!(
+            "  -  {}  -  {} other",
+            account_count_summary(account_count),
+            secondary_count
+        )
+    } else {
+        format!(
+            "  -  {} control{}",
+            secondary_count,
+            if secondary_count == 1 { "" } else { "s" }
+        )
+    };
     Line::from(vec![
         Span::styled(" ", Style::default()),
         Span::styled(provider_label.to_string(), provider_style(provider_id)),
-        Span::styled(
-            format!("  ·  {} actions", count),
-            Style::default().fg(MUTED_DARK),
-        ),
+        Span::styled(summary, Style::default().fg(MUTED_DARK)),
     ])
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ActionSection {
+    Switch,
+    Add,
+    Login,
+    Overview,
+    Setting,
+    Remove,
+    Other,
+}
+
+fn action_section(item: &AccountPickerItem) -> ActionSection {
+    match &item.command {
+        AccountPickerCommand::OpenAccountCenter { .. } => ActionSection::Overview,
+        AccountPickerCommand::OpenAddReplaceFlow { .. } => ActionSection::Add,
+        AccountPickerCommand::Switch { .. } => ActionSection::Switch,
+        AccountPickerCommand::Login { .. } => ActionSection::Login,
+        AccountPickerCommand::Remove { .. } => ActionSection::Remove,
+        AccountPickerCommand::PromptNew { .. } => ActionSection::Add,
+        AccountPickerCommand::PromptValue { .. } => ActionSection::Setting,
+        AccountPickerCommand::SubmitInput(input) if input.contains(" switch ") => {
+            ActionSection::Switch
+        }
+        AccountPickerCommand::SubmitInput(input) if input.contains(" remove ") => {
+            ActionSection::Remove
+        }
+        AccountPickerCommand::SubmitInput(input) if input.ends_with(" settings") => {
+            ActionSection::Overview
+        }
+        AccountPickerCommand::SubmitInput(input) if input.ends_with(" login") => {
+            ActionSection::Login
+        }
+        AccountPickerCommand::SubmitInput(input) if input.contains(" add") => ActionSection::Add,
+        AccountPickerCommand::SubmitInput(_) => ActionSection::Other,
+    }
+}
+
+fn account_is_active(item: &AccountPickerItem) -> bool {
+    item.subtitle
+        .split(|ch| ch == '·' || ch == '-')
+        .any(|part| part.trim().eq_ignore_ascii_case("active"))
+}
+
+fn extract_account_label(title: &str) -> Option<String> {
+    let prefixes = ["Switch account `", "Re-login account `", "Remove account `"];
+    for prefix in prefixes {
+        if let Some(rest) = title.strip_prefix(prefix) {
+            if let Some(label) = rest.strip_suffix('`') {
+                return Some(label.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn compact_item_title(item: &AccountPickerItem) -> String {
+    match action_section(item) {
+        ActionSection::Switch => {
+            extract_account_label(&item.title).unwrap_or_else(|| item.title.clone())
+        }
+        ActionSection::Add => item.title.clone(),
+        ActionSection::Login => extract_account_label(&item.title)
+            .map(|label| format!("Refresh {label}"))
+            .unwrap_or_else(|| "Login / refresh".to_string()),
+        ActionSection::Overview => "Provider settings".to_string(),
+        ActionSection::Remove => extract_account_label(&item.title)
+            .map(|label| format!("Remove {label}"))
+            .unwrap_or_else(|| item.title.clone()),
+        ActionSection::Setting | ActionSection::Other => item.title.clone(),
+    }
+}
+
+fn action_icon(item: &AccountPickerItem) -> (&'static str, Color) {
+    match action_section(item) {
+        ActionSection::Switch => (
+            if account_is_active(item) { "*" } else { "o" },
+            if account_is_active(item) {
+                Color::Rgb(110, 214, 158)
+            } else {
+                Color::Rgb(160, 168, 188)
+            },
+        ),
+        ActionSection::Add => ("+", Color::Rgb(140, 176, 255)),
+        ActionSection::Login => ("R", Color::Rgb(229, 187, 111)),
+        ActionSection::Overview => ("S", Color::Rgb(140, 176, 255)),
+        ActionSection::Setting => (".", Color::Rgb(189, 200, 255)),
+        ActionSection::Remove => ("x", Color::Rgb(255, 140, 140)),
+        ActionSection::Other => ("-", Color::Rgb(180, 190, 220)),
+    }
+}
+
+fn account_count_summary(count: usize) -> String {
+    format!(
+        "{} saved account{}",
+        count,
+        if count == 1 { "" } else { "s" }
+    )
 }
 
 fn action_kind_label(command: &AccountPickerCommand) -> &'static str {
     match command {
+        AccountPickerCommand::OpenAccountCenter { .. } => "overview",
+        AccountPickerCommand::OpenAddReplaceFlow { .. } => "account",
         AccountPickerCommand::SubmitInput(input) if input.ends_with(" settings") => "overview",
         AccountPickerCommand::SubmitInput(input) if input.contains(" remove ") => "danger",
         AccountPickerCommand::SubmitInput(input) if input.contains(" login") => "login",
@@ -606,6 +963,12 @@ fn action_kind_badge(command: &AccountPickerCommand) -> (&'static str, Color) {
 
 fn action_kind_help(command: &AccountPickerCommand) -> &'static str {
     match command {
+        AccountPickerCommand::OpenAccountCenter { .. } => {
+            "Returns to the main account center with all provider and saved-auth actions."
+        }
+        AccountPickerCommand::OpenAddReplaceFlow { .. } => {
+            "Opens a focused chooser where you pick whether to add a new Claude/OpenAI account or replace an existing saved one."
+        }
         AccountPickerCommand::SubmitInput(input) if input.ends_with(" settings") => {
             "Opens a detailed text summary for this provider, including the exact commands you can run manually."
         }
@@ -616,7 +979,7 @@ fn action_kind_help(command: &AccountPickerCommand) -> &'static str {
             "Starts or refreshes authentication for this provider so it becomes usable again."
         }
         AccountPickerCommand::SubmitInput(input) if input.contains(" add") => {
-            "Starts the flow for adding a new named account, so you can keep multiple identities side by side."
+            "Starts the flow for adding the next numbered account, so you can keep multiple identities side by side."
         }
         AccountPickerCommand::SubmitInput(input) if input.contains(" switch ") => {
             "Makes this account active so future requests use it immediately."
@@ -625,7 +988,7 @@ fn action_kind_help(command: &AccountPickerCommand) -> &'static str {
             "Prompts for a new value, then saves the matching provider or global setting."
         }
         AccountPickerCommand::Switch { .. } => {
-            "Switches the active named account for this provider."
+            "Switches the active saved account for this provider."
         }
         AccountPickerCommand::Login { .. } => {
             "Refreshes the selected account by starting the provider login flow again."
@@ -634,7 +997,7 @@ fn action_kind_help(command: &AccountPickerCommand) -> &'static str {
             "Deletes the saved account credentials from local storage."
         }
         AccountPickerCommand::PromptNew { .. } => {
-            "Prompts for an account label first, then continues into the login flow."
+            "Starts login for the next numbered account immediately."
         }
         AccountPickerCommand::SubmitInput(_) => {
             "Runs the selected account-management command immediately."
@@ -645,6 +1008,14 @@ fn action_kind_help(command: &AccountPickerCommand) -> &'static str {
 fn command_preview(command: &AccountPickerCommand) -> String {
     match command {
         AccountPickerCommand::SubmitInput(input) => input.clone(),
+        AccountPickerCommand::OpenAccountCenter { provider_filter } => match provider_filter {
+            Some(provider_id) => format!("Open /account {}", provider_id),
+            None => "Open /account".to_string(),
+        },
+        AccountPickerCommand::OpenAddReplaceFlow { provider_filter } => match provider_filter {
+            Some(provider_id) => format!("Open add/replace flow for {}", provider_id),
+            None => "Open add/replace flow".to_string(),
+        },
         AccountPickerCommand::PromptValue {
             command_prefix,
             empty_value,
@@ -666,8 +1037,8 @@ fn command_preview(command: &AccountPickerCommand) -> String {
             AccountProviderKind::OpenAi => format!("/account openai remove {}", label),
         },
         AccountPickerCommand::PromptNew { provider } => match provider {
-            AccountProviderKind::Anthropic => "/account claude add <label>".to_string(),
-            AccountProviderKind::OpenAi => "/account openai add <label>".to_string(),
+            AccountProviderKind::Anthropic => "/account claude add".to_string(),
+            AccountProviderKind::OpenAi => "/account openai add".to_string(),
         },
     }
 }
@@ -686,6 +1057,7 @@ fn provider_style(provider_id: &str) -> Style {
         "gemini" | "google" => Color::Rgb(129, 184, 255),
         "copilot" => Color::Rgb(182, 154, 255),
         "cursor" => Color::Rgb(131, 215, 255),
+        "account-flow" => Color::Rgb(196, 170, 255),
         "openrouter"
         | "openai-compatible"
         | "opencode"
@@ -709,11 +1081,11 @@ fn truncate_with_ellipsis(input: &str, width: usize) -> String {
     if chars.len() <= width {
         return input.to_string();
     }
-    if width <= 1 {
-        return "…".to_string();
+    if width <= 3 {
+        return ".".repeat(width);
     }
-    let mut out: String = chars.into_iter().take(width - 1).collect();
-    out.push('…');
+    let mut out: String = chars.into_iter().take(width - 3).collect();
+    out.push_str("...");
     out
 }
 
@@ -786,5 +1158,94 @@ mod tests {
 
         assert!(preview.contains("/account default-model <value>"));
         assert!(preview.contains("clear"));
+    }
+
+    #[test]
+    fn test_account_picker_sorts_switches_before_settings() {
+        let picker = AccountPicker::new(
+            " Accounts ",
+            vec![
+                AccountPickerItem::action(
+                    "openai",
+                    "OpenAI",
+                    "Provider settings",
+                    "configured",
+                    AccountPickerCommand::SubmitInput("/account openai settings".to_string()),
+                ),
+                AccountPickerItem::action(
+                    "openai",
+                    "OpenAI",
+                    "Switch account `work`",
+                    "user@example.com - valid - active",
+                    AccountPickerCommand::SubmitInput("/account openai switch work".to_string()),
+                ),
+                AccountPickerItem::action(
+                    "defaults",
+                    "Global",
+                    "Default provider",
+                    "Current: auto",
+                    AccountPickerCommand::PromptValue {
+                        prompt: "provider".to_string(),
+                        command_prefix: "/account default-provider".to_string(),
+                        empty_value: Some("auto".to_string()),
+                        status_notice: "editing".to_string(),
+                    },
+                ),
+            ],
+        );
+
+        let ordered_titles: Vec<String> = picker
+            .filtered
+            .iter()
+            .map(|idx| picker.items[*idx].title.clone())
+            .collect();
+
+        assert_eq!(ordered_titles[0], "Switch account `work`");
+        assert_eq!(ordered_titles[1], "Provider settings");
+        assert_eq!(ordered_titles[2], "Default provider");
+    }
+
+    #[test]
+    fn test_account_picker_left_right_jump_by_provider_group() {
+        let mut picker = AccountPicker::new(
+            " Accounts ",
+            vec![
+                AccountPickerItem::action(
+                    "claude",
+                    "Claude",
+                    "Switch account `work`",
+                    "a@example.com - valid - active",
+                    AccountPickerCommand::SubmitInput("/account claude switch work".to_string()),
+                ),
+                AccountPickerItem::action(
+                    "claude",
+                    "Claude",
+                    "Provider settings",
+                    "configured",
+                    AccountPickerCommand::SubmitInput("/account claude settings".to_string()),
+                ),
+                AccountPickerItem::action(
+                    "openai",
+                    "OpenAI",
+                    "Switch account `default`",
+                    "b@example.com - valid - active",
+                    AccountPickerCommand::SubmitInput("/account openai switch default".to_string()),
+                ),
+            ],
+        );
+
+        picker.selected = 1;
+        let _ = picker.handle_overlay_key(KeyCode::Right, KeyModifiers::empty());
+        assert_eq!(
+            picker.items[picker.filtered[picker.selected]].provider_id,
+            "openai"
+        );
+
+        let _ = picker.handle_overlay_key(KeyCode::Left, KeyModifiers::empty());
+        assert_eq!(
+            picker.items[picker.filtered[picker.selected]].provider_id,
+            "claude"
+        );
+        assert_eq!(picker.selected, 0);
     }
 }

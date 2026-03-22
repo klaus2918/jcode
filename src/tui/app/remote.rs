@@ -270,6 +270,10 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
         }
     }
 
+    if app.pending_queued_dispatch {
+        return;
+    }
+
     if !app.is_processing && !app.queued_messages.is_empty() {
         let queued_messages = std::mem::take(&mut app.queued_messages);
         let hidden_reminders = std::mem::take(&mut app.hidden_queued_system_messages);
@@ -339,6 +343,63 @@ pub(super) async fn handle_terminal_event(
                 handle_remote_key(app, key.code, key.modifiers, remote).await?;
                 if let Some(spec) = app.pending_model_switch.take() {
                     let _ = remote.set_model(&spec).await;
+                }
+                if let Some(selection) = app.pending_account_picker_selection.take() {
+                    match selection {
+                        crate::tui::AccountPickerSelection::Switch { provider_id, label } => {
+                            match provider_id.as_str() {
+                                "claude" => {
+                                    if let Err(e) = crate::auth::claude::set_active_account(&label)
+                                    {
+                                        app.push_display_message(DisplayMessage::error(format!(
+                                            "Failed to switch account: {}",
+                                            e
+                                        )));
+                                    } else {
+                                        crate::auth::AuthStatus::invalidate_cache();
+                                        app.context_limit = app.provider.context_window() as u64;
+                                        app.context_warning_shown = false;
+                                        let _ = remote.switch_anthropic_account(&label).await;
+                                        app.push_display_message(DisplayMessage::system(format!(
+                                            "Switched to Anthropic account `{}`.",
+                                            label
+                                        )));
+                                        app.set_status_notice(format!(
+                                            "Account: switched to {}",
+                                            label
+                                        ));
+                                    }
+                                }
+                                "openai" => {
+                                    if let Err(e) = crate::auth::codex::set_active_account(&label) {
+                                        app.push_display_message(DisplayMessage::error(format!(
+                                            "Failed to switch OpenAI account: {}",
+                                            e
+                                        )));
+                                    } else {
+                                        crate::auth::AuthStatus::invalidate_cache();
+                                        app.context_limit = app.provider.context_window() as u64;
+                                        app.context_warning_shown = false;
+                                        let _ = remote.switch_openai_account(&label).await;
+                                        app.push_display_message(DisplayMessage::system(format!(
+                                            "Switched to OpenAI account `{}`.",
+                                            label
+                                        )));
+                                        app.set_status_notice(format!(
+                                            "OpenAI account: switched to {}",
+                                            label
+                                        ));
+                                    }
+                                }
+                                _ => app.push_display_message(DisplayMessage::error(format!(
+                                    "Provider `{}` does not support account switching.",
+                                    provider_id
+                                ))),
+                            }
+                        }
+                        crate::tui::AccountPickerSelection::Add { .. }
+                        | crate::tui::AccountPickerSelection::Replace { .. } => {}
+                    }
                 }
             }
         }
@@ -513,9 +574,18 @@ pub(super) async fn connect_with_retry(
                 .await
                 {
                     crate::server::ReloadWaitStatus::Ready => {
+                        crate::logging::info(&format!(
+                            "Reconnect reload handoff: ready immediately (state={})",
+                            crate::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+                        ));
                         return Ok(ConnectOutcome::Retry);
                     }
                     crate::server::ReloadWaitStatus::Failed(detail) => {
+                        crate::logging::warn(&format!(
+                            "Reconnect reload handoff: failed detail={:?} state={}",
+                            detail,
+                            crate::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+                        ));
                         let detail = detail.unwrap_or_else(|| {
                             "reload failed before the replacement server became ready; starting replacement server"
                                 .to_string()
@@ -525,6 +595,10 @@ pub(super) async fn connect_with_retry(
                         }
                     }
                     crate::server::ReloadWaitStatus::Idle => {
+                        crate::logging::warn(&format!(
+                            "Reconnect reload handoff: idle without ready server state={}",
+                            crate::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+                        ));
                         if recover_reloading_server(
                             app,
                             terminal,
@@ -539,8 +613,9 @@ pub(super) async fn connect_with_retry(
                     crate::server::ReloadWaitStatus::Waiting { pid } => {
                         state.last_reload_pid = pid;
                         crate::logging::info(&format!(
-                            "Reconnect wait: awaiting reload lifecycle event (pid={:?})",
-                            pid
+                            "Reconnect wait: awaiting reload lifecycle event (pid={:?}, state={})",
+                            pid,
+                            crate::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
                         ));
                         let wait = crate::server::wait_for_reload_handoff_event(pid, &socket_path);
                         tokio::pin!(wait);
@@ -963,7 +1038,11 @@ pub(super) fn handle_disconnect(
     state.reconnect_attempts = 1;
 }
 
-async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) {
+pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) {
+    if app.pending_queued_dispatch {
+        return;
+    }
+
     if !remote.has_loaded_history() {
         return;
     }
@@ -1523,6 +1602,7 @@ pub(super) fn handle_server_event(
             app.thought_line_inserted = false;
             app.thinking_prefix_emitted = false;
             app.thinking_buffer.clear();
+            app.schedule_queued_dispatch_after_interrupt();
             app.push_display_message(DisplayMessage::system("Interrupted"));
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
@@ -2460,6 +2540,12 @@ impl App {
         command: crate::tui::account_picker::AccountPickerCommand,
     ) -> Result<()> {
         match command {
+            crate::tui::account_picker::AccountPickerCommand::OpenAccountCenter {
+                provider_filter,
+            } => self.open_account_center(provider_filter.as_deref()),
+            crate::tui::account_picker::AccountPickerCommand::OpenAddReplaceFlow {
+                provider_filter,
+            } => self.open_account_add_replace_flow(provider_filter.as_deref()),
             crate::tui::account_picker::AccountPickerCommand::SubmitInput(input) => {
                 crate::tui::app::auth::handle_account_command_remote(self, &input, remote).await?;
             }

@@ -1,6 +1,17 @@
 use super::*;
 use crate::tui::{backend, core, is_unexpected_cache_miss, ui};
 
+pub(super) struct RestoredReloadInput {
+    pub input: String,
+    pub cursor: usize,
+    pub queued_messages: Vec<String>,
+    pub hidden_queued_system_messages: Vec<String>,
+    pub interleave_message: Option<String>,
+    pub pending_soft_interrupts: Vec<String>,
+    pub rate_limit_pending_message: Option<super::PendingRemoteMessage>,
+    pub rate_limit_reset: Option<Instant>,
+}
+
 impl App {
     pub(super) fn active_client_session_id(&self) -> Option<&str> {
         if self.is_remote {
@@ -269,7 +280,7 @@ impl App {
             ),
             (
                 "/account".into(),
-                "Manage Anthropic/OpenAI accounts (list/add/switch/remove)",
+                "Open the combined Claude/OpenAI account picker",
             ),
         ];
 
@@ -442,7 +453,14 @@ impl App {
         }
 
         if prefix.starts_with("/fast ") {
-            let modes = ["on", "off", "status"];
+            let modes = [
+                "on",
+                "off",
+                "status",
+                "default on",
+                "default off",
+                "default status",
+            ];
             return self.rank_suggestions(
                 input,
                 modes.iter().map(|m| (format!("/fast {}", m), *m)).collect(),
@@ -504,10 +522,7 @@ impl App {
         if prefix.starts_with("/account ") || prefix.starts_with("/accounts ") {
             let mut suggestions = vec![
                 ("/account list".into(), "Open all provider/account actions"),
-                (
-                    "/account switch".into(),
-                    "Switch active named account by label",
-                ),
+                ("/account switch".into(), "Switch active account by label"),
                 (
                     "/account default-provider".into(),
                     "Set preferred default provider",
@@ -660,7 +675,7 @@ impl App {
             return Vec::new();
         }
 
-        let auth = crate::auth::AuthStatus::check();
+        let auth = crate::auth::AuthStatus::check_fast();
         if !auth.has_any_available() {
             return vec![("Log in to get started".to_string(), "/login".to_string())];
         }
@@ -1153,24 +1168,48 @@ impl App {
         if self.input.is_empty()
             && self.queued_messages.is_empty()
             && self.hidden_queued_system_messages.is_empty()
+            && self.interleave_message.is_none()
+            && self.pending_soft_interrupts.is_empty()
+            && self.rate_limit_pending_message.is_none()
         {
             return;
         }
         if let Ok(jcode_dir) = crate::storage::jcode_dir() {
             let path = jcode_dir.join(format!("client-input-{}", session_id));
+            let rate_limit_reset_in_ms = self.rate_limit_reset.and_then(|reset| {
+                let now = Instant::now();
+                if reset <= now {
+                    Some(0)
+                } else {
+                    Some((reset - now).as_millis().min(u64::MAX as u128) as u64)
+                }
+            });
+            let rate_limit_pending_message =
+                self.rate_limit_pending_message.as_ref().map(|pending| {
+                    serde_json::json!({
+                        "content": pending.content,
+                        "images": pending.images,
+                        "is_system": pending.is_system,
+                        "system_reminder": pending.system_reminder,
+                        "auto_retry": pending.auto_retry,
+                        "retry_attempts": pending.retry_attempts,
+                    })
+                });
             let data = serde_json::json!({
                 "cursor": self.cursor_pos,
                 "input": self.input,
                 "queued_messages": self.queued_messages,
                 "hidden_queued_system_messages": self.hidden_queued_system_messages,
+                "interleave_message": self.interleave_message,
+                "pending_soft_interrupts": self.pending_soft_interrupts,
+                "rate_limit_pending_message": rate_limit_pending_message,
+                "rate_limit_reset_in_ms": rate_limit_reset_in_ms,
             });
             let _ = std::fs::write(&path, data.to_string());
         }
     }
 
-    pub(super) fn restore_input_for_reload(
-        session_id: &str,
-    ) -> Option<(String, usize, Vec<String>, Vec<String>)> {
+    pub(super) fn restore_input_for_reload(session_id: &str) -> Option<RestoredReloadInput> {
         let jcode_dir = crate::storage::jcode_dir().ok()?;
         let path = jcode_dir.join(format!("client-input-{}", session_id));
         if !path.exists() {
@@ -1206,19 +1245,99 @@ impl App {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let interleave_message = value
+                .get("interleave_message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty());
+            let pending_soft_interrupts = value
+                .get("pending_soft_interrupts")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let rate_limit_pending_message = value
+                .get("rate_limit_pending_message")
+                .and_then(|pending| pending.as_object())
+                .map(|pending| super::PendingRemoteMessage {
+                    content: pending
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    images: pending
+                        .get("images")
+                        .and_then(|v| v.as_array())
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| {
+                                    let pair = item.as_array()?;
+                                    let first = pair.first()?.as_str()?;
+                                    let second = pair.get(1)?.as_str()?;
+                                    Some((first.to_string(), second.to_string()))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default(),
+                    is_system: pending
+                        .get("is_system")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    system_reminder: pending
+                        .get("system_reminder")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    auto_retry: pending
+                        .get("auto_retry")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    retry_attempts: pending
+                        .get("retry_attempts")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u8,
+                    retry_at: None,
+                });
+            let rate_limit_reset = value
+                .get("rate_limit_reset_in_ms")
+                .and_then(|v| v.as_u64())
+                .map(|delay_ms| Instant::now() + Duration::from_millis(delay_ms));
+            let mut rate_limit_pending_message = rate_limit_pending_message;
+            if let (Some(pending), Some(reset)) =
+                (&mut rate_limit_pending_message, rate_limit_reset)
+            {
+                pending.retry_at = Some(reset);
+            }
             let cursor = cursor.min(input.len());
-            return Some((
+            return Some(RestoredReloadInput {
                 input,
                 cursor,
                 queued_messages,
                 hidden_queued_system_messages,
-            ));
+                interleave_message,
+                pending_soft_interrupts,
+                rate_limit_pending_message,
+                rate_limit_reset,
+            });
         }
 
         let (cursor_str, input) = data.split_once('\n')?;
         let cursor = cursor_str.parse::<usize>().unwrap_or(0);
         let cursor = cursor.min(input.len());
-        Some((input.to_string(), cursor, Vec::new(), Vec::new()))
+        Some(RestoredReloadInput {
+            input: input.to_string(),
+            cursor,
+            queued_messages: Vec::new(),
+            hidden_queued_system_messages: Vec::new(),
+            interleave_message: None,
+            pending_soft_interrupts: Vec::new(),
+            rate_limit_pending_message: None,
+            rate_limit_reset: None,
+        })
     }
 
     /// Toggle scroll bookmark: stash current position and jump to bottom,

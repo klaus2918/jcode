@@ -170,10 +170,45 @@ enum PinnedContentEntry {
     },
     Image {
         label: String,
+        media_type: String,
+        source: crate::session::RenderedImageSource,
         hash: u64,
         width: u32,
         height: u32,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImageGroup {
+    Inputs,
+    Tools,
+    Other,
+}
+
+fn image_group_for(source: &crate::session::RenderedImageSource) -> ImageGroup {
+    match source {
+        crate::session::RenderedImageSource::UserInput => ImageGroup::Inputs,
+        crate::session::RenderedImageSource::ToolResult { .. } => ImageGroup::Tools,
+        crate::session::RenderedImageSource::Other { .. } => ImageGroup::Other,
+    }
+}
+
+fn image_group_heading(group: ImageGroup) -> (&'static str, Color) {
+    match group {
+        ImageGroup::Inputs => ("inputs", rgb(138, 180, 248)),
+        ImageGroup::Tools => ("tools", accent_color()),
+        ImageGroup::Other => ("other", dim_color()),
+    }
+}
+
+fn image_source_badge(source: &crate::session::RenderedImageSource) -> String {
+    match source {
+        crate::session::RenderedImageSource::UserInput => "input".to_string(),
+        crate::session::RenderedImageSource::ToolResult { tool_name } => {
+            format!("tool:{}", tool_name)
+        }
+        crate::session::RenderedImageSource::Other { role } => role.clone(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -193,7 +228,7 @@ struct PinnedCacheState {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SidePanelRenderKey {
     page_id: String,
-    updated_at_ms: u64,
+    content_revision: u64,
     inner_width: u16,
     inner_height: u16,
     has_protocol: bool,
@@ -236,6 +271,27 @@ fn side_panel_render_cache() -> &'static Mutex<SidePanelRenderCacheState> {
     SIDE_PANEL_RENDER_CACHE.get_or_init(|| Mutex::new(SidePanelRenderCacheState::default()))
 }
 
+fn hash_content(content: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn live_side_panel_content(page: &crate::side_panel::SidePanelPage) -> (String, u64) {
+    match std::fs::read_to_string(&page.file_path) {
+        Ok(content) => {
+            let revision = hash_content(&content);
+            (content, revision)
+        }
+        Err(_) => {
+            let revision = hash_content(&page.content);
+            (page.content.clone(), revision)
+        }
+    }
+}
+
 pub(super) fn collect_pinned_content_cached(
     messages: &[DisplayMessage],
     images: &[crate::session::RenderedImage],
@@ -275,6 +331,9 @@ fn collect_pinned_content(
     let mut entries = Vec::new();
 
     if collect_images {
+        let mut user_entries = Vec::new();
+        let mut tool_entries = Vec::new();
+        let mut other_entries = Vec::new();
         for image in images {
             let Some((hash, width, height)) =
                 mermaid::register_inline_image(&image.media_type, &image.data)
@@ -282,16 +341,28 @@ fn collect_pinned_content(
                 continue;
             };
 
-            entries.push(PinnedContentEntry::Image {
+            let entry = PinnedContentEntry::Image {
                 label: image
                     .label
                     .clone()
                     .unwrap_or_else(|| image.media_type.clone()),
+                media_type: image.media_type.clone(),
+                source: image.source.clone(),
                 hash,
                 width,
                 height,
-            });
+            };
+
+            match &image.source {
+                crate::session::RenderedImageSource::UserInput => user_entries.push(entry),
+                crate::session::RenderedImageSource::ToolResult { .. } => tool_entries.push(entry),
+                crate::session::RenderedImageSource::Other { .. } => other_entries.push(entry),
+            }
         }
+
+        entries.extend(user_entries);
+        entries.extend(tool_entries);
+        entries.extend(other_entries);
     }
 
     for msg in messages {
@@ -503,6 +574,7 @@ pub(super) fn draw_pinned_content_cached(
         let has_protocol = mermaid::protocol_type().is_some();
         let mut text_lines: Vec<Line<'static>> = Vec::new();
         let mut image_placements: Vec<PinnedImagePlacement> = Vec::new();
+        let mut last_image_group: Option<ImageGroup> = None;
 
         for (i, entry) in entries.iter().enumerate() {
             if i > 0 {
@@ -576,11 +648,29 @@ pub(super) fn draw_pinned_content_cached(
                 }
                 PinnedContentEntry::Image {
                     label,
+                    media_type,
+                    source,
                     hash,
                     width: img_w,
                     height: img_h,
                 } => {
+                    let group = image_group_for(source);
+                    if last_image_group != Some(group) {
+                        let (group_label, group_color) = image_group_heading(group);
+                        text_lines.push(Line::from(vec![
+                            Span::styled("   ", Style::default().fg(dim_color())),
+                            Span::styled(
+                                group_label.to_uppercase(),
+                                Style::default()
+                                    .fg(group_color)
+                                    .add_modifier(ratatui::style::Modifier::BOLD),
+                            ),
+                        ]));
+                        last_image_group = Some(group);
+                    }
+
                     let short_label = compact_image_label(label);
+                    let source_badge = image_source_badge(source);
 
                     text_lines.push(Line::from(vec![
                         Span::styled("── 📷 ", Style::default().fg(dim_color())),
@@ -594,6 +684,19 @@ pub(super) fn draw_pinned_content_cached(
                             format!(" {}×{}", img_w, img_h),
                             Style::default().fg(dim_color()),
                         ),
+                        Span::styled(
+                            format!(" [{}]", source_badge),
+                            Style::default().fg(match group {
+                                ImageGroup::Inputs => rgb(138, 180, 248),
+                                ImageGroup::Tools => accent_color(),
+                                ImageGroup::Other => dim_color(),
+                            }),
+                        ),
+                    ]));
+                    text_lines.push(Line::from(vec![
+                        Span::styled("   ", Style::default().fg(dim_color())),
+                        Span::styled(media_type.clone(), Style::default().fg(dim_color())),
+                        Span::styled(" • exact model artifact", Style::default().fg(dim_color())),
                     ]));
 
                     if has_protocol {
@@ -815,9 +918,10 @@ fn render_side_panel_markdown_cached(
     has_protocol: bool,
     centered: bool,
 ) -> PinnedRenderedCache {
+    let (content, content_revision) = live_side_panel_content(page);
     let key = SidePanelRenderKey {
         page_id: page.id.clone(),
-        updated_at_ms: page.updated_at_ms,
+        content_revision,
         inner_width: inner.width,
         inner_height: inner.height,
         has_protocol,
@@ -841,7 +945,7 @@ fn render_side_panel_markdown_cached(
     markdown::set_diagram_mode_override(Some(crate::config::DiagramDisplayMode::None));
     markdown::set_center_code_blocks(centered);
     let rendered_markdown = wrap_side_panel_markdown_lines(
-        markdown::render_markdown_with_width(&page.content, Some(inner.width as usize)),
+        markdown::render_markdown_with_width(&content, Some(inner.width as usize)),
         inner.width as usize,
     );
     markdown::set_center_code_blocks(saved_centered);
@@ -1110,9 +1214,7 @@ mod tests {
     }
 
     fn with_serialized_mermaid_state<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = mermaid_test_lock()
-            .lock()
-            .expect("mermaid test lock");
+        let _guard = mermaid_test_lock().lock().expect("mermaid test lock");
         f()
     }
 
@@ -1129,6 +1231,7 @@ mod tests {
             title: format!("Mermaid Demo {content_hash:016x}"),
             file_path: format!("mermaid_demo_{content_hash:016x}.md"),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
             content,
             updated_at_ms: content_hash,
         }
@@ -1395,6 +1498,7 @@ mod tests {
             title: "Wrap Demo".to_string(),
             file_path: "wrap_demo.md".to_string(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
             content: "This is a deliberately long side panel line that should wrap instead of overflowing the pane.".to_string(),
             updated_at_ms: 1,
         };
@@ -1427,6 +1531,7 @@ mod tests {
             title: "Table Demo".to_string(),
             file_path: "table_demo.md".to_string(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
             content: "| # | Principle | Story Ready |\n| - | - | - |\n| 1 | Customer Obsession | unchecked |".to_string(),
             updated_at_ms: 1,
         };
@@ -1449,6 +1554,50 @@ mod tests {
                 .any(|line| line.matches('│').count() == 2 && line.contains("Cust")),
             "expected a single intact table row line: {:?}",
             text
+        );
+    }
+
+    #[test]
+    fn render_side_panel_markdown_live_syncs_file_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("live.md");
+        std::fs::write(&file_path, "# First").expect("write initial content");
+
+        let page = crate::side_panel::SidePanelPage {
+            id: "live_demo".to_string(),
+            title: "Live Demo".to_string(),
+            file_path: file_path.display().to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::LinkedFile,
+            content: "# Stale".to_string(),
+            updated_at_ms: 1,
+        };
+
+        let first = render_side_panel_markdown_cached(&page, Rect::new(0, 0, 24, 20), false, false);
+        let first_text: Vec<String> = first
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            first_text.iter().any(|line| line.contains("First")),
+            "expected first render to use file content: {:?}",
+            first_text
+        );
+
+        std::fs::write(&file_path, "# Second").expect("write updated content");
+
+        let second =
+            render_side_panel_markdown_cached(&page, Rect::new(0, 0, 24, 20), false, false);
+        let second_text: Vec<String> = second
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            second_text.iter().any(|line| line.contains("Second")),
+            "expected second render to reflect updated file content: {:?}",
+            second_text
         );
     }
 }
@@ -1533,6 +1682,7 @@ fn draw_pinned_content(
     }
 
     let mut text_lines: Vec<Line<'static>> = Vec::new();
+    let mut last_image_group: Option<ImageGroup> = None;
 
     struct ImagePlacement {
         after_text_line: usize,
@@ -1614,11 +1764,29 @@ fn draw_pinned_content(
             }
             PinnedContentEntry::Image {
                 label,
+                media_type,
+                source,
                 hash,
                 width: img_w,
                 height: img_h,
             } => {
+                let group = image_group_for(source);
+                if last_image_group != Some(group) {
+                    let (group_label, group_color) = image_group_heading(group);
+                    text_lines.push(Line::from(vec![
+                        Span::styled("   ", Style::default().fg(dim_color())),
+                        Span::styled(
+                            group_label.to_uppercase(),
+                            Style::default()
+                                .fg(group_color)
+                                .add_modifier(ratatui::style::Modifier::BOLD),
+                        ),
+                    ]));
+                    last_image_group = Some(group);
+                }
+
                 let short_label = compact_image_label(label);
+                let source_badge = image_source_badge(source);
 
                 text_lines.push(Line::from(vec![
                     Span::styled("── 📷 ", Style::default().fg(dim_color())),
@@ -1632,6 +1800,19 @@ fn draw_pinned_content(
                         format!(" {}×{}", img_w, img_h),
                         Style::default().fg(dim_color()),
                     ),
+                    Span::styled(
+                        format!(" [{}]", source_badge),
+                        Style::default().fg(match group {
+                            ImageGroup::Inputs => rgb(138, 180, 248),
+                            ImageGroup::Tools => accent_color(),
+                            ImageGroup::Other => dim_color(),
+                        }),
+                    ),
+                ]));
+                text_lines.push(Line::from(vec![
+                    Span::styled("   ", Style::default().fg(dim_color())),
+                    Span::styled(media_type.clone(), Style::default().fg(dim_color())),
+                    Span::styled(" • exact model artifact", Style::default().fg(dim_color())),
                 ]));
 
                 if has_protocol {
