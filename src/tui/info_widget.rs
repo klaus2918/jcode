@@ -1747,23 +1747,21 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
     }
 
     let mut lines: Vec<Line> = Vec::new();
-    let label_color = rgb(140, 140, 150);
     let text_color = rgb(180, 180, 190);
     let max_width = inner.width.saturating_sub(2) as usize;
 
-    lines.push(Line::from(vec![
-        Span::styled("Memory", Style::default().fg(text_color).bold()),
-        Span::styled(" Activity", Style::default().fg(label_color)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "Memory",
+        Style::default().fg(text_color).bold(),
+    )]));
 
     if let Some(activity) = &info.activity {
         if let Some(pipeline) = &activity.pipeline {
-            lines.push(render_memory_cycle_line(pipeline));
-
-            if lines.len() < inner.height as usize {
-                if let Some(step_line) = memory_primary_step_line(pipeline, max_width) {
-                    lines.push(step_line);
+            for line in render_memory_pipeline_lines(pipeline, max_width) {
+                if lines.len() >= inner.height as usize {
+                    break;
                 }
+                lines.push(line);
             }
         }
 
@@ -1786,17 +1784,53 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
     lines
 }
 
-fn render_memory_cycle_line(pipeline: &PipelineState) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("Cycle  ", Style::default().fg(rgb(140, 140, 150))),
-        memory_step_badge("s", &pipeline.search),
-        Span::raw(" "),
-        memory_step_badge("v", &pipeline.verify),
-        Span::raw(" "),
-        memory_step_badge("i", &pipeline.inject),
-        Span::raw(" "),
-        memory_step_badge("m", &pipeline.maintain),
-    ])
+fn render_memory_pipeline_lines(pipeline: &PipelineState, max_width: usize) -> Vec<Line<'static>> {
+    vec![
+        render_memory_step_line(
+            "Find matches",
+            &pipeline.search,
+            memory_step_detail(
+                "search",
+                &pipeline.search,
+                pipeline.search_result.as_ref(),
+                None,
+            ),
+            max_width,
+        ),
+        render_memory_step_line(
+            "Check relevance",
+            &pipeline.verify,
+            memory_step_detail(
+                "verify",
+                &pipeline.verify,
+                pipeline.verify_result.as_ref(),
+                pipeline.verify_progress,
+            ),
+            max_width,
+        ),
+        render_memory_step_line(
+            "Inject context",
+            &pipeline.inject,
+            memory_step_detail(
+                "inject",
+                &pipeline.inject,
+                pipeline.inject_result.as_ref(),
+                None,
+            ),
+            max_width,
+        ),
+        render_memory_step_line(
+            "Update memory",
+            &pipeline.maintain,
+            memory_step_detail(
+                "maintain",
+                &pipeline.maintain,
+                pipeline.maintain_result.as_ref(),
+                None,
+            ),
+            max_width,
+        ),
+    ]
 }
 
 fn render_memory_trace_store_line(info: &MemoryInfo, max_width: usize) -> Line<'static> {
@@ -1827,15 +1861,64 @@ fn render_memory_trace_graph_line(info: &MemoryInfo, max_width: usize) -> Line<'
     ])
 }
 
-fn memory_step_badge(label: &'static str, status: &StepStatus) -> Span<'static> {
-    let (icon, color) = match status {
-        StepStatus::Pending => ("·", rgb(100, 100, 110)),
-        StepStatus::Running => ("⟳", rgb(255, 200, 100)),
-        StepStatus::Done => ("✓", rgb(100, 200, 100)),
-        StepStatus::Error => ("!", rgb(255, 100, 100)),
-        StepStatus::Skipped => ("-", rgb(100, 100, 110)),
+fn render_memory_step_line(
+    label: &'static str,
+    status: &StepStatus,
+    detail: Option<String>,
+    max_width: usize,
+) -> Line<'static> {
+    let (marker, marker_color, label_color, detail_color, fallback) = match status {
+        StepStatus::Pending => (
+            "·",
+            rgb(100, 100, 110),
+            rgb(140, 140, 150),
+            rgb(120, 120, 130),
+            Some("Waiting"),
+        ),
+        StepStatus::Running => (
+            current_memory_spinner_frame(),
+            rgb(255, 200, 100),
+            rgb(220, 220, 230),
+            rgb(255, 200, 100),
+            Some("Running"),
+        ),
+        StepStatus::Done => (
+            "✓",
+            rgb(100, 200, 100),
+            rgb(180, 180, 190),
+            rgb(160, 160, 170),
+            Some("Done"),
+        ),
+        StepStatus::Error => (
+            "!",
+            rgb(255, 100, 100),
+            rgb(220, 180, 180),
+            rgb(255, 140, 140),
+            Some("Failed"),
+        ),
+        StepStatus::Skipped => (
+            "-",
+            rgb(100, 100, 110),
+            rgb(120, 120, 130),
+            rgb(120, 120, 130),
+            Some("Skipped"),
+        ),
     };
-    Span::styled(format!("{}{}", label, icon), Style::default().fg(color))
+
+    let detail = detail
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback.unwrap_or("").to_string());
+    let available = max_width.saturating_sub(label.chars().count() + 4);
+
+    Line::from(vec![
+        Span::styled(format!("{} ", marker), Style::default().fg(marker_color)),
+        Span::styled(label.to_string(), Style::default().fg(label_color)),
+        Span::styled("  ", Style::default().fg(rgb(100, 100, 110))),
+        Span::styled(
+            truncate_smart(&detail, available),
+            Style::default().fg(detail_color),
+        ),
+    ])
 }
 
 fn memory_active_line(activity: &MemoryActivity, max_width: usize) -> Option<Line<'static>> {
@@ -1858,7 +1941,7 @@ fn memory_active_line(activity: &MemoryActivity, max_width: usize) -> Option<Lin
     }?;
 
     Some(Line::from(vec![
-        Span::styled("Active ", Style::default().fg(rgb(140, 140, 150))),
+        Span::styled("Now: ", Style::default().fg(rgb(140, 140, 150))),
         Span::styled(
             truncate_smart(&text, max_width),
             Style::default().fg(rgb(160, 160, 170)),
@@ -1866,107 +1949,36 @@ fn memory_active_line(activity: &MemoryActivity, max_width: usize) -> Option<Lin
     ]))
 }
 
-fn memory_primary_step_line(pipeline: &PipelineState, max_width: usize) -> Option<Line<'static>> {
-    let step = [
-        (
-            "search",
-            &pipeline.search,
-            pipeline.search_result.as_ref(),
-            None,
-        ),
-        (
-            "verify",
-            &pipeline.verify,
-            pipeline.verify_result.as_ref(),
-            pipeline.verify_progress,
-        ),
-        (
-            "inject",
-            &pipeline.inject,
-            pipeline.inject_result.as_ref(),
-            None,
-        ),
-        (
-            "maintain",
-            &pipeline.maintain,
-            pipeline.maintain_result.as_ref(),
-            None,
-        ),
-    ]
-    .into_iter()
-    .find(|(_, status, _, _)| matches!(status, StepStatus::Running | StepStatus::Error))
-    .or_else(|| {
-        [
-            (
-                "search",
-                &pipeline.search,
-                pipeline.search_result.as_ref(),
-                None,
-            ),
-            (
-                "verify",
-                &pipeline.verify,
-                pipeline.verify_result.as_ref(),
-                pipeline.verify_progress,
-            ),
-            (
-                "inject",
-                &pipeline.inject,
-                pipeline.inject_result.as_ref(),
-                None,
-            ),
-            (
-                "maintain",
-                &pipeline.maintain,
-                pipeline.maintain_result.as_ref(),
-                None,
-            ),
-        ]
-        .into_iter()
-        .rev()
-        .find(|(_, status, result, _)| {
-            matches!(status, StepStatus::Done)
-                && result.as_ref().is_some_and(|r| !r.summary.is_empty())
-        })
-    })?;
+fn current_memory_spinner_frame() -> &'static str {
+    const FRAMES: [&str; 4] = ["/", "-", "\\", "|"];
+    let frame = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.as_millis() / 120) as usize)
+        .unwrap_or(0);
+    FRAMES[frame % FRAMES.len()]
+}
 
-    let (name, status, result, progress) = step;
-    let status_text = match status {
-        StepStatus::Running => {
-            if let Some((done, total)) = progress {
-                format!("{} {}/{}", name, done, total)
+fn memory_step_detail(
+    step: &str,
+    status: &StepStatus,
+    result: Option<&StepResult>,
+    progress: Option<(usize, usize)>,
+) -> Option<String> {
+    match status {
+        StepStatus::Running => progress.map(|(done, total)| format!("{done}/{total}")),
+        StepStatus::Done | StepStatus::Error => result.and_then(|res| {
+            let summary = res.summary.trim();
+            if summary.is_empty() {
+                None
             } else {
-                name.to_string()
+                Some(match step {
+                    "search" if summary.ends_with("hits") => summary.replace("hits", "found"),
+                    _ => summary.to_string(),
+                })
             }
-        }
-        StepStatus::Error => format!("{} failed", name),
-        StepStatus::Done => result
-            .map(|res| {
-                if res.summary.trim().is_empty() {
-                    name.to_string()
-                } else {
-                    format!("{} {}", name, res.summary)
-                }
-            })
-            .unwrap_or_else(|| name.to_string()),
-        StepStatus::Pending => format!("{} pending", name),
-        StepStatus::Skipped => format!("{} skipped", name),
-    };
-
-    let color = match status {
-        StepStatus::Running => rgb(255, 200, 100),
-        StepStatus::Error => rgb(255, 100, 100),
-        StepStatus::Done => rgb(160, 160, 170),
-        StepStatus::Pending | StepStatus::Skipped => rgb(120, 120, 130),
-    };
-
-    Some(Line::from(vec![
-        Span::styled("Step   ", Style::default().fg(rgb(140, 140, 150))),
-        Span::styled(
-            truncate_smart(&status_text, max_width),
-            Style::default().fg(color),
-        ),
-    ]))
+        }),
+        StepStatus::Pending | StepStatus::Skipped => None,
+    }
 }
 
 fn render_memory_topology_lines(info: &MemoryInfo, inner: Rect) -> Vec<Line<'static>> {
@@ -3252,7 +3264,6 @@ mod tests {
             .to_lowercase();
 
         assert!(text.contains("memory"));
-        assert!(text.contains("activity"));
         assert!(text.contains("store"));
         assert!(text.contains("3 total"));
         assert!(text.contains("2p/1g"));
@@ -3314,11 +3325,12 @@ mod tests {
             .to_lowercase();
 
         assert!(text.contains("memory"));
-        assert!(text.contains("activity"));
-        assert!(text.contains("cycle"));
-        assert!(text.contains("step"));
-        assert!(text.contains("verify 1/3"));
-        assert!(text.contains("active"));
+        assert!(text.contains("find matches"));
+        assert!(text.contains("check relevance"));
+        assert!(text.contains("1/3"));
+        assert!(text.contains("inject context"));
+        assert!(text.contains("update memory"));
+        assert!(text.contains("now:"));
         assert!(text.contains("checking 3 candidate"));
     }
 
@@ -3692,7 +3704,10 @@ fn render_memory_compact(info: &MemoryInfo) -> Vec<Line<'static>> {
             if let Some(status) = status {
                 spans.push(Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))));
                 spans.push(Span::styled(
-                    truncate_with_ellipsis(&status, 18),
+                    truncate_with_ellipsis(
+                        &format!("{} {}", current_memory_spinner_frame(), status),
+                        20,
+                    ),
                     Style::default().fg(rgb(255, 200, 100)),
                 ));
             }
@@ -3723,10 +3738,10 @@ fn render_memory_compact(info: &MemoryInfo) -> Vec<Line<'static>> {
 
 fn memory_compact_pipeline_status(pipeline: &PipelineState) -> Option<String> {
     [
-        ("search", &pipeline.search, None),
-        ("verify", &pipeline.verify, pipeline.verify_progress),
+        ("find", &pipeline.search, None),
+        ("check", &pipeline.verify, pipeline.verify_progress),
         ("inject", &pipeline.inject, None),
-        ("maintain", &pipeline.maintain, None),
+        ("update", &pipeline.maintain, None),
     ]
     .into_iter()
     .find_map(|(name, status, progress)| match status {
