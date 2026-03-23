@@ -123,7 +123,7 @@ pub enum Request {
     #[serde(rename = "resume_session")]
     ResumeSession { id: u64, session_id: String },
 
-    /// Deliver a scheduled reminder to a currently live session.
+    /// Deliver a scheduled task to a currently live session.
     #[serde(rename = "notify_session")]
     NotifySession {
         id: u64,
@@ -555,6 +555,9 @@ pub enum ServerEvent {
         /// Exact memory content that was injected
         #[serde(default)]
         prompt: String,
+        /// Display-only version of the injected memory content.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_prompt: Option<String>,
         /// Character length of injected content
         #[serde(default)]
         prompt_chars: usize,

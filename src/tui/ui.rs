@@ -64,7 +64,9 @@ use file_diff_ui::{
 };
 pub(crate) use header::capitalize;
 #[cfg(test)]
-use memory_ui::{choose_memory_tile_span, plan_memory_tile};
+use memory_ui::{
+    MemoryTileItem, choose_memory_tile_span, parse_memory_display_entries, plan_memory_tile,
+};
 use memory_ui::{group_into_tiles, render_memory_tiles, split_by_display_width};
 use messages::get_cached_message_lines;
 pub(crate) use messages::{
@@ -5098,6 +5100,43 @@ mod tests {
             "expected each rendered memory row to fill full layout width for stable centering: {:?}",
             rendered
         );
+    }
+
+    #[test]
+    fn test_parse_memory_display_entries_extracts_updated_at_metadata() {
+        let ts = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        let content = format!(
+            "# Memory\n\n## Facts\n1. The build is green\n<!-- updated_at: {} -->\n",
+            ts
+        );
+
+        let entries = parse_memory_display_entries(&content);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "Facts");
+        assert_eq!(entries[0].1.content, "The build is green");
+        assert!(entries[0].1.updated_at.is_some());
+    }
+
+    #[test]
+    fn test_render_memory_tiles_shows_updated_age_line() {
+        let tiles = group_into_tiles(vec![(
+            "fact".to_string(),
+            MemoryTileItem {
+                content: "The build is green".to_string(),
+                updated_at: Some(chrono::Utc::now() - chrono::Duration::hours(2)),
+            },
+        )]);
+
+        let lines = render_memory_tiles(
+            &tiles,
+            60,
+            Style::default(),
+            Style::default(),
+            Some(Line::from("🧠 recalled 1 memory")),
+        );
+        let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
+
+        assert!(rendered.iter().any(|line| line.contains("updated 2h ago")));
     }
 
     #[test]

@@ -111,7 +111,14 @@ pub fn build_transcript_for_extraction(messages: &[crate::message::Message]) -> 
     transcript
 }
 
-async fn run_final_extraction(transcript: String, session_id: String) {
+fn manager_for_working_dir(working_dir: Option<&str>) -> MemoryManager {
+    match working_dir {
+        Some(dir) if !dir.trim().is_empty() => MemoryManager::new().with_project_dir(dir),
+        _ => MemoryManager::new(),
+    }
+}
+
+async fn run_final_extraction(transcript: String, session_id: String, working_dir: Option<String>) {
     crate::logging::info(&format!(
         "Final extraction starting for session {} ({} chars)",
         session_id,
@@ -119,7 +126,7 @@ async fn run_final_extraction(transcript: String, session_id: String) {
     ));
 
     let sidecar = crate::sidecar::Sidecar::new();
-    let manager = crate::memory::MemoryManager::new();
+    let manager = manager_for_working_dir(working_dir.as_deref());
 
     let existing: Vec<String> = manager
         .list_all()
@@ -186,14 +193,29 @@ pub struct MemoryAgentHandle {
 
 impl MemoryAgentHandle {
     /// Send a context update to the memory agent (async)
-    pub async fn update_context(&self, session_id: &str, messages: Vec<crate::message::Message>) {
-        self.update_context_sync(session_id, messages);
+    pub async fn update_context(
+        &self,
+        session_id: &str,
+        messages: Vec<crate::message::Message>,
+        working_dir: Option<String>,
+    ) {
+        self.update_context_sync_with_dir(session_id, messages, working_dir);
     }
 
     pub fn update_context_sync(&self, session_id: &str, messages: Vec<crate::message::Message>) {
+        self.update_context_sync_with_dir(session_id, messages, None);
+    }
+
+    pub fn update_context_sync_with_dir(
+        &self,
+        session_id: &str,
+        messages: Vec<crate::message::Message>,
+        working_dir: Option<String>,
+    ) {
         let msg = AgentMessage::Context {
             session_id: session_id.to_string(),
             messages,
+            working_dir,
             timestamp: Instant::now(),
         };
         let _ = self.tx.try_send(msg);
@@ -210,6 +232,7 @@ enum AgentMessage {
     Context {
         session_id: String,
         messages: Vec<crate::message::Message>,
+        working_dir: Option<String>,
         timestamp: Instant,
     },
     Reset,
@@ -238,6 +261,8 @@ fn record_maintenance_stat(duration_ms: u64) {
 /// Per-session state tracked by the memory agent
 #[derive(Default)]
 struct SessionState {
+    /// Working directory associated with this session.
+    working_dir: Option<String>,
     /// Last context embedding (for topic change detection)
     last_context_embedding: Option<Vec<f32>>,
     /// Last context string (for extraction when topic changes)
@@ -258,9 +283,6 @@ pub struct MemoryAgent {
     /// Haiku sidecar for LLM decisions
     sidecar: Sidecar,
 
-    /// Memory manager for storage
-    memory_manager: MemoryManager,
-
     /// Per-session state keyed by session ID
     sessions: HashMap<String, SessionState>,
 }
@@ -271,7 +293,6 @@ impl MemoryAgent {
         Self {
             rx,
             sidecar: Sidecar::new(),
-            memory_manager: MemoryManager::new(),
             sessions: HashMap::new(),
         }
     }
@@ -298,6 +319,14 @@ impl MemoryAgent {
             .or_insert_with(SessionState::default)
     }
 
+    fn manager_for_session(&self, session_id: &str) -> MemoryManager {
+        let working_dir = self
+            .sessions
+            .get(session_id)
+            .and_then(|state| state.working_dir.as_deref());
+        manager_for_working_dir(working_dir)
+    }
+
     /// Run the memory agent loop
     async fn run(mut self) {
         crate::logging::info("Memory agent started");
@@ -310,10 +339,14 @@ impl MemoryAgent {
                 AgentMessage::Context {
                     session_id,
                     messages,
+                    working_dir,
                     timestamp,
                 } => {
                     {
                         let ss = self.session_state(&session_id);
+                        if working_dir.is_some() {
+                            ss.working_dir = working_dir;
+                        }
                         ss.turn_count += 1;
                     }
                     bump_turn_stat();
@@ -348,6 +381,7 @@ impl MemoryAgent {
         messages: Vec<crate::message::Message>,
         _timestamp: Instant,
     ) -> Result<()> {
+        let memory_manager = self.manager_for_session(session_id);
         let context = memory::format_context_for_relevance(&messages);
         if context.is_empty() {
             return Ok(());
@@ -394,7 +428,7 @@ impl MemoryAgent {
                             ));
                             ss.turns_since_extraction = 0;
                             let _ = ss;
-                            self.extract_from_context(&prev_context, "topic change")
+                            self.extract_from_context(session_id, &prev_context, "topic change")
                                 .await;
                             let ss = self.session_state(session_id);
                             ss.surfaced_memories.clear();
@@ -432,13 +466,14 @@ impl MemoryAgent {
                     ));
                     ss.turns_since_extraction = 0;
                     let _ = ss;
-                    self.extract_from_context(&extraction_ctx, "periodic").await;
+                    self.extract_from_context(session_id, &extraction_ctx, "periodic")
+                        .await;
                 }
             }
         }
 
         // Step 2: Find similar memories by embedding
-        let candidates = self.memory_manager.find_similar_with_embedding(
+        let candidates = memory_manager.find_similar_with_embedding(
             &context_embedding,
             memory::EMBEDDING_SIMILARITY_THRESHOLD,
             memory::EMBEDDING_MAX_HITS,
@@ -516,6 +551,8 @@ impl MemoryAgent {
             }
 
             if let Some(prompt) = memory::format_relevant_prompt(&relevant, MAX_MEMORIES_PER_TURN) {
+                let display_prompt =
+                    memory::format_relevant_display_prompt(&relevant, MAX_MEMORIES_PER_TURN);
                 let count = prompt
                     .lines()
                     .map(str::trim_start)
@@ -529,7 +566,13 @@ impl MemoryAgent {
                     .count()
                     .max(1);
 
-                memory::set_pending_memory_with_ids(session_id, prompt, count, ids);
+                memory::set_pending_memory_with_ids_and_display(
+                    session_id,
+                    prompt,
+                    count,
+                    ids,
+                    display_prompt,
+                );
                 memory::set_state(MemoryState::FoundRelevant { count });
             } else {
                 memory::set_state(MemoryState::Idle);
@@ -539,7 +582,8 @@ impl MemoryAgent {
         }
 
         // Step 5: Post-retrieval maintenance (runs in background)
-        self.post_retrieval_maintenance(retrieval_ctx).await;
+        self.post_retrieval_maintenance(memory_manager, retrieval_ctx)
+            .await;
 
         Ok(())
     }
@@ -689,7 +733,7 @@ impl MemoryAgent {
     /// Read the source that caused an embedding hit
     async fn read_source(&self, memory_id: &str) -> Result<Option<SourceContext>> {
         // Get the memory entry
-        let all = self.memory_manager.list_all()?;
+        let all = MemoryManager::new().list_all()?;
         let entry = all.iter().find(|e| e.id == memory_id);
 
         if let Some(entry) = entry {
@@ -709,7 +753,7 @@ impl MemoryAgent {
     ///
     /// This is an incremental extraction - we extract from a portion of the
     /// conversation (on topic change or periodically) rather than waiting for session end.
-    async fn extract_from_context(&self, context: &str, reason: &str) {
+    async fn extract_from_context(&self, session_id: &str, context: &str, reason: &str) {
         // Don't extract from very short contexts
         if context.len() < 200 {
             return;
@@ -724,7 +768,7 @@ impl MemoryAgent {
         });
 
         let sidecar = self.sidecar.clone();
-        let memory_manager = self.memory_manager.clone();
+        let memory_manager = self.manager_for_session(session_id);
         let context_owned = context.to_string();
 
         let existing: Vec<String> = {
@@ -733,13 +777,12 @@ impl MemoryAgent {
             } else {
                 &context_owned
             };
-            match self.memory_manager.find_similar(context_summary, 0.25, 80) {
+            match memory_manager.find_similar(context_summary, 0.25, 80) {
                 Ok(similar) if !similar.is_empty() => similar
                     .into_iter()
                     .map(|(entry, _score)| entry.content)
                     .collect(),
-                _ => self
-                    .memory_manager
+                _ => memory_manager
                     .list_all()
                     .unwrap_or_default()
                     .into_iter()
@@ -944,7 +987,11 @@ impl MemoryAgent {
     /// 2. Boost confidence for verified memories
     /// 3. Decay confidence for rejected memories
     /// 4. Log memory gaps for future learning
-    async fn post_retrieval_maintenance(&self, ctx: RetrievalContext) {
+    async fn post_retrieval_maintenance(
+        &self,
+        memory_manager: MemoryManager,
+        ctx: RetrievalContext,
+    ) {
         memory::set_state(MemoryState::Maintaining {
             phase: "graph upkeep".to_string(),
         });
@@ -958,8 +1005,6 @@ impl MemoryAgent {
         });
 
         // Run maintenance in background - don't block retrieval flow
-        let memory_manager = self.memory_manager.clone();
-
         tokio::spawn(async move {
             let started = Instant::now();
 
@@ -1571,22 +1616,36 @@ pub fn get() -> Option<MemoryAgentHandle> {
 }
 
 /// Send a context update to the memory agent (convenience function)
-pub async fn update_context(session_id: &str, messages: Vec<crate::message::Message>) {
+pub async fn update_context(
+    session_id: &str,
+    messages: Vec<crate::message::Message>,
+    working_dir: Option<String>,
+) {
     if let Some(handle) = get() {
-        handle.update_context(session_id, messages).await;
+        handle
+            .update_context(session_id, messages, working_dir)
+            .await;
     }
 }
 
 /// Send a context update synchronously (for use from non-async code)
 /// This is non-blocking - it just sends to the channel
 pub fn update_context_sync(session_id: &str, messages: Vec<crate::message::Message>) {
+    update_context_sync_with_dir(session_id, messages, None);
+}
+
+pub fn update_context_sync_with_dir(
+    session_id: &str,
+    messages: Vec<crate::message::Message>,
+    working_dir: Option<String>,
+) {
     if let Some(handle) = get() {
-        handle.update_context_sync(session_id, messages);
+        handle.update_context_sync_with_dir(session_id, messages, working_dir);
     } else {
         let sid = session_id.to_string();
         tokio::spawn(async move {
             if let Ok(handle) = init().await {
-                handle.update_context_sync(&sid, messages);
+                handle.update_context_sync_with_dir(&sid, messages, working_dir);
             }
         });
     }
@@ -1605,6 +1664,14 @@ pub fn reset() {
 /// This is fire-and-forget: spawns a tokio task that runs extraction
 /// and logs the result. Does not block the caller.
 pub fn trigger_final_extraction(transcript: String, session_id: String) {
+    trigger_final_extraction_with_dir(transcript, session_id, None);
+}
+
+pub fn trigger_final_extraction_with_dir(
+    transcript: String,
+    session_id: String,
+    working_dir: Option<String>,
+) {
     if transcript.len() < 200 {
         return;
     }
@@ -1612,14 +1679,16 @@ pub fn trigger_final_extraction(transcript: String, session_id: String) {
     crate::memory_log::log_final_extraction(&session_id, transcript.len());
 
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(run_final_extraction(transcript, session_id));
+        handle.spawn(run_final_extraction(transcript, session_id, working_dir));
     } else {
         std::thread::spawn(move || {
             match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
             {
-                Ok(runtime) => runtime.block_on(run_final_extraction(transcript, session_id)),
+                Ok(runtime) => {
+                    runtime.block_on(run_final_extraction(transcript, session_id, working_dir))
+                }
                 Err(err) => crate::logging::info(&format!(
                     "Final extraction runtime startup failed: {}",
                     err

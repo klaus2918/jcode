@@ -52,7 +52,12 @@ impl App {
                 self.build_system_prompt_split(memory_pending.as_ref().map(|p| p.prompt.as_str()));
             if let Some(pending) = &memory_pending {
                 let age_ms = pending.computed_at.elapsed().as_millis() as u64;
-                self.show_injected_memory_context(&pending.prompt, pending.count, age_ms);
+                self.show_injected_memory_context(
+                    &pending.prompt,
+                    pending.display_prompt.as_deref(),
+                    pending.count,
+                    age_ms,
+                );
             }
 
             self.status = ProcessingStatus::Sending;
@@ -87,6 +92,7 @@ impl App {
             // Track tool results from provider (already executed by Claude Code CLI)
             let mut sdk_tool_results: std::collections::HashMap<String, (String, bool)> =
                 std::collections::HashMap::new();
+            let mut openai_native_compaction: Option<(String, usize)> = None;
 
             while let Some(event) = stream.next().await {
                 // Track activity for status display
@@ -287,7 +293,12 @@ impl App {
                     StreamEvent::Compaction {
                         trigger,
                         pre_tokens,
+                        openai_encrypted_content,
                     } => {
+                        if let Some(encrypted_content) = openai_encrypted_content {
+                            openai_native_compaction
+                                .get_or_insert_with(|| (encrypted_content, self.messages.len()));
+                        }
                         // Flush any pending buffered text first
                         if let Some(chunk) = self.stream_buffer.flush() {
                             self.streaming_text.push_str(&chunk);
@@ -387,6 +398,10 @@ impl App {
             } else {
                 None
             };
+
+            if let Some((encrypted_content, compacted_count)) = openai_native_compaction.take() {
+                self.apply_openai_native_compaction(encrypted_content, compacted_count)?;
+            }
 
             // Add remaining text to display
             let duration = self.processing_started.map(|t| t.elapsed().as_secs_f32());
@@ -599,7 +614,12 @@ impl App {
                 self.build_system_prompt_split(memory_pending.as_ref().map(|p| p.prompt.as_str()));
             if let Some(pending) = &memory_pending {
                 let age_ms = pending.computed_at.elapsed().as_millis() as u64;
-                self.show_injected_memory_context(&pending.prompt, pending.count, age_ms);
+                self.show_injected_memory_context(
+                    &pending.prompt,
+                    pending.display_prompt.as_deref(),
+                    pending.count,
+                    age_ms,
+                );
             }
 
             crate::logging::info(&format!(
@@ -704,6 +724,7 @@ impl App {
                 std::collections::HashMap::new();
             let store_reasoning_content = self.provider.name() == "openrouter";
             let mut reasoning_content = String::new();
+            let mut openai_native_compaction: Option<(String, usize)> = None;
 
             // Stream with input handling
             loop {
@@ -1078,7 +1099,15 @@ impl App {
                                         self.thinking_prefix_emitted = false;
                                         self.thinking_buffer.clear();
                                     }
-                                    StreamEvent::Compaction { trigger, pre_tokens } => {
+                                    StreamEvent::Compaction {
+                                        trigger,
+                                        pre_tokens,
+                                        openai_encrypted_content,
+                                    } => {
+                                        if let Some(encrypted_content) = openai_encrypted_content {
+                                            openai_native_compaction
+                                                .get_or_insert_with(|| (encrypted_content, self.messages.len()));
+                                        }
                                         // Flush any pending buffered text first
                                         if let Some(chunk) = self.stream_buffer.flush() {
                                             self.streaming_text.push_str(&chunk);
@@ -1211,6 +1240,10 @@ impl App {
             } else {
                 None
             };
+
+            if let Some((encrypted_content, compacted_count)) = openai_native_compaction.take() {
+                self.apply_openai_native_compaction(encrypted_content, compacted_count)?;
+            }
 
             // Add remaining text to display
             let duration = self.processing_started.map(|t| t.elapsed().as_secs_f32());
@@ -1563,18 +1596,26 @@ impl App {
         split
     }
 
-    fn show_injected_memory_context(&mut self, prompt: &str, count: usize, age_ms: u64) {
+    fn show_injected_memory_context(
+        &mut self,
+        prompt: &str,
+        display_prompt: Option<&str>,
+        count: usize,
+        age_ms: u64,
+    ) {
         let count = count.max(1);
         let plural = if count == 1 { "memory" } else { "memories" };
-        let display_prompt = if prompt.trim().is_empty() {
+        let display_prompt = if let Some(display_prompt) = display_prompt {
+            display_prompt.to_string()
+        } else if prompt.trim().is_empty() {
             "# Memory\n\n## Notes\n1. (empty injection payload)".to_string()
         } else {
             prompt.to_string()
         };
-        if !self.should_inject_memory_context(&display_prompt) {
+        if !self.should_inject_memory_context(prompt) {
             return;
         }
-        crate::memory::record_injected_prompt(&display_prompt, count, age_ms);
+        crate::memory::record_injected_prompt(prompt, count, age_ms);
         let summary = if count == 1 {
             "🧠 auto-recalled 1 memory".to_string()
         } else {
@@ -1605,7 +1646,11 @@ impl App {
         let pending = crate::memory::take_pending_memory(&self.session.id);
 
         // Send context to memory agent for the NEXT turn (doesn't block current send)
-        crate::memory_agent::update_context_sync(&self.session.id, messages.to_vec());
+        crate::memory_agent::update_context_sync_with_dir(
+            &self.session.id,
+            messages.to_vec(),
+            self.session.working_dir.clone(),
+        );
 
         // Return pending memory from previous turn
         pending
@@ -1618,7 +1663,12 @@ impl App {
             return None;
         }
 
-        let manager = crate::memory::MemoryManager::new();
+        let manager = self
+            .session
+            .working_dir
+            .as_deref()
+            .map(|dir| crate::memory::MemoryManager::new().with_project_dir(dir))
+            .unwrap_or_else(crate::memory::MemoryManager::new);
         match manager.relevant_prompt_for_messages(messages).await {
             Ok(prompt) => prompt,
             Err(e) => {
@@ -1679,7 +1729,12 @@ impl App {
         }
 
         // Extract memories using sidecar (with existing context for dedup)
-        let manager = crate::memory::MemoryManager::new();
+        let manager = self
+            .session
+            .working_dir
+            .as_deref()
+            .map(|dir| crate::memory::MemoryManager::new().with_project_dir(dir))
+            .unwrap_or_else(crate::memory::MemoryManager::new);
         let existing: Vec<String> = manager
             .list_all()
             .unwrap_or_default()
@@ -1693,7 +1748,12 @@ impl App {
             .await
         {
             Ok(extracted) if !extracted.is_empty() => {
-                let manager = crate::memory::MemoryManager::new();
+                let manager = self
+                    .session
+                    .working_dir
+                    .as_deref()
+                    .map(|dir| crate::memory::MemoryManager::new().with_project_dir(dir))
+                    .unwrap_or_else(crate::memory::MemoryManager::new);
                 let mut stored_count = 0;
 
                 for memory in extracted {

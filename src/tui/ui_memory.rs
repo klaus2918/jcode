@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
 
 #[derive(Clone)]
@@ -10,17 +11,101 @@ pub(super) struct MemoryTilePlan {
 
 pub(super) struct MemoryTile {
     category: String,
-    items: Vec<String>,
+    items: Vec<MemoryTileItem>,
 }
 
-pub(super) fn group_into_tiles(entries: Vec<(String, String)>) -> Vec<MemoryTile> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct MemoryTileItem {
+    pub(super) content: String,
+    pub(super) updated_at: Option<DateTime<Utc>>,
+}
+
+impl From<String> for MemoryTileItem {
+    fn from(content: String) -> Self {
+        Self {
+            content,
+            updated_at: None,
+        }
+    }
+}
+
+impl From<&str> for MemoryTileItem {
+    fn from(content: &str) -> Self {
+        Self::from(content.to_string())
+    }
+}
+
+pub(super) fn parse_memory_display_entries(content: &str) -> Vec<(String, MemoryTileItem)> {
+    let mut entries: Vec<(String, MemoryTileItem)> = Vec::new();
+    let mut current_category = String::new();
+    let mut last_entry_idx: Option<usize> = None;
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.starts_with("# ") || line.is_empty() {
+            continue;
+        }
+        if let Some(category) = line.strip_prefix("## ") {
+            current_category = category.trim().to_string();
+            continue;
+        }
+        if let Some(updated_at_raw) = line
+            .strip_prefix("<!-- updated_at: ")
+            .and_then(|value| value.strip_suffix(" -->"))
+        {
+            if let (Some(idx), Ok(updated_at)) = (
+                last_entry_idx,
+                DateTime::parse_from_rfc3339(updated_at_raw.trim()),
+            ) {
+                entries[idx].1.updated_at = Some(updated_at.with_timezone(&Utc));
+            }
+            continue;
+        }
+
+        let content = if let Some(dot_pos) = line.find(". ") {
+            let prefix = &line[..dot_pos];
+            if prefix.trim().chars().all(|c| c.is_ascii_digit()) {
+                line[dot_pos + 2..].trim()
+            } else {
+                line
+            }
+        } else {
+            line
+        };
+        if content.is_empty() {
+            continue;
+        }
+
+        let category = if current_category.is_empty() {
+            "memory".to_string()
+        } else {
+            current_category.clone()
+        };
+        entries.push((
+            category,
+            MemoryTileItem {
+                content: content.to_string(),
+                updated_at: None,
+            },
+        ));
+        last_entry_idx = Some(entries.len() - 1);
+    }
+
+    entries
+}
+
+pub(super) fn group_into_tiles<T>(entries: Vec<(String, T)>) -> Vec<MemoryTile>
+where
+    T: Into<MemoryTileItem>,
+{
     let mut order: Vec<String> = Vec::new();
-    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, Vec<MemoryTileItem>> =
+        std::collections::HashMap::new();
     for (cat, content) in entries {
         if !map.contains_key(&cat) {
             order.push(cat.clone());
         }
-        map.entry(cat).or_default().push(content);
+        map.entry(cat).or_default().push(content.into());
     }
     order
         .into_iter()
@@ -59,8 +144,53 @@ pub(super) fn split_by_display_width(s: &str, max_width: usize) -> Vec<String> {
     chunks
 }
 
+fn format_memory_updated_age(updated_at: DateTime<Utc>) -> String {
+    let age = Utc::now().signed_duration_since(updated_at);
+    if age.num_seconds() < 2 {
+        "updated now".to_string()
+    } else if age.num_minutes() < 1 {
+        format!("updated {}s ago", age.num_seconds().max(1))
+    } else if age.num_hours() < 1 {
+        format!("updated {}m ago", age.num_minutes())
+    } else if age.num_days() < 1 {
+        format!("updated {}h ago", age.num_hours())
+    } else if age.num_days() < 7 {
+        format!("updated {}d ago", age.num_days())
+    } else if age.num_days() < 30 {
+        format!("updated {}w ago", (age.num_days() / 7).max(1))
+    } else {
+        format!("updated {}mo ago", (age.num_days() / 30).max(1))
+    }
+}
+
+fn memory_age_tint(updated_at: Option<DateTime<Utc>>) -> Color {
+    let Some(updated_at) = updated_at else {
+        return Color::Rgb(44, 46, 58);
+    };
+    let age = Utc::now().signed_duration_since(updated_at);
+    if age.num_hours() < 1 {
+        Color::Rgb(48, 67, 64)
+    } else if age.num_days() < 1 {
+        Color::Rgb(46, 54, 68)
+    } else if age.num_days() < 7 {
+        Color::Rgb(52, 50, 68)
+    } else if age.num_days() < 30 {
+        Color::Rgb(58, 50, 60)
+    } else {
+        Color::Rgb(49, 48, 56)
+    }
+}
+
+fn memory_tile_background(items: &[MemoryTileItem]) -> Color {
+    items
+        .iter()
+        .find_map(|item| item.updated_at)
+        .map(|updated_at| memory_age_tint(Some(updated_at)))
+        .unwrap_or(Color::Rgb(44, 46, 58))
+}
+
 fn memory_tile_content_lines(
-    items: &[String],
+    items: &[MemoryTileItem],
     inner_width: usize,
     border_style: Style,
     text_style: Style,
@@ -71,29 +201,33 @@ fn memory_tile_content_lines(
 
     let mut content_lines: Vec<Line<'static>> = Vec::new();
     for item in items {
-        let text_display_width = unicode_width::UnicodeWidthStr::width(item.as_str());
+        let item_bg = memory_age_tint(item.updated_at);
+        let border_fill_style = border_style.bg(item_bg);
+        let text_fill_style = text_style.bg(item_bg);
+        let meta_fill_style = Style::default().fg(Color::Rgb(175, 180, 190)).bg(item_bg);
+        let text_display_width = unicode_width::UnicodeWidthStr::width(item.content.as_str());
         if text_display_width <= item_width {
-            let text = item.to_string();
+            let text = item.content.to_string();
             let padding = inner_width.saturating_sub(bullet_width + text_display_width);
             let mut spans = vec![
-                Span::styled("│ ", border_style),
-                Span::styled(bullet.to_string(), border_style),
-                Span::styled(text, text_style),
+                Span::styled("│ ", border_fill_style),
+                Span::styled(bullet.to_string(), border_fill_style),
+                Span::styled(text, text_fill_style),
             ];
             if padding > 0 {
-                spans.push(Span::raw(" ".repeat(padding)));
+                spans.push(Span::styled(" ".repeat(padding), text_fill_style));
             }
-            spans.push(Span::styled(" │", border_style));
+            spans.push(Span::styled(" │", border_fill_style));
             content_lines.push(Line::from(spans));
         } else {
             let indent = bullet_width;
             let cont_width = inner_width.saturating_sub(indent);
             let first_chunk_width = item_width;
             let mut all_chunks: Vec<String> = Vec::new();
-            let first_chunks = split_by_display_width(item, first_chunk_width);
+            let first_chunks = split_by_display_width(&item.content, first_chunk_width);
             if let Some(first) = first_chunks.first() {
                 all_chunks.push(first.clone());
-                let remainder: String = item.chars().skip(first.chars().count()).collect();
+                let remainder: String = item.content.chars().skip(first.chars().count()).collect();
                 if !remainder.is_empty() {
                     all_chunks.extend(split_by_display_width(&remainder, cont_width));
                 }
@@ -103,37 +237,52 @@ fn memory_tile_content_lines(
                 if ci == 0 {
                     let padding = inner_width.saturating_sub(bullet_width + chunk_width);
                     let mut spans = vec![
-                        Span::styled("│ ", border_style),
-                        Span::styled(bullet.to_string(), border_style),
-                        Span::styled(chunk.clone(), text_style),
+                        Span::styled("│ ", border_fill_style),
+                        Span::styled(bullet.to_string(), border_fill_style),
+                        Span::styled(chunk.clone(), text_fill_style),
                     ];
                     if padding > 0 {
-                        spans.push(Span::raw(" ".repeat(padding)));
+                        spans.push(Span::styled(" ".repeat(padding), text_fill_style));
                     }
-                    spans.push(Span::styled(" │", border_style));
+                    spans.push(Span::styled(" │", border_fill_style));
                     content_lines.push(Line::from(spans));
                 } else {
                     let padding = inner_width.saturating_sub(indent + chunk_width);
                     let mut spans = vec![
-                        Span::styled("│ ", border_style),
-                        Span::raw(" ".repeat(indent)),
-                        Span::styled(chunk.clone(), text_style),
+                        Span::styled("│ ", border_fill_style),
+                        Span::styled(" ".repeat(indent), text_fill_style),
+                        Span::styled(chunk.clone(), text_fill_style),
                     ];
                     if padding > 0 {
-                        spans.push(Span::raw(" ".repeat(padding)));
+                        spans.push(Span::styled(" ".repeat(padding), text_fill_style));
                     }
-                    spans.push(Span::styled(" │", border_style));
+                    spans.push(Span::styled(" │", border_fill_style));
                     content_lines.push(Line::from(spans));
                 }
             }
         }
+
+        if let Some(updated_at) = item.updated_at {
+            let meta = format_memory_updated_age(updated_at);
+            let meta_width = unicode_width::UnicodeWidthStr::width(meta.as_str());
+            let indent = bullet_width;
+            let padding = inner_width.saturating_sub(indent + meta_width);
+            content_lines.push(Line::from(vec![
+                Span::styled("│ ", border_fill_style),
+                Span::styled(" ".repeat(indent), text_fill_style),
+                Span::styled(meta, meta_fill_style),
+                Span::styled(" ".repeat(padding), text_fill_style),
+                Span::styled(" │", border_fill_style),
+            ]));
+        }
     }
 
     if content_lines.is_empty() {
+        let fill_style = text_style.bg(Color::Rgb(44, 46, 58));
         content_lines.push(Line::from(vec![
-            Span::styled("│ ", border_style),
-            Span::raw(" ".repeat(inner_width)),
-            Span::styled(" │", border_style),
+            Span::styled("│ ", border_style.bg(Color::Rgb(44, 46, 58))),
+            Span::styled(" ".repeat(inner_width), fill_style),
+            Span::styled(" │", border_style.bg(Color::Rgb(44, 46, 58))),
         ]));
     }
 
@@ -150,6 +299,8 @@ fn render_memory_tile_box(
     if inner_width < 4 {
         return Vec::new();
     }
+    let tile_bg = memory_tile_background(&tile.items);
+    let tile_border_style = border_style.bg(tile_bg);
 
     let title_text = format!(" {} ", tile.category.to_lowercase());
     let title_len = unicode_width::UnicodeWidthStr::width(title_text.as_str());
@@ -159,13 +310,13 @@ fn render_memory_tile_box(
 
     let top = Line::from(Span::styled(
         format!("╭{}{}{}╮", left_border, title_text, right_border),
-        border_style,
+        tile_border_style,
     ));
     let content_lines =
         memory_tile_content_lines(&tile.items, inner_width, border_style, text_style);
     let bottom = Line::from(Span::styled(
         format!("╰{}╯", "─".repeat(box_width.saturating_sub(2))),
-        border_style,
+        tile_border_style,
     ));
 
     let mut lines = Vec::with_capacity(content_lines.len() + 2);
@@ -191,7 +342,7 @@ pub(super) fn plan_memory_tile(
         + tile
             .items
             .iter()
-            .map(|item| unicode_width::UnicodeWidthStr::width(item.as_str()).min(80))
+            .map(|item| unicode_width::UnicodeWidthStr::width(item.content.as_str()).min(80))
             .sum::<usize>();
     Some(MemoryTilePlan {
         lines,

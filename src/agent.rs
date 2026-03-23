@@ -454,6 +454,34 @@ impl Agent {
         }
     }
 
+    fn apply_openai_native_compaction(
+        &mut self,
+        encrypted_content: String,
+        compacted_count: usize,
+    ) -> Result<()> {
+        let state = crate::session::StoredCompactionState {
+            summary_text: String::new(),
+            openai_encrypted_content: Some(encrypted_content),
+            covers_up_to_turn: compacted_count,
+            original_turn_count: compacted_count,
+            compacted_count,
+        };
+
+        self.session.compaction = Some(state.clone());
+        let compaction = self.registry.compaction();
+        if let Ok(mut manager) = compaction.try_write() {
+            manager.set_budget(self.provider.context_window());
+            manager.restore_persisted_state(&state, self.session.messages.len());
+        }
+
+        self.cache_tracker.reset();
+        self.locked_tools = None;
+        self.provider_session_id = None;
+        self.session.provider_session_id = None;
+        self.session.save()?;
+        Ok(())
+    }
+
     fn add_message(&mut self, role: Role, content: Vec<ContentBlock>) -> String {
         let id = self.session.add_message(role, content);
         let compaction = self.registry.compaction();
@@ -515,25 +543,35 @@ impl Agent {
     fn messages_for_provider(&mut self) -> (Vec<Message>, Option<CompactionEvent>) {
         // Convert session messages to provider messages (single allocation)
         let all_messages = self.session.messages_for_provider();
-        if self.provider.uses_jcode_compaction() {
+        if self.provider.uses_jcode_compaction() || self.session.compaction.is_some() {
             let compaction = self.registry.compaction();
             match compaction.try_write() {
                 Ok(mut manager) => {
-                    let action = manager.ensure_context_fits(&all_messages, self.provider.clone());
-                    match action {
-                        crate::compaction::CompactionAction::BackgroundStarted { trigger } => {
-                            logging::info(&format!("Background compaction started ({})", trigger));
+                    if self.provider.uses_jcode_compaction() {
+                        let action =
+                            manager.ensure_context_fits(&all_messages, self.provider.clone());
+                        match action {
+                            crate::compaction::CompactionAction::BackgroundStarted { trigger } => {
+                                logging::info(&format!(
+                                    "Background compaction started ({})",
+                                    trigger
+                                ));
+                            }
+                            crate::compaction::CompactionAction::HardCompacted(dropped) => {
+                                logging::warn(&format!(
+                                    "Emergency hard compact: dropped {} messages (context was critical)",
+                                    dropped
+                                ));
+                            }
+                            crate::compaction::CompactionAction::None => {}
                         }
-                        crate::compaction::CompactionAction::HardCompacted(dropped) => {
-                            logging::warn(&format!(
-                                "Emergency hard compact: dropped {} messages (context was critical)",
-                                dropped
-                            ));
-                        }
-                        crate::compaction::CompactionAction::None => {}
                     }
                     let messages = manager.messages_for_api_with(&all_messages);
-                    let event = manager.take_compaction_event();
+                    let event = if self.provider.uses_jcode_compaction() {
+                        manager.take_compaction_event()
+                    } else {
+                        None
+                    };
                     if event.is_some() {
                         self.sync_session_compaction_state_from_manager(&manager);
                     }
@@ -2031,7 +2069,12 @@ impl Agent {
         let sidecar = crate::sidecar::Sidecar::new();
         match sidecar.extract_memories(&transcript).await {
             Ok(extracted) if !extracted.is_empty() => {
-                let manager = crate::memory::MemoryManager::new();
+                let manager = self
+                    .session
+                    .working_dir
+                    .as_deref()
+                    .map(|dir| crate::memory::MemoryManager::new().with_project_dir(dir))
+                    .unwrap_or_else(crate::memory::MemoryManager::new);
                 let mut stored_count = 0;
 
                 for memory in &extracted {
@@ -2215,6 +2258,7 @@ impl Agent {
             // Track tool results from provider (already executed by Claude Code CLI)
             let mut sdk_tool_results: std::collections::HashMap<String, (String, bool)> =
                 std::collections::HashMap::new();
+            let mut openai_native_compaction: Option<(String, usize)> = None;
 
             let mut retry_after_compaction = false;
             while let Some(event) = stream.next().await {
@@ -2416,7 +2460,13 @@ impl Agent {
                     StreamEvent::Compaction {
                         trigger,
                         pre_tokens,
+                        openai_encrypted_content,
                     } => {
+                        if let Some(encrypted_content) = openai_encrypted_content {
+                            openai_native_compaction.get_or_insert_with(|| {
+                                (encrypted_content, self.session.messages.len())
+                            });
+                        }
                         if print_output {
                             let tokens_str = pre_tokens
                                 .map(|t| format!(" ({} tokens)", t))
@@ -2571,6 +2621,10 @@ impl Agent {
             } else {
                 None
             };
+
+            if let Some((encrypted_content, compacted_count)) = openai_native_compaction.take() {
+                self.apply_openai_native_compaction(encrypted_content, compacted_count)?;
+            }
 
             // If stop_reason indicates truncation (e.g. max_tokens), discard tool calls
             // with null/empty inputs since they were likely truncated mid-generation.
@@ -2889,6 +2943,7 @@ impl Agent {
                 let _ = event_tx.send(ServerEvent::MemoryInjected {
                     count: memory_count,
                     prompt: memory.prompt.clone(),
+                    display_prompt: memory.display_prompt.clone(),
                     prompt_chars: memory.prompt.chars().count(),
                     computed_age_ms,
                 });
@@ -2984,6 +3039,7 @@ impl Agent {
                 std::collections::HashMap::new();
             let store_reasoning_content = self.provider.name() == "openrouter";
             let mut reasoning_content = String::new();
+            let mut openai_native_compaction: Option<(String, usize)> = None;
             // Track tool_use_id -> name for tool results
             let mut tool_id_to_name: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
@@ -3178,7 +3234,16 @@ impl Agent {
                         self.session.provider_session_id = Some(sid.clone());
                         let _ = event_tx.send(ServerEvent::SessionId { session_id: sid });
                     }
-                    StreamEvent::Compaction { .. } => {}
+                    StreamEvent::Compaction {
+                        openai_encrypted_content,
+                        ..
+                    } => {
+                        if let Some(encrypted_content) = openai_encrypted_content {
+                            openai_native_compaction.get_or_insert_with(|| {
+                                (encrypted_content, self.session.messages.len())
+                            });
+                        }
+                    }
                     StreamEvent::NativeToolCall {
                         request_id,
                         tool_name,
@@ -3343,6 +3408,10 @@ impl Agent {
             } else {
                 None
             };
+
+            if let Some((encrypted_content, compacted_count)) = openai_native_compaction.take() {
+                self.apply_openai_native_compaction(encrypted_content, compacted_count)?;
+            }
 
             // If stop_reason indicates truncation (e.g. max_tokens), discard tool calls
             // with null/empty inputs since they were likely truncated mid-generation.
@@ -3631,6 +3700,7 @@ impl Agent {
                 let _ = event_tx.send(ServerEvent::MemoryInjected {
                     count: memory_count,
                     prompt: memory.prompt.clone(),
+                    display_prompt: memory.display_prompt.clone(),
                     prompt_chars: memory.prompt.chars().count(),
                     computed_age_ms,
                 });
@@ -3726,6 +3796,7 @@ impl Agent {
                 std::collections::HashMap::new();
             let store_reasoning_content = self.provider.name() == "openrouter";
             let mut reasoning_content = String::new();
+            let mut openai_native_compaction: Option<(String, usize)> = None;
             let mut tool_id_to_name: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
 
@@ -3928,7 +3999,16 @@ impl Agent {
                         self.session.provider_session_id = Some(sid.clone());
                         let _ = event_tx.send(ServerEvent::SessionId { session_id: sid });
                     }
-                    StreamEvent::Compaction { .. } => {}
+                    StreamEvent::Compaction {
+                        openai_encrypted_content,
+                        ..
+                    } => {
+                        if let Some(encrypted_content) = openai_encrypted_content {
+                            openai_native_compaction.get_or_insert_with(|| {
+                                (encrypted_content, self.session.messages.len())
+                            });
+                        }
+                    }
                     StreamEvent::NativeToolCall {
                         request_id,
                         tool_name,
@@ -4092,6 +4172,10 @@ impl Agent {
             } else {
                 None
             };
+
+            if let Some((encrypted_content, compacted_count)) = openai_native_compaction.take() {
+                self.apply_openai_native_compaction(encrypted_content, compacted_count)?;
+            }
 
             // If stop_reason indicates truncation (e.g. max_tokens), discard tool calls
             // with null/empty inputs since they were likely truncated mid-generation.
@@ -4561,6 +4645,8 @@ mod tests {
         first_event_delay: Duration,
     }
 
+    struct NativeAutoCompactionProvider;
+
     #[async_trait]
     impl Provider for DelayedProvider {
         async fn complete(
@@ -4598,6 +4684,36 @@ mod tests {
                 open_delay: self.open_delay,
                 first_event_delay: self.first_event_delay,
             })
+        }
+    }
+
+    #[async_trait]
+    impl Provider for NativeAutoCompactionProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<EventStream> {
+            let (_tx, rx) = tokio_mpsc::channel::<Result<StreamEvent>>(1);
+            Ok(Box::pin(ReceiverStream::new(rx)))
+        }
+
+        fn name(&self) -> &str {
+            "openai"
+        }
+
+        fn supports_compaction(&self) -> bool {
+            true
+        }
+
+        fn uses_jcode_compaction(&self) -> bool {
+            false
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(Self)
         }
     }
 
@@ -4710,6 +4826,43 @@ mod tests {
 
         assert!(saw_text, "expected delayed provider text after keepalive");
         task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn messages_for_provider_replays_persisted_native_compaction_in_auto_mode() {
+        let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+        let registry = Registry::new(provider.clone()).await;
+        let mut agent = Agent::new(provider, registry);
+
+        agent.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "first".to_string(),
+                cache_control: None,
+            }],
+        );
+        agent.add_message(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: "second".to_string(),
+                cache_control: None,
+            }],
+        );
+
+        agent
+            .apply_openai_native_compaction("enc_auto".to_string(), 1)
+            .expect("persist native compaction");
+
+        let (messages, event) = agent.messages_for_provider();
+        assert!(event.is_none());
+        assert_eq!(messages.len(), 2);
+        match &messages[0].content[0] {
+            ContentBlock::OpenAICompaction { encrypted_content } => {
+                assert_eq!(encrypted_content, "enc_auto");
+            }
+            other => panic!("expected OpenAI compaction block, got {other:?}"),
+        }
+        assert_eq!(messages[1].role, Role::Assistant);
     }
 
     // ── InterruptSignal tests ────────────────────────────────────────────────

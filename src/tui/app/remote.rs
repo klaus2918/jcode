@@ -2176,17 +2176,20 @@ pub(super) fn handle_server_event(
         ServerEvent::MemoryInjected {
             count,
             prompt,
+            display_prompt,
             prompt_chars: _,
             computed_age_ms,
         } => {
             if app.memory_enabled {
                 let plural = if count == 1 { "memory" } else { "memories" };
-                let display_prompt = if prompt.trim().is_empty() {
+                let display_prompt = if let Some(display_prompt) = display_prompt {
+                    display_prompt.clone()
+                } else if prompt.trim().is_empty() {
                     "# Memory\n\n## Notes\n1. (content unavailable from server event)".to_string()
                 } else {
                     prompt.clone()
                 };
-                crate::memory::record_injected_prompt(&display_prompt, count, computed_age_ms);
+                crate::memory::record_injected_prompt(&prompt, count, computed_age_ms);
                 let summary = if count == 1 {
                     "🧠 auto-recalled 1 memory".to_string()
                 } else {

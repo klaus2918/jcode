@@ -890,38 +890,7 @@ fn prepare_body_incremental(
             "memory" => {
                 let border_style = Style::default().fg(rgb(130, 140, 180));
                 let text_style = Style::default().fg(dim_color());
-
-                let mut entries: Vec<(String, String)> = Vec::new();
-                let mut current_category = String::new();
-
-                for text_line in msg.content.lines() {
-                    if text_line.starts_with("# ") {
-                        continue;
-                    }
-                    if text_line.starts_with("## ") {
-                        current_category = text_line.trim_start_matches("## ").to_string();
-                        continue;
-                    }
-                    if text_line.trim().is_empty() {
-                        continue;
-                    }
-                    let content = if let Some(dot_pos) = text_line.find(". ") {
-                        let prefix = &text_line[..dot_pos];
-                        if prefix.trim().chars().all(|c| c.is_ascii_digit()) {
-                            text_line[dot_pos + 2..].trim()
-                        } else {
-                            text_line.trim()
-                        }
-                    } else {
-                        text_line.trim()
-                    };
-                    let cat = if current_category.is_empty() {
-                        "memory".to_string()
-                    } else {
-                        current_category.clone()
-                    };
-                    entries.push((cat, content.to_string()));
-                }
+                let entries = super::memory_ui::parse_memory_display_entries(&msg.content);
 
                 let count = entries.len();
                 let tiles = group_into_tiles(entries);
@@ -1381,39 +1350,7 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
             "memory" => {
                 let border_style = Style::default().fg(rgb(130, 140, 180));
                 let text_style = Style::default().fg(dim_color());
-
-                let mut entries: Vec<(String, String)> = Vec::new();
-                let mut current_category = String::new();
-
-                for text_line in msg.content.lines() {
-                    if text_line.starts_with("# ") {
-                        continue;
-                    }
-                    if text_line.starts_with("## ") {
-                        current_category = text_line.trim_start_matches("## ").to_string();
-                        continue;
-                    }
-                    if text_line.trim().is_empty() {
-                        continue;
-                    }
-                    let content = if let Some(dot_pos) = text_line.find(". ") {
-                        let prefix = &text_line[..dot_pos];
-                        if prefix.trim().chars().all(|c| c.is_ascii_digit()) {
-                            text_line[dot_pos + 2..].trim()
-                        } else {
-                            text_line.trim()
-                        }
-                    } else {
-                        text_line.trim()
-                    };
-
-                    let cat = if current_category.is_empty() {
-                        "memory".to_string()
-                    } else {
-                        current_category.clone()
-                    };
-                    entries.push((cat, content.to_string()));
-                }
+                let entries = super::memory_ui::parse_memory_display_entries(&msg.content);
 
                 let count = entries.len();
                 let tiles = group_into_tiles(entries);

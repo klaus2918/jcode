@@ -23,6 +23,23 @@ use std::time::{Instant, SystemTime};
 
 const LEGACY_NOTE_CATEGORY: &str = "note";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryScope {
+    Project,
+    Global,
+    All,
+}
+
+impl MemoryScope {
+    fn includes_project(self) -> bool {
+        matches!(self, Self::Project | Self::All)
+    }
+
+    fn includes_global(self) -> bool {
+        matches!(self, Self::Global | Self::All)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct LegacyNotesFile {
     #[serde(default)]
@@ -131,6 +148,9 @@ const MEMORY_REPEAT_SUPPRESSION_SECS: u64 = 90;
 pub struct PendingMemory {
     /// The formatted memory prompt ready for injection
     pub prompt: String,
+    /// Optional UI-focused rendering of the injected memory payload.
+    /// This can contain extra display-only metadata that is not sent to the model.
+    pub display_prompt: Option<String>,
     /// When this was computed
     pub computed_at: Instant,
     /// Number of relevant memories found
@@ -213,6 +233,17 @@ pub fn set_pending_memory_with_ids(
     count: usize,
     memory_ids: Vec<String>,
 ) {
+    set_pending_memory_with_ids_and_display(session_id, prompt, count, memory_ids, None);
+}
+
+/// Store a pending memory result with associated memory IDs and optional display-only content.
+pub fn set_pending_memory_with_ids_and_display(
+    session_id: &str,
+    prompt: String,
+    count: usize,
+    memory_ids: Vec<String>,
+    display_prompt: Option<String>,
+) {
     crate::memory_log::log_pending_prepared(session_id, &prompt, count, &memory_ids);
 
     if let Ok(mut guard) = PENDING_MEMORY.lock() {
@@ -221,6 +252,7 @@ pub fn set_pending_memory_with_ids(
             session_id.to_string(),
             PendingMemory {
                 prompt,
+                display_prompt,
                 computed_at: Instant::now(),
                 count,
                 memory_ids,
@@ -1018,13 +1050,15 @@ pub fn format_context_for_extraction(messages: &[crate::message::Message]) -> St
     chunks.join("\n").trim().to_string()
 }
 
-fn format_entries_for_prompt(entries: &[MemoryEntry], limit: usize) -> Option<String> {
-    let mut sections: HashMap<MemoryCategory, Vec<&MemoryEntry>> = HashMap::new();
+fn selected_entries_for_prompt<'a>(
+    entries: &'a [MemoryEntry],
+    limit: usize,
+) -> Vec<&'a MemoryEntry> {
+    let mut selected = Vec::new();
     let mut seen_content = HashSet::new();
-    let mut added = 0usize;
 
     for entry in entries.iter().filter(|e| e.active) {
-        if added >= limit {
+        if selected.len() >= limit {
             break;
         }
 
@@ -1038,11 +1072,20 @@ fn format_entries_for_prompt(entries: &[MemoryEntry], limit: usize) -> Option<St
             continue;
         }
 
+        selected.push(entry);
+    }
+
+    selected
+}
+
+fn format_entries_for_prompt(entries: &[MemoryEntry], limit: usize) -> Option<String> {
+    let mut sections: HashMap<MemoryCategory, Vec<&MemoryEntry>> = HashMap::new();
+
+    for entry in selected_entries_for_prompt(entries, limit) {
         sections
             .entry(entry.category.clone())
             .or_default()
             .push(entry);
-        added += 1;
     }
 
     if sections.is_empty() {
@@ -1104,6 +1147,80 @@ fn format_entries_for_prompt(entries: &[MemoryEntry], limit: usize) -> Option<St
 
 pub(crate) fn format_relevant_prompt(entries: &[MemoryEntry], limit: usize) -> Option<String> {
     format_entries_for_prompt(entries, limit).map(|formatted| format!("# Memory\n\n{}", formatted))
+}
+
+pub(crate) fn format_relevant_display_prompt(
+    entries: &[MemoryEntry],
+    limit: usize,
+) -> Option<String> {
+    let mut sections: HashMap<MemoryCategory, Vec<&MemoryEntry>> = HashMap::new();
+
+    for entry in selected_entries_for_prompt(entries, limit) {
+        sections
+            .entry(entry.category.clone())
+            .or_default()
+            .push(entry);
+    }
+
+    if sections.is_empty() {
+        return None;
+    }
+
+    let mut output = String::new();
+    let order = [
+        MemoryCategory::Correction,
+        MemoryCategory::Fact,
+        MemoryCategory::Preference,
+        MemoryCategory::Entity,
+    ];
+
+    let mut write_section = |title: &str, items: Vec<&MemoryEntry>| {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&format!("## {}\n", title));
+        for (idx, item) in items.into_iter().enumerate() {
+            output.push_str(&format!("{}. {}\n", idx + 1, item.content.trim()));
+            output.push_str(&format!(
+                "<!-- updated_at: {} -->\n",
+                item.updated_at.to_rfc3339()
+            ));
+        }
+    };
+
+    for cat in &order {
+        if let Some(items) = sections.remove(cat) {
+            let title = match cat {
+                MemoryCategory::Correction => "Corrections",
+                MemoryCategory::Fact => "Facts",
+                MemoryCategory::Preference => "Preferences",
+                MemoryCategory::Entity => "Entities",
+                MemoryCategory::Custom(_) => "Custom",
+            };
+            write_section(title, items);
+        }
+    }
+
+    let mut custom_sections: BTreeMap<String, Vec<&MemoryEntry>> = BTreeMap::new();
+    for (cat, items) in sections {
+        match cat {
+            MemoryCategory::Custom(name) => {
+                custom_sections.insert(name, items);
+            }
+            other => {
+                custom_sections.insert(other.to_string(), items);
+            }
+        }
+    }
+    for (name, items) in custom_sections {
+        write_section(&name, items);
+    }
+
+    if output.is_empty() {
+        None
+    } else {
+        Some(format!("# Memory\n\n{}", output.trim()))
+    }
 }
 
 fn memory_score(entry: &MemoryEntry) -> f64 {
@@ -1509,6 +1626,27 @@ impl MemoryManager {
         self.find_similar_with_embedding(&query_embedding, threshold, limit)
     }
 
+    pub fn find_similar_scoped(
+        &self,
+        text: &str,
+        threshold: f32,
+        limit: usize,
+        scope: MemoryScope,
+    ) -> Result<Vec<(MemoryEntry, f32)>> {
+        let query_embedding = match crate::embedding::embed(text) {
+            Ok(emb) => emb,
+            Err(e) => {
+                crate::logging::info(&format!(
+                    "Embedding failed, falling back to keyword search: {}",
+                    e
+                ));
+                return Ok(Vec::new());
+            }
+        };
+
+        self.find_similar_with_embedding_scoped(&query_embedding, threshold, limit, scope)
+    }
+
     /// Find memories similar to the given embedding
     pub fn find_similar_with_embedding(
         &self,
@@ -1520,23 +1658,60 @@ impl MemoryManager {
         Self::score_and_filter(entries_with_emb, query_embedding, threshold, limit)
     }
 
+    pub fn find_similar_with_embedding_scoped(
+        &self,
+        query_embedding: &[f32],
+        threshold: f32,
+        limit: usize,
+        scope: MemoryScope,
+    ) -> Result<Vec<(MemoryEntry, f32)>> {
+        let entries_with_emb = self.collect_memories_with_embeddings_scoped(scope)?;
+        Self::score_and_filter(entries_with_emb, query_embedding, threshold, limit)
+    }
+
     fn collect_all_memories_with_embeddings(&self) -> Result<Vec<MemoryEntry>> {
+        self.collect_memories_with_embeddings_scoped(MemoryScope::All)
+    }
+
+    fn collect_memories_with_embeddings_scoped(
+        &self,
+        scope: MemoryScope,
+    ) -> Result<Vec<MemoryEntry>> {
         let mut entries: Vec<MemoryEntry> = Vec::new();
-        if let Ok(project) = self.load_project_graph() {
-            entries.extend(
-                project
-                    .active_memories()
-                    .filter(|m| m.embedding.is_some())
-                    .cloned(),
-            );
+        if scope.includes_project() {
+            if let Ok(project) = self.load_project_graph() {
+                entries.extend(
+                    project
+                        .active_memories()
+                        .filter(|m| m.embedding.is_some())
+                        .cloned(),
+                );
+            }
         }
-        if let Ok(global) = self.load_global_graph() {
-            entries.extend(
-                global
-                    .active_memories()
-                    .filter(|m| m.embedding.is_some())
-                    .cloned(),
-            );
+        if scope.includes_global() {
+            if let Ok(global) = self.load_global_graph() {
+                entries.extend(
+                    global
+                        .active_memories()
+                        .filter(|m| m.embedding.is_some())
+                        .cloned(),
+                );
+            }
+        }
+        Ok(entries)
+    }
+
+    fn collect_memories_scoped(&self, scope: MemoryScope) -> Result<Vec<MemoryEntry>> {
+        let mut entries = Vec::new();
+        if scope.includes_project() {
+            if let Ok(project) = self.load_project_graph() {
+                entries.extend(project.all_memories().cloned());
+            }
+        }
+        if scope.includes_global() {
+            if let Ok(global) = self.load_global_graph() {
+                entries.extend(global.all_memories().cloned());
+            }
         }
         Ok(entries)
     }
@@ -1680,13 +1855,11 @@ impl MemoryManager {
     }
 
     pub fn get_prompt_memories(&self, limit: usize) -> Option<String> {
-        let mut all_entries: Vec<MemoryEntry> = Vec::new();
-        if let Ok(project) = self.load_project_graph() {
-            all_entries.extend(project.all_memories().cloned());
-        }
-        if let Ok(global) = self.load_global_graph() {
-            all_entries.extend(global.all_memories().cloned());
-        }
+        self.get_prompt_memories_scoped(limit, MemoryScope::All)
+    }
+
+    pub fn get_prompt_memories_scoped(&self, limit: usize, scope: MemoryScope) -> Option<String> {
+        let mut all_entries = self.collect_memories_scoped(scope).ok()?;
 
         if all_entries.is_empty() {
             return None;
@@ -1732,34 +1905,21 @@ impl MemoryManager {
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<MemoryEntry>> {
+        self.search_scoped(query, MemoryScope::All)
+    }
+
+    pub fn search_scoped(&self, query: &str, scope: MemoryScope) -> Result<Vec<MemoryEntry>> {
         let mut results = Vec::new();
         let query_lower = query.to_lowercase();
 
-        // Search in project graph
-        if let Ok(project) = self.load_project_graph() {
-            for memory in project.all_memories() {
-                if memory.content.to_lowercase().contains(&query_lower)
-                    || memory
-                        .tags
-                        .iter()
-                        .any(|t| t.to_lowercase().contains(&query_lower))
-                {
-                    results.push(memory.clone());
-                }
-            }
-        }
-
-        // Search in global graph
-        if let Ok(global) = self.load_global_graph() {
-            for memory in global.all_memories() {
-                if memory.content.to_lowercase().contains(&query_lower)
-                    || memory
-                        .tags
-                        .iter()
-                        .any(|t| t.to_lowercase().contains(&query_lower))
-                {
-                    results.push(memory.clone());
-                }
+        for memory in self.collect_memories_scoped(scope)? {
+            if memory.content.to_lowercase().contains(&query_lower)
+                || memory
+                    .tags
+                    .iter()
+                    .any(|t| t.to_lowercase().contains(&query_lower))
+            {
+                results.push(memory);
             }
         }
 
@@ -1767,15 +1927,11 @@ impl MemoryManager {
     }
 
     pub fn list_all(&self) -> Result<Vec<MemoryEntry>> {
-        let mut all = Vec::new();
+        self.list_all_scoped(MemoryScope::All)
+    }
 
-        if let Ok(project) = self.load_project_graph() {
-            all.extend(project.all_memories().cloned());
-        }
-        if let Ok(global) = self.load_global_graph() {
-            all.extend(global.all_memories().cloned());
-        }
-
+    pub fn list_all_scoped(&self, scope: MemoryScope) -> Result<Vec<MemoryEntry>> {
+        let mut all = self.collect_memories_scoped(scope)?;
         all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(all)
     }
@@ -1964,7 +2120,7 @@ impl MemoryManager {
             };
 
             match manager.get_relevant_parallel(&sid, &messages).await {
-                Ok((Some(prompt), memory_ids)) => {
+                Ok((Some(prompt), memory_ids, display_prompt)) => {
                     let count = prompt
                         .lines()
                         .map(str::trim_start)
@@ -1980,10 +2136,16 @@ impl MemoryManager {
                         })
                         .count()
                         .max(1);
-                    set_pending_memory_with_ids(&sid, prompt, count, memory_ids);
+                    set_pending_memory_with_ids_and_display(
+                        &sid,
+                        prompt,
+                        count,
+                        memory_ids,
+                        display_prompt,
+                    );
                     add_event(MemoryEventKind::SidecarComplete { latency_ms: 0 });
                 }
-                Ok((None, _)) => {
+                Ok((None, _, _)) => {
                     set_state(MemoryState::Idle);
                 }
                 Err(e) => {
@@ -2013,10 +2175,10 @@ impl MemoryManager {
         &self,
         session_id: &str,
         messages: &[crate::message::Message],
-    ) -> Result<(Option<String>, Vec<String>)> {
+    ) -> Result<(Option<String>, Vec<String>, Option<String>)> {
         let context = format_context_for_relevance(messages);
         if context.is_empty() {
-            return Ok((None, Vec::new()));
+            return Ok((None, Vec::new(), None));
         }
 
         // Start pipeline tracking
@@ -2048,7 +2210,7 @@ impl MemoryManager {
                             p.maintain = StepStatus::Skipped;
                         });
                         set_state(MemoryState::Idle);
-                        return Ok((None, Vec::new()));
+                        return Ok((None, Vec::new(), None));
                     }
                     pipeline_update(|p| {
                         p.search = StepStatus::Done;
@@ -2110,7 +2272,7 @@ impl MemoryManager {
                 p.maintain = StepStatus::Skipped;
             });
             set_state(MemoryState::Idle);
-            return Ok((None, Vec::new()));
+            return Ok((None, Vec::new(), None));
         }
 
         // Step 2: Sidecar verification (only for embedding hits - much fewer calls!)
@@ -2213,7 +2375,7 @@ impl MemoryManager {
                 p.maintain = StepStatus::Skipped;
             });
             set_state(MemoryState::Idle);
-            return Ok((None, Vec::new()));
+            return Ok((None, Vec::new(), None));
         }
 
         pipeline_update(|p| {
@@ -2230,6 +2392,8 @@ impl MemoryManager {
         });
 
         let prompt = format_relevant_prompt(&relevant, MEMORY_RELEVANCE_MAX_RESULTS);
+        let display_prompt =
+            format_relevant_display_prompt(&relevant, MEMORY_RELEVANCE_MAX_RESULTS);
 
         // Mark inject as done - the prompt is ready for injection
         pipeline_update(|p| {
@@ -2240,7 +2404,7 @@ impl MemoryManager {
             });
         });
 
-        Ok((prompt, relevant_ids))
+        Ok((prompt, relevant_ids, display_prompt))
     }
 
     // ==================== Graph-Based Operations ====================
@@ -2454,8 +2618,18 @@ impl MemoryManager {
         threshold: f32,
         limit: usize,
     ) -> Result<Vec<(MemoryEntry, f32)>> {
+        self.find_similar_with_cascade_scoped(text, threshold, limit, MemoryScope::All)
+    }
+
+    pub fn find_similar_with_cascade_scoped(
+        &self,
+        text: &str,
+        threshold: f32,
+        limit: usize,
+        scope: MemoryScope,
+    ) -> Result<Vec<(MemoryEntry, f32)>> {
         // First, do basic embedding search
-        let embedding_hits = self.find_similar(text, threshold, limit)?;
+        let embedding_hits = self.find_similar_scoped(text, threshold, limit, scope)?;
 
         if embedding_hits.is_empty() {
             return Ok(Vec::new());
@@ -2466,14 +2640,28 @@ impl MemoryManager {
         let seed_scores: Vec<f32> = embedding_hits.iter().map(|(_, s)| *s).collect();
 
         // Load graphs and perform cascade retrieval
-        let mut project_graph = self.load_project_graph()?;
-        let mut global_graph = self.load_global_graph()?;
+        let mut project_graph = if scope.includes_project() {
+            Some(self.load_project_graph()?)
+        } else {
+            None
+        };
+        let mut global_graph = if scope.includes_global() {
+            Some(self.load_global_graph()?)
+        } else {
+            None
+        };
 
         // Cascade through project graph
-        let project_cascade = project_graph.cascade_retrieve(&seed_ids, &seed_scores, 2, limit * 2);
+        let project_cascade = project_graph
+            .as_mut()
+            .map(|graph| graph.cascade_retrieve(&seed_ids, &seed_scores, 2, limit * 2))
+            .unwrap_or_default();
 
         // Cascade through global graph
-        let global_cascade = global_graph.cascade_retrieve(&seed_ids, &seed_scores, 2, limit * 2);
+        let global_cascade = global_graph
+            .as_mut()
+            .map(|graph| graph.cascade_retrieve(&seed_ids, &seed_scores, 2, limit * 2))
+            .unwrap_or_default();
 
         // Merge results, keeping highest score for each memory
         let mut merged: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
@@ -2499,8 +2687,13 @@ impl MemoryManager {
             .into_iter()
             .filter_map(|(id, score)| {
                 project_graph
-                    .get_memory(&id)
-                    .or_else(|| global_graph.get_memory(&id))
+                    .as_ref()
+                    .and_then(|graph| graph.get_memory(&id))
+                    .or_else(|| {
+                        global_graph
+                            .as_ref()
+                            .and_then(|graph| graph.get_memory(&id))
+                    })
                     .cloned()
                     .map(|entry| (entry, score))
             })
@@ -2601,6 +2794,7 @@ mod tests {
                 sid.to_string(),
                 PendingMemory {
                     prompt: "stale".to_string(),
+                    display_prompt: None,
                     computed_at: Instant::now() - Duration::from_secs(121),
                     count: 1,
                     memory_ids: Vec::new(),
@@ -2810,6 +3004,89 @@ mod tests {
             // Clean up
             manager.forget(&id1).expect("forget 1");
             manager.forget(&id2).expect("forget 2");
+        });
+    }
+
+    #[test]
+    fn project_memories_are_isolated_by_explicit_project_dir() {
+        with_temp_home(|_home| {
+            let manager_a = MemoryManager::new().with_project_dir("/tmp/jcode-project-a");
+            let manager_b = MemoryManager::new().with_project_dir("/tmp/jcode-project-b");
+
+            manager_a
+                .remember_project(MemoryEntry::new(
+                    MemoryCategory::Fact,
+                    "memory from project a",
+                ))
+                .expect("remember project a");
+            manager_b
+                .remember_project(MemoryEntry::new(
+                    MemoryCategory::Fact,
+                    "memory from project b",
+                ))
+                .expect("remember project b");
+
+            let project_a: Vec<String> = manager_a
+                .load_project_graph()
+                .expect("load project a")
+                .all_memories()
+                .map(|m| m.content.clone())
+                .collect();
+            let project_b: Vec<String> = manager_b
+                .load_project_graph()
+                .expect("load project b")
+                .all_memories()
+                .map(|m| m.content.clone())
+                .collect();
+
+            assert_eq!(project_a, vec!["memory from project a".to_string()]);
+            assert_eq!(project_b, vec!["memory from project b".to_string()]);
+        });
+    }
+
+    #[test]
+    fn scoped_retrieval_respects_project_vs_global() {
+        with_temp_home(|_home| {
+            let manager = MemoryManager::new().with_project_dir("/tmp/jcode-scope-test");
+
+            manager
+                .remember_project(MemoryEntry::new(
+                    MemoryCategory::Fact,
+                    "project zebra compile notes",
+                ))
+                .expect("remember project");
+            manager
+                .remember_global(MemoryEntry::new(
+                    MemoryCategory::Fact,
+                    "global coffee preference",
+                ))
+                .expect("remember global");
+
+            let project = manager
+                .list_all_scoped(MemoryScope::Project)
+                .expect("list project");
+            let global = manager
+                .list_all_scoped(MemoryScope::Global)
+                .expect("list global");
+            let all = manager.list_all_scoped(MemoryScope::All).expect("list all");
+
+            assert_eq!(project.len(), 1);
+            assert_eq!(project[0].content, "project zebra compile notes");
+            assert_eq!(global.len(), 1);
+            assert_eq!(global[0].content, "global coffee preference");
+            assert_eq!(all.len(), 2);
+
+            let project_search = manager
+                .search_scoped("zebra", MemoryScope::Project)
+                .expect("search project");
+            let global_search = manager
+                .search_scoped("coffee", MemoryScope::Global)
+                .expect("search global");
+
+            assert_eq!(project_search.len(), 1);
+            assert_eq!(project_search[0].content, "project zebra compile notes");
+            assert_eq!(global_search.len(), 1);
+            assert_eq!(global_search[0].content, "global coffee preference");
         });
     }
 }
