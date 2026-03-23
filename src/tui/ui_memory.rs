@@ -165,28 +165,20 @@ fn format_memory_updated_age(updated_at: DateTime<Utc>) -> String {
 
 fn memory_age_tint(updated_at: Option<DateTime<Utc>>) -> Color {
     let Some(updated_at) = updated_at else {
-        return Color::Rgb(44, 46, 58);
+        return Color::Rgb(42, 44, 54);
     };
     let age = Utc::now().signed_duration_since(updated_at);
     if age.num_hours() < 1 {
-        Color::Rgb(48, 67, 64)
+        Color::Rgb(44, 49, 47)
     } else if age.num_days() < 1 {
-        Color::Rgb(46, 54, 68)
+        Color::Rgb(43, 46, 52)
     } else if age.num_days() < 7 {
-        Color::Rgb(52, 50, 68)
+        Color::Rgb(44, 44, 52)
     } else if age.num_days() < 30 {
-        Color::Rgb(58, 50, 60)
+        Color::Rgb(46, 43, 48)
     } else {
-        Color::Rgb(49, 48, 56)
+        Color::Rgb(47, 43, 44)
     }
-}
-
-fn memory_tile_background(items: &[MemoryTileItem]) -> Color {
-    items
-        .iter()
-        .find_map(|item| item.updated_at)
-        .map(|updated_at| memory_age_tint(Some(updated_at)))
-        .unwrap_or(Color::Rgb(44, 46, 58))
 }
 
 fn memory_tile_content_lines(
@@ -202,7 +194,6 @@ fn memory_tile_content_lines(
     let mut content_lines: Vec<Line<'static>> = Vec::new();
     for item in items {
         let item_bg = memory_age_tint(item.updated_at);
-        let border_fill_style = border_style.bg(item_bg);
         let text_fill_style = text_style.bg(item_bg);
         let meta_fill_style = Style::default().fg(Color::Rgb(175, 180, 190)).bg(item_bg);
         let text_display_width = unicode_width::UnicodeWidthStr::width(item.content.as_str());
@@ -210,14 +201,14 @@ fn memory_tile_content_lines(
             let text = item.content.to_string();
             let padding = inner_width.saturating_sub(bullet_width + text_display_width);
             let mut spans = vec![
-                Span::styled("│ ", border_fill_style),
-                Span::styled(bullet.to_string(), border_fill_style),
+                Span::styled("│ ", border_style),
+                Span::styled(bullet.to_string(), text_fill_style),
                 Span::styled(text, text_fill_style),
             ];
             if padding > 0 {
                 spans.push(Span::styled(" ".repeat(padding), text_fill_style));
             }
-            spans.push(Span::styled(" │", border_fill_style));
+            spans.push(Span::styled(" │", border_style));
             content_lines.push(Line::from(spans));
         } else {
             let indent = bullet_width;
@@ -237,26 +228,26 @@ fn memory_tile_content_lines(
                 if ci == 0 {
                     let padding = inner_width.saturating_sub(bullet_width + chunk_width);
                     let mut spans = vec![
-                        Span::styled("│ ", border_fill_style),
-                        Span::styled(bullet.to_string(), border_fill_style),
+                        Span::styled("│ ", border_style),
+                        Span::styled(bullet.to_string(), text_fill_style),
                         Span::styled(chunk.clone(), text_fill_style),
                     ];
                     if padding > 0 {
                         spans.push(Span::styled(" ".repeat(padding), text_fill_style));
                     }
-                    spans.push(Span::styled(" │", border_fill_style));
+                    spans.push(Span::styled(" │", border_style));
                     content_lines.push(Line::from(spans));
                 } else {
                     let padding = inner_width.saturating_sub(indent + chunk_width);
                     let mut spans = vec![
-                        Span::styled("│ ", border_fill_style),
+                        Span::styled("│ ", border_style),
                         Span::styled(" ".repeat(indent), text_fill_style),
                         Span::styled(chunk.clone(), text_fill_style),
                     ];
                     if padding > 0 {
                         spans.push(Span::styled(" ".repeat(padding), text_fill_style));
                     }
-                    spans.push(Span::styled(" │", border_fill_style));
+                    spans.push(Span::styled(" │", border_style));
                     content_lines.push(Line::from(spans));
                 }
             }
@@ -268,21 +259,21 @@ fn memory_tile_content_lines(
             let indent = bullet_width;
             let padding = inner_width.saturating_sub(indent + meta_width);
             content_lines.push(Line::from(vec![
-                Span::styled("│ ", border_fill_style),
+                Span::styled("│ ", border_style),
                 Span::styled(" ".repeat(indent), text_fill_style),
                 Span::styled(meta, meta_fill_style),
                 Span::styled(" ".repeat(padding), text_fill_style),
-                Span::styled(" │", border_fill_style),
+                Span::styled(" │", border_style),
             ]));
         }
     }
 
     if content_lines.is_empty() {
-        let fill_style = text_style.bg(Color::Rgb(44, 46, 58));
+        let fill_style = text_style.bg(Color::Rgb(42, 44, 54));
         content_lines.push(Line::from(vec![
-            Span::styled("│ ", border_style.bg(Color::Rgb(44, 46, 58))),
+            Span::styled("│ ", border_style),
             Span::styled(" ".repeat(inner_width), fill_style),
-            Span::styled(" │", border_style.bg(Color::Rgb(44, 46, 58))),
+            Span::styled(" │", border_style),
         ]));
     }
 
@@ -299,8 +290,6 @@ fn render_memory_tile_box(
     if inner_width < 4 {
         return Vec::new();
     }
-    let tile_bg = memory_tile_background(&tile.items);
-    let tile_border_style = border_style.bg(tile_bg);
 
     let title_text = format!(" {} ", tile.category.to_lowercase());
     let title_len = unicode_width::UnicodeWidthStr::width(title_text.as_str());
@@ -310,13 +299,13 @@ fn render_memory_tile_box(
 
     let top = Line::from(Span::styled(
         format!("╭{}{}{}╮", left_border, title_text, right_border),
-        tile_border_style,
+        border_style,
     ));
     let content_lines =
         memory_tile_content_lines(&tile.items, inner_width, border_style, text_style);
     let bottom = Line::from(Span::styled(
         format!("╰{}╯", "─".repeat(box_width.saturating_sub(2))),
-        tile_border_style,
+        border_style,
     ));
 
     let mut lines = Vec::with_capacity(content_lines.len() + 2);
