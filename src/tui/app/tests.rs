@@ -2594,18 +2594,6 @@ fn test_handle_key_ctrl_word_movement_and_delete() {
 }
 
 #[test]
-fn test_handle_key_ctrl_h_legacy_backspace_fallback_deletes_word() {
-    let mut app = create_test_app();
-    app.set_input_for_test("hello world again");
-
-    app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL)
-        .unwrap();
-
-    assert_eq!(app.input(), "hello world ");
-    assert_eq!(app.cursor_pos(), "hello world ".len());
-}
-
-#[test]
 fn test_handle_key_ctrl_backspace_csi_u_char_fallback_deletes_word() {
     let mut app = create_test_app();
     app.set_input_for_test("hello world again");
@@ -2615,6 +2603,18 @@ fn test_handle_key_ctrl_backspace_csi_u_char_fallback_deletes_word() {
 
     assert_eq!(app.input(), "hello world ");
     assert_eq!(app.cursor_pos(), "hello world ".len());
+}
+
+#[test]
+fn test_handle_key_ctrl_h_does_not_insert_text() {
+    let mut app = create_test_app();
+    app.set_input_for_test("hello");
+
+    app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL)
+        .unwrap();
+
+    assert_eq!(app.input(), "hello");
+    assert_eq!(app.cursor_pos(), "hello".len());
 }
 
 #[test]
@@ -6580,21 +6580,6 @@ fn test_remote_shift_enter_inserts_newline() {
 }
 
 #[test]
-fn test_remote_ctrl_h_legacy_backspace_fallback_deletes_word() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-    let mut app = create_test_app();
-    app.set_input_for_test("hello world again");
-    let mut remote = crate::tui::backend::RemoteConnection::dummy();
-
-    rt.block_on(app.handle_remote_key(KeyCode::Char('h'), KeyModifiers::CONTROL, &mut remote))
-        .unwrap();
-
-    assert_eq!(app.input(), "hello world ");
-    assert_eq!(app.cursor_pos(), "hello world ".len());
-}
-
-#[test]
 fn test_remote_ctrl_backspace_csi_u_char_fallback_deletes_word() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -6607,6 +6592,21 @@ fn test_remote_ctrl_backspace_csi_u_char_fallback_deletes_word() {
 
     assert_eq!(app.input(), "hello world ");
     assert_eq!(app.cursor_pos(), "hello world ".len());
+}
+
+#[test]
+fn test_remote_ctrl_h_does_not_insert_text() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.set_input_for_test("hello");
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('h'), KeyModifiers::CONTROL, &mut remote))
+        .unwrap();
+
+    assert_eq!(app.input(), "hello");
+    assert_eq!(app.cursor_pos(), "hello".len());
 }
 
 #[test]

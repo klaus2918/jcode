@@ -409,7 +409,7 @@ pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
             }
             true
         }
-        KeyCode::Char('w') | KeyCode::Char('h') | KeyCode::Char('\u{8}') | KeyCode::Backspace => {
+        KeyCode::Char('w') | KeyCode::Char('\u{8}') | KeyCode::Backspace => {
             let start = app.find_word_boundary_back();
             if start < app.cursor_pos {
                 app.remember_input_undo_state();
@@ -1059,6 +1059,11 @@ impl App {
                 }
                 _ => {}
             }
+        }
+
+        // Never fall through and insert literal text for unhandled Ctrl+key chords.
+        if modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(());
         }
 
         if code == KeyCode::Enter {

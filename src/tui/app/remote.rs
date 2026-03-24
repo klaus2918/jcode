@@ -2453,6 +2453,11 @@ pub(super) fn handle_disconnected_key(
         return Ok(());
     }
 
+    // Never fall through and insert literal text for unhandled Ctrl+key chords.
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        return Ok(());
+    }
+
     match code {
         KeyCode::Char(c) => handle_remote_char_input(app, c),
         KeyCode::Backspace => {
@@ -2853,10 +2858,7 @@ pub(super) async fn handle_remote_key(
                 }
                 return Ok(());
             }
-            KeyCode::Char('w')
-            | KeyCode::Char('h')
-            | KeyCode::Char('\u{8}')
-            | KeyCode::Backspace => {
+            KeyCode::Char('w') | KeyCode::Char('\u{8}') | KeyCode::Backspace => {
                 let start = app.find_word_boundary_back();
                 if start < app.cursor_pos {
                     app.remember_input_undo_state();
@@ -2934,6 +2936,11 @@ pub(super) async fn handle_remote_key(
     if code == KeyCode::Enter && modifiers.contains(KeyModifiers::SHIFT) {
         input::insert_input_text(app, "\n");
         app.follow_chat_bottom_for_typing();
+        return Ok(());
+    }
+
+    // Never fall through and insert literal text for unhandled Ctrl+key chords.
+    if modifiers.contains(KeyModifiers::CONTROL) {
         return Ok(());
     }
 
