@@ -5,7 +5,7 @@ use super::{
 use crate::bus::{Bus, BusEvent, InputShellCompleted};
 use crate::util::truncate_str;
 use anyhow::Result;
-use crossterm::event::{EventStream, KeyCode, KeyModifiers};
+use crossterm::event::{EventStream, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::DefaultTerminal;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -250,6 +250,94 @@ pub(super) fn insert_input_text(app: &mut App, text: &str) {
     app.cursor_pos += text.len();
     app.reset_tab_completion();
     app.sync_model_picker_preview_from_input();
+}
+
+pub(super) fn handle_text_input(app: &mut App, text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+
+    if app.input.is_empty() && !app.is_processing && app.display_messages.is_empty() {
+        let mut chars = text.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            if let Some(digit) = c.to_digit(10) {
+                let suggestions = app.suggestion_prompts();
+                let idx = digit as usize;
+                if idx >= 1 && idx <= suggestions.len() {
+                    let (_label, prompt) = &suggestions[idx - 1];
+                    if !prompt.starts_with('/') {
+                        app.remember_input_undo_state();
+                        app.input = prompt.clone();
+                        app.cursor_pos = app.input.len();
+                        app.follow_chat_bottom_for_typing();
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    insert_input_text(app, text);
+    true
+}
+
+fn associated_text_for_key_event(_event: &KeyEvent) -> Option<String> {
+    // Future hook: prefer terminal-provided associated text when crossterm exposes it.
+    // Today crossterm does not surface this on KeyEvent even though the kitty protocol
+    // defines a REPORT_ASSOCIATED_TEXT flag.
+    None
+}
+
+pub(super) fn text_input_for_key_event(event: &KeyEvent) -> Option<String> {
+    associated_text_for_key_event(event)
+        .filter(|text| !text.is_empty())
+        .or_else(|| text_input_for_key(event.code, event.modifiers))
+}
+
+pub(super) fn text_input_for_key(code: KeyCode, modifiers: KeyModifiers) -> Option<String> {
+    if modifiers.intersects(
+        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::HYPER,
+    ) {
+        return None;
+    }
+
+    let KeyCode::Char(c) = code else {
+        return None;
+    };
+
+    Some(shifted_printable_fallback(c, modifiers).to_string())
+}
+
+fn shifted_printable_fallback(c: char, modifiers: KeyModifiers) -> char {
+    if !modifiers.contains(KeyModifiers::SHIFT) {
+        return c;
+    }
+
+    match c {
+        'a'..='z' => c.to_ascii_uppercase(),
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '`' => '~',
+        '-' => '_',
+        '=' => '+',
+        '[' => '{',
+        ']' => '}',
+        '\\' => '|',
+        ';' => ':',
+        '\'' => '"',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+        _ => c,
+    }
 }
 
 pub(super) fn clear_input_for_escape(app: &mut App) {
@@ -842,26 +930,7 @@ pub(super) fn handle_enter(app: &mut App) -> bool {
 
 pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
     match code {
-        KeyCode::Char(c) => {
-            if app.input.is_empty() && !app.is_processing && app.display_messages.is_empty() {
-                if let Some(digit) = c.to_digit(10) {
-                    let suggestions = app.suggestion_prompts();
-                    let idx = digit as usize;
-                    if idx >= 1 && idx <= suggestions.len() {
-                        let (_label, prompt) = &suggestions[idx - 1];
-                        if !prompt.starts_with('/') {
-                            app.remember_input_undo_state();
-                            app.input = prompt.clone();
-                            app.cursor_pos = app.input.len();
-                            app.follow_chat_bottom_for_typing();
-                            return true;
-                        }
-                    }
-                }
-            }
-            insert_input_text(app, &c.to_string());
-            true
-        }
+        KeyCode::Char(c) => handle_text_input(app, &c.to_string()),
         KeyCode::Backspace => {
             if app.cursor_pos > 0 {
                 let prev = crate::tui::core::prev_char_boundary(&app.input, app.cursor_pos);
@@ -1046,15 +1115,31 @@ impl App {
             event.kind,
             crossterm::event::KeyEventKind::Press | crossterm::event::KeyEventKind::Repeat
         ) {
-            let _ = self.handle_key(event.code, event.modifiers);
+            let _ = self.handle_key_press_event(event);
         }
     }
 
+    pub(super) fn handle_key_press_event(&mut self, event: KeyEvent) -> Result<()> {
+        self.handle_key_core(
+            event.code,
+            event.modifiers,
+            text_input_for_key_event(&event),
+        )
+    }
+
     pub(super) fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+        self.handle_key_core(code, modifiers, None)
+    }
+
+    fn handle_key_core(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        text_input: Option<String>,
+    ) -> Result<()> {
         let mut code = code;
         let mut modifiers = modifiers;
         ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
-        code = normalize_shifted_printable_key(code, modifiers);
 
         if handle_modal_key(self, code, modifiers)? {
             return Ok(());
@@ -1103,6 +1188,11 @@ impl App {
 
         // Never fall through and insert literal text for unhandled Ctrl+key chords.
         if modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(());
+        }
+
+        if let Some(text) = text_input.or_else(|| text_input_for_key(code, modifiers)) {
+            handle_text_input(self, &text);
             return Ok(());
         }
 

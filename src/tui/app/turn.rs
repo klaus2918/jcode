@@ -660,7 +660,7 @@ impl App {
                                 self.update_copy_badge_key_event(key);
                                 if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                     let scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
-                                    let _ = self.handle_key(key.code, key.modifiers);
+                                    let _ = self.handle_key_press_event(key);
                                     if self.cancel_requested {
                                         self.cancel_requested = false;
                                         self.interleave_message = None;
@@ -745,7 +745,7 @@ impl App {
                                 self.update_copy_badge_key_event(key);
                                 if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                     let scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
-                                    let _ = self.handle_key(key.code, key.modifiers);
+                                    let _ = self.handle_key_press_event(key);
                                     // Check for cancel request
                                     if self.cancel_requested {
                                         self.cancel_requested = false;
@@ -1395,7 +1395,7 @@ impl App {
                                     self.update_copy_badge_key_event(key);
                                     if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                         let scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
-                                        let _ = self.handle_key(key.code, key.modifiers);
+                                        let _ = self.handle_key_press_event(key);
                                         if self.cancel_requested {
                                             self.cancel_requested = false;
                                             self.interleave_message = None;

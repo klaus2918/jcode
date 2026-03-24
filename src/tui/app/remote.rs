@@ -9,7 +9,9 @@ use crate::tool::selfdev::ReloadContext;
 use crate::tui::backend::{RemoteConnection, RemoteDisconnectReason, RemoteEventState, RemoteRead};
 use crate::tui::ui::capitalize;
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseEvent};
+use crossterm::event::{
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+};
 use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
@@ -338,7 +340,7 @@ pub(super) async fn handle_terminal_event(
             app.note_client_focus();
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                handle_remote_key(app, key.code, key.modifiers, remote).await?;
+                handle_remote_key_event(app, key, remote).await?;
                 if let Some(spec) = app.pending_model_switch.take() {
                     let _ = remote.set_model(&spec).await;
                 }
@@ -681,7 +683,7 @@ fn handle_terminal_event_while_disconnected(
             app.note_client_focus();
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                handle_disconnected_key(app, key.code, key.modifiers)?;
+                handle_disconnected_key_event(app, key)?;
             }
             needs_redraw = true;
         }
@@ -2342,23 +2344,7 @@ pub(super) fn handle_server_event(
 }
 
 pub(super) fn handle_remote_char_input(app: &mut App, c: char) {
-    if app.input.is_empty() && !app.is_processing && app.display_messages.is_empty() {
-        if let Some(digit) = c.to_digit(10) {
-            let suggestions = app.suggestion_prompts();
-            let idx = digit as usize;
-            if idx >= 1 && idx <= suggestions.len() {
-                let (_label, prompt) = &suggestions[idx - 1];
-                if !prompt.starts_with('/') {
-                    app.remember_input_undo_state();
-                    app.input = prompt.clone();
-                    app.cursor_pos = app.input.len();
-                    app.follow_chat_bottom_for_typing();
-                    return;
-                }
-            }
-        }
-    }
-    input::insert_input_text(app, &c.to_string());
+    input::handle_text_input(app, &c.to_string());
     app.follow_chat_bottom_for_typing();
 }
 
@@ -2412,10 +2398,27 @@ pub(super) fn handle_disconnected_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<()> {
+    handle_disconnected_key_internal(app, code, modifiers, None)
+}
+
+pub(super) fn handle_disconnected_key_event(app: &mut App, event: KeyEvent) -> Result<()> {
+    handle_disconnected_key_internal(
+        app,
+        event.code,
+        event.modifiers,
+        input::text_input_for_key_event(&event),
+    )
+}
+
+fn handle_disconnected_key_internal(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    text_input: Option<String>,
+) -> Result<()> {
     let mut code = code;
     let mut modifiers = modifiers;
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
-    code = input::normalize_shifted_printable_key(code, modifiers);
 
     if input::handle_navigation_shortcuts(app, code, modifiers) {
         return Ok(());
@@ -2456,6 +2459,12 @@ pub(super) fn handle_disconnected_key(
 
     // Never fall through and insert literal text for unhandled Ctrl+key chords.
     if modifiers.contains(KeyModifiers::CONTROL) {
+        return Ok(());
+    }
+
+    if let Some(text) = text_input.or_else(|| input::text_input_for_key(code, modifiers)) {
+        input::handle_text_input(app, &text);
+        app.follow_chat_bottom_for_typing();
         return Ok(());
     }
 
@@ -2578,10 +2587,34 @@ pub(super) async fn handle_remote_key(
     modifiers: KeyModifiers,
     remote: &mut RemoteConnection,
 ) -> Result<()> {
+    handle_remote_key_internal(app, code, modifiers, remote, None).await
+}
+
+pub(super) async fn handle_remote_key_event(
+    app: &mut App,
+    event: KeyEvent,
+    remote: &mut RemoteConnection,
+) -> Result<()> {
+    handle_remote_key_internal(
+        app,
+        event.code,
+        event.modifiers,
+        remote,
+        input::text_input_for_key_event(&event),
+    )
+    .await
+}
+
+async fn handle_remote_key_internal(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    remote: &mut RemoteConnection,
+    text_input: Option<String>,
+) -> Result<()> {
     let mut code = code;
     let mut modifiers = modifiers;
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
-    code = input::normalize_shifted_printable_key(code, modifiers);
 
     if app.changelog_scroll.is_some() {
         return app.handle_changelog_key(code);
@@ -2943,6 +2976,12 @@ pub(super) async fn handle_remote_key(
 
     // Never fall through and insert literal text for unhandled Ctrl+key chords.
     if modifiers.contains(KeyModifiers::CONTROL) {
+        return Ok(());
+    }
+
+    if let Some(text) = text_input.or_else(|| input::text_input_for_key(code, modifiers)) {
+        input::handle_text_input(app, &text);
+        app.follow_chat_bottom_for_typing();
         return Ok(());
     }
 

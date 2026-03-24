@@ -1330,6 +1330,22 @@ fn test_handle_key_shift_slash_inserts_question_mark() {
 }
 
 #[test]
+fn test_handle_key_event_shift_slash_inserts_question_mark() {
+    use crossterm::event::{KeyEvent, KeyEventKind};
+
+    let mut app = create_test_app();
+
+    app.handle_key_event(KeyEvent::new_with_kind(
+        KeyCode::Char('/'),
+        KeyModifiers::SHIFT,
+        KeyEventKind::Press,
+    ));
+
+    assert_eq!(app.input(), "?");
+    assert_eq!(app.cursor_pos(), 1);
+}
+
+#[test]
 fn test_handle_key_backspace() {
     let mut app = create_test_app();
 
@@ -5282,6 +5298,26 @@ fn test_remote_shift_slash_inserts_question_mark() {
 }
 
 #[test]
+fn test_remote_key_event_shift_slash_inserts_question_mark() {
+    use crossterm::event::{KeyEvent, KeyEventKind};
+
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(remote::handle_remote_key_event(
+        &mut app,
+        KeyEvent::new_with_kind(KeyCode::Char('/'), KeyModifiers::SHIFT, KeyEventKind::Press),
+        &mut remote,
+    ))
+    .unwrap();
+
+    assert_eq!(app.input(), "?");
+    assert_eq!(app.cursor_pos(), 1);
+}
+
+#[test]
 fn test_local_alt_s_toggles_typing_scroll_lock() {
     let mut app = create_test_app();
 
@@ -6510,6 +6546,22 @@ fn test_disconnected_shift_slash_inserts_question_mark() {
     let mut app = create_test_app();
 
     remote::handle_disconnected_key(&mut app, KeyCode::Char('/'), KeyModifiers::SHIFT).unwrap();
+
+    assert_eq!(app.input(), "?");
+    assert!(app.queued_messages().is_empty());
+}
+
+#[test]
+fn test_disconnected_key_event_shift_slash_inserts_question_mark() {
+    use crossterm::event::{KeyEvent, KeyEventKind};
+
+    let mut app = create_test_app();
+
+    remote::handle_disconnected_key_event(
+        &mut app,
+        KeyEvent::new_with_kind(KeyCode::Char('/'), KeyModifiers::SHIFT, KeyEventKind::Press),
+    )
+    .unwrap();
 
     assert_eq!(app.input(), "?");
     assert!(app.queued_messages().is_empty());

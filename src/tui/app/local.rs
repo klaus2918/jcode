@@ -174,7 +174,7 @@ fn apply_terminal_event(
             app.note_client_focus();
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                app.handle_key(key.code, key.modifiers)?;
+                app.handle_key_press_event(key)?;
             }
             Ok(true)
         }
