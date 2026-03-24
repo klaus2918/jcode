@@ -878,6 +878,10 @@ impl Provider for GeminiProvider {
         )
     }
 
+    fn available_models_for_switching(&self) -> Vec<String> {
+        self.available_models_display()
+    }
+
     async fn prefetch_models(&self) -> Result<()> {
         let _ = self.refresh_available_models().await?;
         Ok(())

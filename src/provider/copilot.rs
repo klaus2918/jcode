@@ -978,6 +978,10 @@ impl Provider for CopilotApiProvider {
         FALLBACK_MODELS.iter().map(|m| (*m).to_string()).collect()
     }
 
+    fn available_models_for_switching(&self) -> Vec<String> {
+        self.available_models_display()
+    }
+
     fn supports_compaction(&self) -> bool {
         true
     }

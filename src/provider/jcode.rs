@@ -111,6 +111,11 @@ impl Provider for JcodeProvider {
         self.inner.available_models_display()
     }
 
+    fn available_models_for_switching(&self) -> Vec<String> {
+        self.ensure_runtime_mode();
+        self.inner.available_models_for_switching()
+    }
+
     fn available_providers_for_model(&self, model: &str) -> Vec<String> {
         self.inner.available_providers_for_model(model)
     }

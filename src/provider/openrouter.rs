@@ -2254,6 +2254,10 @@ impl Provider for OpenRouterProvider {
         }
     }
 
+    fn available_models_for_switching(&self) -> Vec<String> {
+        self.available_models_display()
+    }
+
     async fn prefetch_models(&self) -> Result<()> {
         if !self.supports_model_catalog {
             return Ok(());
