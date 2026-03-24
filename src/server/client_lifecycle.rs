@@ -1332,12 +1332,13 @@ async fn start_processing_message(
     let done_tx = processing_done_tx.clone();
     crate::logging::info(&format!("Processing message id={} spawning task", id));
     *processing_task = Some(tokio::spawn(async move {
+        let event_tx = tx.clone();
         let result = match std::panic::AssertUnwindSafe(process_message_streaming_mpsc(
             agent,
             &content,
             images,
             system_reminder,
-            tx,
+            event_tx,
         ))
         .catch_unwind()
         .await

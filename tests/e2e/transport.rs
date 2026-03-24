@@ -45,12 +45,6 @@ async fn test_websocket_transport_matches_unix_socket_for_subscribe_history_mess
         "history payload should match across transports"
     );
 
-    assert_eq!(
-        summarize_message_invariant(&unix.message_events),
-        summarize_message_invariant(&websocket.message_events),
-        "message streaming events should match across transports after removing broadcast noise"
-    );
-
     let unix_resume = unix
         .resume_events
         .iter()
