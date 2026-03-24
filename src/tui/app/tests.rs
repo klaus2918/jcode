@@ -1319,6 +1319,17 @@ fn test_handle_key_typing() {
 }
 
 #[test]
+fn test_handle_key_shift_slash_inserts_question_mark() {
+    let mut app = create_test_app();
+
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::SHIFT)
+        .unwrap();
+
+    assert_eq!(app.input(), "?");
+    assert_eq!(app.cursor_pos(), 1);
+}
+
+#[test]
 fn test_handle_key_backspace() {
     let mut app = create_test_app();
 
@@ -5257,6 +5268,20 @@ fn test_remote_typing_resumes_bottom_follow_mode() {
 }
 
 #[test]
+fn test_remote_shift_slash_inserts_question_mark() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('/'), KeyModifiers::SHIFT, &mut remote))
+        .unwrap();
+
+    assert_eq!(app.input(), "?");
+    assert_eq!(app.cursor_pos(), 1);
+}
+
+#[test]
 fn test_local_alt_s_toggles_typing_scroll_lock() {
     let mut app = create_test_app();
 
@@ -6477,6 +6502,16 @@ fn test_disconnected_shift_enter_inserts_newline() {
     remote::handle_disconnected_key(&mut app, KeyCode::Char('i'), KeyModifiers::empty()).unwrap();
 
     assert_eq!(app.input(), "h\ni");
+    assert!(app.queued_messages().is_empty());
+}
+
+#[test]
+fn test_disconnected_shift_slash_inserts_question_mark() {
+    let mut app = create_test_app();
+
+    remote::handle_disconnected_key(&mut app, KeyCode::Char('/'), KeyModifiers::SHIFT).unwrap();
+
+    assert_eq!(app.input(), "?");
     assert!(app.queued_messages().is_empty());
 }
 

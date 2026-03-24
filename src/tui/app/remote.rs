@@ -2415,6 +2415,7 @@ pub(super) fn handle_disconnected_key(
     let mut code = code;
     let mut modifiers = modifiers;
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
+    code = input::normalize_shifted_printable_key(code, modifiers);
 
     if input::handle_navigation_shortcuts(app, code, modifiers) {
         return Ok(());
@@ -2580,6 +2581,7 @@ pub(super) async fn handle_remote_key(
     let mut code = code;
     let mut modifiers = modifiers;
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
+    code = input::normalize_shifted_printable_key(code, modifiers);
 
     if app.changelog_scroll.is_some() {
         return app.handle_changelog_key(code);
