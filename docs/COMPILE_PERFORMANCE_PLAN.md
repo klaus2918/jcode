@@ -111,6 +111,10 @@ Start with the highest-leverage cache boundaries:
 - Follow-up: gather more realistic before/after timing data using controlled
   touched-file benchmarks rather than fully hot no-op rebuilds.
 
+- 2026-03-24: moved PDF extraction behind the new `crates/jcode-pdf` workspace
+  crate and fixed the `--no-default-features` build path by making PDF support
+  degrade gracefully when the feature is disabled.
+
 ### Phase 5 — Reduce invalidation pressure
 
 - Continue shrinking giant hotspot files.

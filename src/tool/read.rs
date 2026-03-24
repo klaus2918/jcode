@@ -608,7 +608,7 @@ fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
     };
 
     // Extract text from PDF
-    match pdf_extract::extract_text(path) {
+    match jcode_pdf::extract_text(path) {
         Ok(text) => {
             let mut output = String::new();
             output.push_str(&format!("PDF: {} ({})\n", file_path, size_str));
