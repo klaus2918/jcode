@@ -2,7 +2,10 @@
 
 This document defines the safe, incremental path for refactoring jcode while preserving behavior.
 
-See also: [`docs/CODE_QUALITY_10_10_PLAN.md`](CODE_QUALITY_10_10_PLAN.md) for the code-quality target, phased uplift program, and initial hotspot refactor list.
+See also:
+
+- [`docs/CODE_QUALITY_10_10_PLAN.md`](CODE_QUALITY_10_10_PLAN.md) for the code-quality target, phased uplift program, and initial hotspot refactor list.
+- [`docs/COMPILE_PERFORMANCE_PLAN.md`](COMPILE_PERFORMANCE_PLAN.md) for compile-speed baselines, tactical build workflow, and the workspace/crate split roadmap.
 
 ## Goals
 
@@ -16,6 +19,7 @@ See also: [`docs/CODE_QUALITY_10_10_PLAN.md`](CODE_QUALITY_10_10_PLAN.md) for th
 
    - `scripts/refactor_shadow.sh serve`
    - `scripts/refactor_shadow.sh run`
+   - `scripts/refactor_shadow.sh build --release`
 
 2. Before each refactor merge, run the phase-1 verification suite:
 
@@ -65,6 +69,7 @@ See also: [`docs/CODE_QUALITY_10_10_PLAN.md`](CODE_QUALITY_10_10_PLAN.md) for th
 ## Verification Matrix
 
 - Compile: `cargo check -q`
+- Compile timing: `scripts/bench_compile.sh check` and `scripts/bench_compile.sh release-jcode`
 - Warnings: `scripts/check_warning_budget.sh`
 - Security: `scripts/security_preflight.sh`
 - Unit+integration tests: `cargo test -q`

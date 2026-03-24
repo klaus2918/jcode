@@ -64,6 +64,8 @@ Status values:
 - [ ] Add repeated attach/detach and reconnect coverage
 - [ ] Track memory regression expectations in a documented budget
 - [ ] Improve observability around reload, swarm, and tool execution paths
+- [ ] Execute the compile-performance roadmap in `docs/COMPILE_PERFORMANCE_PLAN.md`
+- [ ] Add repeatable compile timing checkpoints for warm/cold self-dev loops
 
 ## Immediate Active Work
 
