@@ -94,11 +94,7 @@ pub fn apply_runtime_env() -> Result<()> {
 }
 
 pub async fn get_bearer_token() -> Result<String> {
-    use azure_core::credentials::TokenCredential;
-
-    let credential = azure_identity::DefaultAzureCredential::new()?;
-    let token = credential.get_token(&[COGNITIVE_SCOPE]).await?;
-    Ok(token.token.secret().to_string())
+    jcode_azure_auth::get_bearer_token(COGNITIVE_SCOPE).await
 }
 
 #[cfg(test)]
