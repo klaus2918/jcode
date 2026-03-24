@@ -29,8 +29,11 @@ Status values:
 ### Highest priority
 - [ ] Split `tests/e2e/main.rs` by feature area
   - Started 2026-03-24: extracted feature modules `session_flow`, `transport`, `provider_behavior`, `binary_integration`, `safety`, and `ambient`
-  - Remaining follow-up: extract shared helpers into `tests/e2e/test_support/mod.rs`
+  - Completed 2026-03-24: extracted shared helpers into `tests/e2e/test_support/mod.rs`
 - [ ] Continue splitting `src/server.rs` into focused submodules
+  - Progress 2026-03-24: extracted shared server/swarm state into `src/server/state.rs`
+  - Progress 2026-03-24: extracted socket/bootstrap helpers into `src/server/socket.rs`
+  - Progress 2026-03-24: extracted reload marker/signal state into `src/server/reload_state.rs`
 - [ ] Split `src/agent.rs` into orchestration, stream, interrupt, and tool-exec modules
 
 ### Next wave

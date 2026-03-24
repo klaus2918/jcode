@@ -261,7 +261,7 @@ pub(super) async fn await_reload_signal(
 ) {
     use std::process::Command as ProcessCommand;
 
-    let mut rx = super::reload_signal().1.clone();
+    let mut rx = super::reload_state::reload_signal().1.clone();
 
     loop {
         let signal = match receive_reload_signal(&mut rx).await {
