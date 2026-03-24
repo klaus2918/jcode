@@ -593,6 +593,7 @@ fn is_pdf_file(path: &Path) -> bool {
 }
 
 /// Handle reading a PDF file - extract text content
+#[cfg(feature = "pdf")]
 fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
     // Get file metadata
     let metadata = std::fs::metadata(path)?;
@@ -644,4 +645,24 @@ fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
             )))
         }
     }
+}
+
+/// Handle reading a PDF file when PDF support is not compiled in.
+#[cfg(not(feature = "pdf"))]
+fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
+    let metadata = std::fs::metadata(path)?;
+    let file_size = metadata.len();
+
+    let size_str = if file_size < 1024 {
+        format!("{} bytes", file_size)
+    } else if file_size < 1024 * 1024 {
+        format!("{:.1} KB", file_size as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", file_size as f64 / 1024.0 / 1024.0)
+    };
+
+    Ok(ToolOutput::new(format!(
+        "PDF: {} ({})\nPDF text extraction is not available in this build. Rebuild with the `pdf` feature enabled to extract text.",
+        file_path, size_str
+    )))
 }
