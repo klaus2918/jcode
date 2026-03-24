@@ -1183,8 +1183,77 @@ pub(super) fn handle_dictation_command(app: &mut App, trimmed: &str) -> bool {
     false
 }
 
+fn alignment_label(centered: bool) -> &'static str {
+    if centered { "centered" } else { "left-aligned" }
+}
+
+fn alignment_status_notice(centered: bool) -> &'static str {
+    if centered {
+        "Layout: Centered"
+    } else {
+        "Layout: Left-aligned"
+    }
+}
+
+fn parse_alignment_value(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "centered" | "center" | "centre" | "on" => Some(true),
+        "left" | "left-aligned" | "left_aligned" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn handle_alignment_command(app: &mut App, trimmed: &str) -> bool {
+    if !trimmed.starts_with("/alignment") {
+        return false;
+    }
+
+    let rest = trimmed
+        .strip_prefix("/alignment")
+        .unwrap_or_default()
+        .trim();
+
+    if rest.is_empty() || matches!(rest, "show" | "status") {
+        let saved = crate::config::Config::load().display.centered;
+        app.push_display_message(DisplayMessage::system(format!(
+            "Alignment is currently **{}**.\nSaved default: **{}**.\n\nUse `/alignment centered` or `/alignment left` to change it permanently, or press `Alt+C` to toggle it for the current session.",
+            alignment_label(app.centered),
+            alignment_label(saved)
+        )));
+        return true;
+    }
+
+    let Some(centered) = parse_alignment_value(rest) else {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: `/alignment` (show), `/alignment centered`, or `/alignment left`".to_string(),
+        ));
+        return true;
+    };
+
+    app.set_centered(centered);
+    app.set_status_notice(alignment_status_notice(centered));
+
+    match crate::config::Config::set_display_centered(centered) {
+        Ok(()) => app.push_display_message(DisplayMessage::system(format!(
+            "Saved default alignment: **{}**. Applied to this session immediately.",
+            alignment_label(centered)
+        ))),
+        Err(error) => app.push_display_message(DisplayMessage::error(format!(
+            "Applied **{}** alignment for this session, but failed to save it as the default: {}",
+            alignment_label(centered),
+            error
+        ))),
+    }
+
+    true
+}
+
 pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     use crate::bus::{Bus, BusEvent};
+
+    if handle_alignment_command(app, trimmed) {
+        return true;
+    }
 
     if trimmed == "/compact mode" || trimmed == "/compact mode status" {
         let mode = app

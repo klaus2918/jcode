@@ -445,6 +445,64 @@ fn test_fast_status_shows_saved_default() {
 }
 
 #[test]
+fn test_alignment_command_persists_and_applies_immediately() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.set_centered(false);
+        app.input = "/alignment centered".to_string();
+
+        app.submit_input();
+
+        let cfg = crate::config::Config::load();
+        assert!(cfg.display.centered);
+        assert!(app.centered_mode());
+        assert_eq!(app.status_notice(), Some("Layout: Centered".to_string()));
+
+        let last = app.display_messages().last().expect("missing response");
+        assert_eq!(last.role, "system");
+        assert!(
+            last.content
+                .contains("Saved default alignment: **centered**")
+        );
+    });
+}
+
+#[test]
+fn test_alignment_status_shows_current_and_saved_defaults() {
+    with_temp_jcode_home(|| {
+        crate::config::Config::set_display_centered(false).expect("save alignment default");
+
+        let mut app = create_test_app();
+        app.set_centered(true);
+        app.input = "/alignment".to_string();
+
+        app.submit_input();
+
+        let last = app.display_messages().last().expect("missing response");
+        assert_eq!(last.role, "system");
+        assert!(
+            last.content
+                .contains("Alignment is currently **centered**.")
+        );
+        assert!(last.content.contains("Saved default: **left-aligned**."));
+        assert!(last.content.contains("/alignment centered"));
+        assert!(last.content.contains("Alt+C"));
+    });
+}
+
+#[test]
+fn test_alignment_invalid_usage_shows_error() {
+    let mut app = create_test_app();
+    app.input = "/alignment diagonal".to_string();
+
+    app.submit_input();
+
+    let last = app.display_messages().last().expect("missing response");
+    assert_eq!(last.role, "error");
+    assert!(last.content.contains("Usage: `/alignment`"));
+}
+
+#[test]
 fn test_help_topic_shows_fix_command_details() {
     let mut app = create_test_app();
     app.input = "/help fix".to_string();
@@ -1891,6 +1949,9 @@ fn test_top_level_command_suggestions_include_config_and_subscription() {
     let suggestions = app.get_suggestions_for("/con");
     assert!(suggestions.iter().any(|(cmd, _)| cmd == "/config"));
 
+    let suggestions = app.get_suggestions_for("/ali");
+    assert!(suggestions.iter().any(|(cmd, _)| cmd == "/alignment"));
+
     let suggestions = app.get_suggestions_for("/sub");
     assert!(suggestions.iter().any(|(cmd, _)| cmd == "/subscription"));
 }
@@ -1913,6 +1974,12 @@ fn test_nested_command_suggestions_filter_partial_suffixes() {
     assert_eq!(
         suggestions.first().map(|(cmd, _)| cmd.as_str()),
         Some("/config edit")
+    );
+
+    let suggestions = app.get_suggestions_for("/alignment ce");
+    assert_eq!(
+        suggestions.first().map(|(cmd, _)| cmd.as_str()),
+        Some("/alignment centered")
     );
 
     let suggestions = app.get_suggestions_for("/compact mo se");

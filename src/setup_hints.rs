@@ -553,7 +553,7 @@ fn startup_hints_for_launch(state: &SetupHintsState) -> Option<StartupHints> {
             .unwrap_or_else(|| "~/.jcode/config.toml".to_string());
 
         let mut message = format!(
-            "You can hotswap text alignment with `Alt+C` (left-aligned ↔ centered).\n\nYou can also change it in `{}` with `display.centered = true` or `display.centered = false`.",
+            "You can hotswap text alignment with `Alt+C` (left-aligned ↔ centered).\n\nTo save it permanently, use `/alignment centered` or `/alignment left`. You can also change it in `{}` with `display.centered = true` or `display.centered = false`.",
             config_path
         );
 
@@ -1391,6 +1391,8 @@ mod tests {
         let (title, message) = hints.display_message.expect("expected display message");
         assert_eq!(title, "Welcome");
         assert!(message.contains("Alt+C"));
+        assert!(message.contains("/alignment centered"));
+        assert!(message.contains("/alignment left"));
         assert!(message.contains("display.centered = true"));
         assert!(message.contains("display.centered = false"));
     }

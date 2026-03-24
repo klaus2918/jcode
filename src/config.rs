@@ -1077,6 +1077,15 @@ impl Config {
         Ok(())
     }
 
+    /// Update the persisted default alignment preference.
+    pub fn set_display_centered(centered: bool) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.display.centered = centered;
+        cfg.save()?;
+        crate::logging::info(&format!("Saved display.centered to config: {}", centered));
+        Ok(())
+    }
+
     /// Create a default config file with comments
     pub fn create_default_config_file() -> anyhow::Result<PathBuf> {
         let path = Self::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;

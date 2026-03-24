@@ -258,6 +258,10 @@ impl App {
                 "/transport".into(),
                 "Show/change connection transport (auto/https/websocket)",
             ),
+            (
+                "/alignment".into(),
+                "Show/change default text alignment (centered/left)",
+            ),
             ("/clear".into(), "Clear conversation history"),
             ("/rewind".into(), "Rewind conversation to previous message"),
             ("/poke".into(), "Poke model to resume with incomplete todos"),
@@ -662,6 +666,26 @@ impl App {
             );
         }
 
+        if prefix.starts_with("/alignment ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    (
+                        "/alignment status".into(),
+                        "Show current and saved alignment",
+                    ),
+                    (
+                        "/alignment centered".into(),
+                        "Save centered alignment and apply it now",
+                    ),
+                    (
+                        "/alignment left".into(),
+                        "Save left-aligned layout and apply it now",
+                    ),
+                ],
+            );
+        }
+
         if prefix.starts_with("/config ") {
             return self.rank_suggestions(
                 input,
@@ -884,6 +908,7 @@ impl App {
                 | "/rewind"
                 | "/compact"
                 | "/compact mode"
+                | "/alignment"
                 | "/config"
                 | "/save"
                 | "/cache"
