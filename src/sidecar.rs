@@ -9,11 +9,13 @@
 
 use crate::auth;
 use anyhow::{Context, Result};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
 /// Fast/cheap OpenAI model used when Codex credentials are available.
 pub const SIDECAR_OPENAI_MODEL: &str = "gpt-5.3-codex-spark";
-const SIDECAR_OPENAI_CHATGPT_MODEL: &str = "gpt-5.3-codex";
+const SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL: &str = "gpt-5.4";
+const SIDECAR_OPENAI_OAUTH_FALLBACK_REASONING: &str = "low";
 
 /// Fast/cheap Claude model used when only Claude credentials are available.
 const SIDECAR_CLAUDE_MODEL: &str = "claude-haiku-4-5-20241022";
@@ -97,6 +99,8 @@ impl Sidecar {
     ///
     /// - Direct API key mode: non-streaming, simple JSON response.
     /// - ChatGPT OAuth mode: streaming SSE (required by chatgpt.com endpoint).
+    ///   Prefer codex-spark there too, but fall back to GPT-5.4 with low
+    ///   reasoning if spark is unavailable for the current account.
     async fn complete_openai(&self, system: &str, user_message: &str) -> Result<String> {
         let creds = auth::codex::load_credentials()
             .context("Failed to load OpenAI/Codex credentials for sidecar")?;
@@ -109,42 +113,97 @@ impl Sidecar {
         };
         let url = format!("{}/{}", base.trim_end_matches('/'), OPENAI_RESPONSES_PATH);
 
-        let model = if is_chatgpt_mode && self.model == SIDECAR_OPENAI_MODEL {
-            SIDECAR_OPENAI_CHATGPT_MODEL
-        } else {
-            &self.model
-        };
+        let (primary_model, primary_reasoning) =
+            resolve_openai_request_model(&self.model, is_chatgpt_mode);
 
-        let mut instructions = String::new();
-        if !system.is_empty() {
-            instructions.push_str(system);
+        match self
+            .complete_openai_with_model(
+                &url,
+                creds.access_token.as_str(),
+                creds.account_id.as_deref(),
+                is_chatgpt_mode,
+                system,
+                user_message,
+                primary_model,
+                primary_reasoning,
+            )
+            .await
+        {
+            Ok(text) => {
+                crate::provider::clear_model_unavailable_for_account(primary_model);
+                Ok(text)
+            }
+            Err(OpenAiSidecarError::Api { status, body })
+                if is_chatgpt_mode
+                    && primary_model == SIDECAR_OPENAI_MODEL
+                    && is_openai_model_unavailable(status, &body) =>
+            {
+                let reason = classify_openai_model_unavailable(status, &body)
+                    .unwrap_or_else(|| format!("model denied by OpenAI API (status {})", status));
+                crate::provider::record_model_unavailable_for_account(primary_model, &reason);
+                crate::logging::info(&format!(
+                    "Sidecar fallback: {} unavailable in ChatGPT OAuth mode; retrying {} with reasoning={} ({})",
+                    primary_model,
+                    SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL,
+                    SIDECAR_OPENAI_OAUTH_FALLBACK_REASONING,
+                    reason
+                ));
+
+                let fallback = self
+                    .complete_openai_with_model(
+                        &url,
+                        creds.access_token.as_str(),
+                        creds.account_id.as_deref(),
+                        is_chatgpt_mode,
+                        system,
+                        user_message,
+                        SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL,
+                        Some(SIDECAR_OPENAI_OAUTH_FALLBACK_REASONING),
+                    )
+                    .await;
+
+                match fallback {
+                    Ok(text) => {
+                        crate::provider::clear_model_unavailable_for_account(
+                            SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL,
+                        );
+                        Ok(text)
+                    }
+                    Err(err) => Err(err.into_anyhow()),
+                }
+            }
+            Err(err) => Err(err.into_anyhow()),
         }
+    }
 
-        // ChatGPT endpoint requires stream:true; direct API supports stream:false.
-        let request = serde_json::json!({
-            "model": model,
-            "instructions": instructions,
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{
-                    "type": "input_text",
-                    "text": user_message,
-                }],
-            }],
-            "stream": is_chatgpt_mode,
-            "store": false,
-        });
+    async fn complete_openai_with_model(
+        &self,
+        url: &str,
+        access_token: &str,
+        account_id: Option<&str>,
+        is_chatgpt_mode: bool,
+        system: &str,
+        user_message: &str,
+        model: &str,
+        reasoning_effort: Option<&str>,
+    ) -> std::result::Result<String, OpenAiSidecarError> {
+        let request = build_openai_request(
+            model,
+            system,
+            user_message,
+            is_chatgpt_mode,
+            reasoning_effort,
+        );
 
         let mut builder = self
             .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", creds.access_token))
+            .post(url)
+            .header("Authorization", format!("Bearer {}", access_token))
             .header("Content-Type", "application/json");
 
         if is_chatgpt_mode {
             builder = builder.header("originator", OPENAI_ORIGINATOR);
-            if let Some(ref account_id) = creds.account_id {
+            if let Some(account_id) = account_id {
                 builder = builder.header("chatgpt-account-id", account_id);
             }
         }
@@ -153,22 +212,26 @@ impl Sidecar {
             .json(&request)
             .send()
             .await
-            .context("Failed to send request to OpenAI API")?;
+            .context("Failed to send request to OpenAI API")
+            .map_err(OpenAiSidecarError::other)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("OpenAI API error ({}): {}", status, error_text);
+            let body = response.text().await.unwrap_or_default();
+            return Err(OpenAiSidecarError::Api { status, body });
         }
 
         if is_chatgpt_mode {
-            collect_openai_sse_text(response).await
+            collect_openai_sse_text(response)
+                .await
+                .map_err(OpenAiSidecarError::other)
         } else {
             let result: serde_json::Value = response
                 .json()
                 .await
-                .context("Failed to parse OpenAI API response")?;
-            extract_openai_response_text(&result)
+                .context("Failed to parse OpenAI API response")
+                .map_err(OpenAiSidecarError::other)?;
+            extract_openai_response_text(&result).map_err(OpenAiSidecarError::other)
         }
     }
 
@@ -375,6 +438,121 @@ impl Default for Sidecar {
 #[allow(dead_code)]
 pub const SIDECAR_FAST_MODEL: &str = SIDECAR_OPENAI_MODEL;
 
+fn resolve_openai_request_model<'a>(
+    preferred_model: &'a str,
+    is_chatgpt_mode: bool,
+) -> (&'a str, Option<&'static str>) {
+    if !is_chatgpt_mode || preferred_model != SIDECAR_OPENAI_MODEL {
+        return (preferred_model, None);
+    }
+
+    match crate::provider::is_model_available_for_account(SIDECAR_OPENAI_MODEL) {
+        Some(false) => (
+            SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL,
+            Some(SIDECAR_OPENAI_OAUTH_FALLBACK_REASONING),
+        ),
+        _ => (SIDECAR_OPENAI_MODEL, None),
+    }
+}
+
+fn build_openai_request(
+    model: &str,
+    system: &str,
+    user_message: &str,
+    stream: bool,
+    reasoning_effort: Option<&str>,
+) -> serde_json::Value {
+    let mut instructions = String::new();
+    if !system.is_empty() {
+        instructions.push_str(system);
+    }
+
+    let mut request = serde_json::json!({
+        "model": model,
+        "instructions": instructions,
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": user_message,
+            }],
+        }],
+        "stream": stream,
+        "store": false,
+    });
+
+    if let Some(effort) = reasoning_effort {
+        request["reasoning"] = serde_json::json!({ "effort": effort });
+    }
+
+    request
+}
+
+fn classify_openai_model_unavailable(status: StatusCode, body: &str) -> Option<String> {
+    let lower = body.to_ascii_lowercase();
+    let mentions_model = lower.contains("model")
+        || lower.contains("slug")
+        || lower.contains("engine")
+        || lower.contains("deployment");
+    let unavailable = lower.contains("not available")
+        || lower.contains("unavailable")
+        || lower.contains("does not have access")
+        || lower.contains("not enabled")
+        || lower.contains("not found")
+        || lower.contains("unknown model")
+        || lower.contains("unsupported model")
+        || lower.contains("invalid model");
+
+    if !mentions_model || !unavailable {
+        return None;
+    }
+
+    if matches!(
+        status,
+        StatusCode::NOT_FOUND
+            | StatusCode::FORBIDDEN
+            | StatusCode::BAD_REQUEST
+            | StatusCode::UNPROCESSABLE_ENTITY
+    ) {
+        let trimmed = body.trim();
+        return Some(if trimmed.is_empty() {
+            format!("model denied by OpenAI API (status {})", status)
+        } else {
+            format!(
+                "model denied by OpenAI API (status {}): {}",
+                status, trimmed
+            )
+        });
+    }
+
+    None
+}
+
+fn is_openai_model_unavailable(status: StatusCode, body: &str) -> bool {
+    classify_openai_model_unavailable(status, body).is_some()
+}
+
+enum OpenAiSidecarError {
+    Api { status: StatusCode, body: String },
+    Other(anyhow::Error),
+}
+
+impl OpenAiSidecarError {
+    fn other(err: anyhow::Error) -> Self {
+        Self::Other(err)
+    }
+
+    fn into_anyhow(self) -> anyhow::Error {
+        match self {
+            Self::Api { status, body } => {
+                anyhow::anyhow!("OpenAI API error ({}): {}", status, body)
+            }
+            Self::Other(err) => err,
+        }
+    }
+}
+
 /// A memory extracted by the sidecar
 #[derive(Debug, Clone)]
 pub struct ExtractedMemory {
@@ -542,6 +720,7 @@ struct ClaudeUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::codex;
     use std::ffi::OsString;
 
     struct EnvVarGuard {
@@ -604,5 +783,62 @@ mod tests {
         let sidecar = Sidecar::new();
         assert_eq!(sidecar.backend, SidecarBackend::OpenAI);
         assert_eq!(sidecar.model, SIDECAR_OPENAI_MODEL);
+    }
+
+    #[test]
+    fn test_chatgpt_oauth_keeps_spark_when_available() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        codex::set_active_account_override(Some("openai-1".to_string()));
+        crate::provider::clear_all_model_unavailability_for_account();
+        crate::provider::populate_account_models(vec![
+            SIDECAR_OPENAI_MODEL.to_string(),
+            SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL.to_string(),
+        ]);
+
+        let (model, reasoning) = resolve_openai_request_model(SIDECAR_OPENAI_MODEL, true);
+        assert_eq!(model, SIDECAR_OPENAI_MODEL);
+        assert_eq!(reasoning, None);
+
+        codex::set_active_account_override(None);
+    }
+
+    #[test]
+    fn test_chatgpt_oauth_falls_back_to_gpt_5_4_low_when_spark_unavailable() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        codex::set_active_account_override(Some("openai-1".to_string()));
+        crate::provider::clear_all_model_unavailability_for_account();
+        crate::provider::populate_account_models(vec![
+            SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL.to_string(),
+        ]);
+
+        let (model, reasoning) = resolve_openai_request_model(SIDECAR_OPENAI_MODEL, true);
+        assert_eq!(model, SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL);
+        assert_eq!(reasoning, Some(SIDECAR_OPENAI_OAUTH_FALLBACK_REASONING));
+
+        codex::set_active_account_override(None);
+    }
+
+    #[test]
+    fn test_build_openai_request_adds_low_reasoning_only_for_fallback() {
+        let request = build_openai_request(
+            SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL,
+            "system",
+            "hello",
+            true,
+            Some(SIDECAR_OPENAI_OAUTH_FALLBACK_REASONING),
+        );
+        assert_eq!(request["model"], SIDECAR_OPENAI_OAUTH_FALLBACK_MODEL);
+        assert_eq!(
+            request["reasoning"],
+            serde_json::json!({"effort": SIDECAR_OPENAI_OAUTH_FALLBACK_REASONING})
+        );
+
+        let spark_request =
+            build_openai_request(SIDECAR_OPENAI_MODEL, "system", "hello", true, None);
+        assert!(spark_request.get("reasoning").is_none());
     }
 }
