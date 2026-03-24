@@ -734,11 +734,11 @@ pub(super) fn draw_pinned_content_cached(
         return;
     };
     let total_lines = rendered.lines.len();
-    PINNED_PANE_TOTAL_LINES.store(total_lines, Ordering::Relaxed);
+    super::set_pinned_pane_total_lines(total_lines);
 
     let max_scroll = total_lines.saturating_sub(inner.height as usize);
     let clamped_scroll = scroll.min(max_scroll);
-    LAST_DIFF_PANE_EFFECTIVE_SCROLL.store(clamped_scroll, Ordering::Relaxed);
+    super::set_last_diff_pane_effective_scroll(clamped_scroll);
 
     let mut visible_lines: Vec<Line<'static>> = rendered
         .lines
@@ -852,10 +852,10 @@ pub(super) fn draw_side_panel_markdown(
     let has_protocol = mermaid::protocol_type().is_some();
     let rendered = render_side_panel_markdown_cached(page, inner, has_protocol, centered);
 
-    PINNED_PANE_TOTAL_LINES.store(rendered.lines.len(), Ordering::Relaxed);
+    super::set_pinned_pane_total_lines(rendered.lines.len());
     let max_scroll = rendered.lines.len().saturating_sub(inner.height as usize);
     let clamped_scroll = scroll.min(max_scroll);
-    LAST_DIFF_PANE_EFFECTIVE_SCROLL.store(clamped_scroll, Ordering::Relaxed);
+    super::set_last_diff_pane_effective_scroll(clamped_scroll);
 
     let mut visible_lines: Vec<Line<'static>> = rendered
         .lines
@@ -1839,11 +1839,11 @@ fn draw_pinned_content(
     }
 
     let total_lines = text_lines.len();
-    PINNED_PANE_TOTAL_LINES.store(total_lines, Ordering::Relaxed);
+    super::set_pinned_pane_total_lines(total_lines);
 
     let max_scroll = total_lines.saturating_sub(inner.height as usize);
     let clamped_scroll = scroll.min(max_scroll);
-    LAST_DIFF_PANE_EFFECTIVE_SCROLL.store(clamped_scroll, Ordering::Relaxed);
+    super::set_last_diff_pane_effective_scroll(clamped_scroll);
 
     let visible_lines: Vec<Line<'static>> = text_lines.into_iter().skip(clamped_scroll).collect();
 

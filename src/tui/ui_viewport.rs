@@ -165,7 +165,7 @@ pub(super) fn draw_messages(
         area,
     );
 
-    LAST_MAX_SCROLL.store(max_scroll, Ordering::Relaxed);
+    super::set_last_max_scroll(max_scroll);
     update_user_prompt_positions(wrapped_user_prompt_starts);
 
     let user_scroll = app.scroll_offset().min(max_scroll);

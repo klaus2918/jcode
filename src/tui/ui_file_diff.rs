@@ -654,7 +654,7 @@ pub(super) fn draw_file_diff_view(
         return;
     }
 
-    PINNED_PANE_TOTAL_LINES.store(total_lines, Ordering::Relaxed);
+    super::set_pinned_pane_total_lines(total_lines);
 
     let max_scroll = total_lines.saturating_sub(inner.height as usize);
 
@@ -666,7 +666,7 @@ pub(super) fn draw_file_diff_view(
     } else {
         pane_scroll.min(max_scroll)
     };
-    LAST_DIFF_PANE_EFFECTIVE_SCROLL.store(effective_scroll, Ordering::Relaxed);
+    super::set_last_diff_pane_effective_scroll(effective_scroll);
 
     let mut visible_lines = {
         let mut cache = match file_diff_cache().lock() {

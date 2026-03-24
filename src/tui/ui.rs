@@ -14,6 +14,8 @@ use super::{DisplayMessage, ProcessingStatus, TuiState, is_unexpected_cache_miss
 use crate::message::ToolCall;
 use ratatui::{prelude::*, widgets::Paragraph};
 use regex::Regex;
+#[cfg(test)]
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque, hash_map::DefaultHasher};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -93,36 +95,121 @@ static LAST_DIFF_PANE_EFFECTIVE_SCROLL: AtomicUsize = AtomicUsize::new(0);
 /// Used by prompt-jump keybindings (Ctrl+5..9, Ctrl+[/]) for accurate positioning.
 static LAST_USER_PROMPT_POSITIONS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 
+#[cfg(test)]
+thread_local! {
+    static TEST_LAST_MAX_SCROLL: Cell<usize> = const { Cell::new(0) };
+    static TEST_PINNED_PANE_TOTAL_LINES: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_DIFF_PANE_EFFECTIVE_SCROLL: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_USER_PROMPT_POSITIONS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    static TEST_LAST_LAYOUT: RefCell<Option<LayoutSnapshot>> = const { RefCell::new(None) };
+}
+
 /// Get the last known max scroll value (from the most recent render frame).
 /// Returns 0 if no frame has been rendered yet.
 pub fn last_max_scroll() -> usize {
-    LAST_MAX_SCROLL.load(Ordering::Relaxed)
+    #[cfg(test)]
+    {
+        return TEST_LAST_MAX_SCROLL.with(Cell::get);
+    }
+    #[cfg(not(test))]
+    {
+        LAST_MAX_SCROLL.load(Ordering::Relaxed)
+    }
 }
 
 /// Get the total line count from the pinned diff/content pane (set during render).
 pub fn pinned_pane_total_lines() -> usize {
-    PINNED_PANE_TOTAL_LINES.load(Ordering::Relaxed)
+    #[cfg(test)]
+    {
+        return TEST_PINNED_PANE_TOTAL_LINES.with(Cell::get);
+    }
+    #[cfg(not(test))]
+    {
+        PINNED_PANE_TOTAL_LINES.load(Ordering::Relaxed)
+    }
 }
 
 pub fn last_diff_pane_effective_scroll() -> usize {
-    LAST_DIFF_PANE_EFFECTIVE_SCROLL.load(Ordering::Relaxed)
+    #[cfg(test)]
+    {
+        return TEST_LAST_DIFF_PANE_EFFECTIVE_SCROLL.with(Cell::get);
+    }
+    #[cfg(not(test))]
+    {
+        LAST_DIFF_PANE_EFFECTIVE_SCROLL.load(Ordering::Relaxed)
+    }
 }
 
 /// Get the last known user prompt line positions (from the most recent render frame).
 /// Returns positions as wrapped line indices from the top of content.
 pub fn last_user_prompt_positions() -> Vec<usize> {
-    LAST_USER_PROMPT_POSITIONS
-        .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .map(|v| v.clone())
-        .unwrap_or_default()
+    #[cfg(test)]
+    {
+        return TEST_LAST_USER_PROMPT_POSITIONS.with(|v| v.borrow().clone());
+    }
+    #[cfg(not(test))]
+    {
+        LAST_USER_PROMPT_POSITIONS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default()
+    }
 }
 
 fn update_user_prompt_positions(positions: &[usize]) {
-    let mutex = LAST_USER_PROMPT_POSITIONS.get_or_init(|| Mutex::new(Vec::new()));
-    if let Ok(mut v) = mutex.lock() {
-        v.clear();
-        v.extend_from_slice(positions);
+    #[cfg(test)]
+    {
+        TEST_LAST_USER_PROMPT_POSITIONS.with(|v| {
+            let mut v = v.borrow_mut();
+            v.clear();
+            v.extend_from_slice(positions);
+        });
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        let mutex = LAST_USER_PROMPT_POSITIONS.get_or_init(|| Mutex::new(Vec::new()));
+        if let Ok(mut v) = mutex.lock() {
+            v.clear();
+            v.extend_from_slice(positions);
+        }
+    }
+}
+
+pub(crate) fn set_last_max_scroll(value: usize) {
+    #[cfg(test)]
+    {
+        TEST_LAST_MAX_SCROLL.with(|cell| cell.set(value));
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        LAST_MAX_SCROLL.store(value, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn set_pinned_pane_total_lines(value: usize) {
+    #[cfg(test)]
+    {
+        TEST_PINNED_PANE_TOTAL_LINES.with(|cell| cell.set(value));
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        PINNED_PANE_TOTAL_LINES.store(value, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn set_last_diff_pane_effective_scroll(value: usize) {
+    #[cfg(test)]
+    {
+        TEST_LAST_DIFF_PANE_EFFECTIVE_SCROLL.with(|cell| cell.set(value));
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        LAST_DIFF_PANE_EFFECTIVE_SCROLL.store(value, Ordering::Relaxed);
     }
 }
 
@@ -1523,20 +1610,58 @@ pub fn record_layout_snapshot(
     diagram_area: Option<Rect>,
     diff_pane_area: Option<Rect>,
 ) {
-    if let Ok(mut snapshot) = last_layout_state().lock() {
-        *snapshot = Some(LayoutSnapshot {
-            messages_area,
-            diagram_area,
-            diff_pane_area,
+    #[cfg(test)]
+    {
+        TEST_LAST_LAYOUT.with(|snapshot| {
+            *snapshot.borrow_mut() = Some(LayoutSnapshot {
+                messages_area,
+                diagram_area,
+                diff_pane_area,
+            });
         });
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        if let Ok(mut snapshot) = last_layout_state().lock() {
+            *snapshot = Some(LayoutSnapshot {
+                messages_area,
+                diagram_area,
+                diff_pane_area,
+            });
+        }
     }
 }
 
 pub fn last_layout_snapshot() -> Option<LayoutSnapshot> {
-    last_layout_state()
-        .lock()
-        .ok()
-        .and_then(|snapshot| *snapshot)
+    #[cfg(test)]
+    {
+        return TEST_LAST_LAYOUT.with(|snapshot| *snapshot.borrow());
+    }
+    #[cfg(not(test))]
+    {
+        last_layout_state()
+            .lock()
+            .ok()
+            .and_then(|snapshot| *snapshot)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_test_render_state_for_tests() {
+    set_last_max_scroll(0);
+    set_pinned_pane_total_lines(0);
+    set_last_diff_pane_effective_scroll(0);
+    update_user_prompt_positions(&[]);
+    TEST_LAST_LAYOUT.with(|snapshot| {
+        *snapshot.borrow_mut() = None;
+    });
+    set_visible_copy_targets(Vec::new());
+    clear_copy_viewport_snapshot();
+
+    if let Ok(mut state) = prompt_viewport_state().lock() {
+        *state = PromptViewportState::default();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -4572,6 +4697,8 @@ mod tests {
 
     #[test]
     fn test_prepare_messages_places_live_batch_after_committed_assistant_text() {
+        let _guard = crate::storage::lock_test_env();
+        clear_test_render_state_for_tests();
         let state = TestState {
             display_messages: vec![
                 DisplayMessage::user("build it"),

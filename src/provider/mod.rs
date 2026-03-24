@@ -4320,6 +4320,38 @@ impl Provider for MultiProvider {
 mod tests {
     use super::*;
 
+    fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_subscription =
+            std::env::var_os(crate::subscription_catalog::JCODE_SUBSCRIPTION_ACTIVE_ENV);
+        crate::env::set_var("JCODE_HOME", temp.path());
+        crate::subscription_catalog::clear_runtime_env();
+        crate::auth::claude::set_active_account_override(None);
+        crate::auth::codex::set_active_account_override(None);
+
+        let result = f();
+
+        crate::auth::claude::set_active_account_override(None);
+        crate::auth::codex::set_active_account_override(None);
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+        if let Some(prev_subscription) = prev_subscription {
+            crate::env::set_var(
+                crate::subscription_catalog::JCODE_SUBSCRIPTION_ACTIVE_ENV,
+                prev_subscription,
+            );
+        } else {
+            crate::env::remove_var(crate::subscription_catalog::JCODE_SUBSCRIPTION_ACTIVE_ENV);
+        }
+        crate::subscription_catalog::clear_runtime_env();
+        result
+    }
+
     fn test_multi_provider_with_cursor() -> MultiProvider {
         MultiProvider {
             claude: None,
@@ -4471,20 +4503,22 @@ mod tests {
 
     #[test]
     fn test_context_limit_claude() {
-        // Default (no subscription info = assumes Max) -> 1M for opus/sonnet 4.6
-        assert_eq!(context_limit_for_model("claude-opus-4-6"), Some(1_048_576));
-        assert_eq!(
-            context_limit_for_model("claude-sonnet-4-6"),
-            Some(1_048_576)
-        );
-        assert_eq!(
-            context_limit_for_model("claude-opus-4-6[1m]"),
-            Some(1_048_576)
-        );
-        assert_eq!(
-            context_limit_for_model("claude-sonnet-4-6[1m]"),
-            Some(1_048_576)
-        );
+        with_clean_provider_test_env(|| {
+            // Default (no subscription info = assumes Max) -> 1M for opus/sonnet 4.6
+            assert_eq!(context_limit_for_model("claude-opus-4-6"), Some(1_048_576));
+            assert_eq!(
+                context_limit_for_model("claude-sonnet-4-6"),
+                Some(1_048_576)
+            );
+            assert_eq!(
+                context_limit_for_model("claude-opus-4-6[1m]"),
+                Some(1_048_576)
+            );
+            assert_eq!(
+                context_limit_for_model("claude-sonnet-4-6[1m]"),
+                Some(1_048_576)
+            );
+        });
     }
 
     #[test]
@@ -4506,6 +4540,7 @@ mod tests {
                 ActiveProvider::OpenAI,
                 ActiveProvider::Copilot,
                 ActiveProvider::Gemini,
+                ActiveProvider::Cursor,
                 ActiveProvider::OpenRouter,
             ]
         );
@@ -4516,6 +4551,7 @@ mod tests {
                 ActiveProvider::Claude,
                 ActiveProvider::Copilot,
                 ActiveProvider::Gemini,
+                ActiveProvider::Cursor,
                 ActiveProvider::OpenRouter,
             ]
         );
@@ -4526,6 +4562,7 @@ mod tests {
                 ActiveProvider::Claude,
                 ActiveProvider::OpenAI,
                 ActiveProvider::Gemini,
+                ActiveProvider::Cursor,
                 ActiveProvider::OpenRouter,
             ]
         );
@@ -4536,6 +4573,7 @@ mod tests {
                 ActiveProvider::Claude,
                 ActiveProvider::OpenAI,
                 ActiveProvider::Copilot,
+                ActiveProvider::Cursor,
                 ActiveProvider::OpenRouter,
             ]
         );
@@ -4547,6 +4585,7 @@ mod tests {
                 ActiveProvider::OpenAI,
                 ActiveProvider::Copilot,
                 ActiveProvider::Gemini,
+                ActiveProvider::Cursor,
             ]
         );
     }
@@ -4585,48 +4624,56 @@ mod tests {
 
     #[test]
     fn test_cursor_models_are_included_in_available_models_display_when_configured() {
-        let provider = test_multi_provider_with_cursor();
-        let models = provider.available_models_display();
-        assert!(models.iter().any(|model| model == "composer-2-fast"));
-        assert!(models.iter().any(|model| model == "composer-2"));
+        with_clean_provider_test_env(|| {
+            let provider = test_multi_provider_with_cursor();
+            let models = provider.available_models_display();
+            assert!(models.iter().any(|model| model == "composer-2-fast"));
+            assert!(models.iter().any(|model| model == "composer-2"));
+        });
     }
 
     #[test]
     fn test_cursor_models_are_included_in_model_routes_when_configured() {
-        let provider = test_multi_provider_with_cursor();
-        let routes = provider.model_routes();
-        assert!(routes.iter().any(|route| {
-            route.model == "composer-2-fast"
-                && route.provider == "Cursor"
-                && route.api_method == "cursor"
-                && route.available
-        }));
+        with_clean_provider_test_env(|| {
+            let provider = test_multi_provider_with_cursor();
+            let routes = provider.model_routes();
+            assert!(routes.iter().any(|route| {
+                route.model == "composer-2-fast"
+                    && route.provider == "Cursor"
+                    && route.api_method == "cursor"
+                    && route.available
+            }));
+        });
     }
 
     #[test]
     fn test_set_model_switches_to_cursor_for_cursor_models() {
-        let provider = test_multi_provider_with_cursor();
-        *provider.active.write().unwrap() = ActiveProvider::Claude;
+        with_clean_provider_test_env(|| {
+            let provider = test_multi_provider_with_cursor();
+            *provider.active.write().unwrap() = ActiveProvider::Claude;
 
-        provider
-            .set_model("composer-2-fast")
-            .expect("cursor model should route to Cursor");
+            provider
+                .set_model("composer-2-fast")
+                .expect("cursor model should route to Cursor");
 
-        assert_eq!(provider.active_provider(), ActiveProvider::Cursor);
-        assert_eq!(provider.model(), "composer-2-fast");
+            assert_eq!(provider.active_provider(), ActiveProvider::Cursor);
+            assert_eq!(provider.model(), "composer-2-fast");
+        });
     }
 
     #[test]
     fn test_set_model_supports_explicit_cursor_prefix() {
-        let provider = test_multi_provider_with_cursor();
-        *provider.active.write().unwrap() = ActiveProvider::OpenAI;
+        with_clean_provider_test_env(|| {
+            let provider = test_multi_provider_with_cursor();
+            *provider.active.write().unwrap() = ActiveProvider::OpenAI;
 
-        provider
-            .set_model("cursor:gpt-5")
-            .expect("explicit cursor prefix should force Cursor route");
+            provider
+                .set_model("cursor:gpt-5")
+                .expect("explicit cursor prefix should force Cursor route");
 
-        assert_eq!(provider.active_provider(), ActiveProvider::Cursor);
-        assert_eq!(provider.model(), "gpt-5");
+            assert_eq!(provider.active_provider(), ActiveProvider::Cursor);
+            assert_eq!(provider.model(), "gpt-5");
+        });
     }
 
     #[test]

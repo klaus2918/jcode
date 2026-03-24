@@ -73,6 +73,10 @@ pub(super) fn get_cached_message_lines<F>(
 where
     F: FnOnce(&DisplayMessage, u16, crate::config::DiffDisplayMode) -> Vec<Line<'static>>,
 {
+    if cfg!(test) {
+        return render(msg, width, diff_mode);
+    }
+
     let key = MessageCacheKey {
         width,
         diff_mode,

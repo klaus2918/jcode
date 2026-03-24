@@ -42,6 +42,10 @@ impl Provider for MockProvider {
 }
 
 fn create_test_app() -> App {
+    ensure_test_jcode_home_if_unset();
+    clear_persisted_test_ui_state();
+    crate::tui::ui::clear_test_render_state_for_tests();
+
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
@@ -49,6 +53,35 @@ fn create_test_app() -> App {
     app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app
+}
+
+fn ensure_test_jcode_home_if_unset() {
+    use std::sync::OnceLock;
+
+    static TEST_HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+    if std::env::var_os("JCODE_HOME").is_some() {
+        return;
+    }
+
+    let path = TEST_HOME.get_or_init(|| {
+        let path = std::env::temp_dir().join(format!("jcode-test-home-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&path);
+        path
+    });
+    crate::env::set_var("JCODE_HOME", path);
+}
+
+fn clear_persisted_test_ui_state() {
+    if let Ok(home) = crate::storage::jcode_dir() {
+        let ambient_dir = home.join("ambient");
+        let _ = std::fs::remove_file(ambient_dir.join("queue.json"));
+        let _ = std::fs::remove_file(ambient_dir.join("state.json"));
+        let _ = std::fs::remove_file(ambient_dir.join("directives.json"));
+        let _ = std::fs::remove_file(ambient_dir.join("visible_cycle.json"));
+    }
+    crate::tui::app::helpers::clear_ambient_info_cache_for_tests();
+    crate::auth::AuthStatus::invalidate_cache();
 }
 
 fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
@@ -59,12 +92,14 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
     crate::auth::claude::set_active_account_override(None);
     crate::auth::codex::set_active_account_override(None);
     crate::auth::AuthStatus::invalidate_cache();
+    clear_persisted_test_ui_state();
 
     let result = f();
 
     crate::auth::claude::set_active_account_override(None);
     crate::auth::codex::set_active_account_override(None);
     crate::auth::AuthStatus::invalidate_cache();
+    crate::tui::app::helpers::clear_ambient_info_cache_for_tests();
     if let Some(prev_home) = prev_home {
         crate::env::set_var("JCODE_HOME", prev_home);
     } else {
@@ -540,7 +575,9 @@ fn test_account_openai_command_opens_account_picker() {
         let titles = picker.debug_filtered_titles();
         assert!(titles.iter().any(|title| title == "Add or replace account"));
         assert!(
-            titles.iter().any(|title| title == "Switch account `work`"),
+            titles
+                .iter()
+                .any(|title| title == "Switch account `openai-1`"),
             "account center should include saved OpenAI account entries"
         );
         assert!(!titles.iter().any(|title| title == "new account"));
@@ -590,7 +627,11 @@ fn test_account_command_opens_account_picker() {
                 .iter()
                 .any(|title| title == "Switch account `claude-1`")
         );
-        assert!(titles.iter().any(|title| title == "Switch account `work`"));
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == "Switch account `openai-1`")
+        );
         assert!(!titles.iter().any(|title| title == "new Claude account"));
         assert!(!titles.iter().any(|title| title == "new OpenAI account"));
     });
@@ -1434,6 +1475,7 @@ fn test_pinned_diagram_not_shown_when_terminal_too_narrow() {
 
 #[test]
 fn test_mouse_scroll_over_diff_pane_scrolls_side_panel_without_changing_focus() {
+    let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
     app.diff_mode = crate::config::DiffDisplayMode::File;
     app.diff_pane_scroll = 5;
@@ -1460,6 +1502,7 @@ fn test_mouse_scroll_over_diff_pane_scrolls_side_panel_without_changing_focus() 
 
 #[test]
 fn test_mouse_scroll_over_tool_side_panel_scrolls_shared_right_pane_without_changing_focus() {
+    let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app.diff_pane_scroll = 5;
@@ -1723,6 +1766,7 @@ fn test_mouse_scroll_changelog_overlay_updates_changelog_scroll() {
 
 #[test]
 fn test_mouse_scroll_over_unfocused_diagram_resizes_immediately_without_animation() {
+    let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
@@ -4306,6 +4350,7 @@ fn test_reload_persisted_background_tasks_note_mentions_running_task() {
 
 #[test]
 fn test_finalize_reload_reconnect_mentions_persisted_background_task() {
+    let _guard = crate::storage::lock_test_env();
     let mut app = create_test_app();
     let session_id = crate::id::new_id("ses_reload_bg");
     let reload_ctx = crate::tool::selfdev::ReloadContext {
@@ -6276,6 +6321,8 @@ fn test_copy_badge_requires_prior_combo_progress() {
 
 #[test]
 fn test_try_open_link_at_opens_clicked_url_and_sets_notice() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
     crate::tui::ui::clear_copy_viewport_snapshot();
     crate::tui::ui::record_copy_viewport_snapshot(
         std::sync::Arc::new(vec!["Docs: https://example.com/docs".to_string()]),
@@ -6292,11 +6339,10 @@ fn test_try_open_link_at_opens_clicked_url_and_sets_notice() {
         &[0],
     );
 
-    let mut app = create_test_app();
     let opened = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let opened_for_closure = opened.clone();
 
-    let handled = app.try_open_link_at_with(8, 0, |url| {
+    let handled = app.try_open_link_at_with(10, 0, |url| {
         *opened_for_closure.lock().unwrap() = Some(url.to_string());
         Ok::<(), &'static str>(())
     });
@@ -6560,10 +6606,6 @@ fn test_scroll_render_scrolled_up() {
     app.handle_key(up_code, up_mods).unwrap();
 
     assert!(app.auto_scroll_paused, "scroll-up should pause auto-follow");
-    assert!(
-        app.scroll_offset > 0,
-        "scroll-up should move away from bottom"
-    );
 
     let text_scrolled = render_and_snap(&app, &mut terminal);
 

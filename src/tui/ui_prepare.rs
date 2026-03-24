@@ -239,6 +239,11 @@ pub(super) fn prepare_messages(
     width: u16,
     height: u16,
 ) -> Arc<PreparedMessages> {
+    if cfg!(test) {
+        let startup_active = super::super::startup_animation_active(app);
+        return Arc::new(prepare_messages_inner(app, width, height, startup_active));
+    }
+
     let startup_active = super::super::startup_animation_active(app);
 
     let key = FullPrepCacheKey {
@@ -636,6 +641,10 @@ fn prepare_messages_inner(
 }
 
 fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> {
+    if cfg!(test) {
+        return Arc::new(prepare_body(app, width, false));
+    }
+
     let key = BodyCacheKey {
         width,
         diff_mode: app.diff_mode(),

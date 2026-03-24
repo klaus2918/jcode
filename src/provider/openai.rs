@@ -5638,7 +5638,7 @@ mod tests {
         let system = "# Environment\nDate: 2026-01-01\n\n# Self-Development Mode\nUse selfdev tool\n\n# Available Skills\n- test";
 
         let instructions = OpenAIProvider::chatgpt_instructions_with_selfdev(system);
-        assert!(instructions.contains("You are in the Jcode harness"));
+        assert!(instructions.contains("Jcode Agent, in the Jcode harness"));
         assert!(instructions.contains("# Self-Development Mode"));
         assert!(instructions.contains("Use selfdev tool"));
     }

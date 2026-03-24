@@ -4760,6 +4760,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_turn_streaming_mpsc_emits_keepalive_while_provider_is_quiet() {
+        let _guard = crate::storage::lock_test_env();
         let provider: Arc<dyn Provider> = Arc::new(DelayedProvider {
             open_delay: Duration::from_secs(2),
             first_event_delay: Duration::from_secs(2),

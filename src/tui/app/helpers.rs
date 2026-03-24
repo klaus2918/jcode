@@ -2,7 +2,11 @@ use crate::todo::TodoItem;
 use crate::tui::info_widget::{AmbientWidgetData, GitInfo, MemoryInfo};
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
+
+static AMBIENT_INFO_CACHE: Mutex<Option<(std::time::Instant, bool, Option<AmbientWidgetData>)>> =
+    Mutex::new(None);
 
 #[derive(Clone)]
 pub(super) struct CachedContextInfo {
@@ -1075,13 +1079,10 @@ pub(super) fn gather_memory_info(memory_enabled: bool) -> Option<MemoryInfo> {
 }
 
 pub(super) fn gather_ambient_info(ambient_enabled: bool) -> Option<AmbientWidgetData> {
-    use std::sync::Mutex;
     use std::time::Instant;
-
-    static CACHE: Mutex<Option<(Instant, bool, Option<AmbientWidgetData>)>> = Mutex::new(None);
     const TTL: Duration = Duration::from_secs(2);
 
-    if let Ok(guard) = CACHE.lock() {
+    if let Ok(guard) = AMBIENT_INFO_CACHE.lock() {
         if let Some((ts, cached_enabled, ref cached)) = *guard {
             if cached_enabled == ambient_enabled && ts.elapsed() < TTL {
                 return cached.clone();
@@ -1108,7 +1109,7 @@ pub(super) fn gather_ambient_info(ambient_enabled: bool) -> Option<AmbientWidget
         .copied();
 
     if !ambient_enabled && reminder_count == 0 {
-        if let Ok(mut guard) = CACHE.lock() {
+        if let Ok(mut guard) = AMBIENT_INFO_CACHE.lock() {
             *guard = Some((Instant::now(), ambient_enabled, None));
         }
         return None;
@@ -1157,11 +1158,18 @@ pub(super) fn gather_ambient_info(ambient_enabled: bool) -> Option<AmbientWidget
         budget_percent: None,
     });
 
-    if let Ok(mut guard) = CACHE.lock() {
+    if let Ok(mut guard) = AMBIENT_INFO_CACHE.lock() {
         *guard = Some((Instant::now(), ambient_enabled, result.clone()));
     }
 
     result
+}
+
+#[cfg(test)]
+pub(crate) fn clear_ambient_info_cache_for_tests() {
+    if let Ok(mut guard) = AMBIENT_INFO_CACHE.lock() {
+        *guard = None;
+    }
 }
 
 pub(crate) fn format_countdown_until(target: chrono::DateTime<chrono::Utc>) -> String {

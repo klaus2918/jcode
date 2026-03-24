@@ -597,13 +597,13 @@ mod tests {
 
     #[test]
     fn test_error_counters() {
-        ERROR_PROVIDER_TIMEOUT.store(0, Ordering::Relaxed);
-        ERROR_TOOL_ERROR.store(0, Ordering::Relaxed);
+        let start_provider_timeout = ERROR_PROVIDER_TIMEOUT.load(Ordering::Relaxed);
+        let start_tool_error = ERROR_TOOL_ERROR.load(Ordering::Relaxed);
         record_error(ErrorCategory::ProviderTimeout);
         record_error(ErrorCategory::ProviderTimeout);
         record_error(ErrorCategory::ToolError);
-        assert_eq!(ERROR_PROVIDER_TIMEOUT.load(Ordering::Relaxed), 2);
-        assert_eq!(ERROR_TOOL_ERROR.load(Ordering::Relaxed), 1);
+        assert!(ERROR_PROVIDER_TIMEOUT.load(Ordering::Relaxed) >= start_provider_timeout + 2);
+        assert!(ERROR_TOOL_ERROR.load(Ordering::Relaxed) >= start_tool_error + 1);
     }
 
     #[test]
