@@ -1,4 +1,4 @@
-use super::*;
+use crate::test_support::*;
 
 #[tokio::test]
 async fn test_websocket_transport_matches_unix_socket_for_subscribe_history_message_and_resume()
@@ -15,7 +15,7 @@ async fn test_websocket_transport_matches_unix_socket_for_subscribe_history_mess
     assert!(
         unix.subscribe_events
             .iter()
-            .any(|event| matches!(event, ServerEvent::Done { id } if *id == 1))
+            .any(|event| matches!(event, ServerEvent::Done { id } if id == 1))
     );
     assert!(
         websocket
@@ -27,7 +27,7 @@ async fn test_websocket_transport_matches_unix_socket_for_subscribe_history_mess
         websocket
             .subscribe_events
             .iter()
-            .any(|event| matches!(event, ServerEvent::Done { id } if *id == 1))
+            .any(|event| matches!(event, ServerEvent::Done { id } if id == 1))
     );
 
     let unix_history = unix
