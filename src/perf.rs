@@ -319,7 +319,7 @@ fn detect_memory() -> (Option<u64>, Option<u64>) {
         ullAvailExtendedVirtual: u64,
     }
 
-    extern "system" {
+    unsafe extern "system" {
         fn GlobalMemoryStatusEx(lpBuffer: *mut MEMORYSTATUSEX) -> i32;
     }
 
