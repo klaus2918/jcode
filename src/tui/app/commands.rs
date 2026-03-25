@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 pub(super) fn reset_current_session(app: &mut App) {
+    app.session.mark_closed();
+    let _ = app.session.save();
     app.clear_provider_messages();
     app.clear_display_messages();
     app.queued_messages.clear();
@@ -15,6 +17,7 @@ pub(super) fn reset_current_session(app: &mut App) {
     app.active_skill = None;
     app.improve_mode = None;
     let mut session = Session::create(None, None);
+    session.mark_active();
     session.model = Some(app.provider.model());
     app.session = session;
     app.side_panel = crate::side_panel::SidePanelSnapshot::default();

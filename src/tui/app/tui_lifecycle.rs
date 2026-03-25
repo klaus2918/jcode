@@ -309,6 +309,7 @@ impl App {
         let t_skills = t0.elapsed();
         let mcp_manager = Arc::new(RwLock::new(McpManager::new()));
         let mut session = Session::create(None, None);
+        session.mark_active();
         session.model = Some(provider.model());
         session.provider_key = crate::session::derive_session_provider_key(provider.name());
         let display = config().display.clone();
