@@ -1630,7 +1630,10 @@ fn test_mouse_scroll_over_tool_side_panel_scrolls_shared_right_pane_without_chan
         modifiers: KeyModifiers::empty(),
     });
 
-    assert!(scroll_only, "right-pane wheel scroll should be deferrable");
+    assert!(
+        !scroll_only,
+        "side-panel wheel scroll should request an immediate redraw"
+    );
     assert_eq!(app.diff_pane_scroll, 8);
     assert!(!app.diff_pane_focus);
     assert!(!app.diff_pane_auto_scroll);
@@ -1668,7 +1671,10 @@ fn test_mouse_scroll_over_tool_side_panel_keeps_typing_in_chat() {
         row: 5,
         modifiers: KeyModifiers::empty(),
     });
-    assert!(scroll_only);
+    assert!(
+        !scroll_only,
+        "side-panel wheel scroll should still keep chat focus while redrawing immediately"
+    );
     assert!(!app.diff_pane_focus);
 
     app.handle_key(KeyCode::Char('x'), KeyModifiers::empty())
@@ -1707,23 +1713,17 @@ fn test_mouse_scroll_over_tool_side_panel_updates_visible_render() {
 
     let before = render_and_snap(&app, &mut terminal);
     assert!(crate::tui::ui::pinned_pane_total_lines() > 3);
-    assert!(
-        crate::tui::ui::last_layout_snapshot()
-            .and_then(|l| l.diff_pane_area)
-            .is_some()
-    );
+    let diff_area = crate::tui::ui::last_layout_snapshot()
+        .and_then(|l| l.diff_pane_area)
+        .expect("expected side panel area after render");
     assert!(before.contains("side-scroll-01"));
 
-    let scroll_only = app.handle_mouse_event(MouseEvent {
+    let _scroll_only = app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::ScrollDown,
-        column: 60,
-        row: 3,
+        column: diff_area.x + diff_area.width / 2,
+        row: diff_area.y + diff_area.height.saturating_sub(2).min(3),
         modifiers: KeyModifiers::empty(),
     });
-    assert!(
-        scroll_only,
-        "wheel scroll should remain deferrable while streaming"
-    );
     assert_eq!(app.diff_pane_scroll, 3);
 
     let after = render_and_snap(&app, &mut terminal);
@@ -1831,7 +1831,10 @@ fn test_mouse_horizontal_scroll_over_tool_side_panel_pans_without_focus_change()
         modifiers: KeyModifiers::empty(),
     });
 
-    assert!(scroll_only);
+    assert!(
+        !scroll_only,
+        "side-panel horizontal pan should request an immediate redraw"
+    );
     assert_eq!(app.diff_pane_scroll_x, 3);
     assert!(!app.diff_pane_focus);
 }

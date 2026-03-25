@@ -98,7 +98,9 @@ impl App {
         self.diagram_focus = false;
         if focus {
             if self.side_panel.focused_page().is_some() {
-                self.set_status_notice("Focus: side pane (j/k scroll, h/l pan diagrams, Esc to return)");
+                self.set_status_notice(
+                    "Focus: side pane (j/k scroll, h/l pan diagrams, Esc to return)",
+                );
             } else {
                 self.set_status_notice("Focus: side pane (j/k scroll, Esc to return)");
             }
@@ -108,7 +110,10 @@ impl App {
     }
 
     pub(super) fn pan_diff_pane_x(&mut self, dx: i32) {
-        self.diff_pane_scroll_x = self.diff_pane_scroll_x.saturating_add(dx).clamp(-4096, 4096);
+        self.diff_pane_scroll_x = self
+            .diff_pane_scroll_x
+            .saturating_add(dx)
+            .clamp(-4096, 4096);
     }
 
     pub(super) fn handle_diff_pane_focus_key(
@@ -625,6 +630,7 @@ impl App {
         }
 
         let mut handled_scroll = false;
+        let mut immediate_redraw = false;
         if diagram_available
             && over_diagram
             && matches!(
@@ -676,8 +682,10 @@ impl App {
                     | MouseEventKind::ScrollRight
             )
         {
-            // Treat wheel scrolling over the shared right pane as hover-only.
-            // Users often want to keep typing in chat while inspecting pinned content.
+            // Keep hover-scroll focus behavior for the shared right pane so users can keep typing
+            // in chat while inspecting pinned content. But when the side panel is visible, redraw
+            // immediately so scroll/pan feels responsive instead of waiting for the next tick.
+            let side_panel_visible = self.side_panel.focused_page().is_some();
             let amt = self.side_pane_mouse_scroll_amount();
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
@@ -704,11 +712,12 @@ impl App {
                 }
                 _ => {}
             }
+            immediate_redraw = side_panel_visible;
             handled_scroll = true;
         }
 
         if handled_scroll {
-            return true;
+            return !immediate_redraw;
         }
 
         if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
