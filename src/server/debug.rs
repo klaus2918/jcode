@@ -78,10 +78,9 @@ async fn resolve_transcript_target_session(
     client_debug_state: &Arc<RwLock<ClientDebugState>>,
 ) -> Result<String> {
     if let Some(session_id) = requested_session.filter(|value| !value.trim().is_empty()) {
-        let has_connected_tui =
-            client_connections.read().await.values().any(|info| {
-                info.session_id == session_id && info.debug_client_id.as_deref().is_some()
-            });
+        let has_connected_tui = client_connections.read().await.values().any(|info| {
+            info.session_id == session_id && info.debug_client_id.as_deref().is_some()
+        });
         if !has_connected_tui {
             anyhow::bail!(
                 "Session '{}' does not have a connected TUI client for transcript injection",
@@ -91,21 +90,47 @@ async fn resolve_transcript_target_session(
         return Ok(session_id);
     }
 
+    let has_connected_tui = |session_id: &str, connections: &HashMap<String, ClientConnectionInfo>| {
+        connections.values().any(|info| {
+            info.session_id == session_id && info.debug_client_id.as_deref().is_some()
+        })
+    };
+
+    let connections = client_connections.read().await;
+
+    if let Ok(Some(session_id)) = crate::dictation::focused_jcode_session() {
+        if has_connected_tui(&session_id, &connections) {
+            return Ok(session_id);
+        }
+    }
+
+    if let Ok(Some(session_id)) = crate::dictation::last_focused_session() {
+        if has_connected_tui(&session_id, &connections) {
+            return Ok(session_id);
+        }
+    }
+
     let active_debug_id = client_debug_state
         .read()
         .await
         .active_id
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("No active TUI client connected"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No transcript target found. Tried focused jcode window, last-focused live jcode session, and active TUI client."
+            )
+        })?;
 
-    client_connections
-        .read()
-        .await
+    connections
         .values()
         .filter(|info| info.debug_client_id.as_deref() == Some(active_debug_id.as_str()))
         .max_by_key(|info| info.last_seen)
         .map(|info| info.session_id.clone())
-        .ok_or_else(|| anyhow::anyhow!("Active TUI client session could not be resolved"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Transcript target could not be resolved from focused window, last-focused session, or active TUI client"
+            )
+        })
 }
 
 async fn inject_transcript(
@@ -600,6 +625,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_transcript_target_session_prefers_last_focused_live_session() {
+        let _guard = crate::storage::lock_test_env();
+        let jcode_dir = crate::storage::jcode_dir().expect("jcode dir");
+        let active_dir = jcode_dir.join("active_pids");
+        std::fs::create_dir_all(&active_dir).expect("create active_pids");
+        std::fs::write(active_dir.join("session_focus"), "12345").expect("write active pid");
+        crate::dictation::remember_last_focused_session("session_focus")
+            .expect("remember last focused session");
+
+        let client_connections = Arc::new(RwLock::new(HashMap::from([(
+            "conn-1".to_string(),
+            ClientConnectionInfo {
+                client_id: "conn-1".to_string(),
+                session_id: "session_focus".to_string(),
+                debug_client_id: Some("debug-1".to_string()),
+                connected_at: Instant::now(),
+                last_seen: Instant::now(),
+            },
+        )])));
+        let client_debug_state = Arc::new(RwLock::new(ClientDebugState::default()));
+
+        let resolved = resolve_transcript_target_session(None, &client_connections, &client_debug_state)
+            .await
+            .expect("resolve last-focused session");
+
+        assert_eq!(resolved, "session_focus");
+    }
+
+    #[tokio::test]
     async fn resolve_transcript_target_session_rejects_requested_session_without_connected_tui() {
         let client_connections = Arc::new(RwLock::new(HashMap::from([(
             "conn-1".to_string(),
@@ -625,6 +679,39 @@ mod tests {
             err.to_string()
                 .contains("does not have a connected TUI client")
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_transcript_target_session_falls_back_to_active_debug_when_last_focused_not_connected(
+    ) {
+        let _guard = crate::storage::lock_test_env();
+        let jcode_dir = crate::storage::jcode_dir().expect("jcode dir");
+        let active_dir = jcode_dir.join("active_pids");
+        std::fs::create_dir_all(&active_dir).expect("create active_pids");
+        std::fs::write(active_dir.join("session_stale"), "12345").expect("write active pid");
+        crate::dictation::remember_last_focused_session("session_stale")
+            .expect("remember last focused session");
+
+        let client_connections = Arc::new(RwLock::new(HashMap::from([(
+            "conn-1".to_string(),
+            ClientConnectionInfo {
+                client_id: "conn-1".to_string(),
+                session_id: "session_debug".to_string(),
+                debug_client_id: Some("debug-1".to_string()),
+                connected_at: Instant::now(),
+                last_seen: Instant::now(),
+            },
+        )])));
+        let client_debug_state = Arc::new(RwLock::new(ClientDebugState {
+            active_id: Some("debug-1".to_string()),
+            clients: HashMap::new(),
+        }));
+
+        let resolved = resolve_transcript_target_session(None, &client_connections, &client_debug_state)
+            .await
+            .expect("resolve active debug fallback");
+
+        assert_eq!(resolved, "session_debug");
     }
 }
 
