@@ -246,6 +246,11 @@ struct PinnedRenderedCache {
     inner_width: u16,
     line_wrap: bool,
     lines: Vec<Line<'static>>,
+    wrapped_plain_lines: std::sync::Arc<Vec<String>>,
+    wrapped_copy_offsets: std::sync::Arc<Vec<usize>>,
+    raw_plain_lines: std::sync::Arc<Vec<String>>,
+    wrapped_line_map: std::sync::Arc<Vec<WrappedLineMap>>,
+    left_margins: Vec<u16>,
     image_placements: Vec<PinnedImagePlacement>,
     has_scrollable_images: bool,
 }
@@ -278,6 +283,38 @@ struct SidePanelImageLayout {
 
 const SIDE_PANEL_INLINE_IMAGE_MIN_ROWS: u16 = 4;
 const SIDE_PANEL_INLINE_IMAGE_MIN_ZOOM_PERCENT: u8 = 70;
+
+fn build_side_pane_snapshot_cache(
+    lines: &[Line<'static>],
+    inner_width: u16,
+) -> (
+    std::sync::Arc<Vec<String>>,
+    std::sync::Arc<Vec<usize>>,
+    std::sync::Arc<Vec<String>>,
+    std::sync::Arc<Vec<WrappedLineMap>>,
+    Vec<u16>,
+) {
+    let plain_lines: Vec<String> = lines.iter().map(super::line_plain_text).collect();
+    let wrapped_line_map: Vec<WrappedLineMap> = plain_lines
+        .iter()
+        .enumerate()
+        .map(|(raw_line, text)| WrappedLineMap {
+            raw_line,
+            start_col: 0,
+            end_col: unicode_width::UnicodeWidthStr::width(text.as_str()),
+        })
+        .collect();
+    let copy_offsets = vec![0; plain_lines.len()];
+    let left_margins = line_left_margins_for_area(lines, inner_width);
+    let plain_lines = std::sync::Arc::new(plain_lines);
+    (
+        plain_lines.clone(),
+        std::sync::Arc::new(copy_offsets),
+        plain_lines,
+        std::sync::Arc::new(wrapped_line_map),
+        left_margins,
+    )
+}
 const SIDE_PANEL_FOLLOWING_CONTENT_PREVIEW_MIN_ROWS: u16 = 6;
 const SIDE_PANEL_FOLLOWING_CONTENT_PREVIEW_MAX_ROWS: u16 = 10;
 
@@ -777,10 +814,23 @@ pub(super) fn draw_pinned_content_cached(
             )));
         }
 
+        let (
+            wrapped_plain_lines,
+            wrapped_copy_offsets,
+            raw_plain_lines,
+            wrapped_line_map,
+            left_margins,
+        ) = build_side_pane_snapshot_cache(&text_lines, inner.width);
+
         cache.rendered_lines = Some(PinnedRenderedCache {
             inner_width: inner.width,
             line_wrap,
             lines: text_lines,
+            wrapped_plain_lines,
+            wrapped_copy_offsets,
+            raw_plain_lines,
+            wrapped_line_map,
+            left_margins,
             image_placements,
             has_scrollable_images: false,
         });
@@ -803,11 +853,20 @@ pub(super) fn draw_pinned_content_cached(
         .take(inner.height as usize)
         .cloned()
         .collect();
-    record_side_pane_snapshot(
-        &rendered.lines,
+    let visible_end = clamped_scroll + visible_lines.len();
+    let visible_left_margins = rendered
+        .left_margins
+        .get(clamped_scroll..visible_end.min(rendered.left_margins.len()))
+        .unwrap_or(&[]);
+    record_side_pane_snapshot_precomputed(
+        rendered.wrapped_plain_lines.clone(),
+        rendered.wrapped_copy_offsets.clone(),
+        rendered.raw_plain_lines.clone(),
+        rendered.wrapped_line_map.clone(),
         clamped_scroll,
-        clamped_scroll + visible_lines.len(),
+        visible_end,
         inner,
+        visible_left_margins,
     );
     apply_side_selection_highlight(app, &mut visible_lines, clamped_scroll);
 
@@ -936,11 +995,20 @@ pub(super) fn draw_side_panel_markdown(
         .take(inner.height as usize)
         .cloned()
         .collect();
-    record_side_pane_snapshot(
-        &rendered.lines,
+    let visible_end = clamped_scroll + visible_lines.len();
+    let visible_left_margins = rendered
+        .left_margins
+        .get(clamped_scroll..visible_end.min(rendered.left_margins.len()))
+        .unwrap_or(&[]);
+    record_side_pane_snapshot_precomputed(
+        rendered.wrapped_plain_lines.clone(),
+        rendered.wrapped_copy_offsets.clone(),
+        rendered.raw_plain_lines.clone(),
+        rendered.wrapped_line_map.clone(),
         clamped_scroll,
-        clamped_scroll + visible_lines.len(),
+        visible_end,
         inner,
+        visible_left_margins,
     );
     apply_side_selection_highlight(app, &mut visible_lines, clamped_scroll);
     frame.render_widget(Paragraph::new(visible_lines), inner);
@@ -1111,10 +1179,23 @@ fn render_side_panel_markdown_cached(
         .iter()
         .any(|placement| placement.render_mode.is_scrollable());
 
+    let (
+        wrapped_plain_lines,
+        wrapped_copy_offsets,
+        raw_plain_lines,
+        wrapped_line_map,
+        left_margins,
+    ) = build_side_pane_snapshot_cache(&text_lines, inner.width);
+
     let rendered = PinnedRenderedCache {
         inner_width: inner.width,
         line_wrap: false,
         lines: text_lines,
+        wrapped_plain_lines,
+        wrapped_copy_offsets,
+        raw_plain_lines,
+        wrapped_line_map,
+        left_margins,
         image_placements,
         has_scrollable_images,
     };

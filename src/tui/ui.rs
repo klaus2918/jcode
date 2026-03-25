@@ -1754,6 +1754,29 @@ fn record_copy_pane_snapshot(
     }
 }
 
+pub(crate) fn record_side_pane_snapshot_precomputed(
+    wrapped_plain_lines: Arc<Vec<String>>,
+    wrapped_copy_offsets: Arc<Vec<usize>>,
+    raw_plain_lines: Arc<Vec<String>>,
+    wrapped_line_map: Arc<Vec<WrappedLineMap>>,
+    scroll: usize,
+    visible_end: usize,
+    content_area: Rect,
+    left_margins: &[u16],
+) {
+    record_copy_pane_snapshot(
+        crate::tui::CopySelectionPane::SidePane,
+        wrapped_plain_lines,
+        wrapped_copy_offsets,
+        raw_plain_lines,
+        wrapped_line_map,
+        scroll,
+        visible_end,
+        content_area,
+        left_margins,
+    );
+}
+
 pub(crate) fn record_copy_viewport_snapshot(
     wrapped_plain_lines: Arc<Vec<String>>,
     wrapped_copy_offsets: Arc<Vec<usize>>,
@@ -1809,8 +1832,10 @@ pub(crate) fn record_side_pane_snapshot(
             end_col: line_display_width(text),
         })
         .collect();
-    record_copy_pane_snapshot(
-        crate::tui::CopySelectionPane::SidePane,
+    let visible_left_margins = left_margins
+        .get(scroll..visible_end.min(left_margins.len()))
+        .unwrap_or(&[]);
+    record_side_pane_snapshot_precomputed(
         Arc::new(raw_plain_lines.clone()),
         Arc::new(vec![0; wrapped_lines.len()]),
         Arc::new(raw_plain_lines),
@@ -1818,7 +1843,7 @@ pub(crate) fn record_side_pane_snapshot(
         scroll,
         visible_end,
         content_area,
-        &left_margins,
+        visible_left_margins,
     );
 }
 
