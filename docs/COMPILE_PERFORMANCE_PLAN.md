@@ -131,6 +131,15 @@ Start with the highest-leverage cache boundaries:
   `native-tls` out of unrelated self-dev rebuilds; edits to `notifications.rs`
   itself still invalidate the main crate and are not the right sole ROI metric.
 
+- 2026-03-25: landed the first provider boundary slice with
+  `crates/jcode-provider-metadata`.
+- Boundary decision: provider **metadata / profile catalogs / pure selection helpers** move into
+  their own crate first, while env mutation, config-file I/O, and runtime integration remain in
+  `src/provider_catalog.rs` as a facade.
+- This is intentionally narrower than a full `Provider` trait split: it creates a real provider-side
+  compile boundary without prematurely dragging streaming/message/runtime dependencies into a shared
+  crate that would likely stay high-churn.
+
 ### Phase 5 — Reduce invalidation pressure
 
 - Continue shrinking giant hotspot files.
@@ -159,6 +168,7 @@ Touched-file `cargo check` samples gathered during this batch:
 - `src/provider/openrouter.rs` after Azure crate split: ~6.0s
 - `src/notifications.rs` after notification-email crate split: ~11.4s
 - `src/channel.rs` after notification-email crate split: ~4.8s
+- `src/provider_catalog.rs` after provider-metadata split: ~5.8s
 
 Notes:
 
@@ -169,6 +179,8 @@ Notes:
   stop dragging mail transport dependencies through the same compile unit.
 - No-op fully hot-cache reruns can look unrealistically fast; use touched-file scenarios
   when evaluating structural compile-speed changes.
+- Provider metadata timings should be interpreted as a first provider-side foothold, not the final
+  provider ROI story; the larger wins should come from future provider-core / implementation splits.
 
 ## Dependency Hygiene Wins (2026-03-24)
 
@@ -187,6 +199,13 @@ The next obvious heavy dependency boundaries are less clearly safe/local than th
 - a future `jcode-provider-core` / provider-implementation split is still the most promising next
   compile-speed move, but it needs boundary design first so high-churn shared types do not create
   a new invalidation hotspot.
+
+Current provider-boundary stance:
+
+- **Done:** `jcode-provider-metadata` for stable login/profile catalog data and pure selection logic.
+- **Not done yet:** `Provider` trait / `EventStream` / model-route core and individual provider impl crates.
+- **Reason:** the trait side still depends on `message.rs`, auth flows, runtime behavior, and provider-specific
+  streaming logic; that seam needs another design pass before splitting to avoid a low-value high-churn core crate.
 
 That means the best next batch should likely start with a narrow provider-support boundary design,
 rather than another opportunistic crate move.
