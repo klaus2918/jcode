@@ -146,6 +146,14 @@ Start with the highest-leverage cache boundaries:
 - Reason: the trait currently still mixes in `message.rs`, runtime/auth behavior, and provider-specific
   streaming/compaction concerns; moving it too early would likely create a noisy, still-high-churn core crate.
 
+- 2026-03-25: landed the first provider-implementation support crate with
+  `crates/jcode-provider-openrouter`.
+- Boundary decision: move **OpenRouter-specific model catalog / endpoint cache / provider ranking /
+  model-spec parsing support** into a dedicated crate, while keeping the actual `Provider` trait impl,
+  auth wiring, and message/stream translation in `src/provider/openrouter.rs`.
+- Reason: this creates a real provider-implementation compile boundary now, without introducing a crate
+  cycle through `Provider`, `EventStream`, or `message.rs`.
+
 ### Phase 5 — Reduce invalidation pressure
 
 - Continue shrinking giant hotspot files.
@@ -176,6 +184,7 @@ Touched-file `cargo check` samples gathered during this batch:
 - `src/channel.rs` after notification-email crate split: ~4.8s
 - `src/provider_catalog.rs` after provider-metadata split: ~5.8s
 - `src/provider/mod.rs` after provider-core type split: ~50.1s
+- `src/provider/openrouter.rs` after openrouter-support crate split: ~5.6s
 
 Notes:
 
@@ -191,6 +200,8 @@ Notes:
 - The `src/provider/mod.rs` touched-file timing remains high because touching that root file still rebuilds the
   main crate and the auth/runtime-heavy trait logic. This stage is about carving out stable reusable pieces first,
   not claiming that the provider root is solved.
+- The `src/provider/openrouter.rs` touched-file sample is more encouraging because the heavy OpenRouter-specific
+  catalog/ranking/cache support now lives in its own crate while the main module stays a thinner wrapper.
 
 ## Dependency Hygiene Wins (2026-03-24)
 
@@ -214,12 +225,14 @@ Current provider-boundary stance:
 
 - **Done:** `jcode-provider-metadata` for stable login/profile catalog data and pure selection logic.
 - **Done:** `jcode-provider-core` for shared HTTP client plus route/cost/core provider value types.
-- **Not done yet:** `Provider` trait / `EventStream` and individual provider impl crates.
+- **Done:** `jcode-provider-openrouter` for OpenRouter-specific catalog/cache/ranking/model-spec support.
+- **Not done yet:** `Provider` trait / `EventStream` extraction and a fully standalone provider impl crate.
 - **Reason:** the trait side still depends on `message.rs`, auth flows, runtime behavior, and provider-specific
-  streaming logic; that seam needs another design pass before splitting to avoid a low-value high-churn core crate.
+  streaming logic; the current staged split avoids turning that unstable seam into a low-value high-churn crate.
 
-That means the best next batch should likely start with a narrow provider-support boundary design,
-rather than another opportunistic crate move.
+That means the best next batch should likely target either:
+- a carefully designed trait seam, or
+- another provider implementation support split with similarly clean boundaries.
 
 ## Developer Workflow Guidance
 

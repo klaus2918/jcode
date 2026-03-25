@@ -22,12 +22,21 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
+pub use jcode_provider_openrouter::{
+    EndpointInfo, ModelInfo, ModelPricing, ProviderRouting, all_model_timestamps,
+    load_endpoints_disk_cache_public, load_model_pricing_disk_cache_public,
+    model_created_timestamp,
+};
+use jcode_provider_openrouter::{
+    KIMI_FALLBACK_PROVIDERS, ModelCatalogRefreshState, ModelsCache, ParsedProvider, PinSource,
+    ProviderPin, current_unix_secs, known_providers, load_disk_cache, load_disk_cache_entry,
+    load_endpoints_disk_cache, parse_model_spec, save_disk_cache, save_endpoints_disk_cache,
+};
 use reqwest::Client;
 use reqwest::header::HeaderName;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskContext, Poll};
@@ -45,40 +54,10 @@ const RETRY_BASE_DELAY_MS: u64 = 1000;
 const DEFAULT_API_BASE: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_API_KEY_NAME: &str = "OPENROUTER_API_KEY";
 const DEFAULT_ENV_FILE: &str = "openrouter.env";
-const DEFAULT_CACHE_NAMESPACE: &str = "openrouter";
 
 /// Default model (Claude Sonnet via OpenRouter)
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4";
-/// Default provider order for Kimi models when no local stats exist yet.
-/// Ordered for practical coding use: speed first, then cache quality, then cost.
-const KIMI_FALLBACK_PROVIDERS: &[&str] = &["Fireworks", "Moonshot AI", "Together", "DeepInfra"];
-/// Known provider names for autocomplete when OpenRouter doesn't supply a list.
-const KNOWN_PROVIDERS: &[&str] = &[
-    "Moonshot AI",
-    "OpenAI",
-    "Anthropic",
-    "Fireworks",
-    "Together",
-    "DeepInfra",
-];
-/// Short aliases to normalize provider input.
-const PROVIDER_ALIASES: &[(&str, &str)] = &[
-    ("moonshot", "Moonshot AI"),
-    ("moonshotai", "Moonshot AI"),
-    ("openai", "OpenAI"),
-    ("anthropic", "Anthropic"),
-    ("fireworks", "Fireworks"),
-    ("together", "Together"),
-    ("deepinfra", "DeepInfra"),
-];
 
-/// Known OpenRouter provider names for autocomplete/fallback suggestions.
-pub fn known_providers() -> Vec<String> {
-    KNOWN_PROVIDERS.iter().map(|p| (*p).to_string()).collect()
-}
-
-/// Cache TTL in seconds (24 hours)
-const CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Soft refresh TTL for the model catalog.
 ///
 /// We keep the 24h disk cache for resilience/offline startup, but after this
@@ -139,23 +118,6 @@ fn configured_env_file_name() -> String {
             raw, DEFAULT_ENV_FILE
         ));
         DEFAULT_ENV_FILE.to_string()
-    }
-}
-
-fn configured_cache_namespace() -> String {
-    let raw = std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_CACHE_NAMESPACE.to_string());
-    let sanitized: String = raw
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    if sanitized.is_empty() {
-        DEFAULT_CACHE_NAMESPACE.to_string()
-    } else {
-        sanitized
     }
 }
 
@@ -267,198 +229,6 @@ impl ProviderAuth {
     }
 }
 
-/// Model info from OpenRouter API
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelInfo {
-    pub id: String,
-    pub name: String,
-    pub context_length: Option<u64>,
-    #[serde(default)]
-    pub pricing: ModelPricing,
-    /// Unix timestamp when the model was created/added
-    #[serde(default)]
-    pub created: Option<u64>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ModelPricing {
-    pub prompt: Option<String>,
-    pub completion: Option<String>,
-    #[serde(default, rename = "input_cache_read")]
-    pub input_cache_read: Option<String>,
-    #[serde(default, rename = "input_cache_write")]
-    pub input_cache_write: Option<String>,
-}
-
-/// Per-provider endpoint info from OpenRouter /endpoints API
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EndpointInfo {
-    pub provider_name: String,
-    #[serde(default)]
-    pub tag: Option<String>,
-    #[serde(default)]
-    pub pricing: ModelPricing,
-    #[serde(default)]
-    pub context_length: Option<u64>,
-    #[serde(default)]
-    pub max_completion_tokens: Option<u64>,
-    #[serde(default)]
-    pub quantization: Option<String>,
-    #[serde(default)]
-    pub uptime_last_30m: Option<f64>,
-    #[serde(default)]
-    pub latency_last_30m: Option<serde_json::Value>,
-    #[serde(default)]
-    pub throughput_last_30m: Option<serde_json::Value>,
-    #[serde(default)]
-    pub supports_implicit_caching: Option<bool>,
-    #[serde(default)]
-    pub status: Option<i32>,
-}
-
-impl EndpointInfo {
-    /// Extract p50 value from a percentile object or plain number
-    fn extract_p50(value: &serde_json::Value) -> Option<f64> {
-        match value {
-            serde_json::Value::Number(n) => n.as_f64(),
-            serde_json::Value::Object(map) => map.get("p50").and_then(|v| v.as_f64()),
-            _ => None,
-        }
-    }
-
-    /// Format a short detail string for picker display: "$0.45/M, 99% up, 14 tps"
-    pub fn detail_string(&self) -> String {
-        let mut parts = Vec::new();
-        if let Some(ref prompt) = self.pricing.prompt {
-            if let Ok(p) = prompt.parse::<f64>() {
-                parts.push(format!("${:.2}/M", p * 1e6));
-            }
-        }
-        if let Some(uptime) = self.uptime_last_30m {
-            parts.push(format!("{:.0}%", uptime));
-        }
-        if let Some(ref tps) = self.throughput_last_30m {
-            if let Some(t) = Self::extract_p50(tps) {
-                if t > 0.0 {
-                    parts.push(format!("{:.0}tps", t));
-                }
-            }
-        }
-        if let Some(ref cache_read) = self.pricing.input_cache_read {
-            if let Ok(cr) = cache_read.parse::<f64>() {
-                if cr > 0.0 {
-                    parts.push("cache".to_string());
-                }
-            }
-        }
-        if let Some(ref q) = self.quantization {
-            if q != "unknown" {
-                parts.push(q.clone());
-            }
-        }
-        parts.join(", ")
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct EndpointsDiskCache {
-    cached_at: u64,
-    endpoints: Vec<EndpointInfo>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PinSource {
-    Explicit,
-    Observed,
-}
-
-#[derive(Debug, Clone)]
-struct ProviderPin {
-    model: String,
-    provider: String,
-    source: PinSource,
-    allow_fallbacks: bool,
-    last_cache_read: Option<Instant>,
-}
-
-#[derive(Debug, Clone)]
-struct ParsedProvider {
-    name: String,
-    allow_fallbacks: bool,
-}
-
-fn normalize_provider_name(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-
-    let lower = trimmed.to_lowercase();
-    for (alias, canonical) in PROVIDER_ALIASES {
-        if lower == *alias {
-            return (*canonical).to_string();
-        }
-    }
-
-    for known in KNOWN_PROVIDERS {
-        if known.eq_ignore_ascii_case(trimmed) {
-            return (*known).to_string();
-        }
-    }
-
-    let simplified: String = lower
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    for known in KNOWN_PROVIDERS {
-        let known_simple: String = known
-            .to_lowercase()
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .collect();
-        if known_simple == simplified {
-            return (*known).to_string();
-        }
-    }
-
-    trimmed.to_string()
-}
-
-fn parse_model_spec(raw: &str) -> (String, Option<ParsedProvider>) {
-    let trimmed = raw.trim();
-    if let Some((model, provider)) = trimmed.rsplit_once('@') {
-        let model = model.trim();
-        let mut provider = provider.trim();
-        if model.is_empty() {
-            return (trimmed.to_string(), None);
-        }
-        if provider.is_empty() {
-            return (model.to_string(), None);
-        }
-        let mut allow_fallbacks = true;
-        if provider.ends_with('!') {
-            provider = provider.trim_end_matches('!').trim();
-            allow_fallbacks = false;
-        }
-        if provider.is_empty() {
-            return (model.to_string(), None);
-        }
-        if provider.eq_ignore_ascii_case("auto") {
-            return (model.to_string(), None);
-        }
-        let provider = normalize_provider_name(provider);
-        return (
-            model.to_string(),
-            Some(ParsedProvider {
-                name: provider,
-                allow_fallbacks,
-            }),
-        );
-    }
-
-    (trimmed.to_string(), None)
-}
-
 fn add_cache_breakpoint(messages: &mut [Message]) -> bool {
     let mut cache_index = None;
     for (idx, msg) in messages.iter().enumerate().rev() {
@@ -489,171 +259,6 @@ fn add_cache_breakpoint(messages: &mut [Message]) -> bool {
     }
 
     false
-}
-
-/// Disk cache structure
-#[derive(Debug, Serialize, Deserialize)]
-struct DiskCache {
-    /// Unix timestamp when cache was written
-    cached_at: u64,
-    /// Cached models
-    models: Vec<ModelInfo>,
-}
-
-/// In-memory cache
-#[derive(Debug, Default)]
-struct ModelsCache {
-    models: Vec<ModelInfo>,
-    fetched: bool,
-    cached_at: Option<u64>,
-}
-
-#[derive(Debug, Default)]
-struct ModelCatalogRefreshState {
-    in_flight: bool,
-    last_attempt_unix: Option<u64>,
-}
-
-fn current_unix_secs() -> Option<u64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs())
-}
-
-fn load_disk_cache_entry() -> Option<DiskCache> {
-    let path = cache_path();
-    let content = std::fs::read_to_string(&path).ok()?;
-    let cache: DiskCache = serde_json::from_str(&content).ok()?;
-    let now = current_unix_secs()?;
-
-    if now.saturating_sub(cache.cached_at) < CACHE_TTL_SECS {
-        Some(cache)
-    } else {
-        None
-    }
-}
-
-/// Get the cache file path
-fn cache_path() -> PathBuf {
-    let namespace = configured_cache_namespace();
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".jcode")
-        .join("cache")
-        .join(format!("{}_models.json", namespace))
-}
-
-/// Load models from disk cache if valid
-fn load_disk_cache() -> Option<Vec<ModelInfo>> {
-    load_disk_cache_entry().map(|cache| cache.models)
-}
-
-pub fn load_model_pricing_disk_cache_public(model_id: &str) -> Option<ModelPricing> {
-    load_disk_cache()?
-        .into_iter()
-        .find(|model| model.id == model_id)
-        .map(|model| model.pricing)
-}
-
-/// Look up the `created` timestamp for a model from the disk cache.
-/// Tries exact match first, then common provider-prefixed variants
-/// (e.g. "claude-opus-4-6" → "anthropic/claude-opus-4.6").
-pub fn model_created_timestamp(model_id: &str) -> Option<u64> {
-    let path = cache_path();
-    let content = std::fs::read_to_string(&path).ok()?;
-    let cache: DiskCache = serde_json::from_str(&content).ok()?;
-
-    // Exact match
-    if let Some(ts) = cache
-        .models
-        .iter()
-        .find(|m| m.id == model_id)
-        .and_then(|m| m.created)
-    {
-        return Some(ts);
-    }
-
-    // Try OpenRouter-style ID variants for direct provider models
-    let candidates = openrouter_id_candidates(model_id);
-    for candidate in &candidates {
-        if let Some(ts) = cache
-            .models
-            .iter()
-            .find(|m| m.id == *candidate)
-            .and_then(|m| m.created)
-        {
-            return Some(ts);
-        }
-    }
-
-    None
-}
-
-/// Generate OpenRouter ID candidates for a direct provider model name.
-/// e.g. "claude-opus-4-6" → ["anthropic/claude-opus-4.6", "anthropic/claude-opus-4-6"]
-///      "gpt-5.3-codex"   → ["openai/gpt-5.3-codex"]
-fn openrouter_id_candidates(model: &str) -> Vec<String> {
-    let mut candidates = Vec::new();
-    if model.starts_with("claude-") || model.starts_with("claude_") {
-        candidates.push(format!("anthropic/{}", model));
-        // Try version with dot instead of dash (claude-opus-4-6 → claude-opus-4.6)
-        if let Some(pos) = model.rfind('-') {
-            let mut dotted = model.to_string();
-            dotted.replace_range(pos..pos + 1, ".");
-            candidates.push(format!("anthropic/{}", dotted));
-        }
-    } else if model.starts_with("gpt-")
-        || model.starts_with("codex-")
-        || model.starts_with("o1")
-        || model.starts_with("o3")
-        || model.starts_with("o4")
-    {
-        candidates.push(format!("openai/{}", model));
-    }
-    candidates
-}
-
-/// Return all cached model timestamps as (id, created) pairs.
-pub fn all_model_timestamps() -> Vec<(String, u64)> {
-    let path = cache_path();
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let cache: DiskCache = match serde_json::from_str(&content) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    cache
-        .models
-        .into_iter()
-        .filter_map(|m| m.created.map(|t| (m.id, t)))
-        .collect()
-}
-
-/// Save models to disk cache
-fn save_disk_cache(models: &[ModelInfo]) {
-    let path = cache_path();
-
-    // Create cache directory if needed
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    let cache = DiskCache {
-        cached_at: now,
-        models: models.to_vec(),
-    };
-
-    if let Ok(content) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(&path, content);
-    }
 }
 
 async fn fetch_models_from_api(
@@ -702,112 +307,6 @@ async fn fetch_models_from_api(
     Ok(models_response.data)
 }
 
-fn endpoints_cache_path(model: &str) -> PathBuf {
-    // Use a safe filename from the model ID
-    let safe_name = model.replace('/', "__");
-    let namespace = configured_cache_namespace();
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".jcode")
-        .join("cache")
-        .join(format!("{}_endpoints_{}.json", namespace, safe_name))
-}
-
-/// Public access to endpoints disk cache for picker (ignores TTL — stale data is fine for display).
-/// Returns (endpoints, age_secs) so caller can show staleness.
-pub fn load_endpoints_disk_cache_public(model: &str) -> Option<(Vec<EndpointInfo>, u64)> {
-    let path = endpoints_cache_path(model);
-    let content = std::fs::read_to_string(&path).ok()?;
-    let cache: EndpointsDiskCache = serde_json::from_str(&content).ok()?;
-    if cache.endpoints.is_empty() {
-        return None;
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-    let age = now.saturating_sub(cache.cached_at);
-    Some((cache.endpoints, age))
-}
-
-fn load_endpoints_disk_cache(model: &str) -> Option<Vec<EndpointInfo>> {
-    let path = endpoints_cache_path(model);
-    let content = std::fs::read_to_string(&path).ok()?;
-    let cache: EndpointsDiskCache = serde_json::from_str(&content).ok()?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-    if now - cache.cached_at < ENDPOINTS_CACHE_TTL_SECS {
-        Some(cache.endpoints)
-    } else {
-        None
-    }
-}
-
-fn save_endpoints_disk_cache(model: &str, endpoints: &[EndpointInfo]) {
-    let path = endpoints_cache_path(model);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let cache = EndpointsDiskCache {
-        cached_at: now,
-        endpoints: endpoints.to_vec(),
-    };
-    if let Ok(content) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(&path, content);
-    }
-}
-
-/// Provider routing configuration
-#[derive(Debug, Clone)]
-pub struct ProviderRouting {
-    /// List of provider slugs to try in order (e.g., ["Fireworks", "Together"])
-    pub order: Option<Vec<String>>,
-    /// Whether to allow fallbacks to other providers (default: true)
-    pub allow_fallbacks: bool,
-    /// Sort providers by OpenRouter's routing metric (e.g., "throughput", "price", "latency")
-    pub sort: Option<String>,
-    /// Prefer providers with at least this throughput (tokens/sec)
-    pub preferred_min_throughput: Option<u32>,
-    /// Prefer providers with latency below this value (ms)
-    pub preferred_max_latency: Option<u32>,
-    /// Max price per 1M tokens (USD) for providers
-    pub max_price: Option<f64>,
-    /// Require providers to support all request parameters
-    pub require_parameters: Option<bool>,
-}
-
-impl Default for ProviderRouting {
-    fn default() -> Self {
-        Self {
-            order: None,
-            allow_fallbacks: true,
-            sort: None,
-            preferred_min_throughput: None,
-            preferred_max_latency: None,
-            max_price: None,
-            require_parameters: None,
-        }
-    }
-}
-
-impl ProviderRouting {
-    fn is_empty(&self) -> bool {
-        self.order.is_none()
-            && self.sort.is_none()
-            && self.preferred_min_throughput.is_none()
-            && self.preferred_max_latency.is_none()
-            && self.max_price.is_none()
-            && self.require_parameters.is_none()
-            && self.allow_fallbacks
-    }
-}
-
 pub struct OpenRouterProvider {
     client: Client,
     model: Arc<RwLock<String>>,
@@ -829,8 +328,7 @@ pub struct OpenRouterProvider {
 impl OpenRouterProvider {
     /// Return true if this model is a Kimi K2/K2.5 variant (Moonshot).
     fn is_kimi_model(model: &str) -> bool {
-        let lower = model.to_lowercase();
-        lower.contains("moonshotai/") || lower.contains("kimi-k2") || lower.contains("kimi-k2.5")
+        jcode_provider_openrouter::is_kimi_model(model)
     }
 
     /// Parse thinking override from env. Values: "enabled"/"disabled"/"auto".
@@ -976,27 +474,7 @@ impl OpenRouterProvider {
 
     /// Parse provider routing configuration from environment variables
     fn parse_provider_routing() -> ProviderRouting {
-        let mut routing = ProviderRouting::default();
-
-        // JCODE_OPENROUTER_PROVIDER: comma-separated list of providers to prefer
-        // e.g., "Fireworks" or "Fireworks,Together"
-        if let Ok(providers) = std::env::var("JCODE_OPENROUTER_PROVIDER") {
-            let order: Vec<String> = providers
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            if !order.is_empty() {
-                routing.order = Some(order);
-            }
-        }
-
-        // JCODE_OPENROUTER_NO_FALLBACK: disable fallbacks to other providers
-        if std::env::var("JCODE_OPENROUTER_NO_FALLBACK").is_ok() {
-            routing.allow_fallbacks = false;
-        }
-
-        routing
+        jcode_provider_openrouter::parse_provider_routing_from_env()
     }
 
     fn set_explicit_pin(&self, model: &str, provider: ParsedProvider) {
@@ -1024,81 +502,7 @@ impl OpenRouterProvider {
     }
 
     fn rank_providers_from_endpoints(endpoints: &[EndpointInfo]) -> Vec<String> {
-        if endpoints.is_empty() {
-            return Vec::new();
-        }
-
-        let cache_available = endpoints.iter().any(|e| {
-            e.supports_implicit_caching == Some(true)
-                || e.pricing
-                    .input_cache_read
-                    .as_deref()
-                    .and_then(|v| v.parse::<f64>().ok())
-                    .unwrap_or(0.0)
-                    > 0.0
-        });
-
-        let mut candidates: Vec<&EndpointInfo> = endpoints
-            .iter()
-            .filter(|e| e.status != Some(1)) // filter out down providers
-            .collect();
-
-        if cache_available {
-            let cache_candidates: Vec<&EndpointInfo> = candidates
-                .iter()
-                .filter(|e| {
-                    e.supports_implicit_caching == Some(true)
-                        || e.pricing
-                            .input_cache_read
-                            .as_deref()
-                            .and_then(|v| v.parse::<f64>().ok())
-                            .unwrap_or(0.0)
-                            > 0.0
-                })
-                .copied()
-                .collect();
-            if !cache_candidates.is_empty() {
-                candidates = cache_candidates;
-            }
-        }
-
-        if candidates.is_empty() {
-            return Vec::new();
-        }
-
-        let mut scored: Vec<(f64, &str)> = candidates
-            .iter()
-            .map(|e| {
-                let throughput = e
-                    .throughput_last_30m
-                    .as_ref()
-                    .and_then(|v| EndpointInfo::extract_p50(v))
-                    .unwrap_or(0.0);
-                let uptime = e.uptime_last_30m.unwrap_or(0.0) / 100.0;
-                let cost = e
-                    .pricing
-                    .prompt
-                    .as_deref()
-                    .and_then(|v| v.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                let cost_score = if cost > 0.0 {
-                    1.0 / (1.0 + cost * 1e6)
-                } else {
-                    0.5
-                };
-
-                let score =
-                    0.50 * throughput.min(200.0) / 200.0 + 0.30 * uptime + 0.20 * cost_score;
-
-                (score, e.provider_name.as_str())
-            })
-            .collect();
-
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored
-            .into_iter()
-            .map(|(_, name)| name.to_string())
-            .collect()
+        jcode_provider_openrouter::rank_providers_from_endpoints(endpoints)
     }
 
     async fn effective_routing(&self, model: &str) -> ProviderRouting {
