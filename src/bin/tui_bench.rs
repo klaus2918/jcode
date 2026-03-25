@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use jcode::message::ToolCall;
 use jcode::prompt::ContextInfo;
+use jcode::side_panel::{SidePanelPage, SidePanelPageFormat, SidePanelPageSource, SidePanelSnapshot};
 use jcode::tui::{DisplayMessage, ProcessingStatus, TuiState, info_widget::InfoWidgetData};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -49,6 +50,14 @@ struct Args {
     /// Benchmark mode
     #[arg(long, value_enum, default_value = "idle")]
     mode: BenchMode,
+
+    /// Side panel content source (used with --mode side-panel)
+    #[arg(long, value_enum, default_value = "managed")]
+    side_panel_source: SidePanelSource,
+
+    /// Number of mermaid blocks to generate in side panel content
+    #[arg(long, default_value = "4")]
+    side_panel_mermaids: usize,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -56,6 +65,13 @@ enum BenchMode {
     Idle,
     Streaming,
     FileDiff,
+    SidePanel,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum SidePanelSource {
+    Managed,
+    LinkedFile,
 }
 
 struct BenchState {
@@ -76,14 +92,33 @@ struct BenchState {
     provider_model: String,
     started_at: Instant,
     diff_pane_scroll: usize,
+    diff_pane_scroll_x: i32,
     diff_pane_focus: bool,
+    side_panel: SidePanelSnapshot,
     bench_file_paths: Vec<PathBuf>,
 }
 
 impl BenchState {
-    fn new(turns: usize, user_len: usize, assistant_len: usize, mode: BenchMode) -> Self {
+    fn new(
+        turns: usize,
+        user_len: usize,
+        assistant_len: usize,
+        mode: BenchMode,
+        side_panel_source: SidePanelSource,
+        side_panel_mermaids: usize,
+    ) -> Self {
         let mut messages = Vec::with_capacity(turns * 2);
         let mut bench_file_paths = Vec::new();
+        let side_panel = if matches!(mode, BenchMode::SidePanel) {
+            make_bench_side_panel(
+                assistant_len.max(240),
+                side_panel_source,
+                side_panel_mermaids,
+                &mut bench_file_paths,
+            )
+        } else {
+            SidePanelSnapshot::default()
+        };
         for idx in 0..turns {
             let user_text = make_text(user_len);
             messages.push(DisplayMessage::user(user_text));
@@ -147,7 +182,9 @@ impl BenchState {
             provider_model: "gpt-5.2-codex".to_string(),
             started_at: Instant::now(),
             diff_pane_scroll: usize::MAX,
-            diff_pane_focus: matches!(mode, BenchMode::FileDiff),
+            diff_pane_scroll_x: 0,
+            diff_pane_focus: matches!(mode, BenchMode::FileDiff | BenchMode::SidePanel),
+            side_panel,
             bench_file_paths,
         }
     }
@@ -181,6 +218,71 @@ fn make_bench_file(idx: usize, approx_len: usize) -> PathBuf {
 
     fs::write(&file_path, content).expect("write bench file");
     file_path
+}
+
+fn make_bench_side_panel(
+    approx_len: usize,
+    source: SidePanelSource,
+    mermaid_count: usize,
+    bench_file_paths: &mut Vec<PathBuf>,
+) -> SidePanelSnapshot {
+    let content = make_side_panel_content(approx_len, mermaid_count.max(1));
+    let source_kind = match source {
+        SidePanelSource::Managed => SidePanelPageSource::Managed,
+        SidePanelSource::LinkedFile => SidePanelPageSource::LinkedFile,
+    };
+
+    let file_path = match source {
+        SidePanelSource::Managed => std::env::temp_dir()
+            .join("jcode_tui_bench")
+            .join("side_panel_managed.md"),
+        SidePanelSource::LinkedFile => std::env::temp_dir()
+            .join("jcode_tui_bench")
+            .join("side_panel_linked.md"),
+    };
+    let _ = fs::create_dir_all(file_path.parent().unwrap_or_else(|| std::path::Path::new(".")));
+    fs::write(&file_path, &content).expect("write side panel bench file");
+    bench_file_paths.push(file_path.clone());
+
+    SidePanelSnapshot {
+        focused_page_id: Some("bench_side_panel".to_string()),
+        pages: vec![SidePanelPage {
+            id: "bench_side_panel".to_string(),
+            title: format!(
+                "Bench Side Panel ({})",
+                match source {
+                    SidePanelSource::Managed => "managed",
+                    SidePanelSource::LinkedFile => "linked-file",
+                }
+            ),
+            file_path: file_path.display().to_string(),
+            format: SidePanelPageFormat::Markdown,
+            source: source_kind,
+            content,
+            updated_at_ms: 1,
+        }],
+    }
+}
+
+fn make_side_panel_content(approx_len: usize, mermaid_count: usize) -> String {
+    let mut out = String::new();
+    out.push_str("# Side Panel Benchmark\n\n");
+    for idx in 0..mermaid_count {
+        out.push_str(&format!("## Section {}\n\n", idx + 1));
+        out.push_str(&make_text(approx_len));
+        out.push_str("\n\n");
+        out.push_str("```mermaid\nflowchart TD\n");
+        out.push_str(&format!(
+            "    A{idx}[Start {idx}] --> B{idx}[Load content]\n    B{idx} --> C{idx}{{Scroll?}}\n    C{idx} -- Yes --> D{idx}[Render viewport]\n    C{idx} -- No --> E{idx}[Reuse cache]\n    D{idx} --> F{idx}[Done]\n    E{idx} --> F{idx}[Done]\n"
+        ));
+        out.push_str("```\n\n");
+        out.push_str("- scroll interaction\n- markdown wrapping\n- image viewport rendering\n\n");
+    }
+    out.push_str("## Final Notes\n\n");
+    for idx in 0..24 {
+        out.push_str(&format!("- Bench line {:02}: {}\n", idx + 1, make_text(64)));
+    }
+    out
 }
 
 impl TuiState for BenchState {
@@ -445,15 +547,13 @@ impl TuiState for BenchState {
         self.diff_pane_scroll
     }
     fn diff_pane_scroll_x(&self) -> i32 {
-        0
+        self.diff_pane_scroll_x
     }
     fn diff_pane_focus(&self) -> bool {
         self.diff_pane_focus
     }
     fn side_panel(&self) -> &jcode::side_panel::SidePanelSnapshot {
-        static EMPTY: std::sync::LazyLock<jcode::side_panel::SidePanelSnapshot> =
-            std::sync::LazyLock::new(jcode::side_panel::SidePanelSnapshot::default);
-        &EMPTY
+        &self.side_panel
     }
     fn pin_images(&self) -> bool {
         false
@@ -543,7 +643,14 @@ fn main() -> Result<()> {
         }
     }
     let args = Args::parse();
-    let mut state = BenchState::new(args.turns, args.user_len, args.assistant_len, args.mode);
+    let mut state = BenchState::new(
+        args.turns,
+        args.user_len,
+        args.assistant_len,
+        args.mode,
+        args.side_panel_source,
+        args.side_panel_mermaids,
+    );
     let stream_text = make_text(args.assistant_len.max(args.stream_chunk));
 
     if matches!(args.mode, BenchMode::FileDiff) {
@@ -559,6 +666,9 @@ fn main() -> Result<()> {
             state.scroll_offset = frame % args.scroll_cycle;
             if matches!(args.mode, BenchMode::FileDiff) {
                 state.diff_pane_scroll = (frame * 3) % args.scroll_cycle.max(1);
+            } else if matches!(args.mode, BenchMode::SidePanel) {
+                state.diff_pane_scroll = (frame * 3) % args.scroll_cycle.max(1);
+                state.diff_pane_scroll_x = if frame % 2 == 0 { 0 } else { 2 };
             }
         }
         if matches!(args.mode, BenchMode::Streaming) {
@@ -580,6 +690,10 @@ fn main() -> Result<()> {
     };
 
     println!("mode: {:?}", args.mode);
+    if matches!(args.mode, BenchMode::SidePanel) {
+        println!("side_panel_source: {:?}", args.side_panel_source);
+        println!("side_panel_mermaids: {}", args.side_panel_mermaids);
+    }
     println!("frames: {}", args.frames);
     println!("total_ms: {:.2}", total_ms);
     println!("avg_ms: {:.2}", avg_ms);

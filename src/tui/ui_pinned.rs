@@ -300,15 +300,48 @@ fn hash_content(content: &str) -> u64 {
     hasher.finish()
 }
 
-fn live_side_panel_content(page: &crate::side_panel::SidePanelPage) -> (String, u64) {
-    match std::fs::read_to_string(&page.file_path) {
-        Ok(content) => {
-            let revision = hash_content(&content);
-            (content, revision)
+fn linked_file_revision(file_path: &str) -> Option<u64> {
+    use std::hash::{Hash as _, Hasher as _};
+
+    let metadata = std::fs::metadata(file_path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    file_path.hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    metadata.permissions().readonly().hash(&mut hasher);
+    metadata
+        .modified()
+        .ok()
+        .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|dur| (dur.as_secs(), dur.subsec_nanos()))
+        .hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+fn side_panel_content_revision(page: &crate::side_panel::SidePanelPage) -> u64 {
+    match page.source {
+        crate::side_panel::SidePanelPageSource::Managed => {
+            if page.updated_at_ms != 0 {
+                page.updated_at_ms
+            } else {
+                hash_content(&page.content)
+            }
         }
-        Err(_) => {
-            let revision = hash_content(&page.content);
-            (page.content.clone(), revision)
+        crate::side_panel::SidePanelPageSource::LinkedFile => linked_file_revision(&page.file_path)
+            .unwrap_or_else(|| {
+                if page.updated_at_ms != 0 {
+                    page.updated_at_ms
+                } else {
+                    hash_content(&page.content)
+                }
+            }),
+    }
+}
+
+fn live_side_panel_content(page: &crate::side_panel::SidePanelPage) -> String {
+    match page.source {
+        crate::side_panel::SidePanelPageSource::Managed => page.content.clone(),
+        crate::side_panel::SidePanelPageSource::LinkedFile => {
+            std::fs::read_to_string(&page.file_path).unwrap_or_else(|_| page.content.clone())
         }
     }
 }
@@ -986,7 +1019,7 @@ fn render_side_panel_markdown_cached(
     has_protocol: bool,
     centered: bool,
 ) -> PinnedRenderedCache {
-    let (content, content_revision) = live_side_panel_content(page);
+    let content_revision = side_panel_content_revision(page);
     let key = SidePanelRenderKey {
         page_id: page.id.clone(),
         content_revision,
@@ -1008,6 +1041,8 @@ fn render_side_panel_markdown_cached(
         }
     }
 
+    let content = live_side_panel_content(page);
+
     let saved_override = markdown::get_diagram_mode_override();
     let saved_centered = markdown::center_code_blocks();
     markdown::set_diagram_mode_override(Some(crate::config::DiagramDisplayMode::None));
@@ -1026,29 +1061,41 @@ fn render_side_panel_markdown_cached(
     };
     let mut text_lines: Vec<Line<'static>> = Vec::new();
     let mut image_placements: Vec<PinnedImagePlacement> = Vec::new();
+    let placeholder_hashes: Vec<Option<u64>> = if has_protocol {
+        rendered_markdown
+            .iter()
+            .map(mermaid::parse_image_placeholder)
+            .collect()
+    } else {
+        vec![None; rendered_markdown.len()]
+    };
+    let mut has_following_content_after = vec![false; rendered_markdown.len()];
+    let mut seen_non_image_content = false;
+    for idx in (0..rendered_markdown.len()).rev() {
+        has_following_content_after[idx] = seen_non_image_content;
+        if placeholder_hashes[idx].is_none() && rendered_markdown[idx].width() > 0 {
+            seen_non_image_content = true;
+        }
+    }
+
     for (idx, line) in rendered_markdown.iter().enumerate() {
-        if has_protocol {
-            if let Some(hash) = mermaid::parse_image_placeholder(line) {
-                let has_following_content = rendered_markdown.iter().skip(idx + 1).any(|future| {
-                    mermaid::parse_image_placeholder(future).is_none() && future.width() > 0
-                });
-                let image_layout = estimate_side_panel_image_layout(
-                    hash,
-                    inner,
-                    text_lines.len(),
-                    has_following_content,
-                );
-                image_placements.push(PinnedImagePlacement {
-                    after_text_line: text_lines.len(),
-                    hash,
-                    rows: image_layout.rows,
-                    render_mode: image_layout.render_mode,
-                });
-                for _ in 0..image_layout.rows {
-                    text_lines.push(Line::from(""));
-                }
-                continue;
+        if let Some(hash) = placeholder_hashes[idx] {
+            let image_layout = estimate_side_panel_image_layout(
+                hash,
+                inner,
+                text_lines.len(),
+                has_following_content_after[idx],
+            );
+            image_placements.push(PinnedImagePlacement {
+                after_text_line: text_lines.len(),
+                hash,
+                rows: image_layout.rows,
+                render_mode: image_layout.render_mode,
+            });
+            for _ in 0..image_layout.rows {
+                text_lines.push(Line::from(""));
             }
+            continue;
         }
         text_lines.push(align_if_unset(line.clone(), align));
     }
@@ -1477,8 +1524,14 @@ mod tests {
         let panned_left = side_panel_viewport_scroll_x(4000, 24, 70, true, Some((8, 16)), -6);
 
         assert!(centered > 0, "expected oversized diagram to start centered");
-        assert!(panned_right > centered, "expected positive pan to move viewport right");
-        assert!(panned_left < centered, "expected negative pan to move viewport left");
+        assert!(
+            panned_right > centered,
+            "expected positive pan to move viewport right"
+        );
+        assert!(
+            panned_left < centered,
+            "expected negative pan to move viewport left"
+        );
     }
 
     #[test]
@@ -1810,6 +1863,70 @@ mod tests {
             second_text.iter().any(|line| line.contains("Second")),
             "expected second render to reflect updated file content: {:?}",
             second_text
+        );
+    }
+
+    #[test]
+    fn render_side_panel_managed_pages_ignore_disk_file_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("managed.md");
+        std::fs::write(&file_path, "# Disk Version").expect("write disk content");
+
+        let page = crate::side_panel::SidePanelPage {
+            id: "managed_demo".to_string(),
+            title: "Managed Demo".to_string(),
+            file_path: file_path.display().to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "# In Memory".to_string(),
+            updated_at_ms: 42,
+        };
+
+        let rendered = render_side_panel_markdown_cached(&page, Rect::new(0, 0, 24, 20), false, false);
+        let text: Vec<String> = rendered
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        assert!(
+            text.iter().any(|line| line.contains("In Memory")),
+            "expected managed side panel to render snapshot content: {:?}",
+            text
+        );
+        assert!(
+            !text.iter().any(|line| line.contains("Disk Version")),
+            "managed side panel should not re-read disk content: {:?}",
+            text
+        );
+    }
+
+    #[test]
+    fn render_side_panel_linked_file_missing_file_falls_back_to_snapshot_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("linked.md");
+
+        let page = crate::side_panel::SidePanelPage {
+            id: "linked_missing_demo".to_string(),
+            title: "Linked Missing Demo".to_string(),
+            file_path: file_path.display().to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::LinkedFile,
+            content: "# Snapshot Fallback".to_string(),
+            updated_at_ms: 7,
+        };
+
+        let rendered = render_side_panel_markdown_cached(&page, Rect::new(0, 0, 24, 20), false, false);
+        let text: Vec<String> = rendered
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        assert!(
+            text.iter().any(|line| line.contains("Snapshot Fallback")),
+            "expected linked side panel to fall back to snapshot content when file is missing: {:?}",
+            text
         );
     }
 }
