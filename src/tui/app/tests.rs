@@ -4204,6 +4204,77 @@ fn test_handle_post_connect_marker_without_reload_context_does_not_queue_selfdev
 }
 
 #[test]
+fn test_handle_post_connect_dispatches_hidden_reload_followup_immediately() {
+    let _guard = crate::storage::lock_test_env();
+    let temp_home = tempfile::TempDir::new().expect("create temp home");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp_home.path());
+
+    let session_id = "session_hidden_reload_followup";
+    crate::tool::selfdev::ReloadContext {
+        task_context: Some("Investigate queued prompt delivery after reload".to_string()),
+        version_before: "old-build".to_string(),
+        version_after: "new-build".to_string(),
+        session_id: session_id.to_string(),
+        timestamp: "2026-03-26T00:00:00Z".to_string(),
+    }
+    .save()
+    .expect("save reload context");
+
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _enter = rt.enter();
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    let mut state = super::remote::RemoteRunState {
+        reconnect_attempts: 1,
+        ..Default::default()
+    };
+
+    let outcome = rt
+        .block_on(super::remote::handle_post_connect(
+            &mut app,
+            &mut terminal,
+            &mut remote,
+            &mut state,
+            Some(session_id),
+        ))
+        .expect("post connect should succeed");
+
+    assert!(matches!(outcome, super::remote::PostConnectOutcome::Ready));
+    assert!(app.hidden_queued_system_messages.is_empty());
+    assert!(
+        app.is_processing,
+        "hidden reload continuation should dispatch immediately"
+    );
+    assert!(matches!(app.status, ProcessingStatus::Sending));
+    assert!(app.current_message_id.is_some());
+
+    let pending = app
+        .rate_limit_pending_message
+        .as_ref()
+        .expect("expected pending remote message for dispatched continuation");
+    assert!(pending.is_system);
+    assert_eq!(pending.content, "");
+    let reminder = pending
+        .system_reminder
+        .as_ref()
+        .expect("expected hidden system reminder");
+    assert!(reminder.contains("Reload succeeded (old-build → new-build)"));
+    assert!(reminder.contains("Continue immediately from where you left off"));
+
+    cleanup_reload_context_file(session_id);
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
 fn test_handle_server_event_token_usage_uses_per_call_deltas() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();

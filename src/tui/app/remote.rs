@@ -894,9 +894,9 @@ pub(super) async fn handle_post_connect<B: ratatui::backend::Backend>(
         app.set_status_notice("Loading session...");
     }
 
-    if remote.has_loaded_history() && !app.is_processing && !app.queued_messages.is_empty() {
+    if remote.has_loaded_history() && !app.is_processing && app.has_queued_followups() {
         crate::logging::info(
-            "Post-connect history restored with queued continuation; dispatching immediately",
+            "Post-connect history restored with queued followups; dispatching immediately",
         );
         process_remote_followups(app, remote).await;
     }
