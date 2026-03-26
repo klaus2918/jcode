@@ -1448,6 +1448,101 @@ fn test_diagram_cycle_ctrl_arrows() {
 }
 
 #[test]
+fn test_cycle_diagram_resets_view_to_fit() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+    app.diagram_focus = true;
+    app.diagram_zoom = 140;
+    app.diagram_scroll_x = 12;
+    app.diagram_scroll_y = 7;
+
+    crate::tui::mermaid::clear_active_diagrams();
+    crate::tui::mermaid::register_active_diagram(0x1, 100, 80, None);
+    crate::tui::mermaid::register_active_diagram(0x2, 120, 90, None);
+
+    app.cycle_diagram(1);
+
+    assert_eq!(app.diagram_index, 1);
+    assert_eq!(app.diagram_zoom, 100);
+    assert_eq!(app.diagram_scroll_x, 0);
+    assert_eq!(app.diagram_scroll_y, 0);
+
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
+#[test]
+fn test_resize_resets_diagram_and_side_panel_diagram_view_to_fit() {
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+    app.diagram_zoom = 130;
+    app.diagram_scroll_x = 9;
+    app.diagram_scroll_y = 4;
+    app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: "".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "```mermaid\nflowchart LR\nA-->B\n```".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+    app.diff_pane_scroll_x = 17;
+
+    assert!(app.should_redraw_after_resize());
+    assert_eq!(app.diagram_zoom, 100);
+    assert_eq!(app.diagram_scroll_x, 0);
+    assert_eq!(app.diagram_scroll_y, 0);
+    assert_eq!(app.diff_pane_scroll_x, 0);
+}
+
+#[test]
+fn test_side_panel_visibility_change_resets_diagram_fit_context() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+    app.diagram_pane_position = crate::config::DiagramPanePosition::Side;
+
+    crate::tui::mermaid::clear_active_diagrams();
+    crate::tui::mermaid::register_active_diagram(0xabc, 900, 450, None);
+
+    app.normalize_diagram_state();
+    assert_eq!(app.last_visible_diagram_hash, Some(0xabc));
+
+    app.diagram_zoom = 150;
+    app.diagram_scroll_x = 8;
+    app.diagram_scroll_y = 3;
+    app.set_side_panel_snapshot(crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("side".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "side".to_string(),
+            title: "Side".to_string(),
+            file_path: "".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "hello".to_string(),
+            updated_at_ms: 1,
+        }],
+    });
+
+    assert_eq!(app.diagram_zoom, 100);
+    assert_eq!(app.diagram_scroll_x, 0);
+    assert_eq!(app.diagram_scroll_y, 0);
+    assert_eq!(app.last_visible_diagram_hash, None);
+
+    app.set_side_panel_snapshot(crate::side_panel::SidePanelSnapshot::default());
+    assert_eq!(app.last_visible_diagram_hash, Some(0xabc));
+
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
+#[test]
 fn test_pinned_side_diagram_layout_allocates_right_pane() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
@@ -5286,6 +5381,22 @@ fn test_debug_command_side_panel_latency_bench_reports_immediate_redraw() {
         "headless side-panel p95 latency should stay within a 60fps frame budget: {}",
         result
     );
+}
+
+#[test]
+fn test_debug_command_mermaid_flicker_bench_returns_json() {
+    let mut app = create_test_app();
+    let result = app.handle_debug_command("mermaid:flicker-bench 8");
+    let value: serde_json::Value =
+        serde_json::from_str(&result).expect("flicker bench should return JSON");
+
+    assert_eq!(value["steps"].as_u64(), Some(8));
+    assert!(
+        value.get("protocol_supported").and_then(|v| v.as_bool()).is_some(),
+        "expected protocol_supported bool in result: {}",
+        result
+    );
+    assert!(value.get("deltas").is_some(), "expected delta counters: {}", result);
 }
 
 #[test]

@@ -106,6 +106,7 @@ CLIENT COMMANDS (client: prefix):
   client:mermaid:stats     - Get mermaid render/cache stats
   client:mermaid:memory    - Mermaid memory profile (RSS + cache estimates)
   client:mermaid:memory-bench [n] - Synthetic Mermaid memory benchmark
+  client:mermaid:flicker-bench [n] - Benchmark viewport protocol churn / flicker risk
   client:mermaid:cache     - List mermaid cache entries
   client:mermaid:state     - Get image state (resize modes)
   client:mermaid:test      - Render test diagram

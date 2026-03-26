@@ -26,7 +26,7 @@ use mermaid_rs_renderer::{
 use ratatui::prelude::*;
 use ratatui_image::{
     CropOptions, Resize, StatefulImage,
-    picker::{Picker, ProtocolType},
+    picker::{Picker, ProtocolType, cap_parser::Parser},
     protocol::StatefulProtocol,
 };
 use serde::Serialize;
@@ -79,6 +79,12 @@ static IMAGE_STATE: LazyLock<Mutex<ImageStateCache>> =
 /// Cache decoded source images to avoid reloading from disk on every pan
 static SOURCE_CACHE: LazyLock<Mutex<SourceImageCache>> =
     LazyLock::new(|| Mutex::new(SourceImageCache::new()));
+
+/// Cache Kitty-specific viewport state so scroll-only updates can reuse the
+/// same transmitted image data and adjust placeholders instead of rebuilding a
+/// fresh cropped protocol payload on every tick.
+static KITTY_VIEWPORT_STATE: LazyLock<Mutex<KittyViewportCache>> =
+    LazyLock::new(|| Mutex::new(KittyViewportCache::new()));
 
 /// Last render state for skip-redundant-render optimization
 static LAST_RENDER: LazyLock<Mutex<HashMap<u64, LastRenderState>>> =
@@ -228,6 +234,72 @@ struct SourceImageCache {
     entries: HashMap<u64, SourceImageEntry>,
 }
 
+struct KittyViewportState {
+    source_path: PathBuf,
+    zoom_percent: u8,
+    unique_id: u32,
+    full_cols: u16,
+    full_rows: u16,
+    pending_transmit: Option<String>,
+}
+
+struct KittyViewportCache {
+    entries: HashMap<u64, KittyViewportState>,
+    order: VecDeque<u64>,
+}
+
+impl KittyViewportCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn touch(&mut self, hash: u64) {
+        if let Some(pos) = self.order.iter().position(|h| *h == hash) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(hash);
+    }
+
+    fn get_mut(&mut self, hash: u64) -> Option<&mut KittyViewportState> {
+        if self.entries.contains_key(&hash) {
+            self.touch(hash);
+            self.entries.get_mut(&hash)
+        } else {
+            None
+        }
+    }
+
+    fn insert(&mut self, hash: u64, state: KittyViewportState) {
+        if self.entries.contains_key(&hash) {
+            self.entries.insert(hash, state);
+            self.touch(hash);
+        } else {
+            self.entries.insert(hash, state);
+            self.order.push_back(hash);
+            while self.order.len() > IMAGE_STATE_MAX {
+                if let Some(old) = self.order.pop_front() {
+                    self.entries.remove(&old);
+                }
+            }
+        }
+    }
+
+    fn remove(&mut self, hash: &u64) {
+        self.entries.remove(hash);
+        if let Some(pos) = self.order.iter().position(|h| h == hash) {
+            self.order.remove(pos);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+}
+
 impl SourceImageCache {
     fn new() -> Self {
         Self {
@@ -309,6 +381,11 @@ pub struct MermaidDebugStats {
     pub image_state_hits: u64,
     pub image_state_misses: u64,
     pub skipped_renders: u64,
+    pub fit_state_reuse_hits: u64,
+    pub fit_protocol_rebuilds: u64,
+    pub viewport_state_reuse_hits: u64,
+    pub viewport_protocol_rebuilds: u64,
+    pub clear_operations: u64,
     pub last_image_render_ms: Option<f32>,
     pub cache_entries: usize,
     pub cache_dir: Option<String>,
@@ -385,6 +462,90 @@ struct ProcessMemorySnapshot {
     rss_bytes: Option<u64>,
     peak_rss_bytes: Option<u64>,
     virtual_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MermaidTimingSummary {
+    pub avg_ms: f64,
+    pub p50_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub max_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MermaidFlickerBenchmark {
+    pub protocol_supported: bool,
+    pub protocol: Option<String>,
+    pub steps: usize,
+    pub changed_viewports: usize,
+    pub fit_frames: usize,
+    pub viewport_frames: usize,
+    pub fit_timing: MermaidTimingSummary,
+    pub viewport_timing: MermaidTimingSummary,
+    pub deltas: MermaidDebugStatsDelta,
+    pub viewport_protocol_rebuild_rate: f64,
+    pub fit_protocol_rebuild_rate: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MermaidDebugStatsDelta {
+    pub image_state_hits: u64,
+    pub image_state_misses: u64,
+    pub skipped_renders: u64,
+    pub fit_state_reuse_hits: u64,
+    pub fit_protocol_rebuilds: u64,
+    pub viewport_state_reuse_hits: u64,
+    pub viewport_protocol_rebuilds: u64,
+    pub clear_operations: u64,
+}
+
+fn percentile_summary(samples_ms: &[f64]) -> MermaidTimingSummary {
+    if samples_ms.is_empty() {
+        return MermaidTimingSummary {
+            avg_ms: 0.0,
+            p50_ms: 0.0,
+            p95_ms: 0.0,
+            p99_ms: 0.0,
+            max_ms: 0.0,
+        };
+    }
+    let mut sorted = samples_ms.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let percentile = |p: f64| {
+        let rank = ((sorted.len() - 1) as f64 * p).round() as usize;
+        sorted[rank.min(sorted.len() - 1)]
+    };
+    MermaidTimingSummary {
+        avg_ms: samples_ms.iter().sum::<f64>() / samples_ms.len() as f64,
+        p50_ms: percentile(0.50),
+        p95_ms: percentile(0.95),
+        p99_ms: percentile(0.99),
+        max_ms: sorted.last().copied().unwrap_or(0.0),
+    }
+}
+
+fn diff_counter(after: u64, before: u64) -> u64 {
+    after.saturating_sub(before)
+}
+
+fn debug_stats_delta(before: &MermaidDebugStats, after: &MermaidDebugStats) -> MermaidDebugStatsDelta {
+    MermaidDebugStatsDelta {
+        image_state_hits: diff_counter(after.image_state_hits, before.image_state_hits),
+        image_state_misses: diff_counter(after.image_state_misses, before.image_state_misses),
+        skipped_renders: diff_counter(after.skipped_renders, before.skipped_renders),
+        fit_state_reuse_hits: diff_counter(after.fit_state_reuse_hits, before.fit_state_reuse_hits),
+        fit_protocol_rebuilds: diff_counter(after.fit_protocol_rebuilds, before.fit_protocol_rebuilds),
+        viewport_state_reuse_hits: diff_counter(
+            after.viewport_state_reuse_hits,
+            before.viewport_state_reuse_hits,
+        ),
+        viewport_protocol_rebuilds: diff_counter(
+            after.viewport_protocol_rebuilds,
+            before.viewport_protocol_rebuilds,
+        ),
+        clear_operations: diff_counter(after.clear_operations, before.clear_operations),
+    }
 }
 
 pub fn debug_stats() -> MermaidDebugStats {
@@ -538,6 +699,114 @@ pub fn debug_memory_benchmark(iterations: usize) -> MermaidMemoryBenchmark {
         peak_working_set_estimate_bytes: peak_working_set,
         before,
         after,
+    }
+}
+
+pub fn debug_flicker_benchmark(steps: usize) -> MermaidFlickerBenchmark {
+    init_picker();
+    let protocol = protocol_type().map(|p| format!("{:?}", p));
+    let protocol_supported = protocol.is_some();
+    let steps = steps.clamp(4, 256);
+
+    if !protocol_supported {
+        return MermaidFlickerBenchmark {
+            protocol_supported: false,
+            protocol,
+            steps,
+            changed_viewports: 0,
+            fit_frames: 0,
+            viewport_frames: 0,
+            fit_timing: percentile_summary(&[]),
+            viewport_timing: percentile_summary(&[]),
+            deltas: MermaidDebugStatsDelta::default(),
+            viewport_protocol_rebuild_rate: 0.0,
+            fit_protocol_rebuild_rate: 0.0,
+        };
+    }
+
+    let sample = r#"flowchart LR
+    A[Client] --> B[Side Panel]
+    B --> C[Viewport Render]
+    C --> D[Kitty Protocol]
+    D --> E[Terminal]
+    E --> F[Visible Frame]
+    F --> G{Scroll?}
+    G -->|Yes| C
+    G -->|No| H[Stable]
+    I[Wide diagram] --> B
+    J[Large labels] --> B
+    K[Resize] --> B
+    L[Pan] --> C
+"#;
+
+    let hash = match render_mermaid_sized(sample, Some(140)) {
+        RenderResult::Image { hash, .. } => hash,
+        RenderResult::Error(_) => {
+            return MermaidFlickerBenchmark {
+                protocol_supported,
+                protocol,
+                steps,
+                changed_viewports: 0,
+                fit_frames: 0,
+                viewport_frames: 0,
+                fit_timing: percentile_summary(&[]),
+                viewport_timing: percentile_summary(&[]),
+                deltas: MermaidDebugStatsDelta::default(),
+                viewport_protocol_rebuild_rate: 0.0,
+                fit_protocol_rebuild_rate: 0.0,
+            };
+        }
+    };
+
+    let mut fit_samples = Vec::with_capacity(steps);
+    let mut viewport_samples = Vec::with_capacity(steps);
+    let before = debug_stats();
+    let area = Rect::new(0, 0, 56, 18);
+    let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+
+    for _ in 0..steps {
+        let start = Instant::now();
+        let _ = render_image_widget_scale(hash, area, &mut buf, false);
+        fit_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    let mut changed_viewports = 0usize;
+    let mut last_viewport: Option<(i32, i32)> = None;
+    for idx in 0..steps {
+        let scroll_x = (idx as i32) * 2;
+        let scroll_y = (idx as i32) / 3;
+        if last_viewport != Some((scroll_x, scroll_y)) {
+            changed_viewports += 1;
+            last_viewport = Some((scroll_x, scroll_y));
+        }
+        let start = Instant::now();
+        let _ = render_image_widget_viewport(hash, area, &mut buf, scroll_x, scroll_y, 100, false);
+        viewport_samples.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    let after = debug_stats();
+    let deltas = debug_stats_delta(&before, &after);
+
+    MermaidFlickerBenchmark {
+        protocol_supported,
+        protocol,
+        steps,
+        changed_viewports,
+        fit_frames: fit_samples.len(),
+        viewport_frames: viewport_samples.len(),
+        fit_timing: percentile_summary(&fit_samples),
+        viewport_timing: percentile_summary(&viewport_samples),
+        viewport_protocol_rebuild_rate: if changed_viewports == 0 {
+            0.0
+        } else {
+            deltas.viewport_protocol_rebuilds as f64 / changed_viewports as f64
+        },
+        fit_protocol_rebuild_rate: if fit_samples.is_empty() {
+            0.0
+        } else {
+            deltas.fit_protocol_rebuilds as f64 / fit_samples.len() as f64
+        },
+        deltas,
     }
 }
 
@@ -757,6 +1026,9 @@ pub fn clear_cache() -> Result<(), String> {
     if let Ok(mut source) = SOURCE_CACHE.lock() {
         source.entries.clear();
         source.order.clear();
+    }
+    if let Ok(mut kitty) = KITTY_VIEWPORT_STATE.lock() {
+        kitty.clear();
     }
     if let Ok(mut last) = LAST_RENDER.lock() {
         last.clear();
@@ -1567,6 +1839,9 @@ pub fn get_cached_path(hash: u64) -> Option<PathBuf> {
 fn invalidate_cached_image(hash: u64) {
     if let Ok(mut state) = IMAGE_STATE.lock() {
         state.remove(&hash);
+    }
+    if let Ok(mut kitty) = KITTY_VIEWPORT_STATE.lock() {
+        kitty.remove(&hash);
     }
     if let Ok(mut source) = SOURCE_CACHE.lock() {
         source.remove(hash);
@@ -2416,6 +2691,7 @@ fn render_image_widget_fit_inner(
             }
             if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
                 dbg.stats.image_state_hits += 1;
+                dbg.stats.fit_state_reuse_hits += 1;
             }
             if !render_stateful_image_safe(hash, render_area, buf, &mut img_state.protocol, resize)
             {
@@ -2431,6 +2707,7 @@ fn render_image_widget_fit_inner(
             if let Ok(img) = image::open(&path) {
                 if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
                     dbg.stats.image_state_misses += 1;
+                    dbg.stats.fit_protocol_rebuilds += 1;
                 }
                 let target_mode = if scale_up {
                     ResizeMode::Scale
@@ -2494,6 +2771,282 @@ fn load_source_image(hash: u64, path: &Path) -> Option<Arc<DynamicImage>> {
     }
     Some(Arc::new(img))
 }
+
+fn kitty_viewport_unique_id(hash: u64) -> u32 {
+    let mixed = (hash as u32) ^ ((hash >> 32) as u32) ^ 0x4B49_5459;
+    mixed.max(1)
+}
+
+fn kitty_is_tmux() -> bool {
+    std::env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
+        || std::env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux")
+}
+
+fn kitty_transmit_virtual(img: &DynamicImage, id: u32) -> String {
+    use std::fmt::Write;
+
+    let (w, h) = (img.width(), img.height());
+    let img_rgba8 = img.to_rgba8();
+    let bytes = img_rgba8.as_raw();
+
+    let (start, escape, end) = Parser::escape_tmux(kitty_is_tmux());
+    let mut data = String::from(start);
+
+    let chunks = bytes.chunks(4096 / 4 * 3);
+    let chunk_count = chunks.len();
+    for (i, chunk) in chunks.enumerate() {
+        let payload = base64::engine::general_purpose::STANDARD.encode(chunk);
+        data.push_str(escape);
+
+        match i {
+            0 => {
+                let more = if chunk_count > 1 { 1 } else { 0 };
+                write!(
+                    data,
+                    "_Gq=2,i={id},a=T,U=1,f=32,t=d,s={w},v={h},m={more};{payload}"
+                )
+                .unwrap();
+            }
+            n if n + 1 == chunk_count => {
+                write!(data, "_Gq=2,m=0;{payload}").unwrap();
+            }
+            _ => {
+                write!(data, "_Gq=2,m=1;{payload}").unwrap();
+            }
+        }
+        data.push_str(escape);
+        write!(data, "\\").unwrap();
+    }
+    data.push_str(end);
+
+    data
+}
+
+fn kitty_scaled_image_for_zoom(source: &DynamicImage, zoom_percent: u8) -> DynamicImage {
+    use image::imageops::FilterType;
+
+    let zoom = zoom_percent.clamp(50, 200) as u32;
+    if zoom == 100 {
+        return source.clone();
+    }
+
+    let scaled_w = ((source.width() as u64).saturating_mul(zoom as u64) / 100)
+        .max(1)
+        .min(u32::MAX as u64) as u32;
+    let scaled_h = ((source.height() as u64).saturating_mul(zoom as u64) / 100)
+        .max(1)
+        .min(u32::MAX as u64) as u32;
+    source.resize_exact(scaled_w, scaled_h, FilterType::Nearest)
+}
+
+fn div_ceil_u32_local(value: u32, divisor: u32) -> u32 {
+    if divisor == 0 {
+        value
+    } else {
+        value.saturating_add(divisor - 1) / divisor
+    }
+}
+
+fn kitty_full_rect_for_image(img: &DynamicImage, font_size: (u16, u16)) -> (u16, u16) {
+    (
+        div_ceil_u32_local(img.width().max(1), font_size.0.max(1) as u32)
+            .min(u16::MAX as u32) as u16,
+        div_ceil_u32_local(img.height().max(1), font_size.1.max(1) as u32)
+            .min(u16::MAX as u32) as u16,
+    )
+}
+
+fn ensure_kitty_viewport_state(
+    hash: u64,
+    source_path: &Path,
+    source: &DynamicImage,
+    zoom_percent: u8,
+    font_size: (u16, u16),
+) -> Option<(u32, u16, u16)> {
+    let zoom_percent = zoom_percent.clamp(50, 200);
+    let mut cache = KITTY_VIEWPORT_STATE.lock().ok()?;
+    if let Some(state) = cache.get_mut(hash) {
+        if state.source_path == source_path && state.zoom_percent == zoom_percent {
+            return Some((state.unique_id, state.full_cols, state.full_rows));
+        }
+    }
+
+    let scaled = kitty_scaled_image_for_zoom(source, zoom_percent);
+    let (full_cols, full_rows) = kitty_full_rect_for_image(&scaled, font_size);
+    if full_cols == 0 || full_rows == 0 {
+        return None;
+    }
+
+    let unique_id = cache
+        .get_mut(hash)
+        .map(|state| state.unique_id)
+        .unwrap_or_else(|| kitty_viewport_unique_id(hash));
+
+    cache.insert(
+        hash,
+        KittyViewportState {
+            source_path: source_path.to_path_buf(),
+            zoom_percent,
+            unique_id,
+            full_cols,
+            full_rows,
+            pending_transmit: Some(kitty_transmit_virtual(&scaled, unique_id)),
+        },
+    );
+
+    if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+        dbg.stats.viewport_protocol_rebuilds += 1;
+    }
+
+    cache
+        .get_mut(hash)
+        .map(|state| (state.unique_id, state.full_cols, state.full_rows))
+}
+
+fn render_kitty_virtual_viewport(
+    hash: u64,
+    area: Rect,
+    buf: &mut Buffer,
+    scroll_x: u16,
+    scroll_y: u16,
+    visible_width: u16,
+    visible_height: u16,
+) -> bool {
+    use std::fmt::Write;
+
+    if visible_width == 0 || visible_height == 0 {
+        return true;
+    }
+
+    let mut cache = match KITTY_VIEWPORT_STATE.lock() {
+        Ok(cache) => cache,
+        Err(_) => return false,
+    };
+    let Some(state) = cache.get_mut(hash) else {
+        return false;
+    };
+    let unique_id = state.unique_id;
+    let pending_transmit = state.pending_transmit.take();
+    drop(cache);
+
+    if pending_transmit.is_none() {
+        if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+            dbg.stats.viewport_state_reuse_hits += 1;
+        }
+    }
+
+    let [id_extra, id_r, id_g, id_b] = unique_id.to_be_bytes();
+    let id_color = format!("\x1b[38;2;{id_r};{id_g};{id_b}m");
+    let right = area.width.saturating_sub(1);
+    let down = area.height.saturating_sub(1);
+
+    for row in 0..area.height {
+        let y = area.top() + row;
+        if row >= visible_height {
+            for x in 0..area.width {
+                if let Some(cell) = buf.cell_mut((area.left() + x, y)) {
+                    cell.set_symbol(" ");
+                    cell.set_skip(false);
+                }
+            }
+            continue;
+        }
+
+        let mut symbol = if row == 0 {
+            pending_transmit.clone().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        symbol.push_str("\x1b[s");
+        symbol.push_str(&id_color);
+        kitty_add_placeholder(&mut symbol, scroll_x, scroll_y.saturating_add(row), id_extra);
+        for x in 1..area.width {
+            if let Some(cell) = buf.cell_mut((area.left() + x, y)) {
+                if x < visible_width {
+                    symbol.push('\u{10EEEE}');
+                    cell.set_skip(true);
+                } else {
+                    cell.set_symbol(" ");
+                    cell.set_skip(false);
+                }
+            }
+        }
+        write!(symbol, "\x1b[u\x1b[{right}C\x1b[{down}B").unwrap();
+        if let Some(cell) = buf.cell_mut((area.left(), y)) {
+            cell.set_symbol(&symbol);
+        }
+    }
+
+    true
+}
+
+fn can_use_kitty_virtual_viewport(full_cols: u16, full_rows: u16, scroll_x: u16, scroll_y: u16) -> bool {
+    let max_index = KITTY_DIACRITICS.len() as u16;
+    full_cols < max_index && full_rows < max_index && scroll_x < max_index && scroll_y < max_index
+}
+
+fn kitty_add_placeholder(buf: &mut String, x: u16, y: u16, id_extra: u8) {
+    buf.push('\u{10EEEE}');
+    buf.push(kitty_diacritic(y));
+    buf.push(kitty_diacritic(x));
+    buf.push(kitty_diacritic(id_extra as u16));
+}
+
+#[inline]
+fn kitty_diacritic(index: u16) -> char {
+    KITTY_DIACRITICS.get(index as usize).copied().unwrap_or(KITTY_DIACRITICS[0])
+}
+
+/// From https://sw.kovidgoyal.net/kitty/_downloads/1792bad15b12979994cd6ecc54c967a6/rowcolumn-diacritics.txt
+static KITTY_DIACRITICS: [char; 297] = [
+    '\u{305}', '\u{30D}', '\u{30E}', '\u{310}', '\u{312}', '\u{33D}', '\u{33E}',
+    '\u{33F}', '\u{346}', '\u{34A}', '\u{34B}', '\u{34C}', '\u{350}', '\u{351}',
+    '\u{352}', '\u{357}', '\u{35B}', '\u{363}', '\u{364}', '\u{365}', '\u{366}',
+    '\u{367}', '\u{368}', '\u{369}', '\u{36A}', '\u{36B}', '\u{36C}', '\u{36D}',
+    '\u{36E}', '\u{36F}', '\u{483}', '\u{484}', '\u{485}', '\u{486}', '\u{487}',
+    '\u{592}', '\u{593}', '\u{594}', '\u{595}', '\u{597}', '\u{598}', '\u{599}',
+    '\u{59C}', '\u{59D}', '\u{59E}', '\u{59F}', '\u{5A0}', '\u{5A1}', '\u{5A8}',
+    '\u{5A9}', '\u{5AB}', '\u{5AC}', '\u{5AF}', '\u{5C4}', '\u{610}', '\u{611}',
+    '\u{612}', '\u{613}', '\u{614}', '\u{615}', '\u{616}', '\u{617}', '\u{657}',
+    '\u{658}', '\u{659}', '\u{65A}', '\u{65B}', '\u{65D}', '\u{65E}', '\u{6D6}',
+    '\u{6D7}', '\u{6D8}', '\u{6D9}', '\u{6DA}', '\u{6DB}', '\u{6DC}', '\u{6DF}',
+    '\u{6E0}', '\u{6E1}', '\u{6E2}', '\u{6E4}', '\u{6E7}', '\u{6E8}', '\u{6EB}',
+    '\u{6EC}', '\u{730}', '\u{732}', '\u{733}', '\u{735}', '\u{736}', '\u{73A}',
+    '\u{73D}', '\u{73F}', '\u{740}', '\u{741}', '\u{743}', '\u{745}', '\u{747}',
+    '\u{749}', '\u{74A}', '\u{7EB}', '\u{7EC}', '\u{7ED}', '\u{7EE}', '\u{7EF}',
+    '\u{7F0}', '\u{7F1}', '\u{7F3}', '\u{816}', '\u{817}', '\u{818}', '\u{819}',
+    '\u{81B}', '\u{81C}', '\u{81D}', '\u{81E}', '\u{81F}', '\u{820}', '\u{821}',
+    '\u{822}', '\u{823}', '\u{825}', '\u{826}', '\u{827}', '\u{829}', '\u{82A}',
+    '\u{82B}', '\u{82C}', '\u{82D}', '\u{951}', '\u{953}', '\u{954}', '\u{F82}',
+    '\u{F83}', '\u{F86}', '\u{F87}', '\u{135D}', '\u{135E}', '\u{135F}', '\u{17DD}',
+    '\u{193A}', '\u{1A17}', '\u{1A75}', '\u{1A76}', '\u{1A77}', '\u{1A78}',
+    '\u{1A79}', '\u{1A7A}', '\u{1A7B}', '\u{1A7C}', '\u{1B6B}', '\u{1B6D}',
+    '\u{1B6E}', '\u{1B6F}', '\u{1B70}', '\u{1B71}', '\u{1B72}', '\u{1B73}',
+    '\u{1CD0}', '\u{1CD1}', '\u{1CD2}', '\u{1CDA}', '\u{1CDB}', '\u{1CE0}',
+    '\u{1DC0}', '\u{1DC1}', '\u{1DC3}', '\u{1DC4}', '\u{1DC5}', '\u{1DC6}',
+    '\u{1DC7}', '\u{1DC8}', '\u{1DC9}', '\u{1DCB}', '\u{1DCC}', '\u{1DD1}',
+    '\u{1DD2}', '\u{1DD3}', '\u{1DD4}', '\u{1DD5}', '\u{1DD6}', '\u{1DD7}',
+    '\u{1DD8}', '\u{1DD9}', '\u{1DDA}', '\u{1DDB}', '\u{1DDC}', '\u{1DDD}',
+    '\u{1DDE}', '\u{1DDF}', '\u{1DE0}', '\u{1DE1}', '\u{1DE2}', '\u{1DE3}',
+    '\u{1DE4}', '\u{1DE5}', '\u{1DE6}', '\u{1DFE}', '\u{20D0}', '\u{20D1}',
+    '\u{20D4}', '\u{20D5}', '\u{20D6}', '\u{20D7}', '\u{20DB}', '\u{20DC}',
+    '\u{20E1}', '\u{20E7}', '\u{20E9}', '\u{20F0}', '\u{2CEF}', '\u{2CF0}',
+    '\u{2CF1}', '\u{2DE0}', '\u{2DE1}', '\u{2DE2}', '\u{2DE3}', '\u{2DE4}',
+    '\u{2DE5}', '\u{2DE6}', '\u{2DE7}', '\u{2DE8}', '\u{2DE9}', '\u{2DEA}',
+    '\u{2DEB}', '\u{2DEC}', '\u{2DED}', '\u{2DEE}', '\u{2DEF}', '\u{2DF0}',
+    '\u{2DF1}', '\u{2DF2}', '\u{2DF3}', '\u{2DF4}', '\u{2DF5}', '\u{2DF6}',
+    '\u{2DF7}', '\u{2DF8}', '\u{2DF9}', '\u{2DFA}', '\u{2DFB}', '\u{2DFC}',
+    '\u{2DFD}', '\u{2DFE}', '\u{2DFF}', '\u{A66F}', '\u{A67C}', '\u{A67D}',
+    '\u{A6F0}', '\u{A6F1}', '\u{A8E0}', '\u{A8E1}', '\u{A8E2}', '\u{A8E3}',
+    '\u{A8E4}', '\u{A8E5}', '\u{A8E6}', '\u{A8E7}', '\u{A8E8}', '\u{A8E9}',
+    '\u{A8EA}', '\u{A8EB}', '\u{A8EC}', '\u{A8ED}', '\u{A8EE}', '\u{A8EF}',
+    '\u{A8F0}', '\u{A8F1}', '\u{AAB0}', '\u{AAB2}', '\u{AAB3}', '\u{AAB7}',
+    '\u{AAB8}', '\u{AABE}', '\u{AABF}', '\u{AAC1}', '\u{FE20}', '\u{FE21}',
+    '\u{FE22}', '\u{FE23}', '\u{FE24}', '\u{FE25}', '\u{FE26}', '\u{10A0F}',
+    '\u{10A38}', '\u{1D185}', '\u{1D186}', '\u{1D187}', '\u{1D188}', '\u{1D189}',
+    '\u{1D1AA}', '\u{1D1AB}', '\u{1D1AC}', '\u{1D1AD}', '\u{1D242}', '\u{1D243}',
+    '\u{1D244}',
+];
 
 /// Render an image by cropping a viewport (for pan/scroll in pinned pane).
 pub fn render_image_widget_viewport(
@@ -2593,6 +3146,36 @@ pub fn render_image_widget_viewport(
         view_h_px,
     };
 
+    if picker.protocol_type() == ProtocolType::Kitty {
+        if let Some((_, full_cols, full_rows)) =
+            ensure_kitty_viewport_state(hash, &source_path, source.as_ref(), zoom_percent, font_size)
+        {
+            let scroll_x_cells = (scroll_x.max(0) as u16).min(full_cols.saturating_sub(1));
+            let scroll_y_cells = (scroll_y.max(0) as u16).min(full_rows.saturating_sub(1));
+            if can_use_kitty_virtual_viewport(full_cols, full_rows, scroll_x_cells, scroll_y_cells) {
+                let visible_width = image_area.width.min(full_cols.saturating_sub(scroll_x_cells));
+                let visible_height = image_area.height.min(full_rows.saturating_sub(scroll_y_cells));
+                if let Ok(mut state) = IMAGE_STATE.lock() {
+                    if let Some(img_state) = state.get_mut(hash) {
+                        img_state.last_area = Some(image_area);
+                        img_state.last_viewport = Some(viewport);
+                    }
+                }
+                if render_kitty_virtual_viewport(
+                    hash,
+                    image_area,
+                    buf,
+                    scroll_x_cells,
+                    scroll_y_cells,
+                    visible_width,
+                    visible_height,
+                ) {
+                    return area.height;
+                }
+            }
+        }
+    }
+
     {
         let mut state = IMAGE_STATE.lock().unwrap();
         let needs_reset = state
@@ -2607,6 +3190,9 @@ pub fn render_image_widget_viewport(
         }
         if let Some(img_state) = state.get_mut(hash) {
             if img_state.last_viewport == Some(viewport) {
+                if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+                    dbg.stats.viewport_state_reuse_hits += 1;
+                }
                 if !render_stateful_image_safe(
                     hash,
                     image_area,
@@ -2623,6 +3209,9 @@ pub fn render_image_widget_viewport(
     }
 
     let cropped = source.crop_imm(scroll_x_px, scroll_y_px, crop_w, crop_h);
+    if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+        dbg.stats.viewport_protocol_rebuilds += 1;
+    }
     let protocol = picker.new_resize_protocol(cropped);
 
     let mut state = IMAGE_STATE.lock().unwrap();
@@ -2665,6 +3254,9 @@ pub fn clear_image_area(area: Rect, buf: &mut Buffer) {
     let clamped = area.intersection(*buf.area());
     if clamped.width == 0 || clamped.height == 0 {
         return;
+    }
+    if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+        dbg.stats.clear_operations += 1;
     }
     super::color_support::clear_buf(clamped, buf);
 }
@@ -3852,5 +4444,76 @@ mod tests {
             stats.cache_misses,
             after_requests - initial_requests
         );
+    }
+
+    #[test]
+    fn test_kitty_viewport_state_reuses_transmit_for_scroll_only_updates() {
+        let _lock = mermaid_render_test_lock();
+        clear_cache().ok();
+        if let Ok(mut debug) = MERMAID_DEBUG.lock() {
+            debug.stats = MermaidDebugStats::default();
+        }
+
+        let hash = 0x1234_5678_9abc_def0;
+        let path = PathBuf::from("/tmp/test-kitty-scroll.png");
+        let source = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            640,
+            480,
+            image::Rgba([20, 40, 60, 255]),
+        ));
+
+        let (unique_id, full_cols, full_rows) =
+            ensure_kitty_viewport_state(hash, &path, &source, 100, (8, 16))
+                .expect("kitty viewport state");
+        assert!(full_cols > 0 && full_rows > 0);
+
+        let rebuilds_after_first = MERMAID_DEBUG.lock().unwrap().stats.viewport_protocol_rebuilds;
+        assert_eq!(rebuilds_after_first, 1);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+        assert!(render_kitty_virtual_viewport(hash, Rect::new(0, 0, 20, 8), &mut buf, 0, 0, 20, 8));
+        let first_symbol = buf[(0, 0)].symbol().to_string();
+        assert!(first_symbol.contains("_Gq=2"), "first render should transmit image data");
+
+        let (same_id, _, _) = ensure_kitty_viewport_state(hash, &path, &source, 100, (8, 16))
+            .expect("kitty viewport state reused");
+        assert_eq!(same_id, unique_id);
+        let rebuilds_after_second = MERMAID_DEBUG.lock().unwrap().stats.viewport_protocol_rebuilds;
+        assert_eq!(rebuilds_after_second, rebuilds_after_first);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+        assert!(render_kitty_virtual_viewport(hash, Rect::new(0, 0, 20, 8), &mut buf, 3, 2, 20, 8));
+        let second_symbol = buf[(0, 0)].symbol().to_string();
+        assert!(!second_symbol.contains("_Gq=2"), "scroll-only render should reuse prior transmit");
+    }
+
+    #[test]
+    fn test_kitty_viewport_state_rebuilds_when_zoom_changes() {
+        let _lock = mermaid_render_test_lock();
+        clear_cache().ok();
+        if let Ok(mut debug) = MERMAID_DEBUG.lock() {
+            debug.stats = MermaidDebugStats::default();
+        }
+
+        let hash = 0x0bad_f00d_dead_beef;
+        let path = PathBuf::from("/tmp/test-kitty-zoom.png");
+        let source = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            320,
+            200,
+            image::Rgba([200, 120, 80, 255]),
+        ));
+
+        let (id_100, cols_100, rows_100) =
+            ensure_kitty_viewport_state(hash, &path, &source, 100, (8, 16)).expect("zoom 100");
+        let rebuilds_100 = MERMAID_DEBUG.lock().unwrap().stats.viewport_protocol_rebuilds;
+
+        let (id_150, cols_150, rows_150) =
+            ensure_kitty_viewport_state(hash, &path, &source, 150, (8, 16)).expect("zoom 150");
+        let rebuilds_150 = MERMAID_DEBUG.lock().unwrap().stats.viewport_protocol_rebuilds;
+
+        assert_eq!(id_100, id_150, "zoom changes should reuse kitty image id");
+        assert!(cols_150 >= cols_100);
+        assert!(rows_150 >= rows_100);
+        assert_eq!(rebuilds_150, rebuilds_100 + 1);
     }
 }

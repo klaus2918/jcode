@@ -1222,6 +1222,7 @@ impl App {
             Some(last) if now.duration_since(last) < RESIZE_REDRAW_MIN_INTERVAL => false,
             _ => {
                 self.last_resize_redraw = Some(now);
+                self.handle_diagram_geometry_change();
                 true
             }
         }

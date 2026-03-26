@@ -75,6 +75,7 @@ enum BenchMode {
     Streaming,
     FileDiff,
     SidePanel,
+    MermaidFlicker,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -661,6 +662,40 @@ fn main() -> Result<()> {
         args.side_panel_mermaids,
     );
     let stream_text = make_text(args.assistant_len.max(args.stream_chunk));
+
+    if matches!(args.mode, BenchMode::MermaidFlicker) {
+        let result = jcode::tui::mermaid::debug_flicker_benchmark(args.frames.max(4));
+        println!("mode: {:?}", args.mode);
+        println!("steps: {}", result.steps);
+        println!("protocol_supported: {}", result.protocol_supported);
+        if let Some(protocol) = &result.protocol {
+            println!("protocol: {}", protocol);
+        }
+        println!("fit_avg_ms: {:.2}", result.fit_timing.avg_ms);
+        println!("fit_p95_ms: {:.2}", result.fit_timing.p95_ms);
+        println!("viewport_avg_ms: {:.2}", result.viewport_timing.avg_ms);
+        println!("viewport_p95_ms: {:.2}", result.viewport_timing.p95_ms);
+        println!(
+            "viewport_protocol_rebuilds: {}",
+            result.deltas.viewport_protocol_rebuilds
+        );
+        println!(
+            "viewport_state_reuse_hits: {}",
+            result.deltas.viewport_state_reuse_hits
+        );
+        println!("fit_protocol_rebuilds: {}", result.deltas.fit_protocol_rebuilds);
+        println!("fit_state_reuse_hits: {}", result.deltas.fit_state_reuse_hits);
+        println!("clear_operations: {}", result.deltas.clear_operations);
+        println!(
+            "viewport_protocol_rebuild_rate: {:.4}",
+            result.viewport_protocol_rebuild_rate
+        );
+        println!(
+            "fit_protocol_rebuild_rate: {:.4}",
+            result.fit_protocol_rebuild_rate
+        );
+        return Ok(());
+    }
 
     if matches!(args.mode, BenchMode::FileDiff) {
         state.diff_mode = jcode::config::DiffDisplayMode::File;

@@ -1419,6 +1419,20 @@ impl App {
         } else if cmd == "mermaid:memory-bench" {
             let result = crate::tui::mermaid::debug_memory_benchmark(40);
             serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+        } else if cmd == "mermaid:flicker-bench" {
+            let result = crate::tui::mermaid::debug_flicker_benchmark(24);
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+        } else if cmd.starts_with("mermaid:flicker-bench ") {
+            let raw_steps = cmd
+                .strip_prefix("mermaid:flicker-bench ")
+                .unwrap_or("")
+                .trim();
+            let steps = match raw_steps.parse::<usize>() {
+                Ok(v) => v,
+                Err(_) => return "Invalid steps (expected integer)".to_string(),
+            };
+            let result = crate::tui::mermaid::debug_flicker_benchmark(steps);
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
         } else if cmd.starts_with("mermaid:memory-bench ") {
             let raw_iterations = cmd
                 .strip_prefix("mermaid:memory-bench ")
@@ -1645,6 +1659,7 @@ impl App {
                  - anomalies - dump visual debug anomalies\n\
                  - theme - dump current palette snapshot\n\
                  - mermaid:stats - dump mermaid debug stats\n\
+                 - mermaid:flicker-bench [n] - benchmark viewport protocol churn / flicker risk\n\
                  - mermaid:cache - list mermaid cache entries\n\
                  - mermaid:evict - clear mermaid cache\n\
                  - markdown:stats - dump markdown debug stats\n\

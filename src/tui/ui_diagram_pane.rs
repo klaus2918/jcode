@@ -12,6 +12,20 @@ pub(crate) fn div_ceil_u32(value: u32, divisor: u32) -> u32 {
     value.saturating_add(divisor - 1) / divisor
 }
 
+#[cfg(test)]
+mod tests {
+    use super::diagram_view_uses_fit_mode;
+
+    #[test]
+    fn diagram_view_uses_fit_mode_when_unfocused_or_reset() {
+        assert!(diagram_view_uses_fit_mode(false, 0, 0, 100));
+        assert!(diagram_view_uses_fit_mode(true, 0, 0, 100));
+        assert!(!diagram_view_uses_fit_mode(true, 1, 0, 100));
+        assert!(!diagram_view_uses_fit_mode(true, 0, 1, 100));
+        assert!(!diagram_view_uses_fit_mode(true, 0, 0, 90));
+    }
+}
+
 pub(crate) fn estimate_pinned_diagram_pane_width_with_font(
     diagram: &info_widget::DiagramInfo,
     pane_height: u16,
@@ -154,6 +168,15 @@ pub(crate) fn is_diagram_poor_fit(
     }
 }
 
+pub(crate) fn diagram_view_uses_fit_mode(
+    focused: bool,
+    scroll_x: i32,
+    scroll_y: i32,
+    zoom_percent: u8,
+) -> bool {
+    !focused || (scroll_x == 0 && scroll_y == 0 && zoom_percent == 100)
+}
+
 pub(crate) fn draw_pinned_diagram(
     frame: &mut Frame,
     diagram: &info_widget::DiagramInfo,
@@ -175,13 +198,14 @@ pub(crate) fn draw_pinned_diagram(
 
     let border_color = if focused { accent_color() } else { dim_color() };
     let mut title_parts = vec![Span::styled(" pinned ", Style::default().fg(tool_color()))];
+    let fit_mode = diagram_view_uses_fit_mode(focused, scroll_x, scroll_y, zoom_percent);
     if total > 0 {
         title_parts.push(Span::styled(
             format!("{}/{}", index + 1, total),
             Style::default().fg(tool_color()),
         ));
     }
-    let mode_label = if focused { " pan " } else { " fit " };
+    let mode_label = if fit_mode { " fit " } else { " pan " };
     title_parts.push(Span::styled(
         mode_label,
         Style::default().fg(if focused { accent_color() } else { dim_color() }),
@@ -254,7 +278,7 @@ pub(crate) fn draw_pinned_diagram(
             frame.render_widget(paragraph, inner);
             rendered = inner.height;
         } else if super::super::mermaid::protocol_type().is_some() {
-            if focused {
+            if focused && !fit_mode {
                 rendered = super::super::mermaid::render_image_widget_viewport(
                     diagram.hash,
                     inner,

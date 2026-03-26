@@ -1472,6 +1472,7 @@ impl App {
             self.diff_pane_scroll_x = 0;
             self.diff_pane_auto_scroll = true;
         }
+        self.sync_diagram_fit_context();
     }
 
     pub(super) fn toggle_typing_scroll_lock(&mut self) {

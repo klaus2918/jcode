@@ -430,6 +430,9 @@ pub struct App {
     diagram_pane_position: crate::config::DiagramPanePosition,
     // Diagram zoom percentage (100 = normal)
     diagram_zoom: u8,
+    // Last diagram hash that was actually visible in the pinned pane.
+    // Used to detect identity/layout changes that should reset back to fit.
+    last_visible_diagram_hash: Option<u64>,
     // Whether the user is dragging the diagram pane border
     diagram_pane_dragging: bool,
     // Scroll offset for pinned diff pane
