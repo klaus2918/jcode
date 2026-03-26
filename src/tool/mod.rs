@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod agentgrep;
 pub mod ambient;
 mod apply_patch;
 mod bash;
@@ -227,6 +228,7 @@ impl Registry {
             let mut m = HashMap::new();
             Self::insert_tool(&mut m, "read", read::ReadTool::new());
             Self::insert_tool(&mut m, "write", write::WriteTool::new());
+            Self::insert_tool(&mut m, "agentgrep", agentgrep::AgentGrepTool::new());
             Self::insert_tool(&mut m, "side_panel", side_panel::SidePanelTool::new());
             Self::insert_tool(&mut m, "edit", edit::EditTool::new());
             Self::insert_tool(&mut m, "multiedit", multiedit::MultiEditTool::new());

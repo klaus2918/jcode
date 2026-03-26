@@ -670,6 +670,60 @@ pub(super) fn get_tool_summary_with_budget(
                 format!("'{}'", truncate_regex_display(pattern, budget))
             }
         }
+        "agentgrep" => {
+            let mode = tool
+                .input
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            match mode {
+                "grep" | "find" => {
+                    let query = tool
+                        .input
+                        .get("query")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if query.is_empty() {
+                        mode.to_string()
+                    } else {
+                        format!(
+                            "{} '{}'",
+                            mode,
+                            truncate_query_display(
+                                query,
+                                bounded(36).saturating_sub(mode.len() + 3)
+                            )
+                        )
+                    }
+                }
+                "smart" => {
+                    let terms = tool.input.get("terms").and_then(|v| v.as_array());
+                    let mut subject = None;
+                    let mut relation = None;
+                    if let Some(terms) = terms {
+                        for term in terms {
+                            if let Some(term) = term.as_str() {
+                                if let Some(value) = term.strip_prefix("subject:") {
+                                    subject = Some(value);
+                                } else if let Some(value) = term.strip_prefix("relation:") {
+                                    relation = Some(value);
+                                }
+                            }
+                        }
+                    }
+
+                    match (subject, relation) {
+                        (Some(subject), Some(relation)) => format!(
+                            "smart {}:{}",
+                            truncate_identifier_display(subject, bounded(18)),
+                            truncate_identifier_display(relation, bounded(14))
+                        ),
+                        _ => "smart".to_string(),
+                    }
+                }
+                other => other.to_string(),
+            }
+        }
         "ls" => tool
             .input
             .get("path")
