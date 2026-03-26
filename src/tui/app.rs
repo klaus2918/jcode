@@ -56,6 +56,10 @@ mod tui_lifecycle;
 mod tui_state;
 mod turn;
 
+pub(crate) fn extract_input_shell_command(input: &str) -> Option<&str> {
+    self::input::extract_input_shell_command(input)
+}
+
 #[derive(Debug, Clone)]
 struct PendingRemoteMessage {
     content: String,
