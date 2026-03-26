@@ -8,6 +8,7 @@ pub mod gemini;
 pub mod jcode;
 pub mod models;
 pub mod openai;
+pub(crate) mod openai_request;
 pub mod openrouter;
 pub mod pricing;
 
