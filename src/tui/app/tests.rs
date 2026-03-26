@@ -1543,6 +1543,42 @@ fn test_side_panel_visibility_change_resets_diagram_fit_context() {
 }
 
 #[test]
+fn test_goal_side_panel_focus_updates_status_notice() {
+    let mut app = create_test_app();
+
+    app.set_side_panel_snapshot(crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("goals".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "goals".to_string(),
+            title: "Goals".to_string(),
+            file_path: "".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "# Goals".to_string(),
+            updated_at_ms: 1,
+        }],
+    });
+    assert_eq!(app.status_notice(), Some("Goals".to_string()));
+
+    app.set_side_panel_snapshot(crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("goal.ship-mobile-mvp".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "goal.ship-mobile-mvp".to_string(),
+            title: "Goal: Ship mobile MVP".to_string(),
+            file_path: "".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "# Goal: Ship mobile MVP".to_string(),
+            updated_at_ms: 2,
+        }],
+    });
+    assert_eq!(
+        app.status_notice(),
+        Some("Goal: Ship mobile MVP".to_string())
+    );
+}
+
+#[test]
 fn test_pinned_side_diagram_layout_allocates_right_pane() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();

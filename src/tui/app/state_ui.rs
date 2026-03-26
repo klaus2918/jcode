@@ -1463,6 +1463,7 @@ impl App {
     ) {
         let focused_before = self.side_panel.focused_page_id.clone();
         let focused_after = snapshot.focused_page_id.clone();
+        let focused_title_after = snapshot.focused_page().map(|page| page.title.clone());
         self.side_panel = snapshot;
         if focused_before != focused_after
             || self.diff_pane_scroll > 0
@@ -1471,6 +1472,13 @@ impl App {
             self.diff_pane_scroll = 0;
             self.diff_pane_scroll_x = 0;
             self.diff_pane_auto_scroll = true;
+        }
+        if focused_before != focused_after {
+            match (focused_after.as_deref(), focused_title_after.as_deref()) {
+                (Some("goals"), _) => self.set_status_notice("Goals"),
+                (Some(id), Some(title)) if id.starts_with("goal.") => self.set_status_notice(title),
+                _ => {}
+            }
         }
         self.sync_diagram_fit_context();
     }
