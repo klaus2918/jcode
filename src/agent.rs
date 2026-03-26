@@ -2,6 +2,7 @@
 
 mod interrupts;
 mod prompt_support;
+mod utils;
 
 use crate::build;
 use crate::bus::{Bus, BusEvent, SubagentStatus, ToolEvent, ToolStatus};
@@ -15,17 +16,17 @@ use crate::message::{
 use crate::protocol::{HistoryMessage, ServerEvent};
 use crate::provider::{NativeToolResult, Provider};
 use crate::session::{
-    EnvSnapshot, GitState, Session, SessionStatus, StoredDisplayRole, StoredMessage,
+    EnvSnapshot, Session, SessionStatus, StoredDisplayRole, StoredMessage,
 };
 use crate::skill::SkillRegistry;
 use crate::tool::{Registry, ToolContext, ToolExecutionMode};
 use anyhow::Result;
 use chrono::Utc;
 use futures::StreamExt;
+use self::utils::{git_state_for_dir, trace_enabled};
 use std::collections::HashSet;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
@@ -4246,41 +4247,6 @@ fn print_tool_summary(tool: &ToolCall) {
     }
 }
 
-fn trace_enabled() -> bool {
-    match std::env::var("JCODE_TRACE") {
-        Ok(value) => {
-            let value = value.trim();
-            !value.is_empty() && value != "0" && value.to_lowercase() != "false"
-        }
-        Err(_) => false,
-    }
-}
-
-fn git_state_for_dir(dir: &Path) -> Option<GitState> {
-    let root = git_output(dir, &["rev-parse", "--show-toplevel"])?;
-    let head = git_output(dir, &["rev-parse", "HEAD"]);
-    let branch = git_output(dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
-    let dirty = git_output(dir, &["status", "--porcelain"]).map(|out| !out.is_empty());
-
-    Some(GitState {
-        root,
-        head,
-        branch,
-        dirty,
-    })
-}
-
-fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
 
 #[cfg(test)]
 mod tests {
