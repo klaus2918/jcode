@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Install the current release binary into the immutable version store,
-# update the stable channel symlink, and point the launcher at stable.
+# update the stable + current channel symlinks, and point the launcher at current.
 #
 # Paths after install:
 # - ~/.jcode/builds/versions/<hash>/jcode (immutable)
 # - ~/.jcode/builds/stable/jcode -> .../versions/<hash>/jcode
-# - ~/.local/bin/jcode -> ~/.jcode/builds/stable/jcode (launcher)
+# - ~/.jcode/builds/current/jcode -> .../versions/<hash>/jcode
+# - ~/.local/bin/jcode -> ~/.jcode/builds/current/jcode (launcher)
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -70,14 +71,21 @@ ln -sfn "$version_dir/jcode" "$stable_dir/jcode"
 # Update stable-version marker
 printf '%s\n' "$hash" > "$builds_dir/stable-version"
 
-# Update launcher path to stable channel
+# Update current symlink + marker
+current_dir="$builds_dir/current"
+mkdir -p "$current_dir"
+ln -sfn "$version_dir/jcode" "$current_dir/jcode"
+printf '%s\n' "$hash" > "$builds_dir/current-version"
+
+# Update launcher path to current channel
 install_dir="${JCODE_INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$install_dir"
-ln -sfn "$stable_dir/jcode" "$install_dir/jcode"
+ln -sfn "$current_dir/jcode" "$install_dir/jcode"
 
 echo "Installed: $version_dir/jcode"
 echo "Updated stable symlink: $stable_dir/jcode -> $version_dir/jcode"
-echo "Updated launcher symlink: $install_dir/jcode -> $stable_dir/jcode"
+echo "Updated current symlink: $current_dir/jcode -> $version_dir/jcode"
+echo "Updated launcher symlink: $install_dir/jcode -> $current_dir/jcode"
 
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$install_dir"; then
   echo ""

@@ -120,10 +120,8 @@ pub fn launcher_binary_path() -> Result<PathBuf> {
     Ok(launcher_dir()?.join(binary_name()))
 }
 
-/// Update launcher path to point at the stable channel binary.
-pub fn update_launcher_symlink_to_stable() -> Result<PathBuf> {
+fn update_launcher_symlink(target: &Path) -> Result<PathBuf> {
     let launcher = launcher_binary_path()?;
-    let stable = stable_binary_path()?;
 
     if let Some(parent) = launcher.parent() {
         storage::ensure_dir(parent)?;
@@ -138,19 +136,38 @@ pub fn update_launcher_symlink_to_stable() -> Result<PathBuf> {
             std::process::id()
         ));
 
-    crate::platform::atomic_symlink_swap(&stable, &launcher, &temp)?;
+    crate::platform::atomic_symlink_swap(target, &launcher, &temp)?;
     Ok(launcher)
 }
 
-/// Resolve which client binary should be considered for update checks/reload.
+/// Update launcher path to point at the current channel binary.
+pub fn update_launcher_symlink_to_current() -> Result<PathBuf> {
+    let current = current_binary_path()?;
+    update_launcher_symlink(&current)
+}
+
+/// Update launcher path to point at the stable channel binary.
+pub fn update_launcher_symlink_to_stable() -> Result<PathBuf> {
+    let stable = stable_binary_path()?;
+    update_launcher_symlink(&stable)
+}
+
+/// Resolve which client binary should be considered for launches, updates, and reloads.
 ///
-/// Order matters and should match `/reload` behavior:
-/// - Self-dev sessions prefer a freshly built repo binary from `target/release`
+/// Order matters:
+/// - Prefer the published `current` channel first (active local build)
+/// - Self-dev sessions can fall back to an unpublished repo build from `target/release`
 /// - Then the self-dev canary channel
 /// - Then launcher path
 /// - Then stable channel path
 /// - Finally currently running executable
 pub fn client_update_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'static str)> {
+    if let Ok(current) = current_binary_path() {
+        if current.exists() {
+            return Some((current, "current"));
+        }
+    }
+
     if is_selfdev_session {
         if let Some(repo_dir) = get_repo_dir() {
             if let Some(dev) = find_dev_binary(&repo_dir) {
@@ -407,6 +424,11 @@ pub fn stable_binary_path() -> Result<PathBuf> {
     Ok(builds_dir()?.join("stable").join(binary_name()))
 }
 
+/// Get path to current symlink (active local build channel)
+pub fn current_binary_path() -> Result<PathBuf> {
+    Ok(builds_dir()?.join("current").join(binary_name()))
+}
+
 /// Get path to canary binary
 pub fn canary_binary_path() -> Result<PathBuf> {
     Ok(builds_dir()?.join("canary").join(binary_name()))
@@ -422,6 +444,17 @@ pub fn migration_context_path(session_id: &str) -> Result<PathBuf> {
 /// Get path to stable version file (watched by other sessions)
 pub fn stable_version_file() -> Result<PathBuf> {
     Ok(builds_dir()?.join("stable-version"))
+}
+
+/// Get path to current version file (active local build marker).
+pub fn current_version_file() -> Result<PathBuf> {
+    Ok(builds_dir()?.join("current-version"))
+}
+
+fn repo_build_version(repo_dir: &std::path::Path) -> Result<String> {
+    let hash = current_git_hash(repo_dir)?;
+    let dirty = is_working_tree_dirty(repo_dir)?;
+    Ok(if dirty { format!("{}-dirty", hash) } else { hash })
 }
 
 /// Get the current git hash
@@ -552,24 +585,43 @@ pub fn update_stable_symlink(version: &str) -> Result<PathBuf> {
     Ok(stable_link)
 }
 
-/// Install release binary into immutable versions and point stable+launcher to it.
+/// Update current symlink to point to a version and publish current-version marker.
+pub fn update_current_symlink(version: &str) -> Result<PathBuf> {
+    let current_link = update_channel_symlink("current", version)?;
+    std::fs::write(current_version_file()?, version)?;
+    Ok(current_link)
+}
+
+/// Install the local release binary into immutable versions and make it the active `current`
+/// build + launcher, while keeping `stable` untouched.
+pub fn publish_local_current_build(repo_dir: &std::path::Path) -> Result<PathBuf> {
+    let source = release_binary_path(repo_dir);
+    if !source.exists() {
+        anyhow::bail!("Binary not found at {:?}", source);
+    }
+
+    let version = repo_build_version(repo_dir)?;
+    let versioned = install_binary_at_version(&source, &version)?;
+    update_current_symlink(&version)?;
+    update_launcher_symlink_to_current()?;
+
+    Ok(versioned)
+}
+
+/// Install release binary into immutable versions, promote it to stable, and also make it the
+/// active current/launcher build.
 pub fn install_local_release(repo_dir: &std::path::Path) -> Result<PathBuf> {
     let source = release_binary_path(repo_dir);
     if !source.exists() {
         anyhow::bail!("Binary not found at {:?}", source);
     }
 
-    let hash = current_git_hash(repo_dir)?;
-    let dirty = is_working_tree_dirty(repo_dir)?;
-    let version = if dirty {
-        format!("{}-dirty", hash)
-    } else {
-        hash
-    };
+    let version = repo_build_version(repo_dir)?;
 
     let versioned = install_binary_at_version(&source, &version)?;
     update_stable_symlink(&version)?;
-    update_launcher_symlink_to_stable()?;
+    update_current_symlink(&version)?;
+    update_launcher_symlink_to_current()?;
 
     Ok(versioned)
 }
@@ -602,6 +654,22 @@ pub fn clear_migration_context(session_id: &str) -> Result<()> {
 /// Read the current stable version
 pub fn read_stable_version() -> Result<Option<String>> {
     let path = stable_version_file()?;
+    if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        let hash = content.trim();
+        if hash.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(hash.to_string()))
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+/// Read the current active version.
+pub fn read_current_version() -> Result<Option<String>> {
+    let path = current_version_file()?;
     if path.exists() {
         let content = std::fs::read_to_string(path)?;
         let hash = content.trim();
@@ -713,19 +781,28 @@ mod tests {
 
     #[test]
     fn test_client_update_candidate_prefers_dev_binary_for_selfdev() {
-        let Some(repo_dir) = get_repo_dir() else {
-            return;
-        };
-        let Some(dev_binary) = find_dev_binary(&repo_dir) else {
-            return;
-        };
-        if !dev_binary.exists() {
-            return;
-        }
+        let _guard = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp_home.path());
+
+        let version = "test-current";
+        let version_binary = install_binary_at_version(std::env::current_exe().as_ref().unwrap(), version)
+            .expect("install test version");
+        update_current_symlink(version).expect("update current symlink");
 
         let candidate = client_update_candidate(true).expect("expected selfdev candidate");
-        assert_eq!(candidate.1, "dev");
-        assert_eq!(candidate.0, dev_binary);
+        assert_eq!(candidate.1, "current");
+        assert_eq!(
+            std::fs::canonicalize(candidate.0).expect("canonical candidate"),
+            std::fs::canonicalize(version_binary).expect("canonical version binary")
+        );
+
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
     }
 
     #[test]

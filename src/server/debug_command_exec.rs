@@ -438,6 +438,7 @@ pub(super) async fn execute_debug_command(
 
         let hash = crate::build::current_git_hash(&repo_dir)?;
 
+        crate::build::publish_local_current_build(&repo_dir)?;
         crate::build::install_version(&repo_dir, &hash)?;
         crate::build::update_canary_symlink(&hash)?;
 

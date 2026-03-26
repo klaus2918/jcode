@@ -57,6 +57,7 @@ else
   builds_dir="$HOME/.jcode/builds"
 fi
 stable_dir="$builds_dir/stable"
+current_dir="$builds_dir/current"
 version_dir="$builds_dir/versions"
 launcher_path="$INSTALL_DIR/jcode${EXE}"
 
@@ -86,7 +87,7 @@ elif curl -fsSL "$URL_BIN" -o "$tmpdir/jcode.download" 2>/dev/null; then
   download_mode="bin"
 fi
 
-mkdir -p "$INSTALL_DIR" "$stable_dir" "$version_dir"
+mkdir -p "$INSTALL_DIR" "$stable_dir" "$current_dir" "$version_dir"
 
 version="${VERSION#v}"
 dest_version_dir="$version_dir/$version"

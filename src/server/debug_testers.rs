@@ -64,6 +64,18 @@ async fn spawn_tester(opts: serde_json::Value) -> Result<String> {
 
     let binary_path = if let Some(b) = binary {
         PathBuf::from(b)
+    } else if let Ok(current) = crate::build::current_binary_path() {
+        if current.exists() {
+            current
+        } else if let Ok(canary) = crate::build::canary_binary_path() {
+            if canary.exists() {
+                canary
+            } else {
+                std::env::current_exe()?
+            }
+        } else {
+            std::env::current_exe()?
+        }
     } else if let Ok(canary) = crate::build::canary_binary_path() {
         if canary.exists() {
             canary

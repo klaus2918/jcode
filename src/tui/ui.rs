@@ -429,7 +429,7 @@ fn semver() -> &'static str {
 
 /// True when this process is running from the stable release binary path.
 /// Only matches the explicit ~/.jcode/builds/stable/jcode path, NOT
-/// ~/.local/bin/jcode launcher path (which points to stable).
+/// ~/.local/bin/jcode launcher path (which now points to current).
 fn is_running_stable_release() -> bool {
     static IS_STABLE: OnceLock<bool> = OnceLock::new();
     *IS_STABLE.get_or_init(|| {
@@ -443,7 +443,7 @@ fn is_running_stable_release() -> bool {
         // Check if we were launched via the stable symlink
         if let Ok(stable_path) = crate::build::stable_binary_path() {
             // Compare the symlink target (not canonical) to distinguish
-            // launcher/stable links from direct binary execution.
+            // direct stable-channel execution from launcher/current links.
             let stable_target =
                 std::fs::read_link(&stable_path).unwrap_or_else(|_| stable_path.clone());
             let current_target =

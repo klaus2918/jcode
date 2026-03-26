@@ -146,7 +146,13 @@ pub fn selfdev_status_output() -> Result<ToolOutput> {
         }
     }
 
-    status.push_str("\n## Build Status\n\n");
+        status.push_str("\n## Build Channels\n\n");
+
+    if let Ok(Some(current)) = build::read_current_version() {
+        status.push_str(&format!("**Current:** {}\n", current));
+    } else {
+        status.push_str("**Current:** none\n");
+    }
 
     if let Some(ref stable) = manifest.stable {
         status.push_str(&format!("**Stable:** {}\n", stable));
@@ -451,7 +457,7 @@ impl SelfDevTool {
     }
 
     fn launch_binary() -> Result<std::path::PathBuf> {
-        build::client_update_candidate(false)
+        build::client_update_candidate(true)
             .map(|(path, _label)| path)
             .or_else(|| std::env::current_exe().ok())
             .ok_or_else(|| anyhow::anyhow!("Could not resolve jcode executable to launch"))
@@ -601,9 +607,10 @@ impl SelfDevTool {
         };
         let version_before = env!("JCODE_VERSION").to_string();
 
-        // Install the new binary and update canary symlink so the server
-        // exec's into the correct (freshly built) binary.
+        // Publish the newly built binary as the active current build so reload,
+        // launcher sessions, and self-dev spawns all converge on the same binary.
         if !SelfDevTool::is_test_session() {
+            build::publish_local_current_build(&repo_dir)?;
             build::install_version(&repo_dir, &hash)?;
             build::update_canary_symlink(&hash)?;
         }

@@ -58,9 +58,6 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
 
     crate::process_title::set_client_session_title(&session_id, true);
 
-    let target_binary =
-        build::find_dev_binary(&repo_dir).unwrap_or_else(|| build::release_binary_path(&repo_dir));
-
     if should_build {
         output::stderr_info("Building...");
 
@@ -73,8 +70,15 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
             anyhow::bail!("Build failed");
         }
 
+        build::publish_local_current_build(&repo_dir)?;
+
         output::stderr_info("✓ Build complete");
     }
+
+    let target_binary = build::client_update_candidate(true)
+        .map(|(path, _)| path)
+        .or_else(|| build::find_dev_binary(&repo_dir))
+        .unwrap_or_else(|| build::release_binary_path(&repo_dir));
 
     if !target_binary.exists() {
         anyhow::bail!(

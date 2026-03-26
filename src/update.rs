@@ -373,7 +373,8 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
                 build::install_binary_at_version(&path, &channel_version)
                     .context("Failed to install built binary")?;
                 build::update_stable_symlink(&channel_version)?;
-                build::update_launcher_symlink_to_stable()?;
+                build::update_current_symlink(&channel_version)?;
+                build::update_launcher_symlink_to_current()?;
 
                 metadata.installed_version = Some(format!("main-{}", latest_sha));
                 metadata.installed_from = Some("source".to_string());
@@ -595,7 +596,8 @@ pub fn download_and_install_blocking(release: &GitHubRelease) -> Result<PathBuf>
     let versioned_path = build::install_binary_at_version(&temp_path, version)?;
     let _ = fs::remove_file(&temp_path);
     build::update_stable_symlink(version)?;
-    build::update_launcher_symlink_to_stable()?;
+    build::update_current_symlink(version)?;
+    build::update_launcher_symlink_to_current()?;
 
     metadata.installed_version = Some(release.tag_name.clone());
     metadata.installed_from = Some(asset.browser_download_url.clone());
