@@ -2524,16 +2524,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // (max 10 lines visible, scrolls if more).
     let base_input_height =
         input_ui::wrapped_input_line_count(app, chat_area.width, next_prompt).min(10) as u16;
-    // Add 1 line for command suggestions when typing /, or for the Ctrl+Enter hint when processing
-    let suggestions = app.command_suggestions();
-    let has_slash_input = app.input().trim_start().starts_with('/');
-    let hint_line_height = if !suggestions.is_empty() && (has_slash_input || !app.is_processing()) {
-        1 // Command suggestions (shown even during streaming when typing /commands)
-    } else if app.is_processing() && !app.input().is_empty() {
-        1 // Ctrl+Enter hint
-    } else {
-        0
-    };
+    // Add 1 line for command suggestions, shell mode hints, or the Ctrl+Enter hint.
+    let hint_line_height = input_ui::input_hint_line_height(app);
     let picker_height: u16 = if let Some(picker) = app.picker_state() {
         let visible_models = picker.filtered.len() as u16;
         let rows_needed = visible_models + 1; // +1 for header
@@ -2626,7 +2618,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         capture.state.queued_count = pending_count;
         capture.state.message_count = app.display_messages().len();
         capture.state.streaming_text_len = app.streaming_text().len();
-        capture.state.has_suggestions = !suggestions.is_empty();
+        capture.state.has_suggestions = !app.command_suggestions().is_empty();
         capture.state.status = format!("{:?}", app.status());
         capture.state.diagram_mode = Some(format!("{:?}", diagram_mode));
         capture.state.diagram_focus = diagram_focus;

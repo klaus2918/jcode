@@ -6,9 +6,66 @@ use super::{
     is_unexpected_cache_miss, pending_color, queued_color, rainbow_prompt_color, user_color,
 };
 use crate::message::ConnectionPhase;
+use crate::tui::app;
 use crate::tui::color_support::rgb;
 use crate::tui::info_widget::occasional_status_tip;
 use ratatui::{prelude::*, widgets::Paragraph};
+
+fn shell_mode_color() -> Color {
+    rgb(110, 214, 151)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComposerMode {
+    Chat,
+    SlashCommand,
+    ShellLocal,
+    ShellRemote,
+}
+
+impl ComposerMode {
+    fn is_shell(self) -> bool {
+        matches!(self, Self::ShellLocal | Self::ShellRemote)
+    }
+}
+
+fn composer_mode(input: &str, is_remote_mode: bool) -> ComposerMode {
+    if app::extract_input_shell_command(input).is_some() {
+        if is_remote_mode {
+            ComposerMode::ShellRemote
+        } else {
+            ComposerMode::ShellLocal
+        }
+    } else if input.trim_start().starts_with('/') {
+        ComposerMode::SlashCommand
+    } else {
+        ComposerMode::Chat
+    }
+}
+
+fn shell_mode_hint(mode: ComposerMode) -> Option<&'static str> {
+    match mode {
+        ComposerMode::ShellLocal => Some("  shell mode · Enter runs locally"),
+        ComposerMode::ShellRemote => Some("  shell mode · Enter runs on server"),
+        _ => None,
+    }
+}
+
+pub(super) fn input_hint_line_height(app: &dyn TuiState) -> u16 {
+    let suggestions = app.command_suggestions();
+    let mode = composer_mode(app.input(), app.is_remote_mode());
+    let has_suggestions = !suggestions.is_empty()
+        && matches!(mode, ComposerMode::SlashCommand | ComposerMode::Chat)
+        && (matches!(mode, ComposerMode::SlashCommand) || !app.is_processing());
+
+    if has_suggestions || shell_mode_hint(mode).is_some() {
+        1
+    } else if app.is_processing() && !app.input().is_empty() {
+        1
+    } else {
+        0
+    }
+}
 
 pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
     let (icon, _) = send_mode_indicator(app);
@@ -16,7 +73,10 @@ pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
 }
 
 pub(super) fn input_prompt(app: &dyn TuiState) -> (&'static str, Color) {
-    if app.is_processing() {
+    let mode = composer_mode(app.input(), app.is_remote_mode());
+    if mode.is_shell() {
+        ("$ ", shell_mode_color())
+    } else if app.is_processing() {
         ("… ", queued_color())
     } else if app.active_skill().is_some() {
         ("» ", accent_color())
@@ -673,6 +733,38 @@ mod tests {
         assert_eq!(spans[0].content.as_ref(), " · 0/3 done");
         assert_eq!(spans[1].content.as_ref(), " · running: #1 bash +2");
     }
+
+    #[test]
+    fn composer_mode_detects_shell_input_before_commands() {
+        assert_eq!(
+            composer_mode(" ! cargo test ", false),
+            ComposerMode::ShellLocal
+        );
+        assert_eq!(
+            composer_mode("! cargo test", true),
+            ComposerMode::ShellRemote
+        );
+        assert_eq!(composer_mode(" /help", false), ComposerMode::SlashCommand);
+        assert_eq!(composer_mode("hello", false), ComposerMode::Chat);
+    }
+
+    #[test]
+    fn shell_mode_hint_reflects_execution_target() {
+        assert_eq!(
+            shell_mode_hint(ComposerMode::ShellLocal),
+            Some("  shell mode · Enter runs locally")
+        );
+        assert_eq!(
+            shell_mode_hint(ComposerMode::ShellRemote),
+            Some("  shell mode · Enter runs on server")
+        );
+        assert_eq!(shell_mode_hint(ComposerMode::Chat), None);
+    }
+
+    #[test]
+    fn shell_mode_color_is_distinct() {
+        assert_eq!(shell_mode_color(), rgb(110, 214, 151));
+    }
 }
 
 /// Build the spans for the notification line. Returns empty vec when there is nothing to show.
@@ -803,9 +895,11 @@ pub(super) fn draw_input(
     let input_text = app.input();
     let cursor_pos = app.cursor_pos();
 
+    let mode = composer_mode(input_text, app.is_remote_mode());
     let suggestions = app.command_suggestions();
-    let has_slash_input = input_text.trim_start().starts_with('/');
-    let has_suggestions = !suggestions.is_empty() && (has_slash_input || !app.is_processing());
+    let has_suggestions = !suggestions.is_empty()
+        && matches!(mode, ComposerMode::SlashCommand | ComposerMode::Chat)
+        && (matches!(mode, ComposerMode::SlashCommand) || !app.is_processing());
 
     let (prompt_char, caret_color) = input_prompt(app);
     let num_str = format!("{}", next_prompt);
@@ -877,6 +971,13 @@ pub(super) fn draw_input(
             }
             lines.push(Line::from(spans));
         }
+    } else if let Some(shell_hint) = shell_mode_hint(mode) {
+        hint_shown = true;
+        hint_line = Some(shell_hint.trim().to_string());
+        lines.push(Line::from(Span::styled(
+            shell_hint,
+            Style::default().fg(shell_mode_color()),
+        )));
     } else if app.is_processing() && !input_text.is_empty() {
         hint_shown = true;
         let hint = if app.queue_mode() {
@@ -1104,7 +1205,10 @@ pub(crate) fn wrap_input_text<'a>(
 }
 
 fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {
-    if app.queue_mode() {
+    let mode = composer_mode(app.input(), app.is_remote_mode());
+    if mode.is_shell() {
+        ("$", shell_mode_color())
+    } else if app.queue_mode() {
         ("⏳", queued_color())
     } else if let Some(ref conn) = app.connection_type() {
         let lower = conn.to_lowercase();
