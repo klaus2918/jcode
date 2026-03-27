@@ -474,6 +474,10 @@ pub struct App {
     last_side_panel_focus_id: Option<String>,
     // Pin read images to side pane
     pin_images: bool,
+    // Show a native terminal scrollbar in the chat viewport.
+    chat_native_scrollbar: bool,
+    // Show a native terminal scrollbar in the side panel.
+    side_panel_native_scrollbar: bool,
     // Interactive model/provider picker
     picker_state: Option<super::PickerState>,
     // Pending model switch from picker (for remote mode async processing)

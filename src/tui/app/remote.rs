@@ -70,13 +70,13 @@ fn reconnect_status_message(app: &App, state: &RemoteRunState, detail: &str) -> 
                 .and_then(|id| crate::id::extract_session_name(id))
         });
     let resume_hint = if let Some(name) = &session_name {
-        format!("\n  Resume later: jcode --resume {}", name)
+        format!(" · resume: jcode --resume {}", name)
     } else {
         String::new()
     };
 
     format!(
-        "⚡ Connection lost — retrying (attempt {}, {})\n  Cause: {}{}",
+        "⚡ Connection lost — retrying (attempt {}, {}) — {}{}",
         state.reconnect_attempts.max(1),
         elapsed_str,
         detail,

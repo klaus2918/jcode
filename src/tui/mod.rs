@@ -172,6 +172,8 @@ pub trait TuiState {
     fn connected_clients(&self) -> Option<usize>;
     /// Short-lived notice shown in the status line (e.g., model switch, toggle diff)
     fn status_notice(&self) -> Option<String>;
+    /// Whether a transient remote startup phase is active and should keep redraws responsive.
+    fn remote_startup_phase_active(&self) -> bool;
     /// Optional configured keybinding label for external dictation.
     fn dictation_key_label(&self) -> Option<String>;
     /// Time since app started (for startup animations)
@@ -229,6 +231,10 @@ pub trait TuiState {
     fn side_panel(&self) -> &crate::side_panel::SidePanelSnapshot;
     /// Whether to pin read images to a side pane
     fn pin_images(&self) -> bool;
+    /// Whether to show a native terminal scrollbar for the chat viewport
+    fn chat_native_scrollbar(&self) -> bool;
+    /// Whether to show a native terminal scrollbar for the side panel
+    fn side_panel_native_scrollbar(&self) -> bool;
     /// Whether to wrap lines in the pinned diff pane
     fn diff_line_wrap(&self) -> bool;
     /// Interactive model/provider picker state (shown as inline row above input)
@@ -443,6 +449,7 @@ pub(crate) fn redraw_interval(state: &dyn TuiState) -> Duration {
     if state.is_processing()
         || !state.streaming_text().is_empty()
         || state.status_notice().is_some()
+        || state.remote_startup_phase_active()
         || state.has_notification()
         || state.rate_limit_remaining().is_some()
     {
@@ -505,6 +512,38 @@ pub(crate) fn subscribe_metadata() -> (Option<String>, Option<bool>) {
 /// Public wrapper to render a single frame (used by benchmarks/tools).
 pub fn render_frame(frame: &mut Frame<'_>, state: &dyn TuiState) {
     ui::draw(frame, state);
+}
+
+pub use ui::SidePanelDebugStats;
+
+pub fn side_panel_debug_stats() -> SidePanelDebugStats {
+    ui::side_panel_debug_stats()
+}
+
+pub fn reset_side_panel_debug_stats() {
+    ui::reset_side_panel_debug_stats();
+}
+
+pub fn clear_side_panel_render_caches() {
+    ui::clear_side_panel_render_caches();
+}
+
+pub fn prewarm_focused_side_panel(
+    snapshot: &crate::side_panel::SidePanelSnapshot,
+    terminal_width: u16,
+    terminal_height: u16,
+    ratio_percent: u8,
+    has_protocol: bool,
+    centered: bool,
+) -> bool {
+    ui::prewarm_focused_side_panel(
+        snapshot,
+        terminal_width,
+        terminal_height,
+        ratio_percent,
+        has_protocol,
+        centered,
+    )
 }
 
 #[cfg(test)]

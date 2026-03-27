@@ -1594,6 +1594,46 @@ fn test_goal_side_panel_focus_updates_status_notice() {
 }
 
 #[test]
+fn test_side_panel_same_page_update_preserves_scroll_position() {
+    let mut app = create_test_app();
+    app.diff_pane_scroll = 14;
+    app.diff_pane_scroll_x = 3;
+
+    let first = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: "plan.md".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "# Plan\n\nVersion 1".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+    app.set_side_panel_snapshot(first);
+    app.diff_pane_scroll = 14;
+    app.diff_pane_scroll_x = 3;
+
+    let second = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: "plan.md".to_string(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "# Plan\n\nVersion 2".to_string(),
+            updated_at_ms: 2,
+        }],
+    };
+    app.set_side_panel_snapshot(second);
+
+    assert_eq!(app.diff_pane_scroll, 14);
+    assert_eq!(app.diff_pane_scroll_x, 3);
+}
+
+#[test]
 fn test_pinned_side_diagram_layout_allocates_right_pane() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
@@ -4541,7 +4581,12 @@ fn test_handle_remote_disconnect_flushes_streaming_text_and_sets_reconnect_state
         .expect("missing reconnect status message");
     assert_eq!(last.role, "system");
     assert!(last.content.contains("⚡ Connection lost — retrying"));
-    assert!(last.content.contains("Cause: connection to server dropped"));
+    assert!(last.content.contains("connection to server dropped"));
+    assert!(
+        !last.content.contains('\n'),
+        "reconnect status should stay on one line: {}",
+        last.content
+    );
 }
 
 #[test]
@@ -4585,7 +4630,7 @@ fn test_push_display_message_coalesces_repeated_single_line_system_messages() {
 #[test]
 fn test_push_display_message_does_not_coalesce_multiline_system_messages() {
     let mut app = create_test_app();
-    let message = "⚡ Connection lost — retrying (attempt 1, 0s)\n  Cause: protocol error";
+    let message = "Reload complete\ncontinuing";
 
     app.push_display_message(DisplayMessage::system(message.to_string()));
     app.push_display_message(DisplayMessage::system(message.to_string()));

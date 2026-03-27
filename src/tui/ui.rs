@@ -3255,6 +3255,8 @@ mod tests {
         active_skill: Option<String>,
         centered_mode: bool,
         anim_elapsed: f32,
+        time_since_activity: Option<Duration>,
+        remote_startup_phase_active: bool,
         picker_state: Option<crate::tui::PickerState>,
     }
 
@@ -3344,7 +3346,7 @@ mod tests {
             self.batch_progress.clone()
         }
         fn time_since_activity(&self) -> Option<Duration> {
-            None
+            self.time_since_activity
         }
         fn total_session_tokens(&self) -> Option<(u64, u64)> {
             None
@@ -3381,6 +3383,9 @@ mod tests {
         }
         fn status_notice(&self) -> Option<String> {
             None
+        }
+        fn remote_startup_phase_active(&self) -> bool {
+            self.remote_startup_phase_active
         }
         fn dictation_key_label(&self) -> Option<String> {
             None
@@ -3531,6 +3536,27 @@ mod tests {
             Err(poisoned) => poisoned.into_inner(),
         };
         *state = PromptViewportState::default();
+    }
+
+    #[test]
+    fn test_redraw_interval_stays_fast_during_remote_startup_phase() {
+        let idle = TestState {
+            anim_elapsed: 10.0,
+            display_messages: vec![DisplayMessage::system("seed".to_string())],
+            time_since_activity: Some(crate::tui::REDRAW_DEEP_IDLE_AFTER + Duration::from_secs(1)),
+            ..Default::default()
+        };
+        let startup = TestState {
+            time_since_activity: idle.time_since_activity,
+            remote_startup_phase_active: true,
+            ..Default::default()
+        };
+
+        let idle_interval = crate::tui::redraw_interval(&idle);
+        let startup_interval = crate::tui::redraw_interval(&startup);
+
+        assert_eq!(idle_interval, crate::tui::REDRAW_DEEP_IDLE);
+        assert!(startup_interval < idle_interval);
     }
 
     fn record_test_chat_snapshot(text: &str) {

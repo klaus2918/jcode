@@ -458,6 +458,10 @@ impl crate::tui::TuiState for App {
         })
     }
 
+    fn remote_startup_phase_active(&self) -> bool {
+        self.remote_startup_phase.is_some()
+    }
+
     fn dictation_key_label(&self) -> Option<String> {
         self.dictation_key_label().map(|s| s.to_string())
     }
@@ -965,6 +969,12 @@ impl crate::tui::TuiState for App {
     }
     fn pin_images(&self) -> bool {
         self.pin_images
+    }
+    fn chat_native_scrollbar(&self) -> bool {
+        self.chat_native_scrollbar
+    }
+    fn side_panel_native_scrollbar(&self) -> bool {
+        self.side_panel_native_scrollbar
     }
     fn diff_line_wrap(&self) -> bool {
         crate::config::config().display.diff_line_wrap
