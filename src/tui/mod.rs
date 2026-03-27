@@ -21,6 +21,7 @@ pub mod test_harness;
 mod ui;
 mod ui_diff;
 pub mod visual_debug;
+pub mod workspace_map;
 
 pub use app::{App, CopyBadgeUiState, DisplayMessage, ProcessingStatus, RunResult};
 
