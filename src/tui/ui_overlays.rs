@@ -194,6 +194,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Resume the last saved improve loop/plan",
     ));
     lines.push(help_entry("/split", "Clone session into a new window"));
+    lines.push(help_entry(
+        "/workspace [status|on|off|add]",
+        "Enable and manage the Niri-style session workspace",
+    ));
     lines.push(help_entry("/resume", "Browse and resume previous sessions"));
     lines.push(help_entry("/save [label]", "Bookmark session for /resume"));
     lines.push(help_entry(

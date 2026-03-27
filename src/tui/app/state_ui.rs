@@ -481,6 +481,10 @@ impl App {
             ("/save".into(), "Bookmark session for easy access"),
             ("/unsave".into(), "Remove bookmark from session"),
             ("/split".into(), "Split session into a new window"),
+            (
+                "/workspace".into(),
+                "Niri-style session workspace (status/on/off/add)",
+            ),
             ("/quit".into(), "Exit jcode"),
             ("/auth".into(), "Show authentication status"),
             ("/cache".into(), "Toggle cache TTL between 5min and 1h"),

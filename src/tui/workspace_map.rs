@@ -139,6 +139,10 @@ impl WorkspaceMapModel {
         self.row_mut(self.current_workspace)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.rows.values().all(WorkspaceRow::is_empty)
+    }
+
     pub fn add_session_to_current_workspace(&mut self, tile: WorkspaceSessionTile) -> (i32, usize) {
         let workspace = self.current_workspace;
         let index = self.current_row_mut().insert_right_of_focus(tile);
@@ -147,6 +151,73 @@ impl WorkspaceMapModel {
 
     pub fn focus_session_in_workspace(&mut self, workspace: i32, index: usize) -> bool {
         self.row_mut(workspace).focus(index)
+    }
+
+    pub fn locate_session(&self, session_id: &str) -> Option<(i32, usize)> {
+        self.rows.iter().find_map(|(workspace, row)| {
+            row.sessions
+                .iter()
+                .position(|tile| tile.session_id == session_id)
+                .map(|index| (*workspace, index))
+        })
+    }
+
+    pub fn focus_session_by_id(&mut self, session_id: &str) -> bool {
+        let Some((workspace, index)) = self.locate_session(session_id) else {
+            return false;
+        };
+        self.current_workspace = workspace;
+        self.row_mut(workspace).focus(index)
+    }
+
+    pub fn current_focused_session_id(&self) -> Option<&str> {
+        let row = self.current_row()?;
+        let index = row.focused_index()?;
+        row.sessions.get(index).map(|tile| tile.session_id.as_str())
+    }
+
+    pub fn set_row_sessions(
+        &mut self,
+        workspace: i32,
+        sessions: Vec<WorkspaceSessionTile>,
+        focused_index: Option<usize>,
+    ) {
+        let row = self.row_mut(workspace);
+        row.sessions = sessions;
+        row.last_focused = focused_index.filter(|idx| *idx < row.sessions.len());
+    }
+
+    pub fn insert_session_in_workspace(
+        &mut self,
+        workspace: i32,
+        tile: WorkspaceSessionTile,
+    ) -> usize {
+        self.current_workspace = workspace;
+        self.row_mut(workspace).insert_right_of_focus(tile)
+    }
+
+    pub fn focused_session_in_workspace(&self, workspace: i32) -> Option<&str> {
+        let row = self.row(workspace)?;
+        let index = row.focused_index()?;
+        row.sessions.get(index).map(|tile| tile.session_id.as_str())
+    }
+
+    pub fn nearest_populated_workspace_above(&self) -> Option<i32> {
+        self.rows
+            .iter()
+            .filter_map(|(workspace, row)| {
+                (*workspace > self.current_workspace && !row.is_empty()).then_some(*workspace)
+            })
+            .min()
+    }
+
+    pub fn nearest_populated_workspace_below(&self) -> Option<i32> {
+        self.rows
+            .iter()
+            .filter_map(|(workspace, row)| {
+                (*workspace < self.current_workspace && !row.is_empty()).then_some(*workspace)
+            })
+            .max()
     }
 
     pub fn move_left(&mut self) -> bool {

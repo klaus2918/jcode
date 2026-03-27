@@ -918,6 +918,23 @@ impl crate::tui::TuiState for App {
         }
     }
 
+    fn workspace_mode_enabled(&self) -> bool {
+        crate::tui::workspace_client::is_enabled()
+    }
+
+    fn workspace_map_rows(&self) -> Vec<crate::tui::workspace_map::VisibleWorkspaceRow> {
+        let session_id = if self.is_remote {
+            self.remote_session_id.as_deref()
+        } else {
+            Some(self.session.id.as_str())
+        };
+        crate::tui::workspace_client::visible_rows(5, session_id, self.is_processing)
+    }
+
+    fn workspace_animation_tick(&self) -> u64 {
+        self.app_started.elapsed().as_millis() as u64 / 180
+    }
+
     fn render_streaming_markdown(&self, width: usize) -> Vec<ratatui::text::Line<'static>> {
         let mut renderer = self.streaming_md_renderer.borrow_mut();
         renderer.set_width(Some(width));

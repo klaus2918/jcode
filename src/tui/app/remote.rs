@@ -173,6 +173,113 @@ fn reload_marker_active() -> bool {
     crate::server::reload_marker_active(RELOAD_MARKER_MAX_AGE)
 }
 
+async fn handle_workspace_navigation_key(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    remote: &mut RemoteConnection,
+) -> Result<bool> {
+    if !modifiers.contains(KeyModifiers::ALT) || !crate::tui::workspace_client::is_enabled() {
+        return Ok(false);
+    }
+
+    let target = match code {
+        KeyCode::Char('h') => crate::tui::workspace_client::navigate_left(),
+        KeyCode::Char('l') => crate::tui::workspace_client::navigate_right(),
+        KeyCode::Char('k') => crate::tui::workspace_client::navigate_up(),
+        KeyCode::Char('j') => crate::tui::workspace_client::navigate_down(),
+        _ => return Ok(false),
+    };
+
+    if app.is_processing {
+        app.set_status_notice("Finish current work before moving workspace focus");
+        return Ok(true);
+    }
+
+    let Some(target_session_id) = target else {
+        app.set_status_notice("No workspace session in that direction");
+        return Ok(true);
+    };
+    remote.resume_session(&target_session_id).await?;
+    let label = crate::id::extract_session_name(&target_session_id)
+        .map(|name| name.to_string())
+        .unwrap_or(target_session_id);
+    app.set_status_notice(format!("Workspace → {}", label));
+    Ok(true)
+}
+
+async fn handle_workspace_command(
+    app: &mut App,
+    remote: &mut RemoteConnection,
+    trimmed: &str,
+) -> Result<bool> {
+    if !trimmed.starts_with("/workspace") {
+        return Ok(false);
+    }
+
+    let current_session = app
+        .remote_session_id
+        .as_deref()
+        .or(app.resume_session_id.as_deref())
+        .or(Some(app.session.id.as_str()));
+
+    match trimmed {
+        "/workspace" | "/workspace status" => {
+            app.push_display_message(DisplayMessage::system(
+                crate::tui::workspace_client::status_summary(),
+            ));
+            return Ok(true);
+        }
+        "/workspace on" | "/workspace import" => {
+            crate::tui::workspace_client::enable(current_session, &app.remote_sessions);
+            app.set_status_notice("Workspace mode enabled");
+            app.push_display_message(DisplayMessage::system(
+                crate::tui::workspace_client::status_summary(),
+            ));
+            return Ok(true);
+        }
+        "/workspace off" => {
+            crate::tui::workspace_client::disable();
+            app.set_status_notice("Workspace mode disabled");
+            app.push_display_message(DisplayMessage::system("Workspace mode: off".to_string()));
+            return Ok(true);
+        }
+        _ => {}
+    }
+
+    let target = match trimmed {
+        "/workspace add" | "/workspace add right" => {
+            Some(crate::tui::workspace_client::WorkspaceSplitTarget::Right)
+        }
+        "/workspace add up" => Some(crate::tui::workspace_client::WorkspaceSplitTarget::Up),
+        "/workspace add down" => Some(crate::tui::workspace_client::WorkspaceSplitTarget::Down),
+        _ => None,
+    };
+
+    if let Some(target) = target {
+        crate::tui::workspace_client::enable(current_session, &app.remote_sessions);
+        crate::tui::workspace_client::queue_split_target(target);
+        app.pending_split_label = Some("Workspace".to_string());
+        if app.is_processing {
+            app.pending_split_request = true;
+            app.push_display_message(DisplayMessage::system(
+                "Workspace add queued — new session will be created when idle.".to_string(),
+            ));
+            app.set_status_notice("Workspace add queued");
+        } else {
+            begin_remote_split_launch(app, "Workspace");
+            remote.split().await?;
+        }
+        return Ok(true);
+    }
+
+    app.push_display_message(DisplayMessage::system(
+        "`/workspace`\nShow workspace status.\n\n`/workspace on`\nEnable/import workspace mode for current remote sessions.\n\n`/workspace off`\nDisable workspace mode.\n\n`/workspace add`\nSplit current session and add it to the right in the current workspace row.\n\n`/workspace add up`\nSplit current session into the workspace above.\n\n`/workspace add down`\nSplit current session into the workspace below."
+            .to_string(),
+    ));
+    Ok(true)
+}
+
 pub(super) fn reload_handoff_active(state: &RemoteRunState) -> bool {
     state.server_reload_in_progress || reload_marker_active()
 }
@@ -236,6 +343,26 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
     app.refresh_side_panel_linked_content_if_due();
 
     let _ = check_debug_command(app, remote).await;
+
+    if !app.is_processing {
+        if let Some(target_session) = crate::tui::workspace_client::take_pending_resume_session() {
+            match remote.resume_session(&target_session).await {
+                Ok(()) => {
+                    let label = crate::id::extract_session_name(&target_session)
+                        .map(|name| name.to_string())
+                        .unwrap_or(target_session);
+                    app.set_status_notice(format!("Workspace → {}", label));
+                    return;
+                }
+                Err(err) => {
+                    app.push_display_message(DisplayMessage::error(format!(
+                        "Failed to switch workspace session: {}",
+                        err
+                    )));
+                }
+            }
+        }
+    }
 
     if let Some(reset_time) = app.rate_limit_reset {
         if Instant::now() >= reset_time {
@@ -2198,6 +2325,7 @@ pub(super) fn handle_server_event(
             app.remote_is_canary = is_canary;
             app.remote_server_version = server_version;
             app.remote_server_has_update = server_has_update;
+            crate::tui::workspace_client::sync_after_history(&session_id, &app.remote_sessions);
 
             if server_has_update == Some(true) && !app.pending_server_reload {
                 app.pending_server_reload = true;
@@ -2598,6 +2726,20 @@ pub(super) fn handle_server_event(
             new_session_name,
             ..
         } => {
+            if crate::tui::workspace_client::handle_split_response(&new_session_id) {
+                finish_remote_split_launch(app);
+                app.pending_split_request = false;
+                app.pending_split_startup_message = None;
+                app.pending_split_model_override = None;
+                app.pending_split_provider_key_override = None;
+                app.pending_split_label = None;
+                app.push_display_message(DisplayMessage::system(format!(
+                    "Added **{}** to workspace.",
+                    new_session_name,
+                )));
+                app.set_status_notice(format!("Workspace + {}", new_session_name));
+                return false;
+            }
             finish_remote_split_launch(app);
             app.pending_split_request = false;
             let startup_message = app.pending_split_startup_message.take();
@@ -3002,6 +3144,10 @@ async fn handle_remote_key_internal(
 
     if app.dictation_key_matches(code, modifiers) {
         app.handle_dictation_trigger();
+        return Ok(());
+    }
+
+    if handle_workspace_navigation_key(app, code, modifiers, remote).await? {
         return Ok(());
     }
 
@@ -4081,6 +4227,10 @@ async fn handle_remote_key_internal(
                         "Splitting session...".to_string(),
                     ));
                     remote.split().await?;
+                    return Ok(());
+                }
+
+                if handle_workspace_command(app, remote, trimmed).await? {
                     return Ok(());
                 }
 

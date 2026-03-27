@@ -21,6 +21,7 @@ pub mod test_harness;
 mod ui;
 mod ui_diff;
 pub mod visual_debug;
+pub mod workspace_client;
 pub mod workspace_map;
 pub mod workspace_map_widget;
 
@@ -196,6 +197,18 @@ pub trait TuiState {
     fn server_update_available(&self) -> Option<bool>;
     /// Get info widget data (todos, client count, etc.)
     fn info_widget_data(&self) -> info_widget::InfoWidgetData;
+    /// Whether workspace mode is enabled for this client.
+    fn workspace_mode_enabled(&self) -> bool {
+        false
+    }
+    /// Visible Niri-style workspace rows for the workspace-map widget.
+    fn workspace_map_rows(&self) -> Vec<workspace_map::VisibleWorkspaceRow> {
+        Vec::new()
+    }
+    /// Animation tick used for lightweight workspace map animation.
+    fn workspace_animation_tick(&self) -> u64 {
+        0
+    }
     /// Render streaming text using incremental markdown renderer
     /// This is more efficient than re-rendering on every frame
     fn render_streaming_markdown(&self, width: usize) -> Vec<Line<'static>>;

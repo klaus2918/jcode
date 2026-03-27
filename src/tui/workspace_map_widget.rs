@@ -11,6 +11,18 @@ const TILE_HEIGHT: u16 = 2;
 const COL_GAP: u16 = 2;
 const ROW_GAP: u16 = 1;
 
+pub fn preferred_size(rows: &[VisibleWorkspaceRow]) -> (u16, u16) {
+    let max_tiles = rows.iter().map(|row| row.sessions.len()).max().unwrap_or(0) as u16;
+    let width = if max_tiles == 0 {
+        TILE_WIDTH + 2
+    } else {
+        max_tiles * TILE_WIDTH + max_tiles.saturating_sub(1) * COL_GAP + 2
+    };
+    let height =
+        rows.len() as u16 * TILE_HEIGHT + rows.len().saturating_sub(1) as u16 * ROW_GAP + 2;
+    (width, height)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkspaceTilePlacement {
     pub workspace: i32,
