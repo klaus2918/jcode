@@ -230,6 +230,59 @@ fn clear_area(frame: &mut Frame, area: Rect) {
     super::color_support::clear_buf(area, frame.buffer_mut());
 }
 
+const RIGHT_RAIL_HEADER_HEIGHT: u16 = 1;
+
+fn right_rail_border_style(focused: bool, focus_color: Color) -> Style {
+    let border_color = if focused { focus_color } else { dim_color() };
+    Style::default().fg(border_color)
+}
+
+fn right_rail_inner(area: Rect) -> Rect {
+    ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::LEFT)
+        .inner(area)
+}
+
+fn right_rail_content_area(area: Rect) -> Option<Rect> {
+    let inner = right_rail_inner(area);
+    if inner.width == 0 || inner.height <= RIGHT_RAIL_HEADER_HEIGHT {
+        return None;
+    }
+
+    Some(Rect {
+        x: inner.x,
+        y: inner.y + RIGHT_RAIL_HEADER_HEIGHT,
+        width: inner.width,
+        height: inner.height - RIGHT_RAIL_HEADER_HEIGHT,
+    })
+}
+
+fn draw_right_rail_chrome(
+    frame: &mut Frame,
+    area: Rect,
+    title: Line<'static>,
+    border_style: Style,
+) -> Option<Rect> {
+    let inner = right_rail_inner(area);
+    let content_area = right_rail_content_area(area)?;
+
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::LEFT)
+        .border_style(border_style);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(title),
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: RIGHT_RAIL_HEADER_HEIGHT,
+        },
+    );
+
+    Some(content_area)
+}
+
 fn user_color() -> Color {
     rgb(138, 180, 248)
 }
@@ -1008,62 +1061,108 @@ fn binary_age() -> Option<String> {
 struct ChangelogEntry<'a> {
     hash: &'a str,
     tag: &'a str,
+    timestamp: Option<i64>,
     subject: &'a str,
 }
 
-/// Parse the embedded changelog. Format per entry: "hash:tag:subject"
-/// where tag is either a version like "v0.4.2" or empty.
-/// Entries are separated by ASCII unit separator (0x1F).
-fn parse_changelog() -> Vec<ChangelogEntry<'static>> {
-    let changelog: &'static str = env!("JCODE_CHANGELOG");
+/// Parse changelog entries from the embedded changelog string.
+///
+/// Current format per entry:
+///   "hash<RS>tag<RS>timestamp<RS>subject"
+/// where tag is either a version like "v0.4.2" or empty, timestamp is a
+/// Unix epoch seconds string, and entries are separated by ASCII unit
+/// separator (0x1F).
+///
+/// Older binaries used "hash:tag:subject"; we keep parsing that format too.
+fn parse_changelog_from(changelog: &str) -> Vec<ChangelogEntry<'_>> {
     if changelog.is_empty() {
         return Vec::new();
     }
     changelog
         .split('\x1f')
         .filter_map(|entry| {
-            let (hash, rest) = entry.split_once(':')?;
-            let (tag, subject) = rest.split_once(':')?;
-            Some(ChangelogEntry { hash, tag, subject })
+            if entry.contains('\x1e') {
+                let mut parts = entry.splitn(4, '\x1e');
+                let hash = parts.next()?;
+                let tag = parts.next().unwrap_or("");
+                let timestamp = parts.next().and_then(|raw| raw.parse::<i64>().ok());
+                let subject = parts.next()?;
+                Some(ChangelogEntry {
+                    hash,
+                    tag,
+                    timestamp,
+                    subject,
+                })
+            } else {
+                let (hash, rest) = entry.split_once(':')?;
+                let (tag, subject) = rest.split_once(':')?;
+                Some(ChangelogEntry {
+                    hash,
+                    tag,
+                    timestamp: None,
+                    subject,
+                })
+            }
         })
         .collect()
 }
 
+/// Parse the embedded changelog from the build-time environment.
+fn parse_changelog() -> Vec<ChangelogEntry<'static>> {
+    let changelog: &'static str = env!("JCODE_CHANGELOG");
+    parse_changelog_from(changelog)
+}
+
 /// A group of changelog entries under a version heading.
+#[derive(Clone)]
 pub struct ChangelogGroup {
     pub version: String,
+    pub released_at: Option<String>,
     pub entries: Vec<String>,
 }
 
-/// Return all embedded changelog entries grouped by release version.
-/// Each group has a version label (e.g. "v0.4.2") and the commit subjects
-/// that belong to that release. Commits before any tag are grouped under
-/// the current build version.
-pub fn get_grouped_changelog() -> Vec<ChangelogGroup> {
-    let entries = parse_changelog();
+fn format_changelog_timestamp(timestamp: i64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+}
+
+fn group_changelog_entries(
+    entries: &[ChangelogEntry<'_>],
+    current_version: &str,
+    current_git_date: &str,
+) -> Vec<ChangelogGroup> {
     if entries.is_empty() {
         return Vec::new();
     }
 
-    let current_version = env!("JCODE_VERSION");
     let version_label = current_version
         .split_whitespace()
         .next()
         .unwrap_or(current_version);
+    let unreleased_time =
+        chrono::DateTime::parse_from_str(current_git_date, "%Y-%m-%d %H:%M:%S %z")
+            .ok()
+            .map(|dt| {
+                dt.with_timezone(&chrono::Utc)
+                    .format("%Y-%m-%d %H:%M UTC")
+                    .to_string()
+            });
 
     let mut groups: Vec<ChangelogGroup> = Vec::new();
     let mut current_group = ChangelogGroup {
         version: format!("{} (unreleased)", version_label),
+        released_at: unreleased_time,
         entries: Vec::new(),
     };
 
-    for entry in &entries {
+    for entry in entries {
         if !entry.tag.is_empty() {
             if !current_group.entries.is_empty() {
                 groups.push(current_group);
             }
             current_group = ChangelogGroup {
                 version: entry.tag.to_string(),
+                released_at: entry.timestamp.and_then(format_changelog_timestamp),
                 entries: vec![entry.subject.to_string()],
             };
         } else {
@@ -1075,6 +1174,20 @@ pub fn get_grouped_changelog() -> Vec<ChangelogGroup> {
     }
 
     groups
+}
+
+/// Return all embedded changelog entries grouped by release version.
+/// Each group has a version label (e.g. "v0.4.2") and the commit subjects
+/// that belong to that release. Commits before any tag are grouped under
+/// the current build version.
+pub fn get_grouped_changelog() -> Vec<ChangelogGroup> {
+    static GROUPS: OnceLock<Vec<ChangelogGroup>> = OnceLock::new();
+    GROUPS
+        .get_or_init(|| {
+            let entries = parse_changelog();
+            group_changelog_entries(&entries, env!("JCODE_VERSION"), env!("JCODE_GIT_DATE"))
+        })
+        .clone()
 }
 
 /// Get changelog entries the user hasn't seen yet.
@@ -2867,6 +2980,37 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             placements: Vec::new(),
         });
     }
+
+    if app.workspace_mode_enabled() && !show_donut {
+        let rows = app.workspace_map_rows();
+        if !rows.is_empty() {
+            let (preferred_w, preferred_h) = super::workspace_map_widget::preferred_size(&rows);
+            let widget_w = preferred_w
+                .min(messages_area.width.saturating_sub(2))
+                .max(10);
+            let widget_h = preferred_h
+                .min(messages_area.height.saturating_sub(2))
+                .max(4);
+            let widget_rect = Rect::new(
+                messages_area.x.saturating_add(
+                    messages_area
+                        .width
+                        .saturating_sub(widget_w)
+                        .saturating_sub(1),
+                ),
+                messages_area.y.saturating_add(1),
+                widget_w,
+                widget_h,
+            );
+            super::workspace_map_widget::render_workspace_map(
+                frame.buffer_mut(),
+                widget_rect,
+                &rows,
+                app.workspace_animation_tick(),
+            );
+        }
+    }
+
     if visual_debug::overlay_enabled() {
         overlays::draw_debug_overlay(frame, &placements, &chunks);
     }
@@ -3214,11 +3358,6 @@ pub(crate) fn render_native_scrollbar(
         scroll.min(max_scroll) * max_thumb_offset / max_scroll
     };
 
-    let track_color = if focused {
-        rgb(92, 106, 130)
-    } else {
-        rgb(62, 68, 78)
-    };
     let thumb_color = if focused {
         rgb(188, 208, 240)
     } else {
@@ -3239,7 +3378,7 @@ pub(crate) fn render_native_scrollbar(
             };
             (glyph, thumb_color)
         } else {
-            ("╎", track_color)
+            (" ", Color::Reset)
         };
         lines.push(Line::from(Span::styled(glyph, Style::default().fg(color))));
     }
@@ -3258,6 +3397,77 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn parse_changelog_from_supports_timestamped_entries() {
+        let changelog = concat!(
+            "abc123\x1ev1.2.2\x1e1711234500\x1eCut release\x1f",
+            "def456\x1e\x1e1711234600\x1eFix follow-up"
+        );
+
+        let entries = parse_changelog_from(changelog);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].hash, "abc123");
+        assert_eq!(entries[0].tag, "v1.2.2");
+        assert_eq!(entries[0].timestamp, Some(1711234500));
+        assert_eq!(entries[0].subject, "Cut release");
+        assert_eq!(entries[1].timestamp, Some(1711234600));
+    }
+
+    #[test]
+    fn group_changelog_entries_includes_release_times() {
+        let entries = vec![
+            ChangelogEntry {
+                hash: "aaa111",
+                tag: "",
+                timestamp: Some(1711235600),
+                subject: "Latest unreleased fix",
+            },
+            ChangelogEntry {
+                hash: "bbb222",
+                tag: "v1.2.2",
+                timestamp: Some(1711234500),
+                subject: "Cut release",
+            },
+            ChangelogEntry {
+                hash: "ccc333",
+                tag: "",
+                timestamp: Some(1711234400),
+                subject: "Earlier release commit",
+            },
+        ];
+
+        let groups =
+            group_changelog_entries(&entries, "v1.2.3 (deadbee)", "2024-03-23 16:46:40 +0000");
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].version, "v1.2.3 (unreleased)");
+        assert_eq!(
+            groups[0].released_at.as_deref(),
+            Some("2024-03-23 16:46 UTC")
+        );
+        assert_eq!(groups[0].entries, vec!["Latest unreleased fix"]);
+
+        assert_eq!(groups[1].version, "v1.2.2");
+        assert_eq!(
+            groups[1].released_at.as_deref(),
+            Some("2024-03-23 22:55 UTC")
+        );
+        assert_eq!(
+            groups[1].entries,
+            vec!["Cut release", "Earlier release commit"]
+        );
+    }
+
+    #[test]
+    fn parse_changelog_from_supports_legacy_entries_without_timestamps() {
+        let entries = parse_changelog_from("abc123:v1.2.2:Legacy entry");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].hash, "abc123");
+        assert_eq!(entries[0].tag, "v1.2.2");
+        assert_eq!(entries[0].timestamp, None);
+        assert_eq!(entries[0].subject, "Legacy entry");
     }
 
     #[test]

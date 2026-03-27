@@ -51,24 +51,24 @@ fn main() {
     )
     .unwrap_or_default();
 
-    // Get recent commit messages with version tag decorations.
-    // Format: "hash|decorations|subject" per line (pipe-delimited to avoid
-    // conflict with colons in decorations like "tag: v0.5.0").
-    // We grab enough commits to cover several releases so /changelog can group by version.
+    // Get recent commit messages with commit timestamps and version tag decorations.
+    // Format: "hash|timestamp|decorations|subject" per line.
+    // We embed a deeper window so /changelog can cover many more releases.
     let raw_log = std::env::var("JCODE_BUILD_CHANGELOG_RAW")
         .ok()
         .or_else(|| metadata_value("changelog_raw"))
-        .or_else(|| git_output(["log", "--oneline", "-100", "--format=%h|%D|%s"]))
+        .or_else(|| git_output(["log", "-700", "--format=%h|%ct|%D|%s"]))
         .unwrap_or_default();
 
-    // Normalize to "hash:tag:subject" — extract version tag or leave empty.
-    // Join with ASCII unit separator (0x1F) since cargo:rustc-env treats
-    // newlines as separate directives.
+    // Normalize to "hash<RS>tag<RS>timestamp<RS>subject" — extract version tag or
+    // leave empty. We use ASCII record/unit separators so fields can safely
+    // contain punctuation.
     let changelog = raw_log
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(3, '|');
+            let mut parts = line.splitn(4, '|');
             let hash = parts.next()?;
+            let timestamp = parts.next().unwrap_or("");
             let decorations = parts.next().unwrap_or("");
             let subject = parts.next()?;
             let tag = decorations
@@ -77,7 +77,10 @@ fn main() {
                 .find(|d| d.starts_with("tag: v"))
                 .and_then(|d| d.strip_prefix("tag: "))
                 .unwrap_or("");
-            Some(format!("{}:{}:{}", hash, tag, subject))
+            Some(format!(
+                "{}\x1e{}\x1e{}\x1e{}",
+                hash, tag, timestamp, subject
+            ))
         })
         .collect::<Vec<_>>()
         .join("\x1f");

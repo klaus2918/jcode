@@ -23,8 +23,12 @@ pub(super) fn draw_changelog_overlay(frame: &mut Frame, area: Rect, scroll: usiz
         )));
     } else {
         for group in &groups {
+            let heading = match &group.released_at {
+                Some(released_at) => format!("  {} · {}", group.version, released_at),
+                None => format!("  {}", group.version),
+            };
             lines.push(Line::from(Span::styled(
-                format!("  {}", group.version),
+                heading,
                 Style::default()
                     .fg(rgb(200, 200, 220))
                     .add_modifier(Modifier::BOLD),
