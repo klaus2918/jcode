@@ -4560,6 +4560,42 @@ fn test_replace_display_message_content_bumps_version() {
 }
 
 #[test]
+fn test_push_display_message_coalesces_repeated_single_line_system_messages() {
+    let mut app = create_test_app();
+
+    app.push_display_message(DisplayMessage::system(
+        "✓ Reconnected successfully.".to_string(),
+    ));
+    let before = app.display_messages_version;
+    app.push_display_message(DisplayMessage::system(
+        "✓ Reconnected successfully.".to_string(),
+    ));
+    app.push_display_message(DisplayMessage::system(
+        "✓ Reconnected successfully.".to_string(),
+    ));
+
+    assert_eq!(app.display_messages().len(), 1);
+    assert_eq!(
+        app.display_messages()[0].content,
+        "✓ Reconnected successfully. [×3]"
+    );
+    assert_ne!(app.display_messages_version, before);
+}
+
+#[test]
+fn test_push_display_message_does_not_coalesce_multiline_system_messages() {
+    let mut app = create_test_app();
+    let message = "⚡ Connection lost — retrying (attempt 1, 0s)\n  Cause: protocol error";
+
+    app.push_display_message(DisplayMessage::system(message.to_string()));
+    app.push_display_message(DisplayMessage::system(message.to_string()));
+
+    assert_eq!(app.display_messages().len(), 2);
+    assert_eq!(app.display_messages()[0].content, message);
+    assert_eq!(app.display_messages()[1].content, message);
+}
+
+#[test]
 fn test_remove_display_message_bumps_version() {
     let mut app = create_test_app();
     app.push_display_message(DisplayMessage::system(
@@ -5448,6 +5484,16 @@ fn test_remote_tui_state_falls_back_to_cached_model_after_startup_phase_clears()
     } else {
         crate::env::remove_var("JCODE_HOME");
     }
+}
+
+#[test]
+fn test_remote_tui_state_shows_connected_after_startup_phase_clears_without_model() {
+    let mut app = App::new_for_remote(None);
+    app.remote_session_id = Some("session_connected_123".to_string());
+    app.clear_remote_startup_phase();
+
+    assert_eq!(crate::tui::TuiState::provider_model(&app), "connected");
+    assert_eq!(crate::tui::TuiState::provider_name(&app), "remote");
 }
 
 #[test]

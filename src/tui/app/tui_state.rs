@@ -47,6 +47,10 @@ impl App {
             .as_ref()
             .map(crate::tui::app::RemoteStartupPhase::header_label)
             .or_else(|| self.effective_remote_provider_model())
+            .or_else(|| {
+                (self.remote_session_id.is_some() || self.connection_type.is_some())
+                    .then(|| "connected".to_string())
+            })
     }
 
     fn remote_header_provider_name(&self) -> Option<String> {
