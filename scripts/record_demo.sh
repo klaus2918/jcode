@@ -10,10 +10,12 @@
 
 set -euo pipefail
 
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
 DEMO_NAME="${1:?Usage: record_demo.sh <name> <prompt>}"
 PROMPT="${2:?Usage: record_demo.sh <name> <prompt>}"
 DEMO_DIR="/tmp/jcode-demo/$DEMO_NAME"
-OUTPUT_DIR="$HOME/jcode/assets/demos"
+OUTPUT_DIR="$repo_root/assets/demos"
 SOCK=$(ls /tmp/kitty.sock* 2>/dev/null | head -1)
 
 mkdir -p "$DEMO_DIR" "$OUTPUT_DIR"
@@ -29,7 +31,7 @@ echo "[1/5] Launching jcode..."
 kitten @ --to unix:$SOCK launch --type=os-window \
     --cwd "$DEMO_DIR" \
     --title "jcode-demo-$DEMO_NAME" \
-    /home/jeremy/jcode/target/release/jcode
+    "$repo_root/target/release/jcode"
 
 sleep 3  # Let jcode fully start
 

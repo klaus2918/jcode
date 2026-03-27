@@ -33,6 +33,7 @@ import time
 
 TIMEOUT_SECS = 10
 POLL_INTERVAL = 0.05
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # ── socket helpers ─────────────────────────────────────────────────────────────
 
@@ -183,7 +184,7 @@ def test_state_with_session():
 
 @test("4. selfdev status action works")
 def test_selfdev_status():
-    sess = create_session("/home/jeremy/jcode", selfdev=True)
+    sess = create_session(str(REPO_ROOT), selfdev=True)
     try:
         r = dbg('tool:selfdev {"action":"status"}', session_id=sess)
         assert r.get("ok") is not False, f"selfdev status failed: {r}"
@@ -198,7 +199,7 @@ def test_selfdev_status():
 
 @test("5. selfdev socket-info action works")
 def test_selfdev_socket_info():
-    sess = create_session("/home/jeremy/jcode", selfdev=True)
+    sess = create_session(str(REPO_ROOT), selfdev=True)
     try:
         r = dbg('tool:selfdev {"action":"socket-info"}', session_id=sess)
         assert r.get("ok") is not False, f"selfdev socket-info failed: {r}"

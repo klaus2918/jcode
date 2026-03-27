@@ -12,7 +12,7 @@ LINUX_URL="https://github.com/1jehuang/jcode/releases/download/${VERSION}/jcode-
 MACOS_URL="https://github.com/1jehuang/jcode/releases/download/${VERSION}/jcode-macos-aarch64.tar.gz"
 
 tmpdir=$(mktemp -d)
-trap "rm -rf $tmpdir" EXIT
+trap 'rm -rf "$tmpdir"' EXIT
 
 echo "Downloading assets for checksums..."
 curl -sL "$LINUX_URL" -o "$tmpdir/linux.tar.gz"

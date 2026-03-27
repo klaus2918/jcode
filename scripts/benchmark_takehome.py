@@ -17,9 +17,12 @@ import select
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 
 DEBUG_SOCKET = f"/run/user/{os.getuid()}/jcode-debug.sock"
-TAKEHOME_SOURCE = "/home/jeremy/original_performance_takehome"
+TAKEHOME_SOURCE = os.environ.get(
+    "TAKEHOME_SOURCE", str(Path.home() / "original_performance_takehome")
+)
 BENCHMARK_DIR = "/tmp/takehome-benchmark"
 TIMEOUT_MINUTES = int(os.environ.get('BENCHMARK_TIMEOUT', '10'))
 BASELINE = 147734

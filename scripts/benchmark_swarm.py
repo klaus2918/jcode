@@ -27,10 +27,13 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 DEBUG_SOCKET = f"/run/user/{os.getuid()}/jcode-debug.sock"
 MAIN_SOCKET = f"/run/user/{os.getuid()}/jcode.sock"
-TAKEHOME_SOURCE = "/home/jeremy/original_performance_takehome"
+TAKEHOME_SOURCE = os.environ.get(
+    "TAKEHOME_SOURCE", str(Path.home() / "original_performance_takehome")
+)
 BENCHMARK_DIR = "/tmp/takehome-benchmark"
 BASELINE = 147734
 
