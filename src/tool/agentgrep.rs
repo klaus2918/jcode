@@ -20,6 +20,8 @@ struct AgentGrepInput {
     #[serde(default)]
     query: Option<String>,
     #[serde(default)]
+    file: Option<String>,
+    #[serde(default)]
     terms: Option<Vec<String>>,
     #[serde(default)]
     regex: Option<bool>,
@@ -341,8 +343,9 @@ fn build_agentgrep_args(
         }
         "outline" => {
             let file = params
-                .query
+                .file
                 .as_deref()
+                .or(params.query.as_deref())
                 .or_else(|| {
                     params
                         .terms
@@ -350,7 +353,9 @@ fn build_agentgrep_args(
                         .and_then(|terms| terms.first().map(String::as_str))
                 })
                 .ok_or_else(|| {
-                    anyhow::anyhow!("agentgrep outline requires 'file' as query or first term")
+                    anyhow::anyhow!(
+                        "agentgrep outline requires 'file' (or legacy 'query' / first term)"
+                    )
                 })?;
             if let Some(path) = params.path.as_deref() {
                 args.push(OsString::from("--path"));
@@ -1525,6 +1530,7 @@ mod tests {
         let params = AgentGrepInput {
             mode: "grep".to_string(),
             query: Some("auth_status".to_string()),
+            file: None,
             terms: None,
             regex: Some(true),
             path: Some("src".to_string()),
@@ -1570,6 +1576,7 @@ mod tests {
         let params = AgentGrepInput {
             mode: "smart".to_string(),
             query: None,
+            file: None,
             terms: Some(vec![
                 "subject:auth_status".to_string(),
                 "relation:rendered".to_string(),
@@ -1614,6 +1621,39 @@ mod tests {
                 "relation:rendered",
                 "path:src/tui"
             ]
+        );
+    }
+
+    #[test]
+    fn build_args_for_outline_accepts_file_field() {
+        let ctx = test_ctx(Path::new("/workspace"));
+        let params = AgentGrepInput {
+            mode: "outline".to_string(),
+            query: None,
+            file: Some("src/tool/agentgrep.rs".to_string()),
+            terms: None,
+            regex: None,
+            path: Some("repo".to_string()),
+            glob: None,
+            file_type: None,
+            hidden: None,
+            no_ignore: None,
+            max_files: None,
+            max_regions: None,
+            full_region: None,
+            debug_plan: None,
+            debug_score: None,
+            paths_only: None,
+        };
+
+        let args = build_agentgrep_args(&params, &ctx, None).unwrap();
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            rendered,
+            vec!["outline", "--path", "/workspace/repo", "src/tool/agentgrep.rs"]
         );
     }
 
