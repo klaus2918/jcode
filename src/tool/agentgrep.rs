@@ -1,9 +1,13 @@
 use super::{Tool, ToolContext, ToolOutput};
+use crate::message::ToolCall;
+use crate::session::{Session, render_messages};
+use crate::storage;
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::ffi::OsString;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
@@ -40,6 +44,40 @@ struct AgentGrepInput {
     paths_only: Option<bool>,
 }
 
+#[derive(Debug, Serialize, Default)]
+struct AgentGrepHarnessContext {
+    version: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    known_regions: Vec<AgentGrepKnownRegion>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    known_files: Vec<AgentGrepKnownFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    focus_files: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentGrepKnownRegion {
+    path: String,
+    start_line: usize,
+    end_line: usize,
+    body_confidence: f32,
+    current_version_confidence: f32,
+    prune_confidence: f32,
+    source_strength: &'static str,
+    reasons: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentGrepKnownFile {
+    path: String,
+    structure_confidence: f32,
+    body_confidence: f32,
+    current_version_confidence: f32,
+    prune_confidence: f32,
+    source_strength: &'static str,
+    reasons: Vec<&'static str>,
+}
+
 pub struct AgentGrepTool {
     binary_override: Option<PathBuf>,
 }
@@ -65,7 +103,7 @@ impl Tool for AgentGrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search a codebase using agentgrep. Supports exact grep, ranked file discovery, and structured smart search. Best for replacing the agent's first burst of grep/read calls with more grouped, structure-aware results."
+        "Search a codebase using agentgrep. Supports exact grep, ranked file discovery, file outlines, and relation-aware trace search. Best for replacing the agent's first burst of grep/read calls with more grouped, structure-aware results."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -75,12 +113,16 @@ impl Tool for AgentGrepTool {
             "properties": {
                 "mode": {
                     "type": "string",
-                    "enum": ["grep", "find", "smart"],
-                    "description": "Search mode: grep for exact content search, find for ranked file discovery, smart for structured investigation"
+                    "enum": ["grep", "find", "outline", "trace", "smart"],
+                    "description": "Search mode: grep for exact content search, find for ranked file discovery, outline for known-file structure, trace for relation-aware investigation (smart is an alias)"
                 },
                 "query": {
                     "type": "string",
                     "description": "Query string for grep and find modes"
+                },
+                "file": {
+                    "type": "string",
+                    "description": "File path for outline mode"
                 },
                 "terms": {
                     "type": "array",
@@ -152,7 +194,8 @@ impl Tool for AgentGrepTool {
             }
         };
 
-        let args = build_agentgrep_args(&params, &ctx)?;
+        let context_path = maybe_write_context_json(&params, &ctx)?;
+        let args = build_agentgrep_args(&params, &ctx, context_path.as_deref())?;
         let mut command = Command::new(&binary);
         command.args(&args);
         if let Some(ref dir) = ctx.working_dir {
@@ -189,18 +232,27 @@ impl Tool for AgentGrepTool {
             rendered.push_str(&stderr);
         }
 
+        if let Some(path) = context_path {
+            let _ = std::fs::remove_file(path);
+        }
+
         Ok(ToolOutput::new(rendered).with_title(format!("agentgrep {}", params.mode)))
     }
 }
 
-fn build_agentgrep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Result<Vec<OsString>> {
+fn build_agentgrep_args(
+    params: &AgentGrepInput,
+    ctx: &ToolContext,
+    context_json_path: Option<&Path>,
+) -> Result<Vec<OsString>> {
     let mut args = Vec::new();
     let mode = params.mode.as_str();
     match mode {
-        "grep" | "find" | "smart" => args.push(OsString::from(mode)),
+        "grep" | "find" | "outline" => args.push(OsString::from(mode)),
+        "trace" | "smart" => args.push(OsString::from("trace")),
         _ => {
             return Err(anyhow::anyhow!(
-                "Unsupported agentgrep mode: {}. Use grep, find, or smart.",
+                "Unsupported agentgrep mode: {}. Use grep, find, outline, or trace.",
                 params.mode
             ));
         }
@@ -235,12 +287,24 @@ fn build_agentgrep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Result<Ve
                 args.push(OsString::from(part));
             }
         }
-        "smart" => {
+        "outline" => {
+            let file = params
+                .query
+                .as_deref()
+                .or_else(|| params.terms.as_ref().and_then(|terms| terms.first().map(String::as_str)))
+                .ok_or_else(|| anyhow::anyhow!("agentgrep outline requires 'file' as query or first term"))?;
+            if let Some(path) = params.path.as_deref() {
+                args.push(OsString::from("--path"));
+                args.push(resolve_path_arg(ctx, path).into_os_string());
+            }
+            args.push(OsString::from(file));
+        }
+        "trace" | "smart" => {
             let terms = params
                 .terms
                 .as_ref()
                 .filter(|terms| !terms.is_empty())
-                .ok_or_else(|| anyhow::anyhow!("agentgrep smart requires non-empty 'terms'"))?;
+                .ok_or_else(|| anyhow::anyhow!("agentgrep trace requires non-empty 'terms'"))?;
             if let Some(max_files) = params.max_files {
                 args.push(OsString::from("--max-files"));
                 args.push(OsString::from(max_files.to_string()));
@@ -260,6 +324,10 @@ fn build_agentgrep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Result<Ve
                 args.push(OsString::from("--debug-score"));
             }
             push_common_flags(&mut args, params, ctx);
+            if let Some(context_path) = context_json_path {
+                args.push(OsString::from("--context-json"));
+                args.push(context_path.as_os_str().to_os_string());
+            }
             for term in terms {
                 args.push(OsString::from(term));
             }
@@ -268,6 +336,177 @@ fn build_agentgrep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Result<Ve
     }
 
     Ok(args)
+}
+
+fn maybe_write_context_json(params: &AgentGrepInput, ctx: &ToolContext) -> Result<Option<PathBuf>> {
+    if !matches!(params.mode.as_str(), "trace" | "smart" | "outline") {
+        return Ok(None);
+    }
+
+    let context = build_harness_context(params, ctx);
+    let Some(context) = context else {
+        return Ok(None);
+    };
+
+    let mut path = storage::runtime_dir();
+    path.push(format!(
+        "jcode-agentgrep-context-{}-{}.json",
+        ctx.session_id, ctx.tool_call_id
+    ));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&path, serde_json::to_vec(&context)?)?;
+    Ok(Some(path))
+}
+
+fn build_harness_context(params: &AgentGrepInput, ctx: &ToolContext) -> Option<AgentGrepHarnessContext> {
+    let session = Session::load(&ctx.session_id).ok()?;
+    let rendered = render_messages(&session);
+    let search_root = params
+        .path
+        .as_deref()
+        .map(|path| resolve_path_arg(ctx, path))
+        .or_else(|| ctx.working_dir.clone())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let mut context = AgentGrepHarnessContext {
+        version: 1,
+        ..Default::default()
+    };
+    let mut focus = HashSet::new();
+
+    for msg in rendered {
+        let Some(tool) = msg.tool_data else {
+            continue;
+        };
+        if msg.role != "tool" {
+            continue;
+        }
+        match tool.name.as_str() {
+            "read" => collect_read_exposure(&tool, &search_root, ctx, &mut context, &mut focus),
+            "agentgrep" => {
+                collect_agentgrep_exposure(&tool, &search_root, ctx, &mut context, &mut focus)
+            }
+            _ => {}
+        }
+    }
+
+    context.focus_files = focus.into_iter().collect();
+    if context.known_regions.is_empty() && context.known_files.is_empty() && context.focus_files.is_empty() {
+        None
+    } else {
+        Some(context)
+    }
+}
+
+fn collect_read_exposure(
+    tool: &ToolCall,
+    search_root: &Path,
+    ctx: &ToolContext,
+    context: &mut AgentGrepHarnessContext,
+    focus: &mut HashSet<String>,
+) {
+    let Some(file_path) = tool.input.get("file_path").and_then(|value| value.as_str()) else {
+        return;
+    };
+    let Some(path) = normalize_context_path(file_path, search_root, ctx) else {
+        return;
+    };
+    let (start_line, end_line) = normalize_read_range_from_tool_input(&tool.input);
+    focus.insert(path.clone());
+    context.known_regions.push(AgentGrepKnownRegion {
+        path: path.clone(),
+        start_line,
+        end_line,
+        body_confidence: 0.85,
+        current_version_confidence: 0.7,
+        prune_confidence: 0.78,
+        source_strength: "full_region",
+        reasons: vec!["read_tool_exposure", "session_local_history"],
+    });
+    context.known_files.push(AgentGrepKnownFile {
+        path,
+        structure_confidence: 0.55,
+        body_confidence: 0.45,
+        current_version_confidence: 0.7,
+        prune_confidence: 0.4,
+        source_strength: "snippet",
+        reasons: vec!["read_tool_exposure"],
+    });
+}
+
+fn collect_agentgrep_exposure(
+    tool: &ToolCall,
+    search_root: &Path,
+    ctx: &ToolContext,
+    context: &mut AgentGrepHarnessContext,
+    focus: &mut HashSet<String>,
+) {
+    let Some(mode) = tool.input.get("mode").and_then(|value| value.as_str()) else {
+        return;
+    };
+    match mode {
+        "outline" => {
+            let file = tool
+                .input
+                .get("file")
+                .and_then(|value| value.as_str())
+                .or_else(|| tool.input.get("query").and_then(|value| value.as_str()));
+            let Some(file) = file else {
+                return;
+            };
+            let Some(path) = normalize_context_path(file, search_root, ctx) else {
+                return;
+            };
+            focus.insert(path.clone());
+            context.known_files.push(AgentGrepKnownFile {
+                path,
+                structure_confidence: 0.95,
+                body_confidence: 0.15,
+                current_version_confidence: 0.75,
+                prune_confidence: 0.86,
+                source_strength: "outline_only",
+                reasons: vec!["agentgrep_outline_result"],
+            });
+        }
+        "trace" | "smart" => {
+            if let Some(path_hint) = tool.input.get("path").and_then(|value| value.as_str())
+                && let Some(path) = normalize_context_path(path_hint, search_root, ctx)
+            {
+                focus.insert(path);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_context_path(path: &str, search_root: &Path, ctx: &ToolContext) -> Option<String> {
+    let resolved = ctx.resolve_path(Path::new(path));
+    if let Ok(relative) = resolved.strip_prefix(search_root) {
+        return Some(relative.display().to_string());
+    }
+    if Path::new(path).is_relative() {
+        return Some(path.to_string());
+    }
+    None
+}
+
+fn normalize_read_range_from_tool_input(input: &Value) -> (usize, usize) {
+    if let Some(start_line) = input.get("start_line").and_then(|value| value.as_u64()) {
+        let start_line = start_line as usize;
+        let end_line = input
+            .get("end_line")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as usize)
+            .unwrap_or(start_line.saturating_add(input.get("limit").and_then(|value| value.as_u64()).unwrap_or(200) as usize).saturating_sub(1));
+        return (start_line.max(1), end_line.max(start_line.max(1)));
+    }
+    let offset = input.get("offset").and_then(|value| value.as_u64()).unwrap_or(0) as usize;
+    let limit = input.get("limit").and_then(|value| value.as_u64()).unwrap_or(200) as usize;
+    let start_line = offset + 1;
+    let end_line = start_line + limit.saturating_sub(1);
+    (start_line, end_line)
 }
 
 fn push_common_flags(args: &mut Vec<OsString>, params: &AgentGrepInput, ctx: &ToolContext) {
@@ -394,7 +633,7 @@ mod tests {
             paths_only: Some(true),
         };
 
-        let args = build_agentgrep_args(&params, &ctx).unwrap();
+        let args = build_agentgrep_args(&params, &ctx, None).unwrap();
         let rendered: Vec<String> = args
             .iter()
             .map(|arg| arg.to_string_lossy().to_string())
@@ -443,7 +682,7 @@ mod tests {
             paths_only: None,
         };
 
-        let args = build_agentgrep_args(&params, &ctx).unwrap();
+        let args = build_agentgrep_args(&params, &ctx, None).unwrap();
         let rendered: Vec<String> = args
             .iter()
             .map(|arg| arg.to_string_lossy().to_string())
@@ -451,7 +690,7 @@ mod tests {
         assert_eq!(
             rendered,
             vec![
-                "smart",
+                "trace",
                 "--max-files",
                 "3",
                 "--max-regions",
@@ -480,6 +719,7 @@ mod tests {
             .execute(json!({"mode": "grep", "query": "lsp"}), ctx)
             .await
             .expect("tool output");
+        eprintln!("missing binary output: {}", output.output);
         assert!(output.output.contains("agentgrep is not available"));
     }
 
@@ -515,7 +755,7 @@ mod tests {
         assert!(
             output
                 .output
-                .contains("args:smart --max-files 2 --max-regions 3 --debug-plan --path")
+                .contains("args:trace --max-files 2 --max-regions 3 --debug-plan --path")
         );
         assert!(
             output
