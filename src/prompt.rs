@@ -368,11 +368,12 @@ Use this tool to send commands to the debug socket for visual debugging, spawnin
 ## Workflow
 
 When you make code changes to jcode:
-1. Build using the fastest practical local build path for self-dev iteration. Prefer the repo's standard fast dev build path when one exists (for example `scripts/dev_cargo.sh build --release --bin jcode` in this repo, which enables sccache/fast linker); otherwise use plain `cargo build --release --bin jcode`. If you want future launcher/Alt+; sessions to use the new build, publish the current build too, for example by using `selfdev reload` after the build or `jcode self-dev --build` outside the session.
-2. Avoid slow distribution/signoff builds like `release-lto` unless you specifically need to validate a production artifact.
-3. Use `selfdev` with action `reload` to restart with the new binary
-4. The session continues automatically after restart — you will receive a continuation message
-5. **After reload, immediately continue your work** — do not stop and wait for user input
+1. If you want the new build to become the active launcher/current build for future `jcode` and Alt+; sessions, prefer the built-in self-dev publish flow: run `jcode self-dev --build` outside the session, or build in-session and then use `selfdev reload`.
+2. For build-only iteration, use the fastest practical local build path. Prefer the repo's standard fast dev build path when one exists (for example `scripts/dev_cargo.sh build --release --bin jcode` in this repo, which enables sccache/fast linker); otherwise use plain `cargo build --release --bin jcode`.
+3. Avoid slow distribution/signoff builds like `release-lto` unless you specifically need to validate a production artifact.
+4. Use `selfdev` with action `reload` to restart with the new binary after building in-session.
+5. The session continues automatically after restart — you will receive a continuation message
+6. **After reload, immediately continue your work** — do not stop and wait for user input
 
 For testing UI changes, use the debug_socket tool to spawn testers and capture visual debug frames."#.to_string()
 }
@@ -415,11 +416,12 @@ Debug socket path: {}
 ## Workflow
 
 When you make code changes to jcode:
-1. Build using the fastest practical local build path for self-dev iteration. Prefer the repo's standard fast dev build path when one exists (for example `scripts/dev_cargo.sh build --release --bin jcode` in this repo, which enables sccache/fast linker); otherwise use plain `cargo build --release --bin jcode`. If you want future launcher/Alt+; sessions to use the new build, publish the current build too, for example by using `selfdev reload` after the build or `jcode self-dev --build` outside the session.
-2. Avoid slow distribution/signoff builds like `release-lto` unless you specifically need to validate a production artifact.
-3. Use `selfdev` with action `reload` to restart with the new binary
-4. The session continues automatically after restart — you will receive a continuation message
-5. **After reload, immediately continue your work** — do not stop and wait for user input
+1. If you want the new build to become the active launcher/current build for future `jcode` and Alt+; sessions, prefer the built-in self-dev publish flow: run `jcode self-dev --build` outside the session, or build in-session and then use `selfdev reload`.
+2. For build-only iteration, use the fastest practical local build path. Prefer the repo's standard fast dev build path when one exists (for example `scripts/dev_cargo.sh build --release --bin jcode` in this repo, which enables sccache/fast linker); otherwise use plain `cargo build --release --bin jcode`.
+3. Avoid slow distribution/signoff builds like `release-lto` unless you specifically need to validate a production artifact.
+4. Use `selfdev` with action `reload` to restart with the new binary after building in-session.
+5. The session continues automatically after restart — you will receive a continuation message
+6. **After reload, immediately continue your work** — do not stop and wait for user input
 
 For testing UI changes, use the debug_socket tool to spawn testers and capture visual debug frames."#,
         debug_socket_path.display()
@@ -658,5 +660,14 @@ mod tests {
         let prompt = build_system_prompt_with_selfdev(None, &[], true);
         assert!(prompt.contains("You are running in self-dev mode"));
         assert!(!prompt.contains("Self-Development Access"));
+    }
+
+    #[test]
+    fn test_selfdev_prompt_prefers_publish_flow_for_active_builds() {
+        let prompt = build_system_prompt_with_selfdev(None, &[], true);
+        assert!(prompt.contains("jcode self-dev --build"));
+        assert!(prompt.contains("selfdev reload"));
+        assert!(prompt.contains("For build-only iteration"));
+        assert!(prompt.contains("scripts/dev_cargo.sh build --release --bin jcode"));
     }
 }
