@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod client_actions;
 mod client_api;
 mod client_comm;
@@ -46,8 +44,6 @@ use self::swarm::{
 use crate::agent::{Agent, SoftInterruptSource};
 use crate::ambient_runner::AmbientRunnerHandle;
 use crate::bus::{Bus, BusEvent, FileOp};
-#[allow(unused_imports)]
-use crate::protocol::ContextEntry;
 use crate::protocol::{NotificationType, ServerEvent};
 use crate::provider::Provider;
 use crate::transport::Listener;
