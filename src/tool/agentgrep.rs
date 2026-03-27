@@ -6,8 +6,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::ffi::OsString;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
@@ -291,8 +291,15 @@ fn build_agentgrep_args(
             let file = params
                 .query
                 .as_deref()
-                .or_else(|| params.terms.as_ref().and_then(|terms| terms.first().map(String::as_str)))
-                .ok_or_else(|| anyhow::anyhow!("agentgrep outline requires 'file' as query or first term"))?;
+                .or_else(|| {
+                    params
+                        .terms
+                        .as_ref()
+                        .and_then(|terms| terms.first().map(String::as_str))
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("agentgrep outline requires 'file' as query or first term")
+                })?;
             if let Some(path) = params.path.as_deref() {
                 args.push(OsString::from("--path"));
                 args.push(resolve_path_arg(ctx, path).into_os_string());
@@ -360,7 +367,10 @@ fn maybe_write_context_json(params: &AgentGrepInput, ctx: &ToolContext) -> Resul
     Ok(Some(path))
 }
 
-fn build_harness_context(params: &AgentGrepInput, ctx: &ToolContext) -> Option<AgentGrepHarnessContext> {
+fn build_harness_context(
+    params: &AgentGrepInput,
+    ctx: &ToolContext,
+) -> Option<AgentGrepHarnessContext> {
     let session = Session::load(&ctx.session_id).ok()?;
     let rendered = render_messages(&session);
     let search_root = params
@@ -393,7 +403,10 @@ fn build_harness_context(params: &AgentGrepInput, ctx: &ToolContext) -> Option<A
     }
 
     context.focus_files = focus.into_iter().collect();
-    if context.known_regions.is_empty() && context.known_files.is_empty() && context.focus_files.is_empty() {
+    if context.known_regions.is_empty()
+        && context.known_files.is_empty()
+        && context.focus_files.is_empty()
+    {
         None
     } else {
         Some(context)
@@ -499,11 +512,26 @@ fn normalize_read_range_from_tool_input(input: &Value) -> (usize, usize) {
             .get("end_line")
             .and_then(|value| value.as_u64())
             .map(|value| value as usize)
-            .unwrap_or(start_line.saturating_add(input.get("limit").and_then(|value| value.as_u64()).unwrap_or(200) as usize).saturating_sub(1));
+            .unwrap_or(
+                start_line
+                    .saturating_add(
+                        input
+                            .get("limit")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(200) as usize,
+                    )
+                    .saturating_sub(1),
+            );
         return (start_line.max(1), end_line.max(start_line.max(1)));
     }
-    let offset = input.get("offset").and_then(|value| value.as_u64()).unwrap_or(0) as usize;
-    let limit = input.get("limit").and_then(|value| value.as_u64()).unwrap_or(200) as usize;
+    let offset = input
+        .get("offset")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0) as usize;
+    let limit = input
+        .get("limit")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(200) as usize;
     let start_line = offset + 1;
     let end_line = start_line + limit.saturating_sub(1);
     (start_line, end_line)
@@ -542,6 +570,7 @@ fn resolve_agentgrep_binary(override_path: Option<&Path>) -> Option<PathBuf> {
         if path.exists() {
             return Some(path.to_path_buf());
         }
+        return None;
     }
 
     if let Some(path) = std::env::var_os("JCODE_AGENTGREP_BIN") {
@@ -719,7 +748,6 @@ mod tests {
             .execute(json!({"mode": "grep", "query": "lsp"}), ctx)
             .await
             .expect("tool output");
-        eprintln!("missing binary output: {}", output.output);
         assert!(output.output.contains("agentgrep is not available"));
     }
 
