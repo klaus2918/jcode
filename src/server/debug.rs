@@ -78,9 +78,10 @@ async fn resolve_transcript_target_session(
     client_debug_state: &Arc<RwLock<ClientDebugState>>,
 ) -> Result<String> {
     if let Some(session_id) = requested_session.filter(|value| !value.trim().is_empty()) {
-        let has_connected_tui = client_connections.read().await.values().any(|info| {
-            info.session_id == session_id && info.debug_client_id.as_deref().is_some()
-        });
+        let has_connected_tui =
+            client_connections.read().await.values().any(|info| {
+                info.session_id == session_id && info.debug_client_id.as_deref().is_some()
+            });
         if !has_connected_tui {
             anyhow::bail!(
                 "Session '{}' does not have a connected TUI client for transcript injection",
@@ -90,11 +91,12 @@ async fn resolve_transcript_target_session(
         return Ok(session_id);
     }
 
-    let has_connected_tui = |session_id: &str, connections: &HashMap<String, ClientConnectionInfo>| {
-        connections.values().any(|info| {
-            info.session_id == session_id && info.debug_client_id.as_deref().is_some()
-        })
-    };
+    let has_connected_tui =
+        |session_id: &str, connections: &HashMap<String, ClientConnectionInfo>| {
+            connections.values().any(|info| {
+                info.session_id == session_id && info.debug_client_id.as_deref().is_some()
+            })
+        };
 
     let connections = client_connections.read().await;
 
@@ -468,44 +470,6 @@ pub(super) async fn handle_debug_client(
 mod tests {
     use super::*;
     use crate::server::debug_jobs::DebugJobStatus;
-    use std::ffi::OsString;
-
-    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        crate::storage::lock_test_env()
-    }
-
-    struct TestHomeGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        prev_home: Option<OsString>,
-        _temp_home: tempfile::TempDir,
-    }
-
-    impl TestHomeGuard {
-        fn new() -> Self {
-            let lock = lock_env();
-            let temp_home = tempfile::Builder::new()
-                .prefix("jcode-server-debug-test-home-")
-                .tempdir()
-                .expect("create temp home");
-            let prev_home = std::env::var_os("JCODE_HOME");
-            crate::env::set_var("JCODE_HOME", temp_home.path());
-            Self {
-                _lock: lock,
-                prev_home,
-                _temp_home: temp_home,
-            }
-        }
-    }
-
-    impl Drop for TestHomeGuard {
-        fn drop(&mut self) {
-            if let Some(prev_home) = &self.prev_home {
-                crate::env::set_var("JCODE_HOME", prev_home);
-            } else {
-                crate::env::remove_var("JCODE_HOME");
-            }
-        }
-    }
 
     #[test]
     fn client_debug_state_registers_unregisters_and_falls_back() {
@@ -646,9 +610,10 @@ mod tests {
         )])));
         let client_debug_state = Arc::new(RwLock::new(ClientDebugState::default()));
 
-        let resolved = resolve_transcript_target_session(None, &client_connections, &client_debug_state)
-            .await
-            .expect("resolve last-focused session");
+        let resolved =
+            resolve_transcript_target_session(None, &client_connections, &client_debug_state)
+                .await
+                .expect("resolve last-focused session");
 
         assert_eq!(resolved, "session_focus");
     }
@@ -682,8 +647,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_transcript_target_session_falls_back_to_active_debug_when_last_focused_not_connected(
-    ) {
+    async fn resolve_transcript_target_session_falls_back_to_active_debug_when_last_focused_not_connected()
+     {
         let _guard = crate::storage::lock_test_env();
         let jcode_dir = crate::storage::jcode_dir().expect("jcode dir");
         let active_dir = jcode_dir.join("active_pids");
@@ -707,9 +672,10 @@ mod tests {
             clients: HashMap::new(),
         }));
 
-        let resolved = resolve_transcript_target_session(None, &client_connections, &client_debug_state)
-            .await
-            .expect("resolve active debug fallback");
+        let resolved =
+            resolve_transcript_target_session(None, &client_connections, &client_debug_state)
+                .await
+                .expect("resolve active debug fallback");
 
         assert_eq!(resolved, "session_debug");
     }

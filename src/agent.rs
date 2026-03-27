@@ -2,6 +2,7 @@
 
 mod compaction_support;
 mod interrupts;
+mod message_support;
 mod prompt_support;
 mod response_recovery;
 mod stream_support;
@@ -269,63 +270,6 @@ impl Agent {
         Ok(())
     }
 
-    fn add_message(&mut self, role: Role, content: Vec<ContentBlock>) -> String {
-        let id = self.session.add_message(role, content);
-        let compaction = self.registry.compaction();
-        if let Ok(mut manager) = compaction.try_write() {
-            manager.notify_message_added();
-        }
-        id
-    }
-
-    fn add_message_with_display_role(
-        &mut self,
-        role: Role,
-        content: Vec<ContentBlock>,
-        display_role: Option<StoredDisplayRole>,
-    ) -> String {
-        let id = self
-            .session
-            .add_message_with_display_role(role, content, display_role);
-        let compaction = self.registry.compaction();
-        if let Ok(mut manager) = compaction.try_write() {
-            manager.notify_message_added();
-        }
-        id
-    }
-
-    fn add_message_with_duration(
-        &mut self,
-        role: Role,
-        content: Vec<ContentBlock>,
-        duration_ms: Option<u64>,
-    ) -> String {
-        let id = self
-            .session
-            .add_message_with_duration(role, content, duration_ms);
-        let compaction = self.registry.compaction();
-        if let Ok(mut manager) = compaction.try_write() {
-            manager.notify_message_added();
-        }
-        id
-    }
-
-    fn add_message_ext(
-        &mut self,
-        role: Role,
-        content: Vec<ContentBlock>,
-        duration_ms: Option<u64>,
-        token_usage: Option<crate::session::StoredTokenUsage>,
-    ) -> String {
-        let id = self
-            .session
-            .add_message_ext(role, content, duration_ms, token_usage);
-        let compaction = self.registry.compaction();
-        if let Ok(mut manager) = compaction.try_write() {
-            manager.notify_message_added();
-        }
-        id
-    }
 
     fn messages_for_provider(&mut self) -> (Vec<Message>, Option<CompactionEvent>) {
         // Convert session messages to provider messages (single allocation)
@@ -450,87 +394,6 @@ impl Agent {
         repaired
     }
 
-
-    fn continuation_prompt_for_stop_reason(stop_reason: &str) -> String {
-        format!(
-            "[System reminder: your previous response ended before completion (stop_reason: {}). Continue exactly where you left off, do not repeat completed content, and if the next step is a tool call, emit the tool call now.]",
-            stop_reason.trim()
-        )
-    }
-
-    fn maybe_continue_incomplete_response(
-        &mut self,
-        stop_reason: Option<&str>,
-        attempts: &mut u32,
-    ) -> Result<bool> {
-        let Some(stop_reason) = stop_reason
-            .map(str::trim)
-            .filter(|reason| !reason.is_empty())
-        else {
-            return Ok(false);
-        };
-
-        if !Self::should_continue_after_stop_reason(stop_reason) {
-            return Ok(false);
-        }
-
-        if *attempts >= Self::MAX_INCOMPLETE_CONTINUATION_ATTEMPTS {
-            logging::warn(&format!(
-                "Response ended with stop_reason='{}' after {} continuation attempts; returning partial output",
-                stop_reason, attempts
-            ));
-            return Ok(false);
-        }
-
-        *attempts += 1;
-        logging::warn(&format!(
-            "Response ended with stop_reason='{}'; requesting continuation (attempt {}/{})",
-            stop_reason,
-            attempts,
-            Self::MAX_INCOMPLETE_CONTINUATION_ATTEMPTS
-        ));
-
-        self.add_message(
-            Role::User,
-            vec![ContentBlock::Text {
-                text: Self::continuation_prompt_for_stop_reason(stop_reason),
-                cache_control: None,
-            }],
-        );
-        self.session.save()?;
-        Ok(true)
-    }
-
-    fn filter_truncated_tool_calls(
-        &mut self,
-        stop_reason: Option<&str>,
-        tool_calls: &mut Vec<ToolCall>,
-        assistant_message_id: Option<&String>,
-    ) {
-        let stop_reason = stop_reason.unwrap_or("");
-        if !Self::should_continue_after_stop_reason(stop_reason) {
-            return;
-        }
-
-        let before = tool_calls.len();
-        tool_calls.retain(|tc| !tc.input.is_null());
-        let discarded = before - tool_calls.len();
-        if discarded > 0 && tool_calls.is_empty() {
-            logging::warn(&format!(
-                "Discarded {} tool call(s) with null input (truncated by {}); requesting continuation",
-                discarded,
-                if stop_reason.is_empty() {
-                    "unknown"
-                } else {
-                    stop_reason
-                }
-            ));
-            if let Some(msg_id) = assistant_message_id {
-                self.session.remove_tool_use_blocks(msg_id);
-                let _ = self.session.save();
-            }
-        }
-    }
 
     pub fn session_id(&self) -> &str {
         &self.session.id
