@@ -266,6 +266,21 @@ fn test_help_topic_shows_btw_command_details() {
 }
 
 #[test]
+fn test_help_topic_shows_observe_command_details() {
+    let mut app = create_test_app();
+    app.input = "/help observe".to_string();
+    app.submit_input();
+
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing help response");
+    assert_eq!(msg.role, "system");
+    assert!(msg.content.contains("`/observe`"));
+    assert!(msg.content.contains("latest tool call or tool result"));
+}
+
+#[test]
 fn test_save_command_bookmarks_session_with_memory_enabled() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -384,6 +399,153 @@ fn test_btw_command_prepares_side_panel_and_hidden_turn() {
     } else {
         crate::env::remove_var("JCODE_HOME");
     }
+}
+
+#[test]
+fn test_btw_command_in_remote_mode_queues_followup_instead_of_erroring() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_session_id = Some("ses_remote_btw".to_string());
+    app.input = "/btw what are we doing?".to_string();
+    app.submit_input();
+
+    assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("btw"));
+    assert_eq!(app.hidden_queued_system_messages.len(), 1);
+    assert!(app.pending_queued_dispatch);
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing remote btw message");
+    assert_eq!(msg.role, "system");
+    assert!(msg.content.contains("Running `/btw`"));
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
+fn test_observe_command_enables_transient_page_without_persisting() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.input = "/observe on".to_string();
+        app.submit_input();
+
+        assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("observe"));
+        let page = app.side_panel.focused_page().expect("missing observe page");
+        assert_eq!(page.title, "Observe");
+        assert_eq!(
+            page.source,
+            crate::side_panel::SidePanelPageSource::Ephemeral
+        );
+        assert!(
+            page.content
+                .contains("Waiting for the next tool call or tool result")
+        );
+
+        let persisted = crate::side_panel::snapshot_for_session(&app.session.id)
+            .expect("load persisted side panel");
+        assert!(persisted.pages.is_empty());
+        assert!(persisted.focused_page_id.is_none());
+    });
+}
+
+#[test]
+fn test_observe_command_off_restores_previous_side_panel_page() {
+    let mut app = create_test_app();
+    app.set_side_panel_snapshot(test_side_panel_snapshot("plan", "Plan"));
+
+    app.input = "/observe on".to_string();
+    app.submit_input();
+    assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("observe"));
+    assert!(app.side_panel.pages.iter().any(|page| page.id == "plan"));
+
+    app.input = "/observe off".to_string();
+    app.submit_input();
+    assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("plan"));
+    assert!(!app.side_panel.pages.iter().any(|page| page.id == "observe"));
+}
+
+#[test]
+fn test_observe_updates_latest_tool_context_only() {
+    let mut app = create_test_app();
+    app.input = "/observe on".to_string();
+    app.submit_input();
+
+    let tool_call = crate::message::ToolCall {
+        id: "tool_1".to_string(),
+        name: "read".to_string(),
+        input: serde_json::json!({"file_path": "src/main.rs", "start_line": 1, "end_line": 10}),
+        intent: None,
+    };
+    app.observe_tool_call(&tool_call);
+
+    let page = app.side_panel.focused_page().expect("missing observe page");
+    assert!(
+        page.content
+            .contains("Latest tool call emitted by the model")
+    );
+    assert!(page.content.contains("`read`"));
+    assert!(page.content.contains("src/main.rs"));
+
+    app.observe_tool_result(&tool_call, "1 use std::path::Path;", false, Some("read"));
+
+    let page = app.side_panel.focused_page().expect("missing observe page");
+    assert!(page.content.contains("Latest tool result added to context"));
+    assert!(page.content.contains("Status: completed"));
+    assert!(page.content.contains("1 use std::path::Path;"));
+    assert!(
+        !page
+            .content
+            .contains("Latest tool call emitted by the model")
+    );
+}
+
+#[test]
+fn test_observe_ignores_noise_tools_and_preserves_latest_useful_context() {
+    let mut app = create_test_app();
+    app.input = "/observe on".to_string();
+    app.submit_input();
+
+    let read_tool = crate::message::ToolCall {
+        id: "tool_read".to_string(),
+        name: "read".to_string(),
+        input: serde_json::json!({"file_path": "src/main.rs"}),
+        intent: None,
+    };
+    app.observe_tool_result(&read_tool, "fn main() {}", false, Some("read"));
+    let before = app
+        .side_panel
+        .focused_page()
+        .expect("missing observe page")
+        .content
+        .clone();
+
+    let noise_tool = crate::message::ToolCall {
+        id: "tool_side_panel".to_string(),
+        name: "side_panel".to_string(),
+        input: serde_json::json!({"action": "write", "page_id": "plan"}),
+        intent: None,
+    };
+    app.observe_tool_call(&noise_tool);
+    app.observe_tool_result(&noise_tool, "ok", false, Some("side_panel"));
+
+    let after = app
+        .side_panel
+        .focused_page()
+        .expect("missing observe page")
+        .content
+        .clone();
+    assert_eq!(after, before);
+    assert!(after.contains("fn main() {}"));
+    assert!(!after.contains("tool_side_panel"));
 }
 
 #[test]
@@ -714,21 +876,39 @@ fn test_account_openai_command_opens_account_picker() {
         app.input = "/account openai".to_string();
         app.submit_input();
 
+        assert!(app.account_picker_overlay.is_none());
         let picker = app
-            .account_picker_overlay
+            .picker_state
             .as_ref()
-            .expect("/account openai should open the account center")
-            .borrow();
-        let titles = picker.debug_filtered_titles();
-        assert!(titles.iter().any(|title| title == "Add or replace account"));
+            .expect("/account openai should open the inline account picker");
+        assert_eq!(picker.kind, crate::tui::PickerKind::Account);
+        assert!(picker.models.iter().any(|entry| {
+            matches!(
+                entry.selection,
+                crate::tui::PickerSelection::Account(crate::tui::AccountPickerSelection::Switch {
+                    ref provider_id,
+                    ref label
+                }) if provider_id == "openai" && label == "work"
+            )
+        }));
         assert!(
-            titles
+            picker
+                .models
                 .iter()
-                .any(|title| title == "Switch account `openai-1`"),
-            "account center should include saved OpenAI account entries"
+                .any(|entry| entry.name == "new account")
         );
-        assert!(!titles.iter().any(|title| title == "new account"));
-        assert!(!titles.iter().any(|title| title == "replace account"));
+        assert!(
+            picker
+                .models
+                .iter()
+                .any(|entry| entry.name == "replace account")
+        );
+        assert!(
+            picker
+                .models
+                .iter()
+                .any(|entry| entry.name == "account center")
+        );
     });
 }
 
@@ -762,25 +942,47 @@ fn test_account_command_opens_account_picker() {
         app.input = "/account".to_string();
         app.submit_input();
 
+        assert!(app.account_picker_overlay.is_none());
         let picker = app
-            .account_picker_overlay
+            .picker_state
             .as_ref()
-            .expect("/account should open the account center")
-            .borrow();
-        let titles = picker.debug_filtered_titles();
-        assert!(titles.iter().any(|title| title == "Add or replace account"));
+            .expect("/account should open the inline account picker");
+        assert!(picker.models.iter().any(|entry| {
+            matches!(
+                entry.selection,
+                crate::tui::PickerSelection::Account(crate::tui::AccountPickerSelection::Switch {
+                    ref provider_id,
+                    ref label
+                }) if provider_id == "claude" && label == "claude-1"
+            )
+        }));
+        assert!(picker.models.iter().any(|entry| {
+            matches!(
+                entry.selection,
+                crate::tui::PickerSelection::Account(crate::tui::AccountPickerSelection::Switch {
+                    ref provider_id,
+                    ref label
+                }) if provider_id == "openai" && label == "work"
+            )
+        }));
         assert!(
-            titles
+            picker
+                .models
                 .iter()
-                .any(|title| title == "Switch account `claude-1`")
+                .any(|entry| entry.name == "new Claude account")
         );
         assert!(
-            titles
+            picker
+                .models
                 .iter()
-                .any(|title| title == "Switch account `openai-1`")
+                .any(|entry| entry.name == "new OpenAI account")
         );
-        assert!(!titles.iter().any(|title| title == "new Claude account"));
-        assert!(!titles.iter().any(|title| title == "new OpenAI account"));
+        assert!(
+            picker
+                .models
+                .iter()
+                .any(|entry| entry.name == "account center")
+        );
     });
 }
 
@@ -815,42 +1017,24 @@ fn test_account_picker_supports_arrow_and_vim_navigation() {
         app.submit_input();
 
         let initial_selected = app
-            .account_picker_overlay
+            .picker_state
             .as_ref()
-            .expect("account center should open")
-            .borrow()
-            .debug_selected_index();
+            .expect("inline account picker should open")
+            .selected;
 
         app.handle_key(KeyCode::Down, KeyModifiers::empty())
             .unwrap();
-        let after_arrow = app
-            .account_picker_overlay
-            .as_ref()
-            .unwrap()
-            .borrow()
-            .debug_selected_index();
+        let after_arrow = app.picker_state.as_ref().unwrap().selected;
         assert_eq!(after_arrow, initial_selected + 1);
 
         app.handle_key(KeyCode::Char('j'), KeyModifiers::empty())
             .unwrap();
-        let after_vim = app
-            .account_picker_overlay
-            .as_ref()
-            .unwrap()
-            .borrow()
-            .debug_selected_index();
+        let after_vim = app.picker_state.as_ref().unwrap().selected;
         assert_eq!(after_vim, after_arrow + 1);
 
         app.handle_key(KeyCode::Char('k'), KeyModifiers::empty())
             .unwrap();
-        assert_eq!(
-            app.account_picker_overlay
-                .as_ref()
-                .unwrap()
-                .borrow()
-                .debug_selected_index(),
-            after_arrow
-        );
+        assert_eq!(app.picker_state.as_ref().unwrap().selected, after_arrow);
     });
 }
 
@@ -925,22 +1109,33 @@ fn test_account_command_combines_claude_and_openai_accounts() {
         app.submit_input();
 
         let picker = app
-            .account_picker_overlay
+            .picker_state
             .as_ref()
-            .expect("account center should open")
-            .borrow();
-        let titles = picker.debug_filtered_titles();
+            .expect("inline account picker should open");
+        assert!(picker.models.iter().any(|entry| {
+            matches!(
+                entry.selection,
+                crate::tui::PickerSelection::Account(crate::tui::AccountPickerSelection::Switch {
+                    ref provider_id,
+                    ref label
+                }) if provider_id == "claude" && label == "claude-1"
+            )
+        }));
+        assert!(picker.models.iter().any(|entry| {
+            matches!(
+                entry.selection,
+                crate::tui::PickerSelection::Account(crate::tui::AccountPickerSelection::Switch {
+                    ref provider_id,
+                    ref label
+                }) if provider_id == "openai" && label == "openai-1"
+            )
+        }));
         assert!(
-            titles
+            picker
+                .models
                 .iter()
-                .any(|title| title == "Switch account `claude-1`")
+                .any(|entry| entry.name == "account center")
         );
-        assert!(
-            titles
-                .iter()
-                .any(|title| title == "Switch account `openai-1`")
-        );
-        assert!(titles.iter().any(|title| title == "Add or replace account"));
     });
 }
 
@@ -975,7 +1170,7 @@ fn test_account_command_uses_fast_auth_snapshot_without_running_cursor_status() 
         app.input = "/account".to_string();
         app.submit_input();
 
-        assert!(app.account_picker_overlay.is_some());
+        assert!(app.picker_state.is_some());
         assert!(
             !marker.exists(),
             "/account should not execute `cursor-agent status` on open"

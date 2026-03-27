@@ -343,6 +343,7 @@ pub enum AccountPickerSelection {
     Switch { provider_id: String, label: String },
     Add { provider_id: String },
     Replace { provider_id: String, label: String },
+    OpenCenter { provider_filter: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

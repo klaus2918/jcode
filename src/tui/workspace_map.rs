@@ -27,10 +27,7 @@ impl WorkspaceSessionTile {
         }
     }
 
-    pub fn with_state(
-        session_id: impl Into<String>,
-        state: WorkspaceSessionVisualState,
-    ) -> Self {
+    pub fn with_state(session_id: impl Into<String>, state: WorkspaceSessionVisualState) -> Self {
         Self {
             session_id: session_id.into(),
             state,
@@ -142,10 +139,7 @@ impl WorkspaceMapModel {
         self.row_mut(self.current_workspace)
     }
 
-    pub fn add_session_to_current_workspace(
-        &mut self,
-        tile: WorkspaceSessionTile,
-    ) -> (i32, usize) {
+    pub fn add_session_to_current_workspace(&mut self, tile: WorkspaceSessionTile) -> (i32, usize) {
         let workspace = self.current_workspace;
         let index = self.current_row_mut().insert_right_of_focus(tile);
         (workspace, index)
@@ -281,22 +275,34 @@ mod tests {
         map.add_session_to_current_workspace(WorkspaceSessionTile::new("fox"));
         map.add_session_to_current_workspace(WorkspaceSessionTile::new("bear"));
         assert!(map.move_left());
-        assert_eq!(map.current_row().and_then(|row| row.focused_index()), Some(0));
+        assert_eq!(
+            map.current_row().and_then(|row| row.focused_index()),
+            Some(0)
+        );
 
         map.move_up();
         map.add_session_to_current_workspace(WorkspaceSessionTile::new("owl"));
         map.add_session_to_current_workspace(WorkspaceSessionTile::new("ibis"));
         assert!(map.move_left());
         assert_eq!(map.current_workspace(), 1);
-        assert_eq!(map.current_row().and_then(|row| row.focused_index()), Some(0));
+        assert_eq!(
+            map.current_row().and_then(|row| row.focused_index()),
+            Some(0)
+        );
 
         map.move_down();
         assert_eq!(map.current_workspace(), 0);
-        assert_eq!(map.current_row().and_then(|row| row.focused_index()), Some(0));
+        assert_eq!(
+            map.current_row().and_then(|row| row.focused_index()),
+            Some(0)
+        );
 
         map.move_up();
         assert_eq!(map.current_workspace(), 1);
-        assert_eq!(map.current_row().and_then(|row| row.focused_index()), Some(0));
+        assert_eq!(
+            map.current_row().and_then(|row| row.focused_index()),
+            Some(0)
+        );
     }
 
     #[test]
@@ -312,12 +318,13 @@ mod tests {
         let workspaces: Vec<_> = rows.iter().map(|row| row.workspace).collect();
         assert_eq!(workspaces, vec![2, 1, 0]);
         assert!(rows.iter().any(|row| row.workspace == 1 && row.is_current));
-        assert!(rows
-            .iter()
-            .find(|row| row.workspace == 1)
-            .expect("current workspace row")
-            .sessions
-            .is_empty());
+        assert!(
+            rows.iter()
+                .find(|row| row.workspace == 1)
+                .expect("current workspace row")
+                .sessions
+                .is_empty()
+        );
     }
 
     #[test]

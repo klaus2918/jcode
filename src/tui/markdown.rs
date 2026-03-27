@@ -585,6 +585,10 @@ fn diagram_side_only() -> bool {
     matches!(effective_diagram_mode(), DiagramDisplayMode::Pinned)
 }
 
+fn mermaid_should_register_active() -> bool {
+    !matches!(effective_diagram_mode(), DiagramDisplayMode::None)
+}
+
 fn mermaid_sidebar_placeholder(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
@@ -976,6 +980,12 @@ pub fn debug_stats() -> MarkdownDebugStats {
     MarkdownDebugStats::default()
 }
 
+pub fn reset_debug_stats() {
+    if let Ok(mut state) = MARKDOWN_DEBUG.lock() {
+        state.stats = MarkdownDebugStats::default();
+    }
+}
+
 pub fn debug_stats_json() -> Option<serde_json::Value> {
     serde_json::to_value(debug_stats()).ok()
 }
@@ -1349,7 +1359,16 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     // Render mermaid diagram.
                     // In streaming mode this updates only the ephemeral preview entry.
                     let terminal_width = max_width.and_then(|w| u16::try_from(w).ok());
-                    let result = if streaming_mode {
+                    if !streaming_mode
+                        && !mermaid_should_register_active()
+                        && !mermaid::image_protocol_available()
+                    {
+                        lines.push(mermaid_sidebar_placeholder(
+                            "↗ mermaid diagram (image protocols unavailable)",
+                        ));
+                        continue;
+                    }
+                    let result = if streaming_mode || !mermaid_should_register_active() {
                         mermaid::render_mermaid_untracked(&code_block_content, terminal_width)
                     } else {
                         mermaid::render_mermaid_sized(&code_block_content, terminal_width)
@@ -2585,8 +2604,18 @@ pub fn render_markdown_lazy(
                     .unwrap_or(false);
 
                 if is_mermaid {
+                    if !mermaid_should_register_active() && !mermaid::image_protocol_available() {
+                        lines.push(mermaid_sidebar_placeholder(
+                            "↗ mermaid diagram (image protocols unavailable)",
+                        ));
+                        continue;
+                    }
                     let terminal_width = max_width.and_then(|w| u16::try_from(w).ok());
-                    let result = mermaid::render_mermaid_sized(&code_block_content, terminal_width);
+                    let result = if mermaid_should_register_active() {
+                        mermaid::render_mermaid_sized(&code_block_content, terminal_width)
+                    } else {
+                        mermaid::render_mermaid_untracked(&code_block_content, terminal_width)
+                    };
                     match result {
                         mermaid::RenderResult::Image { .. } if side_only => {
                             lines.push(mermaid_sidebar_placeholder("↗ mermaid diagram (sidebar)"));

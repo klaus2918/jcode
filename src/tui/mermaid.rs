@@ -529,13 +529,19 @@ fn diff_counter(after: u64, before: u64) -> u64 {
     after.saturating_sub(before)
 }
 
-fn debug_stats_delta(before: &MermaidDebugStats, after: &MermaidDebugStats) -> MermaidDebugStatsDelta {
+fn debug_stats_delta(
+    before: &MermaidDebugStats,
+    after: &MermaidDebugStats,
+) -> MermaidDebugStatsDelta {
     MermaidDebugStatsDelta {
         image_state_hits: diff_counter(after.image_state_hits, before.image_state_hits),
         image_state_misses: diff_counter(after.image_state_misses, before.image_state_misses),
         skipped_renders: diff_counter(after.skipped_renders, before.skipped_renders),
         fit_state_reuse_hits: diff_counter(after.fit_state_reuse_hits, before.fit_state_reuse_hits),
-        fit_protocol_rebuilds: diff_counter(after.fit_protocol_rebuilds, before.fit_protocol_rebuilds),
+        fit_protocol_rebuilds: diff_counter(
+            after.fit_protocol_rebuilds,
+            before.fit_protocol_rebuilds,
+        ),
         viewport_state_reuse_hits: diff_counter(
             after.viewport_state_reuse_hits,
             before.viewport_state_reuse_hits,
@@ -562,6 +568,12 @@ pub fn debug_stats() -> MermaidDebugStats {
     }
     out.protocol = protocol_type().map(|p| format!("{:?}", p));
     out
+}
+
+pub fn reset_debug_stats() {
+    if let Ok(mut debug) = MERMAID_DEBUG.lock() {
+        debug.stats = MermaidDebugStats::default();
+    }
 }
 
 pub fn debug_stats_json() -> Option<serde_json::Value> {
@@ -2849,10 +2861,10 @@ fn div_ceil_u32_local(value: u32, divisor: u32) -> u32 {
 
 fn kitty_full_rect_for_image(img: &DynamicImage, font_size: (u16, u16)) -> (u16, u16) {
     (
-        div_ceil_u32_local(img.width().max(1), font_size.0.max(1) as u32)
-            .min(u16::MAX as u32) as u16,
-        div_ceil_u32_local(img.height().max(1), font_size.1.max(1) as u32)
-            .min(u16::MAX as u32) as u16,
+        div_ceil_u32_local(img.width().max(1), font_size.0.max(1) as u32).min(u16::MAX as u32)
+            as u16,
+        div_ceil_u32_local(img.height().max(1), font_size.1.max(1) as u32).min(u16::MAX as u32)
+            as u16,
     )
 }
 
@@ -2959,7 +2971,12 @@ fn render_kitty_virtual_viewport(
         };
         symbol.push_str("\x1b[s");
         symbol.push_str(&id_color);
-        kitty_add_placeholder(&mut symbol, scroll_x, scroll_y.saturating_add(row), id_extra);
+        kitty_add_placeholder(
+            &mut symbol,
+            scroll_x,
+            scroll_y.saturating_add(row),
+            id_extra,
+        );
         for x in 1..area.width {
             if let Some(cell) = buf.cell_mut((area.left() + x, y)) {
                 if x < visible_width {
@@ -2980,7 +2997,12 @@ fn render_kitty_virtual_viewport(
     true
 }
 
-fn can_use_kitty_virtual_viewport(full_cols: u16, full_rows: u16, scroll_x: u16, scroll_y: u16) -> bool {
+fn can_use_kitty_virtual_viewport(
+    full_cols: u16,
+    full_rows: u16,
+    scroll_x: u16,
+    scroll_y: u16,
+) -> bool {
     let max_index = KITTY_DIACRITICS.len() as u16;
     full_cols < max_index && full_rows < max_index && scroll_x < max_index && scroll_y < max_index
 }
@@ -2994,57 +3016,310 @@ fn kitty_add_placeholder(buf: &mut String, x: u16, y: u16, id_extra: u8) {
 
 #[inline]
 fn kitty_diacritic(index: u16) -> char {
-    KITTY_DIACRITICS.get(index as usize).copied().unwrap_or(KITTY_DIACRITICS[0])
+    KITTY_DIACRITICS
+        .get(index as usize)
+        .copied()
+        .unwrap_or(KITTY_DIACRITICS[0])
 }
 
 /// From https://sw.kovidgoyal.net/kitty/_downloads/1792bad15b12979994cd6ecc54c967a6/rowcolumn-diacritics.txt
 static KITTY_DIACRITICS: [char; 297] = [
-    '\u{305}', '\u{30D}', '\u{30E}', '\u{310}', '\u{312}', '\u{33D}', '\u{33E}',
-    '\u{33F}', '\u{346}', '\u{34A}', '\u{34B}', '\u{34C}', '\u{350}', '\u{351}',
-    '\u{352}', '\u{357}', '\u{35B}', '\u{363}', '\u{364}', '\u{365}', '\u{366}',
-    '\u{367}', '\u{368}', '\u{369}', '\u{36A}', '\u{36B}', '\u{36C}', '\u{36D}',
-    '\u{36E}', '\u{36F}', '\u{483}', '\u{484}', '\u{485}', '\u{486}', '\u{487}',
-    '\u{592}', '\u{593}', '\u{594}', '\u{595}', '\u{597}', '\u{598}', '\u{599}',
-    '\u{59C}', '\u{59D}', '\u{59E}', '\u{59F}', '\u{5A0}', '\u{5A1}', '\u{5A8}',
-    '\u{5A9}', '\u{5AB}', '\u{5AC}', '\u{5AF}', '\u{5C4}', '\u{610}', '\u{611}',
-    '\u{612}', '\u{613}', '\u{614}', '\u{615}', '\u{616}', '\u{617}', '\u{657}',
-    '\u{658}', '\u{659}', '\u{65A}', '\u{65B}', '\u{65D}', '\u{65E}', '\u{6D6}',
-    '\u{6D7}', '\u{6D8}', '\u{6D9}', '\u{6DA}', '\u{6DB}', '\u{6DC}', '\u{6DF}',
-    '\u{6E0}', '\u{6E1}', '\u{6E2}', '\u{6E4}', '\u{6E7}', '\u{6E8}', '\u{6EB}',
-    '\u{6EC}', '\u{730}', '\u{732}', '\u{733}', '\u{735}', '\u{736}', '\u{73A}',
-    '\u{73D}', '\u{73F}', '\u{740}', '\u{741}', '\u{743}', '\u{745}', '\u{747}',
-    '\u{749}', '\u{74A}', '\u{7EB}', '\u{7EC}', '\u{7ED}', '\u{7EE}', '\u{7EF}',
-    '\u{7F0}', '\u{7F1}', '\u{7F3}', '\u{816}', '\u{817}', '\u{818}', '\u{819}',
-    '\u{81B}', '\u{81C}', '\u{81D}', '\u{81E}', '\u{81F}', '\u{820}', '\u{821}',
-    '\u{822}', '\u{823}', '\u{825}', '\u{826}', '\u{827}', '\u{829}', '\u{82A}',
-    '\u{82B}', '\u{82C}', '\u{82D}', '\u{951}', '\u{953}', '\u{954}', '\u{F82}',
-    '\u{F83}', '\u{F86}', '\u{F87}', '\u{135D}', '\u{135E}', '\u{135F}', '\u{17DD}',
-    '\u{193A}', '\u{1A17}', '\u{1A75}', '\u{1A76}', '\u{1A77}', '\u{1A78}',
-    '\u{1A79}', '\u{1A7A}', '\u{1A7B}', '\u{1A7C}', '\u{1B6B}', '\u{1B6D}',
-    '\u{1B6E}', '\u{1B6F}', '\u{1B70}', '\u{1B71}', '\u{1B72}', '\u{1B73}',
-    '\u{1CD0}', '\u{1CD1}', '\u{1CD2}', '\u{1CDA}', '\u{1CDB}', '\u{1CE0}',
-    '\u{1DC0}', '\u{1DC1}', '\u{1DC3}', '\u{1DC4}', '\u{1DC5}', '\u{1DC6}',
-    '\u{1DC7}', '\u{1DC8}', '\u{1DC9}', '\u{1DCB}', '\u{1DCC}', '\u{1DD1}',
-    '\u{1DD2}', '\u{1DD3}', '\u{1DD4}', '\u{1DD5}', '\u{1DD6}', '\u{1DD7}',
-    '\u{1DD8}', '\u{1DD9}', '\u{1DDA}', '\u{1DDB}', '\u{1DDC}', '\u{1DDD}',
-    '\u{1DDE}', '\u{1DDF}', '\u{1DE0}', '\u{1DE1}', '\u{1DE2}', '\u{1DE3}',
-    '\u{1DE4}', '\u{1DE5}', '\u{1DE6}', '\u{1DFE}', '\u{20D0}', '\u{20D1}',
-    '\u{20D4}', '\u{20D5}', '\u{20D6}', '\u{20D7}', '\u{20DB}', '\u{20DC}',
-    '\u{20E1}', '\u{20E7}', '\u{20E9}', '\u{20F0}', '\u{2CEF}', '\u{2CF0}',
-    '\u{2CF1}', '\u{2DE0}', '\u{2DE1}', '\u{2DE2}', '\u{2DE3}', '\u{2DE4}',
-    '\u{2DE5}', '\u{2DE6}', '\u{2DE7}', '\u{2DE8}', '\u{2DE9}', '\u{2DEA}',
-    '\u{2DEB}', '\u{2DEC}', '\u{2DED}', '\u{2DEE}', '\u{2DEF}', '\u{2DF0}',
-    '\u{2DF1}', '\u{2DF2}', '\u{2DF3}', '\u{2DF4}', '\u{2DF5}', '\u{2DF6}',
-    '\u{2DF7}', '\u{2DF8}', '\u{2DF9}', '\u{2DFA}', '\u{2DFB}', '\u{2DFC}',
-    '\u{2DFD}', '\u{2DFE}', '\u{2DFF}', '\u{A66F}', '\u{A67C}', '\u{A67D}',
-    '\u{A6F0}', '\u{A6F1}', '\u{A8E0}', '\u{A8E1}', '\u{A8E2}', '\u{A8E3}',
-    '\u{A8E4}', '\u{A8E5}', '\u{A8E6}', '\u{A8E7}', '\u{A8E8}', '\u{A8E9}',
-    '\u{A8EA}', '\u{A8EB}', '\u{A8EC}', '\u{A8ED}', '\u{A8EE}', '\u{A8EF}',
-    '\u{A8F0}', '\u{A8F1}', '\u{AAB0}', '\u{AAB2}', '\u{AAB3}', '\u{AAB7}',
-    '\u{AAB8}', '\u{AABE}', '\u{AABF}', '\u{AAC1}', '\u{FE20}', '\u{FE21}',
-    '\u{FE22}', '\u{FE23}', '\u{FE24}', '\u{FE25}', '\u{FE26}', '\u{10A0F}',
-    '\u{10A38}', '\u{1D185}', '\u{1D186}', '\u{1D187}', '\u{1D188}', '\u{1D189}',
-    '\u{1D1AA}', '\u{1D1AB}', '\u{1D1AC}', '\u{1D1AD}', '\u{1D242}', '\u{1D243}',
+    '\u{305}',
+    '\u{30D}',
+    '\u{30E}',
+    '\u{310}',
+    '\u{312}',
+    '\u{33D}',
+    '\u{33E}',
+    '\u{33F}',
+    '\u{346}',
+    '\u{34A}',
+    '\u{34B}',
+    '\u{34C}',
+    '\u{350}',
+    '\u{351}',
+    '\u{352}',
+    '\u{357}',
+    '\u{35B}',
+    '\u{363}',
+    '\u{364}',
+    '\u{365}',
+    '\u{366}',
+    '\u{367}',
+    '\u{368}',
+    '\u{369}',
+    '\u{36A}',
+    '\u{36B}',
+    '\u{36C}',
+    '\u{36D}',
+    '\u{36E}',
+    '\u{36F}',
+    '\u{483}',
+    '\u{484}',
+    '\u{485}',
+    '\u{486}',
+    '\u{487}',
+    '\u{592}',
+    '\u{593}',
+    '\u{594}',
+    '\u{595}',
+    '\u{597}',
+    '\u{598}',
+    '\u{599}',
+    '\u{59C}',
+    '\u{59D}',
+    '\u{59E}',
+    '\u{59F}',
+    '\u{5A0}',
+    '\u{5A1}',
+    '\u{5A8}',
+    '\u{5A9}',
+    '\u{5AB}',
+    '\u{5AC}',
+    '\u{5AF}',
+    '\u{5C4}',
+    '\u{610}',
+    '\u{611}',
+    '\u{612}',
+    '\u{613}',
+    '\u{614}',
+    '\u{615}',
+    '\u{616}',
+    '\u{617}',
+    '\u{657}',
+    '\u{658}',
+    '\u{659}',
+    '\u{65A}',
+    '\u{65B}',
+    '\u{65D}',
+    '\u{65E}',
+    '\u{6D6}',
+    '\u{6D7}',
+    '\u{6D8}',
+    '\u{6D9}',
+    '\u{6DA}',
+    '\u{6DB}',
+    '\u{6DC}',
+    '\u{6DF}',
+    '\u{6E0}',
+    '\u{6E1}',
+    '\u{6E2}',
+    '\u{6E4}',
+    '\u{6E7}',
+    '\u{6E8}',
+    '\u{6EB}',
+    '\u{6EC}',
+    '\u{730}',
+    '\u{732}',
+    '\u{733}',
+    '\u{735}',
+    '\u{736}',
+    '\u{73A}',
+    '\u{73D}',
+    '\u{73F}',
+    '\u{740}',
+    '\u{741}',
+    '\u{743}',
+    '\u{745}',
+    '\u{747}',
+    '\u{749}',
+    '\u{74A}',
+    '\u{7EB}',
+    '\u{7EC}',
+    '\u{7ED}',
+    '\u{7EE}',
+    '\u{7EF}',
+    '\u{7F0}',
+    '\u{7F1}',
+    '\u{7F3}',
+    '\u{816}',
+    '\u{817}',
+    '\u{818}',
+    '\u{819}',
+    '\u{81B}',
+    '\u{81C}',
+    '\u{81D}',
+    '\u{81E}',
+    '\u{81F}',
+    '\u{820}',
+    '\u{821}',
+    '\u{822}',
+    '\u{823}',
+    '\u{825}',
+    '\u{826}',
+    '\u{827}',
+    '\u{829}',
+    '\u{82A}',
+    '\u{82B}',
+    '\u{82C}',
+    '\u{82D}',
+    '\u{951}',
+    '\u{953}',
+    '\u{954}',
+    '\u{F82}',
+    '\u{F83}',
+    '\u{F86}',
+    '\u{F87}',
+    '\u{135D}',
+    '\u{135E}',
+    '\u{135F}',
+    '\u{17DD}',
+    '\u{193A}',
+    '\u{1A17}',
+    '\u{1A75}',
+    '\u{1A76}',
+    '\u{1A77}',
+    '\u{1A78}',
+    '\u{1A79}',
+    '\u{1A7A}',
+    '\u{1A7B}',
+    '\u{1A7C}',
+    '\u{1B6B}',
+    '\u{1B6D}',
+    '\u{1B6E}',
+    '\u{1B6F}',
+    '\u{1B70}',
+    '\u{1B71}',
+    '\u{1B72}',
+    '\u{1B73}',
+    '\u{1CD0}',
+    '\u{1CD1}',
+    '\u{1CD2}',
+    '\u{1CDA}',
+    '\u{1CDB}',
+    '\u{1CE0}',
+    '\u{1DC0}',
+    '\u{1DC1}',
+    '\u{1DC3}',
+    '\u{1DC4}',
+    '\u{1DC5}',
+    '\u{1DC6}',
+    '\u{1DC7}',
+    '\u{1DC8}',
+    '\u{1DC9}',
+    '\u{1DCB}',
+    '\u{1DCC}',
+    '\u{1DD1}',
+    '\u{1DD2}',
+    '\u{1DD3}',
+    '\u{1DD4}',
+    '\u{1DD5}',
+    '\u{1DD6}',
+    '\u{1DD7}',
+    '\u{1DD8}',
+    '\u{1DD9}',
+    '\u{1DDA}',
+    '\u{1DDB}',
+    '\u{1DDC}',
+    '\u{1DDD}',
+    '\u{1DDE}',
+    '\u{1DDF}',
+    '\u{1DE0}',
+    '\u{1DE1}',
+    '\u{1DE2}',
+    '\u{1DE3}',
+    '\u{1DE4}',
+    '\u{1DE5}',
+    '\u{1DE6}',
+    '\u{1DFE}',
+    '\u{20D0}',
+    '\u{20D1}',
+    '\u{20D4}',
+    '\u{20D5}',
+    '\u{20D6}',
+    '\u{20D7}',
+    '\u{20DB}',
+    '\u{20DC}',
+    '\u{20E1}',
+    '\u{20E7}',
+    '\u{20E9}',
+    '\u{20F0}',
+    '\u{2CEF}',
+    '\u{2CF0}',
+    '\u{2CF1}',
+    '\u{2DE0}',
+    '\u{2DE1}',
+    '\u{2DE2}',
+    '\u{2DE3}',
+    '\u{2DE4}',
+    '\u{2DE5}',
+    '\u{2DE6}',
+    '\u{2DE7}',
+    '\u{2DE8}',
+    '\u{2DE9}',
+    '\u{2DEA}',
+    '\u{2DEB}',
+    '\u{2DEC}',
+    '\u{2DED}',
+    '\u{2DEE}',
+    '\u{2DEF}',
+    '\u{2DF0}',
+    '\u{2DF1}',
+    '\u{2DF2}',
+    '\u{2DF3}',
+    '\u{2DF4}',
+    '\u{2DF5}',
+    '\u{2DF6}',
+    '\u{2DF7}',
+    '\u{2DF8}',
+    '\u{2DF9}',
+    '\u{2DFA}',
+    '\u{2DFB}',
+    '\u{2DFC}',
+    '\u{2DFD}',
+    '\u{2DFE}',
+    '\u{2DFF}',
+    '\u{A66F}',
+    '\u{A67C}',
+    '\u{A67D}',
+    '\u{A6F0}',
+    '\u{A6F1}',
+    '\u{A8E0}',
+    '\u{A8E1}',
+    '\u{A8E2}',
+    '\u{A8E3}',
+    '\u{A8E4}',
+    '\u{A8E5}',
+    '\u{A8E6}',
+    '\u{A8E7}',
+    '\u{A8E8}',
+    '\u{A8E9}',
+    '\u{A8EA}',
+    '\u{A8EB}',
+    '\u{A8EC}',
+    '\u{A8ED}',
+    '\u{A8EE}',
+    '\u{A8EF}',
+    '\u{A8F0}',
+    '\u{A8F1}',
+    '\u{AAB0}',
+    '\u{AAB2}',
+    '\u{AAB3}',
+    '\u{AAB7}',
+    '\u{AAB8}',
+    '\u{AABE}',
+    '\u{AABF}',
+    '\u{AAC1}',
+    '\u{FE20}',
+    '\u{FE21}',
+    '\u{FE22}',
+    '\u{FE23}',
+    '\u{FE24}',
+    '\u{FE25}',
+    '\u{FE26}',
+    '\u{10A0F}',
+    '\u{10A38}',
+    '\u{1D185}',
+    '\u{1D186}',
+    '\u{1D187}',
+    '\u{1D188}',
+    '\u{1D189}',
+    '\u{1D1AA}',
+    '\u{1D1AB}',
+    '\u{1D1AC}',
+    '\u{1D1AD}',
+    '\u{1D242}',
+    '\u{1D243}',
     '\u{1D244}',
 ];
 
@@ -3147,14 +3422,23 @@ pub fn render_image_widget_viewport(
     };
 
     if picker.protocol_type() == ProtocolType::Kitty {
-        if let Some((_, full_cols, full_rows)) =
-            ensure_kitty_viewport_state(hash, &source_path, source.as_ref(), zoom_percent, font_size)
-        {
+        if let Some((_, full_cols, full_rows)) = ensure_kitty_viewport_state(
+            hash,
+            &source_path,
+            source.as_ref(),
+            zoom_percent,
+            font_size,
+        ) {
             let scroll_x_cells = (scroll_x.max(0) as u16).min(full_cols.saturating_sub(1));
             let scroll_y_cells = (scroll_y.max(0) as u16).min(full_rows.saturating_sub(1));
-            if can_use_kitty_virtual_viewport(full_cols, full_rows, scroll_x_cells, scroll_y_cells) {
-                let visible_width = image_area.width.min(full_cols.saturating_sub(scroll_x_cells));
-                let visible_height = image_area.height.min(full_rows.saturating_sub(scroll_y_cells));
+            if can_use_kitty_virtual_viewport(full_cols, full_rows, scroll_x_cells, scroll_y_cells)
+            {
+                let visible_width = image_area
+                    .width
+                    .min(full_cols.saturating_sub(scroll_x_cells));
+                let visible_height = image_area
+                    .height
+                    .min(full_rows.saturating_sub(scroll_y_cells));
                 if let Ok(mut state) = IMAGE_STATE.lock() {
                     if let Some(img_state) = state.get_mut(hash) {
                         img_state.last_area = Some(image_area);
@@ -4467,24 +4751,54 @@ mod tests {
                 .expect("kitty viewport state");
         assert!(full_cols > 0 && full_rows > 0);
 
-        let rebuilds_after_first = MERMAID_DEBUG.lock().unwrap().stats.viewport_protocol_rebuilds;
+        let rebuilds_after_first = MERMAID_DEBUG
+            .lock()
+            .unwrap()
+            .stats
+            .viewport_protocol_rebuilds;
         assert_eq!(rebuilds_after_first, 1);
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
-        assert!(render_kitty_virtual_viewport(hash, Rect::new(0, 0, 20, 8), &mut buf, 0, 0, 20, 8));
+        assert!(render_kitty_virtual_viewport(
+            hash,
+            Rect::new(0, 0, 20, 8),
+            &mut buf,
+            0,
+            0,
+            20,
+            8
+        ));
         let first_symbol = buf[(0, 0)].symbol().to_string();
-        assert!(first_symbol.contains("_Gq=2"), "first render should transmit image data");
+        assert!(
+            first_symbol.contains("_Gq=2"),
+            "first render should transmit image data"
+        );
 
         let (same_id, _, _) = ensure_kitty_viewport_state(hash, &path, &source, 100, (8, 16))
             .expect("kitty viewport state reused");
         assert_eq!(same_id, unique_id);
-        let rebuilds_after_second = MERMAID_DEBUG.lock().unwrap().stats.viewport_protocol_rebuilds;
+        let rebuilds_after_second = MERMAID_DEBUG
+            .lock()
+            .unwrap()
+            .stats
+            .viewport_protocol_rebuilds;
         assert_eq!(rebuilds_after_second, rebuilds_after_first);
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
-        assert!(render_kitty_virtual_viewport(hash, Rect::new(0, 0, 20, 8), &mut buf, 3, 2, 20, 8));
+        assert!(render_kitty_virtual_viewport(
+            hash,
+            Rect::new(0, 0, 20, 8),
+            &mut buf,
+            3,
+            2,
+            20,
+            8
+        ));
         let second_symbol = buf[(0, 0)].symbol().to_string();
-        assert!(!second_symbol.contains("_Gq=2"), "scroll-only render should reuse prior transmit");
+        assert!(
+            !second_symbol.contains("_Gq=2"),
+            "scroll-only render should reuse prior transmit"
+        );
     }
 
     #[test]
@@ -4505,11 +4819,19 @@ mod tests {
 
         let (id_100, cols_100, rows_100) =
             ensure_kitty_viewport_state(hash, &path, &source, 100, (8, 16)).expect("zoom 100");
-        let rebuilds_100 = MERMAID_DEBUG.lock().unwrap().stats.viewport_protocol_rebuilds;
+        let rebuilds_100 = MERMAID_DEBUG
+            .lock()
+            .unwrap()
+            .stats
+            .viewport_protocol_rebuilds;
 
         let (id_150, cols_150, rows_150) =
             ensure_kitty_viewport_state(hash, &path, &source, 150, (8, 16)).expect("zoom 150");
-        let rebuilds_150 = MERMAID_DEBUG.lock().unwrap().stats.viewport_protocol_rebuilds;
+        let rebuilds_150 = MERMAID_DEBUG
+            .lock()
+            .unwrap()
+            .stats
+            .viewport_protocol_rebuilds;
 
         assert_eq!(id_100, id_150, "zoom changes should reuse kitty image id");
         assert!(cols_150 >= cols_100);

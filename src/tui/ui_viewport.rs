@@ -1,6 +1,62 @@
 use super::*;
 use unicode_width::UnicodeWidthStr;
 
+pub(super) fn split_native_scrollbar_area(area: Rect, enabled: bool) -> (Rect, Option<Rect>) {
+    if !enabled || area.width <= 1 {
+        return (area, None);
+    }
+
+    (
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width.saturating_sub(1),
+            height: area.height,
+        },
+        Some(Rect {
+            x: area.x + area.width.saturating_sub(1),
+            y: area.y,
+            width: 1,
+            height: area.height,
+        }),
+    )
+}
+
+pub(super) fn render_native_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    position: usize,
+    content_length: usize,
+    viewport_content_length: usize,
+    focused: bool,
+) {
+    use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+
+    if area.width == 0
+        || area.height == 0
+        || content_length <= viewport_content_length
+        || viewport_content_length == 0
+    {
+        return;
+    }
+
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("▕"))
+        .track_style(Style::default().fg(dim_color()))
+        .thumb_symbol("▐")
+        .thumb_style(Style::default().fg(if focused {
+            tool_color()
+        } else {
+            queued_color()
+        }));
+    let mut state = ScrollbarState::new(content_length)
+        .position(position)
+        .viewport_content_length(viewport_content_length);
+    frame.render_stateful_widget(scrollbar, area, &mut state);
+}
+
 fn lower_bound(values: &[usize], target: usize) -> usize {
     values.partition_point(|&v| v < target)
 }
@@ -149,7 +205,10 @@ pub(super) fn draw_messages(
     app: &dyn TuiState,
     area: Rect,
     prepared: &PreparedMessages,
+    show_native_scrollbar: bool,
 ) -> info_widget::Margins {
+    let (render_area, scrollbar_area) =
+        super::split_native_scrollbar_area(area, show_native_scrollbar);
     let wrapped_lines = &prepared.wrapped_lines;
     let wrapped_user_indices = &prepared.wrapped_user_indices;
     let wrapped_user_prompt_starts = &prepared.wrapped_user_prompt_starts;
@@ -157,12 +216,12 @@ pub(super) fn draw_messages(
     let user_prompt_texts = &prepared.user_prompt_texts;
 
     let total_lines = wrapped_lines.len();
-    let viewport_height = area.height as usize;
+    let viewport_height = render_area.height as usize;
     let max_scroll = compute_max_scroll_with_prompt_preview(
         total_lines,
         wrapped_user_prompt_starts,
         user_prompt_texts,
-        area,
+        render_area,
     );
 
     super::set_last_max_scroll(max_scroll);
@@ -180,17 +239,17 @@ pub(super) fn draw_messages(
             wrapped_user_prompt_starts,
             user_prompt_texts,
             scroll,
-            area.width,
+            render_area.width,
         )
     } else {
         0u16
     };
 
     let content_area = Rect {
-        x: area.x,
-        y: area.y.saturating_add(prompt_preview_lines),
-        width: area.width,
-        height: area.height.saturating_sub(prompt_preview_lines),
+        x: render_area.x,
+        y: render_area.y.saturating_add(prompt_preview_lines),
+        width: render_area.width,
+        height: render_area.height.saturating_sub(prompt_preview_lines),
     };
     let visible_height = content_area.height as usize;
 
@@ -517,7 +576,7 @@ pub(super) fn draw_messages(
         }
     }
 
-    let right_x = area.x + area.width.saturating_sub(1);
+    let right_x = render_area.x + render_area.width.saturating_sub(1);
     for &line_idx in &wrapped_user_indices[visible_user_start..visible_user_end] {
         if line_idx >= scroll && line_idx < scroll + visible_height {
             let screen_y = content_area.y + (line_idx - scroll) as u16;
@@ -532,11 +591,11 @@ pub(super) fn draw_messages(
         }
     }
 
-    if scroll > 0 {
+    if !show_native_scrollbar && scroll > 0 {
         let indicator = format!("↑{}", scroll);
         let indicator_area = Rect {
-            x: area.x + area.width.saturating_sub(indicator.len() as u16 + 2),
-            y: area.y,
+            x: render_area.x + render_area.width.saturating_sub(indicator.len() as u16 + 2),
+            y: render_area.y,
             width: indicator.len() as u16,
             height: 1,
         };
@@ -560,7 +619,8 @@ pub(super) fn draw_messages(
                     let prompt_num = prompt_order + 1;
                     let num_str = format!("{}", prompt_num);
                     let prefix_len = num_str.len() + 2;
-                    let content_width = area.width.saturating_sub(prefix_len as u16 + 2) as usize;
+                    let content_width =
+                        render_area.width.saturating_sub(prefix_len as u16 + 2) as usize;
                     let dim_style = Style::default().dim();
                     let align = if app.centered_mode() {
                         ratatui::layout::Alignment::Center
@@ -616,9 +676,9 @@ pub(super) fn draw_messages(
 
                     let line_count = preview_lines.len() as u16;
                     let preview_area = Rect {
-                        x: area.x,
-                        y: area.y,
-                        width: area.width.saturating_sub(1),
+                        x: render_area.x,
+                        y: render_area.y,
+                        width: render_area.width.saturating_sub(1),
                         height: line_count,
                     };
                     clear_area(frame, preview_area);
@@ -628,11 +688,11 @@ pub(super) fn draw_messages(
         }
     }
 
-    if app.auto_scroll_paused() && scroll < max_scroll {
+    if !show_native_scrollbar && app.auto_scroll_paused() && scroll < max_scroll {
         let indicator = format!("↓{}", max_scroll - scroll);
         let indicator_area = Rect {
-            x: area.x + area.width.saturating_sub(indicator.len() as u16 + 2),
-            y: area.y + area.height.saturating_sub(1),
+            x: render_area.x + render_area.width.saturating_sub(indicator.len() as u16 + 2),
+            y: render_area.y + render_area.height.saturating_sub(1),
             width: indicator.len() as u16,
             height: 1,
         };
@@ -642,6 +702,17 @@ pub(super) fn draw_messages(
                 Style::default().fg(queued_color()),
             )])),
             indicator_area,
+        );
+    }
+
+    if let Some(scrollbar_area) = scrollbar_area {
+        super::render_native_scrollbar(
+            frame,
+            scrollbar_area,
+            scroll,
+            total_lines,
+            visible_height,
+            false,
         );
     }
 

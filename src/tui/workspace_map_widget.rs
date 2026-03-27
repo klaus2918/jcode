@@ -53,7 +53,12 @@ pub fn compute_workspace_tile_placements(
             placements.push(WorkspaceTilePlacement {
                 workspace: row.workspace,
                 session_index,
-                rect: Rect::new(x, y, TILE_WIDTH.min(area.width), TILE_HEIGHT.min(area.height)),
+                rect: Rect::new(
+                    x,
+                    y,
+                    TILE_WIDTH.min(area.width),
+                    TILE_HEIGHT.min(area.height),
+                ),
                 focused: row.focused_index == Some(session_index),
                 current_workspace: row.is_current,
                 state: session.state,
@@ -84,7 +89,12 @@ fn draw_workspace_tile(buf: &mut Buffer, placement: WorkspaceTilePlacement, tick
         return;
     }
 
-    let border_color = border_color(placement.state, placement.focused, placement.current_workspace, tick);
+    let border_color = border_color(
+        placement.state,
+        placement.focused,
+        placement.current_workspace,
+        tick,
+    );
     let fill_color = fill_color(placement.state);
     let glyphs = if placement.focused {
         ['╔', '╗', '╚', '╝', '═', '║']
@@ -108,34 +118,50 @@ fn draw_workspace_tile(buf: &mut Buffer, placement: WorkspaceTilePlacement, tick
         }
     }
 
-    buf[(x0, y0)]
-        .set_symbol(&glyphs[0].to_string())
-        .set_style(Style::default().fg(border_color).bg(fill_color.unwrap_or(Color::Reset)));
-    buf[(x1, y0)]
-        .set_symbol(&glyphs[1].to_string())
-        .set_style(Style::default().fg(border_color).bg(fill_color.unwrap_or(Color::Reset)));
-    buf[(x0, y1)]
-        .set_symbol(&glyphs[2].to_string())
-        .set_style(Style::default().fg(border_color).bg(fill_color.unwrap_or(Color::Reset)));
-    buf[(x1, y1)]
-        .set_symbol(&glyphs[3].to_string())
-        .set_style(Style::default().fg(border_color).bg(fill_color.unwrap_or(Color::Reset)));
+    buf[(x0, y0)].set_symbol(&glyphs[0].to_string()).set_style(
+        Style::default()
+            .fg(border_color)
+            .bg(fill_color.unwrap_or(Color::Reset)),
+    );
+    buf[(x1, y0)].set_symbol(&glyphs[1].to_string()).set_style(
+        Style::default()
+            .fg(border_color)
+            .bg(fill_color.unwrap_or(Color::Reset)),
+    );
+    buf[(x0, y1)].set_symbol(&glyphs[2].to_string()).set_style(
+        Style::default()
+            .fg(border_color)
+            .bg(fill_color.unwrap_or(Color::Reset)),
+    );
+    buf[(x1, y1)].set_symbol(&glyphs[3].to_string()).set_style(
+        Style::default()
+            .fg(border_color)
+            .bg(fill_color.unwrap_or(Color::Reset)),
+    );
 
     for x in (x0 + 1)..x1 {
-        buf[(x, y0)]
-            .set_symbol(&glyphs[4].to_string())
-            .set_style(Style::default().fg(border_color).bg(fill_color.unwrap_or(Color::Reset)));
-        buf[(x, y1)]
-            .set_symbol(&glyphs[4].to_string())
-            .set_style(Style::default().fg(border_color).bg(fill_color.unwrap_or(Color::Reset)));
+        buf[(x, y0)].set_symbol(&glyphs[4].to_string()).set_style(
+            Style::default()
+                .fg(border_color)
+                .bg(fill_color.unwrap_or(Color::Reset)),
+        );
+        buf[(x, y1)].set_symbol(&glyphs[4].to_string()).set_style(
+            Style::default()
+                .fg(border_color)
+                .bg(fill_color.unwrap_or(Color::Reset)),
+        );
     }
     for y in (y0 + 1)..y1 {
-        buf[(x0, y)]
-            .set_symbol(&glyphs[5].to_string())
-            .set_style(Style::default().fg(border_color).bg(fill_color.unwrap_or(Color::Reset)));
-        buf[(x1, y)]
-            .set_symbol(&glyphs[5].to_string())
-            .set_style(Style::default().fg(border_color).bg(fill_color.unwrap_or(Color::Reset)));
+        buf[(x0, y)].set_symbol(&glyphs[5].to_string()).set_style(
+            Style::default()
+                .fg(border_color)
+                .bg(fill_color.unwrap_or(Color::Reset)),
+        );
+        buf[(x1, y)].set_symbol(&glyphs[5].to_string()).set_style(
+            Style::default()
+                .fg(border_color)
+                .bg(fill_color.unwrap_or(Color::Reset)),
+        );
     }
 }
 

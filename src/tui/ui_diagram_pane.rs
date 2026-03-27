@@ -224,7 +224,7 @@ pub(crate) fn draw_pinned_diagram(
         Style::default().fg(dim_color()),
     ));
     title_parts.push(Span::styled(
-        " Alt+M toggle",
+        " Alt+M side panel",
         Style::default().fg(dim_color()),
     ));
 

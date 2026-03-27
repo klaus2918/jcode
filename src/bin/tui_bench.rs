@@ -1,11 +1,15 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use jcode::message::ToolCall;
+use jcode::message::{ContentBlock, Role, ToolCall};
 use jcode::prompt::ContextInfo;
-use jcode::side_panel::{SidePanelPage, SidePanelPageFormat, SidePanelPageSource, SidePanelSnapshot};
+use jcode::session::{Session, StoredDisplayRole};
+use jcode::side_panel::{
+    SidePanelPage, SidePanelPageFormat, SidePanelPageSource, SidePanelSnapshot,
+};
 use jcode::tui::{DisplayMessage, ProcessingStatus, TuiState, info_widget::InfoWidgetData};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use serde::Serialize;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -18,6 +22,45 @@ fn percentile_ms(samples_ms: &[f64], percentile: f64) -> f64 {
     let percentile = percentile.clamp(0.0, 1.0);
     let rank = ((samples_ms.len() - 1) as f64 * percentile).round() as usize;
     samples_ms[rank.min(samples_ms.len() - 1)]
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct TimingSummary {
+    avg_ms: f64,
+    p50_ms: f64,
+    p95_ms: f64,
+    p99_ms: f64,
+    max_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct SidePanelFrameProfile {
+    frame: usize,
+    ms: f64,
+    markdown_renders: u64,
+    mermaid_requests: u64,
+    mermaid_cache_hits: u64,
+    mermaid_cache_misses: u64,
+    mermaid_render_success: u64,
+    side_panel_markdown_hits: u64,
+    side_panel_markdown_misses: u64,
+    side_panel_render_hits: u64,
+    side_panel_render_misses: u64,
+}
+
+fn summarize_timing(samples_ms: &[f64]) -> TimingSummary {
+    if samples_ms.is_empty() {
+        return TimingSummary::default();
+    }
+    let mut sorted = samples_ms.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    TimingSummary {
+        avg_ms: samples_ms.iter().sum::<f64>() / samples_ms.len() as f64,
+        p50_ms: percentile_ms(&sorted, 0.50),
+        p95_ms: percentile_ms(&sorted, 0.95),
+        p99_ms: percentile_ms(&sorted, 0.99),
+        max_ms: sorted.last().copied().unwrap_or(0.0),
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -67,6 +110,38 @@ struct Args {
     /// Number of mermaid blocks to generate in side panel content
     #[arg(long, default_value = "4")]
     side_panel_mermaids: usize,
+
+    /// Load realistic benchmark content from a saved session id or path
+    #[arg(long)]
+    session: Option<String>,
+
+    /// Focus a specific side-panel page when loading from a session
+    #[arg(long)]
+    side_panel_page: Option<String>,
+
+    /// Max historical session messages to import into the benchmark chat column
+    #[arg(long, default_value = "120")]
+    session_max_messages: usize,
+
+    /// For synthetic linked-file side-panel benches, rewrite the file every N frames
+    #[arg(long, default_value = "0")]
+    linked_refresh_every: usize,
+
+    /// Exclude the first N frames when reporting steady-state metrics
+    #[arg(long, default_value = "1")]
+    warmup_frames: usize,
+
+    /// Emit machine-readable JSON benchmark output
+    #[arg(long, default_value_t = false)]
+    json: bool,
+
+    /// Skip proactive side-panel prewarming before the benchmark loop
+    #[arg(long, default_value_t = false)]
+    no_side_panel_prewarm: bool,
+
+    /// Keep any existing mermaid cache instead of forcing a cold-cache benchmark start
+    #[arg(long, default_value_t = false)]
+    keep_mermaid_cache: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -106,6 +181,9 @@ struct BenchState {
     diff_pane_focus: bool,
     side_panel: SidePanelSnapshot,
     bench_file_paths: Vec<PathBuf>,
+    linked_refresh_path: Option<PathBuf>,
+    linked_refresh_generation: usize,
+    session_source: Option<String>,
 }
 
 impl BenchState {
@@ -196,7 +274,123 @@ impl BenchState {
             diff_pane_focus: matches!(mode, BenchMode::FileDiff | BenchMode::SidePanel),
             side_panel,
             bench_file_paths,
+            linked_refresh_path: matches!(mode, BenchMode::SidePanel)
+                .then(|| match side_panel_source {
+                    SidePanelSource::LinkedFile => Some(PathBuf::from(
+                        std::env::temp_dir()
+                            .join("jcode_tui_bench")
+                            .join("side_panel_linked.md"),
+                    )),
+                    SidePanelSource::Managed => None,
+                })
+                .flatten(),
+            linked_refresh_generation: 0,
+            session_source: None,
         }
+    }
+
+    fn from_session(
+        id_or_path: &str,
+        mode: BenchMode,
+        focused_page_id: Option<&str>,
+        max_messages: usize,
+    ) -> Result<Self> {
+        let session = jcode::replay::load_session(id_or_path)
+            .with_context(|| format!("failed to load session '{}'", id_or_path))?;
+        let mut side_panel =
+            jcode::side_panel::snapshot_for_session(&session.id).unwrap_or_default();
+        if side_panel.pages.is_empty() {
+            side_panel = reconstruct_side_panel_snapshot_from_session(&session);
+        }
+        if matches!(mode, BenchMode::SidePanel) && side_panel.pages.is_empty() {
+            anyhow::bail!(
+                "session '{}' has no side-panel content in storage or recoverable tool history",
+                session.id
+            );
+        }
+
+        if let Some(page_id) = focused_page_id {
+            if side_panel.pages.iter().any(|page| page.id == page_id) {
+                side_panel.focused_page_id = Some(page_id.to_string());
+            } else {
+                anyhow::bail!(
+                    "side-panel page '{}' not found in session '{}'",
+                    page_id,
+                    session.id
+                );
+            }
+        } else if side_panel.focused_page_id.is_none() {
+            side_panel.focused_page_id = side_panel.pages.first().map(|page| page.id.clone());
+        }
+
+        Ok(Self {
+            messages: session_to_display_messages(&session, max_messages),
+            messages_version: 1,
+            streaming_text: String::new(),
+            input: String::new(),
+            cursor_pos: 0,
+            queued_messages: Vec::new(),
+            scroll_offset: 0,
+            is_processing: matches!(mode, BenchMode::Streaming),
+            status: if matches!(mode, BenchMode::Streaming) {
+                ProcessingStatus::Streaming
+            } else {
+                ProcessingStatus::Idle
+            },
+            diff_mode: if matches!(mode, BenchMode::FileDiff) {
+                jcode::config::DiffDisplayMode::File
+            } else {
+                jcode::config::DiffDisplayMode::Off
+            },
+            queue_mode: true,
+            context_info: ContextInfo::default(),
+            info_widget: InfoWidgetData::default(),
+            provider_name: session
+                .provider_key
+                .clone()
+                .unwrap_or_else(|| "session".to_string()),
+            provider_model: session
+                .model
+                .clone()
+                .unwrap_or_else(|| "session-replay".to_string()),
+            started_at: Instant::now(),
+            diff_pane_scroll: usize::MAX,
+            diff_pane_scroll_x: 0,
+            diff_pane_focus: matches!(mode, BenchMode::FileDiff | BenchMode::SidePanel),
+            side_panel,
+            bench_file_paths: Vec::new(),
+            linked_refresh_path: None,
+            linked_refresh_generation: 0,
+            session_source: Some(session.id),
+        })
+    }
+
+    fn simulate_linked_refresh(&mut self) {
+        let Some(path) = self.linked_refresh_path.as_ref() else {
+            return;
+        };
+        let Some(page) = self.side_panel.focused_page() else {
+            return;
+        };
+        if page.source != SidePanelPageSource::LinkedFile {
+            return;
+        }
+
+        self.linked_refresh_generation += 1;
+        let content = make_side_panel_refresh_content(self.linked_refresh_generation);
+        fs::write(path, &content).expect("rewrite linked side-panel bench file");
+        let _ = jcode::side_panel::refresh_linked_page_content(&mut self.side_panel, None);
+    }
+
+    fn prewarm_side_panel(&self, width: u16, height: u16) -> bool {
+        jcode::tui::prewarm_focused_side_panel(
+            &self.side_panel,
+            width,
+            height,
+            40,
+            jcode::tui::mermaid::protocol_type().is_some(),
+            false,
+        )
     }
 }
 
@@ -250,7 +444,11 @@ fn make_bench_side_panel(
             .join("jcode_tui_bench")
             .join("side_panel_linked.md"),
     };
-    let _ = fs::create_dir_all(file_path.parent().unwrap_or_else(|| std::path::Path::new(".")));
+    let _ = fs::create_dir_all(
+        file_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(".")),
+    );
     fs::write(&file_path, &content).expect("write side panel bench file");
     bench_file_paths.push(file_path.clone());
 
@@ -293,6 +491,220 @@ fn make_side_panel_content(approx_len: usize, mermaid_count: usize) -> String {
         out.push_str(&format!("- Bench line {:02}: {}\n", idx + 1, make_text(64)));
     }
     out
+}
+
+fn make_side_panel_refresh_content(generation: usize) -> String {
+    format!(
+        "# Linked Refresh Benchmark\n\nGeneration: {generation}\n\n{}\n\n```mermaid\nflowchart TD\n    A[Refresh {generation}] --> B[Read file]\n    B --> C[Update snapshot]\n    C --> D[Reuse width cache]\n```\n",
+        make_text(360)
+    )
+}
+
+fn session_to_display_messages(session: &Session, max_messages: usize) -> Vec<DisplayMessage> {
+    let start = session.messages.len().saturating_sub(max_messages);
+    let mut out = Vec::new();
+
+    for message in session.messages.iter().skip(start) {
+        let text = stored_message_visible_text(message);
+        if text.trim().is_empty() {
+            continue;
+        }
+        if message.display_role == Some(StoredDisplayRole::System) {
+            out.push(DisplayMessage::system(text));
+            continue;
+        }
+        match message.role {
+            Role::User => out.push(DisplayMessage::user(text)),
+            Role::Assistant => out.push(DisplayMessage::assistant(text)),
+        }
+    }
+
+    if out.is_empty() {
+        out.push(DisplayMessage::assistant(format!(
+            "Loaded session {} for side-panel benchmarking.",
+            session.id
+        )));
+    }
+
+    out
+}
+
+fn stored_message_visible_text(message: &jcode::session::StoredMessage) -> String {
+    let mut parts = Vec::new();
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text, .. } | ContentBlock::Reasoning { text } => {
+                if !text.trim().is_empty() {
+                    parts.push(text.trim().to_string());
+                }
+            }
+            ContentBlock::ToolUse { name, input, .. } => {
+                parts.push(format!("[tool:{} {}]", name, input));
+            }
+            ContentBlock::ToolResult { content, .. } => {
+                if !content.trim().is_empty() {
+                    parts.push(content.trim().to_string());
+                }
+            }
+            ContentBlock::Image { media_type, .. } => {
+                parts.push(format!("[image:{}]", media_type));
+            }
+            ContentBlock::OpenAICompaction { .. } => {}
+        }
+    }
+    parts.join("\n\n")
+}
+
+fn reconstruct_side_panel_snapshot_from_session(session: &Session) -> SidePanelSnapshot {
+    use std::collections::HashMap;
+
+    let mut pages: HashMap<String, SidePanelPage> = HashMap::new();
+    let mut focused_page_id: Option<String> = None;
+    let mut revision = 1u64;
+
+    for message in &session.messages {
+        for block in &message.content {
+            let ContentBlock::ToolUse { name, input, .. } = block else {
+                continue;
+            };
+            if name != "side_panel" {
+                continue;
+            }
+
+            let action = input
+                .get("action")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            match action {
+                "write" | "append" => {
+                    let Some(page_id) = input.get("page_id").and_then(|value| value.as_str())
+                    else {
+                        continue;
+                    };
+                    let title = input
+                        .get("title")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or(page_id)
+                        .to_string();
+                    let content = input
+                        .get("content")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+                    let page = pages
+                        .entry(page_id.to_string())
+                        .or_insert_with(|| SidePanelPage {
+                            id: page_id.to_string(),
+                            title: title.clone(),
+                            file_path: format!("session://{}/{}.md", session.id, page_id),
+                            format: SidePanelPageFormat::Markdown,
+                            source: SidePanelPageSource::Managed,
+                            content: String::new(),
+                            updated_at_ms: revision,
+                        });
+                    page.title = title;
+                    if action == "append"
+                        && !page.content.is_empty()
+                        && !page.content.ends_with('\n')
+                    {
+                        page.content.push('\n');
+                    }
+                    if action == "append" {
+                        page.content.push_str(content);
+                    } else {
+                        page.content = content.to_string();
+                    }
+                    page.updated_at_ms = revision;
+                    if input
+                        .get("focus")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true)
+                    {
+                        focused_page_id = Some(page_id.to_string());
+                    }
+                    revision = revision.saturating_add(1);
+                }
+                "load" => {
+                    let page_id = input
+                        .get("page_id")
+                        .and_then(|value| value.as_str())
+                        .or_else(|| {
+                            input
+                                .get("file_path")
+                                .and_then(|value| value.as_str())
+                                .and_then(|path| {
+                                    std::path::Path::new(path)
+                                        .file_stem()
+                                        .and_then(|stem| stem.to_str())
+                                })
+                        });
+                    let Some(page_id) = page_id else {
+                        continue;
+                    };
+                    let Some(file_path) = input.get("file_path").and_then(|value| value.as_str())
+                    else {
+                        continue;
+                    };
+                    let title = input
+                        .get("title")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or(page_id)
+                        .to_string();
+                    let content = fs::read_to_string(file_path).unwrap_or_default();
+                    pages.insert(
+                        page_id.to_string(),
+                        SidePanelPage {
+                            id: page_id.to_string(),
+                            title,
+                            file_path: file_path.to_string(),
+                            format: SidePanelPageFormat::Markdown,
+                            source: SidePanelPageSource::LinkedFile,
+                            content,
+                            updated_at_ms: revision,
+                        },
+                    );
+                    if input
+                        .get("focus")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true)
+                    {
+                        focused_page_id = Some(page_id.to_string());
+                    }
+                    revision = revision.saturating_add(1);
+                }
+                "focus" => {
+                    if let Some(page_id) = input.get("page_id").and_then(|value| value.as_str()) {
+                        focused_page_id = Some(page_id.to_string());
+                    }
+                }
+                "delete" => {
+                    if let Some(page_id) = input.get("page_id").and_then(|value| value.as_str()) {
+                        pages.remove(page_id);
+                        if focused_page_id.as_deref() == Some(page_id) {
+                            focused_page_id = None;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut pages: Vec<SidePanelPage> = pages.into_values().collect();
+    pages.sort_by(|a, b| {
+        b.updated_at_ms
+            .cmp(&a.updated_at_ms)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    if focused_page_id.is_none() {
+        focused_page_id = pages.first().map(|page| page.id.clone());
+    }
+
+    SidePanelSnapshot {
+        focused_page_id,
+        pages,
+    }
 }
 
 impl TuiState for BenchState {
@@ -460,6 +872,10 @@ impl TuiState for BenchState {
         None
     }
 
+    fn remote_startup_phase_active(&self) -> bool {
+        false
+    }
+
     fn dictation_key_label(&self) -> Option<String> {
         None
     }
@@ -568,6 +984,15 @@ impl TuiState for BenchState {
     fn pin_images(&self) -> bool {
         false
     }
+
+    fn chat_native_scrollbar(&self) -> bool {
+        jcode::config::config().display.native_scrollbars.chat
+    }
+
+    fn side_panel_native_scrollbar(&self) -> bool {
+        jcode::config::config().display.native_scrollbars.side_panel
+    }
+
     fn diff_line_wrap(&self) -> bool {
         true
     }
@@ -653,14 +1078,23 @@ fn main() -> Result<()> {
         }
     }
     let args = Args::parse();
-    let mut state = BenchState::new(
-        args.turns,
-        args.user_len,
-        args.assistant_len,
-        args.mode,
-        args.side_panel_source,
-        args.side_panel_mermaids,
-    );
+    let mut state = if let Some(session) = args.session.as_deref() {
+        BenchState::from_session(
+            session,
+            args.mode,
+            args.side_panel_page.as_deref(),
+            args.session_max_messages,
+        )?
+    } else {
+        BenchState::new(
+            args.turns,
+            args.user_len,
+            args.assistant_len,
+            args.mode,
+            args.side_panel_source,
+            args.side_panel_mermaids,
+        )
+    };
     let stream_text = make_text(args.assistant_len.max(args.stream_chunk));
 
     if matches!(args.mode, BenchMode::MermaidFlicker) {
@@ -683,8 +1117,14 @@ fn main() -> Result<()> {
             "viewport_state_reuse_hits: {}",
             result.deltas.viewport_state_reuse_hits
         );
-        println!("fit_protocol_rebuilds: {}", result.deltas.fit_protocol_rebuilds);
-        println!("fit_state_reuse_hits: {}", result.deltas.fit_state_reuse_hits);
+        println!(
+            "fit_protocol_rebuilds: {}",
+            result.deltas.fit_protocol_rebuilds
+        );
+        println!(
+            "fit_state_reuse_hits: {}",
+            result.deltas.fit_state_reuse_hits
+        );
         println!("clear_operations: {}", result.deltas.clear_operations);
         println!(
             "viewport_protocol_rebuild_rate: {:.4}",
@@ -701,11 +1141,28 @@ fn main() -> Result<()> {
         state.diff_mode = jcode::config::DiffDisplayMode::File;
     }
 
+    let profile_side_panel = matches!(args.mode, BenchMode::SidePanel);
+    if profile_side_panel {
+        jcode::tui::mermaid::clear_active_diagrams();
+        jcode::tui::mermaid::clear_streaming_preview_diagram();
+        jcode::tui::clear_side_panel_render_caches();
+        jcode::tui::reset_side_panel_debug_stats();
+        jcode::tui::markdown::reset_debug_stats();
+        jcode::tui::mermaid::reset_debug_stats();
+        if !args.keep_mermaid_cache {
+            let _ = jcode::tui::mermaid::clear_cache();
+        }
+        if !args.no_side_panel_prewarm {
+            let _ = state.prewarm_side_panel(args.width, args.height);
+        }
+    }
+
     let backend = TestBackend::new(args.width, args.height);
     let mut terminal = Terminal::new(backend)?;
 
     let start = Instant::now();
     let mut frame_times_ms: Vec<f64> = Vec::with_capacity(args.frames);
+    let mut side_panel_profiles: Vec<SidePanelFrameProfile> = Vec::new();
     for frame in 0..args.frames {
         if args.scroll_cycle > 0 {
             state.scroll_offset = frame % args.scroll_cycle;
@@ -716,15 +1173,64 @@ fn main() -> Result<()> {
                 state.diff_pane_scroll_x = if frame % 2 == 0 { 0 } else { 2 };
             }
         }
+        if matches!(args.mode, BenchMode::SidePanel)
+            && args.linked_refresh_every > 0
+            && frame > 0
+            && frame % args.linked_refresh_every == 0
+        {
+            state.simulate_linked_refresh();
+        }
         if matches!(args.mode, BenchMode::Streaming) {
             let chunk_len = ((frame + 1) * args.stream_chunk).min(stream_text.len());
             state.streaming_text = stream_text[..chunk_len].to_string();
             state.is_processing = true;
             state.status = ProcessingStatus::Streaming;
         }
+        let markdown_before = profile_side_panel.then(jcode::tui::markdown::debug_stats);
+        let mermaid_before = profile_side_panel.then(jcode::tui::mermaid::debug_stats);
+        let side_panel_before = profile_side_panel.then(jcode::tui::side_panel_debug_stats);
         let frame_start = Instant::now();
         terminal.draw(|f| jcode::tui::render_frame(f, &state))?;
-        frame_times_ms.push(frame_start.elapsed().as_secs_f64() * 1000.0);
+        let frame_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
+        frame_times_ms.push(frame_ms);
+        if let (Some(markdown_before), Some(mermaid_before), Some(side_panel_before)) =
+            (markdown_before, mermaid_before, side_panel_before)
+        {
+            let markdown_after = jcode::tui::markdown::debug_stats();
+            let mermaid_after = jcode::tui::mermaid::debug_stats();
+            let side_panel_after = jcode::tui::side_panel_debug_stats();
+            side_panel_profiles.push(SidePanelFrameProfile {
+                frame,
+                ms: frame_ms,
+                markdown_renders: markdown_after
+                    .total_renders
+                    .saturating_sub(markdown_before.total_renders),
+                mermaid_requests: mermaid_after
+                    .total_requests
+                    .saturating_sub(mermaid_before.total_requests),
+                mermaid_cache_hits: mermaid_after
+                    .cache_hits
+                    .saturating_sub(mermaid_before.cache_hits),
+                mermaid_cache_misses: mermaid_after
+                    .cache_misses
+                    .saturating_sub(mermaid_before.cache_misses),
+                mermaid_render_success: mermaid_after
+                    .render_success
+                    .saturating_sub(mermaid_before.render_success),
+                side_panel_markdown_hits: side_panel_after
+                    .markdown_cache_hits
+                    .saturating_sub(side_panel_before.markdown_cache_hits),
+                side_panel_markdown_misses: side_panel_after
+                    .markdown_cache_misses
+                    .saturating_sub(side_panel_before.markdown_cache_misses),
+                side_panel_render_hits: side_panel_after
+                    .render_cache_hits
+                    .saturating_sub(side_panel_before.render_cache_hits),
+                side_panel_render_misses: side_panel_after
+                    .render_cache_misses
+                    .saturating_sub(side_panel_before.render_cache_misses),
+            });
+        }
     }
     let elapsed = start.elapsed();
 
@@ -735,26 +1241,143 @@ fn main() -> Result<()> {
     } else {
         0.0
     };
-    let mut sorted = frame_times_ms;
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p50_ms = percentile_ms(&sorted, 0.50);
-    let p95_ms = percentile_ms(&sorted, 0.95);
-    let p99_ms = percentile_ms(&sorted, 0.99);
-    let max_ms = sorted.last().copied().unwrap_or(0.0);
+    let total_summary = summarize_timing(&frame_times_ms);
+    let warm_start = args.warmup_frames.min(frame_times_ms.len());
+    let warm_summary = summarize_timing(&frame_times_ms[warm_start..]);
+    let first_frame_ms = frame_times_ms.first().copied().unwrap_or(0.0);
+    let side_panel_final_stats = profile_side_panel.then(jcode::tui::side_panel_debug_stats);
+    let markdown_final_stats = profile_side_panel.then(jcode::tui::markdown::debug_stats);
+    let mermaid_final_stats = profile_side_panel.then(jcode::tui::mermaid::debug_stats);
+    let cold_frame_count = side_panel_profiles
+        .iter()
+        .filter(|frame| {
+            frame.markdown_renders > 0
+                || frame.mermaid_cache_misses > 0
+                || frame.mermaid_render_success > 0
+                || frame.side_panel_markdown_misses > 0
+                || frame.side_panel_render_misses > 0
+        })
+        .count();
+
+    if args.json {
+        let report = json!({
+            "mode": format!("{:?}", args.mode),
+            "width": args.width,
+            "height": args.height,
+            "frames": args.frames,
+            "warmup_frames": args.warmup_frames,
+            "prewarm_side_panel": profile_side_panel && !args.no_side_panel_prewarm,
+            "keep_mermaid_cache": args.keep_mermaid_cache,
+            "session": state.session_source,
+            "session_messages": if !state.messages.is_empty() { Some(state.messages.len()) } else { None },
+            "side_panel": if profile_side_panel {
+                Some(json!({
+                    "pages": state.side_panel.pages.len(),
+                    "focused_page": state.side_panel.focused_page_id,
+                    "final_cache_stats": side_panel_final_stats,
+                    "markdown_stats": markdown_final_stats,
+                    "mermaid_stats": mermaid_final_stats,
+                    "cold_frame_count": cold_frame_count,
+                    "frame_profiles": side_panel_profiles,
+                }))
+            } else {
+                None
+            },
+            "timing": {
+                "first_frame_ms": first_frame_ms,
+                "total": total_summary,
+                "warm": warm_summary,
+                "fps": fps,
+                "avg_total_ms": avg_ms,
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
 
     println!("mode: {:?}", args.mode);
+    if let Some(session_source) = &state.session_source {
+        println!("session: {}", session_source);
+        println!("session_messages: {}", state.messages.len());
+    }
     if matches!(args.mode, BenchMode::SidePanel) {
         println!("side_panel_source: {:?}", args.side_panel_source);
         println!("side_panel_mermaids: {}", args.side_panel_mermaids);
+        println!("side_panel_pages: {}", state.side_panel.pages.len());
+        println!(
+            "focused_side_panel_page: {}",
+            state
+                .side_panel
+                .focused_page_id
+                .as_deref()
+                .unwrap_or("none")
+        );
+        println!("side_panel_prewarm: {}", !args.no_side_panel_prewarm);
+        println!("mermaid_cache_cold_start: {}", !args.keep_mermaid_cache);
     }
     println!("frames: {}", args.frames);
+    println!("warmup_frames: {}", args.warmup_frames);
     println!("total_ms: {:.2}", total_ms);
     println!("avg_ms: {:.2}", avg_ms);
-    println!("p50_ms: {:.2}", p50_ms);
-    println!("p95_ms: {:.2}", p95_ms);
-    println!("p99_ms: {:.2}", p99_ms);
-    println!("max_ms: {:.2}", max_ms);
+    println!("first_frame_ms: {:.2}", first_frame_ms);
+    println!("p50_ms: {:.2}", total_summary.p50_ms);
+    println!("p95_ms: {:.2}", total_summary.p95_ms);
+    println!("p99_ms: {:.2}", total_summary.p99_ms);
+    println!("max_ms: {:.2}", total_summary.max_ms);
+    println!("warm_avg_ms: {:.2}", warm_summary.avg_ms);
+    println!("warm_p95_ms: {:.2}", warm_summary.p95_ms);
+    println!("warm_p99_ms: {:.2}", warm_summary.p99_ms);
     println!("fps: {:.1}", fps);
+    if profile_side_panel {
+        let markdown_frames = side_panel_profiles
+            .iter()
+            .filter(|frame| frame.markdown_renders > 0)
+            .count();
+        let mermaid_miss_frames = side_panel_profiles
+            .iter()
+            .filter(|frame| frame.mermaid_cache_misses > 0)
+            .count();
+        let render_miss_frames = side_panel_profiles
+            .iter()
+            .filter(|frame| frame.side_panel_render_misses > 0)
+            .count();
+        println!("cold_frames: {}", cold_frame_count);
+        println!("frames_with_markdown_render: {}", markdown_frames);
+        println!("frames_with_mermaid_cache_miss: {}", mermaid_miss_frames);
+        println!("frames_with_render_cache_miss: {}", render_miss_frames);
+        if let Some(stats) = side_panel_final_stats {
+            println!(
+                "side_panel_markdown_cache_hits: {}",
+                stats.markdown_cache_hits
+            );
+            println!(
+                "side_panel_markdown_cache_misses: {}",
+                stats.markdown_cache_misses
+            );
+            println!("side_panel_render_cache_hits: {}", stats.render_cache_hits);
+            println!(
+                "side_panel_render_cache_misses: {}",
+                stats.render_cache_misses
+            );
+            println!(
+                "side_panel_markdown_cache_entries: {}",
+                stats.markdown_cache_entries
+            );
+            println!(
+                "side_panel_render_cache_entries: {}",
+                stats.render_cache_entries
+            );
+        }
+        if let Some(stats) = markdown_final_stats {
+            println!("markdown_total_renders: {}", stats.total_renders);
+        }
+        if let Some(stats) = mermaid_final_stats {
+            println!("mermaid_total_requests: {}", stats.total_requests);
+            println!("mermaid_cache_hits: {}", stats.cache_hits);
+            println!("mermaid_cache_misses: {}", stats.cache_misses);
+            println!("mermaid_render_success: {}", stats.render_success);
+        }
+    }
 
     Ok(())
 }

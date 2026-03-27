@@ -2533,12 +2533,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let hint_line_height = input_ui::input_hint_line_height(app);
     let picker_height: u16 = if let Some(picker) = app.picker_state() {
         let visible_models = picker.filtered.len() as u16;
-        let rows_needed = visible_models + 1; // +1 for header
+        let rows_needed = visible_models + 1 + 2; // +1 for header, +2 for rounded border
         let max_height: u16 = 20;
         rows_needed.min(max_height)
     } else {
         0
     };
+    let picker_gap_height: u16 = if picker_height > 0 { 1 } else { 0 };
     let input_height = base_input_height + hint_line_height;
 
     let total_start = Instant::now();
@@ -2546,15 +2547,32 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         capture.render_order.push("prepare_messages".to_string());
     }
     let prep_start = Instant::now();
-    let prepared = prepare::prepare_messages(
-        app,
-        if app.chat_native_scrollbar() && chat_area.width > 1 {
-            chat_area.width.saturating_sub(1)
-        } else {
-            chat_area.width
-        },
-        chat_area.height,
-    );
+    let prepared_full_width = prepare::prepare_messages(app, chat_area.width, chat_area.height);
+    let show_donut = crate::config::config().display.idle_animation
+        && app.display_messages().is_empty()
+        && !app.is_processing()
+        && app.streaming_text().is_empty()
+        && app.queued_messages().is_empty();
+    let donut_height: u16 = if show_donut { 14 } else { 0 };
+    let notification_height: u16 = if app.has_notification() { 1 } else { 0 };
+    let fixed_height = 1
+        + queued_height
+        + notification_height
+        + picker_height
+        + picker_gap_height
+        + input_height
+        + donut_height; // status + queued + notification + picker + gap + input + donut
+    let available_height = chat_area.height;
+
+    let initial_content_height = prepared_full_width.wrapped_lines.len().max(1) as u16;
+    let chat_scrollbar_visible = app.chat_native_scrollbar()
+        && chat_area.width > 1
+        && initial_content_height + fixed_height > available_height;
+    let prepared = if chat_scrollbar_visible {
+        prepare::prepare_messages(app, chat_area.width.saturating_sub(1), chat_area.height)
+    } else {
+        prepared_full_width
+    };
     if let Some(ref mut capture) = debug_capture {
         capture.image_regions = prepared
             .image_regions
@@ -2568,21 +2586,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
     let prep_elapsed = prep_start.elapsed();
     let content_height = prepared.wrapped_lines.len().max(1) as u16;
-    let show_donut = crate::config::config().display.idle_animation
-        && app.display_messages().is_empty()
-        && !app.is_processing()
-        && app.streaming_text().is_empty()
-        && app.queued_messages().is_empty();
-    let donut_height: u16 = if show_donut { 14 } else { 0 };
-    let notification_height: u16 = if app.has_notification() { 1 } else { 0 };
-    let fixed_height =
-        1 + queued_height + notification_height + picker_height + input_height + donut_height; // status + queued + notification + picker + input + donut
-    let available_height = chat_area.height;
 
     // Use packed layout when content fits, scrolling layout otherwise
     let use_packed = content_height + fixed_height <= available_height;
 
-    // Layout: messages (includes header), queued, status, notification, picker, input, donut
+    // Layout: messages (includes header), queued, status, notification, picker, gap, input, donut
     // All vertical chunks are within the chat_area (left column).
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -2592,7 +2600,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                 Constraint::Length(queued_height),         // Queued messages (above status)
                 Constraint::Length(1),                     // Status line
                 Constraint::Length(notification_height),   // Notification line
-                Constraint::Length(picker_height),         // Picker (0 or 1 line)
+                Constraint::Length(picker_height),         // Picker
+                Constraint::Length(picker_gap_height),     // Picker/input spacing
                 Constraint::Length(input_height),          // Input
                 Constraint::Length(donut_height),          // Donut animation
             ]
@@ -2602,7 +2611,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                 Constraint::Length(queued_height),       // Queued messages (above status)
                 Constraint::Length(1),                   // Status line
                 Constraint::Length(notification_height), // Notification line
-                Constraint::Length(picker_height),       // Picker (0 or 1 line)
+                Constraint::Length(picker_height),       // Picker
+                Constraint::Length(picker_gap_height),   // Picker/input spacing
                 Constraint::Length(input_height),        // Input
                 Constraint::Length(donut_height),        // Donut animation
             ]
@@ -2618,7 +2628,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             capture.layout.queued_area = Some(chunks[1].into());
         }
         capture.layout.status_area = Some(chunks[2].into());
-        capture.layout.input_area = Some(chunks[5].into());
+        capture.layout.input_area = Some(chunks[6].into());
         capture.layout.input_lines_raw = app.input().lines().count().max(1);
         capture.layout.input_lines_wrapped = base_input_height as usize;
 
@@ -2685,7 +2695,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
     record_layout_snapshot(messages_area, diagram_area, diff_pane_area);
 
-    let margins = draw_messages(frame, app, messages_area, &prepared);
+    let margins = draw_messages(frame, app, messages_area, &prepared, chat_scrollbar_visible);
 
     // Render pinned diagram if we have one
     if let (Some(diagram_info), Some(area)) = (&pinned_diagram, diagram_area) {
@@ -2783,13 +2793,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     input_ui::draw_input(
         frame,
         app,
-        chunks[5],
+        chunks[6],
         user_count + pending_count + 1,
         &mut debug_capture,
     );
 
     if donut_height > 0 {
-        animations::draw_idle_animation(frame, app, chunks[6]);
+        animations::draw_idle_animation(frame, app, chunks[7]);
     }
 
     // Draw info widget overlays (skip during idle animation - they look out of place)
@@ -2884,6 +2894,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         let total_draw = draw_start.elapsed();
         record_profile(prep_elapsed, total_draw, total_start.elapsed());
     }
+}
+
+fn picker_input_gap_height(app: &dyn TuiState) -> u16 {
+    if app.picker_state().is_some() { 1 } else { 0 }
 }
 
 fn extract_line_text(line: &Line) -> String {
@@ -3161,6 +3175,14 @@ pub(crate) fn split_native_scrollbar_area(area: Rect, enabled: bool) -> (Rect, O
     (content, Some(scrollbar))
 }
 
+pub(crate) fn native_scrollbar_visible(
+    enabled: bool,
+    total_lines: usize,
+    visible_height: usize,
+) -> bool {
+    enabled && visible_height > 0 && total_lines > visible_height
+}
+
 pub(crate) fn render_native_scrollbar(
     frame: &mut Frame,
     area: Rect,
@@ -3169,7 +3191,10 @@ pub(crate) fn render_native_scrollbar(
     visible_height: usize,
     focused: bool,
 ) {
-    if area.width == 0 || area.height == 0 {
+    if area.width == 0
+        || area.height == 0
+        || !native_scrollbar_visible(true, total_lines, visible_height)
+    {
         return;
     }
 
@@ -3190,22 +3215,31 @@ pub(crate) fn render_native_scrollbar(
     };
 
     let track_color = if focused {
-        rgb(110, 125, 150)
+        rgb(92, 106, 130)
     } else {
-        rgb(70, 75, 85)
+        rgb(62, 68, 78)
     };
     let thumb_color = if focused {
-        rgb(190, 210, 255)
+        rgb(188, 208, 240)
     } else {
-        rgb(145, 155, 180)
+        rgb(136, 148, 172)
     };
 
     let mut lines = Vec::with_capacity(track_height);
     for row in 0..track_height {
         let (glyph, color) = if row >= thumb_offset && row < thumb_offset + thumb_height {
-            ("█", thumb_color)
+            let glyph = if thumb_height == 1 {
+                "•"
+            } else if row == thumb_offset {
+                "╷"
+            } else if row + 1 == thumb_offset + thumb_height {
+                "╵"
+            } else {
+                "│"
+            };
+            (glyph, thumb_color)
         } else {
-            ("│", track_color)
+            ("╎", track_color)
         };
         lines.push(Line::from(Span::styled(glyph, Style::default().fg(color))));
     }
@@ -3238,6 +3272,15 @@ mod tests {
         let (content, scrollbar) = split_native_scrollbar_area(Rect::new(1, 2, 1, 5), true);
         assert_eq!(content, Rect::new(1, 2, 1, 5));
         assert!(scrollbar.is_none());
+    }
+
+    #[test]
+    fn native_scrollbar_visibility_requires_overflow() {
+        assert!(!native_scrollbar_visible(false, 20, 5));
+        assert!(!native_scrollbar_visible(true, 0, 5));
+        assert!(!native_scrollbar_visible(true, 5, 5));
+        assert!(!native_scrollbar_visible(true, 4, 5));
+        assert!(native_scrollbar_visible(true, 6, 5));
     }
 
     #[derive(Clone, Default)]
@@ -3581,6 +3624,27 @@ mod tests {
     #[test]
     fn test_calculate_input_lines_empty() {
         assert_eq!(calculate_input_lines("", 80), 1);
+    }
+
+    #[test]
+    fn test_picker_input_gap_height_only_when_picker_visible() {
+        let state = TestState::default();
+        assert_eq!(picker_input_gap_height(&state), 0);
+
+        let picker_state = crate::tui::PickerState {
+            kind: crate::tui::PickerKind::Model,
+            models: vec![],
+            filtered: vec![],
+            selected: 0,
+            column: 0,
+            filter: String::new(),
+            preview: false,
+        };
+        let state_with_picker = TestState {
+            picker_state: Some(picker_state),
+            ..Default::default()
+        };
+        assert_eq!(picker_input_gap_height(&state_with_picker), 1);
     }
 
     #[test]

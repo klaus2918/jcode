@@ -1,4 +1,137 @@
 use super::*;
+use ratatui::widgets::{Block, BorderType, Borders};
+use unicode_width::UnicodeWidthStr;
+
+fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+fn truncate_display(text: &str, max_width: usize) -> String {
+    if display_width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width + 1 > max_width {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    out.push('…');
+    out
+}
+
+fn pad_left_display(text: &str, width: usize) -> String {
+    let truncated = truncate_display(text, width);
+    let padding = width.saturating_sub(display_width(truncated.as_str()));
+    format!("{}{}", truncated, " ".repeat(padding))
+}
+
+fn pad_center_display(text: &str, width: usize) -> String {
+    let truncated = truncate_display(text, width);
+    let rendered = display_width(truncated.as_str());
+    let total_padding = width.saturating_sub(rendered);
+    let left_padding = total_padding / 2;
+    let right_padding = total_padding.saturating_sub(left_padding);
+    format!(
+        "{}{}{}",
+        " ".repeat(left_padding),
+        truncated,
+        " ".repeat(right_padding)
+    )
+}
+
+fn picker_entry_display_name(entry: &crate::tui::ModelEntry) -> String {
+    let default_marker = if entry.is_default { " ⚙" } else { "" };
+    let suffix = if entry.recommended && !entry.is_current {
+        format!(" ★{}", default_marker)
+    } else if entry.old && !entry.is_current {
+        if let Some(ref date) = entry.created_date {
+            format!(" {}{}", date, default_marker)
+        } else {
+            format!(" old{}", default_marker)
+        }
+    } else if let Some(ref date) = entry.created_date {
+        if !entry.is_current {
+            format!(" {}{}", date, default_marker)
+        } else {
+            default_marker.to_string()
+        }
+    } else {
+        default_marker.to_string()
+    };
+
+    format!("{}{}", entry.name, suffix)
+}
+
+fn picker_render_width(picker: &crate::tui::PickerState, max_width: usize) -> usize {
+    let marker_width = 3usize;
+    let is_preview = picker.preview;
+
+    let mut max_model_len = if picker.kind == crate::tui::PickerKind::Account {
+        display_width("ACCOUNT")
+    } else {
+        display_width("MODEL")
+    };
+    let mut max_provider_len = display_width("PROVIDER");
+    let mut max_via_len = if picker.kind == crate::tui::PickerKind::Account {
+        display_width("ACTION")
+    } else {
+        display_width("VIA")
+    };
+
+    for &fi in &picker.filtered {
+        let entry = &picker.models[fi];
+        max_model_len = max_model_len.max(display_width(picker_entry_display_name(entry).as_str()));
+        if let Some(route) = entry.routes.get(entry.selected_route) {
+            let provider_label = if entry.routes.len() > 1 {
+                format!("{} ({})", route.provider, entry.routes.len())
+            } else {
+                route.provider.clone()
+            };
+            max_provider_len = max_provider_len.max(display_width(provider_label.as_str()));
+            max_via_len = max_via_len.max(display_width(route.api_method.as_str()));
+        }
+    }
+
+    let mut provider_width = (max_provider_len + 1).min(if is_preview { 16 } else { 20 });
+    let mut via_width = (max_via_len + 1).min(12);
+    let model_cap = if is_preview { 42 } else { 56 };
+    let min_model_width = max_model_len.min(8).max(6);
+
+    let budget = max_width.saturating_sub(marker_width);
+    if provider_width + via_width + min_model_width > budget {
+        let provider_floor = 8usize.min(provider_width);
+        let via_floor = 4usize.min(via_width);
+
+        let provider_reduction = (provider_width + via_width + min_model_width)
+            .saturating_sub(budget)
+            .min(provider_width.saturating_sub(provider_floor));
+        provider_width = provider_width.saturating_sub(provider_reduction);
+
+        let via_reduction = (provider_width + via_width + min_model_width)
+            .saturating_sub(budget)
+            .min(via_width.saturating_sub(via_floor));
+        via_width = via_width.saturating_sub(via_reduction);
+    }
+
+    let model_budget = budget.saturating_sub(provider_width + via_width);
+    let model_width = max_model_len
+        .min(model_cap)
+        .min(model_budget.max(min_model_width.min(model_budget)));
+
+    marker_width + provider_width + via_width + model_width
+}
 
 pub(super) fn format_elapsed(secs: f32) -> String {
     if secs >= 3600.0 {
@@ -47,7 +180,7 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
 
     let height = area.height as usize;
     let width = area.width as usize;
-    if height == 0 {
+    if height <= 2 || width <= 2 {
         return;
     }
 
@@ -68,25 +201,45 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
         let entry = &picker.models[fi];
         let route = entry.routes.get(entry.selected_route);
         if let Some(r) = route {
-            max_provider_len = max_provider_len.max(r.provider.len());
-            max_via_len = max_via_len.max(r.api_method.len());
+            max_provider_len = max_provider_len.max(display_width(r.provider.as_str()));
+            max_via_len = max_via_len.max(display_width(r.api_method.as_str()));
         }
     }
     max_provider_len = max_provider_len.max(8);
     max_via_len = max_via_len.max(3);
 
-    let provider_width: usize;
-    let via_width: usize;
-    let model_width: usize;
-    if is_preview {
-        provider_width = (max_provider_len + 1).min(16);
-        via_width = (max_via_len + 1).min(12);
-        model_width = width.saturating_sub(marker_width + provider_width + via_width);
+    let content_width = picker_render_width(picker, width.saturating_sub(2)).max(1);
+    let outer_width = content_width.saturating_add(2).min(width);
+    let horizontal_offset = if app.centered_mode() {
+        area.width.saturating_sub(outer_width as u16) / 2
     } else {
-        via_width = 12;
-        provider_width = 20;
-        model_width = width.saturating_sub(marker_width + provider_width + via_width);
+        0
+    };
+    let render_area = Rect {
+        x: area.x + horizontal_offset,
+        y: area.y,
+        width: outer_width as u16,
+        height: area.height,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(rgb(85, 85, 110)))
+        .style(Style::default().bg(rgb(18, 18, 26)));
+    frame.render_widget(block.clone(), render_area);
+
+    let inner = block.inner(render_area);
+    if inner.height == 0 || inner.width == 0 {
+        return;
     }
+
+    let height = inner.height as usize;
+    let width = inner.width as usize;
+
+    let provider_cap = if is_preview { 16 } else { 20 };
+    let provider_width = (max_provider_len + 1).max(8).min(provider_cap);
+    let via_width = (max_via_len + 1).max(4).min(12);
+    let model_width = width.saturating_sub(marker_width + provider_width + via_width);
 
     let (col_widths, col_labels, col_logical): ([usize; 3], [&str; 3], [usize; 3]) =
         if is_account_picker {
@@ -185,6 +338,9 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
         }
     }
 
+    let row_base_width = marker_width + provider_width + via_width + model_width;
+    let detail_width = width.saturating_sub(row_base_width).saturating_sub(2);
+
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(header_spans));
 
@@ -193,13 +349,13 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
             "   no matches",
             Style::default().fg(dim_color()).italic(),
         )));
-        frame.render_widget(Paragraph::new(lines), area);
+        frame.render_widget(Paragraph::new(lines), inner);
         return;
     }
 
     let list_height = height.saturating_sub(1);
     if list_height == 0 {
-        frame.render_widget(Paragraph::new(lines), area);
+        frame.render_widget(Paragraph::new(lines), inner);
         return;
     }
 
@@ -232,34 +388,11 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
         ));
 
         let unavailable = route.map(|r| !r.available).unwrap_or(true);
-        let default_marker = if entry.is_default { " ⚙" } else { "" };
-        let suffix = if entry.recommended && !entry.is_current {
-            format!(" ★{}", default_marker)
-        } else if entry.old && !entry.is_current {
-            if let Some(ref date) = entry.created_date {
-                format!(" {}{}", date, default_marker)
-            } else {
-                format!(" old{}", default_marker)
-            }
-        } else if let Some(ref date) = entry.created_date {
-            if !entry.is_current {
-                format!(" {}{}", date, default_marker)
-            } else {
-                default_marker.to_string()
-            }
+        let display_name = picker_entry_display_name(entry);
+        let padded_model = if is_preview {
+            pad_center_display(display_name.as_str(), model_width)
         } else {
-            default_marker.to_string()
-        };
-        let display_name = format!("{}{}", entry.name, suffix);
-        let padded_model: String = {
-            let chars: Vec<char> = display_name.chars().collect();
-            if chars.len() > model_width {
-                chars[..model_width].iter().collect()
-            } else if is_preview {
-                format!("{:^w$}", display_name, w = model_width)
-            } else {
-                format!("{:<w$}", display_name, w = model_width)
-            }
+            pad_left_display(display_name.as_str(), model_width)
         };
         let account_action_color = match &entry.selection {
             crate::tui::PickerSelection::Account(crate::tui::AccountPickerSelection::Add {
@@ -289,7 +422,7 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
         let match_positions = if !picker.filter.is_empty() {
             let raw = fuzzy_match_positions(&picker.filter, &entry.name);
             if is_preview && !raw.is_empty() {
-                let name_len = display_name.chars().count();
+                let name_len = display_width(display_name.as_str());
                 let pad = if name_len < model_width {
                     (model_width - name_len) / 2
                 } else {
@@ -337,15 +470,7 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
             provider_raw.to_string()
         };
         let pw = provider_width.saturating_sub(1);
-        let provider_display = {
-            let chars: Vec<char> = provider_label.chars().collect();
-            if chars.len() > pw {
-                let truncated: String = chars[..pw].iter().collect();
-                format!(" {:<w$}", truncated, w = pw)
-            } else {
-                format!(" {:<w$}", provider_label, w = pw)
-            }
-        };
+        let provider_display = format!(" {}", pad_left_display(provider_label.as_str(), pw));
         let provider_style = if unavailable {
             Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 1 {
@@ -356,15 +481,7 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
 
         let via_raw = route.map(|r| r.api_method.as_str()).unwrap_or("—");
         let vw = via_width.saturating_sub(1);
-        let via_display = {
-            let chars: Vec<char> = via_raw.chars().collect();
-            if chars.len() > vw {
-                let truncated: String = chars[..vw].iter().collect();
-                format!(" {:<w$}", truncated, w = vw)
-            } else {
-                format!(" {:<w$}", via_raw, w = vw)
-            }
-        };
+        let via_display = format!(" {}", pad_left_display(via_raw, vw));
         let via_style = if unavailable {
             Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 2 {
@@ -384,9 +501,12 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
         }
 
         if let Some(route) = route {
-            if !route.detail.is_empty() {
+            if !route.detail.is_empty() && detail_width > 0 {
                 spans.push(Span::styled(
-                    format!("  {}", route.detail),
+                    format!(
+                        "  {}",
+                        truncate_display(route.detail.as_str(), detail_width)
+                    ),
                     if unavailable {
                         Style::default().fg(rgb(80, 80, 80))
                     } else {
@@ -399,5 +519,65 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
         lines.push(Line::from(spans));
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_picker() -> crate::tui::PickerState {
+        crate::tui::PickerState {
+            kind: crate::tui::PickerKind::Model,
+            filtered: vec![0],
+            selected: 0,
+            column: 0,
+            filter: String::new(),
+            preview: false,
+            models: vec![crate::tui::ModelEntry {
+                name: "gpt-5.4".to_string(),
+                routes: vec![crate::tui::RouteOption {
+                    provider: "openai".to_string(),
+                    api_method: "oauth".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    estimated_reference_cost_micros: None,
+                }],
+                selection: crate::tui::PickerSelection::Model,
+                selected_route: 0,
+                is_current: true,
+                is_default: false,
+                recommended: true,
+                recommendation_rank: 0,
+                old: false,
+                created_date: None,
+                effort: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn picker_render_width_uses_intrinsic_content_width() {
+        let picker = sample_picker();
+        let width = picker_render_width(&picker, 120);
+        assert!(width < 120, "picker should not expand to full width");
+        assert!(width >= 20, "picker should remain wide enough for content");
+    }
+
+    #[test]
+    fn picker_render_area_centers_in_centered_mode() {
+        let picker = sample_picker();
+        let width = picker_render_width(&picker, 80) as u16;
+        let area = Rect::new(5, 3, 80, 2);
+        let horizontal_offset = area.width.saturating_sub(width) / 2;
+        let render_area = Rect {
+            x: area.x + horizontal_offset,
+            y: area.y,
+            width,
+            height: area.height,
+        };
+
+        assert!(render_area.x > area.x, "centered picker should shift right");
+        assert_eq!(render_area.width, width);
+    }
 }

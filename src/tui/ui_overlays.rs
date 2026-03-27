@@ -146,6 +146,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(help_entry("/config init", "Create default config file"));
     lines.push(help_entry("/config edit", "Open config in $EDITOR"));
     lines.push(help_entry("/dictate", "Run configured external dictation"));
+    lines.push(help_entry(
+        "/context",
+        "Show the full session context snapshot",
+    ));
     lines.push(help_entry("/info", "Show session info and token usage"));
     lines.push(help_entry("/usage", "Show subscription usage limits"));
     lines.push(help_entry("/version", "Show version and build details"));
@@ -285,7 +289,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         section_style,
     )));
     lines.push(Line::from(""));
-    lines.push(key_entry("Alt+M", "Toggle diagram pane"));
+    lines.push(key_entry(
+        "Alt+M",
+        "Toggle side panel (or diagram pane if empty)",
+    ));
     lines.push(key_entry("Alt+T", "Toggle diagram position (side/top)"));
     lines.push(key_entry("Ctrl+H / Ctrl+L", "Focus chat / diagram / diffs"));
     lines.push(key_entry(

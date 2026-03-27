@@ -20,6 +20,7 @@ use ratatui::{
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
 
 pub use graph::build_graph_topology;
 #[cfg(test)]
@@ -1547,16 +1548,10 @@ fn render_context_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static
         .map(|t| t as usize)
         .unwrap_or_else(|| info.estimated_tokens());
     let limit_tokens = data.context_limit.unwrap_or(DEFAULT_CONTEXT_LIMIT).max(1);
-    let used_pct = ((used_tokens as f64 / limit_tokens as f64) * 100.0)
-        .round()
-        .clamp(0.0, 100.0) as u8;
-    let left_pct = 100u8.saturating_sub(used_pct);
-
-    vec![render_labeled_bar(
+    vec![render_context_usage_line(
         "Context",
-        used_pct,
-        left_pct,
-        None,
+        used_tokens,
+        limit_tokens,
         inner.width,
     )]
 }
@@ -3310,6 +3305,51 @@ mod tests {
     }
 
     #[test]
+    fn context_usage_line_shows_numeric_label_inside_bar() {
+        let line = super::render_context_usage_line("Context", 50_000, 200_000, 40);
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(text.contains("Context"), "expected context label: {text}");
+        assert!(
+            text.contains("50k/200k"),
+            "expected inline token label: {text}"
+        );
+    }
+
+    #[test]
+    fn render_context_compact_prefers_observed_token_usage_for_label() {
+        let data = InfoWidgetData {
+            context_info: Some(crate::prompt::ContextInfo {
+                total_chars: 400_000,
+                ..Default::default()
+            }),
+            context_limit: Some(200_000),
+            observed_context_tokens: Some(50_000),
+            ..Default::default()
+        };
+
+        let lines = super::render_context_compact(&data, Rect::new(0, 0, 40, 1));
+        let text: String = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(
+            text.contains("50k/200k"),
+            "expected observed token count: {text}"
+        );
+        assert!(
+            !text.contains("100k/200k"),
+            "should not fall back to char estimate when observed tokens exist: {text}"
+        );
+    }
+
+    #[test]
     fn sticky_placement_clamps_width_to_current_margin() {
         {
             let mut guard = super::get_or_init_state();
@@ -4301,41 +4341,54 @@ fn render_context_compact(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'stati
         .map(|t| t as usize)
         .unwrap_or_else(|| info.estimated_tokens());
     let limit_tokens = data.context_limit.unwrap_or(DEFAULT_CONTEXT_LIMIT).max(1);
-    let used_pct = ((used_tokens as f64 / limit_tokens as f64) * 100.0)
-        .round()
-        .clamp(0.0, 100.0) as u8;
-    let left_pct = 100u8.saturating_sub(used_pct);
-
     let label = if data.is_compacting {
         "Context📦"
     } else {
         "Context"
     };
 
-    vec![render_labeled_bar(
+    vec![render_context_usage_line(
         label,
-        used_pct,
-        left_pct,
-        None,
+        used_tokens,
+        limit_tokens,
         inner.width,
     )]
 }
 
-#[cfg(test)]
 fn render_usage_bar(used_tokens: usize, limit_tokens: usize, width: u16) -> Line<'static> {
-    let bar_width = width.saturating_sub(2).min(24).max(8) as usize;
-    let mut used_cells = ((used_tokens as f64 / limit_tokens as f64) * bar_width as f64)
+    let safe_limit = limit_tokens.max(1);
+    let bar_width = width.saturating_sub(2).min(24) as usize;
+    if bar_width == 0 {
+        return Line::default();
+    }
+
+    let mut used_cells = ((used_tokens as f64 / safe_limit as f64) * bar_width as f64)
         .round()
         .max(0.0) as usize;
     if used_cells > bar_width {
         used_cells = bar_width;
     }
+
+    let used_pct = ((used_tokens as f64 / safe_limit as f64) * 100.0)
+        .round()
+        .clamp(0.0, 100.0) as u8;
+    let left_pct = 100u8.saturating_sub(used_pct);
+    let used_color = if left_pct == 0 {
+        rgb(255, 100, 100)
+    } else if left_pct < 20 {
+        rgb(255, 100, 100)
+    } else if left_pct <= 50 {
+        rgb(255, 200, 100)
+    } else {
+        rgb(100, 200, 100)
+    };
+
     let label = format!(
         "{}/{}",
         format_token_k(used_tokens),
         format_token_k(limit_tokens)
     );
-    let show_label = label.len().saturating_add(2) <= bar_width;
+    let show_label = UnicodeWidthStr::width(label.as_str()) <= bar_width;
     let mut spans = Vec::new();
     spans.push(Span::styled("[", Style::default().fg(rgb(90, 90, 100))));
     if show_label {
@@ -4356,7 +4409,7 @@ fn render_usage_bar(used_tokens: usize, limit_tokens: usize, width: u16) -> Line
                     Style::default().fg(rgb(170, 170, 180)).bold()
                 }
             } else if in_used {
-                Style::default().fg(rgb(120, 200, 180))
+                Style::default().fg(used_color)
             } else {
                 Style::default().fg(rgb(50, 50, 60))
             };
@@ -4366,7 +4419,7 @@ fn render_usage_bar(used_tokens: usize, limit_tokens: usize, width: u16) -> Line
         let empty_cells = bar_width.saturating_sub(used_cells);
         spans.push(Span::styled(
             "█".repeat(used_cells),
-            Style::default().fg(rgb(120, 200, 180)),
+            Style::default().fg(used_color),
         ));
         if empty_cells > 0 {
             spans.push(Span::styled(
@@ -4379,11 +4432,42 @@ fn render_usage_bar(used_tokens: usize, limit_tokens: usize, width: u16) -> Line
     Line::from(spans)
 }
 
-#[cfg(test)]
 fn format_token_k(tokens: usize) -> String {
     if tokens >= 1000 {
         format!("{}k", tokens / 1000)
     } else {
         format!("{}", tokens)
     }
+}
+
+fn render_context_usage_line(
+    label: &str,
+    used_tokens: usize,
+    limit_tokens: usize,
+    width: u16,
+) -> Line<'static> {
+    let label_width = UnicodeWidthStr::width(label);
+    let bar_width = width.saturating_sub(label_width as u16 + 1);
+
+    if bar_width < 3 {
+        return Line::from(vec![
+            Span::styled(label.to_string(), Style::default().fg(rgb(140, 140, 150))),
+            Span::raw(" "),
+            Span::styled(
+                format!(
+                    "{}/{}",
+                    format_token_k(used_tokens),
+                    format_token_k(limit_tokens)
+                ),
+                Style::default().fg(rgb(100, 200, 100)).bold(),
+            ),
+        ]);
+    }
+
+    let mut spans = vec![Span::styled(
+        format!("{label} "),
+        Style::default().fg(rgb(140, 140, 150)),
+    )];
+    spans.extend(render_usage_bar(used_tokens, limit_tokens, bar_width).spans);
+    Line::from(spans)
 }
