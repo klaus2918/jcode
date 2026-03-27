@@ -468,6 +468,21 @@ fn startup_spawn_notice(_state: &SetupHintsState) -> Option<String> {
 fn startup_hints_for_launch(state: &SetupHintsState) -> Option<StartupHints> {
     let spawn_notice = startup_spawn_notice(state);
 
+    if state.launch_count == 1 {
+        let mut message = "Tip: use `/alignment left` to switch to Claude-style left alignment, or press `Alt+C` to toggle left/centered for the current session.".to_string();
+
+        if let Some(spawn_notice) = spawn_notice {
+            message.push_str("\n\n");
+            message.push_str(&spawn_notice);
+        }
+
+        return Some(StartupHints::with_status_and_display(
+            "Tip: `/alignment left` or Alt+C toggles alignment.".to_string(),
+            "Alignment",
+            message,
+        ));
+    }
+
     if state.launch_count <= 3 {
         let config_path = crate::config::Config::path()
             .map(|path| path.display().to_string())
@@ -1304,9 +1319,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_three_launches_include_alignment_tip() {
+    fn first_launch_shows_explicit_alignment_hint_first() {
         let state = SetupHintsState {
             launch_count: 1,
+            ..SetupHintsState::default()
+        };
+
+        let hints = startup_hints_for_launch(&state).expect("expected startup hint");
+        assert_eq!(
+            hints.status_notice.as_deref(),
+            Some("Tip: `/alignment left` or Alt+C toggles alignment.")
+        );
+
+        let (title, message) = hints.display_message.expect("expected display message");
+        assert_eq!(title, "Alignment");
+        assert!(message.contains("Alt+C"));
+        assert!(message.contains("/alignment left"));
+        assert!(message.contains("Claude-style left alignment"));
+        assert!(!message.contains("display.centered = true"));
+    }
+
+    #[test]
+    fn second_and_third_launches_include_alignment_tip() {
+        let state = SetupHintsState {
+            launch_count: 2,
             ..SetupHintsState::default()
         };
 
