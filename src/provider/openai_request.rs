@@ -79,119 +79,140 @@ fn schema_supports_strict(schema: &Value) -> bool {
     }
 }
 
-fn strict_normalize_schema(schema: &Value) -> Value {
-    fn make_schema_nullable(schema: Value) -> Value {
-        match schema {
-            Value::Object(mut map) => {
-                if let Some(Value::String(t)) = map.get("type").cloned() {
-                    if t != "null" {
-                        map.insert(
-                            "type".to_string(),
-                            Value::Array(vec![Value::String(t), Value::String("null".to_string())]),
-                        );
-                    }
-                    return Value::Object(map);
-                }
+fn schema_is_object_typed(map: &serde_json::Map<String, Value>) -> bool {
+    match map.get("type") {
+        Some(Value::String(t)) => t == "object",
+        Some(Value::Array(types)) => types.iter().any(|v| v.as_str() == Some("object")),
+        _ => false,
+    }
+}
 
-                if let Some(Value::Array(mut types)) = map.get("type").cloned() {
-                    if !types.iter().any(|v| v.as_str() == Some("null")) {
-                        types.push(Value::String("null".to_string()));
-                    }
-                    map.insert("type".to_string(), Value::Array(types));
-                    return Value::Object(map);
-                }
+fn schema_contains_null_type(schema: &Value) -> bool {
+    schema
+        .get("type")
+        .and_then(Value::as_str)
+        .map(|ty| ty == "null")
+        .unwrap_or(false)
+}
 
-                if let Some(Value::Array(mut any_of)) = map.get("anyOf").cloned() {
-                    if !any_of.iter().any(|v| {
-                        v.get("type")
-                            .and_then(|t| t.as_str())
-                            .map(|t| t == "null")
-                            .unwrap_or(false)
-                    }) {
-                        any_of.push(serde_json::json!({ "type": "null" }));
-                    }
-                    map.insert("anyOf".to_string(), Value::Array(any_of));
-                    return Value::Object(map);
+fn make_schema_nullable(schema: Value) -> Value {
+    match schema {
+        Value::Object(mut map) => {
+            if let Some(Value::String(t)) = map.get("type").cloned() {
+                if t != "null" {
+                    map.insert(
+                        "type".to_string(),
+                        Value::Array(vec![Value::String(t), Value::String("null".to_string())]),
+                    );
                 }
-
-                serde_json::json!({
-                    "anyOf": [
-                        Value::Object(map),
-                        { "type": "null" }
-                    ]
-                })
+                return Value::Object(map);
             }
-            other => serde_json::json!({
+
+            if let Some(Value::Array(mut types)) = map.get("type").cloned() {
+                if !types.iter().any(|v| v.as_str() == Some("null")) {
+                    types.push(Value::String("null".to_string()));
+                }
+                map.insert("type".to_string(), Value::Array(types));
+                return Value::Object(map);
+            }
+
+            if let Some(Value::Array(mut any_of)) = map.get("anyOf").cloned() {
+                if !any_of.iter().any(schema_contains_null_type) {
+                    any_of.push(serde_json::json!({ "type": "null" }));
+                }
+                map.insert("anyOf".to_string(), Value::Array(any_of));
+                return Value::Object(map);
+            }
+
+            serde_json::json!({
                 "anyOf": [
-                    other,
+                    Value::Object(map),
                     { "type": "null" }
                 ]
-            }),
+            })
+        }
+        other => serde_json::json!({
+            "anyOf": [
+                other,
+                { "type": "null" }
+            ]
+        }),
+    }
+}
+
+fn normalize_strict_schema_keyword(key: &str, value: &Value) -> Value {
+    match key {
+        "properties" | "$defs" | "definitions" | "patternProperties" => match value {
+            Value::Object(children) => Value::Object(
+                children
+                    .iter()
+                    .map(|(child_key, child_value)| {
+                        (child_key.clone(), strict_normalize_schema(child_value))
+                    })
+                    .collect(),
+            ),
+            _ => strict_normalize_schema(value),
+        },
+        "allOf" | "anyOf" | "oneOf" | "prefixItems" => match value {
+            Value::Array(items) => {
+                Value::Array(items.iter().map(strict_normalize_schema).collect())
+            }
+            _ => strict_normalize_schema(value),
+        },
+        _ => strict_normalize_schema(value),
+    }
+}
+
+fn existing_required_keys(map: &serde_json::Map<String, Value>) -> HashSet<String> {
+    map.get("required")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn normalize_required_properties(map: &mut serde_json::Map<String, Value>) {
+    let Some(property_names) = map
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| {
+            let mut names: Vec<String> = properties.keys().cloned().collect();
+            names.sort();
+            names
+        })
+    else {
+        return;
+    };
+
+    let existing_required = existing_required_keys(map);
+
+    if let Some(Value::Object(properties)) = map.get_mut("properties") {
+        for (prop_name, prop_schema) in properties.iter_mut() {
+            if !existing_required.contains(prop_name) {
+                *prop_schema = make_schema_nullable(prop_schema.clone());
+            }
         }
     }
 
+    map.insert(
+        "required".to_string(),
+        Value::Array(property_names.into_iter().map(Value::String).collect()),
+    );
+}
+
+fn strict_normalize_schema(schema: &Value) -> Value {
     fn normalize_map(map: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
         let mut out = serde_json::Map::new();
         for (key, value) in map {
-            let normalized = match key.as_str() {
-                "properties" | "$defs" | "definitions" | "patternProperties" => match value {
-                    Value::Object(children) => {
-                        let mut rewritten = serde_json::Map::new();
-                        for (child_key, child_value) in children {
-                            rewritten
-                                .insert(child_key.clone(), strict_normalize_schema(child_value));
-                        }
-                        Value::Object(rewritten)
-                    }
-                    _ => strict_normalize_schema(value),
-                },
-                "items" | "contains" | "if" | "then" | "else" | "not" => {
-                    strict_normalize_schema(value)
-                }
-                "allOf" | "anyOf" | "oneOf" | "prefixItems" => match value {
-                    Value::Array(items) => {
-                        Value::Array(items.iter().map(strict_normalize_schema).collect())
-                    }
-                    _ => strict_normalize_schema(value),
-                },
-                _ => strict_normalize_schema(value),
-            };
+            let normalized = normalize_strict_schema_keyword(key, value);
             out.insert(key.clone(), normalized);
         }
 
-        let is_object_typed = match out.get("type") {
-            Some(Value::String(t)) => t == "object",
-            Some(Value::Array(types)) => types.iter().any(|v| v.as_str() == Some("object")),
-            _ => false,
-        };
-
-        if let Some(Value::Object(properties)) = out.get("properties") {
-            let existing_required: std::collections::HashSet<String> = out
-                .get("required")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            let mut required_all: Vec<String> = properties.keys().cloned().collect();
-            required_all.sort();
-
-            if let Some(Value::Object(props_mut)) = out.get_mut("properties") {
-                for (prop_name, prop_schema) in props_mut.iter_mut() {
-                    if !existing_required.contains(prop_name) {
-                        *prop_schema = make_schema_nullable(prop_schema.clone());
-                    }
-                }
-            }
-
-            out.insert(
-                "required".to_string(),
-                Value::Array(required_all.into_iter().map(Value::String).collect()),
-            );
-        }
+        let is_object_typed = schema_is_object_typed(&out);
+        normalize_required_properties(&mut out);
 
         if is_object_typed || out.contains_key("properties") {
             out.insert("additionalProperties".to_string(), Value::Bool(false));
@@ -204,6 +225,110 @@ fn strict_normalize_schema(schema: &Value) -> Value {
         Value::Object(map) => Value::Object(normalize_map(map)),
         Value::Array(items) => Value::Array(items.iter().map(strict_normalize_schema).collect()),
         _ => schema.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{make_schema_nullable, schema_supports_strict, strict_normalize_schema};
+    use serde_json::json;
+
+    #[test]
+    fn strict_normalize_schema_marks_optional_properties_nullable_and_required() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "required_name": { "type": "string" },
+                "optional_age": { "type": "integer" }
+            },
+            "required": ["required_name"]
+        });
+
+        let normalized = strict_normalize_schema(&schema);
+
+        assert_eq!(
+            normalized,
+            json!({
+                "type": "object",
+                "properties": {
+                    "required_name": { "type": "string" },
+                    "optional_age": { "type": ["integer", "null"] }
+                },
+                "required": ["optional_age", "required_name"],
+                "additionalProperties": false
+            })
+        );
+    }
+
+    #[test]
+    fn strict_normalize_schema_preserves_existing_nullability() {
+        let schema = json!({
+            "anyOf": [
+                { "type": "string" },
+                { "type": "null" }
+            ]
+        });
+
+        assert_eq!(
+            make_schema_nullable(schema.clone()),
+            json!({
+                "anyOf": [
+                    { "type": "string" },
+                    { "type": "null" }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn strict_normalize_schema_recurses_through_nested_object_keywords() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "child": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" }
+                    }
+                }
+            }
+        });
+
+        let normalized = strict_normalize_schema(&schema);
+
+        assert_eq!(
+            normalized,
+            json!({
+                "type": "object",
+                "properties": {
+                    "child": {
+                        "type": ["object", "null"],
+                        "properties": {
+                            "name": { "type": ["string", "null"] }
+                        },
+                        "required": ["name"],
+                        "additionalProperties": false
+                    }
+                },
+                "required": ["child"],
+                "additionalProperties": false
+            })
+        );
+    }
+
+    #[test]
+    fn schema_supports_strict_rejects_open_or_empty_objects() {
+        assert!(!schema_supports_strict(&json!({ "type": "object" })));
+        assert!(!schema_supports_strict(&json!({
+            "type": "object",
+            "properties": { "x": { "type": "string" } },
+            "additionalProperties": true
+        })));
+        assert!(schema_supports_strict(&json!({
+            "type": "object",
+            "properties": { "x": { "type": "string" } },
+            "additionalProperties": false
+        })));
     }
 }
 
