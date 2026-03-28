@@ -32,6 +32,12 @@ struct SelfDevInput {
     /// Whether to notify the requesting agent when the queued background build completes.
     #[serde(default)]
     notify: Option<bool>,
+    /// Build request id for actions like cancel-build.
+    #[serde(default)]
+    request_id: Option<String>,
+    /// Background task id for actions like cancel-build.
+    #[serde(default)]
+    task_id: Option<String>,
 }
 
 /// Context saved before reload, restored after restart
@@ -71,8 +77,10 @@ impl SelfDevLaunchResult {
 enum BuildRequestState {
     Queued,
     Building,
+    Attached,
     Completed,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +101,7 @@ struct BuildRequest {
     error: Option<String>,
     output_file: Option<String>,
     status_file: Option<String>,
+    attached_to_request_id: Option<String>,
 }
 
 impl BuildRequest {
@@ -150,6 +159,43 @@ impl BuildRequest {
                 )
             })
             .collect())
+    }
+
+    fn attached_watchers(parent_request_id: &str) -> Result<Vec<Self>> {
+        Ok(Self::load_all()?
+            .into_iter()
+            .filter(|request| {
+                request.attached_to_request_id.as_deref() == Some(parent_request_id)
+                    && request.state == BuildRequestState::Attached
+            })
+            .collect())
+    }
+
+    fn find_duplicate_pending(
+        repo_dir: &Path,
+        reason: &str,
+        version: Option<&str>,
+    ) -> Result<Option<Self>> {
+        Ok(Self::pending_requests()?.into_iter().find(|request| {
+            request.repo_dir == repo_dir.display().to_string()
+                && request.reason == reason
+                && request.version.as_deref() == version
+        }))
+    }
+
+    fn find_by_request_or_task(
+        request_id: Option<&str>,
+        task_id: Option<&str>,
+    ) -> Result<Option<Self>> {
+        if let Some(request_id) = request_id {
+            return Self::load(request_id);
+        }
+        let Some(task_id) = task_id else {
+            return Ok(None);
+        };
+        Ok(Self::load_all()?
+            .into_iter()
+            .find(|request| request.background_task_id.as_deref() == Some(task_id)))
     }
 
     fn display_owner(&self) -> String {
@@ -323,11 +369,14 @@ pub fn selfdev_status_output() -> Result<ToolOutput> {
     if !pending_requests.is_empty() {
         status.push_str("\n## Build Queue\n\n");
         for (index, request) in pending_requests.iter().enumerate() {
+            let watchers = BuildRequest::attached_watchers(&request.request_id)?;
             let state = match request.state {
                 BuildRequestState::Queued => "queued",
                 BuildRequestState::Building => "building",
+                BuildRequestState::Attached => "attached",
                 BuildRequestState::Completed => "completed",
                 BuildRequestState::Failed => "failed",
+                BuildRequestState::Cancelled => "cancelled",
             };
             status.push_str(&format!(
                 "{}. **{}** — {}\n   Reason: {}\n   Requested: {}\n",
@@ -337,11 +386,26 @@ pub fn selfdev_status_output() -> Result<ToolOutput> {
                 request.reason,
                 request.requested_at,
             ));
+            if let Some(version) = request.version.as_deref() {
+                status.push_str(&format!("   Target version: `{}`\n", version));
+            }
             if let Some(task_id) = request.background_task_id.as_deref() {
                 status.push_str(&format!("   Task: `{}`\n", task_id));
             }
             if let Some(started_at) = request.started_at.as_deref() {
                 status.push_str(&format!("   Started: {}\n", started_at));
+            }
+            if !watchers.is_empty() {
+                let watcher_names = watchers
+                    .iter()
+                    .map(BuildRequest::display_owner)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                status.push_str(&format!(
+                    "   Attached watchers: {} ({})\n",
+                    watchers.len(),
+                    watcher_names
+                ));
             }
         }
     }
@@ -489,8 +553,8 @@ impl Tool for SelfDevTool {
 
     fn description(&self) -> &str {
         "Self-development tool for working on jcode itself. Actions: 'enter' (spawn a new self-dev session), \
-         'build' (queue a background self-dev build with a reason/comment), 'status' (show build versions), \
-         and in self-dev mode also 'reload', 'socket-info', and 'socket-help'."
+         'build' (queue a background self-dev build with a reason/comment), 'cancel-build' (cancel a queued/running self-dev build request), \
+         'status' (show build versions), and in self-dev mode also 'reload', 'socket-info', and 'socket-help'."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -502,6 +566,7 @@ impl Tool for SelfDevTool {
                         "enum": [
                         "enter",
                         "build",
+                        "cancel-build",
                         "reload",
                         "status",
                         "socket-info",
@@ -509,6 +574,7 @@ impl Tool for SelfDevTool {
                     ],
                     "description": "Action to perform: 'enter' spawns a new self-dev session, \
                                    'build' queues a coordinated background build with a reason/comment, \
+                                   'cancel-build' cancels a queued/running self-dev build request, \
                                    'reload' restarts with built binary, \
                                    'status' shows build versions and crash history, \
                                    'socket-info' returns debug socket paths and connection info, \
@@ -530,6 +596,14 @@ impl Tool for SelfDevTool {
                 "notify": {
                     "type": "boolean",
                     "description": "For action='build': notify the requesting agent when the queued background build completes (default: true)."
+                },
+                "request_id": {
+                    "type": "string",
+                    "description": "For action='cancel-build': build request id to cancel."
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "For action='cancel-build': background task id to cancel if request id is not known."
                 }
             },
             "required": ["action"]
@@ -545,6 +619,10 @@ impl Tool for SelfDevTool {
         let result = match action.as_str() {
             "enter" => self.do_enter(params.prompt, &ctx).await,
             "build" => self.do_build(params.reason, params.notify, &ctx).await,
+            "cancel-build" => {
+                self.do_cancel_build(params.request_id, params.task_id, &ctx)
+                    .await
+            }
             "reload" => {
                 if !SelfDevTool::session_is_selfdev(&ctx.session_id) {
                     Ok(ToolOutput::new(
@@ -575,7 +653,7 @@ impl Tool for SelfDevTool {
                 }
             }
             _ => Ok(ToolOutput::new(format!(
-                "Unknown action: {}. Use 'enter', 'build', 'reload', 'status', 'socket-info', or 'socket-help'.",
+                "Unknown action: {}. Use 'enter', 'build', 'cancel-build', 'reload', 'status', 'socket-info', or 'socket-help'.",
                 action
             ))),
         };
@@ -694,6 +772,18 @@ impl SelfDevTool {
         session::Session::load(session_id)
             .map(|session| (session.short_name, session.title))
             .unwrap_or((None, None))
+    }
+
+    fn requested_build_version(repo_dir: &Path) -> Result<String> {
+        if Self::is_test_session() {
+            return Ok("test-build".to_string());
+        }
+        let info = build::current_build_info(repo_dir)?;
+        Ok(if info.dirty {
+            format!("{}-dirty", info.hash)
+        } else {
+            info.hash
+        })
     }
 
     fn newest_active_request() -> Result<Option<BuildRequest>> {
@@ -861,6 +951,79 @@ impl SelfDevTool {
         })
     }
 
+    async fn follow_existing_build(
+        request_id: String,
+        original_request_id: String,
+        output_path: PathBuf,
+    ) -> Result<TaskResult> {
+        let mut file = tokio::fs::File::create(&output_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create output file: {}", e))?;
+        Self::append_output_line(
+            &mut file,
+            format!(
+                "Attached to existing selfdev build request {} instead of spawning a duplicate build.",
+                original_request_id
+            ),
+        )
+        .await;
+
+        loop {
+            let Some(original) = BuildRequest::load(&original_request_id)? else {
+                anyhow::bail!("Original build request {} disappeared", original_request_id);
+            };
+            match original.state {
+                BuildRequestState::Queued | BuildRequestState::Building => {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                BuildRequestState::Completed => {
+                    let mut request = BuildRequest::load(&request_id)?.ok_or_else(|| {
+                        anyhow::anyhow!("Attached build request {} disappeared", request_id)
+                    })?;
+                    request.state = BuildRequestState::Completed;
+                    request.completed_at = Some(Utc::now().to_rfc3339());
+                    request.error = None;
+                    request.save()?;
+                    Self::append_output_line(
+                        &mut file,
+                        format!(
+                            "Original build {} completed successfully.",
+                            original_request_id
+                        ),
+                    )
+                    .await;
+                    return Ok(TaskResult {
+                        exit_code: Some(0),
+                        error: None,
+                    });
+                }
+                BuildRequestState::Failed | BuildRequestState::Cancelled => {
+                    let mut request = BuildRequest::load(&request_id)?.ok_or_else(|| {
+                        anyhow::anyhow!("Attached build request {} disappeared", request_id)
+                    })?;
+                    request.state = original.state.clone();
+                    request.completed_at = Some(Utc::now().to_rfc3339());
+                    request.error = original.error.clone();
+                    request.save()?;
+                    let error = original.error.clone().unwrap_or_else(|| {
+                        format!("Original build {} did not complete", original_request_id)
+                    });
+                    Self::append_output_line(&mut file, &error).await;
+                    return Ok(TaskResult {
+                        exit_code: None,
+                        error: Some(error),
+                    });
+                }
+                BuildRequestState::Attached => {
+                    anyhow::bail!(
+                        "Original build request {} is attached, not build-producing",
+                        original_request_id
+                    );
+                }
+            }
+        }
+    }
+
     async fn run_build_request(
         request_id: String,
         repo_dir: PathBuf,
@@ -974,10 +1137,89 @@ impl SelfDevTool {
                 anyhow::anyhow!("Could not find the jcode repository directory for selfdev build")
             })?;
 
+        let requested_version = SelfDevTool::requested_build_version(&repo_dir)?;
         let blocker = SelfDevTool::newest_active_request()?;
+        let duplicate =
+            BuildRequest::find_duplicate_pending(&repo_dir, &reason, Some(&requested_version))?;
         let command = SelfDevTool::build_command(&repo_dir);
         let (session_short_name, session_title) = SelfDevTool::load_session_labels(&ctx.session_id);
         let request_id = SelfDevTool::next_request_id();
+        let notify = notify.unwrap_or(true);
+
+        if let Some(existing) = duplicate {
+            let mut request = BuildRequest {
+                request_id: request_id.clone(),
+                background_task_id: None,
+                session_id: ctx.session_id.clone(),
+                session_short_name,
+                session_title,
+                reason: reason.clone(),
+                repo_dir: repo_dir.display().to_string(),
+                command: command.display.clone(),
+                requested_at: Utc::now().to_rfc3339(),
+                started_at: None,
+                completed_at: None,
+                state: BuildRequestState::Attached,
+                version: Some(requested_version.clone()),
+                error: None,
+                output_file: None,
+                status_file: None,
+                attached_to_request_id: Some(existing.request_id.clone()),
+            };
+            request.save()?;
+
+            let request_id_for_task = request_id.clone();
+            let existing_request_id = existing.request_id.clone();
+            let info = background::global()
+                .spawn_with_notify(
+                    "selfdev-build-watch",
+                    &ctx.session_id,
+                    notify,
+                    move |output_path| async move {
+                        SelfDevTool::follow_existing_build(
+                            request_id_for_task,
+                            existing_request_id,
+                            output_path,
+                        )
+                        .await
+                    },
+                )
+                .await;
+
+            request.background_task_id = Some(info.task_id.clone());
+            request.output_file = Some(info.output_file.display().to_string());
+            request.status_file = Some(info.status_file.display().to_string());
+            request.save()?;
+
+            let output = format!(
+                "Matching self-dev build already queued/running, so this request was attached instead of spawning a duplicate build.\n\n- Your request ID: `{}`\n- Watcher task ID: `{}`\n- Existing request: `{}`\n- Requested by: {}\n- Reason: {}\n- Target version: `{}`\n\nYou will{} be notified when the existing build finishes.",
+                request_id,
+                info.task_id,
+                existing.request_id,
+                existing.display_owner(),
+                existing.reason,
+                requested_version,
+                if notify { "" } else { " not" }
+            );
+
+            return Ok(ToolOutput::new(output).with_metadata(json!({
+                "background": true,
+                "deduped": true,
+                "request_id": request_id,
+                "task_id": info.task_id,
+                "output_file": info.output_file.to_string_lossy(),
+                "status_file": info.status_file.to_string_lossy(),
+                "duplicate_of": {
+                    "request_id": existing.request_id,
+                    "task_id": existing.background_task_id,
+                    "session_id": existing.session_id,
+                    "session_short_name": existing.session_short_name,
+                    "session_title": existing.session_title,
+                    "reason": existing.reason,
+                    "version": existing.version,
+                }
+            })));
+        }
 
         let mut request = BuildRequest {
             request_id: request_id.clone(),
@@ -992,10 +1234,11 @@ impl SelfDevTool {
             started_at: None,
             completed_at: None,
             state: BuildRequestState::Queued,
-            version: None,
+            version: Some(requested_version.clone()),
             error: None,
             output_file: None,
             status_file: None,
+            attached_to_request_id: None,
         };
         request.save()?;
 
@@ -1003,7 +1246,6 @@ impl SelfDevTool {
         let repo_dir_for_task = repo_dir.clone();
         let command_for_task = command.clone();
         let reason_for_task = reason.clone();
-        let notify = notify.unwrap_or(true);
         let info = background::global()
             .spawn_with_notify(
                 "selfdev-build",
@@ -1029,10 +1271,11 @@ impl SelfDevTool {
 
         let queue_position = SelfDevTool::current_queue_position(&request_id)?.unwrap_or(1);
         let mut output = format!(
-            "Self-dev build queued in background.\n\n- Request ID: `{}`\n- Task ID: `{}`\n- Reason: {}\n- Command: `{}`\n- Queue position: {}\n- Output file: `{}`\n- Status file: `{}`\n\nYou will{} be notified when the build completes.",
+            "Self-dev build queued in background.\n\n- Request ID: `{}`\n- Task ID: `{}`\n- Reason: {}\n- Target version: `{}`\n- Command: `{}`\n- Queue position: {}\n- Output file: `{}`\n- Status file: `{}`\n\nYou will{} be notified when the build completes.",
             request_id,
             info.task_id,
             reason,
+            requested_version,
             command.display,
             queue_position,
             info.output_file.display(),
@@ -1060,12 +1303,78 @@ impl SelfDevTool {
             "output_file": info.output_file.to_string_lossy(),
             "status_file": info.status_file.to_string_lossy(),
             "queue_position": queue_position,
+            "version": requested_version,
             "blocked_by": blocker.as_ref().map(|request| json!({
                 "session_id": request.session_id,
                 "session_short_name": request.session_short_name,
                 "session_title": request.session_title,
                 "reason": request.reason,
+                "version": request.version,
             }))
+        })))
+    }
+
+    async fn do_cancel_build(
+        &self,
+        request_id: Option<String>,
+        task_id: Option<String>,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput> {
+        let Some(mut request) =
+            BuildRequest::find_by_request_or_task(request_id.as_deref(), task_id.as_deref())?
+        else {
+            return Ok(ToolOutput::new(
+                "No self-dev build request matched the provided request_id/task_id.",
+            ));
+        };
+
+        if request.session_id != ctx.session_id {
+            return Ok(ToolOutput::new(format!(
+                "That self-dev build request belongs to {}, not this session ({}).",
+                request.display_owner(),
+                ctx.session_id
+            )));
+        }
+
+        if matches!(
+            request.state,
+            BuildRequestState::Completed | BuildRequestState::Failed | BuildRequestState::Cancelled
+        ) {
+            return Ok(ToolOutput::new(format!(
+                "Build request `{}` is already in terminal state `{}`.",
+                request.request_id,
+                match request.state {
+                    BuildRequestState::Completed => "completed",
+                    BuildRequestState::Failed => "failed",
+                    BuildRequestState::Cancelled => "cancelled",
+                    _ => unreachable!(),
+                }
+            )));
+        }
+
+        let cancelled_task = if let Some(task_id) = request.background_task_id.as_deref() {
+            background::global().cancel(task_id).await?
+        } else {
+            false
+        };
+
+        request.state = BuildRequestState::Cancelled;
+        request.completed_at = Some(Utc::now().to_rfc3339());
+        request.error = Some("Cancelled by user".to_string());
+        request.save()?;
+
+        Ok(ToolOutput::new(format!(
+            "Cancelled self-dev build request `{}`.\n\n- Task cancelled: {}\n- Reason: {}\n- Target version: {}",
+            request.request_id,
+            if cancelled_task { "yes" } else { "no (task may have already finished)" },
+            request.reason,
+            request.version.as_deref().unwrap_or("unknown")
+        ))
+        .with_metadata(json!({
+            "request_id": request.request_id,
+            "task_id": request.background_task_id,
+            "cancelled": true,
+            "cancelled_task": cancelled_task,
         })))
     }
 
@@ -1716,6 +2025,11 @@ mod tests {
         assert!(status_output.output.contains("## Build Queue"));
         assert!(status_output.output.contains("first reason"));
         assert!(status_output.output.contains("second reason"));
+        assert!(
+            status_output
+                .output
+                .contains("Target version: `test-build`")
+        );
 
         let first_status = wait_for_task_completion(first_task_id).await;
         let second_status = wait_for_task_completion(second_task_id).await;
@@ -1735,5 +2049,132 @@ mod tests {
         .expect("request two exists");
         assert_eq!(request_one.state, BuildRequestState::Completed);
         assert_eq!(request_two.state, BuildRequestState::Completed);
+    }
+
+    #[tokio::test]
+    async fn build_dedupes_identical_reason_and_version_with_attached_watcher() {
+        let _storage_guard = crate::storage::lock_test_env();
+        let _lock = lock_env();
+        let temp_home = tempfile::TempDir::new().expect("temp home");
+        let _home_guard = EnvVarGuard::set("JCODE_HOME", temp_home.path());
+        let _test_guard = EnvVarGuard::set("JCODE_TEST_SESSION", "1");
+        let repo = create_repo_fixture();
+
+        let mut session_one = session::Session::create(None, Some("Build A".to_string()));
+        session_one.short_name = Some("alpha".to_string());
+        session_one.save().expect("save session one");
+
+        let mut session_two = session::Session::create(None, Some("Build B".to_string()));
+        session_two.short_name = Some("beta".to_string());
+        session_two.save().expect("save session two");
+
+        let tool = SelfDevTool::new();
+        let first = tool
+            .execute(
+                json!({"action": "build", "reason": "same reason"}),
+                create_test_context(&session_one.id, Some(repo.path().to_path_buf())),
+            )
+            .await
+            .expect("first build should queue");
+        let second = tool
+            .execute(
+                json!({"action": "build", "reason": "same reason"}),
+                create_test_context(&session_two.id, Some(repo.path().to_path_buf())),
+            )
+            .await
+            .expect("second build should attach");
+
+        let first_meta = first.metadata.expect("first metadata");
+        let second_meta = second.metadata.expect("second metadata");
+        assert_eq!(second_meta["deduped"].as_bool(), Some(true));
+        assert_eq!(
+            second_meta["duplicate_of"]["request_id"].as_str(),
+            first_meta["request_id"].as_str()
+        );
+
+        let status_output = selfdev_status_output().expect("status output");
+        assert!(status_output.output.contains("Attached watchers: 1"));
+        assert!(status_output.output.contains("alpha"));
+        assert!(status_output.output.contains("beta"));
+
+        let first_status = wait_for_task_completion(first_meta["task_id"].as_str().unwrap()).await;
+        let second_status =
+            wait_for_task_completion(second_meta["task_id"].as_str().unwrap()).await;
+        assert_eq!(first_status.status, BackgroundTaskStatus::Completed);
+        assert_eq!(second_status.status, BackgroundTaskStatus::Completed);
+
+        let watcher_request = BuildRequest::load(second_meta["request_id"].as_str().unwrap())
+            .expect("load watcher request")
+            .expect("watcher request exists");
+        assert_eq!(watcher_request.state, BuildRequestState::Completed);
+        assert_eq!(
+            watcher_request.attached_to_request_id.as_deref(),
+            first_meta["request_id"].as_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_build_marks_request_cancelled_and_removes_it_from_queue() {
+        let _storage_guard = crate::storage::lock_test_env();
+        let _lock = lock_env();
+        let temp_home = tempfile::TempDir::new().expect("temp home");
+        let _home_guard = EnvVarGuard::set("JCODE_HOME", temp_home.path());
+        let _test_guard = EnvVarGuard::set("JCODE_TEST_SESSION", "1");
+        let repo = create_repo_fixture();
+
+        let mut session_one = session::Session::create(None, Some("Build A".to_string()));
+        session_one.short_name = Some("alpha".to_string());
+        session_one.save().expect("save session one");
+
+        let mut session_two = session::Session::create(None, Some("Build B".to_string()));
+        session_two.short_name = Some("beta".to_string());
+        session_two.save().expect("save session two");
+
+        let tool = SelfDevTool::new();
+        let first = tool
+            .execute(
+                json!({"action": "build", "reason": "keep building"}),
+                create_test_context(&session_one.id, Some(repo.path().to_path_buf())),
+            )
+            .await
+            .expect("first build should queue");
+        let second = tool
+            .execute(
+                json!({"action": "build", "reason": "cancel me"}),
+                create_test_context(&session_two.id, Some(repo.path().to_path_buf())),
+            )
+            .await
+            .expect("second build should queue");
+
+        let second_meta = second.metadata.expect("second metadata");
+        let cancel = tool
+            .execute(
+                json!({
+                    "action": "cancel-build",
+                    "request_id": second_meta["request_id"].as_str().unwrap()
+                }),
+                create_test_context(&session_two.id, Some(repo.path().to_path_buf())),
+            )
+            .await
+            .expect("cancel should succeed");
+
+        assert!(cancel.output.contains("Cancelled self-dev build request"));
+
+        let second_status =
+            wait_for_task_completion(second_meta["task_id"].as_str().unwrap()).await;
+        assert_eq!(second_status.status, BackgroundTaskStatus::Failed);
+
+        let cancelled_request = BuildRequest::load(second_meta["request_id"].as_str().unwrap())
+            .expect("load cancelled request")
+            .expect("cancelled request exists");
+        assert_eq!(cancelled_request.state, BuildRequestState::Cancelled);
+
+        let status_output = selfdev_status_output().expect("status output");
+        assert!(status_output.output.contains("keep building"));
+        assert!(!status_output.output.contains("cancel me"));
+
+        let first_meta = first.metadata.expect("first metadata");
+        let first_status = wait_for_task_completion(first_meta["task_id"].as_str().unwrap()).await;
+        assert_eq!(first_status.status, BackgroundTaskStatus::Completed);
     }
 }
