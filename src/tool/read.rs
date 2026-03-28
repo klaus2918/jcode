@@ -122,6 +122,7 @@ impl Tool for ReadTool {
         json!({
             "type": "object",
             "required": ["file_path"],
+            "description": "Read file contents by line range. Use either start_line/end_line (1-based, inclusive) or offset/limit (0-based). Do not combine offset with start_line or end_line. If end_line is provided, omit limit.",
             "properties": {
                 "file_path": {
                     "type": "string",
@@ -129,19 +130,19 @@ impl Tool for ReadTool {
                 },
                 "start_line": {
                     "type": "integer",
-                    "description": "1-based line number to start reading from (inclusive)"
+                    "description": "1-based line number to start reading from (inclusive). Use with end_line or limit, and do not combine with offset."
                 },
                 "end_line": {
                     "type": "integer",
-                    "description": "1-based line number to stop reading at (inclusive)"
+                    "description": "1-based line number to stop reading at (inclusive). Use only with start_line, and omit limit when end_line is provided."
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "Line number to start reading from (0-based)"
+                    "description": "0-based line offset to start reading from. Use with limit, and do not combine with start_line or end_line."
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of lines to read (default 5000)"
+                    "description": "Maximum number of lines to read (default 5000). With start_line, use this only when end_line is omitted."
                 }
             }
         })
@@ -339,6 +340,15 @@ mod tests {
                 .contains("greater than or equal to start_line"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn read_tool_schema_avoids_openai_incompatible_combinators() {
+        let schema = ReadTool::new().parameters_schema();
+
+        assert_eq!(schema.get("type"), Some(&json!("object")));
+        assert!(schema.get("allOf").is_none());
+        assert!(schema.get("not").is_none());
     }
 
     #[tokio::test]
