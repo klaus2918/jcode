@@ -3,9 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const TELEMETRY_ENDPOINT: &str = "https://jcode-telemetry.jeremyhuang55555.workers.dev/v1/event";
+const ASYNC_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+const BLOCKING_INSTALL_TIMEOUT: Duration = Duration::from_millis(1200);
+const BLOCKING_LIFECYCLE_TIMEOUT: Duration = Duration::from_millis(800);
 
 static SESSION_STATE: Mutex<Option<SessionTelemetry>> = Mutex::new(None);
 
@@ -99,6 +102,12 @@ struct SessionTelemetry {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum DeliveryMode {
+    Background,
+    Blocking(Duration),
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum SessionEndReason {
     NormalExit,
     Panic,
@@ -137,6 +146,24 @@ fn telemetry_id_path() -> Option<PathBuf> {
     storage::jcode_dir().ok().map(|d| d.join("telemetry_id"))
 }
 
+fn install_recorded_path() -> Option<PathBuf> {
+    storage::jcode_dir()
+        .ok()
+        .map(|d| d.join("telemetry_install_sent"))
+}
+
+fn write_private_file(path: &PathBuf, value: &str) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, value);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
 fn get_or_create_id() -> Option<String> {
     let path = telemetry_id_path()?;
     if let Ok(id) = std::fs::read_to_string(&path) {
@@ -146,15 +173,7 @@ fn get_or_create_id() -> Option<String> {
         }
     }
     let id = uuid::Uuid::new_v4().to_string();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&path, &id);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    write_private_file(&path, &id);
     Some(id)
 }
 
@@ -166,17 +185,43 @@ fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-fn fire_and_forget(payload: serde_json::Value) {
-    std::thread::spawn(move || {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build();
-        let client = match client {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let _ = client.post(TELEMETRY_ENDPOINT).json(&payload).send();
-    });
+fn install_recorded_for_id(id: &str) -> bool {
+    install_recorded_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|stored| stored.trim() == id)
+        .unwrap_or(false)
+}
+
+fn mark_install_recorded(id: &str) {
+    if let Some(path) = install_recorded_path() {
+        write_private_file(&path, id);
+    }
+}
+
+fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    match client.post(TELEMETRY_ENDPOINT).json(&payload).send() {
+        Ok(response) => response.error_for_status().is_ok(),
+        Err(_) => false,
+    }
+}
+
+fn send_payload(payload: serde_json::Value, mode: DeliveryMode) -> bool {
+    match mode {
+        DeliveryMode::Background => {
+            std::thread::spawn(move || {
+                let _ = post_payload(payload, ASYNC_SEND_TIMEOUT);
+            });
+            true
+        }
+        DeliveryMode::Blocking(timeout) => post_payload(payload, timeout),
+    }
 }
 
 fn reset_counters() {
@@ -274,11 +319,11 @@ fn maybe_emit_session_start() {
         }
     };
     if let Ok(payload) = serde_json::to_value(&event) {
-        fire_and_forget(payload);
+        let _ = send_payload(payload, DeliveryMode::Background);
     }
 }
 
-fn emit_session_start_for_state(id: String, state: &SessionTelemetry) {
+fn emit_session_start_for_state(id: String, state: &SessionTelemetry, mode: DeliveryMode) -> bool {
     let event = SessionStartEvent {
         id,
         event: "session_start",
@@ -290,32 +335,38 @@ fn emit_session_start_for_state(id: String, state: &SessionTelemetry) {
         resumed_session: state.resumed_session,
     };
     if let Ok(payload) = serde_json::to_value(&event) {
-        fire_and_forget(payload);
+        return send_payload(payload, mode);
     }
+    false
 }
 
 pub fn record_install_if_first_run() {
     if !is_enabled() {
         return;
     }
-    if !is_first_run() {
-        return;
-    }
+    let first_run = is_first_run();
     let id = match get_or_create_id() {
         Some(id) => id,
         None => return,
     };
+    if install_recorded_for_id(&id) {
+        return;
+    }
     let event = InstallEvent {
-        id,
+        id: id.clone(),
         event: "install",
         version: version(),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
     };
     if let Ok(payload) = serde_json::to_value(&event) {
-        fire_and_forget(payload);
+        if send_payload(payload, DeliveryMode::Blocking(BLOCKING_INSTALL_TIMEOUT)) {
+            mark_install_recorded(&id);
+        }
     }
-    show_first_run_notice();
+    if first_run {
+        show_first_run_notice();
+    }
 }
 
 pub fn begin_session(provider: &str, model: &str) {
@@ -520,7 +571,11 @@ fn emit_lifecycle_event(
         return;
     }
     if !state.start_event_sent {
-        emit_session_start_for_state(id.clone(), &state);
+        let _ = emit_session_start_for_state(
+            id.clone(),
+            &state,
+            DeliveryMode::Blocking(BLOCKING_LIFECYCLE_TIMEOUT),
+        );
     }
     let duration = state.started_at.elapsed();
     let event = SessionLifecycleEvent {
@@ -553,7 +608,7 @@ fn emit_lifecycle_event(
         errors,
     };
     if let Ok(payload) = serde_json::to_value(&event) {
-        fire_and_forget(payload);
+        let _ = send_payload(payload, DeliveryMode::Blocking(BLOCKING_LIFECYCLE_TIMEOUT));
     }
     reset_counters();
 }
@@ -580,9 +635,20 @@ fn show_first_run_notice() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::lock_test_env;
+    use std::sync::{Mutex, OnceLock};
+
+    fn lock_telemetry_test_state() -> std::sync::MutexGuard<'static, ()> {
+        static TELEMETRY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        TELEMETRY_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn test_opt_out_env_var() {
+        let _guard = lock_test_env();
         crate::env::set_var("JCODE_NO_TELEMETRY", "1");
         assert!(!is_enabled());
         crate::env::remove_var("JCODE_NO_TELEMETRY");
@@ -590,6 +656,7 @@ mod tests {
 
     #[test]
     fn test_do_not_track() {
+        let _guard = lock_test_env();
         crate::env::set_var("DO_NOT_TRACK", "1");
         assert!(!is_enabled());
         crate::env::remove_var("DO_NOT_TRACK");
@@ -597,13 +664,14 @@ mod tests {
 
     #[test]
     fn test_error_counters() {
-        let start_provider_timeout = ERROR_PROVIDER_TIMEOUT.load(Ordering::Relaxed);
-        let start_tool_error = ERROR_TOOL_ERROR.load(Ordering::Relaxed);
+        let _guard = lock_telemetry_test_state();
+        reset_counters();
         record_error(ErrorCategory::ProviderTimeout);
         record_error(ErrorCategory::ProviderTimeout);
         record_error(ErrorCategory::ToolError);
-        assert!(ERROR_PROVIDER_TIMEOUT.load(Ordering::Relaxed) >= start_provider_timeout + 2);
-        assert!(ERROR_TOOL_ERROR.load(Ordering::Relaxed) >= start_tool_error + 1);
+        assert_eq!(ERROR_PROVIDER_TIMEOUT.load(Ordering::Relaxed), 2);
+        assert_eq!(ERROR_TOOL_ERROR.load(Ordering::Relaxed), 1);
+        reset_counters();
     }
 
     #[test]
@@ -677,6 +745,11 @@ mod tests {
 
     #[test]
     fn test_record_connection_type_buckets_transport() {
+        let _guard = lock_telemetry_test_state();
+        reset_counters();
+        if let Ok(mut session) = SESSION_STATE.lock() {
+            *session = None;
+        }
         begin_session_with_mode("openai", "gpt-5.4", false);
         record_connection_type("websocket/persistent-fresh");
         record_connection_type("websocket/persistent-reuse");
@@ -693,6 +766,10 @@ mod tests {
         assert_eq!(state.transport_native_http2, 1);
         assert_eq!(state.transport_cli_subprocess, 1);
         assert_eq!(state.transport_other, 1);
+        if let Ok(mut session) = SESSION_STATE.lock() {
+            *session = None;
+        }
+        reset_counters();
     }
 
     #[test]
@@ -701,5 +778,24 @@ mod tests {
             sanitize_telemetry_label("\u{1b}[1mclaude-opus-4-6\u{1b}[0m\n"),
             "claude-opus-4-6"
         );
+    }
+
+    #[test]
+    fn test_install_marker_tracks_current_telemetry_id() {
+        let _guard = lock_test_env();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = tempfile::TempDir::new().expect("create temp dir");
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        assert!(!install_recorded_for_id("id-a"));
+        mark_install_recorded("id-a");
+        assert!(install_recorded_for_id("id-a"));
+        assert!(!install_recorded_for_id("id-b"));
+
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
     }
 }

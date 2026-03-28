@@ -21,10 +21,11 @@ Cloudflare Worker that receives anonymous telemetry events from jcode.
 ### Migrating an existing database
 
 If your production database was created before the latest telemetry fields were added,
-apply the expansion migration remotely:
+apply both remote migrations:
 
 ```bash
 wrangler d1 execute jcode-telemetry --remote --file=migrations/0001_expand_events.sql
+wrangler d1 execute jcode-telemetry --remote --file=migrations/0002_transport_metrics.sql
 ```
 
 Then redeploy the worker:
@@ -39,6 +40,17 @@ npm run deploy
    ```
 
 6. Set up custom domain (optional): point `telemetry.jcode.dev` to the worker in Cloudflare dashboard
+
+### Ops helpers
+
+```bash
+# Apply schema catch-up migrations
+npm run migrate:expand
+npm run migrate:transport
+
+# Run the health dashboard query
+npm run health
+```
 
 ## Querying Data
 
@@ -69,4 +81,18 @@ wrangler d1 execute jcode-telemetry --command "SELECT telemetry_id, COUNT(*) AS 
 
 # OS/arch breakdown
 wrangler d1 execute jcode-telemetry --command "SELECT os, arch, COUNT(DISTINCT telemetry_id) as users FROM events GROUP BY os, arch ORDER BY users DESC"
+
+# Transport breakdown (requires 0002 transport migration)
+wrangler d1 execute jcode-telemetry --command "SELECT SUM(transport_https) AS https, SUM(transport_persistent_ws_fresh) AS ws_fresh, SUM(transport_persistent_ws_reuse) AS ws_reuse, SUM(transport_cli_subprocess) AS cli, SUM(transport_native_http2) AS native_http2, SUM(transport_other) AS other FROM events WHERE event IN ('session_end', 'session_crash')"
+
+# Telemetry health dashboard
+wrangler d1 execute jcode-telemetry --file=health.sql
 ```
+
+## What to watch for
+
+- `session_start` far exceeding `session_end + session_crash` for multiple days
+- `session_crash = 0` for long periods despite known crashes
+- large `lifecycle_ids_without_install` counts
+- a single telemetry ID dominating session totals (dev/test skew)
+- zeroed transport totals after transport-aware releases (missing migration)
