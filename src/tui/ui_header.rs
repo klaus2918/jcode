@@ -276,11 +276,7 @@ pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Lin
     let nice_model = format_model_name(&short_model);
     let build_info = binary_age().unwrap_or_else(|| "unknown".to_string());
     let centered = app.centered_mode();
-    let align = if centered {
-        Alignment::Center
-    } else {
-        Alignment::Left
-    };
+    let align = Alignment::Center;
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -395,12 +391,7 @@ pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Lin
 
 pub(crate) fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
-    let centered = app.centered_mode();
-    let align = if centered {
-        ratatui::layout::Alignment::Center
-    } else {
-        ratatui::layout::Alignment::Left
-    };
+    let align = ratatui::layout::Alignment::Center;
 
     let model = app.provider_model();
     let provider_name = app.provider_name();
@@ -638,4 +629,103 @@ fn multi_status_badge_no_leading_space(items: &[(&str, Color)]) -> Vec<Span<'sta
 
     spans.push(Span::styled("⟩", Style::default().fg(dim_color())));
     spans
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::Message;
+    use crate::provider::{EventStream, Provider};
+    use crate::tool::Registry;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use std::sync::OnceLock;
+
+    struct MockProvider;
+
+    #[async_trait]
+    impl Provider for MockProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::message::ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<EventStream> {
+            unimplemented!("Mock provider")
+        }
+
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(MockProvider)
+        }
+    }
+
+    fn ensure_test_jcode_home_if_unset() {
+        static TEST_HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+        if std::env::var_os("JCODE_HOME").is_some() {
+            return;
+        }
+
+        let path = TEST_HOME.get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("jcode-test-home-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&path);
+            path
+        });
+        crate::env::set_var("JCODE_HOME", path);
+    }
+
+    fn create_test_app() -> crate::tui::app::App {
+        ensure_test_jcode_home_if_unset();
+
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+        let rt = tokio::runtime::Runtime::new().expect("test runtime");
+        let registry = rt.block_on(Registry::new(provider.clone()));
+        crate::tui::app::App::new(provider, registry)
+    }
+
+    #[test]
+    fn left_aligned_mode_keeps_persistent_header_centered() {
+        let mut app = create_test_app();
+        app.set_centered(false);
+
+        let lines = build_persistent_header(&app, 80);
+        let non_empty: Vec<&Line<'_>> = lines
+            .iter()
+            .filter(|line| !line.spans.iter().all(|span| span.content.trim().is_empty()))
+            .collect();
+
+        assert!(!non_empty.is_empty(), "expected persistent header lines");
+        assert!(
+            non_empty
+                .iter()
+                .all(|line| line.alignment == Some(Alignment::Center)),
+            "persistent header should remain centered in left-aligned mode: {non_empty:?}"
+        );
+    }
+
+    #[test]
+    fn left_aligned_mode_keeps_secondary_header_centered() {
+        let mut app = create_test_app();
+        app.set_centered(false);
+
+        let lines = build_header_lines(&app, 80);
+        let non_empty: Vec<&Line<'_>> = lines
+            .iter()
+            .filter(|line| !line.spans.iter().all(|span| span.content.trim().is_empty()))
+            .collect();
+
+        assert!(!non_empty.is_empty(), "expected header detail lines");
+        assert!(
+            non_empty
+                .iter()
+                .all(|line| line.alignment == Some(Alignment::Center)),
+            "header detail lines should remain centered in left-aligned mode: {non_empty:?}"
+        );
+    }
 }

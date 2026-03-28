@@ -973,6 +973,61 @@ fn escape_currency_dollars(text: &str) -> String {
     out
 }
 
+fn looks_like_line_oriented_transcript_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if trimmed.starts_with("tool:")
+        || trimmed.starts_with("tools:")
+        || trimmed.starts_with("broadcast from ")
+    {
+        return true;
+    }
+
+    matches!(trimmed.chars().next(), Some('✓' | '✗' | '┌' | '│' | '└'))
+}
+
+fn preserve_line_oriented_softbreaks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut in_code_fence = false;
+    let mut fence_char = '\0';
+    let mut fence_len = 0usize;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let prev_log_like = idx > 0 && looks_like_line_oriented_transcript_line(lines[idx - 1]);
+        let next_log_like =
+            idx + 1 < lines.len() && looks_like_line_oriented_transcript_line(lines[idx + 1]);
+        let preserve_softbreak = !in_code_fence
+            && looks_like_line_oriented_transcript_line(line)
+            && (prev_log_like || next_log_like);
+
+        out.push_str(line);
+        if idx + 1 < lines.len() {
+            if preserve_softbreak && !line.ends_with("  ") {
+                out.push_str("  ");
+            }
+            out.push('\n');
+        }
+
+        if in_code_fence {
+            if is_closing_fence(line, fence_char, fence_len) {
+                in_code_fence = false;
+                fence_char = '\0';
+                fence_len = 0;
+            }
+        } else if let Some((marker, min_len)) = parse_opening_fence(line) {
+            in_code_fence = true;
+            fence_char = marker;
+            fence_len = min_len;
+        }
+    }
+
+    out
+}
+
 pub fn debug_stats() -> MarkdownDebugStats {
     if let Ok(state) = MARKDOWN_DEBUG.lock() {
         return state.stats.clone();
@@ -994,6 +1049,7 @@ pub fn debug_stats_json() -> Option<serde_json::Value> {
 pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<Line<'static>> {
     let render_start = Instant::now();
     let text = escape_currency_dollars(text);
+    let text = preserve_line_oriented_softbreaks(&text);
     let text = text.as_str();
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
@@ -2256,6 +2312,7 @@ pub fn render_markdown_lazy(
     visible_range: std::ops::Range<usize>,
 ) -> Vec<Line<'static>> {
     let text = escape_currency_dollars(text);
+    let text = preserve_line_oriented_softbreaks(&text);
     let text = text.as_str();
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
@@ -4280,5 +4337,52 @@ mod tests {
 
         assert!(rendered.contains("`code`"));
         assert!(rendered.contains("in same line"));
+    }
+
+    #[test]
+    fn test_line_oriented_tool_transcript_softbreaks_are_preserved() {
+        let md = concat!(
+            "tool: batch\n",
+            "✓ batch 3 calls\n",
+            "  ✓ bash $ git status --short --branch\n",
+            "  ✓ communicate list\n",
+            "┌─ diff\n",
+            "│ 810- Session(SessionInfo),\n",
+            "└─\n"
+        );
+
+        let lines = render_markdown_with_width(md, Some(28));
+        let rendered: Vec<String> = lines.iter().map(line_to_string).collect();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.trim_start() == "tool: batch"),
+            "expected tool transcript header to stay on its own line: {rendered:?}"
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.trim_start().starts_with("✓ batch 3 calls")),
+            "expected batch summary to stay on its own line: {rendered:?}"
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.trim_start().starts_with("✓ bash $ git status")),
+            "expected nested transcript line to stay on its own line: {rendered:?}"
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.trim_start().starts_with("┌─ diff")),
+            "expected diff box header to stay on its own line: {rendered:?}"
+        );
+        assert!(
+            rendered
+                .iter()
+                .all(|line| !(line.contains("tool: batch") && line.contains("✓ batch 3 calls"))),
+            "tool transcript lines should not collapse into one wrapped paragraph: {rendered:?}"
+        );
     }
 }
