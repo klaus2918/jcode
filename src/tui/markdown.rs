@@ -3844,6 +3844,54 @@ mod tests {
     }
 
     #[test]
+    fn test_wrapped_code_block_repeats_gutter_on_continuations() {
+        let lines = render_markdown("```text\nalpha beta gamma delta\n```");
+        let wrapped = wrap_lines(lines, 10);
+        let rendered: Vec<String> = wrapped.iter().map(line_to_string).collect();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "┌─ text ",
+                "│ alpha ",
+                "│ beta ",
+                "│ gamma ",
+                "│ delta",
+                "└─",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_wrapped_syntax_highlighted_code_block_keeps_all_body_lines_in_frame() {
+        let lines = render_markdown("```rust\nlet alpha_beta_gamma = delta_epsilon_zeta();\n```");
+        let wrapped = wrap_lines(lines, 18);
+        let rendered: Vec<String> = wrapped.iter().map(line_to_string).collect();
+
+        assert!(
+            rendered.first().is_some_and(|line| line.starts_with("┌─ rust ")),
+            "expected code block header: {rendered:?}"
+        );
+        assert_eq!(rendered.last().map(String::as_str), Some("└─"));
+
+        let body = &rendered[1..rendered.len() - 1];
+        assert!(body.len() >= 2, "expected wrapped code body: {rendered:?}");
+        assert!(
+            body.iter().all(|line| line.starts_with("│ ")),
+            "every wrapped code line should remain inside the code block frame: {rendered:?}"
+        );
+
+        let flattened = body
+            .iter()
+            .map(|line| line.trim_start_matches("│ "))
+            .collect::<String>();
+        assert!(
+            flattened.contains("let alpha_beta_gamma = delta_epsilon_zeta();"),
+            "wrapped code body should preserve code text order: {rendered:?}"
+        );
+    }
+
+    #[test]
     fn test_centered_mode_keeps_list_markers_flush_left() {
         let md = concat!(
             "1. Create a goal\n",
