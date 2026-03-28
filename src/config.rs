@@ -1235,6 +1235,7 @@ scroll_up_fallback = "cmd+k"
 scroll_down_fallback = "cmd+j"
 
 # Workspace navigation (Niri-style)
+# Comma-separate multiple bindings to add aliases.
 workspace_left = "alt+h"
 workspace_down = "alt+j"
 workspace_up = "alt+k"

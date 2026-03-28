@@ -33,10 +33,10 @@ pub enum WorkspaceNavigationDirection {
 
 #[derive(Clone, Debug)]
 pub struct WorkspaceNavigationKeys {
-    pub left: KeyBinding,
-    pub down: KeyBinding,
-    pub up: KeyBinding,
-    pub right: KeyBinding,
+    pub left: Vec<KeyBinding>,
+    pub down: Vec<KeyBinding>,
+    pub up: Vec<KeyBinding>,
+    pub right: Vec<KeyBinding>,
     pub left_label: String,
     pub down_label: String,
     pub up_label: String,
@@ -49,16 +49,16 @@ impl WorkspaceNavigationKeys {
         code: KeyCode,
         modifiers: KeyModifiers,
     ) -> Option<WorkspaceNavigationDirection> {
-        if self.left.matches(code, modifiers) {
+        if binding_list_matches(&self.left, code, modifiers) {
             return Some(WorkspaceNavigationDirection::Left);
         }
-        if self.down.matches(code, modifiers) {
+        if binding_list_matches(&self.down, code, modifiers) {
             return Some(WorkspaceNavigationDirection::Down);
         }
-        if self.up.matches(code, modifiers) {
+        if binding_list_matches(&self.up, code, modifiers) {
             return Some(WorkspaceNavigationDirection::Up);
         }
-        if self.right.matches(code, modifiers) {
+        if binding_list_matches(&self.right, code, modifiers) {
             return Some(WorkspaceNavigationDirection::Right);
         }
         None
@@ -128,12 +128,16 @@ pub fn load_workspace_navigation_keys() -> WorkspaceNavigationKeys {
     };
 
     let (left, left_label) =
-        parse_or_default(&cfg.keybindings.workspace_left, default_left, "Alt+H");
+        parse_bindings_or_default(&cfg.keybindings.workspace_left, vec![default_left], "Alt+H");
     let (down, down_label) =
-        parse_or_default(&cfg.keybindings.workspace_down, default_down, "Alt+J");
-    let (up, up_label) = parse_or_default(&cfg.keybindings.workspace_up, default_up, "Alt+K");
-    let (right, right_label) =
-        parse_or_default(&cfg.keybindings.workspace_right, default_right, "Alt+L");
+        parse_bindings_or_default(&cfg.keybindings.workspace_down, vec![default_down], "Alt+J");
+    let (up, up_label) =
+        parse_bindings_or_default(&cfg.keybindings.workspace_up, vec![default_up], "Alt+K");
+    let (right, right_label) = parse_bindings_or_default(
+        &cfg.keybindings.workspace_right,
+        vec![default_right],
+        "Alt+L",
+    );
 
     WorkspaceNavigationKeys {
         left,
@@ -147,11 +151,34 @@ pub fn load_workspace_navigation_keys() -> WorkspaceNavigationKeys {
     }
 }
 
+fn binding_list_matches(bindings: &[KeyBinding], code: KeyCode, modifiers: KeyModifiers) -> bool {
+    bindings
+        .iter()
+        .any(|binding| binding.matches(code, modifiers))
+}
+
 fn parse_or_default(raw: &str, fallback: KeyBinding, fallback_label: &str) -> (KeyBinding, String) {
     match parse_keybinding(raw) {
         Some(binding) => (binding.clone(), format_binding(&binding)),
         None => (fallback.clone(), fallback_label.to_string()),
     }
+}
+
+fn parse_bindings_or_default(
+    raw: &str,
+    fallback: Vec<KeyBinding>,
+    fallback_label: &str,
+) -> (Vec<KeyBinding>, String) {
+    let bindings = parse_keybinding_list(raw);
+    if bindings.is_empty() {
+        return (fallback, fallback_label.to_string());
+    }
+    let label = bindings
+        .iter()
+        .map(format_binding)
+        .collect::<Vec<_>>()
+        .join(", ");
+    (bindings, label)
 }
 
 fn parse_optional(
@@ -167,6 +194,15 @@ fn parse_optional(
         Some(binding) => (Some(binding.clone()), Some(format_binding(&binding))),
         None => (Some(fallback.clone()), Some(fallback_label.to_string())),
     }
+}
+
+fn parse_keybinding_list(raw: &str) -> Vec<KeyBinding> {
+    let raw = raw.trim();
+    if raw.is_empty() || is_disabled(raw) {
+        return Vec::new();
+    }
+
+    raw.split(',').filter_map(parse_keybinding).collect()
 }
 
 fn is_disabled(raw: &str) -> bool {
@@ -315,7 +351,9 @@ impl ScrollKeys {
         if self.page_down.matches(code, modifiers) {
             return Some(10); // Page down
         }
-        if modifiers.contains(KeyModifiers::CONTROL) {
+        let legacy_ctrl_fallback = self.up.matches(KeyCode::Char('k'), KeyModifiers::CONTROL)
+            && self.down.matches(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        if legacy_ctrl_fallback && modifiers.contains(KeyModifiers::CONTROL) {
             match code {
                 KeyCode::Char('k') => return Some(-3),
                 KeyCode::Char('j') => return Some(3),
@@ -666,7 +704,15 @@ mod tests {
 
     #[test]
     fn test_scroll_amount_ctrl_fallback() {
-        let keys = test_scroll_keys();
+        let mut keys = test_scroll_keys();
+        keys.up = KeyBinding {
+            code: KeyCode::Char('k'),
+            modifiers: KeyModifiers::CONTROL,
+        };
+        keys.down = KeyBinding {
+            code: KeyCode::Char('j'),
+            modifiers: KeyModifiers::CONTROL,
+        };
 
         assert_eq!(
             keys.scroll_amount(KeyCode::Char('k'), KeyModifiers::CONTROL),
@@ -675,6 +721,20 @@ mod tests {
         assert_eq!(
             keys.scroll_amount(KeyCode::Char('j'), KeyModifiers::CONTROL),
             Some(3)
+        );
+    }
+
+    #[test]
+    fn test_scroll_amount_ctrl_fallback_disabled_when_rebound() {
+        let keys = test_scroll_keys();
+
+        assert_eq!(
+            keys.scroll_amount(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            None
+        );
+        assert_eq!(
+            keys.scroll_amount(KeyCode::Char('j'), KeyModifiers::CONTROL),
+            None
         );
     }
 
@@ -759,22 +819,22 @@ mod tests {
     #[test]
     fn workspace_navigation_keys_match_super_bindings() {
         let keys = WorkspaceNavigationKeys {
-            left: KeyBinding {
+            left: vec![KeyBinding {
                 code: KeyCode::Char('h'),
                 modifiers: KeyModifiers::SUPER,
-            },
-            down: KeyBinding {
+            }],
+            down: vec![KeyBinding {
                 code: KeyCode::Char('j'),
                 modifiers: KeyModifiers::SUPER,
-            },
-            up: KeyBinding {
+            }],
+            up: vec![KeyBinding {
                 code: KeyCode::Char('k'),
                 modifiers: KeyModifiers::SUPER,
-            },
-            right: KeyBinding {
+            }],
+            right: vec![KeyBinding {
                 code: KeyCode::Char('l'),
                 modifiers: KeyModifiers::SUPER,
-            },
+            }],
             left_label: "Super+H".to_string(),
             down_label: "Super+J".to_string(),
             up_label: "Super+K".to_string(),
@@ -800,6 +860,105 @@ mod tests {
         assert_eq!(
             keys.direction_for(KeyCode::Char('h'), KeyModifiers::ALT),
             None
+        );
+    }
+
+    #[test]
+    fn workspace_navigation_keys_support_multiple_aliases() {
+        let keys = WorkspaceNavigationKeys {
+            left: vec![
+                KeyBinding {
+                    code: KeyCode::Char('h'),
+                    modifiers: KeyModifiers::SUPER,
+                },
+                KeyBinding {
+                    code: KeyCode::Left,
+                    modifiers: KeyModifiers::SUPER,
+                },
+                KeyBinding {
+                    code: KeyCode::Left,
+                    modifiers: KeyModifiers::ALT,
+                },
+                KeyBinding {
+                    code: KeyCode::Char('h'),
+                    modifiers: KeyModifiers::CONTROL,
+                },
+            ],
+            down: vec![
+                KeyBinding {
+                    code: KeyCode::Char('j'),
+                    modifiers: KeyModifiers::SUPER,
+                },
+                KeyBinding {
+                    code: KeyCode::Down,
+                    modifiers: KeyModifiers::SUPER,
+                },
+                KeyBinding {
+                    code: KeyCode::Down,
+                    modifiers: KeyModifiers::ALT,
+                },
+                KeyBinding {
+                    code: KeyCode::Char('j'),
+                    modifiers: KeyModifiers::CONTROL,
+                },
+            ],
+            up: vec![
+                KeyBinding {
+                    code: KeyCode::Char('k'),
+                    modifiers: KeyModifiers::SUPER,
+                },
+                KeyBinding {
+                    code: KeyCode::Up,
+                    modifiers: KeyModifiers::SUPER,
+                },
+                KeyBinding {
+                    code: KeyCode::Up,
+                    modifiers: KeyModifiers::ALT,
+                },
+                KeyBinding {
+                    code: KeyCode::Char('k'),
+                    modifiers: KeyModifiers::CONTROL,
+                },
+            ],
+            right: vec![
+                KeyBinding {
+                    code: KeyCode::Char('l'),
+                    modifiers: KeyModifiers::SUPER,
+                },
+                KeyBinding {
+                    code: KeyCode::Right,
+                    modifiers: KeyModifiers::SUPER,
+                },
+                KeyBinding {
+                    code: KeyCode::Right,
+                    modifiers: KeyModifiers::ALT,
+                },
+                KeyBinding {
+                    code: KeyCode::Char('l'),
+                    modifiers: KeyModifiers::CONTROL,
+                },
+            ],
+            left_label: "Super+H, Super+Left, Alt+Left, Ctrl+H".to_string(),
+            down_label: "Super+J, Super+Down, Alt+Down, Ctrl+J".to_string(),
+            up_label: "Super+K, Super+Up, Alt+Up, Ctrl+K".to_string(),
+            right_label: "Super+L, Super+Right, Alt+Right, Ctrl+L".to_string(),
+        };
+
+        assert_eq!(
+            keys.direction_for(KeyCode::Left, KeyModifiers::SUPER),
+            Some(WorkspaceNavigationDirection::Left)
+        );
+        assert_eq!(
+            keys.direction_for(KeyCode::Right, KeyModifiers::ALT),
+            Some(WorkspaceNavigationDirection::Right)
+        );
+        assert_eq!(
+            keys.direction_for(KeyCode::Char('j'), KeyModifiers::CONTROL),
+            Some(WorkspaceNavigationDirection::Down)
+        );
+        assert_eq!(
+            keys.direction_for(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            Some(WorkspaceNavigationDirection::Up)
         );
     }
 }
