@@ -418,6 +418,9 @@ pub(super) async fn handle_set_feature(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
@@ -479,8 +482,12 @@ pub(super) async fn handle_set_feature(
                     swarm_plans,
                 )
                 .await;
-                remove_session_channel_subscriptions(client_session_id, channel_subscriptions)
-                    .await;
+                remove_session_channel_subscriptions(
+                    client_session_id,
+                    channel_subscriptions,
+                    channel_subscriptions_by_session,
+                )
+                .await;
             }
 
             if enabled {
@@ -756,6 +763,10 @@ mod tests {
             String,
             HashMap<String, HashSet<String>>,
         >::new()));
+        let channel_subscriptions_by_session = Arc::new(RwLock::new(HashMap::<
+            String,
+            HashMap<String, HashSet<String>>,
+        >::new()));
         let swarm_plans = Arc::new(RwLock::new(HashMap::new()));
         let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
         let mut swarm_enabled = false;
@@ -772,6 +783,7 @@ mod tests {
             &swarms_by_id,
             &swarm_coordinators,
             &channel_subscriptions,
+            &channel_subscriptions_by_session,
             &swarm_plans,
             &client_event_tx,
         )
@@ -1102,7 +1114,7 @@ pub(super) async fn handle_agent_task(
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {

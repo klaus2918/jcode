@@ -1,8 +1,9 @@
 use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
-    ClientConnectionInfo, FileAccess, SessionInterruptQueues, SharedContext, SwarmEvent,
-    SwarmEventType, SwarmMember, queue_soft_interrupt_for_session, record_swarm_event,
-    truncate_detail, update_member_status,
+    ClientConnectionInfo, SessionInterruptQueues, SharedContext, SwarmEvent, SwarmEventType,
+    SwarmMember, queue_soft_interrupt_for_session, record_swarm_event,
+    subscribe_session_to_channel, truncate_detail, unsubscribe_session_from_channel,
+    update_member_status,
 };
 use crate::agent::{Agent, SoftInterruptSource};
 use crate::protocol::{AgentInfo, ContextEntry, NotificationType, ServerEvent};
@@ -39,7 +40,7 @@ pub(super) async fn handle_comm_share(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     shared_context: &Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {
@@ -167,7 +168,7 @@ pub(super) async fn handle_comm_list(
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
+    files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
 ) {
     let swarm_id = swarm_id_for_session(&req_session_id, swarm_members).await;
 
@@ -181,22 +182,19 @@ pub(super) async fn handle_comm_list(
         };
 
         let members = swarm_members.read().await;
-        let touches = file_touches.read().await;
+        let touches = files_touched_by_session.read().await;
 
         let member_list: Vec<AgentInfo> = swarm_session_ids
             .iter()
             .filter_map(|sid| {
                 members.get(sid).map(|member| {
-                    let files: Vec<String> = touches
-                        .iter()
-                        .filter_map(|(path, accesses)| {
-                            if accesses.iter().any(|access| &access.session_id == sid) {
-                                Some(path.display().to_string())
-                            } else {
-                                None
-                            }
-                        })
+                    let mut files: Vec<String> = touches
+                        .get(sid)
+                        .into_iter()
+                        .flat_map(|paths| paths.iter())
+                        .map(|path| path.display().to_string())
                         .collect();
+                    files.sort();
 
                     AgentInfo {
                         session_id: sid.clone(),
@@ -230,20 +228,24 @@ pub(super) async fn handle_comm_subscribe_channel(
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {
     let swarm_id = swarm_id_for_session(&req_session_id, swarm_members).await;
 
     if let Some(swarm_id) = swarm_id {
-        let mut subs = channel_subscriptions.write().await;
-        subs.entry(swarm_id.clone())
-            .or_default()
-            .entry(channel.clone())
-            .or_default()
-            .insert(req_session_id.clone());
-        drop(subs);
+        subscribe_session_to_channel(
+            &req_session_id,
+            &swarm_id,
+            &channel,
+            channel_subscriptions,
+            channel_subscriptions_by_session,
+        )
+        .await;
 
         record_swarm_event(
             event_history,
@@ -276,23 +278,24 @@ pub(super) async fn handle_comm_unsubscribe_channel(
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {
     let swarm_id = swarm_id_for_session(&req_session_id, swarm_members).await;
 
     if let Some(swarm_id) = swarm_id {
-        let mut subs = channel_subscriptions.write().await;
-        if let Some(swarm_subs) = subs.get_mut(&swarm_id) {
-            if let Some(channel_subs) = swarm_subs.get_mut(&channel) {
-                channel_subs.remove(&req_session_id);
-                if channel_subs.is_empty() {
-                    swarm_subs.remove(&channel);
-                }
-            }
-        }
-        drop(subs);
+        unsubscribe_session_from_channel(
+            &req_session_id,
+            &swarm_id,
+            &channel,
+            channel_subscriptions,
+            channel_subscriptions_by_session,
+        )
+        .await;
 
         record_swarm_event(
             event_history,
@@ -331,7 +334,7 @@ pub(super) async fn handle_comm_message(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
@@ -687,7 +690,8 @@ mod tests {
                 HashSet::from([target_id.clone()]),
             )]),
         )])));
-        let event_history: Arc<RwLock<Vec<SwarmEvent>>> = Arc::new(RwLock::new(Vec::new()));
+        let event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>> =
+            Arc::new(RwLock::new(std::collections::VecDeque::new()));
         let event_counter = Arc::new(AtomicU64::new(0));
         let (swarm_event_tx, _) = broadcast::channel(16);
         let client_connections = Arc::new(RwLock::new(HashMap::from([(

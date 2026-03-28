@@ -4,9 +4,82 @@
 //! operations return errors or no-ops.
 
 use anyhow::Result;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::time::Duration;
 
 pub type EmbeddingVec = Vec<f32>;
+
+#[derive(Debug)]
+struct TopKItem<T> {
+    score: f32,
+    ordinal: usize,
+    value: T,
+}
+
+impl<T> PartialEq for TopKItem<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.score.to_bits() == other.score.to_bits() && self.ordinal == other.ordinal
+    }
+}
+
+impl<T> Eq for TopKItem<T> {}
+
+impl<T> PartialOrd for TopKItem<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T> Ord for TopKItem<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| self.ordinal.cmp(&other.ordinal))
+    }
+}
+
+fn top_k_scored<T, I>(items: I, limit: usize) -> Vec<(T, f32)>
+where
+    I: IntoIterator<Item = (T, f32)>,
+{
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut heap: BinaryHeap<Reverse<TopKItem<T>>> = BinaryHeap::new();
+    for (ordinal, (value, score)) in items.into_iter().enumerate() {
+        let candidate = Reverse(TopKItem {
+            score,
+            ordinal,
+            value,
+        });
+
+        if heap.len() < limit {
+            heap.push(candidate);
+            continue;
+        }
+
+        let replace = heap
+            .peek()
+            .map(|smallest| score > smallest.0.score)
+            .unwrap_or(false);
+        if replace {
+            heap.pop();
+            heap.push(candidate);
+        }
+    }
+
+    let mut results: Vec<_> = heap
+        .into_iter()
+        .map(|Reverse(item)| (item.value, item.score, item.ordinal))
+        .collect();
+    results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+    results
+        .into_iter()
+        .map(|(value, score, _)| (value, score))
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct EmbedderStats {
@@ -97,14 +170,13 @@ pub fn find_similar(
 ) -> Vec<(usize, f32)> {
     let refs: Vec<&[f32]> = candidates.iter().map(|v| v.as_slice()).collect();
     let scores = batch_cosine_similarity(query, &refs);
-    let mut results: Vec<(usize, f32)> = scores
-        .into_iter()
-        .enumerate()
-        .filter(|(_, score)| *score >= threshold)
-        .collect();
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    results.truncate(top_k);
-    results
+    top_k_scored(
+        scores
+            .into_iter()
+            .enumerate()
+            .filter(|(_, score)| *score >= threshold),
+        top_k,
+    )
 }
 
 pub fn is_model_available() -> bool {

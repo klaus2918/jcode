@@ -1,4 +1,5 @@
-use super::{MAX_EVENT_HISTORY, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan};
+use super::state::MAX_EVENT_HISTORY;
+use super::{FileAccess, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan};
 use crate::agent::Agent;
 use crate::plan::PlanItem;
 use crate::protocol::{NotificationType, ServerEvent};
@@ -140,8 +141,38 @@ pub(super) async fn remove_plan_participant(
 pub(super) async fn remove_session_channel_subscriptions(
     session_id: &str,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
 ) {
+    let session_subscriptions = {
+        let mut reverse = channel_subscriptions_by_session.write().await;
+        reverse.remove(session_id)
+    };
+
     let mut subs = channel_subscriptions.write().await;
+
+    if let Some(session_subscriptions) = session_subscriptions {
+        for (swarm_id, channels) in session_subscriptions {
+            let mut remove_swarm = false;
+            if let Some(swarm_subs) = subs.get_mut(&swarm_id) {
+                for channel_name in channels {
+                    if let Some(members) = swarm_subs.get_mut(&channel_name) {
+                        members.remove(session_id);
+                        if members.is_empty() {
+                            swarm_subs.remove(&channel_name);
+                        }
+                    }
+                }
+                remove_swarm = swarm_subs.is_empty();
+            }
+            if remove_swarm {
+                subs.remove(&swarm_id);
+            }
+        }
+        return;
+    }
+
     let swarm_ids: Vec<String> = subs.keys().cloned().collect();
 
     for swarm_id in swarm_ids {
@@ -161,6 +192,108 @@ pub(super) async fn remove_session_channel_subscriptions(
         if remove_swarm {
             subs.remove(&swarm_id);
         }
+    }
+}
+
+pub(super) async fn remove_session_file_touches(
+    session_id: &str,
+    file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
+    files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
+) {
+    let touched_paths = {
+        let mut reverse = files_touched_by_session.write().await;
+        reverse.remove(session_id)
+    };
+
+    let mut touches = file_touches.write().await;
+    if let Some(paths) = touched_paths {
+        for path in paths {
+            let mut remove_path = false;
+            if let Some(accesses) = touches.get_mut(&path) {
+                accesses.retain(|access| access.session_id != session_id);
+                remove_path = accesses.is_empty();
+            }
+            if remove_path {
+                touches.remove(&path);
+            }
+        }
+        return;
+    }
+
+    touches.retain(|_, accesses| {
+        accesses.retain(|access| access.session_id != session_id);
+        !accesses.is_empty()
+    });
+}
+
+pub(super) async fn subscribe_session_to_channel(
+    session_id: &str,
+    swarm_id: &str,
+    channel: &str,
+    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
+) {
+    {
+        let mut subs = channel_subscriptions.write().await;
+        subs.entry(swarm_id.to_string())
+            .or_default()
+            .entry(channel.to_string())
+            .or_default()
+            .insert(session_id.to_string());
+    }
+
+    let mut reverse = channel_subscriptions_by_session.write().await;
+    reverse
+        .entry(session_id.to_string())
+        .or_default()
+        .entry(swarm_id.to_string())
+        .or_default()
+        .insert(channel.to_string());
+}
+
+pub(super) async fn unsubscribe_session_from_channel(
+    session_id: &str,
+    swarm_id: &str,
+    channel: &str,
+    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
+) {
+    {
+        let mut subs = channel_subscriptions.write().await;
+        let mut remove_swarm = false;
+        if let Some(swarm_subs) = subs.get_mut(swarm_id) {
+            if let Some(members) = swarm_subs.get_mut(channel) {
+                members.remove(session_id);
+                if members.is_empty() {
+                    swarm_subs.remove(channel);
+                }
+            }
+            remove_swarm = swarm_subs.is_empty();
+        }
+        if remove_swarm {
+            subs.remove(swarm_id);
+        }
+    }
+
+    let mut reverse = channel_subscriptions_by_session.write().await;
+    let mut remove_session_entry = false;
+    if let Some(session_subs) = reverse.get_mut(session_id) {
+        let mut remove_swarm_entry = false;
+        if let Some(channels) = session_subs.get_mut(swarm_id) {
+            channels.remove(channel);
+            remove_swarm_entry = channels.is_empty();
+        }
+        if remove_swarm_entry {
+            session_subs.remove(swarm_id);
+        }
+        remove_session_entry = session_subs.is_empty();
+    }
+    if remove_session_entry {
+        reverse.remove(session_id);
     }
 }
 
@@ -254,7 +387,7 @@ pub(super) async fn remove_session_from_swarm(
 }
 
 pub(super) async fn record_swarm_event(
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     session_id: String,
@@ -273,9 +406,9 @@ pub(super) async fn record_swarm_event(
     };
     let _ = swarm_event_tx.send(swarm_event.clone());
     let mut history = event_history.write().await;
-    history.push(swarm_event);
+    history.push_back(swarm_event);
     if history.len() > MAX_EVENT_HISTORY {
-        history.remove(0);
+        history.pop_front();
     }
 }
 
@@ -283,7 +416,7 @@ pub(super) async fn record_swarm_event_for_session(
     session_id: &str,
     event: SwarmEventType,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {
@@ -313,7 +446,7 @@ pub(super) async fn update_member_status(
     detail: Option<String>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    event_history: Option<&Arc<RwLock<Vec<SwarmEvent>>>>,
+    event_history: Option<&Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>>,
     event_counter: Option<&Arc<std::sync::atomic::AtomicU64>>,
     swarm_event_tx: Option<&broadcast::Sender<SwarmEvent>>,
 ) {

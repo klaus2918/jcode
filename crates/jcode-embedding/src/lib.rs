@@ -1,10 +1,83 @@
 use anyhow::{Context, Result};
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::io::Write;
 use std::path::Path;
 use tokenizers::Tokenizer;
 use tract_hir::prelude::*;
 
 pub const MODEL_NAME: &str = "all-MiniLM-L6-v2";
+
+#[derive(Debug)]
+struct TopKItem<T> {
+    score: f32,
+    ordinal: usize,
+    value: T,
+}
+
+impl<T> PartialEq for TopKItem<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.score.to_bits() == other.score.to_bits() && self.ordinal == other.ordinal
+    }
+}
+
+impl<T> Eq for TopKItem<T> {}
+
+impl<T> PartialOrd for TopKItem<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T> Ord for TopKItem<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| self.ordinal.cmp(&other.ordinal))
+    }
+}
+
+fn top_k_scored<T, I>(items: I, limit: usize) -> Vec<(T, f32)>
+where
+    I: IntoIterator<Item = (T, f32)>,
+{
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut heap: BinaryHeap<Reverse<TopKItem<T>>> = BinaryHeap::new();
+    for (ordinal, (value, score)) in items.into_iter().enumerate() {
+        let candidate = Reverse(TopKItem {
+            score,
+            ordinal,
+            value,
+        });
+
+        if heap.len() < limit {
+            heap.push(candidate);
+            continue;
+        }
+
+        let replace = heap
+            .peek()
+            .map(|smallest| score > smallest.0.score)
+            .unwrap_or(false);
+        if replace {
+            heap.pop();
+            heap.push(candidate);
+        }
+    }
+
+    let mut results: Vec<_> = heap
+        .into_iter()
+        .map(|Reverse(item)| (item.value, item.score, item.ordinal))
+        .collect();
+    results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+    results
+        .into_iter()
+        .map(|(value, score, _)| (value, score))
+        .collect()
+}
 const EMBEDDING_DIM: usize = 384;
 const MAX_SEQ_LENGTH: usize = 256;
 
@@ -167,15 +240,13 @@ pub fn find_similar(
     let refs: Vec<&[f32]> = candidates.iter().map(|v| v.as_slice()).collect();
     let scores = batch_cosine_similarity(query, &refs);
 
-    let mut results: Vec<(usize, f32)> = scores
-        .into_iter()
-        .enumerate()
-        .filter(|(_, score)| *score >= threshold)
-        .collect();
-
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    results.truncate(top_k);
-    results
+    top_k_scored(
+        scores
+            .into_iter()
+            .enumerate()
+            .filter(|(_, score)| *score >= threshold),
+        top_k,
+    )
 }
 
 pub fn is_model_available(model_dir: &Path) -> bool {
@@ -245,5 +316,20 @@ mod tests {
         assert!((cosine_similarity(&a, &b) - 1.0).abs() < 0.001);
         assert!((cosine_similarity(&a, &c) - 0.0).abs() < 0.001);
         assert!((cosine_similarity(&a, &d) - (-1.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn find_similar_returns_only_top_k_sorted_hits() {
+        let query = vec![1.0, 0.0, 0.0];
+        let candidates = vec![
+            vec![0.2, 0.0, 0.0],
+            vec![0.9, 0.0, 0.0],
+            vec![0.7, 0.0, 0.0],
+            vec![0.8, 0.0, 0.0],
+        ];
+
+        let hits = find_similar(&query, &candidates, 0.1, 2);
+
+        assert_eq!(hits, vec![(1, 0.9), (3, 0.8)]);
     }
 }

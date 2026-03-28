@@ -12,7 +12,6 @@ use crate::session::Session;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 fn create_visible_spawn_session(
@@ -50,85 +49,29 @@ fn spawn_visible_session_window(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn spawn_initial_message_runner(
-    new_session_id: String,
-    initial_msg: String,
-    sessions: Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
-    swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
-    swarms_by_id: Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    event_history: Arc<RwLock<Vec<SwarmEvent>>>,
-    event_counter: Arc<std::sync::atomic::AtomicU64>,
-    swarm_event_tx: broadcast::Sender<SwarmEvent>,
-) {
-    tokio::spawn(async move {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-
-        loop {
-            let agent_arc = {
-                let agent_sessions = sessions.read().await;
-                agent_sessions.get(&new_session_id).cloned()
-            };
-            let is_headed = {
-                let members = swarm_members.read().await;
-                members
-                    .get(&new_session_id)
-                    .map(|member| !member.is_headless)
-                    .unwrap_or(false)
-            };
-
-            if let (Some(agent_arc), true) = (agent_arc, is_headed) {
-                update_member_status(
-                    &new_session_id,
-                    "running",
-                    Some(truncate_detail(&initial_msg, 120)),
-                    &swarm_members,
-                    &swarms_by_id,
-                    Some(&event_history),
-                    Some(&event_counter),
-                    Some(&swarm_event_tx),
-                )
-                .await;
-
-                let (drain_tx, mut drain_rx) = tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
-                tokio::spawn(async move { while drain_rx.recv().await.is_some() {} });
-                let result = process_message_streaming_mpsc(
-                    Arc::clone(&agent_arc),
-                    &initial_msg,
-                    vec![],
-                    None,
-                    drain_tx,
-                )
-                .await;
-                let (new_status, new_detail) = match result {
-                    Ok(()) => ("ready", None),
-                    Err(ref error) => ("failed", Some(truncate_detail(&error.to_string(), 120))),
-                };
-                update_member_status(
-                    &new_session_id,
-                    new_status,
-                    new_detail,
-                    &swarm_members,
-                    &swarms_by_id,
-                    Some(&event_history),
-                    Some(&event_counter),
-                    Some(&swarm_event_tx),
-                )
-                .await;
-                return;
-            }
-
-            if tokio::time::Instant::now() >= deadline {
-                crate::logging::warn(&format!(
-                    "Timed out waiting for headed spawned session {} to connect before sending initial message",
-                    new_session_id
-                ));
-                return;
-            }
-
-            tokio::time::sleep(Duration::from_millis(250)).await;
+fn persist_headed_startup_message(session_id: &str, message: &str) {
+    if message.trim().is_empty() {
+        return;
+    }
+    if let Ok(jcode_dir) = crate::storage::jcode_dir() {
+        let path = jcode_dir.join(format!("client-input-{}", session_id));
+        let data = serde_json::json!({
+            "cursor": 0,
+            "input": "",
+            "queued_messages": [],
+            "hidden_queued_system_messages": [message],
+            "interleave_message": serde_json::Value::Null,
+            "pending_soft_interrupts": [],
+            "rate_limit_pending_message": serde_json::Value::Null,
+            "rate_limit_reset_in_ms": serde_json::Value::Null,
+        });
+        if let Err(error) = std::fs::write(&path, data.to_string()) {
+            crate::logging::warn(&format!(
+                "Failed to persist startup message for spawned session {}: {}",
+                session_id, error
+            ));
         }
-    });
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -146,7 +89,10 @@ pub(super) async fn handle_comm_spawn(
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     _channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    _channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
@@ -239,7 +185,6 @@ pub(super) async fn handle_comm_spawn(
 
     match spawn_result {
         Ok((new_session_id, is_headless_fallback)) => {
-
             {
                 let mut plans = swarm_plans.write().await;
                 if let Some(plan) = plans.get_mut(&swarm_id) {
@@ -326,16 +271,7 @@ pub(super) async fn handle_comm_spawn(
                         });
                     }
                 } else {
-                    spawn_initial_message_runner(
-                        new_session_id.clone(),
-                        initial_msg,
-                        Arc::clone(sessions),
-                        Arc::clone(swarm_members),
-                        Arc::clone(swarms_by_id),
-                        Arc::clone(event_history),
-                        Arc::clone(event_counter),
-                        swarm_event_tx.clone(),
-                    );
+                    persist_headed_startup_message(&new_session_id, &initial_msg);
                 }
             }
 
@@ -367,7 +303,10 @@ pub(super) async fn handle_comm_stop(
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     soft_interrupt_queues: &SessionInterruptQueues,
@@ -471,7 +410,12 @@ pub(super) async fn handle_comm_stop(
             }
             broadcast_swarm_status(swarm_id, swarm_members, swarms_by_id).await;
         }
-        remove_session_channel_subscriptions(&target_session, channel_subscriptions).await;
+        remove_session_channel_subscriptions(
+            &target_session,
+            channel_subscriptions,
+            channel_subscriptions_by_session,
+        )
+        .await;
         let _ = client_event_tx.send(ServerEvent::Done { id });
     } else {
         let _ = client_event_tx.send(ServerEvent::Error {

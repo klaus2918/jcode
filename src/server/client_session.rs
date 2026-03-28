@@ -1,9 +1,10 @@
 use super::client_state::{send_history, spawn_model_prefetch_update};
 use super::{
-    ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmMember, VersionedPlan,
-    broadcast_swarm_status, register_session_interrupt_queue, remove_plan_participant,
-    remove_session_channel_subscriptions, remove_session_interrupt_queue, rename_plan_participant,
-    rename_session_interrupt_queue, swarm_id_for_dir, update_member_status,
+    ClientConnectionInfo, FileAccess, SessionInterruptQueues, SwarmEvent, SwarmMember,
+    VersionedPlan, broadcast_swarm_status, register_session_interrupt_queue,
+    remove_plan_participant, remove_session_channel_subscriptions, remove_session_file_touches,
+    remove_session_interrupt_queue, rename_plan_participant, rename_session_interrupt_queue,
+    swarm_id_for_dir, update_member_status,
 };
 use crate::agent::Agent;
 use crate::message::ContentBlock;
@@ -77,9 +78,14 @@ pub(super) async fn handle_clear_session(
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
+    files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
@@ -144,7 +150,13 @@ pub(super) async fn handle_clear_session(
             swarm.insert(new_id.clone());
         }
     }
-    remove_session_channel_subscriptions(client_session_id, channel_subscriptions).await;
+    remove_session_file_touches(client_session_id, file_touches, files_touched_by_session).await;
+    remove_session_channel_subscriptions(
+        client_session_id,
+        channel_subscriptions,
+        channel_subscriptions_by_session,
+    )
+    .await;
     update_member_status(
         &new_id,
         "ready",
@@ -185,6 +197,9 @@ pub(super) async fn handle_subscribe(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
@@ -215,8 +230,12 @@ pub(super) async fn handle_subscribe(
 
         if let Some(ref old_id) = old_swarm_id {
             if updated_swarm_id.as_ref() != Some(old_id) {
-                remove_session_channel_subscriptions(client_session_id, channel_subscriptions)
-                    .await;
+                remove_session_channel_subscriptions(
+                    client_session_id,
+                    channel_subscriptions,
+                    channel_subscriptions_by_session,
+                )
+                .await;
             }
             let mut swarms = swarms_by_id.write().await;
             if let Some(swarm) = swarms.get_mut(old_id) {
@@ -362,7 +381,12 @@ pub(super) async fn handle_resume_session(
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
+    files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     client_count: &Arc<RwLock<usize>>,
@@ -371,7 +395,7 @@ pub(super) async fn handle_resume_session(
     server_icon: &str,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) -> Result<()> {
@@ -472,7 +496,14 @@ pub(super) async fn handle_resume_session(
                     members.insert(session_id.clone(), member);
                 }
             }
-            remove_session_channel_subscriptions(&old_session_id, channel_subscriptions).await;
+            remove_session_channel_subscriptions(
+                &old_session_id,
+                channel_subscriptions,
+                channel_subscriptions_by_session,
+            )
+            .await;
+            remove_session_file_touches(&old_session_id, file_touches, files_touched_by_session)
+                .await;
             {
                 let mut coordinators = swarm_coordinators.write().await;
                 for coordinator in coordinators.values_mut() {

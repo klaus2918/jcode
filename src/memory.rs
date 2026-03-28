@@ -16,7 +16,8 @@ use crate::tui::info_widget::{
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
@@ -881,15 +882,14 @@ impl MemoryStore {
     }
 
     pub fn search(&self, query: &str) -> Vec<&MemoryEntry> {
-        let query_lower = query.to_lowercase();
+        let query_lower = normalize_search_text(query);
+        if query_lower.is_empty() {
+            return Vec::new();
+        }
+
         self.entries
             .iter()
-            .filter(|e| {
-                e.content.to_lowercase().contains(&query_lower)
-                    || e.tags
-                        .iter()
-                        .any(|t| t.to_lowercase().contains(&query_lower))
-            })
+            .filter(|e| memory_matches_search(e, &query_lower))
             .collect()
     }
 
@@ -906,15 +906,16 @@ impl MemoryStore {
     }
 
     pub fn get_relevant(&self, limit: usize) -> Vec<&MemoryEntry> {
-        let mut entries: Vec<&MemoryEntry> = self.entries.iter().filter(|e| e.active).collect();
-        entries.sort_by(|a, b| {
-            let score_a = memory_score(a);
-            let score_b = memory_score(b);
-            score_b
-                .partial_cmp(&score_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        entries.into_iter().take(limit).collect()
+        top_k_by_score(
+            self.entries
+                .iter()
+                .filter(|entry| entry.active)
+                .map(|entry| (entry, memory_score(entry) as f32)),
+            limit,
+        )
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect()
     }
 
     pub fn format_for_prompt(&self, limit: usize) -> Option<String> {
@@ -1258,6 +1259,185 @@ fn memory_score(entry: &MemoryEntry) -> f64 {
     score += (entry.strength as f64).ln() * 5.0;
 
     score
+}
+
+#[derive(Debug)]
+struct TopKItem<T> {
+    score: f32,
+    ordinal: usize,
+    value: T,
+}
+
+impl<T> PartialEq for TopKItem<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.score.to_bits() == other.score.to_bits() && self.ordinal == other.ordinal
+    }
+}
+
+impl<T> Eq for TopKItem<T> {}
+
+impl<T> PartialOrd for TopKItem<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T> Ord for TopKItem<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| self.ordinal.cmp(&other.ordinal))
+    }
+}
+
+fn top_k_by_score<T, I>(items: I, limit: usize) -> Vec<(T, f32)>
+where
+    I: IntoIterator<Item = (T, f32)>,
+{
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut heap: BinaryHeap<Reverse<TopKItem<T>>> = BinaryHeap::new();
+
+    for (ordinal, (value, score)) in items.into_iter().enumerate() {
+        let candidate = Reverse(TopKItem {
+            score,
+            ordinal,
+            value,
+        });
+
+        if heap.len() < limit {
+            heap.push(candidate);
+            continue;
+        }
+
+        let replace = heap
+            .peek()
+            .map(|smallest| score > smallest.0.score)
+            .unwrap_or(false);
+        if replace {
+            heap.pop();
+            heap.push(candidate);
+        }
+    }
+
+    let mut results: Vec<_> = heap
+        .into_iter()
+        .map(|Reverse(item)| (item.value, item.score, item.ordinal))
+        .collect();
+    results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+    results
+        .into_iter()
+        .map(|(value, score, _)| (value, score))
+        .collect()
+}
+
+#[derive(Debug)]
+struct TopKOrdItem<T, K> {
+    key: K,
+    ordinal: usize,
+    value: T,
+}
+
+impl<T, K: Ord> PartialEq for TopKOrdItem<T, K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.ordinal == other.ordinal
+    }
+}
+
+impl<T, K: Ord> Eq for TopKOrdItem<T, K> {}
+
+impl<T, K: Ord> PartialOrd for TopKOrdItem<T, K> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T, K: Ord> Ord for TopKOrdItem<T, K> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key
+            .cmp(&other.key)
+            .then_with(|| self.ordinal.cmp(&other.ordinal))
+    }
+}
+
+fn top_k_by_ord<T, K, I>(items: I, limit: usize) -> Vec<(T, K)>
+where
+    I: IntoIterator<Item = (T, K)>,
+    K: Ord,
+{
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut heap: BinaryHeap<Reverse<TopKOrdItem<T, K>>> = BinaryHeap::new();
+
+    for (ordinal, (value, key)) in items.into_iter().enumerate() {
+        let candidate = Reverse(TopKOrdItem {
+            key,
+            ordinal,
+            value,
+        });
+
+        if heap.len() < limit {
+            heap.push(candidate);
+            continue;
+        }
+
+        let replace = heap
+            .peek()
+            .map(|smallest| candidate.0.key > smallest.0.key)
+            .unwrap_or(false);
+        if replace {
+            heap.pop();
+            heap.push(candidate);
+        }
+    }
+
+    let mut results: Vec<_> = heap
+        .into_iter()
+        .map(|Reverse(item)| (item.value, item.key, item.ordinal))
+        .collect();
+    results.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+    results
+        .into_iter()
+        .map(|(value, key, _)| (value, key))
+        .collect()
+}
+
+fn normalize_search_text(text: &str) -> String {
+    let lowered = text.trim().to_lowercase();
+    let mut normalized = String::with_capacity(lowered.len());
+    let mut last_was_space = true;
+
+    for ch in lowered.chars() {
+        let mapped = if ch.is_whitespace() || matches!(ch, '-' | '_' | '/' | '\\' | '.' | ':') {
+            ' '
+        } else {
+            ch
+        };
+
+        if mapped == ' ' {
+            if !last_was_space {
+                normalized.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            normalized.push(mapped);
+            last_was_space = false;
+        }
+    }
+
+    normalized.trim_end().to_string()
+}
+
+fn memory_matches_search(memory: &MemoryEntry, normalized_query: &str) -> bool {
+    normalize_search_text(&memory.content).contains(normalized_query)
+        || memory
+            .tags
+            .iter()
+            .any(|tag| normalize_search_text(tag).contains(normalized_query))
 }
 
 #[derive(Clone)]
@@ -1732,16 +1912,15 @@ impl MemoryManager {
             .collect();
         let scores = crate::embedding::batch_cosine_similarity(query_embedding, &emb_refs);
 
-        let mut scored: Vec<(MemoryEntry, f32)> = entries
-            .into_iter()
-            .zip(scores)
-            .filter(|(_, sim)| *sim >= threshold)
-            .collect();
-
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let scored = top_k_by_score(
+            entries
+                .into_iter()
+                .zip(scores)
+                .filter(|(_, sim)| *sim >= threshold),
+            limit,
+        );
 
         let scored = Self::apply_gap_filter(scored);
-        let scored: Vec<_> = scored.into_iter().take(limit).collect();
 
         Ok(scored)
     }
@@ -1859,17 +2038,24 @@ impl MemoryManager {
     }
 
     pub fn get_prompt_memories_scoped(&self, limit: usize, scope: MemoryScope) -> Option<String> {
-        let mut all_entries = self.collect_memories_scoped(scope).ok()?;
+        let all_entries: Vec<_> = top_k_by_ord(
+            self.collect_memories_scoped(scope)
+                .ok()?
+                .into_iter()
+                .map(|entry| {
+                    let updated_at = entry.updated_at.timestamp_millis();
+                    (entry, updated_at)
+                }),
+            limit,
+        )
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect();
 
         if all_entries.is_empty() {
             return None;
         }
 
-        // Sort by updated_at descending and limit
-        all_entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        all_entries.truncate(limit);
-
-        // Format as prompt
         format_entries_for_prompt(&all_entries, limit)
     }
 
@@ -1909,16 +2095,15 @@ impl MemoryManager {
     }
 
     pub fn search_scoped(&self, query: &str, scope: MemoryScope) -> Result<Vec<MemoryEntry>> {
+        let query_lower = normalize_search_text(query);
+        if query_lower.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut results = Vec::new();
-        let query_lower = query.to_lowercase();
 
         for memory in self.collect_memories_scoped(scope)? {
-            if memory.content.to_lowercase().contains(&query_lower)
-                || memory
-                    .tags
-                    .iter()
-                    .any(|t| t.to_lowercase().contains(&query_lower))
-            {
+            if memory_matches_search(&memory, &query_lower) {
                 results.push(memory);
             }
         }
@@ -1993,19 +2178,19 @@ impl MemoryManager {
         max_candidates: usize,
     ) -> Result<Vec<MemoryEntry>> {
         // Get top candidate memories by score
-        let mut candidates: Vec<_> = self
-            .list_all()?
-            .into_iter()
-            .filter(|entry| entry.active)
-            .collect();
-        candidates.sort_by(|a, b| {
-            let score_a = memory_score(a);
-            let score_b = memory_score(b);
-            score_b
-                .partial_cmp(&score_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        candidates.truncate(max_candidates);
+        let candidates: Vec<_> = top_k_by_score(
+            self.collect_memories_scoped(MemoryScope::All)?
+                .into_iter()
+                .filter(|entry| entry.active)
+                .map(|entry| {
+                    let score = memory_score(&entry) as f32;
+                    (entry, score)
+                }),
+            max_candidates,
+        )
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect();
 
         if candidates.is_empty() {
             return Ok(Vec::new());
@@ -2073,18 +2258,33 @@ impl MemoryManager {
         keywords: &[&str],
         limit: usize,
     ) -> Result<Vec<MemoryEntry>> {
-        let all = self.list_all()?;
-
-        let matches: Vec<_> = all
-            .into_iter()
-            .filter(|e| {
-                let content_lower = e.content.to_lowercase();
-                keywords
-                    .iter()
-                    .any(|kw| content_lower.contains(&kw.to_lowercase()))
-            })
-            .take(limit)
+        let normalized_keywords: Vec<String> = keywords
+            .iter()
+            .map(|keyword| normalize_search_text(keyword))
+            .filter(|keyword| !keyword.is_empty())
             .collect();
+        if normalized_keywords.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let matches: Vec<_> = top_k_by_ord(
+            self.collect_memories_scoped(MemoryScope::All)?
+                .into_iter()
+                .filter(|entry| {
+                    let content_lower = normalize_search_text(&entry.content);
+                    normalized_keywords
+                        .iter()
+                        .any(|kw| content_lower.contains(kw))
+                })
+                .map(|entry| {
+                    let updated_at = entry.updated_at.timestamp_millis();
+                    (entry, updated_at)
+                }),
+            limit,
+        )
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect();
 
         Ok(matches)
     }
@@ -2238,15 +2438,19 @@ impl MemoryManager {
                         });
                     });
 
-                    let mut all: Vec<_> =
-                        self.list_all()?.into_iter().filter(|e| e.active).collect();
-                    all.sort_by(|a, b| {
-                        memory_score(b)
-                            .partial_cmp(&memory_score(a))
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                    all.truncate(MEMORY_RELEVANCE_MAX_CANDIDATES);
-                    all.into_iter().map(|e| (e, 0.0)).collect()
+                    top_k_by_score(
+                        self.collect_memories_scoped(MemoryScope::All)?
+                            .into_iter()
+                            .filter(|entry| entry.active)
+                            .map(|entry| {
+                                let score = memory_score(&entry) as f32;
+                                (entry, score)
+                            }),
+                        MEMORY_RELEVANCE_MAX_CANDIDATES,
+                    )
+                    .into_iter()
+                    .map(|(entry, _)| (entry, 0.0))
+                    .collect()
                 }
             };
 
@@ -2682,10 +2886,9 @@ impl MemoryManager {
             }
         }
 
-        // Look up entries and sort by score
-        let mut results: Vec<(MemoryEntry, f32)> = merged
-            .into_iter()
-            .filter_map(|(id, score)| {
+        // Look up entries and keep only the top-scoring results
+        let results: Vec<(MemoryEntry, f32)> = top_k_by_score(
+            merged.into_iter().filter_map(|(id, score)| {
                 project_graph
                     .as_ref()
                     .and_then(|graph| graph.get_memory(&id))
@@ -2696,11 +2899,9 @@ impl MemoryManager {
                     })
                     .cloned()
                     .map(|entry| (entry, score))
-            })
-            .collect();
-
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        results.truncate(limit);
+            }),
+            limit,
+        );
 
         Ok(results)
     }
@@ -2933,6 +3134,18 @@ mod tests {
     }
 
     #[test]
+    fn memory_search_normalizes_whitespace_and_separators() {
+        let mut store = MemoryStore::new();
+        let entry = MemoryEntry::new(MemoryCategory::Fact, "Uses side panel layout")
+            .with_tags(vec!["build_cache".to_string()]);
+        store.add(entry);
+
+        assert_eq!(store.search("  side-panel  ").len(), 1);
+        assert_eq!(store.search("BUILD.CACHE").len(), 1);
+        assert!(store.search("   ").is_empty());
+    }
+
+    #[test]
     fn manager_persists_and_forgets_memories() {
         with_temp_home(|_dir| {
             let manager = MemoryManager::new_test();
@@ -3041,6 +3254,60 @@ mod tests {
 
             assert_eq!(project_a, vec!["memory from project a".to_string()]);
             assert_eq!(project_b, vec!["memory from project b".to_string()]);
+        });
+    }
+
+    #[test]
+    fn manager_search_scoped_normalizes_whitespace_and_separators() {
+        with_temp_home(|_home| {
+            let manager = MemoryManager::new().with_project_dir("/tmp/jcode-search-normalization");
+
+            manager
+                .remember_project(MemoryEntry::new(
+                    MemoryCategory::Fact,
+                    "project compile notes",
+                ))
+                .expect("remember project");
+
+            let hits = manager
+                .search_scoped("  compile/notes  ", MemoryScope::Project)
+                .expect("search project");
+            assert_eq!(hits.len(), 1);
+        });
+    }
+
+    #[test]
+    fn prompt_memories_scoped_keeps_only_most_recent_entries() {
+        with_temp_home(|_home| {
+            let manager = MemoryManager::new().with_project_dir("/tmp/jcode-prompt-topk");
+
+            let mut oldest = MemoryEntry::new(MemoryCategory::Fact, "oldest memory");
+            oldest.created_at = Utc::now() - chrono::Duration::seconds(30);
+            oldest.updated_at = oldest.created_at;
+
+            let mut middle = MemoryEntry::new(MemoryCategory::Fact, "middle memory");
+            middle.created_at = Utc::now() - chrono::Duration::seconds(20);
+            middle.updated_at = middle.created_at;
+
+            let mut newest = MemoryEntry::new(MemoryCategory::Fact, "newest memory");
+            newest.created_at = Utc::now() - chrono::Duration::seconds(10);
+            newest.updated_at = newest.created_at;
+
+            manager.remember_project(oldest).expect("remember oldest");
+            manager.remember_project(middle).expect("remember middle");
+            manager.remember_project(newest).expect("remember newest");
+
+            let prompt = manager
+                .get_prompt_memories_scoped(2, MemoryScope::Project)
+                .expect("prompt memories");
+
+            assert!(prompt.contains("newest memory"));
+            assert!(prompt.contains("middle memory"));
+            assert!(!prompt.contains("oldest memory"));
+
+            let newest_idx = prompt.find("newest memory").expect("newest in prompt");
+            let middle_idx = prompt.find("middle memory").expect("middle in prompt");
+            assert!(newest_idx < middle_idx);
         });
     }
 

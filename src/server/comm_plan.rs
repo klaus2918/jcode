@@ -24,7 +24,7 @@ pub(super) async fn handle_comm_propose_plan(
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {
@@ -255,7 +255,7 @@ pub(super) async fn handle_comm_approve_plan(
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {
@@ -394,7 +394,7 @@ pub(super) async fn handle_comm_reject_plan(
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {

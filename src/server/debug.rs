@@ -185,7 +185,7 @@ pub(super) async fn handle_debug_client(
     client_debug_state: Arc<RwLock<ClientDebugState>>,
     client_debug_response_tx: broadcast::Sender<(u64, String)>,
     debug_jobs: Arc<RwLock<HashMap<String, DebugJob>>>,
-    event_history: Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: broadcast::Sender<SwarmEvent>,
     server_identity: ServerIdentity,

@@ -9,10 +9,82 @@
 use crate::memory::{MemoryEntry, MemoryStore};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 /// Current graph format version for migration detection
 pub const GRAPH_VERSION: u32 = 2;
+
+#[derive(Debug)]
+struct TopKItem<T> {
+    score: f32,
+    ordinal: usize,
+    value: T,
+}
+
+impl<T> PartialEq for TopKItem<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.score.to_bits() == other.score.to_bits() && self.ordinal == other.ordinal
+    }
+}
+
+impl<T> Eq for TopKItem<T> {}
+
+impl<T> PartialOrd for TopKItem<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T> Ord for TopKItem<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| self.ordinal.cmp(&other.ordinal))
+    }
+}
+
+fn top_k_scored<T, I>(items: I, limit: usize) -> Vec<(T, f32)>
+where
+    I: IntoIterator<Item = (T, f32)>,
+{
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut heap: BinaryHeap<Reverse<TopKItem<T>>> = BinaryHeap::new();
+    for (ordinal, (value, score)) in items.into_iter().enumerate() {
+        let candidate = Reverse(TopKItem {
+            score,
+            ordinal,
+            value,
+        });
+
+        if heap.len() < limit {
+            heap.push(candidate);
+            continue;
+        }
+
+        let replace = heap
+            .peek()
+            .map(|smallest| score > smallest.0.score)
+            .unwrap_or(false);
+        if replace {
+            heap.pop();
+            heap.push(candidate);
+        }
+    }
+
+    let mut results: Vec<_> = heap
+        .into_iter()
+        .map(|Reverse(item)| (item.value, item.score, item.ordinal))
+        .collect();
+    results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+    results
+        .into_iter()
+        .map(|(value, score, _)| (value, score))
+        .collect()
+}
 
 /// Edge relationship types between nodes
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -539,11 +611,8 @@ impl MemoryGraph {
             }
         }
 
-        // Sort by score and limit results
-        let mut sorted: Vec<_> = results.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        sorted.truncate(max_results);
-        sorted
+        // Keep only the top-scoring results
+        top_k_scored(results.into_iter(), max_results)
     }
 
     // ==================== Migration ====================
@@ -778,6 +847,29 @@ mod tests {
             .map(|(_, s)| *s)
             .unwrap();
         assert!(a_score > b_score);
+    }
+
+    #[test]
+    fn test_cascade_retrieval_respects_result_limit_and_order() {
+        let mut graph = MemoryGraph::new();
+
+        let id_a = graph.add_memory(make_test_memory("Memory A"));
+        let id_b = graph.add_memory(make_test_memory("Memory B"));
+        let id_c = graph.add_memory(make_test_memory("Memory C"));
+        let id_d = graph.add_memory(make_test_memory("Memory D"));
+
+        graph.link_memories(&id_a, &id_b, 0.9);
+        graph.link_memories(&id_a, &id_c, 0.8);
+        graph.link_memories(&id_a, &id_d, 0.7);
+
+        let results = graph.cascade_retrieve(&[id_a.clone()], &[1.0], 1, 3);
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, id_a);
+        assert_eq!(results[1].0, id_b);
+        assert_eq!(results[2].0, id_c);
+        assert!(results[0].1 > results[1].1);
+        assert!(results[1].1 > results[2].1);
     }
 
     #[test]

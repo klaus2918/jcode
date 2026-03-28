@@ -40,8 +40,9 @@ use self::reload::await_reload_signal;
 use self::swarm::{
     broadcast_swarm_plan, broadcast_swarm_status, record_swarm_event,
     record_swarm_event_for_session, remove_plan_participant, remove_session_channel_subscriptions,
-    remove_session_from_swarm, rename_plan_participant, run_swarm_message, summarize_plan_items,
-    truncate_detail, update_member_status,
+    remove_session_file_touches, remove_session_from_swarm, rename_plan_participant,
+    run_swarm_message, subscribe_session_to_channel, summarize_plan_items, truncate_detail,
+    unsubscribe_session_from_channel, update_member_status,
 };
 use crate::agent::{Agent, SoftInterruptSource};
 use crate::ambient_runner::AmbientRunnerHandle;
@@ -58,10 +59,10 @@ use tokio::sync::{Mutex, OnceCell, RwLock, broadcast};
 
 mod state;
 
+use self::state::latest_peer_touches;
 pub use self::state::{
     FileAccess, SharedContext, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
 };
-use self::state::{MAX_EVENT_HISTORY, latest_peer_touches};
 use self::state::{
     SessionInterruptQueues, enqueue_soft_interrupt, queue_soft_interrupt_for_session,
     register_session_interrupt_queue, remove_session_interrupt_queue,
@@ -139,6 +140,8 @@ pub struct Server {
     client_connections: Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     /// Track file touches: path -> list of accesses
     file_touches: Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
+    /// Reverse index for file touches: session_id -> touched paths
+    files_touched_by_session: Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
     /// Swarm members: session_id -> SwarmMember info
     swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
     /// Swarm groupings by swarm id -> set of session_ids
@@ -157,8 +160,11 @@ pub struct Server {
     debug_jobs: Arc<RwLock<HashMap<String, DebugJob>>>,
     /// Channel subscriptions (swarm_id -> channel -> session_ids)
     channel_subscriptions: Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    /// Reverse index for channel subscriptions: session_id -> swarm_id -> channels
+    channel_subscriptions_by_session:
+        Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
     /// Event history for real-time event subscription (ring buffer)
-    event_history: Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     /// Counter for event IDs
     event_counter: Arc<std::sync::atomic::AtomicU64>,
     /// Broadcast channel for swarm event subscriptions (debug socket subscribers)
@@ -218,6 +224,7 @@ impl Server {
             client_count: Arc::new(RwLock::new(0)),
             client_connections: Arc::new(RwLock::new(HashMap::new())),
             file_touches: Arc::new(RwLock::new(HashMap::new())),
+            files_touched_by_session: Arc::new(RwLock::new(HashMap::new())),
             swarm_members: Arc::new(RwLock::new(HashMap::new())),
             swarms_by_id: Arc::new(RwLock::new(HashMap::new())),
             shared_context: Arc::new(RwLock::new(HashMap::new())),
@@ -227,7 +234,8 @@ impl Server {
             client_debug_response_tx,
             debug_jobs: Arc::new(RwLock::new(HashMap::new())),
             channel_subscriptions: Arc::new(RwLock::new(HashMap::new())),
-            event_history: Arc::new(RwLock::new(Vec::new())),
+            channel_subscriptions_by_session: Arc::new(RwLock::new(HashMap::new())),
+            event_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             event_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             swarm_event_tx: broadcast::channel(256).0,
             ambient_runner,
@@ -262,6 +270,7 @@ impl Server {
     /// Monitor the global Bus for FileTouch events and detect conflicts
     async fn monitor_bus(
         file_touches: Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
+        files_touched_by_session: Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
         swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
         swarms_by_id: Arc<RwLock<HashMap<String, HashSet<String>>>>,
         _swarm_plans: Arc<RwLock<HashMap<String, VersionedPlan>>>,
@@ -269,7 +278,7 @@ impl Server {
         _shared_context: Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
         sessions: Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
         soft_interrupt_queues: SessionInterruptQueues,
-        event_history: Arc<RwLock<Vec<SwarmEvent>>>,
+        event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
         event_counter: Arc<std::sync::atomic::AtomicU64>,
         swarm_event_tx: broadcast::Sender<SwarmEvent>,
     ) {
@@ -287,6 +296,17 @@ impl Server {
                     accesses.retain(|a| now.duration_since(a.timestamp) < TOUCH_EXPIRY);
                     !accesses.is_empty()
                 });
+                let mut rebuilt_reverse_index: HashMap<String, HashSet<PathBuf>> = HashMap::new();
+                for (path, accesses) in touches.iter() {
+                    for access in accesses {
+                        rebuilt_reverse_index
+                            .entry(access.session_id.clone())
+                            .or_default()
+                            .insert(path.clone());
+                    }
+                }
+                drop(touches);
+                *files_touched_by_session.write().await = rebuilt_reverse_index;
                 last_cleanup = Instant::now();
             }
 
@@ -307,6 +327,13 @@ impl Server {
                             summary: touch.summary.clone(),
                         });
                     }
+                    {
+                        let mut reverse_index = files_touched_by_session.write().await;
+                        reverse_index
+                            .entry(session_id.clone())
+                            .or_default()
+                            .insert(path.clone());
+                    }
 
                     // Record event for subscription
                     {
@@ -315,26 +342,21 @@ impl Server {
                         let session_name = member.and_then(|m| m.friendly_name.clone());
                         let swarm_id = member.and_then(|m| m.swarm_id.clone());
 
-                        let event = SwarmEvent {
-                            id: event_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-                            session_id: session_id.clone(),
+                        drop(members);
+                        record_swarm_event(
+                            &event_history,
+                            &event_counter,
+                            &swarm_event_tx,
+                            session_id.clone(),
                             session_name,
                             swarm_id,
-                            event: SwarmEventType::FileTouch {
+                            SwarmEventType::FileTouch {
                                 path: path.to_string_lossy().to_string(),
                                 op: touch.op.as_str().to_string(),
                                 summary: touch.summary.clone(),
                             },
-                            timestamp: Instant::now(),
-                            absolute_time: std::time::SystemTime::now(),
-                        };
-
-                        let mut history = event_history.write().await;
-                        history.push(event.clone());
-                        if history.len() > MAX_EVENT_HISTORY {
-                            history.remove(0);
-                        }
-                        let _ = swarm_event_tx.send(event);
+                        )
+                        .await;
                     }
 
                     // Find the swarm this session belongs to
@@ -638,6 +660,7 @@ impl Server {
 
         // Spawn the bus monitor for swarm coordination
         let monitor_file_touches = Arc::clone(&self.file_touches);
+        let monitor_files_touched_by_session = Arc::clone(&self.files_touched_by_session);
         let monitor_swarm_members = Arc::clone(&self.swarm_members);
         let monitor_swarms_by_id = Arc::clone(&self.swarms_by_id);
         let monitor_swarm_plans = Arc::clone(&self.swarm_plans);
@@ -651,6 +674,7 @@ impl Server {
         tokio::spawn(async move {
             Self::monitor_bus(
                 monitor_file_touches,
+                monitor_files_touched_by_session,
                 monitor_swarm_members,
                 monitor_swarms_by_id,
                 monitor_swarm_plans,
@@ -770,7 +794,10 @@ impl Server {
         let main_swarm_plans = Arc::clone(&self.swarm_plans);
         let main_swarm_coordinators = Arc::clone(&self.swarm_coordinators);
         let main_file_touches = Arc::clone(&self.file_touches);
+        let main_files_touched_by_session = Arc::clone(&self.files_touched_by_session);
         let main_channel_subscriptions = Arc::clone(&self.channel_subscriptions);
+        let main_channel_subscriptions_by_session =
+            Arc::clone(&self.channel_subscriptions_by_session);
         let main_client_debug_state = Arc::clone(&self.client_debug_state);
         let main_client_debug_response_tx = self.client_debug_response_tx.clone();
         let main_event_history = Arc::clone(&self.event_history);
@@ -801,7 +828,10 @@ impl Server {
                         let swarm_plans = Arc::clone(&main_swarm_plans);
                         let swarm_coordinators = Arc::clone(&main_swarm_coordinators);
                         let file_touches = Arc::clone(&main_file_touches);
+                        let files_touched_by_session = Arc::clone(&main_files_touched_by_session);
                         let channel_subscriptions = Arc::clone(&main_channel_subscriptions);
+                        let channel_subscriptions_by_session =
+                            Arc::clone(&main_channel_subscriptions_by_session);
                         let client_debug_state = Arc::clone(&main_client_debug_state);
                         let client_debug_response_tx = main_client_debug_response_tx.clone();
                         let event_history = Arc::clone(&main_event_history);
@@ -836,7 +866,9 @@ impl Server {
                                 swarm_plans,
                                 swarm_coordinators,
                                 file_touches,
+                                files_touched_by_session,
                                 channel_subscriptions,
+                                channel_subscriptions_by_session,
                                 client_debug_state,
                                 client_debug_response_tx,
                                 event_history,
@@ -1047,7 +1079,10 @@ impl Server {
         let gw_swarm_plans = Arc::clone(&self.swarm_plans);
         let gw_swarm_coordinators = Arc::clone(&self.swarm_coordinators);
         let gw_file_touches = Arc::clone(&self.file_touches);
+        let gw_files_touched_by_session = Arc::clone(&self.files_touched_by_session);
         let gw_channel_subscriptions = Arc::clone(&self.channel_subscriptions);
+        let gw_channel_subscriptions_by_session =
+            Arc::clone(&self.channel_subscriptions_by_session);
         let gw_client_debug_state = Arc::clone(&self.client_debug_state);
         let gw_client_debug_response_tx = self.client_debug_response_tx.clone();
         let gw_event_history = Arc::clone(&self.event_history);
@@ -1076,7 +1111,10 @@ impl Server {
                 let swarm_plans = Arc::clone(&gw_swarm_plans);
                 let swarm_coordinators = Arc::clone(&gw_swarm_coordinators);
                 let file_touches = Arc::clone(&gw_file_touches);
+                let files_touched_by_session = Arc::clone(&gw_files_touched_by_session);
                 let channel_subscriptions = Arc::clone(&gw_channel_subscriptions);
+                let channel_subscriptions_by_session =
+                    Arc::clone(&gw_channel_subscriptions_by_session);
                 let client_debug_state = Arc::clone(&gw_client_debug_state);
                 let client_debug_response_tx = gw_client_debug_response_tx.clone();
                 let event_history = Arc::clone(&gw_event_history);
@@ -1115,7 +1153,9 @@ impl Server {
                         swarm_plans,
                         swarm_coordinators,
                         file_touches,
+                        files_touched_by_session,
                         channel_subscriptions,
+                        channel_subscriptions_by_session,
                         client_debug_state,
                         client_debug_response_tx,
                         event_history,

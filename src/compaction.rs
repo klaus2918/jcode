@@ -20,7 +20,7 @@
 use crate::message::{ContentBlock, Message, Role};
 use crate::provider::Provider;
 use anyhow::Result;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinHandle;
@@ -67,6 +67,12 @@ const EMBED_MAX_CHARS_PER_MSG: usize = 512;
 
 /// Rolling window of per-turn embeddings used for topic-shift detection
 const EMBEDDING_HISTORY_WINDOW: usize = 10;
+
+/// Per-manager semantic embedding cache capacity.
+///
+/// This avoids repeated embedding lookups for the same truncated message and
+/// goal texts across successive semantic compaction checks.
+const SEMANTIC_EMBED_CACHE_CAPACITY: usize = 256;
 
 const SUMMARY_PROMPT: &str = r#"Summarize our conversation so you can continue this work later.
 
@@ -183,6 +189,14 @@ pub struct CompactionManager {
     /// Each entry is the L2-normalized embedding of the last assistant message
     /// of that turn (truncated to EMBED_MAX_CHARS_PER_MSG for speed).
     embedding_history: VecDeque<Vec<f32>>,
+
+    /// Local cache for semantic compaction embeddings keyed by truncated-text hash.
+    /// Stores both successful embeddings and failed lookups (`None`) so repeated
+    /// semantic scans do not redo the same work.
+    semantic_embed_cache: HashMap<u64, (Option<Vec<f32>>, u64)>,
+
+    /// Monotonic recency counter for the semantic embedding cache LRU.
+    semantic_embed_cache_counter: u64,
 }
 
 impl CompactionManager {
@@ -205,6 +219,8 @@ impl CompactionManager {
             token_history: VecDeque::with_capacity(TOKEN_HISTORY_WINDOW + 1),
             turns_since_last_compact: 0,
             embedding_history: VecDeque::with_capacity(EMBEDDING_HISTORY_WINDOW + 1),
+            semantic_embed_cache: HashMap::with_capacity(SEMANTIC_EMBED_CACHE_CAPACITY),
+            semantic_embed_cache_counter: 0,
         }
     }
 
@@ -267,6 +283,8 @@ impl CompactionManager {
         self.token_history.clear();
         self.turns_since_last_compact = 0;
         self.embedding_history.clear();
+        self.semantic_embed_cache.clear();
+        self.semantic_embed_cache_counter = 0;
         self.total_turns = total_messages;
         self.compacted_count = state.compacted_count.min(total_messages);
         self.active_summary = Some(Summary {
@@ -313,14 +331,14 @@ impl CompactionManager {
     /// embedding model is unavailable.
     pub fn push_embedding_snapshot(&mut self, text: &str) {
         let snippet: String = text.chars().take(EMBED_MAX_CHARS_PER_MSG).collect();
-        match crate::embedding::embed(&snippet) {
-            Ok(emb) => {
+        match self.cached_semantic_embedding(&snippet) {
+            Some(emb) => {
                 self.embedding_history.push_back(emb);
                 if self.embedding_history.len() > EMBEDDING_HISTORY_WINDOW {
                     self.embedding_history.pop_front();
                 }
             }
-            Err(_) => {}
+            None => {}
         }
     }
 
@@ -481,68 +499,48 @@ impl CompactionManager {
     /// Messages above `relevance_keep_threshold` anywhere in the history are
     /// pulled out of the summarize set. Falls back to the standard recency
     /// cutoff if embeddings fail.
-    fn semantic_cutoff(&self, active: &[Message]) -> usize {
-        let cfg = &self.compaction_config;
+    fn semantic_cutoff(&mut self, active: &[Message]) -> usize {
+        let goal_window_turns = self.compaction_config.goal_window_turns;
+        let relevance_keep_threshold = self.compaction_config.relevance_keep_threshold;
         let standard_cutoff = active.len().saturating_sub(RECENT_TURNS_TO_KEEP);
         if standard_cutoff == 0 {
             return 0;
         }
 
         // Build goal text from recent turns.
-        let goal_turns = cfg.goal_window_turns.min(active.len());
-        let goal_text: String = active[active.len() - goal_turns..]
-            .iter()
-            .flat_map(|m| m.content.iter())
-            .filter_map(|b| match b {
-                ContentBlock::Text { text, .. } => Some(text.chars().take(200).collect::<String>()),
-                ContentBlock::ToolResult { content, .. } => {
-                    Some(content.chars().take(100).collect::<String>())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        let goal_turns = goal_window_turns.min(active.len());
+        let goal_text = Self::semantic_goal_text(&active[active.len() - goal_turns..]);
 
         if goal_text.is_empty() {
             return standard_cutoff;
         }
 
-        let goal_emb = match crate::embedding::embed(&goal_text) {
-            Ok(e) => e,
-            Err(_) => return standard_cutoff,
+        let goal_emb = match self.cached_semantic_embedding(&goal_text) {
+            Some(embedding) => embedding,
+            None => return standard_cutoff,
         };
 
         // Score each candidate message (those before standard_cutoff).
-        let mut high_relevance: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut high_relevance_count = 0usize;
+        let mut earliest_high_relevance = standard_cutoff;
 
         for (idx, msg) in active[..standard_cutoff].iter().enumerate() {
-            let text: String = msg
-                .content
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text, .. } => Some(
-                        text.chars()
-                            .take(EMBED_MAX_CHARS_PER_MSG)
-                            .collect::<String>(),
-                    ),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
+            let text = Self::semantic_message_text(msg);
 
             if text.is_empty() {
                 continue;
             }
 
-            if let Ok(emb) = crate::embedding::embed(&text) {
-                let sim = crate::embedding::cosine_similarity(&goal_emb, &emb);
-                if sim >= cfg.relevance_keep_threshold {
-                    high_relevance.insert(idx);
+            if let Some(embedding) = self.cached_semantic_embedding(&text) {
+                let sim = crate::embedding::cosine_similarity(&goal_emb, &embedding);
+                if sim >= relevance_keep_threshold {
+                    high_relevance_count += 1;
+                    earliest_high_relevance = earliest_high_relevance.min(idx);
                 }
             }
         }
 
-        if high_relevance.is_empty() {
+        if high_relevance_count == 0 {
             return standard_cutoff;
         }
 
@@ -550,12 +548,7 @@ impl CompactionManager {
         // We can't have gaps in the summarized range (tool call integrity),
         // so we move the cutoff up to just before the earliest high-relevance
         // message in the tail of the compaction range.
-        let mut adjusted_cutoff = standard_cutoff;
-        for &idx in &high_relevance {
-            if idx < adjusted_cutoff {
-                adjusted_cutoff = idx;
-            }
-        }
+        let adjusted_cutoff = earliest_high_relevance;
 
         // Ensure we actually compact something meaningful.
         if adjusted_cutoff < 2 {
@@ -564,9 +557,7 @@ impl CompactionManager {
 
         crate::logging::info(&format!(
             "[compaction/semantic] relevance scoring: {} high-relevance msgs kept, cutoff {} -> {}",
-            high_relevance.len(),
-            standard_cutoff,
-            adjusted_cutoff
+            high_relevance_count, standard_cutoff, adjusted_cutoff
         ));
 
         adjusted_cutoff
@@ -884,61 +875,57 @@ impl CompactionManager {
     /// Find a safe cutoff point that doesn't split tool call/result pairs.
     /// Static version that works on a message slice.
     fn safe_cutoff_static(messages: &[Message], initial_cutoff: usize) -> usize {
-        use std::collections::HashSet;
-
         let mut cutoff = initial_cutoff;
 
-        // Collect tool_use_ids from ToolResults in the "kept" portion (after cutoff)
-        let mut needed_tool_ids: HashSet<String> = HashSet::new();
+        // Track tool call/result ids in the kept portion.
+        let mut available_tool_ids = std::collections::HashSet::new();
+        let mut missing_tool_ids = std::collections::HashSet::new();
+
         for msg in &messages[cutoff..] {
             for block in &msg.content {
-                if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                    needed_tool_ids.insert(tool_use_id.clone());
-                }
-            }
-        }
-
-        if needed_tool_ids.is_empty() {
-            return cutoff;
-        }
-
-        // Collect tool_use_ids from ToolUse blocks in the "kept" portion
-        let mut available_tool_ids: HashSet<String> = HashSet::new();
-        for msg in &messages[cutoff..] {
-            for block in &msg.content {
-                if let ContentBlock::ToolUse { id, .. } = block {
-                    available_tool_ids.insert(id.clone());
-                }
-            }
-        }
-
-        // Find missing tool calls (results exist but calls don't in kept portion)
-        let missing: HashSet<_> = needed_tool_ids
-            .difference(&available_tool_ids)
-            .cloned()
-            .collect();
-
-        if missing.is_empty() {
-            return cutoff;
-        }
-
-        // Move cutoff backwards to include messages with missing tool calls
-        for (idx, msg) in messages[..cutoff].iter().enumerate().rev() {
-            let mut found_any = false;
-            for block in &msg.content {
-                if let ContentBlock::ToolUse { id, .. } = block {
-                    if missing.contains(id) {
-                        found_any = true;
+                match block {
+                    ContentBlock::ToolUse { id, .. } => {
+                        available_tool_ids.insert(id.clone());
+                        missing_tool_ids.remove(id);
                     }
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        if !available_tool_ids.contains(tool_use_id) {
+                            missing_tool_ids.insert(tool_use_id.clone());
+                        }
+                    }
+                    _ => {}
                 }
-            }
-            if found_any {
-                cutoff = idx;
-                return Self::safe_cutoff_static(messages, cutoff);
             }
         }
 
-        // If we couldn't find all tool calls, don't compact at all
+        if missing_tool_ids.is_empty() {
+            return cutoff;
+        }
+
+        // Walk backward once, progressively growing the kept suffix until every
+        // kept tool result has its matching tool use in the same suffix.
+        for (idx, msg) in messages[..cutoff].iter().enumerate().rev() {
+            for block in &msg.content {
+                match block {
+                    ContentBlock::ToolUse { id, .. } => {
+                        available_tool_ids.insert(id.clone());
+                        missing_tool_ids.remove(id);
+                    }
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        if !available_tool_ids.contains(tool_use_id) {
+                            missing_tool_ids.insert(tool_use_id.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if missing_tool_ids.is_empty() {
+                cutoff = idx;
+                return cutoff;
+            }
+        }
+
+        // If we couldn't find every matching tool call, don't compact at all.
         0
     }
 
@@ -1175,6 +1162,87 @@ impl CompactionManager {
             .sum()
     }
 
+    fn semantic_goal_text(messages: &[Message]) -> String {
+        let mut text = String::new();
+        for msg in messages {
+            for block in &msg.content {
+                match block {
+                    ContentBlock::Text {
+                        text: block_text, ..
+                    } => Self::push_semantic_excerpt(&mut text, block_text, 200),
+                    ContentBlock::ToolResult { content, .. } => {
+                        Self::push_semantic_excerpt(&mut text, content, 100)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        text
+    }
+
+    fn semantic_message_text(msg: &Message) -> String {
+        let mut text = String::new();
+        for block in &msg.content {
+            if let ContentBlock::Text {
+                text: block_text, ..
+            } = block
+            {
+                Self::push_semantic_excerpt(&mut text, block_text, EMBED_MAX_CHARS_PER_MSG);
+            }
+        }
+        text
+    }
+
+    fn push_semantic_excerpt(target: &mut String, source: &str, max_chars: usize) {
+        if source.is_empty() {
+            return;
+        }
+        if !target.is_empty() {
+            target.push(' ');
+        }
+        target.extend(source.chars().take(max_chars));
+    }
+
+    fn hash_text(text: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn cached_semantic_embedding(&mut self, text: &str) -> Option<Vec<f32>> {
+        let key = Self::hash_text(text);
+
+        if let Some((cached, recency)) = self.semantic_embed_cache.get_mut(&key) {
+            let counter = self.semantic_embed_cache_counter;
+            self.semantic_embed_cache_counter = counter.wrapping_add(1);
+            *recency = counter;
+            return cached.clone();
+        }
+
+        let embedding = crate::embedding::embed(text).ok();
+        self.insert_semantic_embedding_cache(key, embedding.clone());
+        embedding
+    }
+
+    fn insert_semantic_embedding_cache(&mut self, key: u64, embedding: Option<Vec<f32>>) {
+        if self.semantic_embed_cache.len() >= SEMANTIC_EMBED_CACHE_CAPACITY {
+            let oldest_key = self
+                .semantic_embed_cache
+                .iter()
+                .min_by_key(|(_, (_, recency))| *recency)
+                .map(|(&key, _)| key);
+            if let Some(oldest_key) = oldest_key {
+                self.semantic_embed_cache.remove(&oldest_key);
+            }
+        }
+
+        let counter = self.semantic_embed_cache_counter;
+        self.semantic_embed_cache_counter = counter.wrapping_add(1);
+        self.semantic_embed_cache.insert(key, (embedding, counter));
+    }
+
     /// Poll for compaction completion and return an event if one was applied.
     pub fn poll_compaction_event(&mut self) -> Option<CompactionEvent> {
         self.check_and_apply_compaction();
@@ -1199,6 +1267,12 @@ impl CompactionManager {
         }
 
         let pre_tokens = self.effective_token_count_with(all_messages) as u64;
+        let active_char_counts: Vec<usize> = active.iter().map(Self::message_char_count).collect();
+        let mut remaining_suffix_chars = vec![0usize; active_char_counts.len() + 1];
+        for idx in (0..active_char_counts.len()).rev() {
+            remaining_suffix_chars[idx] =
+                remaining_suffix_chars[idx + 1].saturating_add(active_char_counts[idx]);
+        }
 
         let mut turns_to_keep = RECENT_TURNS_TO_KEEP.min(active.len().saturating_sub(1));
         let mut cutoff;
@@ -1207,8 +1281,7 @@ impl CompactionManager {
             cutoff = Self::safe_cutoff_static(active, cutoff);
 
             if cutoff > 0 {
-                let remaining: usize = active[cutoff..].iter().map(Self::message_char_count).sum();
-                let remaining_tokens = remaining / CHARS_PER_TOKEN;
+                let remaining_tokens = remaining_suffix_chars[cutoff] / CHARS_PER_TOKEN;
                 if remaining_tokens <= self.token_budget {
                     break;
                 }
@@ -1948,6 +2021,57 @@ mod tests {
 
         let cutoff = CompactionManager::safe_cutoff_static(&messages, 2);
         assert_eq!(cutoff, 2, "no tool pairs, cutoff should stay unchanged");
+    }
+
+    #[test]
+    fn test_safe_cutoff_handles_chained_tool_dependencies_without_rescan() {
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool_a".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({"file": "a.txt"}),
+                }],
+                timestamp: None,
+                tool_duration_ms: None,
+            },
+            make_text_message(Role::User, "intermediate"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "tool_a".to_string(),
+                        content: "a contents".to_string(),
+                        is_error: Some(false),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool_b".to_string(),
+                        name: "grep".to_string(),
+                        input: serde_json::json!({"pattern": "foo"}),
+                    },
+                ],
+                timestamp: None,
+                tool_duration_ms: None,
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool_b".to_string(),
+                    content: "foo".to_string(),
+                    is_error: Some(false),
+                }],
+                timestamp: None,
+                tool_duration_ms: None,
+            },
+            make_text_message(Role::Assistant, "done"),
+        ];
+
+        let cutoff = CompactionManager::safe_cutoff_static(&messages, 3);
+        assert_eq!(
+            cutoff, 0,
+            "cutoff should walk back through nested tool dependencies until the kept suffix is self-contained"
+        );
     }
 
     // ── emergency_truncate_with ─────────────────────────────────────

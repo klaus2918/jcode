@@ -1,11 +1,13 @@
 use super::{
-    ClientConnectionInfo, ClientDebugState, SessionInterruptQueues, SwarmEvent, SwarmEventType,
-    SwarmMember, VersionedPlan, record_swarm_event, remove_session_channel_subscriptions,
-    remove_session_from_swarm, remove_session_interrupt_queue, update_member_status,
+    ClientConnectionInfo, ClientDebugState, FileAccess, SessionInterruptQueues, SwarmEvent,
+    SwarmEventType, SwarmMember, VersionedPlan, record_swarm_event,
+    remove_session_channel_subscriptions, remove_session_file_touches, remove_session_from_swarm,
+    remove_session_interrupt_queue, update_member_status,
 };
 use crate::agent::{Agent, InterruptSignal};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, broadcast};
@@ -42,14 +44,19 @@ pub(super) async fn cleanup_client_connection(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
+    files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions_by_session: &Arc<
+        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
+    >,
     client_debug_state: &Arc<RwLock<ClientDebugState>>,
     client_debug_id: &str,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     client_connection_id: &str,
     shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
-    event_history: &Arc<RwLock<Vec<SwarmEvent>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) -> Result<()> {
@@ -161,7 +168,14 @@ pub(super) async fn cleanup_client_connection(
             )
             .await;
         }
-        remove_session_channel_subscriptions(client_session_id, channel_subscriptions).await;
+        remove_session_channel_subscriptions(
+            client_session_id,
+            channel_subscriptions,
+            channel_subscriptions_by_session,
+        )
+        .await;
+        remove_session_file_touches(client_session_id, file_touches, files_touched_by_session)
+            .await;
     }
 
     {
