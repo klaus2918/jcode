@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use super::keybind::{CenteredToggleKeys, ModelSwitchKeys, OptionalBinding, ScrollKeys};
+use super::keybind::{
+    CenteredToggleKeys, ModelSwitchKeys, OptionalBinding, ScrollKeys, WorkspaceNavigationKeys,
+};
 use super::markdown::IncrementalMarkdownRenderer;
 use super::stream_buffer::StreamBuffer;
 use crate::bus::{Bus, BusEvent, LoginCompleted, ToolEvent, ToolStatus};
@@ -543,6 +545,8 @@ pub struct App {
     scroll_keys: ScrollKeys,
     // Keybinding for centered-mode toggle
     centered_toggle_keys: CenteredToggleKeys,
+    // Keybindings for Niri-style workspace navigation
+    workspace_navigation_keys: WorkspaceNavigationKeys,
     // Optional configured keybinding for external dictation
     dictation_key: OptionalBinding,
     // Active external dictation session, if one is running

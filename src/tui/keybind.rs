@@ -23,6 +23,48 @@ pub struct ModelSwitchKeys {
     pub prev_label: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspaceNavigationDirection {
+    Left,
+    Down,
+    Up,
+    Right,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkspaceNavigationKeys {
+    pub left: KeyBinding,
+    pub down: KeyBinding,
+    pub up: KeyBinding,
+    pub right: KeyBinding,
+    pub left_label: String,
+    pub down_label: String,
+    pub up_label: String,
+    pub right_label: String,
+}
+
+impl WorkspaceNavigationKeys {
+    pub fn direction_for(
+        &self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Option<WorkspaceNavigationDirection> {
+        if self.left.matches(code, modifiers) {
+            return Some(WorkspaceNavigationDirection::Left);
+        }
+        if self.down.matches(code, modifiers) {
+            return Some(WorkspaceNavigationDirection::Down);
+        }
+        if self.up.matches(code, modifiers) {
+            return Some(WorkspaceNavigationDirection::Up);
+        }
+        if self.right.matches(code, modifiers) {
+            return Some(WorkspaceNavigationDirection::Right);
+        }
+        None
+    }
+}
+
 impl ModelSwitchKeys {
     pub fn direction_for(&self, code: KeyCode, modifiers: KeyModifiers) -> Option<i8> {
         if self.next.matches(code, modifiers) {
@@ -62,6 +104,46 @@ pub fn load_model_switch_keys() -> ModelSwitchKeys {
         prev,
         next_label,
         prev_label,
+    }
+}
+
+pub fn load_workspace_navigation_keys() -> WorkspaceNavigationKeys {
+    let cfg = config();
+
+    let default_left = KeyBinding {
+        code: KeyCode::Char('h'),
+        modifiers: KeyModifiers::ALT,
+    };
+    let default_down = KeyBinding {
+        code: KeyCode::Char('j'),
+        modifiers: KeyModifiers::ALT,
+    };
+    let default_up = KeyBinding {
+        code: KeyCode::Char('k'),
+        modifiers: KeyModifiers::ALT,
+    };
+    let default_right = KeyBinding {
+        code: KeyCode::Char('l'),
+        modifiers: KeyModifiers::ALT,
+    };
+
+    let (left, left_label) =
+        parse_or_default(&cfg.keybindings.workspace_left, default_left, "Alt+H");
+    let (down, down_label) =
+        parse_or_default(&cfg.keybindings.workspace_down, default_down, "Alt+J");
+    let (up, up_label) = parse_or_default(&cfg.keybindings.workspace_up, default_up, "Alt+K");
+    let (right, right_label) =
+        parse_or_default(&cfg.keybindings.workspace_right, default_right, "Alt+L");
+
+    WorkspaceNavigationKeys {
+        left,
+        down,
+        up,
+        right,
+        left_label,
+        down_label,
+        up_label,
+        right_label,
     }
 }
 
@@ -672,5 +754,52 @@ mod tests {
         assert!(binding.modifiers.contains(KeyModifiers::CONTROL));
         assert!(binding.modifiers.contains(KeyModifiers::SHIFT));
         assert_eq!(format_binding(&binding), "Ctrl+Shift+F23");
+    }
+
+    #[test]
+    fn workspace_navigation_keys_match_super_bindings() {
+        let keys = WorkspaceNavigationKeys {
+            left: KeyBinding {
+                code: KeyCode::Char('h'),
+                modifiers: KeyModifiers::SUPER,
+            },
+            down: KeyBinding {
+                code: KeyCode::Char('j'),
+                modifiers: KeyModifiers::SUPER,
+            },
+            up: KeyBinding {
+                code: KeyCode::Char('k'),
+                modifiers: KeyModifiers::SUPER,
+            },
+            right: KeyBinding {
+                code: KeyCode::Char('l'),
+                modifiers: KeyModifiers::SUPER,
+            },
+            left_label: "Super+H".to_string(),
+            down_label: "Super+J".to_string(),
+            up_label: "Super+K".to_string(),
+            right_label: "Super+L".to_string(),
+        };
+
+        assert_eq!(
+            keys.direction_for(KeyCode::Char('h'), KeyModifiers::SUPER),
+            Some(WorkspaceNavigationDirection::Left)
+        );
+        assert_eq!(
+            keys.direction_for(KeyCode::Char('j'), KeyModifiers::SUPER),
+            Some(WorkspaceNavigationDirection::Down)
+        );
+        assert_eq!(
+            keys.direction_for(KeyCode::Char('k'), KeyModifiers::SUPER),
+            Some(WorkspaceNavigationDirection::Up)
+        );
+        assert_eq!(
+            keys.direction_for(KeyCode::Char('l'), KeyModifiers::SUPER),
+            Some(WorkspaceNavigationDirection::Right)
+        );
+        assert_eq!(
+            keys.direction_for(KeyCode::Char('h'), KeyModifiers::ALT),
+            None
+        );
     }
 }

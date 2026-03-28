@@ -7,6 +7,7 @@ use crate::message::ToolCall;
 use crate::protocol::{NotificationType, ServerEvent, TranscriptMode};
 use crate::tool::selfdev::ReloadContext;
 use crate::tui::backend::{RemoteConnection, RemoteDisconnectReason, RemoteEventState, RemoteRead};
+use crate::tui::keybind::WorkspaceNavigationDirection;
 use crate::tui::ui::capitalize;
 use anyhow::Result;
 use crossterm::event::{
@@ -179,16 +180,19 @@ async fn handle_workspace_navigation_key(
     modifiers: KeyModifiers,
     remote: &mut RemoteConnection,
 ) -> Result<bool> {
-    if !modifiers.contains(KeyModifiers::ALT) || !crate::tui::workspace_client::is_enabled() {
+    if !crate::tui::workspace_client::is_enabled() {
         return Ok(false);
     }
 
-    let target = match code {
-        KeyCode::Char('h') => crate::tui::workspace_client::navigate_left(),
-        KeyCode::Char('l') => crate::tui::workspace_client::navigate_right(),
-        KeyCode::Char('k') => crate::tui::workspace_client::navigate_up(),
-        KeyCode::Char('j') => crate::tui::workspace_client::navigate_down(),
-        _ => return Ok(false),
+    let Some(direction) = app.workspace_navigation_keys.direction_for(code, modifiers) else {
+        return Ok(false);
+    };
+
+    let target = match direction {
+        WorkspaceNavigationDirection::Left => crate::tui::workspace_client::navigate_left(),
+        WorkspaceNavigationDirection::Right => crate::tui::workspace_client::navigate_right(),
+        WorkspaceNavigationDirection::Up => crate::tui::workspace_client::navigate_up(),
+        WorkspaceNavigationDirection::Down => crate::tui::workspace_client::navigate_down(),
     };
 
     if app.is_processing {

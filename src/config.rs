@@ -185,6 +185,14 @@ pub struct KeybindingsConfig {
     pub scroll_up_fallback: String,
     /// Scroll down fallback key (default: "cmd+j")
     pub scroll_down_fallback: String,
+    /// Workspace navigation left key (default: "alt+h")
+    pub workspace_left: String,
+    /// Workspace navigation down key (default: "alt+j")
+    pub workspace_down: String,
+    /// Workspace navigation up key (default: "alt+k")
+    pub workspace_up: String,
+    /// Workspace navigation right key (default: "alt+l")
+    pub workspace_right: String,
 }
 
 impl Default for KeybindingsConfig {
@@ -204,6 +212,10 @@ impl Default for KeybindingsConfig {
             scroll_bookmark: "ctrl+g".to_string(),
             scroll_up_fallback: "cmd+k".to_string(),
             scroll_down_fallback: "cmd+j".to_string(),
+            workspace_left: "alt+h".to_string(),
+            workspace_down: "alt+j".to_string(),
+            workspace_up: "alt+k".to_string(),
+            workspace_right: "alt+l".to_string(),
         }
     }
 }
@@ -722,6 +734,18 @@ impl Config {
         if let Ok(v) = std::env::var("JCODE_SCROLL_DOWN_FALLBACK_KEY") {
             self.keybindings.scroll_down_fallback = v;
         }
+        if let Ok(v) = std::env::var("JCODE_WORKSPACE_LEFT_KEY") {
+            self.keybindings.workspace_left = v;
+        }
+        if let Ok(v) = std::env::var("JCODE_WORKSPACE_DOWN_KEY") {
+            self.keybindings.workspace_down = v;
+        }
+        if let Ok(v) = std::env::var("JCODE_WORKSPACE_UP_KEY") {
+            self.keybindings.workspace_up = v;
+        }
+        if let Ok(v) = std::env::var("JCODE_WORKSPACE_RIGHT_KEY") {
+            self.keybindings.workspace_right = v;
+        }
 
         // Dictation
         if let Ok(v) = std::env::var("JCODE_DICTATION_COMMAND") {
@@ -1210,6 +1234,12 @@ scroll_bookmark = "ctrl+g"
 scroll_up_fallback = "cmd+k"
 scroll_down_fallback = "cmd+j"
 
+# Workspace navigation (Niri-style)
+workspace_left = "alt+h"
+workspace_down = "alt+j"
+workspace_up = "alt+k"
+workspace_right = "alt+l"
+
 [dictation]
 # External speech-to-text command.
 # The command should record/transcribe speech and print the final transcript to stdout.
@@ -1415,6 +1445,10 @@ desktop_notifications = true
 - Prompt up: `{}`
 - Prompt down: `{}`
 - Scroll bookmark: `{}`
+- Workspace left: `{}`
+- Workspace down: `{}`
+- Workspace up: `{}`
+- Workspace right: `{}`
 
 **Dictation:**
 - Command: `{}`
@@ -1498,6 +1532,10 @@ desktop_notifications = true
             self.keybindings.scroll_prompt_up,
             self.keybindings.scroll_prompt_down,
             self.keybindings.scroll_bookmark,
+            self.keybindings.workspace_left,
+            self.keybindings.workspace_down,
+            self.keybindings.workspace_up,
+            self.keybindings.workspace_right,
             if self.dictation.command.trim().is_empty() {
                 "(disabled)"
             } else {
