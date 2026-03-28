@@ -8,9 +8,128 @@ use super::{
 use crate::agent::Agent;
 use crate::protocol::{NotificationType, ServerEvent};
 use crate::provider::Provider;
+use crate::session::Session;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+
+fn create_visible_spawn_session(
+    working_dir: Option<&str>,
+    model_override: Option<&str>,
+    selfdev_requested: bool,
+) -> anyhow::Result<(String, PathBuf)> {
+    let cwd = working_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let mut session = Session::create(None, None);
+    session.working_dir = Some(cwd.display().to_string());
+    if let Some(model) = model_override {
+        session.model = Some(model.to_string());
+    }
+    if selfdev_requested {
+        session.set_canary("self-dev");
+    }
+    session.save()?;
+
+    Ok((session.id.clone(), cwd))
+}
+
+fn spawn_visible_session_window(
+    session_id: &str,
+    cwd: &PathBuf,
+    selfdev_requested: bool,
+) -> anyhow::Result<bool> {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("jcode"));
+    if selfdev_requested {
+        crate::cli::tui_launch::spawn_selfdev_in_new_terminal(&exe, session_id, cwd)
+    } else {
+        crate::cli::tui_launch::spawn_resume_in_new_terminal(&exe, session_id, cwd)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_initial_message_runner(
+    new_session_id: String,
+    initial_msg: String,
+    sessions: Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    event_history: Arc<RwLock<Vec<SwarmEvent>>>,
+    event_counter: Arc<std::sync::atomic::AtomicU64>,
+    swarm_event_tx: broadcast::Sender<SwarmEvent>,
+) {
+    tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+
+        loop {
+            let agent_arc = {
+                let agent_sessions = sessions.read().await;
+                agent_sessions.get(&new_session_id).cloned()
+            };
+            let is_headed = {
+                let members = swarm_members.read().await;
+                members
+                    .get(&new_session_id)
+                    .map(|member| !member.is_headless)
+                    .unwrap_or(false)
+            };
+
+            if let (Some(agent_arc), true) = (agent_arc, is_headed) {
+                update_member_status(
+                    &new_session_id,
+                    "running",
+                    Some(truncate_detail(&initial_msg, 120)),
+                    &swarm_members,
+                    &swarms_by_id,
+                    Some(&event_history),
+                    Some(&event_counter),
+                    Some(&swarm_event_tx),
+                )
+                .await;
+
+                let (drain_tx, mut drain_rx) = tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
+                tokio::spawn(async move { while drain_rx.recv().await.is_some() {} });
+                let result = process_message_streaming_mpsc(
+                    Arc::clone(&agent_arc),
+                    &initial_msg,
+                    vec![],
+                    None,
+                    drain_tx,
+                )
+                .await;
+                let (new_status, new_detail) = match result {
+                    Ok(()) => ("ready", None),
+                    Err(ref error) => ("failed", Some(truncate_detail(&error.to_string(), 120))),
+                };
+                update_member_status(
+                    &new_session_id,
+                    new_status,
+                    new_detail,
+                    &swarm_members,
+                    &swarms_by_id,
+                    Some(&event_history),
+                    Some(&event_counter),
+                    Some(&swarm_event_tx),
+                )
+                .await;
+                return;
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                crate::logging::warn(&format!(
+                    "Timed out waiting for headed spawned session {} to connect before sending initial message",
+                    new_session_id
+                ));
+                return;
+            }
+
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    });
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_comm_spawn(
@@ -48,11 +167,6 @@ pub(super) async fn handle_comm_spawn(
         None => return,
     };
 
-    let cmd = if let Some(ref dir) = working_dir {
-        format!("create_session:{dir}")
-    } else {
-        "create_session".to_string()
-    };
     let coordinator_model = {
         let agent_sessions = sessions.read().await;
         agent_sessions.get(&req_session_id).and_then(|agent| {
@@ -75,32 +189,56 @@ pub(super) async fn handle_comm_spawn(
             .unwrap_or(false)
     };
 
-    match create_headless_session(
-        sessions,
-        global_session_id,
-        provider_template,
-        &cmd,
-        swarm_members,
-        swarms_by_id,
-        swarm_coordinators,
-        swarm_plans,
-        soft_interrupt_queues,
+    let visible_spawn = create_visible_spawn_session(
+        working_dir.as_deref(),
+        coordinator_model.as_deref(),
         coordinator_is_canary,
-        coordinator_model,
-        Some(Arc::clone(mcp_pool)),
     )
-    .await
-    {
-        Ok(result_json) => {
-            let new_session_id = serde_json::from_str::<serde_json::Value>(&result_json)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("session_id")
-                        .and_then(|session_id| session_id.as_str())
-                        .map(|session_id| session_id.to_string())
-                })
-                .unwrap_or_default();
+    .and_then(|(new_session_id, cwd)| {
+        let launched = spawn_visible_session_window(&new_session_id, &cwd, coordinator_is_canary)?;
+        Ok((new_session_id, launched))
+    });
+
+    let spawn_result: anyhow::Result<(String, bool)> = match visible_spawn {
+        Ok((new_session_id, true)) => Ok((new_session_id, false)),
+        Ok((_, false)) | Err(_) => {
+            let cmd = if let Some(ref dir) = working_dir {
+                format!("create_session:{dir}")
+            } else {
+                "create_session".to_string()
+            };
+            create_headless_session(
+                sessions,
+                global_session_id,
+                provider_template,
+                &cmd,
+                swarm_members,
+                swarms_by_id,
+                swarm_coordinators,
+                swarm_plans,
+                soft_interrupt_queues,
+                coordinator_is_canary,
+                coordinator_model.clone(),
+                Some(Arc::clone(mcp_pool)),
+            )
+            .await
+            .and_then(|result_json| {
+                serde_json::from_str::<serde_json::Value>(&result_json)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("session_id")
+                            .and_then(|session_id| session_id.as_str())
+                            .map(|session_id| session_id.to_string())
+                    })
+                    .map(|session_id| (session_id, true))
+                    .ok_or_else(|| anyhow::anyhow!("Failed to parse spawned session id"))
+            })
+        }
+    };
+
+    match spawn_result {
+        Ok((new_session_id, is_headless_fallback)) => {
 
             {
                 let mut plans = swarm_plans.write().await;
@@ -120,71 +258,84 @@ pub(super) async fn handle_comm_spawn(
                 swarms_by_id,
             )
             .await;
-            record_swarm_event_for_session(
-                &new_session_id,
-                SwarmEventType::MemberChange {
-                    action: "joined".to_string(),
-                },
-                swarm_members,
-                event_history,
-                event_counter,
-                swarm_event_tx,
-            )
-            .await;
-
             if let Some(initial_msg) = initial_message {
-                let agent_arc = {
-                    let agent_sessions = sessions.read().await;
-                    agent_sessions.get(&new_session_id).cloned()
-                };
-                if let Some(agent_arc) = agent_arc {
-                    let sid_clone = new_session_id.clone();
-                    let swarm_members2 = Arc::clone(swarm_members);
-                    let swarms_by_id2 = Arc::clone(swarms_by_id);
-                    let event_history2 = Arc::clone(event_history);
-                    let event_counter2 = Arc::clone(event_counter);
-                    let swarm_event_tx2 = swarm_event_tx.clone();
-                    tokio::spawn(async move {
-                        update_member_status(
-                            &sid_clone,
-                            "running",
-                            Some(truncate_detail(&initial_msg, 120)),
-                            &swarm_members2,
-                            &swarms_by_id2,
-                            Some(&event_history2),
-                            Some(&event_counter2),
-                            Some(&swarm_event_tx2),
-                        )
-                        .await;
-                        let (drain_tx, mut drain_rx) =
-                            tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
-                        tokio::spawn(async move { while drain_rx.recv().await.is_some() {} });
-                        let result = process_message_streaming_mpsc(
-                            Arc::clone(&agent_arc),
-                            &initial_msg,
-                            vec![],
-                            None,
-                            drain_tx,
-                        )
-                        .await;
-                        let (new_status, new_detail) = match result {
-                            Ok(()) => ("ready", None),
-                            Err(ref error) => {
-                                ("failed", Some(truncate_detail(&error.to_string(), 120)))
-                            }
-                        };
-                        update_member_status(
-                            &sid_clone,
-                            new_status,
-                            new_detail,
-                            &swarm_members2,
-                            &swarms_by_id2,
-                            Some(&event_history2),
-                            Some(&event_counter2),
-                            Some(&swarm_event_tx2),
-                        )
-                        .await;
-                    });
+                if is_headless_fallback {
+                    record_swarm_event_for_session(
+                        &new_session_id,
+                        SwarmEventType::MemberChange {
+                            action: "joined".to_string(),
+                        },
+                        swarm_members,
+                        event_history,
+                        event_counter,
+                        swarm_event_tx,
+                    )
+                    .await;
+
+                    let agent_arc = {
+                        let agent_sessions = sessions.read().await;
+                        agent_sessions.get(&new_session_id).cloned()
+                    };
+                    if let Some(agent_arc) = agent_arc {
+                        let sid_clone = new_session_id.clone();
+                        let swarm_members2 = Arc::clone(swarm_members);
+                        let swarms_by_id2 = Arc::clone(swarms_by_id);
+                        let event_history2 = Arc::clone(event_history);
+                        let event_counter2 = Arc::clone(event_counter);
+                        let swarm_event_tx2 = swarm_event_tx.clone();
+                        tokio::spawn(async move {
+                            update_member_status(
+                                &sid_clone,
+                                "running",
+                                Some(truncate_detail(&initial_msg, 120)),
+                                &swarm_members2,
+                                &swarms_by_id2,
+                                Some(&event_history2),
+                                Some(&event_counter2),
+                                Some(&swarm_event_tx2),
+                            )
+                            .await;
+                            let (drain_tx, mut drain_rx) =
+                                tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
+                            tokio::spawn(async move { while drain_rx.recv().await.is_some() {} });
+                            let result = process_message_streaming_mpsc(
+                                Arc::clone(&agent_arc),
+                                &initial_msg,
+                                vec![],
+                                None,
+                                drain_tx,
+                            )
+                            .await;
+                            let (new_status, new_detail) = match result {
+                                Ok(()) => ("ready", None),
+                                Err(ref error) => {
+                                    ("failed", Some(truncate_detail(&error.to_string(), 120)))
+                                }
+                            };
+                            update_member_status(
+                                &sid_clone,
+                                new_status,
+                                new_detail,
+                                &swarm_members2,
+                                &swarms_by_id2,
+                                Some(&event_history2),
+                                Some(&event_counter2),
+                                Some(&swarm_event_tx2),
+                            )
+                            .await;
+                        });
+                    }
+                } else {
+                    spawn_initial_message_runner(
+                        new_session_id.clone(),
+                        initial_msg,
+                        Arc::clone(sessions),
+                        Arc::clone(swarm_members),
+                        Arc::clone(swarms_by_id),
+                        Arc::clone(event_history),
+                        Arc::clone(event_counter),
+                        swarm_event_tx.clone(),
+                    );
                 }
             }
 

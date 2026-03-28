@@ -33,6 +33,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct SessionInfo {
     pub id: String,
+    pub parent_id: Option<String>,
     pub short_name: String,
     pub icon: String,
     pub title: String,
@@ -41,6 +42,7 @@ pub struct SessionInfo {
     pub assistant_message_count: usize,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub last_message_time: chrono::DateTime<chrono::Utc>,
+    pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
     pub working_dir: Option<String>,
     pub model: Option<String>,
     pub provider_key: Option<String>,
@@ -268,9 +270,13 @@ fn collect_recent_session_stems(sessions_dir: &Path, scan_limit: usize) -> Resul
 #[derive(Deserialize)]
 struct SessionSummary {
     #[serde(default)]
+    parent_id: Option<String>,
+    #[serde(default)]
     title: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    last_active_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     messages: Vec<SessionMessageSummary>,
     #[serde(default)]
@@ -375,6 +381,8 @@ impl SessionTokenUsageSummary {
 #[derive(Deserialize)]
 struct SessionJournalSummaryMeta {
     #[serde(default)]
+    parent_id: Option<String>,
+    #[serde(default)]
     title: Option<String>,
     updated_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
@@ -395,6 +403,8 @@ struct SessionJournalSummaryMeta {
     save_label: Option<String>,
     #[serde(default)]
     status: SessionStatus,
+    #[serde(default)]
+    last_active_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Deserialize)]
@@ -422,8 +432,10 @@ fn load_session_summary(path: &Path) -> Result<SessionSummary> {
 
             match serde_json::from_str::<SessionJournalSummaryEntry>(trimmed) {
                 Ok(entry) => {
+                    summary.parent_id = entry.meta.parent_id;
                     summary.title = entry.meta.title;
                     summary.updated_at = entry.meta.updated_at;
+                    summary.last_active_at = entry.meta.last_active_at;
                     summary.working_dir = entry.meta.working_dir;
                     summary.short_name = entry.meta.short_name;
                     summary.provider_key = entry.meta.provider_key;
@@ -467,25 +479,38 @@ fn build_messages_preview(session: &Session) -> Vec<PreviewMessage> {
         .collect()
 }
 
-fn crashed_sessions_from_visible_sessions(sessions: &[SessionInfo]) -> Option<CrashedSessionsInfo> {
+fn crashed_sessions_from_all_sessions(sessions: &[SessionInfo]) -> Option<CrashedSessionsInfo> {
+    let recovered_parents: HashSet<&str> = sessions
+        .iter()
+        .filter(|s| s.id.starts_with("session_recovery_"))
+        .filter_map(|s| s.parent_id.as_deref())
+        .collect();
+
     let mut crashed: Vec<&SessionInfo> = sessions
         .iter()
         .filter(|s| matches!(s.status, SessionStatus::Crashed { .. }))
+        .filter(|s| !recovered_parents.contains(s.id.as_str()))
         .collect();
     if crashed.is_empty() {
         return None;
     }
 
-    crashed.sort_by(|a, b| b.last_message_time.cmp(&a.last_message_time));
-    let most_recent = crashed[0].last_message_time;
+    let crash_timestamp =
+        |session: &SessionInfo| session.last_active_at.unwrap_or(session.last_message_time);
+    let most_recent = crashed
+        .iter()
+        .map(|session| crash_timestamp(session))
+        .max()?;
     let crash_window = chrono::Duration::seconds(60);
     crashed.retain(|s| {
-        let delta = most_recent.signed_duration_since(s.last_message_time);
+        let delta = most_recent.signed_duration_since(crash_timestamp(s));
         delta >= chrono::Duration::zero() && delta <= crash_window
     });
     if crashed.is_empty() {
         return None;
     }
+
+    crashed.sort_by(|a, b| b.last_message_time.cmp(&a.last_message_time));
 
     Some(CrashedSessionsInfo {
         session_ids: crashed.iter().map(|s| s.id.clone()).collect(),
@@ -565,6 +590,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
 
             sessions.push(SessionInfo {
                 id: stem.to_string(),
+                parent_id: session.parent_id,
                 short_name,
                 icon: icon.to_string(),
                 title,
@@ -573,6 +599,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
                 assistant_message_count,
                 created_at: session.created_at,
                 last_message_time: session.updated_at,
+                last_active_at: session.last_active_at,
                 working_dir: session.working_dir,
                 model: session.model,
                 provider_key: session.provider_key,
@@ -780,7 +807,7 @@ pub enum PickerItem {
         version: String,
         session_count: usize,
     },
-    Session(SessionInfo),
+    Session,
     OrphanHeader {
         session_count: usize,
     },
@@ -836,7 +863,7 @@ impl SessionPicker {
         let total_session_count = sessions.len();
         let hidden_test_count = sessions.iter().filter(|s| s.is_debug).count();
 
-        let crashed_sessions = crashed_sessions_from_visible_sessions(&sessions);
+        let crashed_sessions = crashed_sessions_from_all_sessions(&sessions);
         let crashed_session_ids: HashSet<String> = crashed_sessions
             .as_ref()
             .map(|info| info.session_ids.iter().cloned().collect())
@@ -888,15 +915,13 @@ impl SessionPicker {
         let server_count = server_groups.len();
 
         // Gather all sessions for crash detection
-        let all_for_crash: Vec<&SessionInfo> = server_groups
+        let all_for_crash: Vec<SessionInfo> = server_groups
             .iter()
             .flat_map(|g| g.sessions.iter())
             .chain(orphan_sessions.iter())
-            .filter(|s| !s.is_debug)
+            .cloned()
             .collect();
-        let crashed_sessions = crashed_sessions_from_visible_sessions(
-            &all_for_crash.into_iter().cloned().collect::<Vec<_>>(),
-        );
+        let crashed_sessions = crashed_sessions_from_all_sessions(&all_for_crash);
         let crashed_session_ids: HashSet<String> = crashed_sessions
             .as_ref()
             .map(|info| info.session_ids.iter().cloned().collect())
@@ -1168,26 +1193,26 @@ impl SessionPicker {
     fn collect_filtered_sessions(
         &self,
         session_visible: impl Fn(&SessionInfo) -> bool,
-    ) -> Vec<SessionInfo> {
+    ) -> Vec<&SessionInfo> {
         let mut filtered = Vec::new();
 
         if !self.all_server_groups.is_empty() {
             for group in &self.all_server_groups {
                 for session in &group.sessions {
                     if session_visible(session) {
-                        filtered.push(session.clone());
+                        filtered.push(session);
                     }
                 }
             }
             for session in &self.all_orphan_sessions {
                 if session_visible(session) {
-                    filtered.push(session.clone());
+                    filtered.push(session);
                 }
             }
         } else {
             for session in &self.all_sessions {
                 if session_visible(session) {
-                    filtered.push(session.clone());
+                    filtered.push(session);
                 }
             }
         }
@@ -1213,11 +1238,15 @@ impl SessionPicker {
         self.item_to_session.clear();
 
         if filter_mode != SessionFilterMode::All {
-            let filtered = self.collect_filtered_sessions(session_visible);
+            let filtered: Vec<SessionInfo> = self
+                .collect_filtered_sessions(session_visible)
+                .into_iter()
+                .cloned()
+                .collect();
             for session in filtered {
                 let session_idx = self.sessions.len();
-                self.sessions.push(session.clone());
-                self.items.push(PickerItem::Session(session));
+                self.sessions.push(session);
+                self.items.push(PickerItem::Session);
                 self.item_to_session.push(Some(session_idx));
             }
 
@@ -1244,7 +1273,7 @@ impl SessionPicker {
             return;
         }
 
-        let mut saved_sessions: Vec<SessionInfo> = Vec::new();
+        let mut saved_sessions: Vec<&SessionInfo> = Vec::new();
         let mut saved_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         if !self.all_server_groups.is_empty() {
@@ -1252,21 +1281,21 @@ impl SessionPicker {
                 for s in &group.sessions {
                     if s.saved && session_visible(s) {
                         saved_ids.insert(s.id.clone());
-                        saved_sessions.push(s.clone());
+                        saved_sessions.push(s);
                     }
                 }
             }
             for s in &self.all_orphan_sessions {
                 if s.saved && session_visible(s) {
                     saved_ids.insert(s.id.clone());
-                    saved_sessions.push(s.clone());
+                    saved_sessions.push(s);
                 }
             }
         } else {
             for s in &self.all_sessions {
                 if s.saved && session_visible(s) {
                     saved_ids.insert(s.id.clone());
-                    saved_sessions.push(s.clone());
+                    saved_sessions.push(s);
                 }
             }
         }
@@ -1282,7 +1311,7 @@ impl SessionPicker {
             for session in saved_sessions {
                 let session_idx = self.sessions.len();
                 self.sessions.push(session.clone());
-                self.items.push(PickerItem::Session(session));
+                self.items.push(PickerItem::Session);
                 self.item_to_session.push(Some(session_idx));
             }
         }
@@ -1310,7 +1339,7 @@ impl SessionPicker {
                 for session in visible {
                     let session_idx = self.sessions.len();
                     self.sessions.push(session.clone());
-                    self.items.push(PickerItem::Session(session.clone()));
+                    self.items.push(PickerItem::Session);
                     self.item_to_session.push(Some(session_idx));
                 }
             }
@@ -1329,7 +1358,7 @@ impl SessionPicker {
                 for session in visible_orphans {
                     let session_idx = self.sessions.len();
                     self.sessions.push(session.clone());
-                    self.items.push(PickerItem::Session(session.clone()));
+                    self.items.push(PickerItem::Session);
                     self.item_to_session.push(Some(session_idx));
                 }
             }
@@ -1338,7 +1367,7 @@ impl SessionPicker {
                 if session_visible(session) && !saved_ids.contains(&session.id) {
                     let session_idx = self.sessions.len();
                     self.sessions.push(session.clone());
-                    self.items.push(PickerItem::Session(session.clone()));
+                    self.items.push(PickerItem::Session);
                     self.item_to_session.push(Some(session_idx));
                 }
             }
@@ -1796,7 +1825,12 @@ impl SessionPicker {
                         ]);
                         ListItem::new(vec![line1])
                     }
-                    PickerItem::Session(session) => self.render_session_item(session, is_selected),
+                    PickerItem::Session => self
+                        .item_to_session
+                        .get(idx)
+                        .and_then(|session_idx| session_idx.and_then(|i| self.sessions.get(i)))
+                        .map(|session| self.render_session_item(session, is_selected))
+                        .unwrap_or_else(|| ListItem::new(Line::from(""))),
                 }
             })
             .collect();
@@ -2584,6 +2618,7 @@ mod tests {
 
         SessionInfo {
             id: id.to_string(),
+            parent_id: None,
             short_name: short_name.to_string(),
             icon: "🧪".to_string(),
             title,
@@ -2592,6 +2627,7 @@ mod tests {
             assistant_message_count: 1,
             created_at: now - ChronoDuration::minutes(5),
             last_message_time: now - ChronoDuration::minutes(1),
+            last_active_at: Some(now - ChronoDuration::minutes(1)),
             working_dir,
             model: None,
             provider_key: None,
@@ -2702,6 +2738,96 @@ mod tests {
             .collect();
         assert!(text.contains("reason:"));
         assert!(text.contains("SIGHUP"));
+    }
+
+    #[test]
+    fn test_batch_restore_detection_excludes_already_recovered_parent_sessions() {
+        let crashed = make_session(
+            "session_crash_source",
+            "crash-source",
+            false,
+            SessionStatus::Crashed {
+                message: Some("boom".to_string()),
+            },
+        );
+
+        let mut recovered = make_session(
+            "session_recovery_rec123",
+            "recovered",
+            false,
+            SessionStatus::Closed,
+        );
+        recovered.parent_id = Some(crashed.id.clone());
+
+        let picker = SessionPicker::new(vec![crashed, recovered]);
+
+        assert!(picker.crashed_sessions.is_none());
+        assert!(picker.crashed_session_ids.is_empty());
+    }
+
+    #[test]
+    fn test_grouped_batch_restore_uses_last_active_at_and_includes_debug_sessions() {
+        let now = Utc::now();
+
+        let mut recent_normal = make_session(
+            "session_recent_normal",
+            "recent-normal",
+            false,
+            SessionStatus::Crashed {
+                message: Some("recent crash".to_string()),
+            },
+        );
+        recent_normal.last_message_time = now - ChronoDuration::minutes(10);
+        recent_normal.last_active_at = Some(now - ChronoDuration::seconds(10));
+
+        let mut recent_debug = make_session(
+            "session_recent_debug",
+            "recent-debug",
+            true,
+            SessionStatus::Crashed {
+                message: Some("debug crash".to_string()),
+            },
+        );
+        recent_debug.last_message_time = now - ChronoDuration::minutes(9);
+        recent_debug.last_active_at = Some(now - ChronoDuration::seconds(20));
+
+        let mut stale_crash = make_session(
+            "session_stale_crash",
+            "stale-crash",
+            false,
+            SessionStatus::Crashed {
+                message: Some("old crash".to_string()),
+            },
+        );
+        stale_crash.last_message_time = now - ChronoDuration::seconds(30);
+        stale_crash.last_active_at = Some(now - ChronoDuration::minutes(3));
+
+        let picker = SessionPicker::new_grouped(
+            vec![ServerGroup {
+                name: "main".to_string(),
+                icon: "🛰".to_string(),
+                version: "v0.1.0".to_string(),
+                git_hash: "abc1234".to_string(),
+                is_running: true,
+                sessions: vec![recent_normal.clone(), recent_debug.clone(), stale_crash],
+            }],
+            Vec::new(),
+        );
+
+        let crashed = picker
+            .crashed_sessions
+            .as_ref()
+            .expect("expected eligible crashed sessions");
+
+        assert_eq!(crashed.session_ids.len(), 2);
+        assert!(crashed.session_ids.contains(&recent_normal.id));
+        assert!(crashed.session_ids.contains(&recent_debug.id));
+        assert!(
+            !crashed
+                .session_ids
+                .iter()
+                .any(|id| id == "session_stale_crash")
+        );
     }
 
     #[test]
