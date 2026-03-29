@@ -372,7 +372,7 @@ impl crate::tui::TuiState for App {
     }
 
     fn status(&self) -> ProcessingStatus {
-        if self.split_launch_in_flight() {
+        if self.pending_queued_dispatch || self.split_launch_in_flight() {
             ProcessingStatus::Sending
         } else {
             self.status.clone()

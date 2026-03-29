@@ -9,6 +9,15 @@ use std::time::Instant;
 const BTW_PAGE_ID: &str = "btw";
 const REVIEW_PREFERRED_MODEL: &str = "gpt-5.4";
 
+fn review_session_read_only_guardrails() -> &'static str {
+    "Important constraints for this session:\n\
+- This session is analysis-only. Do not do the work yourself.\n\
+- Do not modify files or repo state. Do not call `edit`, `write`, `multiedit`, `patch`, `apply_patch`, or destructive `bash`/`git` commands.\n\
+- Do not continue implementation, fix issues, or take follow-up actions yourself.\n\
+- If additional work is needed, describe it in your DM to the parent session instead.\n\
+\n"
+}
+
 pub(super) fn reset_current_session(app: &mut App) {
     app.session.mark_closed();
     let _ = app.session.save();
@@ -179,6 +188,7 @@ First read only the conversation history you actually need:\n\
 2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
 3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request or acceptance criteria.\n\
 \n\
+{}\
 Then determine whether review is needed. Review is needed if the recent work likely changed code, config, docs, tests, tooling behavior, or made technical claims worth validating. If the recent turn was purely conversational or administrative, no review is needed.\n\
 \n\
 If no review is needed:\n\
@@ -196,7 +206,10 @@ If review is needed:\n\
 - After sending the DM, stop.\n\
 \n\
 Do not ask the user anything unless absolutely necessary. Keep your own session concise.",
-        parent_session_id, parent_session_id, parent_session_id
+        parent_session_id,
+        review_session_read_only_guardrails(),
+        parent_session_id,
+        parent_session_id
     )
 }
 
@@ -211,6 +224,7 @@ First read only the conversation history you actually need:\n\
 2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
 3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request, constraints, preferences, or acceptance criteria.\n\
 \n\
+{}\
 Then determine whether a judgment pass is needed. It is needed if the recent work likely changed code, docs, tests, tooling behavior, repo state, or made claims about what was completed. If the recent turn was purely conversational or administrative, no judgment is needed.\n\
 \n\
 If no judgment is needed:\n\
@@ -231,7 +245,10 @@ If judgment is needed:\n\
 - After sending the DM, stop.\n\
 \n\
 Do not ask the user anything unless absolutely necessary. Keep your own session concise.",
-        parent_session_id, parent_session_id, parent_session_id
+        parent_session_id,
+        review_session_read_only_guardrails(),
+        parent_session_id,
+        parent_session_id
     )
 }
 
@@ -245,6 +262,7 @@ First read only the conversation history you actually need:\n\
 2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
 3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request or acceptance criteria.\n\
 \n\
+{}\
 Then determine whether review is needed. Review is needed if the recent work likely changed code, config, docs, tests, tooling behavior, or made technical claims worth validating. If the recent turn was purely conversational or administrative, no review is needed.\n\
 \n\
 If no review is needed:\n\
@@ -262,7 +280,10 @@ If review is needed:\n\
 - After sending the DM, stop.\n\
 \n\
 Do not ask the user anything unless absolutely necessary. Keep your own session concise.",
-        parent_session_id, parent_session_id, parent_session_id
+        parent_session_id,
+        review_session_read_only_guardrails(),
+        parent_session_id,
+        parent_session_id
     )
 }
 
@@ -276,6 +297,7 @@ First read only the conversation history you actually need:\n\
 2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
 3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request, constraints, preferences, or acceptance criteria.\n\
 \n\
+{}\
 Then determine whether a judgment pass is needed. It is needed if the recent work likely changed code, docs, tests, tooling behavior, repo state, or made claims about what was completed. If the recent turn was purely conversational or administrative, no judgment is needed.\n\
 \n\
 If no judgment is needed:\n\
@@ -296,7 +318,10 @@ If judgment is needed:\n\
 - After sending the DM, stop.\n\
 \n\
 Do not ask the user anything unless absolutely necessary. Keep your own session concise.",
-        parent_session_id, parent_session_id, parent_session_id
+        parent_session_id,
+        review_session_read_only_guardrails(),
+        parent_session_id,
+        parent_session_id
     )
 }
 

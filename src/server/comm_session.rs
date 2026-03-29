@@ -50,28 +50,7 @@ fn spawn_visible_session_window(
 }
 
 fn persist_headed_startup_message(session_id: &str, message: &str) {
-    if message.trim().is_empty() {
-        return;
-    }
-    if let Ok(jcode_dir) = crate::storage::jcode_dir() {
-        let path = jcode_dir.join(format!("client-input-{}", session_id));
-        let data = serde_json::json!({
-            "cursor": 0,
-            "input": "",
-            "queued_messages": [],
-            "hidden_queued_system_messages": [message],
-            "interleave_message": serde_json::Value::Null,
-            "pending_soft_interrupts": [],
-            "rate_limit_pending_message": serde_json::Value::Null,
-            "rate_limit_reset_in_ms": serde_json::Value::Null,
-        });
-        if let Err(error) = std::fs::write(&path, data.to_string()) {
-            crate::logging::warn(&format!(
-                "Failed to persist startup message for spawned session {}: {}",
-                session_id, error
-            ));
-        }
-    }
+    crate::tui::App::save_startup_message_for_session(session_id, message.to_string());
 }
 
 #[allow(clippy::too_many_arguments)]

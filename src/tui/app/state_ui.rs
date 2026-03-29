@@ -6,6 +6,8 @@ pub(super) struct RestoredReloadInput {
     pub cursor: usize,
     pub queued_messages: Vec<String>,
     pub hidden_queued_system_messages: Vec<String>,
+    pub startup_status_notice: Option<String>,
+    pub startup_display_message: Option<(String, String)>,
     pub interleave_message: Option<String>,
     pub pending_soft_interrupts: Vec<String>,
     pub rate_limit_pending_message: Option<super::PendingRemoteMessage>,
@@ -13,6 +15,28 @@ pub(super) struct RestoredReloadInput {
     pub observe_mode_enabled: bool,
     pub observe_page_markdown: String,
     pub observe_page_updated_at_ms: u64,
+}
+
+fn infer_spawned_session_startup_hints(message: &str) -> Option<(String, (String, String))> {
+    let label = if message.starts_with("You are the automatic reviewer for parent session `") {
+        "Autoreview"
+    } else if message.starts_with("You are the automatic judge for parent session `") {
+        "Autojudge"
+    } else if message.starts_with("You are the one-shot reviewer for parent session `") {
+        "Review"
+    } else if message.starts_with("You are the one-shot judge for parent session `") {
+        "Judge"
+    } else {
+        return None;
+    };
+
+    let parent_session_id = message.split('`').nth(1).unwrap_or("parent");
+    let body = format!(
+        "🔍 {} session started for parent `{}`.\n\nThis session is analysis-only: it will inspect the recent work, send exactly one DM back to the parent session, and stop. It should not continue the work or modify repo state.",
+        label, parent_session_id
+    );
+
+    Some((format!("{} starting", label), (label.to_string(), body)))
 }
 
 impl App {
@@ -1367,7 +1391,7 @@ impl App {
     }
 
     pub fn is_processing(&self) -> bool {
-        self.is_processing || self.split_launch_in_flight()
+        self.is_processing || self.pending_queued_dispatch || self.split_launch_in_flight()
     }
 
     pub fn streaming_text(&self) -> &str {
@@ -1743,17 +1767,21 @@ impl App {
         }
     }
 
-    pub(super) fn save_startup_message_for_session(session_id: &str, message: String) {
+    pub(crate) fn save_startup_message_for_session(session_id: &str, message: String) {
         if message.trim().is_empty() {
             return;
         }
         if let Ok(jcode_dir) = crate::storage::jcode_dir() {
             let path = jcode_dir.join(format!("client-input-{}", session_id));
+            let inferred_hints = infer_spawned_session_startup_hints(&message);
             let data = serde_json::json!({
                 "cursor": 0,
                 "input": "",
                 "queued_messages": [],
                 "hidden_queued_system_messages": [message],
+                "startup_status_notice": inferred_hints.as_ref().map(|(status, _)| status.clone()),
+                "startup_display_message_title": inferred_hints.as_ref().map(|(_, (title, _))| title.clone()),
+                "startup_display_message": inferred_hints.as_ref().map(|(_, (_, body))| body.clone()),
                 "interleave_message": serde_json::Value::Null,
                 "pending_soft_interrupts": [],
                 "rate_limit_pending_message": serde_json::Value::Null,
@@ -1802,6 +1830,23 @@ impl App {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let startup_status_notice = value
+                .get("startup_status_notice")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty());
+            let startup_display_message = value
+                .get("startup_display_message")
+                .and_then(|v| v.as_str())
+                .map(|body| {
+                    let title = value
+                        .get("startup_display_message_title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Launch")
+                        .to_string();
+                    (title, body.to_string())
+                })
+                .filter(|(_, body)| !body.is_empty());
             let interleave_message = value
                 .get("interleave_message")
                 .and_then(|v| v.as_str())
@@ -1888,6 +1933,8 @@ impl App {
                 cursor,
                 queued_messages,
                 hidden_queued_system_messages,
+                startup_status_notice,
+                startup_display_message,
                 interleave_message,
                 pending_soft_interrupts,
                 rate_limit_pending_message,
@@ -1906,6 +1953,8 @@ impl App {
             cursor,
             queued_messages: Vec::new(),
             hidden_queued_system_messages: Vec::new(),
+            startup_status_notice: None,
+            startup_display_message: None,
             interleave_message: None,
             pending_soft_interrupts: Vec::new(),
             rate_limit_pending_message: None,

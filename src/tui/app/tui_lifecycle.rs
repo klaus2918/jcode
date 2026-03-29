@@ -7,6 +7,12 @@ impl App {
         self.input = restored.input;
         self.cursor_pos = restored.cursor;
         self.hidden_queued_system_messages = restored.hidden_queued_system_messages;
+        if let Some(status_notice) = restored.startup_status_notice {
+            self.set_status_notice(status_notice);
+        }
+        if let Some((title, message)) = restored.startup_display_message {
+            self.push_display_message(DisplayMessage::system(message).with_title(title));
+        }
         self.interleave_message = restored.interleave_message;
         self.rate_limit_pending_message = restored.rate_limit_pending_message;
         self.rate_limit_reset = restored.rate_limit_reset;
@@ -642,6 +648,12 @@ impl App {
         if let Some(ref session_id) = resume_session {
             if let Some(restored) = Self::restore_input_for_reload(session_id) {
                 app.apply_restored_reload_input(restored);
+                if app.has_queued_followups() {
+                    app.pending_queued_dispatch = true;
+                    if app.processing_started.is_none() {
+                        app.processing_started = Some(Instant::now());
+                    }
+                }
             }
         }
 

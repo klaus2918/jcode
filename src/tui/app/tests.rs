@@ -3160,6 +3160,64 @@ fn test_startup_message_restore_uses_hidden_system_queue() {
 }
 
 #[test]
+fn test_review_and_judge_startup_prompts_are_analysis_only() {
+    let prompts = [
+        super::commands::build_autoreview_startup_message("session_parent"),
+        super::commands::build_review_startup_message("session_parent"),
+        super::commands::build_autojudge_startup_message("session_parent"),
+        super::commands::build_judge_startup_message("session_parent"),
+    ];
+
+    for prompt in prompts {
+        assert!(prompt.contains("analysis-only"));
+        assert!(prompt.contains("Do not do the work yourself"));
+        assert!(prompt.contains("Do not modify files or repo state"));
+        assert!(prompt.contains("send exactly one DM"));
+        assert!(prompt.contains("Do not continue implementation"));
+    }
+}
+
+#[test]
+fn test_new_for_remote_restores_spawn_startup_hints_and_dispatch_state() {
+    with_temp_jcode_home(|| {
+        let session_id = "session_spawn_child";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("spawn child".to_string()),
+        );
+        session.save().expect("save spawned child session");
+
+        super::App::save_startup_message_for_session(
+            session_id,
+            super::commands::build_autojudge_startup_message("session_parent_123"),
+        );
+
+        let app = App::new_for_remote(Some(session_id.to_string()));
+
+        assert!(app.pending_queued_dispatch);
+        assert!(app.is_processing());
+        assert!(app.processing_started.is_some());
+        assert!(matches!(
+            crate::tui::TuiState::status(&app),
+            ProcessingStatus::Sending
+        ));
+        assert_eq!(app.status_notice(), Some("Autojudge starting".to_string()));
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+
+        let startup_banner = app
+            .display_messages()
+            .last()
+            .expect("spawned session should show startup banner");
+        assert_eq!(startup_banner.role, "system");
+        assert_eq!(startup_banner.title.as_deref(), Some("Autojudge"));
+        assert!(startup_banner.content.contains("analysis-only"));
+        assert!(startup_banner.content.contains("send exactly one DM back"));
+        assert!(startup_banner.content.contains("session_parent_123"));
+    });
+}
+
+#[test]
 fn test_subagent_command_suggestions_include_manual_launch_and_model_policy() {
     let app = create_test_app();
 
