@@ -705,7 +705,7 @@ impl App {
     }
 
     pub(super) fn handle_session_picker_selection(&mut self, session_id: &str) {
-        let exe = std::env::current_exe().unwrap_or_default();
+        let exe = launch_client_executable();
         let mut cwd = std::env::current_dir().unwrap_or_default();
         if let Ok(session) = crate::session::Session::load(session_id) {
             if let Some(dir) = session.working_dir.as_deref() {
@@ -760,7 +760,7 @@ impl App {
             return;
         }
 
-        let exe = std::env::current_exe().unwrap_or_default();
+        let exe = launch_client_executable();
         let cwd = std::env::current_dir().unwrap_or_default();
         let socket = std::env::var("JCODE_SOCKET").ok();
         let mut spawned = 0usize;

@@ -438,7 +438,7 @@ fn launch_review_window_local(
         provider_key_override,
         Some(session_title.to_string()),
     );
-    let exe = std::env::current_exe().unwrap_or_default();
+    let exe = super::launch_client_executable();
     let cwd = active_working_dir(app)
         .filter(|path| path.is_dir())
         .or_else(|| std::env::current_dir().ok())

@@ -2991,7 +2991,7 @@ pub(super) fn handle_server_event(
                     split_label.clone().map(|label| label.to_ascii_lowercase()),
                 );
             }
-            let exe = std::env::current_exe().unwrap_or_default();
+            let exe = super::launch_client_executable();
             let cwd = crate::session::Session::load(&new_session_id)
                 .ok()
                 .and_then(|session| session.working_dir)

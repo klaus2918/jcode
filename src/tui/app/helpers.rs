@@ -28,6 +28,13 @@ pub(super) fn extract_bracketed_system_message(message: &str) -> Option<String> 
     }
 }
 
+pub(super) fn launch_client_executable() -> PathBuf {
+    crate::build::client_update_candidate(crate::cli::selfdev::client_selfdev_requested())
+        .map(|(path, _label)| path)
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("jcode"))
+}
+
 pub(super) fn partition_queued_messages(
     messages: Vec<String>,
     reminders: Vec<String>,
@@ -494,9 +501,11 @@ pub(super) fn spawn_in_new_terminal(
 
         match term.as_str() {
             "handterm" => {
-                let command = shell_command(&std::iter::once(exe.to_string_lossy().into_owned())
-                    .chain(resume_invocation_args(session_id, socket))
-                    .collect::<Vec<_>>());
+                let command = shell_command(
+                    &std::iter::once(exe.to_string_lossy().into_owned())
+                        .chain(resume_invocation_args(session_id, socket))
+                        .collect::<Vec<_>>(),
+                );
                 cmd.args(["--standalone", "--backend", "gpu", "--exec", &command]);
             }
             "kitty" => {
