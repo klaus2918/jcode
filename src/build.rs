@@ -198,6 +198,41 @@ pub fn client_update_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'s
     std::env::current_exe().ok().map(|exe| (exe, "current"))
 }
 
+/// Resolve the best binary to use for `/reload`.
+///
+/// This mostly follows `client_update_candidate`, but if a freshly built repo
+/// release binary exists and is newer than the selected channel binary, prefer
+/// that so local rebuilds can reload correctly even if publishing the build
+/// failed.
+pub fn preferred_reload_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'static str)> {
+    let candidate = client_update_candidate(is_selfdev_session);
+
+    let repo_release = get_repo_dir()
+        .map(|repo_dir| release_binary_path(&repo_dir))
+        .filter(|path| path.exists());
+
+    let repo_is_newer = |repo: &Path, current: &Path| {
+        let repo_mtime = std::fs::metadata(repo).ok().and_then(|m| m.modified().ok());
+        let current_mtime = std::fs::metadata(current)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        match (repo_mtime, current_mtime) {
+            (Some(repo), Some(current)) => repo > current,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    };
+
+    match (repo_release, candidate) {
+        (Some(repo), Some((current, _))) if repo_is_newer(&repo, &current) => {
+            Some((repo, "repo-release"))
+        }
+        (Some(repo), None) => Some((repo, "repo-release")),
+        (_, Some(candidate)) => Some(candidate),
+        (None, None) => None,
+    }
+}
+
 /// Check if a directory is the jcode repository
 pub fn is_jcode_repo(dir: &std::path::Path) -> bool {
     // Check for Cargo.toml with name = "jcode"

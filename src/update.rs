@@ -570,7 +570,9 @@ pub fn prepare_update_blocking() -> Result<PreparedUpdate> {
 
 pub fn spawn_background_session_update(session_id: String) {
     std::thread::spawn(move || {
-        use crate::bus::{Bus, BusEvent, SessionUpdateStatus};
+        use crate::bus::{Bus, BusEvent, ClientMaintenanceAction, SessionUpdateStatus};
+
+        let action = ClientMaintenanceAction::Update;
 
         let publish = |status| Bus::global().publish(BusEvent::SessionUpdateStatus(status));
 
@@ -584,10 +586,12 @@ pub fn spawn_background_session_update(session_id: String) {
             Ok(PreparedUpdate::Stable { release, estimate }) => {
                 publish(SessionUpdateStatus::Status {
                     session_id: session_id.clone(),
+                    action,
                     message: estimate.summary,
                 });
                 publish(SessionUpdateStatus::Status {
                     session_id: session_id.clone(),
+                    action,
                     message: format!(
                         "Downloading {} (estimated {})...",
                         release.tag_name,
@@ -597,10 +601,12 @@ pub fn spawn_background_session_update(session_id: String) {
                 match download_and_install_blocking(&release) {
                     Ok(_) => publish(SessionUpdateStatus::ReadyToReload {
                         session_id,
+                        action,
                         version: release.tag_name,
                     }),
                     Err(error) => publish(SessionUpdateStatus::Error {
                         session_id,
+                        action,
                         message: format!("Update failed: {}", error),
                     }),
                 }
@@ -611,10 +617,12 @@ pub fn spawn_background_session_update(session_id: String) {
             }) => {
                 publish(SessionUpdateStatus::Status {
                     session_id: session_id.clone(),
+                    action,
                     message: estimate.summary,
                 });
                 publish(SessionUpdateStatus::Status {
                     session_id: session_id.clone(),
+                    action,
                     message: format!(
                         "Building main-{} in the background (estimated {})...",
                         latest_sha,
@@ -624,16 +632,19 @@ pub fn spawn_background_session_update(session_id: String) {
                 match install_main_source_update_blocking(&latest_sha) {
                     Ok(_) => publish(SessionUpdateStatus::ReadyToReload {
                         session_id,
+                        action,
                         version: format!("main-{}", latest_sha),
                     }),
                     Err(error) => publish(SessionUpdateStatus::Error {
                         session_id,
+                        action,
                         message: format!("Update failed: {}", error),
                     }),
                 }
             }
             Err(error) => publish(SessionUpdateStatus::Error {
                 session_id,
+                action,
                 message: format!("Update check failed: {}", error),
             }),
         }

@@ -187,12 +187,50 @@ pub enum UpdateStatus {
     Error(String),
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientMaintenanceAction {
+    Update,
+    Rebuild,
+}
+
+impl ClientMaintenanceAction {
+    pub fn noun(&self) -> &'static str {
+        match self {
+            Self::Update => "update",
+            Self::Rebuild => "rebuild",
+        }
+    }
+
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::Update => "Update",
+            Self::Rebuild => "Rebuild",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum SessionUpdateStatus {
-    Status { session_id: String, message: String },
-    NoUpdate { session_id: String, current: String },
-    ReadyToReload { session_id: String, version: String },
-    Error { session_id: String, message: String },
+    Status {
+        session_id: String,
+        action: ClientMaintenanceAction,
+        message: String,
+    },
+    NoUpdate {
+        session_id: String,
+        current: String,
+    },
+    ReadyToReload {
+        session_id: String,
+        action: ClientMaintenanceAction,
+        version: String,
+    },
+    Error {
+        session_id: String,
+        action: ClientMaintenanceAction,
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug)]
