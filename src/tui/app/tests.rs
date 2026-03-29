@@ -1065,18 +1065,34 @@ fn test_account_picker_preview_from_input_filters_accounts() {
         .unwrap();
 
         let mut app = create_test_app();
-        for c in "/account openai 2".chars() {
+        for c in "/account openai sec".chars() {
             app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
                 .unwrap();
         }
 
-        assert!(
-            app.picker_state.is_none(),
-            "account preview should stay disabled"
-        );
+        let picker = app
+            .picker_state
+            .as_ref()
+            .expect("account preview should open");
+        assert!(picker.preview, "account picker should stay in preview mode");
+        assert_eq!(picker.kind, crate::tui::PickerKind::Account);
+        assert_eq!(picker.filter, "sec");
         assert!(app.account_picker_overlay.is_none());
-        assert_eq!(app.input(), "/account openai 2");
+        assert_eq!(app.input(), "/account openai sec");
     });
+}
+
+#[test]
+fn test_account_picker_preview_stays_closed_for_explicit_subcommands() {
+    let mut app = create_test_app();
+
+    for c in "/account openai settings".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+            .unwrap();
+    }
+
+    assert!(app.picker_state.is_none());
+    assert_eq!(app.input(), "/account openai settings");
 }
 
 #[test]
@@ -2904,6 +2920,99 @@ fn test_model_picker_preview_filter_parsing() {
 }
 
 #[test]
+fn test_agents_command_opens_agent_picker() {
+    let mut app = create_test_app();
+    app.input = "/agents".to_string();
+
+    app.submit_input();
+
+    let picker = app
+        .picker_state
+        .as_ref()
+        .expect("/agents should open the agent picker");
+    assert!(
+        picker
+            .models
+            .iter()
+            .any(|entry| entry.name == "Code review")
+    );
+    assert!(picker.models.iter().any(|entry| matches!(
+        entry.selection,
+        crate::tui::PickerSelection::AgentTarget(crate::tui::AgentModelTarget::Swarm)
+    )));
+}
+
+#[test]
+fn test_agents_command_suggestions_include_targets() {
+    let app = create_test_app();
+    let suggestions = app.get_suggestions_for("/agents re");
+    assert!(suggestions.iter().any(|(cmd, _)| cmd == "/agents review"));
+}
+
+#[test]
+fn test_agents_review_picker_saves_config_override() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        configure_test_remote_models(&mut app);
+        app.open_agent_model_picker(crate::tui::AgentModelTarget::Review);
+
+        let selected = app
+            .picker_state
+            .as_ref()
+            .and_then(|picker| {
+                picker.filtered.iter().position(|&idx| {
+                    matches!(
+                        picker.models[idx].selection,
+                        crate::tui::PickerSelection::AgentModelChoice {
+                            target: crate::tui::AgentModelTarget::Review,
+                            clear_override: false,
+                        }
+                    )
+                })
+            })
+            .expect("review picker should include at least one model option");
+        app.picker_state.as_mut().unwrap().selected = selected;
+        let selected_model_idx = app.picker_state.as_ref().unwrap().filtered[selected];
+        app.picker_state.as_mut().unwrap().models[selected_model_idx].routes[0].available = true;
+
+        let expected = {
+            let picker = app.picker_state.as_ref().unwrap();
+            let entry = &picker.models[picker.filtered[selected]];
+            let base = if entry.effort.is_some() {
+                entry
+                    .name
+                    .rsplit_once(" (")
+                    .map(|(base, _)| base.to_string())
+                    .unwrap_or_else(|| entry.name.clone())
+            } else {
+                entry.name.clone()
+            };
+            let route = &entry.routes[entry.selected_route];
+            if route.api_method == "copilot" {
+                format!("copilot:{}", base)
+            } else if route.api_method == "cursor" {
+                format!("cursor:{}", base)
+            } else if route.api_method == "openrouter" && route.provider != "auto" {
+                if base.contains('/') {
+                    format!("{}@{}", base, route.provider)
+                } else {
+                    format!("anthropic/{}@{}", base, route.provider)
+                }
+            } else {
+                base
+            }
+        };
+
+        app.handle_picker_key(KeyCode::Enter, KeyModifiers::NONE)
+            .expect("save agent model override");
+
+        let cfg = crate::config::Config::load();
+        assert_eq!(cfg.autoreview.model.as_deref(), Some(expected.as_str()));
+        assert!(app.picker_state.is_none());
+    });
+}
+
+#[test]
 fn test_model_command_suggestions_include_matching_models() {
     let mut app = create_test_app();
     configure_test_remote_models(&mut app);
@@ -3178,6 +3287,123 @@ fn test_review_and_judge_startup_prompts_are_analysis_only() {
 }
 
 #[test]
+fn test_judge_startup_prompts_describe_visible_mirror_context() {
+    let prompts = [
+        super::commands::build_autojudge_startup_message("session_parent"),
+        super::commands::build_judge_startup_message("session_parent"),
+    ];
+
+    for prompt in prompts {
+        assert!(prompt.contains("user-visible mirror of the parent conversation"));
+        assert!(prompt.contains("shallow summaries of visible tool calls"));
+        assert!(prompt.contains("omits deep tool-result details"));
+    }
+}
+
+#[test]
+fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_sessions() {
+    with_temp_jcode_home(|| {
+        for title in ["judge", "autojudge"] {
+            let parent_id = format!("parent_{title}_visible_context");
+            let child_id = format!("child_{title}_visible_context");
+            let tool_id = format!("tool_{title}_visible_context");
+
+            let mut parent = crate::session::Session::create_with_id(
+                parent_id.clone(),
+                None,
+                Some("parent".to_string()),
+            );
+            parent.add_message(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "please review what happened".to_string(),
+                    cache_control: None,
+                }],
+            );
+            parent.add_message(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Text {
+                        text: "I inspected the repo.".to_string(),
+                        cache_control: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: tool_id.clone(),
+                        name: "bash".to_string(),
+                        input: serde_json::json!({"command": "git diff --stat"}),
+                    },
+                ],
+            );
+            parent.add_message(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: tool_id.clone(),
+                    content: "SECRET_TOOL_OUTPUT_SHOULD_NOT_APPEAR".to_string(),
+                    is_error: None,
+                }],
+            );
+            parent.add_message(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Reasoning {
+                        text: "hidden reasoning should never leak".to_string(),
+                    },
+                    ContentBlock::Text {
+                        text: "Final visible answer.".to_string(),
+                        cache_control: None,
+                    },
+                ],
+            );
+            parent.save().expect("save parent session");
+
+            let mut child = crate::session::Session::create_with_id(
+                child_id.clone(),
+                Some(parent_id.clone()),
+                Some(title.to_string()),
+            );
+            child.replace_messages(parent.messages.clone());
+            child.compaction = Some(crate::session::StoredCompactionState {
+                summary_text: "stale compaction".to_string(),
+                openai_encrypted_content: None,
+                covers_up_to_turn: 1,
+                original_turn_count: 1,
+                compacted_count: 1,
+            });
+            child.save().expect("save child session");
+
+            super::commands::prepare_review_spawned_session(
+                &child_id,
+                super::commands::build_judge_startup_message(&parent_id),
+                None,
+                None,
+                Some(title.to_string()),
+            );
+
+            let prepared = crate::session::Session::load(&child_id).expect("reload child session");
+            let transcript = prepared
+                .messages
+                .iter()
+                .flat_map(|msg| msg.content.iter())
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+
+            assert!(transcript.contains("please review what happened"));
+            assert!(transcript.contains("I inspected the repo."));
+            assert!(transcript.contains("Final visible answer."));
+            assert!(transcript.contains("Visible tool call"));
+            assert!(transcript.contains("git diff --stat"));
+            assert!(!transcript.contains("SECRET_TOOL_OUTPUT_SHOULD_NOT_APPEAR"));
+            assert!(!transcript.contains("hidden reasoning should never leak"));
+            assert!(prepared.compaction.is_none());
+        }
+    });
+}
+
+#[test]
 fn test_new_for_remote_restores_spawn_startup_hints_and_dispatch_state() {
     with_temp_jcode_home(|| {
         let session_id = "session_spawn_child";
@@ -3213,7 +3439,47 @@ fn test_new_for_remote_restores_spawn_startup_hints_and_dispatch_state() {
         assert_eq!(startup_banner.title.as_deref(), Some("Autojudge"));
         assert!(startup_banner.content.contains("analysis-only"));
         assert!(startup_banner.content.contains("send exactly one DM back"));
+        assert!(startup_banner.content.contains("user-visible mirror"));
         assert!(startup_banner.content.contains("session_parent_123"));
+    });
+}
+
+#[test]
+fn test_restore_session_restores_local_judge_processing_state() {
+    with_temp_jcode_home(|| {
+        let session_id = "session_local_judge_child";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("judge".to_string()),
+        );
+        session.save().expect("save child session");
+
+        super::App::save_startup_message_for_session(
+            session_id,
+            super::commands::build_judge_startup_message("session_parent_local"),
+        );
+
+        let mut app = create_test_app();
+        app.restore_session(session_id);
+
+        assert!(app.is_processing());
+        assert!(app.pending_turn);
+        assert!(app.processing_started.is_some());
+        assert!(matches!(
+            crate::tui::TuiState::status(&app),
+            ProcessingStatus::Sending
+        ));
+        assert_eq!(app.status_notice(), Some("Judge starting".to_string()));
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+
+        let startup_banner = app
+            .display_messages()
+            .iter()
+            .find(|msg| msg.title.as_deref() == Some("Judge"))
+            .expect("judge restore should show startup banner");
+        assert!(startup_banner.content.contains("session_parent_local"));
+        assert!(startup_banner.content.contains("user-visible mirror"));
     });
 }
 
@@ -6370,6 +6636,25 @@ fn test_remote_tui_state_shows_reconnecting_phase_in_header() {
         crate::tui::TuiState::provider_model(&app),
         "reconnecting (3)…"
     );
+}
+
+#[test]
+fn test_openai_compatible_login_preserves_profile_for_runtime_activation() {
+    let mut app = create_test_app();
+
+    app.start_login_provider(crate::provider_catalog::ZAI_LOGIN_PROVIDER);
+
+    match app.pending_login {
+        Some(crate::tui::app::PendingLogin::ApiKeyProfile {
+            provider,
+            openai_compatible_profile: Some(profile),
+            ..
+        }) => {
+            assert_eq!(provider, "Z.AI");
+            assert_eq!(profile.id, crate::provider_catalog::ZAI_PROFILE.id);
+        }
+        ref other => panic!("unexpected pending login state: {other:?}"),
+    }
 }
 
 #[test]

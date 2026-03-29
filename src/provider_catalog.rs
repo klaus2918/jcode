@@ -201,6 +201,25 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
         }
     }
 
+    if env_key == "ZHIPU_API_KEY" {
+        if let Ok(key) = std::env::var("ZAI_API_KEY") {
+            let key = key.trim();
+            if !key.is_empty() {
+                return Some(key.to_string());
+            }
+        }
+
+        let legacy_prefix = "ZAI_API_KEY=";
+        for line in content.lines() {
+            if let Some(key) = line.strip_prefix(legacy_prefix) {
+                let key = key.trim().trim_matches('"').trim_matches('\'');
+                if !key.is_empty() {
+                    return Some(key.to_string());
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -684,6 +703,26 @@ mod tests {
         assert_eq!(
             load_api_key_from_env_or_config("OPENCODE_API_KEY", "opencode.env").as_deref(),
             Some("file-secret")
+        );
+    }
+
+    #[test]
+    fn load_api_key_accepts_legacy_zai_key_name() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_root = temp.path().join("config");
+        std::fs::create_dir_all(config_root.join("jcode")).expect("config dir");
+
+        let _guard = EnvGuard::save(&["XDG_CONFIG_HOME", "ZHIPU_API_KEY", "ZAI_API_KEY"]);
+        crate::env::set_var("XDG_CONFIG_HOME", &config_root);
+        crate::env::remove_var("ZHIPU_API_KEY");
+        crate::env::remove_var("ZAI_API_KEY");
+        std::fs::write(config_root.join("jcode").join("zai.env"), "ZAI_API_KEY=legacy-secret\n")
+            .expect("env file");
+
+        assert_eq!(
+            load_api_key_from_env_or_config("ZHIPU_API_KEY", "zai.env").as_deref(),
+            Some("legacy-secret")
         );
     }
 }

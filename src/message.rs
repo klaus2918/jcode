@@ -375,8 +375,30 @@ pub fn redact_secrets(text: &str) -> String {
                 .expect("valid OPENCODE_API_KEY assignment regex"),
             Regex::new(r"(?m)^\s*(OPENCODE_GO_API_KEY\s*=\s*)[^\r\n]+")
                 .expect("valid OPENCODE_GO_API_KEY assignment regex"),
+            Regex::new(r"(?m)^\s*(ZHIPU_API_KEY\s*=\s*)[^\r\n]+")
+                .expect("valid ZHIPU_API_KEY assignment regex"),
             Regex::new(r"(?m)^\s*(ZAI_API_KEY\s*=\s*)[^\r\n]+")
                 .expect("valid ZAI_API_KEY assignment regex"),
+            Regex::new(r"(?m)^\s*(302AI_API_KEY\s*=\s*)[^\r\n]+")
+                .expect("valid 302AI_API_KEY assignment regex"),
+            Regex::new(r"(?m)^\s*(BASETEN_API_KEY\s*=\s*)[^\r\n]+")
+                .expect("valid BASETEN_API_KEY assignment regex"),
+            Regex::new(r"(?m)^\s*(CORTECS_API_KEY\s*=\s*)[^\r\n]+")
+                .expect("valid CORTECS_API_KEY assignment regex"),
+            Regex::new(r"(?m)^\s*(DEEPSEEK_API_KEY\s*=\s*)[^\r\n]+")
+                .expect("valid DEEPSEEK_API_KEY assignment regex"),
+            Regex::new(r"(?m)^\s*(FIRMWARE_API_KEY\s*=\s*)[^\r\n]+")
+                .expect("valid FIRMWARE_API_KEY assignment regex"),
+            Regex::new(r"(?m)^\s*(HF_TOKEN\s*=\s*)[^\r\n]+")
+                .expect("valid HF_TOKEN assignment regex"),
+            Regex::new(r"(?m)^\s*(MOONSHOT_API_KEY\s*=\s*)[^\r\n]+")
+                .expect("valid MOONSHOT_API_KEY assignment regex"),
+            Regex::new(r"(?m)^\s*(NEBIUS_API_KEY\s*=\s*)[^\r\n]+")
+                .expect("valid NEBIUS_API_KEY assignment regex"),
+            Regex::new(r"(?m)^\s*(SCALEWAY_API_KEY\s*=\s*)[^\r\n]+")
+                .expect("valid SCALEWAY_API_KEY assignment regex"),
+            Regex::new(r"(?m)^\s*(STACKIT_API_KEY\s*=\s*)[^\r\n]+")
+                .expect("valid STACKIT_API_KEY assignment regex"),
             Regex::new(r"(?m)^\s*(CHUTES_API_KEY\s*=\s*)[^\r\n]+")
                 .expect("valid CHUTES_API_KEY assignment regex"),
             Regex::new(r"(?m)^\s*(CEREBRAS_API_KEY\s*=\s*)[^\r\n]+")
@@ -401,7 +423,18 @@ pub fn redact_secrets(text: &str) -> String {
         "OPENROUTER_API_KEY",
         "OPENCODE_API_KEY",
         "OPENCODE_GO_API_KEY",
+        "ZHIPU_API_KEY",
         "ZAI_API_KEY",
+        "302AI_API_KEY",
+        "BASETEN_API_KEY",
+        "CORTECS_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "FIRMWARE_API_KEY",
+        "HF_TOKEN",
+        "MOONSHOT_API_KEY",
+        "NEBIUS_API_KEY",
+        "SCALEWAY_API_KEY",
+        "STACKIT_API_KEY",
         "CHUTES_API_KEY",
         "CEREBRAS_API_KEY",
         "OPENAI_COMPAT_API_KEY",

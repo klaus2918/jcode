@@ -84,8 +84,8 @@ fn explicit_openrouter_runtime_configured() -> bool {
     .any(|var| std::env::var_os(var).is_some())
 }
 
-fn autodetected_openai_compatible_profile(
-) -> Option<crate::provider_catalog::ResolvedOpenAiCompatibleProfile> {
+fn autodetected_openai_compatible_profile()
+-> Option<crate::provider_catalog::ResolvedOpenAiCompatibleProfile> {
     if explicit_openrouter_runtime_configured() {
         return None;
     }
@@ -398,14 +398,29 @@ impl OpenRouterProvider {
     }
 
     pub fn new() -> Result<Self> {
+        let autodetected_profile = autodetected_openai_compatible_profile();
         let api_base = configured_api_base();
         let supports_provider_features = provider_features_enabled(&api_base);
         let supports_model_catalog = model_catalog_enabled();
         let send_openrouter_headers = supports_provider_features;
         let auth = Self::resolve_auth()?;
 
-        let model =
-            std::env::var("JCODE_OPENROUTER_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        if std::env::var_os("JCODE_OPENROUTER_CACHE_NAMESPACE").is_none()
+            && let Some(profile) = autodetected_profile.as_ref()
+        {
+            crate::env::set_var("JCODE_OPENROUTER_CACHE_NAMESPACE", &profile.id);
+        }
+
+        let model = std::env::var("JCODE_OPENROUTER_MODEL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                autodetected_profile
+                    .as_ref()
+                    .and_then(|profile| profile.default_model.clone())
+            })
+            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
         // Parse provider routing from environment
         let provider_routing = if supports_provider_features {
@@ -2365,9 +2380,15 @@ mod tests {
         let _openrouter_api_key = EnvVarGuard::remove("OPENROUTER_API_KEY");
         let _opencode_api_key = EnvVarGuard::remove("OPENCODE_API_KEY");
 
-        let opencode =
-            crate::provider_catalog::resolve_openai_compatible_profile(crate::provider_catalog::OPENCODE_PROFILE);
-        write_test_api_key(&temp, &opencode.env_file, &opencode.api_key_env, "test-opencode-key");
+        let opencode = crate::provider_catalog::resolve_openai_compatible_profile(
+            crate::provider_catalog::OPENCODE_PROFILE,
+        );
+        write_test_api_key(
+            &temp,
+            &opencode.env_file,
+            &opencode.api_key_env,
+            "test-opencode-key",
+        );
 
         assert_eq!(configured_api_base(), opencode.api_base);
         assert_eq!(configured_api_key_name(), opencode.api_key_env);
@@ -2390,17 +2411,59 @@ mod tests {
         let _opencode_api_key = EnvVarGuard::remove("OPENCODE_API_KEY");
         let _chutes_api_key = EnvVarGuard::remove("CHUTES_API_KEY");
 
-        let opencode =
-            crate::provider_catalog::resolve_openai_compatible_profile(crate::provider_catalog::OPENCODE_PROFILE);
-        let chutes =
-            crate::provider_catalog::resolve_openai_compatible_profile(crate::provider_catalog::CHUTES_PROFILE);
-        write_test_api_key(&temp, &opencode.env_file, &opencode.api_key_env, "test-opencode-key");
-        write_test_api_key(&temp, &chutes.env_file, &chutes.api_key_env, "test-chutes-key");
+        let opencode = crate::provider_catalog::resolve_openai_compatible_profile(
+            crate::provider_catalog::OPENCODE_PROFILE,
+        );
+        let chutes = crate::provider_catalog::resolve_openai_compatible_profile(
+            crate::provider_catalog::CHUTES_PROFILE,
+        );
+        write_test_api_key(
+            &temp,
+            &opencode.env_file,
+            &opencode.api_key_env,
+            "test-opencode-key",
+        );
+        write_test_api_key(
+            &temp,
+            &chutes.env_file,
+            &chutes.api_key_env,
+            "test-chutes-key",
+        );
 
         assert_eq!(configured_api_base(), DEFAULT_API_BASE);
         assert_eq!(configured_api_key_name(), DEFAULT_API_KEY_NAME);
         assert_eq!(configured_env_file_name(), DEFAULT_ENV_FILE);
         assert!(!OpenRouterProvider::has_credentials());
+    }
+
+    #[test]
+    fn autodetected_profile_seeds_default_model_and_cache_namespace() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().expect("create temp dir");
+        let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", temp.path());
+        let _home = EnvVarGuard::set("HOME", temp.path());
+        let _appdata = EnvVarGuard::set("APPDATA", temp.path().join("AppData").join("Roaming"));
+        let _openrouter_base = EnvVarGuard::remove("JCODE_OPENROUTER_API_BASE");
+        let _openrouter_key = EnvVarGuard::remove("JCODE_OPENROUTER_API_KEY_NAME");
+        let _openrouter_file = EnvVarGuard::remove("JCODE_OPENROUTER_ENV_FILE");
+        let _openrouter_dynamic = EnvVarGuard::remove("JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER");
+        let _openrouter_model = EnvVarGuard::remove("JCODE_OPENROUTER_MODEL");
+        let _openrouter_cache_ns = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+        let _zhipu = EnvVarGuard::remove("ZHIPU_API_KEY");
+
+        let zai = crate::provider_catalog::resolve_openai_compatible_profile(
+            crate::provider_catalog::ZAI_PROFILE,
+        );
+        write_test_api_key(&temp, &zai.env_file, &zai.api_key_env, "test-zai-key");
+
+        let provider = OpenRouterProvider::new().expect("provider");
+        assert_eq!(provider.model.blocking_read().clone(), "glm-4.5");
+        assert_eq!(
+            std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE")
+                .ok()
+                .as_deref(),
+            Some("zai")
+        );
     }
 
     #[test]

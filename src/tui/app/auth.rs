@@ -2282,6 +2282,7 @@ impl App {
             "openrouter.env",
             "OPENROUTER_API_KEY",
             None,
+            None,
         );
     }
 
@@ -2320,6 +2321,7 @@ impl App {
             &resolved.env_file,
             &resolved.api_key_env,
             resolved.default_model.as_deref(),
+            Some(profile),
         );
     }
 
@@ -2330,6 +2332,7 @@ impl App {
         env_file: &str,
         key_name: &str,
         default_model: Option<&str>,
+        openai_compatible_profile: Option<crate::provider_catalog::OpenAiCompatibleProfile>,
     ) {
         let model_hint = default_model
             .map(|m| format!("Suggested default model: `{}`\n\n", m))
@@ -2349,7 +2352,7 @@ impl App {
             env_file: env_file.to_string(),
             key_name: key_name.to_string(),
             default_model: default_model.map(|m| m.to_string()),
-            openai_compatible_profile: None,
+            openai_compatible_profile,
         });
     }
 
