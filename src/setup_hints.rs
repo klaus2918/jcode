@@ -12,6 +12,8 @@ use crate::storage;
 use anyhow::Context;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use std::fmt;
 #[cfg(any(windows, target_os = "macos"))]
 use std::io::Write;
 use std::io::{self, IsTerminal};
@@ -690,7 +692,7 @@ fn install_alacritty() -> Result<()> {
 }
 
 /// Read a single-character choice from the user.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn read_choice() -> String {
     let mut input = String::new();
     let _ = io::stdin().read_line(&mut input);

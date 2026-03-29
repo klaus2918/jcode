@@ -81,13 +81,15 @@ pub use self::reload_state::{
     wait_for_reload_ack, wait_for_reload_handoff_event, write_reload_marker, write_reload_state,
 };
 
-use self::socket::{
-    acquire_daemon_lock, mark_close_on_exec, signal_ready_fd, socket_has_live_listener,
-};
+#[cfg(unix)]
+use self::socket::{acquire_daemon_lock, mark_close_on_exec};
+use self::socket::{signal_ready_fd, socket_has_live_listener};
 pub use self::socket::{
     cleanup_socket_pair, connect_socket, debug_socket_path, has_live_listener, is_server_ready,
-    set_socket_path, socket_path, spawn_server_notify, wait_for_server_ready,
+    set_socket_path, socket_path, wait_for_server_ready,
 };
+#[cfg(unix)]
+pub use self::socket::spawn_server_notify;
 
 pub use self::util::ServerIdentity;
 use self::util::{
