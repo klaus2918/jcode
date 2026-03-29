@@ -93,6 +93,151 @@ fn reconnect_status_message(app: &App, state: &RemoteRunState, detail: &str) -> 
     )
 }
 
+fn reload_wait_status_message(app: &App, state: &RemoteRunState, detail: &str) -> String {
+    let elapsed = state
+        .disconnect_start
+        .map(|start| start.elapsed())
+        .unwrap_or_default();
+    let elapsed_str = if elapsed.as_secs() < 60 {
+        format!("{}s", elapsed.as_secs())
+    } else {
+        format!("{}m {}s", elapsed.as_secs() / 60, elapsed.as_secs() % 60)
+    };
+
+    let session_name = app
+        .remote_session_id
+        .as_ref()
+        .and_then(|id| crate::id::extract_session_name(id))
+        .or_else(|| {
+            app.resume_session_id
+                .as_ref()
+                .and_then(|id| crate::id::extract_session_name(id))
+        });
+    let resume_hint = if let Some(name) = &session_name {
+        format!(" · resume: jcode --resume {}", name)
+    } else {
+        String::new()
+    };
+
+    format!(
+        "⚡ Server reload in progress — waiting for handoff ({}) — {}{}",
+        elapsed_str, detail, resume_hint,
+    )
+}
+
+fn set_disconnect_status_message(app: &mut App, state: &mut RemoteRunState, content: String) {
+    if let Some(idx) = state.disconnect_msg_idx {
+        let _ = app.replace_display_message_content(idx, content);
+    } else {
+        app.push_display_message(DisplayMessage {
+            role: "system".to_string(),
+            content,
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        });
+        state.disconnect_msg_idx = Some(app.display_messages.len() - 1);
+    }
+}
+
+async fn wait_for_reload_handoff_before_reconnect(
+    app: &mut App,
+    terminal: &mut DefaultTerminal,
+    event_stream: &mut EventStream,
+    state: &mut RemoteRunState,
+) -> Result<Option<ConnectOutcome>> {
+    if !reload_handoff_active(state) {
+        return Ok(None);
+    }
+
+    state.disconnect_start.get_or_insert_with(Instant::now);
+    app.set_remote_startup_phase(super::RemoteStartupPhase::WaitingForReload);
+    app.set_status_notice("Waiting for reload handoff...");
+    let detail = state
+        .last_disconnect_reason
+        .as_deref()
+        .unwrap_or("server reload in progress");
+    set_disconnect_status_message(app, state, reload_wait_status_message(app, state, detail));
+    terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
+
+    let socket_path = crate::server::socket_path();
+    match crate::server::inspect_reload_wait_status(
+        &socket_path,
+        RELOAD_MARKER_MAX_AGE,
+        state.last_reload_pid,
+    )
+    .await
+    {
+        crate::server::ReloadWaitStatus::Ready => {
+            crate::logging::info(&format!(
+                "Reconnect reload handoff: ready before next connect attempt (state={})",
+                crate::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+            ));
+            Ok(None)
+        }
+        crate::server::ReloadWaitStatus::Failed(detail) => {
+            crate::logging::warn(&format!(
+                "Reconnect reload handoff pre-check: failed detail={:?} state={}",
+                detail,
+                crate::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+            ));
+            let detail = detail.unwrap_or_else(|| {
+                "reload failed before the replacement server became ready; starting replacement server"
+                    .to_string()
+            });
+            if recover_reloading_server(app, terminal, state, &detail).await? {
+                Ok(Some(ConnectOutcome::Retry))
+            } else {
+                Ok(None)
+            }
+        }
+        crate::server::ReloadWaitStatus::Idle => {
+            crate::logging::warn(&format!(
+                "Reconnect reload handoff pre-check: idle without ready server state={}",
+                crate::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+            ));
+            if recover_reloading_server(
+                app,
+                terminal,
+                state,
+                "reload ended without a ready replacement server; starting replacement server",
+            )
+            .await?
+            {
+                Ok(Some(ConnectOutcome::Retry))
+            } else {
+                Ok(None)
+            }
+        }
+        crate::server::ReloadWaitStatus::Waiting { pid } => {
+            state.last_reload_pid = pid;
+            crate::logging::info(&format!(
+                "Reconnect wait: pausing reconnect attempts for reload lifecycle event (pid={:?}, state={})",
+                pid,
+                crate::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+            ));
+            let wait = crate::server::wait_for_reload_handoff_event(pid, &socket_path);
+            tokio::pin!(wait);
+            let mut redraw = disconnected_redraw_interval();
+            loop {
+                tokio::select! {
+                    _ = &mut wait => break,
+                    _ = redraw.tick() => {
+                        terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
+                    }
+                    event = event_stream.next() => {
+                        if handle_terminal_event_while_disconnected(app, terminal, event)? {
+                            return Ok(Some(ConnectOutcome::Quit));
+                        }
+                    }
+                }
+            }
+            Ok(Some(ConnectOutcome::Retry))
+        }
+    }
+}
+
 fn disconnected_redraw_interval() -> tokio::time::Interval {
     let mut interval = tokio::time::interval(Duration::from_millis(250));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -725,7 +870,7 @@ pub(super) async fn handle_terminal_event(
 mod tests {
     use super::{
         RemoteRunState, compact_plan_message_body, present_swarm_notification,
-        process_remote_followups, reload_handoff_active,
+        process_remote_followups, reload_handoff_active, reload_wait_status_message,
     };
     use crate::protocol::NotificationType;
     use crate::provider::Provider;
@@ -778,6 +923,18 @@ mod tests {
     #[test]
     fn reload_handoff_inactive_without_flag_or_marker() {
         assert!(!reload_handoff_active(&RemoteRunState::default()));
+    }
+
+    #[test]
+    fn reload_wait_status_message_uses_waiting_language() {
+        let mut app = create_test_app();
+        app.resume_session_id = Some("ses_test_reload_wait".to_string());
+        let state = RemoteRunState::default();
+
+        let message = reload_wait_status_message(&app, &state, "server reload in progress");
+
+        assert!(message.contains("waiting for handoff"));
+        assert!(!message.contains("retrying"));
     }
 
     #[test]
@@ -947,6 +1104,12 @@ pub(super) async fn connect_with_retry(
     state: &mut RemoteRunState,
     session_to_resume: Option<&str>,
 ) -> Result<ConnectOutcome> {
+    if let Some(outcome) =
+        wait_for_reload_handoff_before_reconnect(app, terminal, event_stream, state).await?
+    {
+        return Ok(outcome);
+    }
+
     let connect = RemoteConnection::connect_with_session(session_to_resume);
     tokio::pin!(connect);
     let mut redraw = disconnected_redraw_interval();
@@ -1015,19 +1178,7 @@ pub(super) async fn connect_with_retry(
                 )
             };
 
-            if let Some(idx) = state.disconnect_msg_idx {
-                let _ = app.replace_display_message_content(idx, msg_content);
-            } else {
-                app.push_display_message(DisplayMessage {
-                    role: "system".to_string(),
-                    content: msg_content,
-                    tool_calls: Vec::new(),
-                    duration_secs: None,
-                    title: None,
-                    tool_data: None,
-                });
-                state.disconnect_msg_idx = Some(app.display_messages.len() - 1);
-            }
+            set_disconnect_status_message(app, state, msg_content);
             terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
 
             if reload_handoff_active(state) {

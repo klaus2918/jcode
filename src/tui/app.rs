@@ -98,6 +98,7 @@ pub(crate) enum RemoteStartupPhase {
     StartingServer,
     Connecting,
     LoadingSession,
+    WaitingForReload,
     Reconnecting { attempt: u32 },
 }
 
@@ -107,6 +108,7 @@ impl RemoteStartupPhase {
             Self::StartingServer => "starting server…".to_string(),
             Self::Connecting => "connecting to server…".to_string(),
             Self::LoadingSession => "loading session…".to_string(),
+            Self::WaitingForReload => "waiting for reload…".to_string(),
             Self::Reconnecting { attempt } => format!("reconnecting ({attempt})…"),
         }
     }
