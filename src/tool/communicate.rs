@@ -271,6 +271,8 @@ struct CommunicateInput {
     #[serde(default)]
     initial_message: Option<String>,
     #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
     task_id: Option<String>,
@@ -282,6 +284,12 @@ struct CommunicateInput {
     session_ids: Option<Vec<String>>,
     #[serde(default)]
     timeout_minutes: Option<u64>,
+}
+
+impl CommunicateInput {
+    fn spawn_initial_message(&self) -> Option<String> {
+        self.initial_message.clone().or_else(|| self.prompt.clone())
+    }
 }
 
 #[async_trait]
@@ -373,6 +381,10 @@ impl Tool for CommunicateTool {
                 "initial_message": {
                     "type": "string",
                     "description": "For 'spawn': optional initial message to send to the new agent."
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Alias for 'initial_message' when spawning: optional prompt to send to the new agent after it opens."
                 },
                 "limit": {
                     "type": "integer",
@@ -670,7 +682,7 @@ impl Tool for CommunicateTool {
                     id: REQUEST_ID,
                     session_id: ctx.session_id.clone(),
                     working_dir: params.working_dir.clone(),
-                    initial_message: params.initial_message.clone(),
+                    initial_message: params.spawn_initial_message(),
                 };
 
                 match send_request(request) {
@@ -921,7 +933,7 @@ impl Tool for CommunicateTool {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_await_target_statuses, format_members};
+    use super::{CommunicateInput, default_await_target_statuses, format_members};
     use crate::message::{Message, StreamEvent, ToolDefinition};
     use crate::protocol::{AgentInfo, Request, ServerEvent};
     use crate::provider::{EventStream, Provider};
@@ -1193,6 +1205,27 @@ mod tests {
             default_await_target_statuses(),
             vec!["ready", "completed", "stopped", "failed"]
         );
+    }
+
+    #[test]
+    fn spawn_initial_message_accepts_prompt_alias_and_prefers_explicit_initial_message() {
+        let from_prompt: CommunicateInput = serde_json::from_value(serde_json::json!({
+            "action": "spawn",
+            "prompt": "review the diff"
+        }))
+        .expect("prompt alias should deserialize");
+        assert_eq!(
+            from_prompt.spawn_initial_message().as_deref(),
+            Some("review the diff")
+        );
+
+        let preferred: CommunicateInput = serde_json::from_value(serde_json::json!({
+            "action": "spawn",
+            "initial_message": "preferred",
+            "prompt": "fallback"
+        }))
+        .expect("spawn payload should deserialize");
+        assert_eq!(preferred.spawn_initial_message().as_deref(), Some("preferred"));
     }
 
     #[test]

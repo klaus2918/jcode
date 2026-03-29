@@ -5,6 +5,7 @@ use crate::bus::{
 };
 use crate::tui::TuiState;
 use ratatui::layout::Rect;
+use std::cell::RefCell;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -227,6 +228,51 @@ fn create_gemini_test_app() -> App {
 }
 
 #[test]
+fn session_picker_resume_action_keeps_overlay_open() {
+    let mut app = create_test_app();
+    app.session_picker_mode = SessionPickerMode::CatchUp;
+    app.session_picker_overlay = Some(RefCell::new(
+        crate::tui::session_picker::SessionPicker::new(vec![
+            crate::tui::session_picker::SessionInfo {
+                id: "session_keep_open".to_string(),
+                parent_id: None,
+                short_name: "keep-open".to_string(),
+                icon: "k".to_string(),
+                title: "Keep Open".to_string(),
+                message_count: 1,
+                user_message_count: 1,
+                assistant_message_count: 0,
+                created_at: chrono::Utc::now(),
+                last_message_time: chrono::Utc::now(),
+                last_active_at: None,
+                working_dir: None,
+                model: None,
+                provider_key: None,
+                is_canary: false,
+                is_debug: false,
+                saved: false,
+                save_label: None,
+                status: crate::session::SessionStatus::Closed,
+                needs_catchup: false,
+                estimated_tokens: 0,
+                messages_preview: Vec::new(),
+                search_index: "keep-open keep open".to_string(),
+                server_name: None,
+                server_icon: None,
+            },
+        ]),
+    ));
+
+    app.handle_session_picker_key(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::empty(),
+    )
+    .expect("session picker enter should succeed");
+
+    assert!(app.session_picker_overlay.is_some());
+}
+
+#[test]
 fn test_resize_redraw_is_debounced() {
     let mut app = create_test_app();
 
@@ -266,6 +312,157 @@ fn test_help_topic_shows_btw_command_details() {
     assert_eq!(msg.role, "system");
     assert!(msg.content.contains("`/btw <question>`"));
     assert!(msg.content.contains("side panel"));
+}
+
+#[test]
+fn test_help_topic_shows_catchup_command_details() {
+    let mut app = create_test_app();
+    app.input = "/help catchup".to_string();
+    app.submit_input();
+
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing help response");
+    assert_eq!(msg.role, "system");
+    assert!(msg.content.contains("`/catchup`"));
+    assert!(msg.content.contains("side panel"));
+    assert!(msg.content.contains("`/catchup next`"));
+}
+
+#[test]
+fn test_help_topic_shows_back_command_details() {
+    let mut app = create_test_app();
+    app.input = "/help back".to_string();
+    app.submit_input();
+
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing help response");
+    assert_eq!(msg.role, "system");
+    assert!(msg.content.contains("`/back`"));
+    assert!(msg.content.contains("Catch Up"));
+}
+
+#[test]
+fn test_catchup_next_queues_resume_for_attention_session() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_session_id = Some(app.session.id.clone());
+
+        let mut target = Session::create(None, Some("catchup target".to_string()));
+        target.add_message(
+            crate::message::Role::User,
+            vec![crate::message::ContentBlock::Text {
+                text: "Review the implementation and summarize what changed.".to_string(),
+                cache_control: None,
+            }],
+        );
+        target.add_message(
+            crate::message::Role::Assistant,
+            vec![crate::message::ContentBlock::Text {
+                text: "I finished the work and need your decision on the next step.".to_string(),
+                cache_control: None,
+            }],
+        );
+        target.mark_closed();
+        target.save().expect("save catchup target");
+
+        app.input = "/catchup next".to_string();
+        app.submit_input();
+
+        let pending = app
+            .pending_catchup_resume
+            .clone()
+            .expect("missing pending catchup resume");
+        assert_eq!(pending.target_session_id, target.id);
+        assert_eq!(pending.source_session_id, app.remote_session_id);
+        assert_eq!(pending.queue_position, Some((1, 1)));
+        assert!(pending.show_brief);
+
+        let msg = app
+            .display_messages()
+            .last()
+            .expect("missing catchup queued message");
+        assert_eq!(msg.role, "system");
+        assert!(msg.content.contains("Queued Catch Up"));
+    });
+}
+
+#[test]
+fn test_back_command_queues_return_without_showing_brief() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.catchup_return_stack.push("session_prev".to_string());
+
+    app.input = "/back".to_string();
+    app.submit_input();
+
+    let pending = app
+        .pending_catchup_resume
+        .clone()
+        .expect("missing pending back resume");
+    assert_eq!(pending.target_session_id, "session_prev");
+    assert_eq!(pending.source_session_id, None);
+    assert_eq!(pending.queue_position, None);
+    assert!(!pending.show_brief);
+}
+
+#[test]
+fn test_maybe_show_catchup_after_history_adds_brief_page_and_marks_seen() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.side_panel = test_side_panel_snapshot("plan", "Plan");
+
+        let source_session_id = app.session.id.clone();
+        let mut target = Session::create(None, Some("catchup brief".to_string()));
+        target.add_message(
+            crate::message::Role::User,
+            vec![crate::message::ContentBlock::Text {
+                text: "Please review the final diff.".to_string(),
+                cache_control: None,
+            }],
+        );
+        target.add_message(
+            crate::message::Role::Assistant,
+            vec![crate::message::ContentBlock::Text {
+                text: "The implementation is complete and needs your approval.".to_string(),
+                cache_control: None,
+            }],
+        );
+        target.mark_closed();
+        target.save().expect("save catchup brief session");
+        let target_id = target.id.clone();
+
+        app.begin_in_flight_catchup_resume(PendingCatchupResume {
+            target_session_id: target_id.clone(),
+            source_session_id: Some(source_session_id),
+            queue_position: Some((1, 1)),
+            show_brief: true,
+        });
+        app.maybe_show_catchup_after_history(&target_id);
+
+        assert!(app.in_flight_catchup_resume.is_none());
+        assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("catchup"));
+        assert_eq!(app.side_panel.pages.len(), 2);
+        assert!(app.side_panel.pages.iter().any(|page| page.id == "plan"));
+
+        let page = app.side_panel.focused_page().expect("missing catchup page");
+        assert_eq!(page.id, "catchup");
+        assert_eq!(page.file_path, format!("catchup://{}", target_id));
+        assert!(page.content.contains("# Catch Up"));
+        assert!(page.content.contains("Please review the final diff."));
+        assert!(page.content.contains("needs your approval"));
+
+        let persisted = Session::load(&target_id).expect("reload catchup target");
+        assert!(!crate::catchup::needs_catchup(
+            &target_id,
+            persisted.updated_at,
+            &persisted.status
+        ));
+    });
 }
 
 #[test]
@@ -3270,6 +3467,17 @@ fn test_expired_pending_split_launch_no_longer_shows_processing_status() {
 }
 
 #[test]
+fn test_pending_remote_dispatch_counts_as_processing_for_tui_state() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.pending_queued_dispatch = true;
+
+    assert!(app.is_processing());
+    assert!(crate::tui::TuiState::is_processing(&app));
+    assert!(matches!(crate::tui::TuiState::status(&app), ProcessingStatus::Sending));
+}
+
+#[test]
 fn test_startup_message_restore_uses_hidden_system_queue() {
     with_temp_jcode_home(|| {
         let session_id = "startup-hidden-queue-test";
@@ -4345,7 +4553,7 @@ fn test_handle_background_task_completed_renders_markdown_preview() {
         .display_messages()
         .last()
         .expect("background task message");
-    assert_eq!(rendered.role, "system");
+    assert_eq!(rendered.role, "background_task");
     assert!(
         rendered
             .content
@@ -5629,6 +5837,31 @@ fn test_handle_server_event_soft_interrupt_injected_system_renders_system_messag
         .expect("missing injected message");
     assert_eq!(last.role, "system");
     assert!(last.content.contains("Background Task Completed"));
+}
+
+#[test]
+fn test_handle_server_event_soft_interrupt_injected_background_task_renders_card_role() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::SoftInterruptInjected {
+            content: "**Background task** `abc123` · `bash` · ✓ completed · 7.1s · exit 0\n\n```text\nhello\n```\n\n_Full output:_ `bg action=\"output\" task_id=\"abc123\"`".to_string(),
+            display_role: Some("background_task".to_string()),
+            point: "D".to_string(),
+            tools_skipped: None,
+        },
+        &mut remote,
+    );
+
+    let last = app
+        .display_messages()
+        .last()
+        .expect("missing injected background task message");
+    assert_eq!(last.role, "background_task");
+    assert!(last.content.contains("**Background task** `abc123`"));
 }
 
 #[test]
