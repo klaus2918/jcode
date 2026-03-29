@@ -18,6 +18,13 @@ use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
 use tokio::time::MissedTickBehavior;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SwarmNotificationPresentation {
+    title: String,
+    message: String,
+    status_notice: String,
+}
+
 #[derive(Default)]
 pub(super) struct RemoteRunState {
     pub reconnect_attempts: u32,
@@ -90,6 +97,159 @@ fn disconnected_redraw_interval() -> tokio::time::Interval {
     let mut interval = tokio::time::interval(Duration::from_millis(250));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     interval
+}
+
+fn compact_swarm_session_label(session: &str) -> String {
+    crate::id::extract_session_name(session)
+        .unwrap_or(session)
+        .to_string()
+}
+
+fn compact_swarm_summary(summary: &str) -> String {
+    summary.replace(", ", " · ")
+}
+
+fn strip_message_prefix<'a>(message: &'a str, prefix: &str) -> Option<&'a str> {
+    message.strip_prefix(prefix).map(str::trim)
+}
+
+fn compact_direct_message_body(message: &str) -> String {
+    if let Some((_, body)) = message
+        .strip_prefix("DM from ")
+        .and_then(|rest| rest.split_once(": "))
+    {
+        return body.trim().to_string();
+    }
+    message.to_string()
+}
+
+fn compact_channel_message_body(message: &str) -> String {
+    if let Some((_, body)) = message
+        .strip_prefix('#')
+        .and_then(|rest| rest.split_once(": "))
+    {
+        return body.trim().to_string();
+    }
+    message.to_string()
+}
+
+fn compact_broadcast_message_body(message: &str) -> String {
+    if let Some((_, body)) = message
+        .strip_prefix("broadcast from ")
+        .and_then(|rest| rest.split_once(": "))
+    {
+        return body.trim().to_string();
+    }
+    message.to_string()
+}
+
+fn compact_plan_message_body(message: &str) -> String {
+    if message.starts_with("Plan updated by ") && message.ends_with(')') {
+        if let Some(summary) = message.rsplit_once(" (").map(|(_, summary)| summary) {
+            return compact_swarm_summary(summary.trim_end_matches(')'));
+        }
+    }
+
+    if let Some(rest) = strip_message_prefix(message, "Plan updated: task '") {
+        if let Some((task_id, assignee)) = rest.split_once("' assigned to ") {
+            return format!(
+                "Assigned {} → {}",
+                task_id.trim(),
+                compact_swarm_session_label(assignee.trim_end_matches('.').trim())
+            );
+        }
+    }
+
+    if let Some(rest) = strip_message_prefix(message, "Plan approved by coordinator: ") {
+        if let Some((count, proposer)) = rest.split_once(" items added from ") {
+            return format!(
+                "Approved {} items from {}",
+                count.trim(),
+                compact_swarm_session_label(proposer.trim_end_matches('.').trim())
+            );
+        }
+    }
+
+    if let Some(summary) = message
+        .strip_prefix("Plan attached to this session (")
+        .and_then(|rest| rest.strip_suffix(")."))
+    {
+        return format!("Attached · {}", compact_swarm_summary(summary));
+    }
+
+    message.to_string()
+}
+
+fn present_swarm_notification(
+    sender: &str,
+    notification_type: &NotificationType,
+    message: &str,
+) -> SwarmNotificationPresentation {
+    let trimmed = message.trim();
+    match notification_type {
+        NotificationType::Message { scope, channel } => match scope.as_deref() {
+            Some("dm") => {
+                if let Some(task_body) =
+                    strip_message_prefix(trimmed, "Task assigned to you by coordinator: ")
+                {
+                    SwarmNotificationPresentation {
+                        title: format!("Task · {}", sender),
+                        message: task_body.to_string(),
+                        status_notice: format!("Task assigned by {}", sender),
+                    }
+                } else {
+                    SwarmNotificationPresentation {
+                        title: format!("DM from {}", sender),
+                        message: compact_direct_message_body(trimmed),
+                        status_notice: format!("DM from {}", sender),
+                    }
+                }
+            }
+            Some("channel") => SwarmNotificationPresentation {
+                title: format!("#{} · {}", channel.as_deref().unwrap_or("channel"), sender),
+                message: compact_channel_message_body(trimmed),
+                status_notice: format!(
+                    "Channel message · #{}",
+                    channel.as_deref().unwrap_or("channel")
+                ),
+            },
+            Some("broadcast") => SwarmNotificationPresentation {
+                title: format!("Broadcast · {}", sender),
+                message: compact_broadcast_message_body(trimmed),
+                status_notice: format!("Broadcast from {}", sender),
+            },
+            Some("plan") => SwarmNotificationPresentation {
+                title: format!("Plan · {}", sender),
+                message: compact_plan_message_body(trimmed),
+                status_notice: "Swarm plan updated".to_string(),
+            },
+            Some("swarm") => SwarmNotificationPresentation {
+                title: format!("Swarm · {}", sender),
+                message: trimmed.to_string(),
+                status_notice: "Swarm update".to_string(),
+            },
+            Some(other) => SwarmNotificationPresentation {
+                title: format!("{} · {}", capitalize(other), sender),
+                message: trimmed.to_string(),
+                status_notice: format!("{} update", capitalize(other)),
+            },
+            None => SwarmNotificationPresentation {
+                title: format!("Swarm · {}", sender),
+                message: trimmed.to_string(),
+                status_notice: "Swarm update".to_string(),
+            },
+        },
+        NotificationType::SharedContext { key, value } => SwarmNotificationPresentation {
+            title: format!("Shared context · {}", sender),
+            message: format!("{} = {}", key, value).trim().to_string(),
+            status_notice: format!("Shared context: {}", key),
+        },
+        NotificationType::FileConflict { path, operation } => SwarmNotificationPresentation {
+            title: format!("File activity · {}", sender),
+            message: format!("{} {}", operation, path).trim().to_string(),
+            status_notice: format!("{} {}", operation, path),
+        },
+    }
 }
 
 pub(super) enum ConnectOutcome {
@@ -563,7 +723,11 @@ pub(super) async fn handle_terminal_event(
 
 #[cfg(test)]
 mod tests {
-    use super::{RemoteRunState, process_remote_followups, reload_handoff_active};
+    use super::{
+        RemoteRunState, compact_plan_message_body, present_swarm_notification,
+        process_remote_followups, reload_handoff_active,
+    };
+    use crate::protocol::NotificationType;
     use crate::provider::Provider;
     use anyhow::Result;
     use std::sync::Arc;
@@ -655,6 +819,71 @@ mod tests {
         let last = app.display_messages().last().expect("missing info message");
         assert_eq!(last.role, "system");
         assert!(last.content.contains("display.auto_server_reload = false"));
+    }
+
+    #[test]
+    fn compact_plan_message_body_drops_redundant_plan_prefix() {
+        assert_eq!(
+            compact_plan_message_body("Plan updated by sheep (4 items, v1)"),
+            "4 items · v1"
+        );
+        assert_eq!(
+            compact_plan_message_body(
+                "Plan updated: task 'issue41-memory-headed' assigned to session_mouse_1774660180567.",
+            ),
+            "Assigned issue41-memory-headed → mouse"
+        );
+    }
+
+    #[test]
+    fn present_swarm_notification_formats_task_assignments_as_tasks() {
+        let presentation = present_swarm_notification(
+            "sheep",
+            &NotificationType::Message {
+                scope: Some("dm".to_string()),
+                channel: None,
+            },
+            "Task assigned to you by coordinator: Implement compaction asymptotic fixes — You own the compaction task.",
+        );
+
+        assert_eq!(presentation.title, "Task · sheep");
+        assert_eq!(
+            presentation.message,
+            "Implement compaction asymptotic fixes — You own the compaction task."
+        );
+        assert_eq!(presentation.status_notice, "Task assigned by sheep");
+    }
+
+    #[test]
+    fn present_swarm_notification_strips_redundant_dm_prefix() {
+        let presentation = present_swarm_notification(
+            "sheep",
+            &NotificationType::Message {
+                scope: Some("dm".to_string()),
+                channel: None,
+            },
+            "DM from sheep: I can see your worktree diff.",
+        );
+
+        assert_eq!(presentation.title, "DM from sheep");
+        assert_eq!(presentation.message, "I can see your worktree diff.");
+        assert_eq!(presentation.status_notice, "DM from sheep");
+    }
+
+    #[test]
+    fn present_swarm_notification_compacts_plan_titles_and_bodies() {
+        let presentation = present_swarm_notification(
+            "sheep",
+            &NotificationType::Message {
+                scope: Some("plan".to_string()),
+                channel: None,
+            },
+            "Plan updated by sheep (4 items, v1)",
+        );
+
+        assert_eq!(presentation.title, "Plan · sheep");
+        assert_eq!(presentation.message, "4 items · v1");
+        assert_eq!(presentation.status_notice, "Swarm plan updated");
     }
 }
 
@@ -1307,8 +1536,8 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         return;
     }
 
-    if app.pending_background_update_reload.is_some() && !app.is_processing {
-        app.maybe_finish_background_update_reload();
+    if app.pending_background_client_reload.is_some() && !app.is_processing {
+        app.maybe_finish_background_client_reload();
         return;
     }
 
@@ -1611,6 +1840,7 @@ pub(super) async fn begin_remote_send(
         retry_at: None,
     });
     app.autoreview_after_current_turn = !is_system;
+    app.autojudge_after_current_turn = !is_system;
     remote.reset_call_output_tokens_seen();
     Ok(msg_id)
 }
@@ -1901,10 +2131,17 @@ pub(super) fn handle_server_event(
                 app.streaming_tps_elapsed += start.elapsed();
             }
             let parsed_input = remote.get_current_tool_input();
+            let tool_call = ToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                input: parsed_input.clone(),
+                intent: None,
+            };
             if let Some(tc) = app.streaming_tool_calls.iter_mut().find(|tc| tc.id == id) {
-                tc.input = parsed_input.clone();
+                tc.input = parsed_input;
             }
             remote.handle_tool_exec(&id, &name);
+            app.observe_tool_call(&tool_call);
             false
         }
         ServerEvent::ToolDone {
@@ -1913,29 +2150,39 @@ pub(super) fn handle_server_event(
             output,
             error,
         } => {
-            let _ = error;
             let display_output = remote.handle_tool_done(&id, &name, &output);
+            let display_output = if error.is_some()
+                && !display_output.starts_with("Error:")
+                && !display_output.starts_with("error:")
+                && !display_output.starts_with("Failed:")
+            {
+                format!("Error: {}", display_output)
+            } else {
+                display_output
+            };
             let tool_input = app
                 .streaming_tool_calls
                 .iter()
                 .find(|tc| tc.id == id)
                 .map(|tc| tc.input.clone())
                 .unwrap_or(serde_json::Value::Null);
+            let tool_call = ToolCall {
+                id,
+                name,
+                input: tool_input,
+                intent: None,
+            };
             app.commit_pending_streaming_assistant_message();
             crate::tui::mermaid::clear_streaming_preview_diagram();
-            let is_batch = name == "batch";
+            let is_batch = tool_call.name == "batch";
+            app.observe_tool_result(&tool_call, &output, error.is_some(), None);
             app.push_display_message(DisplayMessage {
                 role: "tool".to_string(),
                 content: display_output,
                 tool_calls: vec![],
                 duration_secs: None,
                 title: None,
-                tool_data: Some(ToolCall {
-                    id,
-                    name,
-                    input: tool_input,
-                    intent: None,
-                }),
+                tool_data: Some(tool_call),
             });
             if is_batch {
                 app.batch_progress = None;
@@ -2106,6 +2353,8 @@ pub(super) fn handle_server_event(
                     crate::tui::mermaid::clear_streaming_preview_diagram();
                     let should_autoreview = app.autoreview_after_current_turn;
                     app.autoreview_after_current_turn = false;
+                    let should_autojudge = app.autojudge_after_current_turn;
+                    app.autojudge_after_current_turn = false;
                     app.is_processing = false;
                     app.status = ProcessingStatus::Idle;
                     app.processing_started = None;
@@ -2120,6 +2369,9 @@ pub(super) fn handle_server_event(
                     remote.reset_call_output_tokens_seen();
                     if should_autoreview {
                         super::commands::queue_autoreview_remote(app);
+                    }
+                    if should_autojudge {
+                        super::commands::queue_autojudge_remote(app);
                     }
                 }
             }
@@ -2231,6 +2483,7 @@ pub(super) fn handle_server_event(
             provider_model,
             subagent_model,
             autoreview_enabled,
+            autojudge_enabled,
             available_models,
             available_model_routes,
             mcp_servers,
@@ -2308,8 +2561,11 @@ pub(super) fn handle_server_event(
             app.clear_remote_startup_phase();
             app.session.subagent_model = subagent_model;
             app.session.autoreview_enabled = autoreview_enabled;
+            app.session.autojudge_enabled = autojudge_enabled;
             app.autoreview_enabled =
                 autoreview_enabled.unwrap_or(crate::config::config().autoreview.enabled);
+            app.autojudge_enabled =
+                autojudge_enabled.unwrap_or(crate::config::config().autojudge.enabled);
             if upstream_provider.is_some() {
                 app.upstream_provider = upstream_provider;
             }
@@ -2652,42 +2908,18 @@ pub(super) fn handle_server_event(
                 .or_else(|| crate::id::extract_session_name(&from_session).map(str::to_string))
                 .unwrap_or_else(|| from_session[..8.min(from_session.len())].to_string());
 
-            let (title, message, status_notice) = match notification_type {
-                NotificationType::Message { scope, channel } => {
-                    let title = match scope.as_deref() {
-                        Some("dm") => format!("DM from {}", sender),
-                        Some("channel") => format!(
-                            "#{} · {}",
-                            channel.unwrap_or_else(|| "channel".to_string()),
-                            sender
-                        ),
-                        Some("broadcast") => format!("Broadcast · {}", sender),
-                        Some("plan") => format!("Plan update · {}", sender),
-                        Some("swarm") => format!("Swarm · {}", sender),
-                        Some(other) => format!("{} · {}", capitalize(other), sender),
-                        None => format!("Swarm · {}", sender),
-                    };
-                    (
-                        title,
-                        message.trim().to_string(),
-                        "New swarm message".to_string(),
-                    )
-                }
-                NotificationType::SharedContext { key, value } => (
-                    format!("Shared context · {}", sender),
-                    format!("{} = {}", key, value).trim().to_string(),
-                    format!("Shared context: {}", key),
-                ),
-                NotificationType::FileConflict { path, operation } => (
-                    format!("File activity · {}", sender),
-                    format!("{} {}", operation, path).trim().to_string(),
-                    format!("{} {}", operation, path),
-                ),
-            };
-
-            app.push_display_message(DisplayMessage::swarm(title.clone(), message.clone()));
-            persist_replay_display_message(app, "swarm", Some(title), &message);
-            app.set_status_notice(status_notice);
+            let presentation = present_swarm_notification(&sender, &notification_type, &message);
+            app.push_display_message(DisplayMessage::swarm(
+                presentation.title.clone(),
+                presentation.message.clone(),
+            ));
+            persist_replay_display_message(
+                app,
+                "swarm",
+                Some(presentation.title.clone()),
+                &presentation.message,
+            );
+            app.set_status_notice(presentation.status_notice);
             false
         }
         ServerEvent::Transcript { text, mode } => {
@@ -3622,15 +3854,11 @@ async fn handle_remote_key_internal(
                 }
 
                 if trimmed == "/rebuild" {
-                    app.push_display_message(DisplayMessage::system(
-                        "Rebuilding (git pull + cargo build + tests)...".to_string(),
-                    ));
                     let session_id = app
                         .remote_session_id
                         .clone()
                         .unwrap_or_else(|| crate::id::new_id("ses"));
-                    app.rebuild_requested = Some(session_id);
-                    app.should_quit = true;
+                    app.start_background_client_rebuild(session_id);
                     return Ok(());
                 }
 
@@ -3931,6 +4159,13 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
+                if trimmed == "/autojudge" || trimmed == "/autojudge status" {
+                    app.push_display_message(DisplayMessage::system(
+                        super::commands::autojudge_status_message(app),
+                    ));
+                    return Ok(());
+                }
+
                 if trimmed == "/autoreview on" {
                     remote
                         .set_feature(crate::protocol::FeatureToggle::Autoreview, true)
@@ -3986,6 +4221,61 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
+                if trimmed == "/autojudge on" {
+                    remote
+                        .set_feature(crate::protocol::FeatureToggle::Autojudge, true)
+                        .await?;
+                    app.set_autojudge_feature_enabled(true);
+                    app.set_status_notice("Autojudge: ON");
+                    app.push_display_message(DisplayMessage::system(
+                        "Autojudge enabled for this session.".to_string(),
+                    ));
+                    return Ok(());
+                }
+
+                if trimmed == "/autojudge off" {
+                    remote
+                        .set_feature(crate::protocol::FeatureToggle::Autojudge, false)
+                        .await?;
+                    app.set_autojudge_feature_enabled(false);
+                    app.set_status_notice("Autojudge: OFF");
+                    app.push_display_message(DisplayMessage::system(
+                        "Autojudge disabled for this session.".to_string(),
+                    ));
+                    return Ok(());
+                }
+
+                if trimmed == "/autojudge now" {
+                    super::commands::queue_review_spawn_remote(
+                        app,
+                        "Autojudge",
+                        super::commands::build_autojudge_startup_message(
+                            super::commands::active_session_id(app).as_str(),
+                        ),
+                        crate::config::config().autojudge.model.clone(),
+                        None,
+                    );
+                    if app.is_processing {
+                        app.set_status_notice("Autojudge queued");
+                    } else {
+                        app.pending_split_request = false;
+                        begin_remote_split_launch(app, "Autojudge");
+                        if let Err(error) = remote.split().await {
+                            finish_remote_split_launch(app);
+                            app.pending_split_startup_message = None;
+                            app.pending_split_model_override = None;
+                            app.pending_split_provider_key_override = None;
+                            app.pending_split_label = None;
+                            app.push_display_message(DisplayMessage::error(format!(
+                                "Failed to launch autojudge session: {}",
+                                error
+                            )));
+                            app.set_status_notice("Autojudge launch failed");
+                        }
+                    }
+                    return Ok(());
+                }
+
                 if trimmed == "/review" {
                     let (model_override, provider_key_override) =
                         super::commands::preferred_one_shot_review_override()
@@ -4023,6 +4313,43 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
+                if trimmed == "/judge" {
+                    let (model_override, provider_key_override) =
+                        super::commands::preferred_one_shot_review_override()
+                            .map(|(model, provider_key)| (Some(model), Some(provider_key)))
+                            .unwrap_or_else(|| {
+                                (crate::config::config().autojudge.model.clone(), None)
+                            });
+                    super::commands::queue_review_spawn_remote(
+                        app,
+                        "Judge",
+                        super::commands::build_judge_startup_message(
+                            super::commands::active_session_id(app).as_str(),
+                        ),
+                        model_override,
+                        provider_key_override,
+                    );
+                    if app.is_processing {
+                        app.set_status_notice("Judge queued");
+                    } else {
+                        app.pending_split_request = false;
+                        begin_remote_split_launch(app, "Judge");
+                        if let Err(error) = remote.split().await {
+                            finish_remote_split_launch(app);
+                            app.pending_split_startup_message = None;
+                            app.pending_split_model_override = None;
+                            app.pending_split_provider_key_override = None;
+                            app.pending_split_label = None;
+                            app.push_display_message(DisplayMessage::error(format!(
+                                "Failed to launch judge session: {}",
+                                error
+                            )));
+                            app.set_status_notice("Judge launch failed");
+                        }
+                    }
+                    return Ok(());
+                }
+
                 if trimmed.starts_with("/autoreview ") {
                     app.push_display_message(DisplayMessage::error(
                         "Usage: /autoreview [on|off|status|now]".to_string(),
@@ -4030,8 +4357,20 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
+                if trimmed.starts_with("/autojudge ") {
+                    app.push_display_message(DisplayMessage::error(
+                        "Usage: /autojudge [on|off|status|now]".to_string(),
+                    ));
+                    return Ok(());
+                }
+
                 if trimmed.starts_with("/review ") {
                     app.push_display_message(DisplayMessage::error("Usage: /review".to_string()));
+                    return Ok(());
+                }
+
+                if trimmed.starts_with("/judge ") {
+                    app.push_display_message(DisplayMessage::error("Usage: /judge".to_string()));
                     return Ok(());
                 }
 

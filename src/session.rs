@@ -240,6 +240,9 @@ pub struct Session {
     /// Whether automatic end-of-turn review is enabled for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autoreview_enabled: Option<bool>,
+    /// Whether automatic end-of-turn judging is enabled for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autojudge_enabled: Option<bool>,
     /// Whether this session is a canary session (testing new builds)
     #[serde(default)]
     pub is_canary: bool,
@@ -281,6 +284,12 @@ pub struct Session {
     pub replay_events: Vec<StoredReplayEvent>,
     #[serde(skip)]
     persist_state: SessionPersistState,
+    #[serde(skip)]
+    provider_messages_cache: Vec<Message>,
+    #[serde(skip)]
+    provider_messages_cache_len: usize,
+    #[serde(skip)]
+    provider_messages_cache_mode: PersistVectorMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -295,6 +304,7 @@ struct SessionJournalMeta {
     subagent_model: Option<String>,
     improve_mode: Option<SessionImproveMode>,
     autoreview_enabled: Option<bool>,
+    autojudge_enabled: Option<bool>,
     is_canary: bool,
     testing_build: Option<String>,
     working_dir: Option<String>,
@@ -439,6 +449,7 @@ impl Session {
             subagent_model: self.subagent_model.clone(),
             improve_mode: self.improve_mode,
             autoreview_enabled: self.autoreview_enabled,
+            autojudge_enabled: self.autojudge_enabled,
             is_canary: self.is_canary,
             testing_build: self.testing_build.clone(),
             working_dir: self.working_dir.clone(),
@@ -467,14 +478,24 @@ impl Session {
         };
     }
 
+    fn reset_provider_messages_cache(&mut self) {
+        self.provider_messages_cache.clear();
+        self.provider_messages_cache_len = 0;
+        self.provider_messages_cache_mode = PersistVectorMode::Full;
+    }
+
     fn mark_messages_append_dirty(&mut self) {
         if self.persist_state.messages_mode != PersistVectorMode::Full {
             self.persist_state.messages_mode = PersistVectorMode::Append;
+        }
+        if self.provider_messages_cache_mode != PersistVectorMode::Full {
+            self.provider_messages_cache_mode = PersistVectorMode::Append;
         }
     }
 
     fn mark_messages_full_dirty(&mut self) {
         self.persist_state.messages_mode = PersistVectorMode::Full;
+        self.provider_messages_cache_mode = PersistVectorMode::Full;
     }
 
     fn mark_env_snapshots_append_dirty(&mut self) {
@@ -514,6 +535,7 @@ impl Session {
             || prev.subagent_model != current.subagent_model
             || prev.improve_mode != current.improve_mode
             || prev.autoreview_enabled != current.autoreview_enabled
+            || prev.autojudge_enabled != current.autojudge_enabled
             || prev.is_canary != current.is_canary
             || prev.testing_build != current.testing_build
             || prev.working_dir != current.working_dir
@@ -535,6 +557,7 @@ impl Session {
         self.subagent_model = meta.subagent_model;
         self.improve_mode = meta.improve_mode;
         self.autoreview_enabled = meta.autoreview_enabled;
+        self.autojudge_enabled = meta.autojudge_enabled;
         self.is_canary = meta.is_canary;
         self.testing_build = meta.testing_build;
         self.working_dir = meta.working_dir;
@@ -592,6 +615,7 @@ impl Session {
             }
         }
         session.reset_persist_state(path.exists());
+        session.reset_provider_messages_cache();
         Ok(session)
     }
 
@@ -618,6 +642,7 @@ impl Session {
             subagent_model: None,
             improve_mode: None,
             autoreview_enabled: None,
+            autojudge_enabled: None,
             is_canary: false,
             testing_build: None,
             working_dir: std::env::current_dir()
@@ -634,6 +659,9 @@ impl Session {
             memory_injections: Vec::new(),
             replay_events: Vec::new(),
             persist_state: SessionPersistState::default(),
+            provider_messages_cache: Vec::new(),
+            provider_messages_cache_len: 0,
+            provider_messages_cache_mode: PersistVectorMode::Full,
         };
         session.reset_persist_state(false);
         session
@@ -657,6 +685,7 @@ impl Session {
             subagent_model: None,
             improve_mode: None,
             autoreview_enabled: None,
+            autojudge_enabled: None,
             is_canary: false,
             testing_build: None,
             working_dir: std::env::current_dir()
@@ -673,6 +702,9 @@ impl Session {
             memory_injections: Vec::new(),
             replay_events: Vec::new(),
             persist_state: SessionPersistState::default(),
+            provider_messages_cache: Vec::new(),
+            provider_messages_cache_len: 0,
+            provider_messages_cache_mode: PersistVectorMode::Full,
         };
         session.reset_persist_state(false);
         session
@@ -1089,8 +1121,38 @@ impl Session {
         self.mark_replay_events_append_dirty();
     }
 
-    pub fn messages_for_provider(&self) -> Vec<Message> {
-        self.messages.iter().map(|msg| msg.to_message()).collect()
+    pub fn provider_messages(&mut self) -> &[Message] {
+        let needs_full_rebuild = self.provider_messages_cache_mode == PersistVectorMode::Full
+            || self.provider_messages_cache_len > self.messages.len();
+
+        if needs_full_rebuild {
+            self.provider_messages_cache = self
+                .messages
+                .iter()
+                .map(StoredMessage::to_message)
+                .collect();
+            self.provider_messages_cache_len = self.messages.len();
+            self.provider_messages_cache_mode = PersistVectorMode::Clean;
+            return &self.provider_messages_cache;
+        }
+
+        if self.provider_messages_cache_mode == PersistVectorMode::Append
+            && self.provider_messages_cache_len < self.messages.len()
+        {
+            self.provider_messages_cache.extend(
+                self.messages[self.provider_messages_cache_len..]
+                    .iter()
+                    .map(StoredMessage::to_message),
+            );
+            self.provider_messages_cache_len = self.messages.len();
+            self.provider_messages_cache_mode = PersistVectorMode::Clean;
+        }
+
+        &self.provider_messages_cache
+    }
+
+    pub fn messages_for_provider(&mut self) -> Vec<Message> {
+        self.provider_messages().to_vec()
     }
 
     /// Remove all ToolUse content blocks from a specific message.

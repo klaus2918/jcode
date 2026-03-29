@@ -159,26 +159,36 @@ impl App {
         }
         let compaction = self.registry.compaction();
         if let Ok(mut manager) = compaction.try_write() {
-            manager.notify_message_added();
+            if let Some(message) = self.messages.last() {
+                manager.notify_message_added_with(message);
+            } else {
+                manager.notify_message_added();
+            }
         };
     }
 
     pub(super) fn replace_provider_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
         self.last_injected_memory_signature = None;
-        self.rebuild_tool_result_index();
+        self.reset_tool_output_tracking();
         self.reseed_compaction_from_provider_messages();
     }
 
     pub(super) fn clear_provider_messages(&mut self) {
         self.messages.clear();
         self.last_injected_memory_signature = None;
-        self.tool_result_ids.clear();
+        self.reset_tool_output_tracking();
         self.reseed_compaction_from_provider_messages();
     }
 
-    pub(super) fn rebuild_tool_result_index(&mut self) {
+    pub(super) fn reset_tool_output_tracking(&mut self) {
+        self.tool_call_ids.clear();
         self.tool_result_ids.clear();
+        self.tool_output_scan_index = 0;
+    }
+
+    pub(super) fn rebuild_tool_result_index(&mut self) {
+        self.reset_tool_output_tracking();
         for msg in &self.messages {
             if let Role::User = msg.role {
                 for block in &msg.content {
@@ -188,6 +198,7 @@ impl App {
                 }
             }
         }
+        self.tool_output_scan_index = 0;
     }
 
     pub(super) fn reseed_compaction_from_provider_messages(&mut self) {
@@ -199,9 +210,9 @@ impl App {
             manager.reset();
             manager.set_budget(self.context_limit as usize);
             if let Some(state) = self.session.compaction.as_ref() {
-                manager.restore_persisted_state(state, self.messages.len());
+                manager.restore_persisted_state_with(state, &self.messages);
             } else {
-                manager.seed_restored_messages(self.messages.len());
+                manager.seed_restored_messages_with(&self.messages);
             }
         };
     }
@@ -239,7 +250,7 @@ impl App {
         let compaction = self.registry.compaction();
         if let Ok(mut manager) = compaction.try_write() {
             manager.set_budget(self.context_limit as usize);
-            manager.restore_persisted_state(&state, self.messages.len());
+            manager.restore_persisted_state_with(&state, &self.messages);
         }
 
         self.provider_session_id = None;
@@ -294,7 +305,7 @@ impl App {
         }
         let compaction = self.registry.compaction();
         if let Ok(mut manager) = compaction.try_write() {
-            if let Some(event) = manager.poll_compaction_event() {
+            if let Some(event) = manager.poll_compaction_event_with(&self.messages) {
                 self.sync_session_compaction_state_from_manager(&manager);
                 self.handle_compaction_event(event);
             }
@@ -345,6 +356,11 @@ impl App {
     pub(super) fn set_autoreview_feature_enabled(&mut self, enabled: bool) {
         self.autoreview_enabled = enabled;
         self.session.autoreview_enabled = Some(enabled);
+    }
+
+    pub(super) fn set_autojudge_feature_enabled(&mut self, enabled: bool) {
+        self.autojudge_enabled = enabled;
+        self.session.autojudge_enabled = Some(enabled);
     }
 
     pub(super) fn trigger_save_memory_extraction(&self) {
@@ -430,36 +446,69 @@ impl App {
         false
     }
 
-    pub(super) fn missing_tool_result_ids(&self) -> Vec<String> {
-        let mut tool_calls = HashSet::new();
-        let mut tool_results = HashSet::new();
+    fn collect_missing_tool_outputs_since_last_scan(&mut self) -> Vec<(usize, Vec<String>)> {
+        if self.tool_output_scan_index > self.messages.len() {
+            self.reset_tool_output_tracking();
+        }
 
-        for msg in &self.messages {
+        let scan_start = self.tool_output_scan_index;
+        let mut new_result_ids = Vec::new();
+        let mut assistant_tool_uses: Vec<(usize, Vec<String>)> = Vec::new();
+
+        for (index, msg) in self.messages.iter().enumerate().skip(scan_start) {
             match msg.role {
-                Role::Assistant => {
-                    for block in &msg.content {
-                        if let ContentBlock::ToolUse { id, .. } = block {
-                            tool_calls.insert(id.clone());
-                        }
-                    }
-                }
                 Role::User => {
                     for block in &msg.content {
                         if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                            tool_results.insert(tool_use_id.clone());
+                            new_result_ids.push(tool_use_id.clone());
                         }
+                    }
+                }
+                Role::Assistant => {
+                    let tool_uses = msg
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    if !tool_uses.is_empty() {
+                        assistant_tool_uses.push((index, tool_uses));
                     }
                 }
             }
         }
 
-        tool_calls
-            .difference(&tool_results)
+        self.tool_result_ids.extend(new_result_ids);
+
+        let mut missing_repairs = Vec::new();
+        for (index, tool_uses) in assistant_tool_uses {
+            let mut missing_for_message = Vec::new();
+            for id in tool_uses {
+                self.tool_call_ids.insert(id.clone());
+                if !self.tool_result_ids.contains(&id) {
+                    missing_for_message.push(id);
+                }
+            }
+            if !missing_for_message.is_empty() {
+                missing_repairs.push((index, missing_for_message));
+            }
+        }
+
+        self.tool_output_scan_index = self.messages.len();
+        missing_repairs
+    }
+
+    pub(super) fn missing_tool_result_ids(&mut self) -> Vec<String> {
+        self.collect_missing_tool_outputs_since_last_scan();
+        self.tool_call_ids
+            .difference(&self.tool_result_ids)
             .cloned()
             .collect::<Vec<_>>()
     }
 
-    pub(super) fn summarize_tool_results_missing(&self) -> Option<String> {
+    pub(super) fn summarize_tool_results_missing(&mut self) -> Option<String> {
         let missing = self.missing_tool_result_ids();
         if missing.is_empty() {
             return None;
@@ -479,66 +528,43 @@ impl App {
     }
 
     pub(super) fn repair_missing_tool_outputs(&mut self) -> usize {
-        let mut known_results = HashSet::new();
-        for msg in &self.messages {
-            if let Role::User = msg.role {
-                for block in &msg.content {
-                    if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                        known_results.insert(tool_use_id.clone());
-                    }
-                }
-            }
-        }
-
+        let missing_repairs = self.collect_missing_tool_outputs_since_last_scan();
         let mut repaired = 0usize;
-        let mut index = 0usize;
-        while index < self.messages.len() {
-            let mut missing_for_message: Vec<String> = Vec::new();
-            if let Role::Assistant = self.messages[index].role {
-                for block in &self.messages[index].content {
-                    if let ContentBlock::ToolUse { id, .. } = block {
-                        if !known_results.contains(id) {
-                            known_results.insert(id.clone());
-                            missing_for_message.push(id.clone());
-                        }
-                    }
-                }
+        let mut inserted = 0usize;
+        for (index, missing_for_message) in missing_repairs {
+            for (offset, id) in missing_for_message.iter().enumerate() {
+                let tool_block = ContentBlock::ToolResult {
+                    tool_use_id: id.clone(),
+                    content: TOOL_OUTPUT_MISSING_TEXT.to_string(),
+                    is_error: Some(true),
+                };
+                let inserted_message = Message {
+                    role: Role::User,
+                    content: vec![tool_block.clone()],
+                    timestamp: None,
+                    tool_duration_ms: None,
+                };
+                let stored_message = crate::session::StoredMessage {
+                    id: id::new_id("message"),
+                    role: Role::User,
+                    content: vec![tool_block],
+                    display_role: None,
+                    timestamp: Some(chrono::Utc::now()),
+                    tool_duration_ms: None,
+                    token_usage: None,
+                };
+                self.messages
+                    .insert(index + 1 + inserted + offset, inserted_message);
+                self.session
+                    .messages
+                    .insert(index + 1 + inserted + offset, stored_message);
+                self.tool_result_ids.insert(id.clone());
+                repaired += 1;
             }
-
-            if !missing_for_message.is_empty() {
-                for (offset, id) in missing_for_message.iter().enumerate() {
-                    let tool_block = ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: TOOL_OUTPUT_MISSING_TEXT.to_string(),
-                        is_error: Some(true),
-                    };
-                    let inserted_message = Message {
-                        role: Role::User,
-                        content: vec![tool_block.clone()],
-                        timestamp: None,
-                        tool_duration_ms: None,
-                    };
-                    let stored_message = crate::session::StoredMessage {
-                        id: id::new_id("message"),
-                        role: Role::User,
-                        content: vec![tool_block],
-                        display_role: None,
-                        timestamp: Some(chrono::Utc::now()),
-                        tool_duration_ms: None,
-                        token_usage: None,
-                    };
-                    self.messages.insert(index + 1 + offset, inserted_message);
-                    self.session
-                        .messages
-                        .insert(index + 1 + offset, stored_message);
-                    self.tool_result_ids.insert(id.clone());
-                    repaired += 1;
-                }
-                index += missing_for_message.len();
-            }
-
-            index += 1;
+            inserted += missing_for_message.len();
         }
+
+        self.tool_output_scan_index = self.messages.len();
 
         if repaired > 0 {
             self.reseed_compaction_from_provider_messages();

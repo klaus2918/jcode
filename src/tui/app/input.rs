@@ -1482,8 +1482,14 @@ impl App {
             "autoreview" => {
                 "`/autoreview`\nShow autoreview status for this session.\n\n`/autoreview on`\nEnable end-of-turn autoreview for this session.\n\n`/autoreview off`\nDisable autoreview for this session.\n\n`/autoreview now`\nLaunch a headed reviewer immediately in a new window."
             }
+            "autojudge" => {
+                "`/autojudge`\nShow autojudge status for this session.\n\n`/autojudge on`\nEnable end-of-turn autojudge for this session.\n\n`/autojudge off`\nDisable autojudge for this session.\n\n`/autojudge now`\nLaunch a headed judge immediately in a new window."
+            }
             "review" => {
                 "`/review`\nLaunch a one-shot headed review session immediately.\n\nThe reviewer will DM this session when done. If OpenAI ChatGPT OAuth is available, it prefers `gpt-5.4`."
+            }
+            "judge" => {
+                "`/judge`\nLaunch a one-shot headed judge session immediately.\n\nThe judge will DM this session when done. If OpenAI ChatGPT OAuth is available, it prefers `gpt-5.4`."
             }
             "effort" => {
                 "`/effort`\nShow current reasoning effort.\n\n`/effort <level>`\nSet reasoning effort (none|low|medium|high|xhigh).\n\nAlso: Alt+←/→ to cycle."
@@ -1507,11 +1513,15 @@ impl App {
             "improve" => {
                 "`/improve [focus]`\nStart an autonomous repo-improvement loop. The model inspects the project, writes a ranked todo list, implements the highest-leverage safe improvements, validates them, then keeps going until further work has diminishing returns.\n\n`/improve plan [focus]`\nGenerate a ranked improve todo list only, without editing files.\n\n`/improve resume`\nResume the last saved improve mode for this session using the current improve todos.\n\n`/improve status`\nShow the inferred status of the current improve run and todo batch.\n\n`/improve stop`\nAsk the model to stop after the next safe point, update todos, and summarize remaining work."
             }
-            "reload" => "`/reload`\nReload to a newer binary if one is available.",
+            "reload" => {
+                "`/reload`\nReload into the newest available binary if one is ready. This is fast and does not rebuild."
+            }
             "restart" => {
                 "`/restart`\nRestart jcode with the current binary. Session is preserved.\nUseful after config changes, MCP server updates, or env var changes."
             }
-            "rebuild" => "`/rebuild`\nRun full update flow (git pull + cargo build + tests).",
+            "rebuild" => {
+                "`/rebuild`\nRun `git pull --ff-only`, `cargo build --release`, and release tests in the background. jcode stays usable and reloads automatically when the build is ready."
+            }
             "selfdev" => {
                 "`/selfdev`\nSpawn a new self-dev jcode session in a separate terminal.\n\n`/selfdev <prompt>`\nSpawn a new self-dev session and auto-deliver the prompt to it.\n\n`/selfdev status`\nShow current self-dev/build status."
             }

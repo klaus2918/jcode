@@ -92,6 +92,12 @@ pub struct Agent {
     /// Transient reminder injected into provider requests for the current turn only.
     /// Not persisted to session history.
     current_turn_system_reminder: Option<String>,
+    /// Tool call ids observed in the current session transcript.
+    tool_call_ids: HashSet<String>,
+    /// Tool result ids observed in the current session transcript.
+    tool_result_ids: HashSet<String>,
+    /// Number of stored session messages already indexed for missing tool-output repair.
+    tool_output_scan_index: usize,
     /// Soft interrupt queue: messages to inject at next safe point without cancelling
     /// Uses std::sync::Mutex so it can be accessed without async, even while agent is processing
     soft_interrupt_queue: SoftInterruptQueue,
@@ -145,6 +151,9 @@ impl Agent {
             last_connection_type: None,
             pending_alerts: Vec::new(),
             current_turn_system_reminder: None,
+            tool_call_ids: HashSet::new(),
+            tool_result_ids: HashSet::new(),
+            tool_output_scan_index: 0,
             soft_interrupt_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
             background_tool_signal: InterruptSignal::new(),
             graceful_shutdown: InterruptSignal::new(),
@@ -216,9 +225,9 @@ impl Agent {
         let budget = self.provider.context_window();
         manager.set_budget(budget);
         if let Some(state) = self.session.compaction.as_ref() {
-            manager.restore_persisted_state(state, self.session.messages.len());
+            manager.restore_persisted_stored_state_with(state, &self.session.messages);
         } else {
-            manager.seed_restored_messages(self.session.messages.len());
+            manager.seed_restored_stored_messages_with(&self.session.messages);
         }
         logging::info(&format!(
             "seed_compaction_from_session: seeded compaction with {} messages",
@@ -259,7 +268,7 @@ impl Agent {
         let compaction = self.registry.compaction();
         if let Ok(mut manager) = compaction.try_write() {
             manager.set_budget(self.provider.context_window());
-            manager.restore_persisted_state(&state, self.session.messages.len());
+            manager.restore_persisted_stored_state_with(&state, &self.session.messages);
         }
 
         self.cache_tracker.reset();
@@ -271,7 +280,6 @@ impl Agent {
     }
 
     fn messages_for_provider(&mut self) -> (Vec<Message>, Option<CompactionEvent>) {
-        // Convert session messages to provider messages (single allocation)
         let all_messages = self.session.messages_for_provider();
         if self.provider.uses_jcode_compaction() || self.session.compaction.is_some() {
             let compaction = self.registry.compaction();
@@ -332,57 +340,84 @@ impl Agent {
     }
 
     fn repair_missing_tool_outputs(&mut self) -> usize {
-        let mut known_results = HashSet::new();
-        for msg in &self.session.messages {
-            if let Role::User = msg.role {
-                for block in &msg.content {
-                    if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                        known_results.insert(tool_use_id.clone());
-                    }
-                }
-            }
+        if self.tool_output_scan_index > self.session.messages.len() {
+            self.reset_tool_output_tracking();
         }
 
-        let mut repaired = 0usize;
-        let mut index = 0usize;
-        while index < self.session.messages.len() {
-            let mut missing_for_message: Vec<String> = Vec::new();
-            if let Role::Assistant = self.session.messages[index].role {
-                for block in &self.session.messages[index].content {
-                    if let ContentBlock::ToolUse { id, .. } = block {
-                        if !known_results.contains(id) {
-                            known_results.insert(id.clone());
-                            missing_for_message.push(id.clone());
+        let scan_start = self.tool_output_scan_index;
+        let mut new_result_ids = Vec::new();
+        let mut assistant_tool_uses: Vec<(usize, Vec<String>)> = Vec::new();
+
+        for (index, msg) in self.session.messages.iter().enumerate().skip(scan_start) {
+            match msg.role {
+                Role::User => {
+                    for block in &msg.content {
+                        if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                            new_result_ids.push(tool_use_id.clone());
                         }
                     }
                 }
-            }
-
-            if !missing_for_message.is_empty() {
-                for (offset, id) in missing_for_message.iter().enumerate() {
-                    let tool_block = ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: TOOL_OUTPUT_MISSING_TEXT.to_string(),
-                        is_error: Some(true),
-                    };
-                    let stored_message = StoredMessage {
-                        id: id::new_id("message"),
-                        role: Role::User,
-                        content: vec![tool_block],
-                        display_role: None,
-                        timestamp: Some(chrono::Utc::now()),
-                        tool_duration_ms: None,
-                        token_usage: None,
-                    };
-                    self.session
-                        .insert_message(index + 1 + offset, stored_message);
-                    repaired += 1;
+                Role::Assistant => {
+                    let tool_uses = msg
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    if !tool_uses.is_empty() {
+                        assistant_tool_uses.push((index, tool_uses));
+                    }
                 }
-                index += missing_for_message.len();
             }
-
-            index += 1;
         }
+
+        self.tool_result_ids.extend(new_result_ids);
+
+        let mut missing_repairs: Vec<(usize, Vec<String>)> = Vec::new();
+        for (index, tool_uses) in assistant_tool_uses {
+            let mut missing_for_message = Vec::new();
+            for id in tool_uses {
+                self.tool_call_ids.insert(id.clone());
+                if !self.tool_result_ids.contains(&id) {
+                    missing_for_message.push(id);
+                }
+            }
+            if !missing_for_message.is_empty() {
+                missing_repairs.push((index, missing_for_message));
+            }
+        }
+
+        self.tool_output_scan_index = self.session.messages.len();
+
+        let mut repaired = 0usize;
+        let mut inserted = 0usize;
+        for (index, missing_for_message) in missing_repairs {
+            for (offset, id) in missing_for_message.iter().enumerate() {
+                let tool_block = ContentBlock::ToolResult {
+                    tool_use_id: id.clone(),
+                    content: TOOL_OUTPUT_MISSING_TEXT.to_string(),
+                    is_error: Some(true),
+                };
+                let stored_message = StoredMessage {
+                    id: id::new_id("message"),
+                    role: Role::User,
+                    content: vec![tool_block],
+                    display_role: None,
+                    timestamp: Some(chrono::Utc::now()),
+                    tool_duration_ms: None,
+                    token_usage: None,
+                };
+                self.session
+                    .insert_message(index + 1 + inserted + offset, stored_message);
+                self.tool_result_ids.insert(id.clone());
+                repaired += 1;
+            }
+            inserted += missing_for_message.len();
+        }
+
+        self.tool_output_scan_index = self.session.messages.len();
 
         if repaired > 0 {
             let _ = self.session.save();
@@ -391,6 +426,12 @@ impl Agent {
         }
 
         repaired
+    }
+
+    fn reset_tool_output_tracking(&mut self) {
+        self.tool_call_ids.clear();
+        self.tool_result_ids.clear();
+        self.tool_output_scan_index = 0;
     }
 
     pub fn session_id(&self) -> &str {
@@ -632,7 +673,7 @@ impl Agent {
         Ok(())
     }
 
-    pub fn provider_messages(&self) -> Vec<Message> {
+    pub fn provider_messages(&mut self) -> Vec<Message> {
         self.session.messages_for_provider()
     }
 
@@ -661,6 +702,17 @@ impl Agent {
     pub fn set_autoreview_enabled(&mut self, enabled: bool) -> Result<()> {
         self.session.autoreview_enabled = Some(enabled);
         self.log_env_snapshot("set_autoreview_enabled");
+        self.session.save()?;
+        Ok(())
+    }
+
+    pub fn autojudge_enabled(&self) -> Option<bool> {
+        self.session.autojudge_enabled
+    }
+
+    pub fn set_autojudge_enabled(&mut self, enabled: bool) -> Result<()> {
+        self.session.autojudge_enabled = Some(enabled);
+        self.log_env_snapshot("set_autojudge_enabled");
         self.session.save()?;
         Ok(())
     }

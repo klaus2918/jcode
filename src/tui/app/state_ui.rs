@@ -10,6 +10,9 @@ pub(super) struct RestoredReloadInput {
     pub pending_soft_interrupts: Vec<String>,
     pub rate_limit_pending_message: Option<super::PendingRemoteMessage>,
     pub rate_limit_reset: Option<Instant>,
+    pub observe_mode_enabled: bool,
+    pub observe_page_markdown: String,
+    pub observe_page_updated_at_ms: u64,
 }
 
 impl App {
@@ -21,39 +24,153 @@ impl App {
         }
     }
 
+    fn client_maintenance_busy_message(
+        current: crate::bus::ClientMaintenanceAction,
+        requested: crate::bus::ClientMaintenanceAction,
+    ) -> String {
+        if current == requested {
+            format!("{} already running in the background.", current.title())
+        } else {
+            format!(
+                "{} already running in the background. Wait for it to finish before starting {}.",
+                current.title(),
+                requested.noun()
+            )
+        }
+    }
+
+    fn client_maintenance_card_title(action: crate::bus::ClientMaintenanceAction) -> String {
+        action.title().to_string()
+    }
+
+    fn client_maintenance_card_message(
+        action: crate::bus::ClientMaintenanceAction,
+        status: impl Into<String>,
+        note: impl Into<String>,
+    ) -> String {
+        let note = note.into();
+        let mut content = format!("**Status:** {}", status.into());
+        if !note.is_empty() {
+            content.push_str("\n\n");
+            content.push_str(&note);
+        }
+        if action == crate::bus::ClientMaintenanceAction::Rebuild {
+            content.push_str(
+                "\n\n**Pipeline:** `git pull --ff-only` → `cargo build --release` → `cargo test --release -- --test-threads=1`",
+            );
+        }
+        content
+    }
+
+    fn set_client_maintenance_message(
+        &mut self,
+        action: crate::bus::ClientMaintenanceAction,
+        content: String,
+    ) {
+        let title = Self::client_maintenance_card_title(action);
+        if let Some(idx) = self
+            .display_messages
+            .iter()
+            .rposition(|message| Self::is_client_maintenance_message(message, &title))
+        {
+            let message = &mut self.display_messages[idx];
+            let title_changed = message.title.as_deref() != Some(title.as_str());
+            if title_changed {
+                message.title = Some(title);
+            }
+            if message.content != content || title_changed {
+                message.content = content;
+                self.bump_display_messages_version();
+            }
+        } else {
+            self.push_display_message(DisplayMessage::system(content).with_title(title));
+        }
+    }
+
+    pub(super) fn start_background_client_rebuild(&mut self, session_id: String) {
+        self.start_background_client_maintenance(
+            crate::bus::ClientMaintenanceAction::Rebuild,
+            session_id,
+        );
+    }
+
     pub(super) fn start_background_client_update(&mut self, session_id: String) {
-        if self.background_update_in_progress {
-            self.set_status_notice("Update already running");
-            self.append_reload_message("Update already running in the background...");
+        self.start_background_client_maintenance(
+            crate::bus::ClientMaintenanceAction::Update,
+            session_id,
+        );
+    }
+
+    fn start_background_client_maintenance(
+        &mut self,
+        action: crate::bus::ClientMaintenanceAction,
+        session_id: String,
+    ) {
+        if let Some(current) = self.background_client_action {
+            let message = Self::client_maintenance_busy_message(current, action);
+            self.set_status_notice(&message);
+            self.set_client_maintenance_message(
+                current,
+                Self::client_maintenance_card_message(current, "already running", message),
+            );
             return;
         }
 
-        self.background_update_in_progress = true;
-        self.pending_background_update_reload = None;
-        self.set_status_notice("Checking for updates...");
-        self.append_reload_message(
-            "Checking for updates in the background — jcode will reload when ready.",
-        );
-        crate::update::spawn_background_session_update(session_id);
+        self.background_client_action = Some(action);
+        self.pending_background_client_reload = None;
+
+        match action {
+            crate::bus::ClientMaintenanceAction::Update => {
+                self.set_status_notice("Checking for updates...");
+                self.set_client_maintenance_message(
+                    action,
+                    Self::client_maintenance_card_message(
+                        action,
+                        "checking for updates",
+                        "Running in the background. jcode will reload automatically when the update is ready.",
+                    ),
+                );
+                crate::update::spawn_background_session_update(session_id);
+            }
+            crate::bus::ClientMaintenanceAction::Rebuild => {
+                self.set_status_notice("Starting background rebuild...");
+                self.set_client_maintenance_message(
+                    action,
+                    Self::client_maintenance_card_message(
+                        action,
+                        "starting background rebuild",
+                        "Running in the background. jcode will reload automatically after the rebuild succeeds.",
+                    ),
+                );
+                crate::cli::hot_exec::spawn_background_session_rebuild(session_id);
+            }
+        }
     }
 
-    pub(super) fn maybe_finish_background_update_reload(&mut self) {
+    pub(super) fn maybe_finish_background_client_reload(&mut self) {
         if self.is_processing {
             return;
         }
 
-        let Some(session_id) = self.pending_background_update_reload.take() else {
+        let Some((session_id, action)) = self.pending_background_client_reload.take() else {
             return;
         };
 
-        self.append_reload_message("Reloading client with updated binary...");
+        self.set_client_maintenance_message(
+            action,
+            Self::client_maintenance_card_message(
+                action,
+                "reloading client",
+                "The new binary is ready, so jcode is switching over now.",
+            ),
+        );
         self.save_input_for_reload(&session_id);
         self.reload_requested = Some(session_id);
         self.should_quit = true;
     }
 
     pub(super) fn handle_session_update_status(&mut self, status: crate::bus::SessionUpdateStatus) {
-        use crate::bus::SessionUpdateStatus;
+        use crate::bus::{ClientMaintenanceAction, SessionUpdateStatus};
 
         let Some(active_session_id) = self.active_client_session_id().map(str::to_string) else {
             return;
@@ -62,13 +179,22 @@ impl App {
         match status {
             SessionUpdateStatus::Status {
                 session_id,
+                action,
                 message,
             } => {
                 if session_id != active_session_id {
                     return;
                 }
+                self.background_client_action = Some(action);
                 self.set_status_notice(message.clone());
-                self.append_reload_message(&message);
+                self.set_client_maintenance_message(
+                    action,
+                    Self::client_maintenance_card_message(
+                        action,
+                        message,
+                        "Still running in the background. jcode will reload automatically when ready.",
+                    ),
+                );
             }
             SessionUpdateStatus::NoUpdate {
                 session_id,
@@ -77,44 +203,73 @@ impl App {
                 if session_id != active_session_id {
                     return;
                 }
-                self.background_update_in_progress = false;
-                self.pending_background_update_reload = None;
+                self.background_client_action = None;
+                self.pending_background_client_reload = None;
                 let message = format!("Already up to date ({})", current);
                 self.set_status_notice(&message);
-                self.append_reload_message(&message);
+                self.set_client_maintenance_message(
+                    ClientMaintenanceAction::Update,
+                    Self::client_maintenance_card_message(
+                        ClientMaintenanceAction::Update,
+                        "already up to date",
+                        format!("Current version: `{}`", current),
+                    ),
+                );
             }
             SessionUpdateStatus::ReadyToReload {
                 session_id,
+                action,
                 version,
             } => {
                 if session_id != active_session_id {
                     return;
                 }
-                self.background_update_in_progress = false;
+                self.background_client_action = None;
+                let ready_message = match action {
+                    ClientMaintenanceAction::Update => format!("✅ Updated to {}.", version),
+                    ClientMaintenanceAction::Rebuild => {
+                        format!("✅ Rebuild finished ({}).", version)
+                    }
+                };
                 if self.is_processing {
-                    self.pending_background_update_reload = Some(session_id);
-                    self.set_status_notice("Update installed — will reload after current turn");
-                    self.append_reload_message(&format!(
-                        "✅ Updated to {}. Will reload after the current turn.",
-                        version
+                    self.pending_background_client_reload = Some((session_id, action));
+                    self.set_status_notice(format!(
+                        "{} ready — will reload after the current turn",
+                        action.title()
                     ));
+                    self.set_client_maintenance_message(
+                        action,
+                        Self::client_maintenance_card_message(
+                            action,
+                            ready_message,
+                            "Waiting for the current turn to finish before reloading.",
+                        ),
+                    );
                     return;
                 }
 
-                self.append_reload_message(&format!("✅ Updated to {}.", version));
-                self.pending_background_update_reload = Some(session_id);
-                self.maybe_finish_background_update_reload();
+                self.set_client_maintenance_message(
+                    action,
+                    Self::client_maintenance_card_message(action, ready_message, "Reloading now."),
+                );
+                self.pending_background_client_reload = Some((session_id, action));
+                self.maybe_finish_background_client_reload();
             }
             SessionUpdateStatus::Error {
                 session_id,
+                action,
                 message,
             } => {
                 if session_id != active_session_id {
                     return;
                 }
-                self.background_update_in_progress = false;
-                self.pending_background_update_reload = None;
-                self.set_status_notice("Update failed");
+                self.background_client_action = None;
+                self.pending_background_client_reload = None;
+                self.set_status_notice(format!("{} failed", action.title()));
+                self.set_client_maintenance_message(
+                    action,
+                    Self::client_maintenance_card_message(action, "failed", message.clone()),
+                );
                 self.push_display_message(DisplayMessage::error(message));
             }
         }
@@ -186,6 +341,10 @@ impl App {
                 DisplayMessage::system(line.to_string()).with_title("Reload"),
             );
         }
+    }
+
+    pub(super) fn is_client_maintenance_message(message: &DisplayMessage, title: &str) -> bool {
+        message.role == "system" && message.title.as_deref() == Some(title)
     }
 
     pub(super) fn is_reload_message(message: &DisplayMessage) -> bool {
@@ -429,7 +588,12 @@ impl App {
                 "/autoreview".into(),
                 "Show/toggle automatic end-of-turn review",
             ),
+            (
+                "/autojudge".into(),
+                "Show/toggle automatic end-of-turn judging",
+            ),
             ("/review".into(), "Launch a one-shot headed review session"),
+            ("/judge".into(), "Launch a one-shot headed judge session"),
             ("/effort".into(), "Show/change reasoning effort (Alt+←/→)"),
             ("/fast".into(), "Toggle OpenAI/Codex fast mode"),
             (
@@ -472,11 +636,17 @@ impl App {
                 "Show jcode subscription status and account details",
             ),
             ("/config".into(), "Show or edit configuration"),
-            ("/reload".into(), "Smart reload (if newer binary exists)"),
+            ("/reload".into(), "Reload into newest available binary"),
             ("/restart".into(), "Restart with current binary (no build)"),
-            ("/rebuild".into(), "Full rebuild (git pull + build + tests)"),
+            (
+                "/rebuild".into(),
+                "Background rebuild + auto reload when ready",
+            ),
             ("/selfdev".into(), "Open a new self-dev jcode session"),
-            ("/update".into(), "Check for and install latest release"),
+            (
+                "/update".into(),
+                "Background update + auto reload when ready",
+            ),
             ("/resume".into(), "Open session picker"),
             ("/save".into(), "Bookmark session for easy access"),
             ("/unsave".into(), "Remove bookmark from session"),
@@ -626,6 +796,27 @@ impl App {
             ];
         }
 
+        if prefix.starts_with("/autojudge ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    ("/autojudge status".into(), "Show current autojudge status"),
+                    ("/autojudge on".into(), "Enable end-of-turn autojudge"),
+                    ("/autojudge off".into(), "Disable end-of-turn autojudge"),
+                    ("/autojudge now".into(), "Launch a judge immediately"),
+                ],
+            );
+        }
+
+        if prefix_trimmed == "/autojudge" {
+            return vec![
+                ("/autojudge status".into(), "Show current autojudge status"),
+                ("/autojudge on".into(), "Enable end-of-turn autojudge"),
+                ("/autojudge off".into(), "Disable end-of-turn autojudge"),
+                ("/autojudge now".into(), "Launch a judge immediately"),
+            ];
+        }
+
         if prefix.starts_with("/review ") {
             return self.rank_suggestions(
                 input,
@@ -635,6 +826,17 @@ impl App {
 
         if prefix_trimmed == "/review" {
             return vec![("/review".into(), "Launch a one-shot review immediately")];
+        }
+
+        if prefix.starts_with("/judge ") {
+            return self.rank_suggestions(
+                input,
+                vec![("/judge".into(), "Launch a one-shot judge immediately")],
+            );
+        }
+
+        if prefix_trimmed == "/judge" {
+            return vec![("/judge".into(), "Launch a one-shot judge immediately")];
         }
 
         if prefix_trimmed == "/subagent-model" {
@@ -1499,6 +1701,7 @@ impl App {
             && self.interleave_message.is_none()
             && self.pending_soft_interrupts.is_empty()
             && self.rate_limit_pending_message.is_none()
+            && !self.observe_mode_enabled
         {
             return;
         }
@@ -1532,6 +1735,9 @@ impl App {
                 "pending_soft_interrupts": self.pending_soft_interrupts,
                 "rate_limit_pending_message": rate_limit_pending_message,
                 "rate_limit_reset_in_ms": rate_limit_reset_in_ms,
+                "observe_mode_enabled": self.observe_mode_enabled,
+                "observe_page_markdown": self.observe_page_markdown,
+                "observe_page_updated_at_ms": self.observe_page_updated_at_ms,
             });
             let _ = std::fs::write(&path, data.to_string());
         }
@@ -1552,6 +1758,9 @@ impl App {
                 "pending_soft_interrupts": [],
                 "rate_limit_pending_message": serde_json::Value::Null,
                 "rate_limit_reset_in_ms": serde_json::Value::Null,
+                "observe_mode_enabled": false,
+                "observe_page_markdown": "",
+                "observe_page_updated_at_ms": 0,
             });
             let _ = std::fs::write(&path, data.to_string());
         }
@@ -1660,6 +1869,19 @@ impl App {
             {
                 pending.retry_at = Some(reset);
             }
+            let observe_mode_enabled = value
+                .get("observe_mode_enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let observe_page_markdown = value
+                .get("observe_page_markdown")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let observe_page_updated_at_ms = value
+                .get("observe_page_updated_at_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             let cursor = cursor.min(input.len());
             return Some(RestoredReloadInput {
                 input,
@@ -1670,6 +1892,9 @@ impl App {
                 pending_soft_interrupts,
                 rate_limit_pending_message,
                 rate_limit_reset,
+                observe_mode_enabled,
+                observe_page_markdown,
+                observe_page_updated_at_ms,
             });
         }
 
@@ -1685,6 +1910,9 @@ impl App {
             pending_soft_interrupts: Vec::new(),
             rate_limit_pending_message: None,
             rate_limit_reset: None,
+            observe_mode_enabled: false,
+            observe_page_markdown: String::new(),
+            observe_page_updated_at_ms: 0,
         })
     }
 

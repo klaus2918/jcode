@@ -1,5 +1,5 @@
 use super::*;
-use crate::bus::{BusEvent, InputShellCompleted, SessionUpdateStatus};
+use crate::bus::{BusEvent, ClientMaintenanceAction, InputShellCompleted, SessionUpdateStatus};
 use crate::tui::TuiState;
 use ratatui::layout::Rect;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
@@ -887,8 +887,8 @@ fn test_account_openai_command_opens_account_picker() {
                 entry.selection,
                 crate::tui::PickerSelection::Account(crate::tui::AccountPickerSelection::Switch {
                     ref provider_id,
-                    ref label
-                }) if provider_id == "openai" && label == "work"
+                    ..
+                }) if provider_id == "openai"
             )
         }));
         assert!(
@@ -961,8 +961,8 @@ fn test_account_command_opens_account_picker() {
                 entry.selection,
                 crate::tui::PickerSelection::Account(crate::tui::AccountPickerSelection::Switch {
                     ref provider_id,
-                    ref label
-                }) if provider_id == "openai" && label == "work"
+                    ..
+                }) if provider_id == "openai"
             )
         }));
         assert!(
@@ -2014,6 +2014,64 @@ fn test_pinned_diagram_not_shown_when_terminal_too_narrow() {
 }
 
 #[test]
+fn test_workspace_info_widget_appears_in_visual_debug_frame_when_enabled() {
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::workspace_client::reset_for_tests();
+
+    let mut app = create_test_app();
+    app.centered = true;
+    app.display_messages = vec![
+        DisplayMessage::system("Workspace widget render test".to_string()),
+        DisplayMessage::assistant("Short content keeps room for info widgets.".to_string()),
+    ];
+    app.bump_display_messages_version();
+
+    let current_session = app.session.id.clone();
+    crate::tui::workspace_client::enable(
+        Some(current_session.as_str()),
+        &[current_session.clone(), "workspace_peer".to_string()],
+    );
+
+    crate::tui::visual_debug::enable();
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+    terminal
+        .draw(|f| crate::tui::ui::draw(f, &app))
+        .expect("draw failed");
+
+    let frame = crate::tui::visual_debug::latest_frame().expect("frame capture");
+    let widget = frame
+        .layout
+        .widget_placements
+        .iter()
+        .find(|placement| placement.kind == "workspace")
+        .expect("workspace widget placement");
+
+    assert_eq!(widget.side, "right");
+    assert!(
+        widget.rect.width > 0,
+        "workspace widget width should be non-zero"
+    );
+    assert!(
+        widget.rect.height > 0,
+        "workspace widget height should be non-zero"
+    );
+    assert!(
+        frame
+            .info_widgets
+            .as_ref()
+            .expect("info widget capture")
+            .placements
+            .iter()
+            .any(|placement| placement.kind == "workspace"),
+        "workspace widget should be present in info widget capture"
+    );
+
+    crate::tui::visual_debug::disable();
+    crate::tui::workspace_client::reset_for_tests();
+}
+
+#[test]
 fn test_mouse_scroll_over_diff_pane_scrolls_side_panel_without_changing_focus() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
@@ -2244,6 +2302,112 @@ fn test_side_panel_uses_left_splitter_instead_of_rounded_box() {
     assert_eq!(buf[(diff_area.x, diff_area.y)].symbol(), "│");
     assert_eq!(buf[(diff_area.x, diff_area.y + 1)].symbol(), "│");
     assert!(text.contains("side Plan 1/1"), "rendered text: {text}");
+}
+
+#[test]
+fn test_pinned_content_uses_left_splitter_instead_of_rounded_box() {
+    let _lock = scroll_render_test_lock();
+
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::Pinned;
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        content: "wrote src/demo.rs".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(crate::message::ToolCall {
+            id: "tool-1".to_string(),
+            name: "write".to_string(),
+            input: serde_json::json!({
+                "file_path": "src/demo.rs",
+                "content": "fn demo() {}\n"
+            }),
+            intent: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let backend = ratatui::backend::TestBackend::new(80, 12);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    let text = render_and_snap(&app, &mut terminal);
+
+    let diff_area = crate::tui::ui::last_layout_snapshot()
+        .and_then(|layout| layout.diff_pane_area)
+        .expect("expected pinned pane area after render");
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(buf[(diff_area.x, diff_area.y)].symbol(), "│");
+    assert_eq!(buf[(diff_area.x, diff_area.y + 1)].symbol(), "│");
+    assert!(text.contains("pinned"), "rendered text: {text}");
+}
+
+#[test]
+fn test_file_diff_uses_left_splitter_instead_of_rounded_box() {
+    let _lock = scroll_render_test_lock();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let file_path = temp.path().join("demo.rs");
+    std::fs::write(&file_path, "fn demo() {}\n").expect("write demo file");
+
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::File;
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        content: "updated demo.rs".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(crate::message::ToolCall {
+            id: "tool-1".to_string(),
+            name: "write".to_string(),
+            input: serde_json::json!({
+                "file_path": file_path.display().to_string(),
+                "content": "fn demo() {\n    println!(\"hi\");\n}\n"
+            }),
+            intent: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let backend = ratatui::backend::TestBackend::new(100, 18);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    let text = render_and_snap(&app, &mut terminal);
+
+    let diff_area = crate::tui::ui::last_layout_snapshot()
+        .and_then(|layout| layout.diff_pane_area)
+        .expect("expected file diff pane area after render");
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(buf[(diff_area.x, diff_area.y)].symbol(), "│");
+    assert_eq!(buf[(diff_area.x, diff_area.y + 1)].symbol(), "│");
+    assert!(text.contains("demo.rs"), "rendered text: {text}");
+}
+
+#[test]
+fn test_side_diagram_uses_left_splitter_instead_of_rounded_box() {
+    let _lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+    app.diagram_pane_position = crate::config::DiagramPanePosition::Side;
+
+    crate::tui::mermaid::clear_active_diagrams();
+    crate::tui::mermaid::register_active_diagram(0x444, 900, 450, Some("side".to_string()));
+
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+    let text = render_and_snap(&app, &mut terminal);
+
+    let diagram_area = crate::tui::ui::last_layout_snapshot()
+        .and_then(|layout| layout.diagram_area)
+        .expect("expected side diagram area after render");
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(buf[(diagram_area.x, diagram_area.y)].symbol(), "│");
+    assert_eq!(buf[(diagram_area.x, diagram_area.y + 1)].symbol(), "│");
+    assert!(text.contains("pinned 1/1"), "rendered text: {text}");
+
+    crate::tui::mermaid::clear_active_diagrams();
 }
 
 #[test]
@@ -2898,6 +3062,25 @@ fn test_autoreview_command_toggles_session_preference() {
 }
 
 #[test]
+fn test_autojudge_command_toggles_session_preference() {
+    let mut app = create_test_app();
+
+    assert!(super::commands::handle_session_command(
+        &mut app,
+        "/autojudge on"
+    ));
+    assert_eq!(app.session.autojudge_enabled, Some(true));
+    assert!(app.autojudge_enabled);
+
+    assert!(super::commands::handle_session_command(
+        &mut app,
+        "/autojudge off"
+    ));
+    assert_eq!(app.session.autojudge_enabled, Some(false));
+    assert!(!app.autojudge_enabled);
+}
+
+#[test]
 fn test_review_prefers_openai_oauth_gpt_5_4_when_available() {
     with_temp_jcode_home(|| {
         let auth_path = crate::storage::jcode_dir()
@@ -2992,6 +3175,12 @@ fn test_subagent_command_suggestions_include_manual_launch_and_model_policy() {
 
     let review = app.get_suggestions_for("/review");
     assert!(review.iter().any(|(cmd, _)| cmd == "/review"));
+
+    let judge = app.get_suggestions_for("/judge");
+    assert!(judge.iter().any(|(cmd, _)| cmd == "/judge"));
+
+    let autojudge = app.get_suggestions_for("/autojudge");
+    assert!(autojudge.iter().any(|(cmd, _)| cmd == "/autojudge status"));
 }
 
 fn configure_test_remote_models_with_copilot(app: &mut App) {
@@ -4215,6 +4404,7 @@ fn test_background_update_ready_reloads_immediately_when_idle() {
 
     app.handle_session_update_status(SessionUpdateStatus::ReadyToReload {
         session_id: session_id.clone(),
+        action: ClientMaintenanceAction::Update,
         version: "v1.2.3".to_string(),
     });
 
@@ -4230,13 +4420,16 @@ fn test_background_update_ready_waits_for_turn_to_finish() {
 
     app.handle_session_update_status(SessionUpdateStatus::ReadyToReload {
         session_id: session_id.clone(),
+        action: ClientMaintenanceAction::Update,
         version: "v1.2.3".to_string(),
     });
 
     assert!(app.reload_requested.is_none());
     assert_eq!(
-        app.pending_background_update_reload.as_deref(),
-        Some(session_id.as_str())
+        app.pending_background_client_reload
+            .as_ref()
+            .map(|(id, action)| (id.as_str(), *action)),
+        Some((session_id.as_str(), ClientMaintenanceAction::Update))
     );
     assert!(!app.should_quit);
 
@@ -4245,6 +4438,30 @@ fn test_background_update_ready_waits_for_turn_to_finish() {
 
     assert_eq!(app.reload_requested.as_deref(), Some(session_id.as_str()));
     assert!(app.should_quit);
+}
+
+#[test]
+fn test_background_rebuild_status_uses_compact_rebuild_card() {
+    let mut app = create_test_app();
+    let session_id = app.session.id.clone();
+
+    app.handle_session_update_status(SessionUpdateStatus::Status {
+        session_id,
+        action: ClientMaintenanceAction::Rebuild,
+        message: "Building release binary in the background...".to_string(),
+    });
+
+    let message = app
+        .display_messages()
+        .last()
+        .expect("expected rebuild display message");
+    assert_eq!(message.title.as_deref(), Some("Rebuild"));
+    assert!(
+        message
+            .content
+            .contains("**Status:** Building release binary in the background...")
+    );
+    assert!(message.content.contains("**Pipeline:**"));
 }
 
 #[test]
@@ -4366,6 +4583,45 @@ fn test_save_and_restore_reload_state_preserves_interleave_and_pending_retry() {
     assert_eq!(pending.retry_attempts, 2);
     assert!(pending.retry_at.is_some());
     assert!(restored.rate_limit_reset.is_some());
+}
+
+#[test]
+fn test_save_and_restore_reload_state_preserves_observe_mode() {
+    let mut app = create_test_app();
+    let session_id = format!("test-reload-observe-{}", std::process::id());
+
+    app.set_observe_mode_enabled(true, true);
+    app.observe_page_markdown = "# Observe\n\nPersist me through reload.".to_string();
+    app.observe_page_updated_at_ms = 42;
+    app.save_input_for_reload(&session_id);
+
+    let restored = App::restore_input_for_reload(&session_id).expect("reload state should exist");
+    assert!(restored.observe_mode_enabled);
+    assert_eq!(
+        restored.observe_page_markdown,
+        "# Observe\n\nPersist me through reload."
+    );
+    assert_eq!(restored.observe_page_updated_at_ms, 42);
+}
+
+#[test]
+fn test_new_for_remote_restores_observe_mode_from_reload_state() {
+    let mut app = create_test_app();
+    let session_id = format!("test-remote-observe-{}", std::process::id());
+
+    app.set_observe_mode_enabled(true, true);
+    app.observe_page_markdown = "# Observe\n\nRestored after reload.".to_string();
+    app.observe_page_updated_at_ms = 99;
+    app.save_input_for_reload(&session_id);
+
+    let restored = App::new_for_remote(Some(session_id));
+    assert!(restored.observe_mode_enabled());
+    let page = restored
+        .side_panel()
+        .focused_page()
+        .expect("observe page should be focused");
+    assert_eq!(page.id, "observe");
+    assert!(page.content.contains("Restored after reload."));
 }
 
 #[test]
@@ -4558,6 +4814,7 @@ fn test_handle_server_event_history_clears_connection_type_on_session_change_whe
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             subagent_model: None,
             autoreview_enabled: None,
+            autojudge_enabled: None,
             available_models: vec![],
             available_model_routes: vec![],
             mcp_servers: vec![],
@@ -4605,6 +4862,7 @@ fn test_handle_server_event_history_preserves_connection_type_for_same_session_w
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             subagent_model: None,
             autoreview_enabled: None,
+            autojudge_enabled: None,
             available_models: vec![],
             available_model_routes: vec![],
             mcp_servers: vec![],
@@ -4906,6 +5164,62 @@ fn test_handle_server_event_tool_start_flushes_streaming_text_before_tool_messag
     assert_eq!(app.streaming_tool_calls.len(), 1);
     assert_eq!(app.streaming_tool_calls[0].name, "batch");
     assert!(matches!(app.status, ProcessingStatus::RunningTool(ref name) if name == "batch"));
+}
+
+#[test]
+fn test_handle_server_event_remote_observe_tracks_tool_exec_and_done() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.input = "/observe on".to_string();
+    app.submit_input();
+    assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("observe"));
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::ToolStart {
+            id: "tool_read".to_string(),
+            name: "read".to_string(),
+        },
+        &mut remote,
+    );
+    app.handle_server_event(
+        crate::protocol::ServerEvent::ToolInput {
+            delta: r#"{"file_path":"src/main.rs","start_line":1,"end_line":10}"#.to_string(),
+        },
+        &mut remote,
+    );
+    app.handle_server_event(
+        crate::protocol::ServerEvent::ToolExec {
+            id: "tool_read".to_string(),
+            name: "read".to_string(),
+        },
+        &mut remote,
+    );
+
+    let page = app.side_panel.focused_page().expect("missing observe page");
+    assert!(
+        page.content
+            .contains("Latest tool call emitted by the model")
+    );
+    assert!(page.content.contains("`read`"));
+    assert!(page.content.contains("src/main.rs"));
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::ToolDone {
+            id: "tool_read".to_string(),
+            name: "read".to_string(),
+            output: "1 fn main() {}".to_string(),
+            error: None,
+        },
+        &mut remote,
+    );
+
+    let page = app.side_panel.focused_page().expect("missing observe page");
+    assert!(page.content.contains("Latest tool result added to context"));
+    assert!(page.content.contains("Status: completed"));
+    assert!(page.content.contains("1 fn main() {}"));
 }
 
 #[test]
@@ -5270,6 +5584,7 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             subagent_model: None,
             autoreview_enabled: None,
+            autojudge_enabled: None,
             available_models: vec![],
             available_model_routes: vec![],
             mcp_servers: vec![],
@@ -5334,6 +5649,7 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             subagent_model: None,
             autoreview_enabled: None,
+            autojudge_enabled: None,
             available_models: vec![],
             available_model_routes: vec![],
             mcp_servers: vec![],
@@ -5495,6 +5811,7 @@ fn test_handle_server_event_history_restores_side_panel_snapshot() {
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             subagent_model: None,
             autoreview_enabled: None,
+            autojudge_enabled: None,
             available_models: vec![],
             available_model_routes: vec![],
             mcp_servers: vec![],
@@ -5672,6 +5989,7 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
             provider_model: Some("claude-sonnet-4-20250514".to_string()),
             subagent_model: None,
             autoreview_enabled: None,
+            autojudge_enabled: None,
             available_models: vec![],
             available_model_routes: vec![],
             mcp_servers: vec![],
@@ -6266,6 +6584,50 @@ fn test_remote_review_shows_processing_until_split_response() {
     assert!(app.pending_split_label.is_none());
 }
 
+#[test]
+fn test_remote_judge_shows_processing_until_split_response() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.input = "/judge".to_string();
+    app.cursor_pos = app.input.len();
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+        .expect("/judge should launch split request");
+
+    assert!(
+        app.is_processing,
+        "judge launch should show client processing state"
+    );
+    assert!(matches!(app.status, ProcessingStatus::Sending));
+    assert!(app.current_message_id.is_none());
+    assert_eq!(app.status_notice(), Some("Judge launching".to_string()));
+    assert!(app.pending_split_startup_message.is_some());
+    assert_eq!(app.pending_split_label.as_deref(), Some("Judge"));
+    assert!(!app.pending_split_request);
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::SplitResponse {
+            id: 1,
+            new_session_id: "session_judge_child".to_string(),
+            new_session_name: "judge_child".to_string(),
+        },
+        &mut remote,
+    );
+
+    assert!(
+        !app.is_processing,
+        "split response should clear transient launch state"
+    );
+    assert!(matches!(app.status, ProcessingStatus::Idle));
+    assert!(app.processing_started.is_none());
+    assert!(app.pending_split_startup_message.is_none());
+    assert!(app.pending_split_label.is_none());
+}
+
 // ====================================================================
 // Scroll testing with rendering verification
 // ====================================================================
@@ -6454,7 +6816,7 @@ fn test_chat_native_scrollbar_hidden_when_content_fits() {
     let text = render_and_snap(&app, &mut terminal);
 
     assert_eq!(crate::tui::ui::last_max_scroll(), 0);
-    for glyph in ["╷", "╵", "╎", "•"] {
+    for glyph in ["╷", "╵", "╎"] {
         assert!(
             !text.contains(glyph),
             "did not expect scrollbar glyph {glyph:?} when content fits:\n{text}"
@@ -6485,6 +6847,10 @@ fn test_chat_native_scrollbar_hides_scroll_counters() {
     assert!(
         text.contains('╷') || text.contains('•'),
         "expected native scrollbar thumb to render:\n{text}"
+    );
+    assert!(
+        !text.contains('╎'),
+        "did not expect dotted scrollbar track to render:\n{text}"
     );
     assert!(
         !text.contains(&format!("↑{scroll}")),

@@ -10,6 +10,9 @@ impl App {
         self.interleave_message = restored.interleave_message;
         self.rate_limit_pending_message = restored.rate_limit_pending_message;
         self.rate_limit_reset = restored.rate_limit_reset;
+        self.observe_page_markdown = restored.observe_page_markdown;
+        self.observe_page_updated_at_ms = restored.observe_page_updated_at_ms;
+        self.set_observe_mode_enabled(restored.observe_mode_enabled, restored.observe_mode_enabled);
 
         let mut queued_messages = restored.queued_messages;
         let mut recovered_interrupts = restored.pending_soft_interrupts;
@@ -113,6 +116,9 @@ impl App {
         let autoreview_enabled = session
             .autoreview_enabled
             .unwrap_or(config().autoreview.enabled);
+        let autojudge_enabled = session
+            .autojudge_enabled
+            .unwrap_or(config().autojudge.enabled);
         let context_limit = provider.context_window() as u64;
         let improve_mode = session.improve_mode.map(|mode| match mode {
             crate::session::SessionImproveMode::Run => ImproveMode::Run,
@@ -182,8 +188,8 @@ impl App {
             reload_requested: None,
             rebuild_requested: None,
             update_requested: None,
-            background_update_in_progress: false,
-            pending_background_update_reload: None,
+            background_client_action: None,
+            pending_background_client_reload: None,
             restart_requested: None,
             pasted_contents: Vec::new(),
             pending_images: Vec::new(),
@@ -221,7 +227,9 @@ impl App {
             suppress_terminal_title_updates: false,
             replay_elapsed_override: None,
             replay_processing_started_ms: None,
+            tool_call_ids: HashSet::new(),
             tool_result_ids: HashSet::new(),
+            tool_output_scan_index: 0,
             remote_session_id: None,
             remote_sessions: Vec::new(),
             remote_side_pane_images: Vec::new(),
@@ -237,6 +245,7 @@ impl App {
             requested_exit_code: None,
             memory_enabled: features.memory,
             autoreview_enabled,
+            autojudge_enabled,
             improve_mode,
             last_injected_memory_signature: None,
             swarm_enabled: features.swarm,
@@ -288,6 +297,7 @@ impl App {
             interleave_message: None,
             pending_soft_interrupts: Vec::new(),
             autoreview_after_current_turn: false,
+            autojudge_after_current_turn: false,
             pending_split_startup_message: None,
             pending_split_model_override: None,
             pending_split_provider_key_override: None,
@@ -341,6 +351,9 @@ impl App {
         let autoreview_enabled = session
             .autoreview_enabled
             .unwrap_or(config().autoreview.enabled);
+        let autojudge_enabled = session
+            .autojudge_enabled
+            .unwrap_or(config().autojudge.enabled);
         let context_limit = provider.context_window() as u64;
         let improve_mode = session.improve_mode.map(|mode| match mode {
             crate::session::SessionImproveMode::Run => ImproveMode::Run,
@@ -440,8 +453,8 @@ impl App {
             reload_requested: None,
             rebuild_requested: None,
             update_requested: None,
-            background_update_in_progress: false,
-            pending_background_update_reload: None,
+            background_client_action: None,
+            pending_background_client_reload: None,
             restart_requested: None,
             pasted_contents: Vec::new(),
             pending_images: Vec::new(),
@@ -479,7 +492,9 @@ impl App {
             suppress_terminal_title_updates: false,
             replay_elapsed_override: None,
             replay_processing_started_ms: None,
+            tool_call_ids: HashSet::new(),
             tool_result_ids: HashSet::new(),
+            tool_output_scan_index: 0,
             remote_session_id: None,
             remote_sessions: Vec::new(),
             remote_side_pane_images: Vec::new(),
@@ -495,6 +510,7 @@ impl App {
             requested_exit_code: None,
             memory_enabled: features.memory,
             autoreview_enabled,
+            autojudge_enabled,
             improve_mode,
             last_injected_memory_signature: None,
             swarm_enabled: features.swarm,
@@ -546,6 +562,7 @@ impl App {
             interleave_message: None,
             pending_soft_interrupts: Vec::new(),
             autoreview_after_current_turn: false,
+            autojudge_after_current_turn: false,
             pending_split_startup_message: None,
             pending_split_model_override: None,
             pending_split_provider_key_override: None,
@@ -763,7 +780,8 @@ impl App {
             self.session.is_canary
         };
 
-        let Some((candidate, _label)) = crate::build::client_update_candidate(is_selfdev_session)
+        let Some((candidate, _label)) =
+            crate::build::preferred_reload_candidate(is_selfdev_session)
         else {
             return false;
         };
@@ -871,7 +889,8 @@ impl App {
             // process restarts. The messages are restored, so Claude will get full context.
             self.provider_session_id = None;
             self.session = session;
-            self.replace_provider_messages(self.session.messages_for_provider());
+            let provider_messages = self.session.messages_for_provider();
+            self.replace_provider_messages(provider_messages);
             // Clear the saved provider_session_id since it's no longer valid
             self.session.provider_session_id = None;
             let mut restored_model = false;
@@ -1125,20 +1144,7 @@ pub(super) fn handle_dev_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if trimmed == "/rebuild" {
-        app.push_display_message(DisplayMessage {
-            role: "system".to_string(),
-            content: "Rebuilding jcode (git pull + cargo build + tests)...".to_string(),
-            tool_calls: vec![],
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        });
-        app.session.provider_session_id = app.provider_session_id.clone();
-        app.session
-            .set_status(crate::session::SessionStatus::Reloaded);
-        let _ = app.session.save();
-        app.rebuild_requested = Some(app.session.id.clone());
-        app.should_quit = true;
+        app.start_background_client_rebuild(app.session.id.clone());
         return true;
     }
 

@@ -23,6 +23,7 @@ pub(super) fn reset_current_session(app: &mut App) {
     session.mark_active();
     session.model = Some(app.provider.model());
     session.autoreview_enabled = Some(app.autoreview_enabled);
+    session.autojudge_enabled = Some(app.autojudge_enabled);
     app.session = session;
     app.set_side_panel_snapshot(crate::side_panel::SidePanelSnapshot::default());
     app.last_side_panel_focus_id = None;
@@ -54,7 +55,7 @@ fn handle_observe_command(app: &mut App, trimmed: &str) -> bool {
             if enabled {
                 app.set_status_notice("Observe: ON");
                 app.push_display_message(DisplayMessage::system(
-                    "Observe mode enabled — the side panel now tracks the latest tool call/result added to context."
+                    "Observe mode enabled — the side panel now tracks the latest useful tool call/result added to context."
                         .to_string(),
                 ));
             } else {
@@ -68,7 +69,7 @@ fn handle_observe_command(app: &mut App, trimmed: &str) -> bool {
             app.set_observe_mode_enabled(true, true);
             app.set_status_notice("Observe: ON");
             app.push_display_message(DisplayMessage::system(
-                "Observe mode enabled — the side panel now tracks the latest tool call/result added to context."
+                "Observe mode enabled — the side panel now tracks the latest useful tool call/result added to context."
                     .to_string(),
             ));
         }
@@ -103,6 +104,19 @@ fn current_autoreview_model_override() -> Option<String> {
     crate::config::config().autoreview.model.clone()
 }
 
+fn current_autojudge_model_summary(app: &App) -> String {
+    crate::config::config()
+        .autojudge
+        .model
+        .clone()
+        .or_else(|| app.session.model.clone())
+        .unwrap_or_else(|| app.provider.model())
+}
+
+fn current_autojudge_model_override() -> Option<String> {
+    crate::config::config().autojudge.model.clone()
+}
+
 pub(super) fn autoreview_status_message(app: &App) -> String {
     let default_enabled = crate::config::config().autoreview.enabled;
     let config_model = crate::config::config().autoreview.model.as_deref();
@@ -116,6 +130,32 @@ pub(super) fn autoreview_status_message(app: &App) -> String {
     format!(
         "Autoreview: **{}** (config default: {})\n{}",
         if app.autoreview_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        if default_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        model_line,
+    )
+}
+
+pub(super) fn autojudge_status_message(app: &App) -> String {
+    let default_enabled = crate::config::config().autojudge.enabled;
+    let config_model = crate::config::config().autojudge.model.as_deref();
+    let model_line = match config_model {
+        Some(model) => format!("Judge model override: `{}`", model),
+        None => format!(
+            "Judge model: inherit current session (`{}`)",
+            current_autojudge_model_summary(app)
+        ),
+    };
+    format!(
+        "Autojudge: **{}** (config default: {})\n{}",
+        if app.autojudge_enabled {
             "enabled"
         } else {
             "disabled"
@@ -160,6 +200,41 @@ Do not ask the user anything unless absolutely necessary. Keep your own session 
     )
 }
 
+pub(super) fn build_autojudge_startup_message(parent_session_id: &str) -> String {
+    format!(
+        "You are the automatic judge for parent session `{}`.\n\
+Your job is to evaluate the just-finished work like a strong, lightweight manager/reviewer.\n\
+Judge whether the agent interpreted the user's intent well, chose a good approach, showed enough initiative, and carried the task through thoughtfully and completely.\n\
+\n\
+First read only the conversation history you actually need:\n\
+1. Use `conversation_search` with `stats=true` to learn the history size.\n\
+2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
+3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request, constraints, preferences, or acceptance criteria.\n\
+\n\
+Then determine whether a judgment pass is needed. It is needed if the recent work likely changed code, docs, tests, tooling behavior, repo state, or made claims about what was completed. If the recent turn was purely conversational or administrative, no judgment is needed.\n\
+\n\
+If no judgment is needed:\n\
+- Send exactly one DM to session `{}` using `communicate` with action `dm`.\n\
+- Briefly explain why no judgment was needed.\n\
+- Then stop.\n\
+\n\
+If judgment is needed:\n\
+- Inspect the actual repo changes with targeted commands such as `git diff --stat`, `git diff --name-only`, focused file reads, and relevant tests or validation commands when warranted.\n\
+- Evaluate: intent alignment, completeness, initiative, approach quality, correctness, validation quality, and whether obvious next steps were missed.\n\
+- Prefer concrete findings over vague commentary. Call out if the work stopped after one pass when more follow-through was clearly needed.\n\
+- When finished, send exactly one DM to session `{}` summarizing:\n\
+  - whether judgment was needed\n\
+  - whether the work looks complete and well-executed\n\
+  - any findings with severity and file paths when relevant\n\
+  - specific missing follow-through or better next steps if the execution was incomplete or low-agency\n\
+  - or `Looks good` if the work is aligned, thoughtful, and complete\n\
+- After sending the DM, stop.\n\
+\n\
+Do not ask the user anything unless absolutely necessary. Keep your own session concise.",
+        parent_session_id, parent_session_id, parent_session_id
+    )
+}
+
 pub(super) fn build_review_startup_message(parent_session_id: &str) -> String {
     format!(
         "You are the one-shot reviewer for parent session `{}`.\n\
@@ -191,6 +266,40 @@ Do not ask the user anything unless absolutely necessary. Keep your own session 
     )
 }
 
+pub(super) fn build_judge_startup_message(parent_session_id: &str) -> String {
+    format!(
+        "You are the one-shot judge for parent session `{}`.\n\
+Your job is to inspect the recent work, determine whether a judgment pass is needed, and perform that judgment if needed.\n\
+\n\
+First read only the conversation history you actually need:\n\
+1. Use `conversation_search` with `stats=true` to learn the history size.\n\
+2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
+3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request, constraints, preferences, or acceptance criteria.\n\
+\n\
+Then determine whether a judgment pass is needed. It is needed if the recent work likely changed code, docs, tests, tooling behavior, repo state, or made claims about what was completed. If the recent turn was purely conversational or administrative, no judgment is needed.\n\
+\n\
+If no judgment is needed:\n\
+- Send exactly one DM to session `{}` using `communicate` with action `dm`.\n\
+- Briefly explain why no judgment was needed.\n\
+- Then stop.\n\
+\n\
+If judgment is needed:\n\
+- Inspect the actual repo changes with targeted commands such as `git diff --stat`, `git diff --name-only`, focused file reads, and relevant tests or validation commands when warranted.\n\
+- Evaluate: intent alignment, completeness, initiative, approach quality, correctness, validation quality, and whether obvious next steps were missed.\n\
+- Prefer concrete findings over vague commentary. Call out if the work stopped after one pass when more follow-through was clearly needed.\n\
+- When finished, send exactly one DM to session `{}` summarizing:\n\
+  - whether judgment was needed\n\
+  - whether the work looks complete and well-executed\n\
+  - any findings with severity and file paths when relevant\n\
+  - specific missing follow-through or better next steps if the execution was incomplete or low-agency\n\
+  - or `Looks good` if the work is aligned, thoughtful, and complete\n\
+- After sending the DM, stop.\n\
+\n\
+Do not ask the user anything unless absolutely necessary. Keep your own session concise.",
+        parent_session_id, parent_session_id, parent_session_id
+    )
+}
+
 pub(super) fn preferred_one_shot_review_override() -> Option<(String, String)> {
     let creds = crate::auth::codex::load_credentials().ok()?;
     let has_oauth = !creds.refresh_token.trim().is_empty() || creds.id_token.is_some();
@@ -205,6 +314,12 @@ fn current_review_model_override() -> (Option<String>, Option<String>) {
     preferred_one_shot_review_override()
         .map(|(model, provider_key)| (Some(model), Some(provider_key)))
         .unwrap_or_else(|| (current_autoreview_model_override(), None))
+}
+
+fn current_judge_model_override() -> (Option<String>, Option<String>) {
+    preferred_one_shot_review_override()
+        .map(|(model, provider_key)| (Some(model), Some(provider_key)))
+        .unwrap_or_else(|| (current_autojudge_model_override(), None))
 }
 
 fn clone_session_for_review(
@@ -224,6 +339,7 @@ fn clone_session_for_review(
     child.provider_key = provider_key_override.or_else(|| app.session.provider_key.clone());
     child.subagent_model = app.session.subagent_model.clone();
     child.autoreview_enabled = Some(false);
+    child.autojudge_enabled = Some(false);
     child.status = crate::session::SessionStatus::Closed;
     child.save()?;
     Ok((child.id.clone(), child.display_name().to_string()))
@@ -238,6 +354,7 @@ pub(super) fn prepare_review_spawned_session(
 ) {
     if let Ok(mut session) = crate::session::Session::load(session_id) {
         session.autoreview_enabled = Some(false);
+        session.autojudge_enabled = Some(false);
         if let Some(title) = title_override {
             session.title = Some(title);
         }
@@ -259,6 +376,16 @@ pub(super) fn prepare_autoreview_spawned_session(session_id: &str, startup_messa
         current_autoreview_model_override(),
         None,
         Some("autoreview".to_string()),
+    );
+}
+
+pub(super) fn prepare_autojudge_spawned_session(session_id: &str, startup_message: String) {
+    prepare_review_spawned_session(
+        session_id,
+        startup_message,
+        current_autojudge_model_override(),
+        None,
+        Some("autojudge".to_string()),
     );
 }
 
@@ -332,6 +459,29 @@ fn launch_review_once_local(app: &mut App) -> anyhow::Result<bool> {
     )
 }
 
+fn launch_autojudge_window_local(app: &mut App) -> anyhow::Result<bool> {
+    launch_review_window_local(
+        app,
+        "autojudge",
+        "Autojudge",
+        build_autojudge_startup_message(&active_session_id(app)),
+        current_autojudge_model_override(),
+        None,
+    )
+}
+
+fn launch_judge_once_local(app: &mut App) -> anyhow::Result<bool> {
+    let (model_override, provider_key_override) = current_judge_model_override();
+    launch_review_window_local(
+        app,
+        "judge",
+        "Judge",
+        build_judge_startup_message(&active_session_id(app)),
+        model_override,
+        provider_key_override,
+    )
+}
+
 pub(super) fn queue_review_spawn_remote(
     app: &mut App,
     label: &str,
@@ -364,6 +514,22 @@ pub(super) fn queue_autoreview_remote(app: &mut App) {
     );
 }
 
+pub(super) fn queue_autojudge_remote(app: &mut App) {
+    if !app.autojudge_enabled
+        || app.pending_split_request
+        || app.pending_split_startup_message.is_some()
+    {
+        return;
+    }
+    queue_review_spawn_remote(
+        app,
+        "Autojudge",
+        build_autojudge_startup_message(&active_session_id(app)),
+        current_autojudge_model_override(),
+        None,
+    );
+}
+
 pub(super) fn maybe_trigger_autoreview_local(app: &mut App) {
     if !app.autoreview_enabled || app.is_remote || app.is_replay {
         return;
@@ -374,6 +540,19 @@ pub(super) fn maybe_trigger_autoreview_local(app: &mut App) {
             error
         )));
         app.set_status_notice("Autoreview launch failed");
+    }
+}
+
+pub(super) fn maybe_trigger_autojudge_local(app: &mut App) {
+    if !app.autojudge_enabled || app.is_remote || app.is_replay {
+        return;
+    }
+    if let Err(error) = launch_autojudge_window_local(app) {
+        app.push_display_message(DisplayMessage::error(format!(
+            "Failed to launch autojudge: {}",
+            error
+        )));
+        app.set_status_notice("Autojudge launch failed");
     }
 }
 
@@ -446,6 +625,81 @@ fn handle_autoreview_command_local(app: &mut App, trimmed: &str) -> bool {
         _ => {
             app.push_display_message(DisplayMessage::error(
                 "Usage: `/autoreview [on|off|status|now]`".to_string(),
+            ));
+            true
+        }
+    }
+}
+
+fn handle_judge_command_local(app: &mut App, trimmed: &str) -> bool {
+    if !trimmed.starts_with("/judge") {
+        return false;
+    }
+
+    let rest = trimmed.strip_prefix("/judge").unwrap_or_default().trim();
+
+    if rest.is_empty() {
+        if let Err(error) = launch_judge_once_local(app) {
+            app.push_display_message(DisplayMessage::error(format!(
+                "Failed to launch judge: {}",
+                error
+            )));
+            app.set_status_notice("Judge launch failed");
+        }
+        return true;
+    }
+
+    app.push_display_message(DisplayMessage::error("Usage: `/judge`".to_string()));
+    true
+}
+
+fn handle_autojudge_command_local(app: &mut App, trimmed: &str) -> bool {
+    if !trimmed.starts_with("/autojudge") {
+        return false;
+    }
+
+    let rest = trimmed
+        .strip_prefix("/autojudge")
+        .unwrap_or_default()
+        .trim();
+
+    if rest.is_empty() || matches!(rest, "status" | "show") {
+        app.push_display_message(DisplayMessage::system(autojudge_status_message(app)));
+        return true;
+    }
+
+    match rest {
+        "on" => {
+            app.set_autojudge_feature_enabled(true);
+            let _ = app.session.save();
+            app.push_display_message(DisplayMessage::system(
+                "Autojudge enabled for this session.".to_string(),
+            ));
+            app.set_status_notice("Autojudge: ON");
+            true
+        }
+        "off" => {
+            app.set_autojudge_feature_enabled(false);
+            let _ = app.session.save();
+            app.push_display_message(DisplayMessage::system(
+                "Autojudge disabled for this session.".to_string(),
+            ));
+            app.set_status_notice("Autojudge: OFF");
+            true
+        }
+        "now" => {
+            if let Err(error) = launch_autojudge_window_local(app) {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to launch autojudge: {}",
+                    error
+                )));
+                app.set_status_notice("Autojudge launch failed");
+            }
+            true
+        }
+        _ => {
+            app.push_display_message(DisplayMessage::error(
+                "Usage: `/autojudge [on|off|status|now]`".to_string(),
             ));
             true
         }
@@ -1232,7 +1486,9 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         || handle_observe_command(app, trimmed)
         || handle_btw_command(app, trimmed)
         || handle_autoreview_command_local(app, trimmed)
+        || handle_autojudge_command_local(app, trimmed)
         || handle_review_command_local(app, trimmed)
+        || handle_judge_command_local(app, trimmed)
         || handle_selfdev_command(app, trimmed)
     {
         return true;
@@ -1434,7 +1690,8 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
             Ok(n) if n > 0 && n <= app.session.messages.len() => {
                 let removed = app.session.messages.len() - n;
                 app.session.truncate_messages(n);
-                app.replace_provider_messages(app.session.messages_for_provider());
+                let provider_messages = app.session.messages_for_provider();
+                app.replace_provider_messages(provider_messages);
                 app.session.updated_at = chrono::Utc::now();
 
                 app.clear_display_messages();

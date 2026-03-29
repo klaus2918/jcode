@@ -449,6 +449,21 @@ pub(super) async fn handle_set_feature(
                 }
             }
         }
+        FeatureToggle::Autojudge => {
+            let mut agent_guard = agent.lock().await;
+            match agent_guard.set_autojudge_enabled(enabled) {
+                Ok(()) => {
+                    let _ = client_event_tx.send(ServerEvent::Done { id });
+                }
+                Err(error) => {
+                    let _ = client_event_tx.send(ServerEvent::Error {
+                        id,
+                        message: crate::util::format_error_chain(&error),
+                        retry_after_secs: None,
+                    });
+                }
+            }
+        }
         FeatureToggle::Swarm => {
             if *swarm_enabled == enabled {
                 let _ = client_event_tx.send(ServerEvent::Done { id });
@@ -1027,7 +1042,7 @@ pub(super) fn handle_compact(
     let agent = Arc::clone(agent);
     let tx = client_event_tx.clone();
     tokio::spawn(async move {
-        let agent_guard = agent.lock().await;
+        let mut agent_guard = agent.lock().await;
         let provider = agent_guard.provider_fork();
         let compaction = agent_guard.registry().compaction();
         let messages = agent_guard.provider_messages();

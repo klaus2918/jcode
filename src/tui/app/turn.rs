@@ -1329,7 +1329,15 @@ impl App {
                         .rev()
                         .find(|dm| dm.tool_data.as_ref().map(|td| &td.id) == Some(&tc.id))
                     {
-                        dm.content = sdk_content.clone();
+                        dm.content = if sdk_is_error
+                            && !sdk_content.starts_with("Error:")
+                            && !sdk_content.starts_with("error:")
+                            && !sdk_content.starts_with("Failed:")
+                        {
+                            format!("Error: {}", sdk_content)
+                        } else {
+                            sdk_content.clone()
+                        };
                         dm.title = None;
                     }
 
@@ -1551,6 +1559,7 @@ impl App {
         }
 
         super::commands::maybe_trigger_autoreview_local(self);
+        super::commands::maybe_trigger_autojudge_local(self);
         Ok(())
     }
 
@@ -1653,9 +1662,10 @@ impl App {
         let pending = crate::memory::take_pending_memory(&self.session.id);
 
         // Send context to memory agent for the NEXT turn (doesn't block current send)
+        let shared_messages: std::sync::Arc<[crate::message::Message]> = messages.to_vec().into();
         crate::memory_agent::update_context_sync_with_dir(
             &self.session.id,
-            messages.to_vec(),
+            shared_messages,
             self.session.working_dir.clone(),
         );
 
@@ -1779,6 +1789,7 @@ impl App {
                         category,
                         content: memory.content,
                         tags: Vec::new(),
+                        search_text: String::new(),
                         created_at: chrono::Utc::now(),
                         updated_at: chrono::Utc::now(),
                         access_count: 0,

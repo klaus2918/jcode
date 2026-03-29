@@ -713,6 +713,9 @@ pub enum ServerEvent {
         /// Session-scoped automatic review toggle.
         #[serde(skip_serializing_if = "Option::is_none")]
         autoreview_enabled: Option<bool>,
+        /// Session-scoped automatic judge toggle.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        autojudge_enabled: Option<bool>,
         /// Active compaction mode for this session
         #[serde(default)]
         compaction_mode: crate::config::CompactionMode,
@@ -1009,6 +1012,7 @@ pub enum FeatureToggle {
     Memory,
     Swarm,
     Autoreview,
+    Autojudge,
 }
 
 impl Request {

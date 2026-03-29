@@ -132,6 +132,9 @@ pub struct Config {
 
     /// Auto-review configuration
     pub autoreview: AutoReviewConfig,
+
+    /// Auto-judge configuration
+    pub autojudge: AutoJudgeConfig,
 }
 
 /// Automatic end-of-turn code review configuration.
@@ -145,6 +148,25 @@ pub struct AutoReviewConfig {
 }
 
 impl Default for AutoReviewConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: None,
+        }
+    }
+}
+
+/// Automatic end-of-turn execution judging configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoJudgeConfig {
+    /// Enable autojudge by default for new/resumed sessions (default: false)
+    pub enabled: bool,
+    /// Optional model override for autojudge sessions.
+    pub model: Option<String>,
+}
+
+impl Default for AutoJudgeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -917,6 +939,21 @@ impl Config {
         if let Ok(v) = std::env::var("JCODE_AUTOREVIEW_MODEL") {
             let trimmed = v.trim();
             self.autoreview.model = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
+
+        // Autojudge
+        if let Ok(v) = std::env::var("JCODE_AUTOJUDGE_ENABLED") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.autojudge.enabled = parsed;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_AUTOJUDGE_MODEL") {
+            let trimmed = v.trim();
+            self.autojudge.model = if trimmed.is_empty() {
                 None
             } else {
                 Some(trimmed.to_string())

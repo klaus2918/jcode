@@ -385,10 +385,10 @@ pub struct App {
     rebuild_requested: Option<String>,
     // Update: if set, check for and download update from GitHub releases then exec
     update_requested: Option<String>,
-    // Interactive background client update is currently running
-    background_update_in_progress: bool,
-    // Reload the updated client once the current turn is idle
-    pending_background_update_reload: Option<String>,
+    // Interactive background client maintenance action currently running
+    background_client_action: Option<crate::bus::ClientMaintenanceAction>,
+    // Reload the updated/rebuilt client once the current turn is idle
+    pending_background_client_reload: Option<(String, crate::bus::ClientMaintenanceAction)>,
     // Restart: if set, exec into current binary with this session ID (no build)
     restart_requested: Option<String>,
     // Pasted content storage (displayed as placeholders, expanded on submit)
@@ -448,8 +448,12 @@ pub struct App {
     pub replay_elapsed_override: Option<Duration>,
     /// Sim-time at which processing started (video replay only)
     replay_processing_started_ms: Option<f64>,
+    // Remember tool call ids that have appeared in the provider transcript
+    tool_call_ids: HashSet<String>,
     // Remember tool call ids that already have outputs
     tool_result_ids: HashSet<String>,
+    // Number of provider messages already indexed for missing tool-output repair
+    tool_output_scan_index: usize,
     // Current session ID (from server in remote mode)
     remote_session_id: Option<String>,
     // All sessions on the server (remote mode only)
@@ -477,6 +481,8 @@ pub struct App {
     memory_enabled: bool,
     // Automatic end-of-turn review toggle for this session
     autoreview_enabled: bool,
+    // Automatic end-of-turn judge toggle for this session
+    autojudge_enabled: bool,
     // Last requested `/improve` mode for this session.
     improve_mode: Option<ImproveMode>,
     // Suppress duplicate memory injection messages for near-identical prompts.
@@ -569,6 +575,8 @@ pub struct App {
     pending_soft_interrupts: Vec<String>,
     // Whether the current remote turn should trigger autoreview after completion.
     autoreview_after_current_turn: bool,
+    // Whether the current remote turn should trigger autojudge after completion.
+    autojudge_after_current_turn: bool,
     // Startup message to preload into the next spawned split window.
     pending_split_startup_message: Option<String>,
     // Optional model override to apply before opening the next spawned split window.
