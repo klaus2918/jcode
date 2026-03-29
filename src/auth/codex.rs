@@ -575,9 +575,6 @@ fn decode_jwt_payload(token: &str) -> Option<Value> {
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvVarGuard {
         key: &'static str,
@@ -701,7 +698,7 @@ mod tests {
 
     #[test]
     fn load_credentials_falls_back_to_env_api_key() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "sk-env-test");
@@ -716,7 +713,7 @@ mod tests {
 
     #[test]
     fn multi_account_active_switch_works() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         set_active_account_override(None);
@@ -753,7 +750,7 @@ mod tests {
 
     #[test]
     fn load_auth_file_migrates_legacy_codex_tokens() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         set_active_account_override(None);
@@ -789,7 +786,7 @@ mod tests {
 
     #[test]
     fn load_auth_file_clears_legacy_oauth_tokens_but_keeps_api_key() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         set_active_account_override(None);
@@ -825,7 +822,7 @@ mod tests {
 
     #[test]
     fn load_auth_file_renames_existing_labels_to_numbered_scheme() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         set_active_account_override(None);

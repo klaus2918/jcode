@@ -748,9 +748,6 @@ fn dedup_preserve_order(mut values: Vec<std::ffi::OsString>) -> Vec<std::ffi::Os
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn restore_env_var(key: &str, previous: Option<OsString>) {
         if let Some(previous) = previous {
@@ -948,7 +945,7 @@ mod tests {
 
     #[test]
     fn openrouter_like_status_is_provider_specific() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let prev_chutes = std::env::var_os("CHUTES_API_KEY");
         let prev_opencode = std::env::var_os("OPENCODE_API_KEY");
 
@@ -978,7 +975,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cursor_status_is_available_when_api_key_exists_without_cli() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let prev_access_token = std::env::var_os("CURSOR_ACCESS_TOKEN");
         let prev_refresh_token = std::env::var_os("CURSOR_REFRESH_TOKEN");
         let prev_api_key = std::env::var_os("CURSOR_API_KEY");
@@ -1007,7 +1004,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cursor_status_is_available_for_native_auth_without_cli() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let prev_access_token = std::env::var_os("CURSOR_ACCESS_TOKEN");
         let prev_refresh_token = std::env::var_os("CURSOR_REFRESH_TOKEN");
         let prev_api_key = std::env::var_os("CURSOR_API_KEY");
@@ -1039,7 +1036,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cursor_status_is_available_for_authenticated_cli_session() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let prev_api_key = std::env::var_os("CURSOR_API_KEY");
         let prev_cli_path = std::env::var_os("JCODE_CURSOR_CLI_PATH");
         let temp = tempfile::TempDir::new().expect("create temp dir");
@@ -1062,7 +1059,7 @@ mod tests {
 
     #[test]
     fn configured_api_key_source_uses_valid_overrides() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let key_var = "JCODE_OPENAI_COMPAT_API_KEY_NAME";
         let file_var = "JCODE_OPENAI_COMPAT_ENV_FILE";
         let prev_key = std::env::var(key_var).ok();
@@ -1096,7 +1093,7 @@ mod tests {
 
     #[test]
     fn configured_api_key_source_rejects_invalid_values() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let key_var = "JCODE_OPENAI_COMPAT_API_KEY_NAME";
         let file_var = "JCODE_OPENAI_COMPAT_ENV_FILE";
         let prev_key = std::env::var(key_var).ok();

@@ -523,9 +523,6 @@ pub fn load_opencode_credentials() -> Result<ClaudeCredentials> {
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvVarGuard {
         key: &'static str,
@@ -583,7 +580,7 @@ mod tests {
 
     #[test]
     fn jcode_path_respects_jcode_home() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
 
@@ -608,7 +605,7 @@ mod tests {
 
     #[test]
     fn load_auth_file_renames_existing_labels_to_numbered_scheme() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
         set_active_account_override(None);

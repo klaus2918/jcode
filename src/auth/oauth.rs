@@ -1196,9 +1196,6 @@ async fn refresh_tokens_at_url(token_url: &str, refresh_token: &str) -> Result<O
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvVarGuard {
         key: &'static str,
@@ -1303,7 +1300,7 @@ mod tests {
 
     #[test]
     fn save_openai_tokens_uses_jcode_home_sandbox() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
 
