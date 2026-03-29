@@ -44,6 +44,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
@@ -202,6 +204,21 @@ impl Clone for Registry {
 }
 
 impl Registry {
+    fn shared_skills_registry() -> Arc<RwLock<SkillRegistry>> {
+        #[cfg(test)]
+        {
+            Arc::new(RwLock::new(SkillRegistry::load().unwrap_or_default()))
+        }
+
+        #[cfg(not(test))]
+        {
+            static SHARED: OnceLock<Arc<RwLock<SkillRegistry>>> = OnceLock::new();
+            SHARED
+                .get_or_init(|| Arc::new(RwLock::new(SkillRegistry::load().unwrap_or_default())))
+                .clone()
+        }
+    }
+
     fn insert_tool<T>(tools: &mut HashMap<String, Arc<dyn Tool>>, name: &str, tool: T)
     where
         T: Tool + 'static,
@@ -272,7 +289,7 @@ impl Registry {
     }
 
     pub async fn new(provider: Arc<dyn Provider>) -> Self {
-        let skills = Arc::new(RwLock::new(SkillRegistry::load().unwrap_or_default()));
+        let skills = Self::shared_skills_registry();
         let compaction = Arc::new(RwLock::new(CompactionManager::new()));
         let registry = Self {
             tools: Arc::new(RwLock::new(HashMap::new())),
