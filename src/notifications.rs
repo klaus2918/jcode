@@ -11,7 +11,9 @@ use crate::config::{SafetyConfig, config};
 use crate::logging;
 use crate::safety::AmbientTranscript;
 
-use jcode_notify_email::{ReplyAction, build_permission_email_html, poll_imap_once, send_email};
+use jcode_notify_email::{
+    ReplyAction, SendEmailRequest, build_permission_email_html, poll_imap_once, send_email,
+};
 pub use jcode_notify_email::{extract_permission_id, parse_permission_reply};
 
 /// Notification priority levels (maps to ntfy priority header).
@@ -207,17 +209,17 @@ impl NotificationDispatcher {
                 let cycle_id = cycle_id.map(|s| s.to_string());
                 let html_override = email_html_override.map(|s| s.to_string());
                 tokio::spawn(async move {
-                    if let Err(e) = send_email(
-                        &host,
-                        port,
-                        &from,
-                        &to,
-                        password.as_deref(),
-                        &title,
-                        &body,
-                        cycle_id.as_deref(),
-                        html_override.as_deref(),
-                    )
+                    if let Err(e) = send_email(SendEmailRequest {
+                        smtp_host: &host,
+                        smtp_port: port,
+                        from: &from,
+                        to: &to,
+                        password: password.as_deref(),
+                        subject: &title,
+                        body: &body,
+                        cycle_id: cycle_id.as_deref(),
+                        html_override: html_override.as_deref(),
+                    })
                     .await
                     {
                         logging::error(&format!("Email notification failed: {}", e));

@@ -13,33 +13,35 @@ pub enum ReplyAction {
     },
 }
 
-pub async fn send_email(
-    smtp_host: &str,
-    smtp_port: u16,
-    from: &str,
-    to: &str,
-    password: Option<&str>,
-    subject: &str,
-    body: &str,
-    cycle_id: Option<&str>,
-    html_override: Option<&str>,
-) -> Result<()> {
+pub struct SendEmailRequest<'a> {
+    pub smtp_host: &'a str,
+    pub smtp_port: u16,
+    pub from: &'a str,
+    pub to: &'a str,
+    pub password: Option<&'a str>,
+    pub subject: &'a str,
+    pub body: &'a str,
+    pub cycle_id: Option<&'a str>,
+    pub html_override: Option<&'a str>,
+}
+
+pub async fn send_email(request: SendEmailRequest<'_>) -> Result<()> {
     use lettre::message::header::ContentType;
     use lettre::transport::smtp::authentication::Credentials;
     use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
-    let html_body = match html_override {
+    let html_body = match request.html_override {
         Some(html) => html.to_string(),
-        None => markdown_to_html_email(body),
+        None => markdown_to_html_email(request.body),
     };
 
     let mut builder = Message::builder()
-        .from(from.parse()?)
-        .to(to.parse()?)
-        .subject(subject)
+        .from(request.from.parse()?)
+        .to(request.to.parse()?)
+        .subject(request.subject)
         .header(ContentType::TEXT_HTML);
 
-    if let Some(cid) = cycle_id {
+    if let Some(cid) = request.cycle_id {
         let msg_id = format!("<ambient-{}@jcode>", cid);
         builder = builder.message_id(Some(msg_id));
     }
@@ -47,11 +49,12 @@ pub async fn send_email(
     let email = builder.body(html_body)?;
 
     let mut transport_builder =
-        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host)?.port(smtp_port);
+        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(request.smtp_host)?
+            .port(request.smtp_port);
 
-    if let Some(pw) = password {
-        transport_builder =
-            transport_builder.credentials(Credentials::new(from.to_string(), pw.to_string()));
+    if let Some(pw) = request.password {
+        transport_builder = transport_builder
+            .credentials(Credentials::new(request.from.to_string(), pw.to_string()));
     }
 
     let transport = transport_builder.build();
@@ -89,51 +92,51 @@ pub fn poll_imap_once(host: &str, port: u16, user: &str, pass: &str) -> Result<V
     let mut actions = Vec::new();
     let messages = session.fetch(&seq_set, "RFC822")?;
     for message in messages.iter() {
-        if let Some(body) = message.body() {
-            if let Some(parsed) = mail_parser::MessageParser::default().parse(body) {
-                let in_reply_to = parsed.in_reply_to().as_text().unwrap_or("").to_string();
-                let subject = parsed.subject().unwrap_or("");
+        if let Some(body) = message.body()
+            && let Some(parsed) = mail_parser::MessageParser::default().parse(body)
+        {
+            let in_reply_to = parsed.in_reply_to().as_text().unwrap_or("").to_string();
+            let subject = parsed.subject().unwrap_or("");
 
-                let cycle_id = if in_reply_to.contains("@jcode>") {
-                    in_reply_to
-                        .trim_start_matches("<ambient-")
-                        .trim_end_matches("@jcode>")
-                        .to_string()
-                } else if let Some(start) = subject.find("[jcode-perm:") {
-                    let rest = &subject[start + "[jcode-perm:".len()..];
-                    rest.split(']').next().unwrap_or("").to_string()
-                } else {
-                    continue;
-                };
+            let cycle_id = if in_reply_to.contains("@jcode>") {
+                in_reply_to
+                    .trim_start_matches("<ambient-")
+                    .trim_end_matches("@jcode>")
+                    .to_string()
+            } else if let Some(start) = subject.find("[jcode-perm:") {
+                let rest = &subject[start + "[jcode-perm:".len()..];
+                rest.split(']').next().unwrap_or("").to_string()
+            } else {
+                continue;
+            };
 
-                let body_text = parsed
-                    .body_text(0)
-                    .map(|s| strip_quoted_reply(&s))
-                    .unwrap_or_default();
+            let body_text = parsed
+                .body_text(0)
+                .map(|s| strip_quoted_reply(&s))
+                .unwrap_or_default();
 
-                let effective_text = if body_text.trim().is_empty() {
-                    subject.to_string()
-                } else {
-                    body_text
-                };
+            let effective_text = if body_text.trim().is_empty() {
+                subject.to_string()
+            } else {
+                body_text
+            };
 
-                if effective_text.trim().is_empty() {
-                    continue;
-                }
+            if effective_text.trim().is_empty() {
+                continue;
+            }
 
-                if cycle_id.starts_with("req_") {
-                    let (approved, message) = parse_permission_reply(effective_text.trim());
-                    actions.push(ReplyAction::PermissionDecision {
-                        request_id: cycle_id,
-                        approved,
-                        message,
-                    });
-                } else {
-                    actions.push(ReplyAction::DirectiveReply {
-                        cycle_id,
-                        text: effective_text.trim().to_string(),
-                    });
-                }
+            if cycle_id.starts_with("req_") {
+                let (approved, message) = parse_permission_reply(effective_text.trim());
+                actions.push(ReplyAction::PermissionDecision {
+                    request_id: cycle_id,
+                    approved,
+                    message,
+                });
+            } else {
+                actions.push(ReplyAction::DirectiveReply {
+                    cycle_id,
+                    text: effective_text.trim().to_string(),
+                });
             }
         }
     }

@@ -7,6 +7,8 @@ use tokenizers::Tokenizer;
 use tract_hir::prelude::*;
 
 pub const MODEL_NAME: &str = "all-MiniLM-L6-v2";
+type RunnableEmbeddingModel =
+    SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
 #[derive(Debug)]
 struct TopKItem<T> {
@@ -89,7 +91,7 @@ const TOKENIZER_URL: &str =
 pub type EmbeddingVec = Vec<f32>;
 
 pub struct Embedder {
-    model: SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
+    model: RunnableEmbeddingModel,
     tokenizer: Tokenizer,
 }
 
