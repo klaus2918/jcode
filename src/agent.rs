@@ -235,6 +235,23 @@ impl Agent {
         ));
     }
 
+    fn reset_runtime_state_for_session_change(&mut self) {
+        self.active_skill = None;
+        self.last_upstream_provider = None;
+        self.last_connection_type = None;
+        self.pending_alerts.clear();
+        self.current_turn_system_reminder = None;
+        self.reset_tool_output_tracking();
+        if let Ok(mut queue) = self.soft_interrupt_queue.lock() {
+            queue.clear();
+        }
+        self.background_tool_signal.reset();
+        self.graceful_shutdown.reset();
+        self.cache_tracker.reset();
+        self.last_usage = TokenUsage::default();
+        self.locked_tools = None;
+    }
+
     fn sync_session_compaction_state_from_manager(
         &mut self,
         manager: &crate::compaction::CompactionManager,
@@ -936,7 +953,7 @@ impl Agent {
         new_session.working_dir = preserve_working_dir;
 
         self.session = new_session;
-        self.active_skill = None;
+        self.reset_runtime_state_for_session_change();
         self.provider_session_id = None;
         self.seed_compaction_from_session();
     }
@@ -1153,7 +1170,7 @@ impl Agent {
         // Restore provider_session_id for Claude CLI session resume
         self.provider_session_id = session.provider_session_id.clone();
         self.session = session;
-        self.active_skill = None;
+        self.reset_runtime_state_for_session_change();
         if let Some(model) = self.session.model.clone() {
             if let Err(e) = self.provider.set_model(&model) {
                 logging::error(&format!(
@@ -4172,5 +4189,102 @@ mod tests {
             !active.contains(&first_session_id),
             "cleared session should no longer be tracked as active"
         );
+    }
+
+    fn seed_transient_session_state(agent: &mut Agent) {
+        agent.push_alert("pending alert".to_string());
+        agent.queue_soft_interrupt(
+            "queued interrupt".to_string(),
+            true,
+            SoftInterruptSource::User,
+        );
+        agent.background_tool_signal.fire();
+        agent.request_graceful_shutdown();
+        agent.tool_call_ids.insert("tool_call_old".to_string());
+        agent.tool_result_ids.insert("tool_result_old".to_string());
+        agent.tool_output_scan_index = 7;
+        agent.last_upstream_provider = Some("upstream_old".to_string());
+        agent.last_connection_type = Some("websocket".to_string());
+        agent.current_turn_system_reminder = Some("reminder".to_string());
+        agent.last_usage = TokenUsage {
+            input_tokens: 11,
+            output_tokens: 17,
+            cache_read_input_tokens: Some(3),
+            cache_creation_input_tokens: Some(5),
+        };
+        agent.locked_tools = Some(vec![ToolDefinition {
+            name: "test_tool".to_string(),
+            description: "test tool".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }]);
+    }
+
+    #[tokio::test]
+    async fn clear_resets_runtime_interrupt_and_queue_state() {
+        let _guard = crate::storage::lock_test_env();
+        let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+        let registry = Registry::new(provider.clone()).await;
+        let mut agent = Agent::new(provider, registry);
+
+        seed_transient_session_state(&mut agent);
+        assert_eq!(agent.soft_interrupt_count(), 1);
+        assert!(agent.background_tool_signal().is_set());
+        assert!(agent.graceful_shutdown_signal().is_set());
+
+        agent.clear();
+
+        assert_eq!(agent.soft_interrupt_count(), 0);
+        assert!(!agent.background_tool_signal().is_set());
+        assert!(!agent.graceful_shutdown_signal().is_set());
+        assert_eq!(agent.pending_alert_count(), 0);
+        assert!(agent.tool_call_ids.is_empty());
+        assert!(agent.tool_result_ids.is_empty());
+        assert_eq!(agent.tool_output_scan_index, 0);
+        assert!(agent.last_upstream_provider.is_none());
+        assert!(agent.last_connection_type.is_none());
+        assert!(agent.current_turn_system_reminder.is_none());
+        assert_eq!(agent.last_usage.input_tokens, 0);
+        assert_eq!(agent.last_usage.output_tokens, 0);
+        assert!(agent.locked_tools.is_none());
+    }
+
+    #[tokio::test]
+    async fn restore_session_resets_runtime_interrupt_and_queue_state() {
+        let _guard = crate::storage::lock_test_env();
+        let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+        let registry = Registry::new(provider.clone()).await;
+        let mut agent = Agent::new(provider, registry);
+
+        let mut restored_session = crate::session::Session::create_with_id(
+            "session_restore_resets_runtime_state".to_string(),
+            None,
+            None,
+        );
+        restored_session.save().expect("save restored session");
+
+        seed_transient_session_state(&mut agent);
+        assert_eq!(agent.soft_interrupt_count(), 1);
+        assert!(agent.background_tool_signal().is_set());
+        assert!(agent.graceful_shutdown_signal().is_set());
+
+        let status = agent
+            .restore_session(&restored_session.id)
+            .expect("restore session should succeed");
+
+        assert_eq!(status, crate::session::SessionStatus::Active);
+        assert_eq!(agent.session_id(), restored_session.id);
+        assert_eq!(agent.soft_interrupt_count(), 0);
+        assert!(!agent.background_tool_signal().is_set());
+        assert!(!agent.graceful_shutdown_signal().is_set());
+        assert_eq!(agent.pending_alert_count(), 0);
+        assert!(agent.tool_call_ids.is_empty());
+        assert!(agent.tool_result_ids.is_empty());
+        assert_eq!(agent.tool_output_scan_index, 0);
+        assert!(agent.last_upstream_provider.is_none());
+        assert!(agent.last_connection_type.is_none());
+        assert!(agent.current_turn_system_reminder.is_none());
+        assert_eq!(agent.last_usage.input_tokens, 0);
+        assert_eq!(agent.last_usage.output_tokens, 0);
+        assert!(agent.locked_tools.is_none());
     }
 }
