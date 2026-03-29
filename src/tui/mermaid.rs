@@ -94,10 +94,6 @@ static LAST_RENDER: LazyLock<Mutex<HashMap<u64, LastRenderState>>> =
 static RENDER_ERRORS: LazyLock<Mutex<HashMap<u64, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Pending mermaid content for lazy rendering (hash -> content)
-static PENDING_DIAGRAMS: LazyLock<Mutex<HashMap<u64, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 /// Active diagrams for info widget display
 /// Updated during markdown rendering, queried by info_widget_data()
 static ACTIVE_DIAGRAMS: LazyLock<Mutex<Vec<ActiveDiagram>>> =
@@ -166,10 +162,6 @@ impl ImageStateCache {
 
     fn get(&self, hash: &u64) -> Option<&ImageState> {
         self.entries.get(hash)
-    }
-
-    fn contains_key(&self, hash: &u64) -> bool {
-        self.entries.contains_key(hash)
     }
 
     fn insert(&mut self, hash: u64, state: ImageState) {
@@ -1592,7 +1584,6 @@ pub fn register_external_image(path: &Path, width: u32, height: u32) -> u64 {
                 path: path.to_path_buf(),
                 width,
                 height,
-                complexity: 0,
             },
         );
     }
@@ -1631,7 +1622,6 @@ pub fn register_inline_image(media_type: &str, data_b64: &str) -> Option<(u64, u
                 path,
                 width,
                 height,
-                complexity: 0,
             },
         );
         return Some((hash, width, height));
@@ -1649,25 +1639,6 @@ fn inline_image_extension(media_type: &str) -> &'static str {
         "image/bmp" => "bmp",
         "image/x-icon" | "image/vnd.microsoft.icon" => "ico",
         _ => "img",
-    }
-}
-
-fn has_render_error(hash: u64) -> bool {
-    RENDER_ERRORS
-        .lock()
-        .ok()
-        .map_or(false, |errors| errors.contains_key(&hash))
-}
-
-fn record_render_error(hash: u64, message: String) {
-    if let Ok(mut errors) = RENDER_ERRORS.lock() {
-        errors.insert(hash, message);
-    }
-}
-
-fn clear_render_error(hash: u64) {
-    if let Ok(mut errors) = RENDER_ERRORS.lock() {
-        errors.remove(&hash);
     }
 }
 
@@ -1705,8 +1676,6 @@ struct CachedDiagram {
     path: PathBuf,
     width: u32,
     height: u32,
-    /// Complexity score (nodes + edges) for adaptive sizing decisions
-    complexity: usize,
 }
 
 impl MermaidCache {
@@ -1816,7 +1785,6 @@ impl MermaidCache {
             path,
             width,
             height,
-            complexity: 0,
         })
     }
 }
@@ -2244,7 +2212,6 @@ fn render_mermaid_sized_internal(
                 path: png_path.clone(),
                 width,
                 height,
-                complexity,
             },
         );
     }

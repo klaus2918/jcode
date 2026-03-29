@@ -102,6 +102,7 @@ fn push_with_byte_budget(dst: &mut String, src: &str, budget: &mut usize) {
     *budget = budget.saturating_sub(end);
 }
 
+#[cfg(test)]
 fn build_search_index(
     id: &str,
     short_name: &str,
@@ -838,8 +839,6 @@ pub struct SessionPicker {
     list_state: ListState,
     scroll_offset: u16,
     auto_scroll_preview: bool,
-    /// Number of running servers
-    server_count: usize,
     /// Crashed sessions pending batch restore
     crashed_sessions: Option<CrashedSessionsInfo>,
     /// IDs of sessions that are eligible for current batch restore
@@ -854,8 +853,6 @@ pub struct SessionPicker {
     search_query: String,
     /// Whether we're in search input mode
     search_active: bool,
-    /// Total session count (before filtering)
-    total_session_count: usize,
     /// Hidden test session count (debug + canary)
     hidden_test_count: usize,
     /// Which pane has keyboard focus
@@ -865,7 +862,6 @@ pub struct SessionPicker {
 
 impl SessionPicker {
     pub fn new(sessions: Vec<SessionInfo>) -> Self {
-        let total_session_count = sessions.len();
         let hidden_test_count = sessions.iter().filter(|s| s.is_debug).count();
 
         let crashed_sessions = crashed_sessions_from_all_sessions(&sessions);
@@ -884,7 +880,6 @@ impl SessionPicker {
             list_state: ListState::default(),
             scroll_offset: 0,
             auto_scroll_preview: true,
-            server_count: 0,
             crashed_sessions,
             crashed_session_ids,
             last_list_area: None,
@@ -893,7 +888,6 @@ impl SessionPicker {
             filter_mode: SessionFilterMode::All,
             search_query: String::new(),
             search_active: false,
-            total_session_count,
             hidden_test_count,
             focus: PaneFocus::Sessions,
             last_mouse_scroll: None,
@@ -905,7 +899,7 @@ impl SessionPicker {
     /// Create a picker with server grouping
     pub fn new_grouped(server_groups: Vec<ServerGroup>, orphan_sessions: Vec<SessionInfo>) -> Self {
         // Count totals before filtering
-        let total_session_count: usize = server_groups
+        let _total_session_count: usize = server_groups
             .iter()
             .map(|g| g.sessions.len())
             .sum::<usize>()
@@ -916,8 +910,6 @@ impl SessionPicker {
             .chain(orphan_sessions.iter())
             .filter(|s| s.is_debug)
             .count();
-
-        let server_count = server_groups.len();
 
         // Gather all sessions for crash detection
         let all_for_crash: Vec<SessionInfo> = server_groups
@@ -942,7 +934,6 @@ impl SessionPicker {
             list_state: ListState::default(),
             scroll_offset: 0,
             auto_scroll_preview: true,
-            server_count,
             crashed_sessions,
             crashed_session_ids,
             last_list_area: None,
@@ -951,7 +942,6 @@ impl SessionPicker {
             filter_mode: SessionFilterMode::All,
             search_query: String::new(),
             search_active: false,
-            total_session_count,
             hidden_test_count,
             focus: PaneFocus::Sessions,
             last_mouse_scroll: None,
@@ -1016,6 +1006,7 @@ impl SessionPicker {
         self.item_to_session.push(Some(session_idx));
     }
 
+    #[cfg(test)]
     fn visible_session_iter(&self) -> impl Iterator<Item = &SessionInfo> + '_ {
         self.visible_sessions
             .iter()

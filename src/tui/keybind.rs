@@ -19,8 +19,6 @@ impl KeyBinding {
 pub struct ModelSwitchKeys {
     pub next: KeyBinding,
     pub prev: Option<KeyBinding>,
-    pub next_label: String,
-    pub prev_label: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,10 +35,6 @@ pub struct WorkspaceNavigationKeys {
     pub down: Vec<KeyBinding>,
     pub up: Vec<KeyBinding>,
     pub right: Vec<KeyBinding>,
-    pub left_label: String,
-    pub down_label: String,
-    pub up_label: String,
-    pub right_label: String,
 }
 
 impl WorkspaceNavigationKeys {
@@ -91,20 +85,14 @@ pub fn load_model_switch_keys() -> ModelSwitchKeys {
         modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     };
 
-    let (next, next_label) =
-        parse_or_default(&cfg.keybindings.model_switch_next, default_next, "Ctrl+Tab");
-    let (prev, prev_label) = parse_optional(
+    let (next, _) = parse_or_default(&cfg.keybindings.model_switch_next, default_next, "Ctrl+Tab");
+    let (prev, _) = parse_optional(
         &cfg.keybindings.model_switch_prev,
         default_prev,
         "Ctrl+Shift+Tab",
     );
 
-    ModelSwitchKeys {
-        next,
-        prev,
-        next_label,
-        prev_label,
-    }
+    ModelSwitchKeys { next, prev }
 }
 
 pub fn load_workspace_navigation_keys() -> WorkspaceNavigationKeys {
@@ -127,13 +115,13 @@ pub fn load_workspace_navigation_keys() -> WorkspaceNavigationKeys {
         modifiers: KeyModifiers::ALT,
     };
 
-    let (left, left_label) =
+    let (left, _) =
         parse_bindings_or_default(&cfg.keybindings.workspace_left, vec![default_left], "Alt+H");
-    let (down, down_label) =
+    let (down, _) =
         parse_bindings_or_default(&cfg.keybindings.workspace_down, vec![default_down], "Alt+J");
-    let (up, up_label) =
+    let (up, _) =
         parse_bindings_or_default(&cfg.keybindings.workspace_up, vec![default_up], "Alt+K");
-    let (right, right_label) = parse_bindings_or_default(
+    let (right, _) = parse_bindings_or_default(
         &cfg.keybindings.workspace_right,
         vec![default_right],
         "Alt+L",
@@ -144,10 +132,6 @@ pub fn load_workspace_navigation_keys() -> WorkspaceNavigationKeys {
         down,
         up,
         right,
-        left_label,
-        down_label,
-        up_label,
-        right_label,
     }
 }
 
@@ -307,15 +291,6 @@ pub struct ScrollKeys {
     pub prompt_up: KeyBinding,
     pub prompt_down: KeyBinding,
     pub bookmark: KeyBinding,
-    pub up_label: String,
-    pub down_label: String,
-    pub up_fallback_label: Option<String>,
-    pub down_fallback_label: Option<String>,
-    pub page_up_label: String,
-    pub page_down_label: String,
-    pub prompt_up_label: String,
-    pub prompt_down_label: String,
-    pub bookmark_label: String,
 }
 
 impl ScrollKeys {
@@ -438,8 +413,8 @@ pub fn load_scroll_keys() -> ScrollKeys {
         modifiers: KeyModifiers::CONTROL,
     };
 
-    let (up, up_label) = parse_or_default(&cfg.keybindings.scroll_up, default_up, "Ctrl+K");
-    let (down, down_label) = parse_or_default(&cfg.keybindings.scroll_down, default_down, "Ctrl+J");
+    let (up, _) = parse_or_default(&cfg.keybindings.scroll_up, default_up, "Ctrl+K");
+    let (down, _) = parse_or_default(&cfg.keybindings.scroll_down, default_down, "Ctrl+J");
     let default_up_fallback = KeyBinding {
         code: KeyCode::Char('k'),
         modifiers: KeyModifiers::SUPER,
@@ -448,34 +423,33 @@ pub fn load_scroll_keys() -> ScrollKeys {
         code: KeyCode::Char('j'),
         modifiers: KeyModifiers::SUPER,
     };
-    let (up_fallback, up_fallback_label) = parse_optional(
+    let (up_fallback, _) = parse_optional(
         &cfg.keybindings.scroll_up_fallback,
         default_up_fallback,
         "Cmd+K",
     );
-    let (down_fallback, down_fallback_label) = parse_optional(
+    let (down_fallback, _) = parse_optional(
         &cfg.keybindings.scroll_down_fallback,
         default_down_fallback,
         "Cmd+J",
     );
-    let (page_up, page_up_label) =
-        parse_or_default(&cfg.keybindings.scroll_page_up, default_page_up, "Alt+U");
-    let (page_down, page_down_label) = parse_or_default(
+    let (page_up, _) = parse_or_default(&cfg.keybindings.scroll_page_up, default_page_up, "Alt+U");
+    let (page_down, _) = parse_or_default(
         &cfg.keybindings.scroll_page_down,
         default_page_down,
         "Alt+D",
     );
-    let (prompt_up, prompt_up_label) = parse_or_default(
+    let (prompt_up, _) = parse_or_default(
         &cfg.keybindings.scroll_prompt_up,
         default_prompt_up,
         "Ctrl+[",
     );
-    let (prompt_down, prompt_down_label) = parse_or_default(
+    let (prompt_down, _) = parse_or_default(
         &cfg.keybindings.scroll_prompt_down,
         default_prompt_down,
         "Ctrl+]",
     );
-    let (bookmark, bookmark_label) =
+    let (bookmark, _) =
         parse_or_default(&cfg.keybindings.scroll_bookmark, default_bookmark, "Ctrl+G");
 
     ScrollKeys {
@@ -488,15 +462,6 @@ pub fn load_scroll_keys() -> ScrollKeys {
         prompt_up,
         prompt_down,
         bookmark,
-        up_label,
-        down_label,
-        up_fallback_label,
-        down_fallback_label,
-        page_up_label,
-        page_down_label,
-        prompt_up_label,
-        prompt_down_label,
-        bookmark_label,
     }
 }
 
@@ -504,14 +469,11 @@ pub fn load_scroll_keys() -> ScrollKeys {
 pub struct EffortSwitchKeys {
     pub increase: KeyBinding,
     pub decrease: KeyBinding,
-    pub increase_label: String,
-    pub decrease_label: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct CenteredToggleKeys {
     pub toggle: KeyBinding,
-    pub toggle_label: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -544,23 +506,18 @@ pub fn load_effort_switch_keys() -> EffortSwitchKeys {
         modifiers: KeyModifiers::ALT,
     };
 
-    let (increase, increase_label) = parse_or_default(
+    let (increase, _) = parse_or_default(
         &cfg.keybindings.effort_increase,
         default_increase,
         "Alt+Right",
     );
-    let (decrease, decrease_label) = parse_or_default(
+    let (decrease, _) = parse_or_default(
         &cfg.keybindings.effort_decrease,
         default_decrease,
         "Alt+Left",
     );
 
-    EffortSwitchKeys {
-        increase,
-        decrease,
-        increase_label,
-        decrease_label,
-    }
+    EffortSwitchKeys { increase, decrease }
 }
 
 pub fn load_centered_toggle_key() -> CenteredToggleKeys {
@@ -571,13 +528,9 @@ pub fn load_centered_toggle_key() -> CenteredToggleKeys {
         modifiers: KeyModifiers::ALT,
     };
 
-    let (toggle, toggle_label) =
-        parse_or_default(&cfg.keybindings.centered_toggle, default_toggle, "Alt+C");
+    let (toggle, _) = parse_or_default(&cfg.keybindings.centered_toggle, default_toggle, "Alt+C");
 
-    CenteredToggleKeys {
-        toggle,
-        toggle_label,
-    }
+    CenteredToggleKeys { toggle }
 }
 
 pub fn load_dictation_key() -> OptionalBinding {
@@ -690,15 +643,6 @@ mod tests {
                 code: KeyCode::Char('g'),
                 modifiers: KeyModifiers::CONTROL,
             },
-            up_label: "Alt+K".to_string(),
-            down_label: "Alt+J".to_string(),
-            up_fallback_label: Some("Shift+K".to_string()),
-            down_fallback_label: Some("Shift+J".to_string()),
-            page_up_label: "Alt+U".to_string(),
-            page_down_label: "Alt+D".to_string(),
-            prompt_up_label: "Alt+[".to_string(),
-            prompt_down_label: "Alt+]".to_string(),
-            bookmark_label: "Ctrl+G".to_string(),
         }
     }
 
@@ -835,10 +779,6 @@ mod tests {
                 code: KeyCode::Char('l'),
                 modifiers: KeyModifiers::SUPER,
             }],
-            left_label: "Super+H".to_string(),
-            down_label: "Super+J".to_string(),
-            up_label: "Super+K".to_string(),
-            right_label: "Super+L".to_string(),
         };
 
         assert_eq!(
@@ -938,10 +878,6 @@ mod tests {
                     modifiers: KeyModifiers::CONTROL,
                 },
             ],
-            left_label: "Super+H, Super+Left, Alt+Left, Ctrl+H".to_string(),
-            down_label: "Super+J, Super+Down, Alt+Down, Ctrl+J".to_string(),
-            up_label: "Super+K, Super+Up, Alt+Up, Ctrl+K".to_string(),
-            right_label: "Super+L, Super+Right, Alt+Right, Ctrl+L".to_string(),
         };
 
         assert_eq!(
