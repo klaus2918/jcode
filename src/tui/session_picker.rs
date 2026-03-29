@@ -1678,12 +1678,12 @@ impl SessionPicker {
     }
 
     fn render_session_item(&self, session: &SessionInfo, is_selected: bool) -> ListItem<'static> {
-        let DIM: Color = rgb(100, 100, 100);
-        let DIMMER: Color = rgb(70, 70, 70);
-        let USER_CLR: Color = rgb(138, 180, 248);
-        let ACCENT: Color = rgb(186, 139, 255);
-        let BATCH_RESTORE: Color = rgb(255, 140, 140);
-        let BATCH_ROW_BG: Color = rgb(36, 18, 18);
+        let dim: Color = rgb(100, 100, 100);
+        let dimmer: Color = rgb(70, 70, 70);
+        let user_clr: Color = rgb(138, 180, 248);
+        let accent: Color = rgb(186, 139, 255);
+        let batch_restore: Color = rgb(255, 140, 140);
+        let batch_row_bg: Color = rgb(36, 18, 18);
 
         let created_ago = format_time_ago(session.created_at);
         let in_batch_restore = self.crashed_session_ids.contains(&session.id);
@@ -1705,13 +1705,13 @@ impl SessionPicker {
         let time_ago = format_time_ago(session.last_message_time);
         let (status_icon, status_color, time_label) = match &session.status {
             SessionStatus::Active => ("▶", rgb(100, 200, 100), "active".to_string()),
-            SessionStatus::Closed => ("✓", DIM, format!("closed {}", time_ago)),
+            SessionStatus::Closed => ("✓", dim, format!("closed {}", time_ago)),
             SessionStatus::Crashed { .. } => {
                 ("💥", rgb(220, 100, 100), format!("crashed {}", time_ago))
             }
-            SessionStatus::Reloaded => ("🔄", USER_CLR, format!("reloaded {}", time_ago)),
+            SessionStatus::Reloaded => ("🔄", user_clr, format!("reloaded {}", time_ago)),
             SessionStatus::Compacted => ("📦", rgb(255, 193, 7), format!("compacted {}", time_ago)),
-            SessionStatus::RateLimited => ("⏳", ACCENT, format!("rate-limited {}", time_ago)),
+            SessionStatus::RateLimited => ("⏳", accent, format!("rate-limited {}", time_ago)),
             SessionStatus::Error { .. } => {
                 ("❌", rgb(220, 100, 100), format!("errored {}", time_ago))
             }
@@ -1732,7 +1732,7 @@ impl SessionPicker {
                 format!(" {}", status_icon),
                 Style::default().fg(status_color),
             ),
-            Span::styled(format!("  {}", time_label), Style::default().fg(DIM)),
+            Span::styled(format!("  {}", time_label), Style::default().fg(dim)),
         ];
         if let Some(ref label) = session.save_label {
             line1_spans.push(Span::styled(
@@ -1744,7 +1744,7 @@ impl SessionPicker {
             line1_spans.push(Span::styled(
                 "  [BATCH]",
                 Style::default()
-                    .fg(BATCH_RESTORE)
+                    .fg(batch_restore)
                     .add_modifier(Modifier::BOLD),
             ));
         }
@@ -1771,17 +1771,17 @@ impl SessionPicker {
             Span::styled("     ", Style::default()),
             Span::styled(
                 format!("{}", session.user_message_count),
-                Style::default().fg(USER_CLR),
+                Style::default().fg(user_clr),
             ),
-            Span::styled(" user", Style::default().fg(DIMMER)),
-            Span::styled(" · ", Style::default().fg(DIMMER)),
+            Span::styled(" user", Style::default().fg(dimmer)),
+            Span::styled(" · ", Style::default().fg(dimmer)),
             Span::styled(
                 format!("{}", session.assistant_message_count),
                 Style::default().fg(rgb(129, 199, 132)),
             ),
-            Span::styled(" assistant", Style::default().fg(DIMMER)),
-            Span::styled(" · ", Style::default().fg(DIMMER)),
-            Span::styled(tokens_display, Style::default().fg(DIMMER)),
+            Span::styled(" assistant", Style::default().fg(dimmer)),
+            Span::styled(" · ", Style::default().fg(dimmer)),
+            Span::styled(tokens_display, Style::default().fg(dimmer)),
         ]);
 
         // Line 4: created time + working dir
@@ -1808,9 +1808,9 @@ impl SessionPicker {
             Span::styled("     ", Style::default()),
             Span::styled(
                 format!("created: {}", created_ago),
-                Style::default().fg(DIMMER),
+                Style::default().fg(dimmer),
             ),
-            Span::styled(dir_part, Style::default().fg(DIMMER)),
+            Span::styled(dir_part, Style::default().fg(dimmer)),
         ]);
 
         let mut rows = vec![line1, line2, line3, line4];
@@ -1821,14 +1821,14 @@ impl SessionPicker {
 
         let mut item = ListItem::new(rows);
         if in_batch_restore && !is_selected {
-            item = item.style(Style::default().bg(BATCH_ROW_BG));
+            item = item.style(Style::default().bg(batch_row_bg));
         }
         item
     }
 
     fn render_session_list(&mut self, frame: &mut Frame, area: Rect) {
-        let SERVER_COLOR: Color = rgb(255, 200, 100); // Amber for server headers
-        let DIM: Color = rgb(100, 100, 100);
+        let server_color: Color = rgb(255, 200, 100); // Amber for server headers
+        let dim: Color = rgb(100, 100, 100);
 
         let items: Vec<ListItem> = self
             .items
@@ -1846,16 +1846,16 @@ impl SessionPicker {
                     } => {
                         // Server header - not selectable, acts as a group label
                         let line1 = Line::from(vec![
-                            Span::styled(format!("{} ", icon), Style::default().fg(SERVER_COLOR)),
+                            Span::styled(format!("{} ", icon), Style::default().fg(server_color)),
                             Span::styled(
                                 name.clone(),
                                 Style::default()
-                                    .fg(SERVER_COLOR)
+                                    .fg(server_color)
                                     .add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(
                                 format!("  {} · {} sessions", version, session_count),
-                                Style::default().fg(DIM),
+                                Style::default().fg(dim),
                             ),
                         ]);
                         ListItem::new(vec![line1])
@@ -1863,29 +1863,29 @@ impl SessionPicker {
                     PickerItem::OrphanHeader { session_count } => {
                         // Orphan sessions header
                         let line1 = Line::from(vec![
-                            Span::styled("📦 ", Style::default().fg(DIM)),
+                            Span::styled("📦 ", Style::default().fg(dim)),
                             Span::styled(
                                 "Other sessions",
-                                Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+                                Style::default().fg(dim).add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(
                                 format!("  {} sessions", session_count),
-                                Style::default().fg(DIM),
+                                Style::default().fg(dim),
                             ),
                         ]);
                         ListItem::new(vec![line1])
                     }
                     PickerItem::SavedHeader { session_count } => {
-                        let SAVED_COLOR: Color = rgb(255, 180, 100);
+                        let saved_color: Color = rgb(255, 180, 100);
                         let line1 = Line::from(vec![
-                            Span::styled("📌 ", Style::default().fg(SAVED_COLOR)),
+                            Span::styled("📌 ", Style::default().fg(saved_color)),
                             Span::styled(
                                 "Saved",
                                 Style::default()
-                                    .fg(SAVED_COLOR)
+                                    .fg(saved_color)
                                     .add_modifier(Modifier::BOLD),
                             ),
-                            Span::styled(format!("  {}", session_count), Style::default().fg(DIM)),
+                            Span::styled(format!("  {}", session_count), Style::default().fg(dim)),
                         ]);
                         ListItem::new(vec![line1])
                     }
@@ -1946,12 +1946,12 @@ impl SessionPicker {
             " s next filter · S prev · d debug · / search · h/l focus · ↑↓ · Enter · q "
         };
 
-        let BORDER_DIM: Color = rgb(70, 70, 70);
-        let BORDER_FOCUS: Color = rgb(130, 130, 160);
+        let border_dim: Color = rgb(70, 70, 70);
+        let border_focus: Color = rgb(130, 130, 160);
         let border_color = if self.focus == PaneFocus::Sessions {
-            BORDER_FOCUS
+            border_focus
         } else {
-            BORDER_DIM
+            border_dim
         };
 
         let list = List::new(items)
@@ -1977,11 +1977,11 @@ impl SessionPicker {
 
     fn render_preview(&mut self, frame: &mut Frame, area: Rect) {
         // Colors matching the actual TUI
-        let USER_COLOR: Color = rgb(138, 180, 248); // Soft blue
-        let USER_TEXT: Color = rgb(245, 245, 255); // Bright cool white
-        let DIM_COLOR: Color = rgb(80, 80, 80); // Dim gray
-        let HEADER_ICON_COLOR: Color = rgb(120, 210, 230); // Teal
-        let HEADER_SESSION_COLOR: Color = rgb(255, 255, 255); // White
+        let user_color: Color = rgb(138, 180, 248); // Soft blue
+        let user_text: Color = rgb(245, 245, 255); // Bright cool white
+        let dim_color: Color = rgb(80, 80, 80); // Dim gray
+        let header_icon_color: Color = rgb(120, 210, 230); // Teal
+        let header_session_color: Color = rgb(255, 255, 255); // White
 
         let empty_border_color = if self.focus == PaneFocus::Preview {
             rgb(130, 130, 160)
@@ -2021,12 +2021,12 @@ impl SessionPicker {
             Line::from(vec![
                 Span::styled(
                     format!("{} ", session.icon),
-                    Style::default().fg(HEADER_ICON_COLOR),
+                    Style::default().fg(header_icon_color),
                 ),
                 Span::styled(
                     session.short_name.clone(),
                     Style::default()
-                        .fg(HEADER_SESSION_COLOR)
+                        .fg(header_session_color)
                         .add_modifier(Modifier::BOLD),
                 ),
                 {
@@ -2040,7 +2040,7 @@ impl SessionPicker {
                         SessionStatus::RateLimited => format!("rate-limited {}", ago),
                         SessionStatus::Error { .. } => format!("errored {}", ago),
                     };
-                    Span::styled(format!("  {}", label), Style::default().fg(DIM_COLOR))
+                    Span::styled(format!("  {}", label), Style::default().fg(dim_color))
                 },
             ])
             .alignment(align),
@@ -2076,7 +2076,7 @@ impl SessionPicker {
             lines.push(
                 Line::from(vec![Span::styled(
                     format!("📁 {}", dir),
-                    Style::default().fg(DIM_COLOR),
+                    Style::default().fg(dim_color),
                 )])
                 .alignment(align),
             );
@@ -2166,10 +2166,10 @@ impl SessionPicker {
                         Line::from(vec![
                             Span::styled(
                                 format!("{}", prompt_num),
-                                Style::default().fg(USER_COLOR),
+                                Style::default().fg(user_color),
                             ),
-                            Span::styled("› ", Style::default().fg(USER_COLOR)),
-                            Span::styled(display_msg.content, Style::default().fg(USER_TEXT)),
+                            Span::styled("› ", Style::default().fg(user_color)),
+                            Span::styled(display_msg.content, Style::default().fg(user_text)),
                         ])
                         .alignment(align),
                     );
@@ -2188,7 +2188,7 @@ impl SessionPicker {
                             lines.push(
                                 Line::from(vec![Span::styled(
                                     "[mermaid diagram]",
-                                    Style::default().fg(DIM_COLOR),
+                                    Style::default().fg(dim_color),
                                 )])
                                 .alignment(align),
                             );
@@ -2224,7 +2224,7 @@ impl SessionPicker {
                     lines.push(
                         Line::from(vec![Span::styled(
                             msg.content.clone(),
-                            Style::default().fg(DIM_COLOR),
+                            Style::default().fg(dim_color),
                         )])
                         .alignment(align),
                     );
@@ -2265,7 +2265,7 @@ impl SessionPicker {
                     lines.push(
                         Line::from(vec![Span::styled(
                             msg.content.clone(),
-                            Style::default().fg(DIM_COLOR),
+                            Style::default().fg(dim_color),
                         )])
                         .alignment(align),
                     );
@@ -2298,7 +2298,7 @@ impl SessionPicker {
             lines.push(
                 Line::from(vec![Span::styled(
                     "(empty session)",
-                    Style::default().fg(DIM_COLOR),
+                    Style::default().fg(dim_color),
                 )])
                 .alignment(align),
             );
@@ -2340,10 +2340,10 @@ impl SessionPicker {
     }
 
     fn render_crash_banner(&self, frame: &mut Frame, area: Rect) {
-        let CRASH_BG: Color = rgb(60, 30, 30);
-        let CRASH_FG: Color = rgb(255, 140, 140);
-        let CRASH_ICON: Color = rgb(255, 100, 100);
-        let DIM: Color = rgb(180, 140, 140);
+        let crash_bg: Color = rgb(60, 30, 30);
+        let crash_fg: Color = rgb(255, 140, 140);
+        let crash_icon: Color = rgb(255, 100, 100);
+        let dim: Color = rgb(180, 140, 140);
 
         let Some(info) = &self.crashed_sessions else {
             return;
@@ -2366,7 +2366,7 @@ impl SessionPicker {
         let ago = format_time_ago(info.most_recent_crash);
 
         let line = Line::from(vec![
-            Span::styled(" 💥 ", Style::default().fg(CRASH_ICON).bg(CRASH_BG)),
+            Span::styled(" 💥 ", Style::default().fg(crash_icon).bg(crash_bg)),
             Span::styled(
                 format!(
                     "{} crashed session{}",
@@ -2374,28 +2374,28 @@ impl SessionPicker {
                     if count == 1 { "" } else { "s" }
                 ),
                 Style::default()
-                    .fg(CRASH_FG)
-                    .bg(CRASH_BG)
+                    .fg(crash_fg)
+                    .bg(crash_bg)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(" ({}) ", names_display),
-                Style::default().fg(DIM).bg(CRASH_BG),
+                Style::default().fg(dim).bg(crash_bg),
             ),
-            Span::styled(format!("{} ", ago), Style::default().fg(DIM).bg(CRASH_BG)),
-            Span::styled("— Press ", Style::default().fg(DIM).bg(CRASH_BG)),
+            Span::styled(format!("{} ", ago), Style::default().fg(dim).bg(crash_bg)),
+            Span::styled("— Press ", Style::default().fg(dim).bg(crash_bg)),
             Span::styled(
                 "B",
                 Style::default()
                     .fg(Color::White)
-                    .bg(CRASH_BG)
+                    .bg(crash_bg)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" to batch restore ", Style::default().fg(DIM).bg(CRASH_BG)),
+            Span::styled(" to batch restore ", Style::default().fg(dim).bg(crash_bg)),
         ]);
 
         // Fill the rest of the line with background
-        let paragraph = Paragraph::new(line).style(Style::default().bg(CRASH_BG));
+        let paragraph = Paragraph::new(line).style(Style::default().bg(crash_bg));
         frame.render_widget(paragraph, area);
     }
 
