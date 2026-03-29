@@ -1,9 +1,9 @@
 use super::{App, DisplayMessage, ProcessingStatus, is_context_limit_error};
-use crate::bus::{
-    BackgroundTaskCompleted, BackgroundTaskStatus, BusEvent, InputShellCompleted,
-    ManualToolCompleted,
+use crate::bus::{BackgroundTaskCompleted, BusEvent, InputShellCompleted, ManualToolCompleted};
+use crate::message::{
+    ContentBlock, Message, Role, background_task_status_notice,
+    format_background_task_notification_markdown,
 };
-use crate::message::{ContentBlock, Message, Role};
 use crate::session::StoredDisplayRole;
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyEventKind};
@@ -211,8 +211,9 @@ fn handle_background_task_completed(app: &mut App, task: BackgroundTaskCompleted
         return;
     }
 
-    let notification = format_background_task_notification(&task);
+    let notification = format_background_task_notification_markdown(&task);
     app.push_display_message(DisplayMessage::system(notification.clone()));
+    app.set_status_notice(background_task_status_notice(&task));
 
     if !app.is_processing {
         app.add_provider_message(Message {
@@ -227,39 +228,13 @@ fn handle_background_task_completed(app: &mut App, task: BackgroundTaskCompleted
         app.session.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
-                text: format_background_task_notification(&task),
+                text: format_background_task_notification_markdown(&task),
                 cache_control: None,
             }],
             Some(StoredDisplayRole::System),
         );
         let _ = app.session.save();
     }
-}
-
-fn format_background_task_notification(task: &BackgroundTaskCompleted) -> String {
-    let status_str = match task.status {
-        BackgroundTaskStatus::Completed => "✓ completed",
-        BackgroundTaskStatus::Failed => "✗ failed",
-        BackgroundTaskStatus::Running => "running",
-    };
-    format!(
-        "[Background Task Completed]\n\
-         Task: {} ({})\n\
-         Status: {}\n\
-         Duration: {:.1}s\n\
-         Exit code: {}\n\n\
-         Output preview:\n{}\n\n\
-         Use `bg action=\"output\" task_id=\"{}\"` for full output.",
-        task.task_id,
-        task.tool_name,
-        status_str,
-        task.duration_secs,
-        task.exit_code
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "N/A".to_string()),
-        task.output_preview,
-        task.task_id,
-    )
 }
 
 fn handle_input_shell_completed(app: &mut App, shell: InputShellCompleted) {

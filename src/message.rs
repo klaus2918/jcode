@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::bus::{BackgroundTaskCompleted, BackgroundTaskStatus};
 use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -71,6 +72,69 @@ pub fn input_shell_status_notice(shell: &InputShellResult) -> String {
         format!("Shell command failed (exit {})", code)
     } else {
         "Shell command terminated".to_string()
+    }
+}
+
+fn format_background_task_status(status: &BackgroundTaskStatus) -> &'static str {
+    match status {
+        BackgroundTaskStatus::Completed => "✓ completed",
+        BackgroundTaskStatus::Failed => "✗ failed",
+        BackgroundTaskStatus::Running => "running",
+    }
+}
+
+fn normalize_background_task_preview(preview: &str) -> Option<String> {
+    let normalized = preview.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = normalized.trim_end();
+    if trimmed.trim().is_empty() {
+        None
+    } else {
+        Some(sanitize_fenced_block(trimmed))
+    }
+}
+
+pub fn format_background_task_notification_markdown(task: &BackgroundTaskCompleted) -> String {
+    let exit_code = task
+        .exit_code
+        .map(|code| format!("exit {}", code))
+        .unwrap_or_else(|| "exit n/a".to_string());
+
+    let mut message = format!(
+        "**Background task** `{}` · `{}` · {} · {:.1}s · {}",
+        task.task_id,
+        task.tool_name,
+        format_background_task_status(&task.status),
+        task.duration_secs,
+        exit_code,
+    );
+
+    if let Some(preview) = normalize_background_task_preview(&task.output_preview) {
+        message.push_str(&format!("\n\n```text\n{}\n```", preview));
+    } else {
+        message.push_str("\n\n_No output captured._");
+    }
+
+    message.push_str(&format!(
+        "\n\n_Full output:_ `bg action=\"output\" task_id=\"{}\"`",
+        task.task_id
+    ));
+
+    message
+}
+
+pub fn background_task_status_notice(task: &BackgroundTaskCompleted) -> String {
+    match task.status {
+        BackgroundTaskStatus::Completed => {
+            format!("Background task completed · {}", task.tool_name)
+        }
+        BackgroundTaskStatus::Failed => match task.exit_code {
+            Some(code) => format!(
+                "Background task failed · {} · exit {}",
+                task.tool_name, code
+            ),
+            None => format!("Background task failed · {}", task.tool_name),
+        },
+        BackgroundTaskStatus::Running => format!("Background task running · {}", task.tool_name),
     }
 }
 
@@ -821,5 +885,45 @@ mod tests {
             }
             other => panic!("expected text block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn format_background_task_notification_markdown_uses_code_block_preview() {
+        let rendered = format_background_task_notification_markdown(&BackgroundTaskCompleted {
+            task_id: "abc123".to_string(),
+            tool_name: "bash".to_string(),
+            session_id: "session".to_string(),
+            status: BackgroundTaskStatus::Completed,
+            exit_code: Some(0),
+            output_preview: "[stderr] first line\n[stdout] second line\n".to_string(),
+            output_file: std::path::PathBuf::from("/tmp/output.log"),
+            duration_secs: 7.1,
+            notify: true,
+        });
+
+        assert!(
+            rendered
+                .contains("**Background task** `abc123` · `bash` · ✓ completed · 7.1s · exit 0")
+        );
+        assert!(rendered.contains("```text\n[stderr] first line\n[stdout] second line\n```"));
+        assert!(rendered.contains("_Full output:_ `bg action=\"output\" task_id=\"abc123\"`"));
+    }
+
+    #[test]
+    fn format_background_task_notification_markdown_handles_empty_preview() {
+        let rendered = format_background_task_notification_markdown(&BackgroundTaskCompleted {
+            task_id: "abc123".to_string(),
+            tool_name: "bash".to_string(),
+            session_id: "session".to_string(),
+            status: BackgroundTaskStatus::Failed,
+            exit_code: Some(9),
+            output_preview: "\n\n".to_string(),
+            output_file: std::path::PathBuf::from("/tmp/output.log"),
+            duration_secs: 1.0,
+            notify: true,
+        });
+
+        assert!(rendered.contains("✗ failed"));
+        assert!(rendered.contains("_No output captured._"));
     }
 }

@@ -35,6 +35,7 @@ use super::{
 use crate::agent::{Agent, InterruptSignal, SoftInterruptQueue, SoftInterruptSource, StreamError};
 use crate::bus::{Bus, BusEvent};
 use crate::id;
+use crate::message::format_background_task_notification_markdown;
 use crate::protocol::{Request, ServerEvent, decode_request, encode_event};
 use crate::provider::Provider;
 use crate::tool::Registry;
@@ -332,27 +333,7 @@ pub(super) async fn handle_client(
                     }
                     Ok(BusEvent::BackgroundTaskCompleted(ref task)) => {
                         if task.notify && task.session_id == client_session_id {
-                            let status_str = match task.status {
-                                crate::bus::BackgroundTaskStatus::Completed => "completed",
-                                crate::bus::BackgroundTaskStatus::Failed => "failed",
-                                crate::bus::BackgroundTaskStatus::Running => "running",
-                            };
-                            let notification = format!(
-                                "[Background Task Completed]\n\
-                                 Task: {} ({})\n\
-                                 Status: {}\n\
-                                 Duration: {:.1}s\n\
-                                 Exit code: {}\n\n\
-                                 Output preview:\n{}\n\n\
-                                 Use `bg action=\"output\" task_id=\"{}\"` for full output.",
-                                task.task_id,
-                                task.tool_name,
-                                status_str,
-                                task.duration_secs,
-                                task.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "N/A".to_string()),
-                                task.output_preview,
-                                task.task_id,
-                            );
+                            let notification = format_background_task_notification_markdown(task);
                             let agent_guard = agent.lock().await;
                             agent_guard.queue_soft_interrupt(
                                 notification,

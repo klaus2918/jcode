@@ -1,5 +1,8 @@
 use super::*;
-use crate::bus::{BusEvent, ClientMaintenanceAction, InputShellCompleted, SessionUpdateStatus};
+use crate::bus::{
+    BackgroundTaskCompleted, BackgroundTaskStatus, BusEvent, ClientMaintenanceAction,
+    InputShellCompleted, SessionUpdateStatus,
+};
 use crate::tui::TuiState;
 use ratatui::layout::Rect;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
@@ -4318,6 +4321,46 @@ fn test_handle_input_shell_completed_renders_markdown_blocks() {
     assert_eq!(
         app.status_notice(),
         Some("Shell command completed".to_string())
+    );
+}
+
+#[test]
+fn test_handle_background_task_completed_renders_markdown_preview() {
+    let mut app = create_test_app();
+    let event = BusEvent::BackgroundTaskCompleted(BackgroundTaskCompleted {
+        task_id: "bg123".to_string(),
+        tool_name: "bash".to_string(),
+        session_id: app.session.id.clone(),
+        status: BackgroundTaskStatus::Completed,
+        exit_code: Some(0),
+        output_preview: "[stderr] one\n[stdout] two\n".to_string(),
+        output_file: std::env::temp_dir().join("bg123.output"),
+        duration_secs: 7.1,
+        notify: true,
+    });
+
+    super::local::handle_bus_event(&mut app, Ok(event));
+
+    let rendered = app
+        .display_messages()
+        .last()
+        .expect("background task message");
+    assert_eq!(rendered.role, "system");
+    assert!(
+        rendered
+            .content
+            .contains("**Background task** `bg123` · `bash` · ✓ completed · 7.1s · exit 0")
+    );
+    assert!(rendered.content.contains("```text"));
+    assert!(rendered.content.contains("[stderr] one"));
+    assert!(
+        rendered
+            .content
+            .contains("_Full output:_ `bg action=\"output\" task_id=\"bg123\"`")
+    );
+    assert_eq!(
+        app.status_notice(),
+        Some("Background task completed · bash".to_string())
     );
 }
 
