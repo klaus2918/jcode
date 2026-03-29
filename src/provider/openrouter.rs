@@ -15,8 +15,9 @@ use crate::message::{
     ToolDefinition,
 };
 use crate::provider_catalog::{
-    is_safe_env_file_name, is_safe_env_key_name, load_api_key_from_env_or_config,
-    normalize_api_base,
+    OPENAI_COMPAT_PROFILE, is_safe_env_file_name, is_safe_env_key_name,
+    load_api_key_from_env_or_config, normalize_api_base, openai_compatible_profiles,
+    resolve_openai_compatible_profile,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -72,11 +73,55 @@ const CACHE_PIN_TTL_SECS: u64 = 60 * 60;
 /// Endpoints cache TTL (1 hour) - per-model provider endpoint data
 const ENDPOINTS_CACHE_TTL_SECS: u64 = 60 * 60;
 
+fn explicit_openrouter_runtime_configured() -> bool {
+    [
+        "JCODE_OPENROUTER_API_BASE",
+        "JCODE_OPENROUTER_API_KEY_NAME",
+        "JCODE_OPENROUTER_ENV_FILE",
+        "JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER",
+    ]
+    .iter()
+    .any(|var| std::env::var_os(var).is_some())
+}
+
+fn autodetected_openai_compatible_profile(
+) -> Option<crate::provider_catalog::ResolvedOpenAiCompatibleProfile> {
+    if explicit_openrouter_runtime_configured() {
+        return None;
+    }
+
+    if load_api_key_from_env_or_config(DEFAULT_API_KEY_NAME, DEFAULT_ENV_FILE).is_some() {
+        return None;
+    }
+
+    let compat = resolve_openai_compatible_profile(OPENAI_COMPAT_PROFILE);
+    if load_api_key_from_env_or_config(&compat.api_key_env, &compat.env_file).is_some() {
+        return Some(compat);
+    }
+
+    let mut matches = openai_compatible_profiles()
+        .into_iter()
+        .filter(|profile| profile.id != OPENAI_COMPAT_PROFILE.id)
+        .filter_map(|profile| {
+            let resolved = resolve_openai_compatible_profile(*profile);
+            load_api_key_from_env_or_config(&resolved.api_key_env, &resolved.env_file)
+                .map(|_| resolved)
+        })
+        .collect::<Vec<_>>();
+
+    if matches.len() == 1 {
+        matches.pop()
+    } else {
+        None
+    }
+}
+
 fn configured_api_base() -> String {
     let raw = std::env::var("JCODE_OPENROUTER_API_BASE")
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+        .or_else(|| autodetected_openai_compatible_profile().map(|profile| profile.api_base))
         .unwrap_or_else(|| DEFAULT_API_BASE.to_string());
     normalize_api_base(&raw).unwrap_or_else(|| {
         crate::logging::warn(&format!(
@@ -92,6 +137,7 @@ fn configured_api_key_name() -> String {
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+        .or_else(|| autodetected_openai_compatible_profile().map(|profile| profile.api_key_env))
         .unwrap_or_else(|| DEFAULT_API_KEY_NAME.to_string());
     if is_safe_env_key_name(&raw) {
         raw
@@ -109,6 +155,7 @@ fn configured_env_file_name() -> String {
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+        .or_else(|| autodetected_openai_compatible_profile().map(|profile| profile.env_file))
         .unwrap_or_else(|| DEFAULT_ENV_FILE.to_string());
     if is_safe_env_file_name(&raw) {
         raw
@@ -2213,9 +2260,62 @@ impl Stream for OpenRouterStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::sync::Mutex;
+    use tempfile::TempDir;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            crate::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            crate::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                crate::env::set_var(self.key, previous);
+            } else {
+                crate::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn test_config_dir(temp: &TempDir) -> std::path::PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            temp.path().join("Library").join("Application Support")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            temp.path().join("AppData").join("Roaming")
+        }
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+        {
+            temp.path().to_path_buf()
+        }
+    }
+
+    fn write_test_api_key(temp: &TempDir, env_file: &str, env_key: &str, value: &str) {
+        let config_dir = test_config_dir(temp).join("jcode");
+        std::fs::create_dir_all(&config_dir).expect("create test config dir");
+        std::fs::write(config_dir.join(env_file), format!("{env_key}={value}\n"))
+            .expect("write test api key");
+    }
 
     #[test]
     fn test_has_credentials() {
@@ -2249,6 +2349,58 @@ mod tests {
         } else {
             crate::env::remove_var("JCODE_OPENROUTER_API_BASE");
         }
+    }
+
+    #[test]
+    fn autodetects_single_saved_openai_compatible_profile() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().expect("create temp dir");
+        let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", temp.path());
+        let _home = EnvVarGuard::set("HOME", temp.path());
+        let _appdata = EnvVarGuard::set("APPDATA", temp.path().join("AppData").join("Roaming"));
+        let _openrouter_base = EnvVarGuard::remove("JCODE_OPENROUTER_API_BASE");
+        let _openrouter_key = EnvVarGuard::remove("JCODE_OPENROUTER_API_KEY_NAME");
+        let _openrouter_file = EnvVarGuard::remove("JCODE_OPENROUTER_ENV_FILE");
+        let _openrouter_dynamic = EnvVarGuard::remove("JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER");
+        let _openrouter_api_key = EnvVarGuard::remove("OPENROUTER_API_KEY");
+        let _opencode_api_key = EnvVarGuard::remove("OPENCODE_API_KEY");
+
+        let opencode =
+            crate::provider_catalog::resolve_openai_compatible_profile(crate::provider_catalog::OPENCODE_PROFILE);
+        write_test_api_key(&temp, &opencode.env_file, &opencode.api_key_env, "test-opencode-key");
+
+        assert_eq!(configured_api_base(), opencode.api_base);
+        assert_eq!(configured_api_key_name(), opencode.api_key_env);
+        assert_eq!(configured_env_file_name(), opencode.env_file);
+        assert!(OpenRouterProvider::has_credentials());
+    }
+
+    #[test]
+    fn does_not_guess_when_multiple_saved_openai_compatible_profiles_exist() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().expect("create temp dir");
+        let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", temp.path());
+        let _home = EnvVarGuard::set("HOME", temp.path());
+        let _appdata = EnvVarGuard::set("APPDATA", temp.path().join("AppData").join("Roaming"));
+        let _openrouter_base = EnvVarGuard::remove("JCODE_OPENROUTER_API_BASE");
+        let _openrouter_key = EnvVarGuard::remove("JCODE_OPENROUTER_API_KEY_NAME");
+        let _openrouter_file = EnvVarGuard::remove("JCODE_OPENROUTER_ENV_FILE");
+        let _openrouter_dynamic = EnvVarGuard::remove("JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER");
+        let _openrouter_api_key = EnvVarGuard::remove("OPENROUTER_API_KEY");
+        let _opencode_api_key = EnvVarGuard::remove("OPENCODE_API_KEY");
+        let _chutes_api_key = EnvVarGuard::remove("CHUTES_API_KEY");
+
+        let opencode =
+            crate::provider_catalog::resolve_openai_compatible_profile(crate::provider_catalog::OPENCODE_PROFILE);
+        let chutes =
+            crate::provider_catalog::resolve_openai_compatible_profile(crate::provider_catalog::CHUTES_PROFILE);
+        write_test_api_key(&temp, &opencode.env_file, &opencode.api_key_env, "test-opencode-key");
+        write_test_api_key(&temp, &chutes.env_file, &chutes.api_key_env, "test-chutes-key");
+
+        assert_eq!(configured_api_base(), DEFAULT_API_BASE);
+        assert_eq!(configured_api_key_name(), DEFAULT_API_KEY_NAME);
+        assert_eq!(configured_env_file_name(), DEFAULT_ENV_FILE);
+        assert!(!OpenRouterProvider::has_credentials());
     }
 
     #[test]
