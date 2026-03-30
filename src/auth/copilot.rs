@@ -399,6 +399,13 @@ pub fn save_github_token(token: &str, username: &str) -> Result<()> {
     crate::platform::set_permissions_owner_only(&hosts_path)
         .with_context(|| format!("Failed to secure {}", hosts_path.display()))?;
 
+    // A token written by jcode's own device-login flow should be immediately
+    // usable in future sessions. Without this, later reads treat the saved
+    // hosts.json as an untrusted external auth source and appear to "lose"
+    // the Copilot login after restart/new session.
+    crate::config::Config::allow_external_auth_source(COPILOT_HOSTS_AUTH_SOURCE_ID)?;
+    super::AuthStatus::invalidate_cache();
+
     Ok(())
 }
 
@@ -721,6 +728,36 @@ mod tests {
             crate::env::set_var("JCODE_HOME", prev);
         } else {
             crate::env::remove_var("JCODE_HOME");
+        }
+    }
+
+    #[test]
+    fn save_github_token_makes_future_loads_available() {
+        let _guard = crate::storage::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let prev_jcode_home = std::env::var_os("JCODE_HOME");
+        let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+
+        crate::env::set_var("JCODE_HOME", dir.path());
+        crate::env::remove_var("XDG_CONFIG_HOME");
+
+        save_github_token("gho_persisted_token", "testuser").unwrap();
+
+        assert!(crate::config::Config::external_auth_source_allowed(
+            COPILOT_HOSTS_AUTH_SOURCE_ID
+        ));
+        assert_eq!(load_github_token().unwrap(), "gho_persisted_token");
+
+        if let Some(prev) = prev_jcode_home {
+            crate::env::set_var("JCODE_HOME", prev);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+
+        if let Some(prev) = prev_xdg_config_home {
+            crate::env::set_var("XDG_CONFIG_HOME", prev);
+        } else {
+            crate::env::remove_var("XDG_CONFIG_HOME");
         }
     }
 
