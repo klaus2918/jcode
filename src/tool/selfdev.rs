@@ -486,7 +486,10 @@ pub fn selfdev_status_output() -> Result<ToolOutput> {
             status.push_str(&format!("**Rollback target:** {}\n", previous));
         }
         if let Some(fingerprint) = pending.source_fingerprint.as_deref() {
-            status.push_str(&format!("**Pending source fingerprint:** `{}`\n", fingerprint));
+            status.push_str(&format!(
+                "**Pending source fingerprint:** `{}`\n",
+                fingerprint
+            ));
         }
     }
 
@@ -1219,12 +1222,15 @@ impl SelfDevTool {
                 Self::stream_build_command(repo_dir.clone(), command.clone(), output_path.clone())
                     .await?;
             if result.error.is_none() {
-                let source_after_build = build::ensure_source_state_matches(&repo_dir, &expected_source)?;
-                let published = build::publish_local_current_build_for_source(&repo_dir, &source_after_build)?;
+                let source_after_build =
+                    build::ensure_source_state_matches(&repo_dir, &expected_source)?;
+                let published =
+                    build::publish_local_current_build_for_source(&repo_dir, &source_after_build)?;
                 let mut manifest = build::BuildManifest::load()?;
                 manifest.add_to_history(build::current_build_info(&repo_dir)?)?;
-                let mut request = BuildRequest::load(&request_id)?
-                    .ok_or_else(|| anyhow::anyhow!("Missing queued build request {}", request_id))?;
+                let mut request = BuildRequest::load(&request_id)?.ok_or_else(|| {
+                    anyhow::anyhow!("Missing queued build request {}", request_id)
+                })?;
                 request.published_version = Some(published.version.clone());
                 request.validated = true;
                 request.last_progress = Some("published and smoke-tested".to_string());
@@ -1434,11 +1440,9 @@ impl SelfDevTool {
         };
         request.save()?;
 
-        let queue_position = SelfDevTool::current_queue_position(
-            &request_id,
-            &requested_source.worktree_scope,
-        )?
-        .unwrap_or(1);
+        let queue_position =
+            SelfDevTool::current_queue_position(&request_id, &requested_source.worktree_scope)?
+                .unwrap_or(1);
 
         let request_id_for_task = request_id.clone();
         let repo_dir_for_task = repo_dir.clone();
@@ -1704,7 +1708,9 @@ impl SelfDevTool {
         let published = if SelfDevTool::is_test_session() {
             None
         } else {
-            Some(build::publish_local_current_build_for_source(&repo_dir, &source)?)
+            Some(build::publish_local_current_build_for_source(
+                &repo_dir, &source,
+            )?)
         };
 
         // Update manifest - track what we're testing
@@ -2354,7 +2360,11 @@ mod tests {
 
         assert_eq!(first_meta["queue_position"].as_u64(), Some(1));
         assert_eq!(second_meta["deduped"].as_bool(), Some(true));
-        assert!(second.output.contains("attached instead of spawning a duplicate build"));
+        assert!(
+            second
+                .output
+                .contains("attached instead of spawning a duplicate build")
+        );
 
         let status_output = selfdev_status_output().expect("status output");
         assert!(status_output.output.contains("## Build Queue"));

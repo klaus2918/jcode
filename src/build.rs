@@ -661,7 +661,10 @@ pub fn current_version_file() -> Result<PathBuf> {
 }
 
 fn git_output_bytes(repo_dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git").args(args).current_dir(repo_dir).output()?;
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_dir)
+        .output()?;
     if !output.status.success() {
         anyhow::bail!(
             "git {} failed with status {:?}",
@@ -716,18 +719,30 @@ fn append_untracked_file_fingerprint(state: &mut u64, repo_dir: &Path, relative:
 pub fn current_source_state(repo_dir: &Path) -> Result<SourceState> {
     let short_hash = current_git_hash(repo_dir)?;
     let full_hash = current_git_hash_full(repo_dir)?;
-    let status = git_output_bytes(repo_dir, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+    let status = git_output_bytes(
+        repo_dir,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
     let diff = git_output_bytes(repo_dir, &["diff", "--binary", "HEAD"])?;
-    let untracked = git_output_bytes(repo_dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let untracked = git_output_bytes(
+        repo_dir,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
 
     let dirty = !status.is_empty();
-    let changed_paths = status.split(|byte| *byte == 0).filter(|entry| !entry.is_empty()).count();
+    let changed_paths = status
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .count();
 
     let mut state = FNV_OFFSET_BASIS_64;
     stable_hash_str(&mut state, &full_hash);
     stable_hash_update(&mut state, &status);
     stable_hash_update(&mut state, &diff);
-    for path in untracked.split(|byte| *byte == 0).filter(|entry| !entry.is_empty()) {
+    for path in untracked
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
         let relative = String::from_utf8_lossy(path);
         append_untracked_file_fingerprint(&mut state, repo_dir, &relative);
     }
@@ -1232,7 +1247,11 @@ mod tests {
 
         let state = current_source_state(repo.path()).expect("source state");
         assert!(state.dirty);
-        assert!(state.version_label.starts_with(&format!("{}-dirty-", state.short_hash)));
+        assert!(
+            state
+                .version_label
+                .starts_with(&format!("{}-dirty-", state.short_hash))
+        );
         assert!(state.version_label.len() > state.short_hash.len() + 7);
     }
 
