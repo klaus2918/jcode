@@ -290,8 +290,8 @@ mod tests {
     use super::{
         graceful_shutdown_sessions, graceful_shutdown_sessions_with_timeout, receive_reload_signal,
     };
-    use jcode_agent_runtime::InterruptSignal;
     use crate::server::{ReloadSignal, SwarmEvent, SwarmEventType, SwarmMember};
+    use jcode_agent_runtime::InterruptSignal;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Instant;
