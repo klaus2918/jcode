@@ -57,6 +57,46 @@ fn persist_headed_startup_message(session_id: &str, message: &str) {
     crate::tui::App::save_startup_message_for_session(session_id, message.to_string());
 }
 
+fn clear_headed_startup_message(session_id: &str) {
+    if let Ok(jcode_dir) = crate::storage::jcode_dir() {
+        let path = jcode_dir.join(format!("client-input-{}", session_id));
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn prepare_visible_spawn_session<F>(
+    working_dir: Option<&str>,
+    model_override: Option<&str>,
+    selfdev_requested: bool,
+    startup_message: Option<&str>,
+    launch_visible: F,
+) -> anyhow::Result<(String, bool)>
+where
+    F: FnOnce(&str, &PathBuf, bool) -> anyhow::Result<bool>,
+{
+    let (new_session_id, cwd) =
+        create_visible_spawn_session(working_dir, model_override, selfdev_requested)?;
+
+    if let Some(message) = startup_message {
+        persist_headed_startup_message(&new_session_id, message);
+    }
+
+    match launch_visible(&new_session_id, &cwd, selfdev_requested) {
+        Ok(launched) => {
+            if !launched && startup_message.is_some() {
+                clear_headed_startup_message(&new_session_id);
+            }
+            Ok((new_session_id, launched))
+        }
+        Err(error) => {
+            if startup_message.is_some() {
+                clear_headed_startup_message(&new_session_id);
+            }
+            Err(error)
+        }
+    }
+}
+
 async fn register_visible_spawned_member(
     session_id: &str,
     swarm_id: &str,
@@ -188,15 +228,13 @@ pub(super) async fn handle_comm_spawn(
             .unwrap_or(false)
     };
 
-    let visible_spawn = create_visible_spawn_session(
+    let visible_spawn = prepare_visible_spawn_session(
         working_dir.as_deref(),
         spawn_model.as_deref(),
         coordinator_is_canary,
-    )
-    .and_then(|(new_session_id, cwd)| {
-        let launched = spawn_visible_session_window(&new_session_id, &cwd, coordinator_is_canary)?;
-        Ok((new_session_id, launched))
-    });
+        initial_message.as_deref(),
+        spawn_visible_session_window,
+    );
 
     let spawn_result: anyhow::Result<(String, bool)> = match visible_spawn {
         Ok((new_session_id, true)) => Ok((new_session_id, false)),
@@ -339,8 +377,6 @@ pub(super) async fn handle_comm_spawn(
                             .await;
                         });
                     }
-                } else {
-                    persist_headed_startup_message(&new_session_id, &initial_msg);
                 }
             }
 
@@ -633,11 +669,15 @@ async fn require_coordinator_swarm(
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_spawn_coordinator_swarm, register_visible_spawned_member};
+    use super::{
+        ensure_spawn_coordinator_swarm, prepare_visible_spawn_session,
+        register_visible_spawned_member,
+    };
     use crate::protocol::{NotificationType, ServerEvent};
     use crate::server::SwarmEventType;
     use crate::server::SwarmMember;
     use std::collections::{HashMap, HashSet, VecDeque};
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::time::Instant;
@@ -713,6 +753,75 @@ mod tests {
             event.session_id == "child-1"
                 && matches!(event.event, SwarmEventType::MemberChange { ref action } if action == "joined")
         }));
+    }
+
+    #[test]
+    fn prepare_visible_spawn_session_persists_startup_before_launch() {
+        let _guard = crate::storage::lock_test_env();
+        let temp_home = tempfile::TempDir::new().expect("temp home");
+        crate::env::set_var("JCODE_HOME", temp_home.path());
+
+        let worktree = tempfile::TempDir::new().expect("temp worktree");
+        let startup = "Please start by auditing prompt delivery.";
+
+        let (session_id, launched) = prepare_visible_spawn_session(
+            Some(worktree.path().to_str().expect("utf8 worktree path")),
+            None,
+            false,
+            Some(startup),
+            |session_id, _cwd: &PathBuf, _selfdev| {
+                let path = crate::storage::jcode_dir()
+                    .expect("jcode dir")
+                    .join(format!("client-input-{}", session_id));
+                let data = std::fs::read_to_string(&path).expect("startup file should exist");
+                assert!(
+                    data.contains(startup),
+                    "startup payload should be written before launch"
+                );
+                Ok(true)
+            },
+        )
+        .expect("visible spawn preparation should succeed");
+
+        assert!(launched);
+        let path = crate::storage::jcode_dir()
+            .expect("jcode dir")
+            .join(format!("client-input-{}", session_id));
+        assert!(
+            path.exists(),
+            "startup file should remain for launched visible session"
+        );
+
+        crate::env::remove_var("JCODE_HOME");
+    }
+
+    #[test]
+    fn prepare_visible_spawn_session_cleans_startup_when_launch_not_started() {
+        let _guard = crate::storage::lock_test_env();
+        let temp_home = tempfile::TempDir::new().expect("temp home");
+        crate::env::set_var("JCODE_HOME", temp_home.path());
+
+        let worktree = tempfile::TempDir::new().expect("temp worktree");
+
+        let (session_id, launched) = prepare_visible_spawn_session(
+            Some(worktree.path().to_str().expect("utf8 worktree path")),
+            None,
+            false,
+            Some("Do the thing."),
+            |_session_id, _cwd: &PathBuf, _selfdev| Ok(false),
+        )
+        .expect("visible spawn preparation should succeed even when launch is skipped");
+
+        assert!(!launched);
+        let path = crate::storage::jcode_dir()
+            .expect("jcode dir")
+            .join(format!("client-input-{}", session_id));
+        assert!(
+            !path.exists(),
+            "startup file should be removed when visible launch does not start"
+        );
+
+        crate::env::remove_var("JCODE_HOME");
     }
 
     #[tokio::test]

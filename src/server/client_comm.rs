@@ -7,7 +7,6 @@ use super::{
 };
 use crate::agent::Agent;
 use crate::protocol::{AgentInfo, ContextEntry, NotificationType, ServerEvent};
-use jcode_agent_runtime::SoftInterruptSource;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,6 +29,59 @@ async fn friendly_name_for_session(
     members
         .get(session_id)
         .and_then(|member| member.friendly_name.clone())
+}
+
+async fn run_message_in_live_session_if_idle(
+    session_id: &str,
+    message: &str,
+    reminder: Option<String>,
+    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+) -> bool {
+    let agent = {
+        let guard = sessions.read().await;
+        guard.get(session_id).cloned()
+    };
+    let Some(agent) = agent else {
+        return false;
+    };
+
+    let event_tx = {
+        let members = swarm_members.read().await;
+        members
+            .get(session_id)
+            .map(|member| member.event_tx.clone())
+    };
+    let Some(event_tx) = event_tx else {
+        return false;
+    };
+
+    let is_idle = match agent.try_lock() {
+        Ok(guard) => {
+            drop(guard);
+            true
+        }
+        Err(_) => false,
+    };
+
+    if !is_idle {
+        return false;
+    }
+
+    let session_id = session_id.to_string();
+    let message = message.to_string();
+    tokio::spawn(async move {
+        if let Err(err) =
+            process_message_streaming_mpsc(agent, &message, vec![], reminder, event_tx).await
+        {
+            crate::logging::error(&format!(
+                "Failed to run comm message immediately for live session {}: {}",
+                session_id, err
+            ));
+        }
+    });
+
+    true
 }
 
 pub(super) async fn handle_comm_share(
@@ -329,6 +381,7 @@ pub(super) async fn handle_comm_message(
     message: String,
     to_session: Option<String>,
     channel: Option<String>,
+    wake: Option<bool>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
@@ -435,6 +488,54 @@ pub(super) async fn handle_comm_message(
                     },
                     message: notification_msg.clone(),
                 });
+
+                if wake == Some(true) && target_has_client {
+                    let sender_name = friendly_name
+                        .clone()
+                        .unwrap_or_else(|| from_session.clone());
+                    let reminder = match scope {
+                        "dm" => Some(format!(
+                            "You just received a direct swarm message from {}. Review it and respond or act if useful.",
+                            sender_name
+                        )),
+                        "channel" => Some(format!(
+                            "You just received a swarm channel message in #{} from {}. Review it and respond or act if useful.",
+                            channel.clone().unwrap_or_else(|| "channel".to_string()),
+                            sender_name
+                        )),
+                        _ => Some(format!(
+                            "You just received a swarm broadcast from {}. Review it and respond or act if useful.",
+                            sender_name
+                        )),
+                    };
+
+                    let woke_immediately = run_message_in_live_session_if_idle(
+                        session_id,
+                        &notification_msg,
+                        reminder,
+                        sessions,
+                        swarm_members,
+                    )
+                    .await;
+
+                    if !woke_immediately {
+                        let _ = queue_soft_interrupt_for_session(
+                            session_id,
+                            notification_msg.clone(),
+                            false,
+                            SoftInterruptSource::System,
+                            soft_interrupt_queues,
+                            sessions,
+                        )
+                        .await;
+                    }
+
+                    continue;
+                }
+
+                if wake == Some(false) {
+                    continue;
+                }
 
                 if !target_has_client {
                     let _ = queue_soft_interrupt_for_session(
@@ -712,6 +813,7 @@ mod tests {
             "hello".to_string(),
             None,
             Some("religion-debate".to_string()),
+            None,
             &client_event_tx,
             &sessions,
             &soft_interrupt_queues,
