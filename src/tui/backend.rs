@@ -13,6 +13,7 @@ use crate::tui::remote_diff::RemoteDiffTracker;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
@@ -253,12 +254,21 @@ pub(crate) struct ReplayRemoteState {
 impl RemoteConnection {
     /// Connect to the server
     pub async fn connect() -> Result<Self> {
-        Self::connect_with_session(None).await
+        Self::connect_with_session(None, false).await
     }
 
-    /// Connect to the server and optionally resume a specific session
-    pub async fn connect_with_session(resume_session: Option<&str>) -> Result<Self> {
+    /// Connect to the server and optionally resume a specific session.
+    ///
+    /// When `client_has_local_history` is true, the client already restored the
+    /// transcript locally and only needs lightweight session metadata from the server.
+    pub async fn connect_with_session(
+        resume_session: Option<&str>,
+        client_has_local_history: bool,
+    ) -> Result<Self> {
+        let connect_start = Instant::now();
+        let socket_connect_start = Instant::now();
         let stream = Stream::connect(server::socket_path()).await?;
+        let socket_connect_ms = socket_connect_start.elapsed().as_millis();
         let (reader, writer) = stream.into_split();
 
         let mut conn = Self {
@@ -274,6 +284,7 @@ impl RemoteConnection {
         };
 
         // Subscribe to events
+        let subscribe_start = Instant::now();
         let (working_dir, selfdev) = super::subscribe_metadata();
         conn.send_request(Request::Subscribe {
             id: conn.next_request_id,
@@ -281,21 +292,26 @@ impl RemoteConnection {
             selfdev,
         })
         .await?;
+        let subscribe_ms = subscribe_start.elapsed().as_millis();
         conn.next_request_id += 1;
 
         // If resuming a session, send ResumeSession BEFORE GetHistory.
         // ResumeSession already returns a full History payload on success, so
         // avoid an immediate duplicate GetHistory request in that case.
+        let bootstrap_request_start = Instant::now();
         let mut sent_resume_request = false;
+        let mut bootstrap_request = "get_history";
         if let Some(session_id) = resume_session {
             if crate::session::session_exists(session_id) {
                 conn.send_request(Request::ResumeSession {
                     id: conn.next_request_id,
                     session_id: session_id.to_string(),
+                    client_has_local_history,
                 })
                 .await?;
                 conn.next_request_id += 1;
                 sent_resume_request = true;
+                bootstrap_request = "resume_session";
             }
         }
 
@@ -307,6 +323,17 @@ impl RemoteConnection {
             .await?;
             conn.next_request_id += 1;
         }
+        let bootstrap_request_ms = bootstrap_request_start.elapsed().as_millis();
+
+        crate::logging::info(&format!(
+            "[TIMING] remote connect: socket={}ms, subscribe={}ms, bootstrap_request={}ms, total={}ms, resumed={}, request={}",
+            socket_connect_ms,
+            subscribe_ms,
+            bootstrap_request_ms,
+            connect_start.elapsed().as_millis(),
+            resume_session.is_some(),
+            bootstrap_request,
+        ));
 
         Ok(conn)
     }
@@ -371,6 +398,7 @@ impl RemoteConnection {
         let request = Request::ResumeSession {
             id: self.next_request_id,
             session_id: session_id.to_string(),
+            client_has_local_history: false,
         };
         self.next_request_id += 1;
         self.send_request(request).await

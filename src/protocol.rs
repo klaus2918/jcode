@@ -129,7 +129,12 @@ pub enum Request {
 
     /// Resume a specific session by ID
     #[serde(rename = "resume_session")]
-    ResumeSession { id: u64, session_id: String },
+    ResumeSession {
+        id: u64,
+        session_id: String,
+        #[serde(default)]
+        client_has_local_history: bool,
+    },
 
     /// Deliver a scheduled task to a currently live session.
     #[serde(rename = "notify_session")]

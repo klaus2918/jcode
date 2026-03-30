@@ -181,6 +181,7 @@ impl Client {
         let request = Request::ResumeSession {
             id,
             session_id: session_id.to_string(),
+            client_has_local_history: false,
         };
         let json = serde_json::to_string(&request)? + "\n";
         self.writer.write_all(json.as_bytes()).await?;

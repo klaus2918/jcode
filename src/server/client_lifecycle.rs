@@ -668,10 +668,15 @@ pub(super) async fn handle_client(
                 handle_reload(id, &agent, &client_event_tx).await;
             }
 
-            Request::ResumeSession { id, session_id } => {
+            Request::ResumeSession {
+                id,
+                session_id,
+                client_has_local_history,
+            } => {
                 if handle_resume_session(
                     id,
                     session_id,
+                    client_has_local_history,
                     &mut client_selfdev,
                     &mut client_session_id,
                     &client_connection_id,

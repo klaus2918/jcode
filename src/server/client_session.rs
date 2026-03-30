@@ -1,4 +1,4 @@
-use super::client_state::{send_history, spawn_model_prefetch_update};
+use super::client_state::{HistoryPayloadMode, send_history, spawn_model_prefetch_update};
 use super::{
     ClientConnectionInfo, FileAccess, SessionInterruptQueues, SwarmEvent, SwarmMember,
     VersionedPlan, broadcast_swarm_status, register_session_interrupt_queue,
@@ -206,6 +206,7 @@ pub(super) async fn handle_subscribe(
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
 ) {
+    let subscribe_start = Instant::now();
     if let Some(ref dir) = subscribe_working_dir {
         let mut agent_guard = agent.lock().await;
         agent_guard.set_working_dir(dir);
@@ -327,6 +328,7 @@ pub(super) async fn handle_subscribe(
         registry.register_selfdev_tools().await;
     }
 
+    let mcp_register_start = Instant::now();
     registry
         .register_mcp_tools(
             Some(client_event_tx.clone()),
@@ -334,6 +336,16 @@ pub(super) async fn handle_subscribe(
             Some(client_session_id.to_string()),
         )
         .await;
+    let mcp_register_ms = mcp_register_start.elapsed().as_millis();
+
+    crate::logging::info(&format!(
+        "[TIMING] handle_subscribe: session={}, working_dir_set={}, selfdev={}, mcp_register={}ms, total={}ms",
+        client_session_id,
+        subscribe_working_dir.is_some(),
+        should_selfdev,
+        mcp_register_ms,
+        subscribe_start.elapsed().as_millis(),
+    ));
 
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }
@@ -370,6 +382,7 @@ pub(super) async fn handle_reload(
 pub(super) async fn handle_resume_session(
     id: u64,
     session_id: String,
+    client_has_local_history: bool,
     client_selfdev: &mut bool,
     client_session_id: &mut String,
     client_connection_id: &str,
@@ -543,6 +556,11 @@ pub(super) async fn handle_resume_session(
                 server_name,
                 server_icon,
                 if was_interrupted { Some(true) } else { None },
+                if client_has_local_history {
+                    HistoryPayloadMode::MetadataOnly
+                } else {
+                    HistoryPayloadMode::Full
+                },
             )
             .await?;
             spawn_model_prefetch_update(

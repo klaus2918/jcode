@@ -7,6 +7,12 @@ use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HistoryPayloadMode {
+    Full,
+    MetadataOnly,
+}
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 
@@ -45,6 +51,7 @@ pub(super) async fn handle_get_history(
     server_name: &str,
     server_icon: &str,
 ) -> Result<()> {
+    let history_start = Instant::now();
     send_history(
         id,
         client_session_id,
@@ -55,10 +62,20 @@ pub(super) async fn handle_get_history(
         server_name,
         server_icon,
         None,
+        HistoryPayloadMode::Full,
     )
     .await?;
+    let send_history_ms = history_start.elapsed().as_millis();
 
+    let prefetch_start = Instant::now();
     spawn_model_prefetch_update(Arc::clone(provider), Arc::clone(agent), Arc::clone(writer));
+    crate::logging::info(&format!(
+        "[TIMING] handle_get_history: session={}, send_history={}ms, prefetch_spawn={}ms, total={}ms",
+        client_session_id,
+        send_history_ms,
+        prefetch_start.elapsed().as_millis(),
+        history_start.elapsed().as_millis(),
+    ));
     Ok(())
 }
 
@@ -72,6 +89,7 @@ pub(super) async fn send_history(
     server_name: &str,
     server_icon: &str,
     was_interrupted: Option<bool>,
+    payload_mode: HistoryPayloadMode,
 ) -> Result<()> {
     let history_start = Instant::now();
     let agent_lock_start = Instant::now();
@@ -107,13 +125,23 @@ pub(super) async fn send_history(
         let agent_lock_ms = agent_lock_start.elapsed().as_millis();
         let provider = agent_guard.provider_handle();
 
-        let history_snapshot_start = Instant::now();
-        let messages = agent_guard.get_history();
-        let history_snapshot_ms = history_snapshot_start.elapsed().as_millis();
+        let (messages, history_snapshot_ms) = match payload_mode {
+            HistoryPayloadMode::Full => {
+                let history_snapshot_start = Instant::now();
+                let messages = agent_guard.get_history();
+                (messages, history_snapshot_start.elapsed().as_millis())
+            }
+            HistoryPayloadMode::MetadataOnly => (Vec::new(), 0),
+        };
 
-        let image_render_start = Instant::now();
-        let images = agent_guard.get_rendered_images();
-        let image_render_ms = image_render_start.elapsed().as_millis();
+        let (images, image_render_ms) = match payload_mode {
+            HistoryPayloadMode::Full => {
+                let image_render_start = Instant::now();
+                let images = agent_guard.get_rendered_images();
+                (images, image_render_start.elapsed().as_millis())
+            }
+            HistoryPayloadMode::MetadataOnly => (Vec::new(), 0),
+        };
 
         let tool_names_start = Instant::now();
         let tool_names = agent_guard.tool_names().await;
@@ -197,8 +225,9 @@ pub(super) async fn send_history(
         let count = *client_count.read().await;
         let sessions_snapshot_ms = sessions_snapshot_start.elapsed().as_millis();
         crate::logging::info(&format!(
-            "[TIMING] send_history prep: session={}, messages={}, images={}, mcp_servers={}, agent_lock={}ms, history={}ms, images={}ms, tool_names={}ms, models={}ms, routes={}ms, skills={}ms, provider_meta={}ms, compaction={}ms, side_panel={}ms, sessions={}ms, total={}ms",
+            "[TIMING] send_history prep: session={}, mode={:?}, messages={}, images={}, mcp_servers={}, agent_lock={}ms, history={}ms, images={}ms, tool_names={}ms, models={}ms, routes={}ms, skills={}ms, provider_meta={}ms, compaction={}ms, side_panel={}ms, sessions={}ms, total={}ms",
             session_id,
+            payload_mode,
             messages.len(),
             images.len(),
             mcp_servers.len(),
@@ -218,50 +247,57 @@ pub(super) async fn send_history(
         (all, count)
     };
 
+    let history_event = ServerEvent::History {
+        id,
+        session_id: session_id.to_string(),
+        messages,
+        images,
+        provider_name: Some(provider_name),
+        provider_model: Some(provider_model),
+        subagent_model,
+        autoreview_enabled,
+        autojudge_enabled,
+        available_models,
+        available_model_routes,
+        mcp_servers,
+        skills,
+        total_tokens: None,
+        all_sessions,
+        client_count: Some(current_client_count),
+        is_canary: Some(is_canary),
+        server_version: Some(env!("JCODE_VERSION").to_string()),
+        server_name: Some(server_name.to_string()),
+        server_icon: Some(server_icon.to_string()),
+        server_has_update: Some(server_has_newer_binary()),
+        was_interrupted,
+        connection_type,
+        upstream_provider,
+        reasoning_effort,
+        service_tier,
+        compaction_mode,
+        side_panel,
+    };
+    let encode_start = Instant::now();
+    let json = encode_event(&history_event);
+    let encode_ms = encode_start.elapsed().as_millis();
+    let writer_lock_start = Instant::now();
+    let mut writer_guard = writer.lock().await;
+    let writer_lock_ms = writer_lock_start.elapsed().as_millis();
     let write_start = Instant::now();
-    let result = write_event(
-        writer,
-        &ServerEvent::History {
-            id,
-            session_id: session_id.to_string(),
-            messages,
-            images,
-            provider_name: Some(provider_name),
-            provider_model: Some(provider_model),
-            subagent_model,
-            autoreview_enabled,
-            autojudge_enabled,
-            available_models,
-            available_model_routes,
-            mcp_servers,
-            skills,
-            total_tokens: None,
-            all_sessions,
-            client_count: Some(current_client_count),
-            is_canary: Some(is_canary),
-            server_version: Some(env!("JCODE_VERSION").to_string()),
-            server_name: Some(server_name.to_string()),
-            server_icon: Some(server_icon.to_string()),
-            server_has_update: Some(server_has_newer_binary()),
-            was_interrupted,
-            connection_type,
-            upstream_provider,
-            reasoning_effort,
-            service_tier,
-            compaction_mode,
-            side_panel,
-        },
-    )
-    .await;
+    let result = writer_guard.write_all(json.as_bytes()).await;
+    let write_ms = write_start.elapsed().as_millis();
 
     crate::logging::info(&format!(
-        "[TIMING] send_history write: session={}, write={}ms, total={}ms",
+        "[TIMING] send_history write: session={}, bytes={}, encode={}ms, writer_lock={}ms, write={}ms, total={}ms",
         session_id,
-        write_start.elapsed().as_millis(),
+        json.len(),
+        encode_ms,
+        writer_lock_ms,
+        write_ms,
         history_start.elapsed().as_millis(),
     ));
 
-    result
+    result.map_err(Into::into)
 }
 
 async fn write_event(writer: &Arc<Mutex<WriteHalf>>, event: &ServerEvent) -> Result<()> {

@@ -6909,6 +6909,93 @@ fn test_remote_swarm_status_does_not_clobber_newer_session_history_on_disk() {
 }
 
 #[test]
+fn test_metadata_only_history_preserves_fast_restored_startup_state() {
+    let _guard = crate::storage::lock_test_env();
+    let temp_home = tempfile::TempDir::new().expect("create temp home");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp_home.path());
+
+    let session_id = "session_fast_resume_meta_42";
+    let mut session = crate::session::Session::create_with_id(
+        session_id.to_string(),
+        None,
+        Some("resume me".to_string()),
+    );
+    session.model = Some("gpt-5.4".to_string());
+    session.append_stored_message(crate::session::StoredMessage {
+        id: "msg-fast-resume".to_string(),
+        role: crate::message::Role::Assistant,
+        content: vec![crate::message::ContentBlock::Text {
+            text: "restored locally before connect".to_string(),
+            cache_control: None,
+        }],
+        display_role: None,
+        timestamp: None,
+        tool_duration_ms: None,
+        token_usage: None,
+    });
+    session.save().expect("save fast resume session");
+
+    let mut app = App::new_for_remote(Some(session_id.to_string()));
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard_rt = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::History {
+            id: 1,
+            session_id: session_id.to_string(),
+            messages: vec![],
+            images: vec![],
+            provider_name: Some("openai".to_string()),
+            provider_model: Some("gpt-5.4".to_string()),
+            subagent_model: None,
+            autoreview_enabled: None,
+            autojudge_enabled: None,
+            available_models: vec![],
+            available_model_routes: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            total_tokens: None,
+            all_sessions: vec![session_id.to_string()],
+            client_count: Some(1),
+            is_canary: Some(false),
+            server_version: None,
+            server_name: None,
+            server_icon: None,
+            server_has_update: None,
+            was_interrupted: None,
+            connection_type: Some("https".to_string()),
+            upstream_provider: None,
+            reasoning_effort: None,
+            service_tier: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
+        },
+        &mut remote,
+    );
+
+    let assistant_messages: Vec<_> = app
+        .display_messages()
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .collect();
+    assert_eq!(assistant_messages.len(), 1);
+    assert_eq!(
+        assistant_messages[0].content,
+        "restored locally before connect"
+    );
+    assert_eq!(app.remote_session_id.as_deref(), Some(session_id));
+    assert_eq!(app.connection_type.as_deref(), Some("https"));
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
 fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -7224,8 +7311,13 @@ fn test_new_for_remote_uses_startup_stub_without_loading_full_transcript() {
 
     let app = App::new_for_remote(Some(session_id.to_string()));
     assert_eq!(app.session_id(), session_id);
-    assert!(app.display_messages().is_empty());
-    assert!(app.session.messages.is_empty());
+    assert_eq!(app.display_messages().len(), 1);
+    assert_eq!(
+        app.display_messages()[0].content,
+        "hello from persisted history"
+    );
+    assert_eq!(app.session.messages.len(), 1);
+    assert_eq!(app.remote_session_id.as_deref(), Some(session_id));
     assert_eq!(
         crate::tui::TuiState::provider_model(&app),
         "connecting to server…"

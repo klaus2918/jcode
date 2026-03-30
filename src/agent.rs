@@ -1183,7 +1183,10 @@ impl Agent {
 
     /// Restore a session by ID (loads from disk)
     pub fn restore_session(&mut self, session_id: &str) -> Result<SessionStatus> {
+        let restore_start = Instant::now();
+        let load_start = Instant::now();
         let session = Session::load(session_id)?;
+        let load_ms = load_start.elapsed().as_millis();
         logging::info(&format!(
             "Restoring session '{}' with {} messages, provider_session_id: {:?}, status: {}",
             session_id,
@@ -1192,10 +1195,18 @@ impl Agent {
             session.status.display()
         ));
         let previous_status = session.status.clone();
+
+        let assign_start = Instant::now();
         // Restore provider_session_id for Claude CLI session resume
         self.provider_session_id = session.provider_session_id.clone();
         self.session = session;
+        let assign_ms = assign_start.elapsed().as_millis();
+
+        let reset_start = Instant::now();
         self.reset_runtime_state_for_session_change();
+        let reset_ms = reset_start.elapsed().as_millis();
+
+        let model_start = Instant::now();
         if let Some(model) = self.session.model.clone() {
             if let Err(e) = self.provider.set_model(&model) {
                 logging::error(&format!(
@@ -1206,20 +1217,48 @@ impl Agent {
         } else {
             self.session.model = Some(self.provider.model());
         }
+        let model_ms = model_start.elapsed().as_millis();
+
+        let mark_active_start = Instant::now();
         self.session.mark_active();
+        let mark_active_ms = mark_active_start.elapsed().as_millis();
+
         logging::info(&format!(
             "restore_session: loaded session {} with {} messages, calling seed_compaction",
             session_id,
             self.session.messages.len()
         ));
+        let compaction_start = Instant::now();
         self.seed_compaction_from_session();
+        let compaction_ms = compaction_start.elapsed().as_millis();
+
+        let env_snapshot_start = Instant::now();
         self.log_env_snapshot("resume");
+        let env_snapshot_ms = env_snapshot_start.elapsed().as_millis();
+
+        let save_start = Instant::now();
         if let Err(err) = self.session.save() {
             logging::error(&format!(
                 "Failed to persist resumed session state for {}: {}",
                 session_id, err
             ));
         }
+        let save_ms = save_start.elapsed().as_millis();
+
+        logging::info(&format!(
+            "[TIMING] restore_session: session={}, messages={}, load={}ms, assign={}ms, reset={}ms, model={}ms, mark_active={}ms, compaction={}ms, env_snapshot={}ms, save={}ms, total={}ms",
+            session_id,
+            self.session.messages.len(),
+            load_ms,
+            assign_ms,
+            reset_ms,
+            model_ms,
+            mark_active_ms,
+            compaction_ms,
+            env_snapshot_ms,
+            save_ms,
+            restore_start.elapsed().as_millis(),
+        ));
         logging::info(&format!(
             "Session restored: {} messages in session",
             self.session.messages.len()

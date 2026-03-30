@@ -655,6 +655,48 @@ impl App {
         self.pending_turn = true;
     }
 
+    fn restore_remote_startup_history(&mut self, session_id: &str) {
+        let Ok(session) = Session::load(session_id) else {
+            return;
+        };
+
+        self.clear_display_messages();
+        for item in crate::session::render_messages(&session) {
+            self.push_display_message(DisplayMessage {
+                role: item.role,
+                content: item.content,
+                tool_calls: item.tool_calls,
+                duration_secs: None,
+                title: None,
+                tool_data: item.tool_data,
+            });
+        }
+        self.remote_side_pane_images = crate::session::render_images(&session);
+        self.set_side_panel_snapshot(
+            crate::side_panel::snapshot_for_session(session_id).unwrap_or_default(),
+        );
+        self.remote_session_id = Some(session_id.to_string());
+        self.session = session;
+        self.autoreview_enabled = self
+            .session
+            .autoreview_enabled
+            .unwrap_or(crate::config::config().autoreview.enabled);
+        self.autojudge_enabled = self
+            .session
+            .autojudge_enabled
+            .unwrap_or(crate::config::config().autojudge.enabled);
+        if let Some(model) = self.session.model.clone() {
+            self.update_context_limit_for_model(&model);
+        }
+        self.follow_chat_bottom();
+        crate::logging::info(&format!(
+            "Remote startup fast restore: session={}, display_messages={}, images={}",
+            session_id,
+            self.display_messages.len(),
+            self.remote_side_pane_images.len()
+        ));
+    }
+
     /// Create an App instance for remote mode (connecting to server)
     pub fn new_for_remote(resume_session: Option<String>) -> Self {
         let provider: Arc<dyn Provider> = Arc::new(NullProvider);
@@ -679,6 +721,7 @@ impl App {
                     }
                 }
             }
+            app.restore_remote_startup_history(session_id);
         }
 
         app.resume_session_id = resume_session;

@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
 
 /// Session exit status - why the session ended
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -637,8 +638,13 @@ impl Session {
     }
 
     pub fn load_from_path(path: &Path) -> Result<Self> {
+        let load_start = Instant::now();
+        let snapshot_start = Instant::now();
         let mut session: Session = storage::read_json(path)?;
+        let snapshot_ms = snapshot_start.elapsed().as_millis();
         let journal_path = session_journal_path_from_snapshot(path);
+        let journal_start = Instant::now();
+        let mut journal_entries = 0usize;
         if journal_path.exists() {
             let file = std::fs::File::open(&journal_path)?;
             let reader = BufReader::new(file);
@@ -649,7 +655,10 @@ impl Session {
                     continue;
                 }
                 match serde_json::from_str::<SessionJournalEntry>(trimmed) {
-                    Ok(entry) => session.apply_journal_entry(entry),
+                    Ok(entry) => {
+                        journal_entries += 1;
+                        session.apply_journal_entry(entry)
+                    }
                     Err(err) => {
                         crate::logging::warn(&format!(
                             "Session journal parse failed at {} line {}: {}",
@@ -662,8 +671,23 @@ impl Session {
                 }
             }
         }
+        let journal_ms = journal_start.elapsed().as_millis();
+        let finalize_start = Instant::now();
         session.reset_persist_state(path.exists());
         session.reset_provider_messages_cache();
+        let finalize_ms = finalize_start.elapsed().as_millis();
+        crate::logging::info(&format!(
+            "[TIMING] session_load: session={}, snapshot={}ms, journal={}ms, finalize={}ms, journal_entries={}, messages={}, env_snapshots={}, replay_events={}, total={}ms",
+            session.id,
+            snapshot_ms,
+            journal_ms,
+            finalize_ms,
+            journal_entries,
+            session.messages.len(),
+            session.env_snapshots.len(),
+            session.replay_events.len(),
+            load_start.elapsed().as_millis(),
+        ));
         Ok(session)
     }
 
