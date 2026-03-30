@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+const ALLOW_LEGACY_AUTH_ENV: &str = "JCODE_ALLOW_CODEX_LEGACY_AUTH";
+
 #[derive(Debug, Clone)]
 pub struct CodexCredentials {
     pub access_token: String,
@@ -167,6 +169,35 @@ fn legacy_auth_path() -> Result<PathBuf> {
     crate::storage::user_home_path(".codex/auth.json")
 }
 
+pub fn legacy_auth_file_path() -> Result<PathBuf> {
+    legacy_auth_path()
+}
+
+pub fn allow_legacy_auth_for_process() {
+    crate::env::set_var(ALLOW_LEGACY_AUTH_ENV, "1");
+    super::AuthStatus::invalidate_cache();
+}
+
+pub fn legacy_auth_allowed() -> bool {
+    std::env::var(ALLOW_LEGACY_AUTH_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+pub fn has_legacy_credentials() -> bool {
+    load_legacy_oauth_credentials().is_ok() || load_legacy_api_key_credentials().is_ok()
+}
+
+pub fn has_unconsented_legacy_credentials() -> bool {
+    has_legacy_credentials() && !legacy_auth_allowed()
+}
+
 pub fn load_auth_file() -> Result<JcodeOpenAiAuthFile> {
     let path = jcode_auth_path()?;
     let mut auth = if path.exists() {
@@ -176,24 +207,6 @@ pub fn load_auth_file() -> Result<JcodeOpenAiAuthFile> {
     } else {
         JcodeOpenAiAuthFile::default()
     };
-
-    if auth.openai_accounts.is_empty()
-        && let Ok(legacy) = load_legacy_oauth_credentials()
-        && !legacy.access_token.is_empty()
-    {
-        crate::logging::info(
-            "Migrating legacy .codex/auth.json OAuth tokens to jcode multi-account OpenAI auth format",
-        );
-        auth.openai_accounts.push(account_from_credentials(
-            "default",
-            &legacy,
-            legacy.id_token.as_deref().and_then(extract_email),
-        ));
-        auth.active_openai_account = Some("default".to_string());
-        if save_auth_file(&auth).is_ok() {
-            let _ = clear_legacy_oauth_tokens();
-        }
-    }
 
     if relabel_accounts(&mut auth) {
         crate::logging::info(
@@ -350,6 +363,7 @@ pub fn load_credentials() -> Result<CodexCredentials> {
     let env_api_key = load_env_api_key();
     let now_ms = chrono::Utc::now().timestamp_millis();
     let mut expired_candidates: Vec<(&str, CodexCredentials)> = Vec::new();
+    let legacy_allowed = legacy_auth_allowed();
 
     if let Ok(creds) = load_jcode_credentials() {
         if creds
@@ -362,19 +376,21 @@ pub fn load_credentials() -> Result<CodexCredentials> {
         expired_candidates.push(("jcode", creds));
     }
 
-    if let Ok(creds) = load_legacy_oauth_credentials() {
-        if creds
-            .expires_at
-            .map(|expires_at| expires_at > now_ms)
-            .unwrap_or(true)
-        {
+    if legacy_allowed {
+        if let Ok(creds) = load_legacy_oauth_credentials() {
+            if creds
+                .expires_at
+                .map(|expires_at| expires_at > now_ms)
+                .unwrap_or(true)
+            {
+                return Ok(creds);
+            }
+            expired_candidates.push(("legacy", creds));
+        }
+
+        if let Ok(creds) = load_legacy_api_key_credentials() {
             return Ok(creds);
         }
-        expired_candidates.push(("legacy", creds));
-    }
-
-    if let Ok(creds) = load_legacy_api_key_credentials() {
-        return Ok(creds);
     }
 
     if let Some(api_key) = env_api_key {
@@ -475,26 +491,6 @@ fn load_legacy_auth_file() -> Result<LegacyAuthFile> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Could not read credentials from {:?}", path))?;
     serde_json::from_str(&content).context("Could not parse Codex credentials")
-}
-
-fn clear_legacy_oauth_tokens() -> Result<()> {
-    let path = legacy_auth_path()?;
-    if !path.exists() {
-        return Ok(());
-    }
-
-    let mut auth = load_legacy_auth_file()?;
-    auth.tokens = None;
-
-    if auth.api_key.is_some() {
-        let json = serde_json::to_string_pretty(&auth)?;
-        std::fs::write(&path, json)?;
-        crate::platform::set_permissions_owner_only(&path)?;
-    } else {
-        std::fs::remove_file(&path)?;
-    }
-
-    Ok(())
 }
 
 fn credentials_from_account(account: &OpenAiAccount) -> CodexCredentials {
@@ -775,17 +771,16 @@ mod tests {
         .unwrap();
 
         let auth = load_auth_file().unwrap();
-        assert_eq!(auth.openai_accounts.len(), 1);
-        assert_eq!(auth.openai_accounts[0].label, "openai-1");
-        assert_eq!(auth.active_openai_account.as_deref(), Some("openai-1"));
+        assert!(auth.openai_accounts.is_empty());
+        assert!(auth.active_openai_account.is_none());
         assert!(
-            !legacy_path.exists(),
-            "expected legacy OAuth file to be removed after migration"
+            legacy_path.exists(),
+            "expected legacy Codex auth file to remain untouched"
         );
     }
 
     #[test]
-    fn load_auth_file_clears_legacy_oauth_tokens_but_keeps_api_key() {
+    fn load_credentials_ignores_legacy_oauth_without_consent() {
         let _lock = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
@@ -811,13 +806,53 @@ mod tests {
         )
         .unwrap();
 
-        let auth = load_auth_file().unwrap();
-        assert_eq!(auth.openai_accounts.len(), 1);
+        let err = load_credentials().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("No OpenAI tokens or API key found"),
+            "unexpected error: {err:#}"
+        );
 
         let legacy: LegacyAuthFile =
             serde_json::from_str(&std::fs::read_to_string(&legacy_path).unwrap()).unwrap();
-        assert!(legacy.tokens.is_none());
+        assert!(legacy.tokens.is_some());
         assert_eq!(legacy.api_key.as_deref(), Some("sk-legacy"));
+    }
+
+    #[test]
+    fn load_credentials_reads_legacy_oauth_when_allowed() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().unwrap();
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        let _allow = EnvVarGuard::set(ALLOW_LEGACY_AUTH_ENV, "1");
+        set_active_account_override(None);
+
+        let legacy_path = temp
+            .path()
+            .join("external")
+            .join(".codex")
+            .join("auth.json");
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &legacy_path,
+            r#"{
+                "tokens": {
+                    "access_token": "at_legacy",
+                    "refresh_token": "rt_legacy",
+                    "account_id": "acct_legacy",
+                    "expires_at": 9999999999999
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let creds = load_credentials().unwrap();
+        assert_eq!(creds.access_token, "at_legacy");
+        assert_eq!(creds.refresh_token, "rt_legacy");
+        assert!(
+            legacy_path.exists(),
+            "legacy auth file should remain in place"
+        );
     }
 
     #[test]

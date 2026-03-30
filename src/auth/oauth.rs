@@ -1012,7 +1012,9 @@ async fn refresh_openai_tokens_inner(
     if let Some(label) = label {
         save_openai_tokens_for_account(&oauth_tokens, label)?;
     } else {
-        save_openai_tokens(&oauth_tokens)?;
+        crate::logging::info(
+            "Refreshed OpenAI/Codex tokens from an external source without storing them in jcode auth",
+        );
     }
     Ok(oauth_tokens)
 }
