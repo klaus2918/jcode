@@ -351,6 +351,7 @@ impl App {
             in_flight_catchup_resume: None,
             login_picker_overlay: None,
             account_picker_overlay: None,
+            usage_overlay: None,
         };
 
         for notice in app.provider.drain_startup_notices() {
@@ -621,6 +622,7 @@ impl App {
             in_flight_catchup_resume: None,
             login_picker_overlay: None,
             account_picker_overlay: None,
+            usage_overlay: None,
         };
 
         for notice in app.provider.drain_startup_notices() {

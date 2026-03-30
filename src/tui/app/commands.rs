@@ -2645,9 +2645,7 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if trimmed == "/usage" {
-        app.push_display_message(DisplayMessage::system(
-            "Fetching usage limits from all providers...".to_string(),
-        ));
+        app.open_usage_overlay_loading();
         tokio::spawn(async move {
             let results = crate::usage::fetch_all_provider_usage().await;
             Bus::global().publish(BusEvent::UsageReport(results));

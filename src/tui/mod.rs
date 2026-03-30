@@ -20,6 +20,7 @@ mod stream_buffer;
 pub mod test_harness;
 mod ui;
 mod ui_diff;
+pub mod usage_overlay;
 pub mod visual_debug;
 pub mod workspace_client;
 pub use jcode_tui_workspace::workspace_map;
@@ -275,6 +276,8 @@ pub trait TuiState {
     fn login_picker_overlay(&self) -> Option<&std::cell::RefCell<login_picker::LoginPicker>>;
     /// Account picker overlay for /account command
     fn account_picker_overlay(&self) -> Option<&std::cell::RefCell<account_picker::AccountPicker>>;
+    /// Usage overlay for /usage command
+    fn usage_overlay(&self) -> Option<&std::cell::RefCell<usage_overlay::UsageOverlay>>;
     /// Working directory for this session
     fn working_dir(&self) -> Option<String>;
     /// Monotonic clock for viewport animations

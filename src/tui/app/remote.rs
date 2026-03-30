@@ -3639,6 +3639,11 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    if app.usage_overlay.is_some() {
+        app.handle_usage_overlay_key(code, modifiers)?;
+        return Ok(());
+    }
+
     if let Some(ref picker) = app.picker_state {
         if !picker.preview {
             return app.handle_picker_key(code, modifiers);

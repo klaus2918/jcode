@@ -651,141 +651,227 @@ impl App {
     }
 
     pub(super) fn handle_usage_report(&mut self, results: Vec<crate::usage::ProviderUsage>) {
-        let jcode_runtime = crate::subscription_catalog::is_runtime_mode_enabled();
+        use crate::tui::usage_overlay::{
+            UsageOverlay, UsageOverlayItem, UsageOverlayStatus, UsageOverlaySummary,
+        };
 
-        if results.is_empty() {
-            if jcode_runtime {
-                let mut output = String::from("## Subscription Usage\n\n");
-                output.push_str("### Jcode Subscription\n\n");
-                output.push_str(
-                    "Live billing/usage reporting is not connected yet for the curated jcode-managed subscription path.\n\n",
-                );
-                output.push_str(&format!(
-                    "- Runtime mode: {}\n",
-                    if jcode_runtime { "active" } else { "inactive" }
-                ));
-                output.push_str(&format!(
-                    "- Router base: `{}`\n",
-                    crate::subscription_catalog::configured_api_base().unwrap_or_else(|| {
-                        crate::subscription_catalog::DEFAULT_JCODE_API_BASE.to_string()
-                    })
-                ));
-                output.push_str(&format!(
-                    "- Current catalog: {}\n\n",
-                    crate::subscription_catalog::curated_models()
-                        .iter()
-                        .map(|model| model.display_name)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-                output.push_str("Planned retail → usable inference budgets:\n");
-                output.push_str(&format!(
-                    "- {}: ${:.2} usable\n",
-                    crate::subscription_catalog::JcodeTier::Starter20.display_name(),
-                    crate::subscription_catalog::JcodeTier::Starter20.usable_budget_usd()
-                ));
-                output.push_str(&format!(
-                    "- {}: ${:.2} usable\n\n",
-                    crate::subscription_catalog::JcodeTier::Pro100.display_name(),
-                    crate::subscription_catalog::JcodeTier::Pro100.usable_budget_usd()
-                ));
-                output.push_str(
-                    "Use `/subscription` for the full curated subscription status scaffold.",
-                );
-                self.push_display_message(DisplayMessage::system(output));
+        fn format_token_count(tokens: u64) -> String {
+            if tokens >= 1_000_000 {
+                format!("{:.1}M", tokens as f64 / 1_000_000.0)
+            } else if tokens >= 1_000 {
+                format!("{:.1}k", tokens as f64 / 1_000.0)
             } else {
-                self.push_display_message(DisplayMessage::system(
-                    "No providers with OAuth credentials found.\n\
-                     Use `/login anthropic` or `/login openai` to authenticate."
-                        .to_string(),
-                ));
+                tokens.to_string()
             }
-            return;
         }
 
-        let mut output = String::from("## Subscription Usage\n\n");
+        fn provider_status(provider: &crate::usage::ProviderUsage) -> UsageOverlayStatus {
+            if provider.error.is_some() {
+                return UsageOverlayStatus::Error;
+            }
+
+            let highest = provider
+                .limits
+                .iter()
+                .map(|limit| limit.usage_percent)
+                .fold(0.0_f32, f32::max);
+
+            if highest >= 95.0 {
+                UsageOverlayStatus::Critical
+            } else if highest >= 80.0 {
+                UsageOverlayStatus::Warning
+            } else if provider.limits.is_empty() && provider.extra_info.is_empty() {
+                UsageOverlayStatus::Info
+            } else {
+                UsageOverlayStatus::Good
+            }
+        }
+
+        let jcode_runtime = crate::subscription_catalog::is_runtime_mode_enabled();
+        let mut items = Vec::new();
+        let mut summary = UsageOverlaySummary::default();
 
         if jcode_runtime {
-            output.push_str("### Jcode Subscription\n\n");
-            output.push_str(
-                "Live jcode subscription billing/usage metering is not wired yet, so this section shows scaffold data only.\n",
-            );
-            output.push_str(&format!(
-                "- Router base: `{}`\n",
-                crate::subscription_catalog::configured_api_base().unwrap_or_else(|| {
-                    crate::subscription_catalog::DEFAULT_JCODE_API_BASE.to_string()
-                })
-            ));
-            output.push_str(&format!(
-                "- Curated models: {}\n",
-                crate::subscription_catalog::curated_models()
-                    .iter()
-                    .map(|model| model.display_name)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-            output.push_str(&format!(
-                "- {} usable budget: ${:.2}\n",
-                crate::subscription_catalog::JcodeTier::Starter20.display_name(),
-                crate::subscription_catalog::JcodeTier::Starter20.usable_budget_usd()
-            ));
-            output.push_str(&format!(
-                "- {} usable budget: ${:.2}\n\n---\n\n",
-                crate::subscription_catalog::JcodeTier::Pro100.display_name(),
-                crate::subscription_catalog::JcodeTier::Pro100.usable_budget_usd()
+            items.push(UsageOverlayItem::new(
+                "jcode",
+                "Jcode Subscription",
+                "Scaffold only · curated router status",
+                UsageOverlayStatus::Info,
+                vec![
+                    "## Jcode Subscription".to_string(),
+                    "Live billing/usage reporting is not connected yet for the curated jcode-managed subscription path.".to_string(),
+                    "".to_string(),
+                    "## Runtime".to_string(),
+                    format!(
+                        "• Runtime mode: {}",
+                        if jcode_runtime { "active" } else { "inactive" }
+                    ),
+                    format!(
+                        "• Router base: {}",
+                        crate::subscription_catalog::configured_api_base().unwrap_or_else(|| {
+                            crate::subscription_catalog::DEFAULT_JCODE_API_BASE.to_string()
+                        })
+                    ),
+                    format!(
+                        "• Curated models: {}",
+                        crate::subscription_catalog::curated_models()
+                            .iter()
+                            .map(|model| model.display_name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    "".to_string(),
+                    "## Planned usable budgets".to_string(),
+                    format!(
+                        "• {}: ${:.2} usable",
+                        crate::subscription_catalog::JcodeTier::Starter20.display_name(),
+                        crate::subscription_catalog::JcodeTier::Starter20.usable_budget_usd()
+                    ),
+                    format!(
+                        "• {}: ${:.2} usable",
+                        crate::subscription_catalog::JcodeTier::Pro100.display_name(),
+                        crate::subscription_catalog::JcodeTier::Pro100.usable_budget_usd()
+                    ),
+                    "".to_string(),
+                    "• Use `/subscription` for the full curated subscription status scaffold."
+                        .to_string(),
+                ],
             ));
         }
 
-        for (i, provider) in results.iter().enumerate() {
-            if i > 0 {
-                output.push_str("---\n\n");
-            }
-            output.push_str(&format!("### {}\n\n", provider.provider_name));
-
-            if let Some(ref err) = provider.error {
-                output.push_str(&format!("⚠ {}\n\n", err));
-                continue;
-            }
-
-            if provider.limits.is_empty() && provider.extra_info.is_empty() {
-                output.push_str("No usage data available\n\n");
-                continue;
+        for provider in &results {
+            let status = provider_status(provider);
+            summary.provider_count += 1;
+            match status {
+                UsageOverlayStatus::Warning => summary.warning_count += 1,
+                UsageOverlayStatus::Critical => summary.critical_count += 1,
+                UsageOverlayStatus::Error => summary.error_count += 1,
+                _ => {}
             }
 
-            for limit in &provider.limits {
-                let bar = crate::usage::format_usage_bar(limit.usage_percent, 15);
-                let reset_info = if let Some(ref ts) = limit.resets_at {
-                    let relative = crate::usage::format_reset_time(ts);
-                    format!(" (resets in {})", relative)
-                } else {
-                    String::new()
-                };
-                output.push_str(&format!("- **{}**: {}{}\n", limit.name, bar, reset_info));
+            let subtitle = if let Some(err) = &provider.error {
+                crate::util::truncate_str(err, 56).to_string()
+            } else if let Some(limit) = provider
+                .limits
+                .iter()
+                .max_by(|left, right| left.usage_percent.total_cmp(&right.usage_percent))
+            {
+                format!(
+                    "{} window{} · highest {} {:.0}%",
+                    provider.limits.len(),
+                    if provider.limits.len() == 1 { "" } else { "s" },
+                    limit.name,
+                    limit.usage_percent
+                )
+            } else if !provider.extra_info.is_empty() {
+                format!(
+                    "{} detail field{}",
+                    provider.extra_info.len(),
+                    if provider.extra_info.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                )
+            } else {
+                "No usage data returned".to_string()
+            };
+
+            let mut detail_lines = vec![format!("## {}", provider.provider_name)];
+            if let Some(err) = &provider.error {
+                detail_lines.push(format!("• {}", err));
+            } else {
+                if provider.limits.is_empty() && provider.extra_info.is_empty() {
+                    detail_lines.push("• No usage data available.".to_string());
+                }
+
+                if !provider.limits.is_empty() {
+                    detail_lines.push("".to_string());
+                    detail_lines.push("## Usage windows".to_string());
+                    for limit in &provider.limits {
+                        let reset_info = limit
+                            .resets_at
+                            .as_deref()
+                            .map(crate::usage::format_reset_time)
+                            .map(|relative| format!(" · resets in {}", relative))
+                            .unwrap_or_default();
+                        detail_lines.push(format!(
+                            "• {}: {}{}",
+                            limit.name,
+                            crate::usage::format_usage_bar(limit.usage_percent, 15),
+                            reset_info
+                        ));
+                    }
+                }
+
+                if !provider.extra_info.is_empty() {
+                    detail_lines.push("".to_string());
+                    detail_lines.push("## Details".to_string());
+                    for (key, value) in &provider.extra_info {
+                        detail_lines.push(format!("• {}: {}", key, value));
+                    }
+                }
             }
 
-            if !provider.limits.is_empty() {
-                output.push('\n');
-            }
+            items.push(UsageOverlayItem::new(
+                provider.provider_name.to_lowercase(),
+                provider.provider_name.clone(),
+                subtitle,
+                status,
+                detail_lines,
+            ));
+        }
 
-            for (key, value) in &provider.extra_info {
-                output.push_str(&format!("- {}: {}\n", key, value));
-            }
-            output.push('\n');
+        if results.is_empty() && !jcode_runtime {
+            items.push(UsageOverlayItem::new(
+                "setup",
+                "No connected providers",
+                "Add Claude or OpenAI OAuth to inspect subscription usage",
+                UsageOverlayStatus::Info,
+                vec![
+                    "## No connected providers".to_string(),
+                    "No providers with OAuth credentials found.".to_string(),
+                    "".to_string(),
+                    "## Next steps".to_string(),
+                    "• Use `/login anthropic` to connect Claude OAuth.".to_string(),
+                    "• Use `/login openai` to connect ChatGPT / Codex OAuth.".to_string(),
+                ],
+            ));
         }
 
         if self.total_input_tokens > 0 || self.total_output_tokens > 0 {
-            output.push_str("---\n\n### Session Usage\n\n");
-            output.push_str(&format!(
-                "- **Input tokens:** {}\n- **Output tokens:** {}\n",
-                self.total_input_tokens, self.total_output_tokens
-            ));
+            summary.session_visible = true;
+            let mut subtitle = format!(
+                "{} in · {} out",
+                format_token_count(self.total_input_tokens),
+                format_token_count(self.total_output_tokens)
+            );
             if self.total_cost > 0.0 {
-                output.push_str(&format!("- **Cost:** ${:.4}\n", self.total_cost));
+                subtitle.push_str(&format!(" · ${:.4}", self.total_cost));
             }
-            output.push('\n');
+
+            let mut detail_lines = vec![
+                "## Current session".to_string(),
+                format!("• Input tokens: {}", self.total_input_tokens),
+                format!("• Output tokens: {}", self.total_output_tokens),
+            ];
+            if self.total_cost > 0.0 {
+                detail_lines.push(format!("• Estimated cost: ${:.4}", self.total_cost));
+            }
+
+            items.push(UsageOverlayItem::new(
+                "session",
+                "Session Usage",
+                subtitle,
+                UsageOverlayStatus::Info,
+                detail_lines,
+            ));
         }
 
-        self.push_display_message(DisplayMessage::system(output));
+        self.usage_overlay = Some(std::cell::RefCell::new(UsageOverlay::new(
+            "Usage", items, summary,
+        )));
+        self.set_status_notice("Usage → updated");
     }
 
     pub(super) fn run_fix_command(&mut self) {

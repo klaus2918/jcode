@@ -1054,6 +1054,10 @@ impl crate::tui::TuiState for App {
         self.account_picker_overlay.as_ref()
     }
 
+    fn usage_overlay(&self) -> Option<&RefCell<crate::tui::usage_overlay::UsageOverlay>> {
+        self.usage_overlay.as_ref()
+    }
+
     fn working_dir(&self) -> Option<String> {
         self.session.working_dir.clone()
     }

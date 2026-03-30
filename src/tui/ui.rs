@@ -3786,6 +3786,11 @@ mod tests {
         ) -> Option<&std::cell::RefCell<crate::tui::account_picker::AccountPicker>> {
             None
         }
+        fn usage_overlay(
+            &self,
+        ) -> Option<&std::cell::RefCell<crate::tui::usage_overlay::UsageOverlay>> {
+            None
+        }
         fn working_dir(&self) -> Option<String> {
             None
         }

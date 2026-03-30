@@ -1033,6 +1033,12 @@ impl TuiState for BenchState {
         None
     }
 
+    fn usage_overlay(
+        &self,
+    ) -> Option<&std::cell::RefCell<jcode::tui::usage_overlay::UsageOverlay>> {
+        None
+    }
+
     fn working_dir(&self) -> Option<String> {
         None
     }

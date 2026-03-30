@@ -662,6 +662,8 @@ pub struct App {
     login_picker_overlay: Option<RefCell<super::login_picker::LoginPicker>>,
     /// Account picker overlay (None = not visible)
     account_picker_overlay: Option<RefCell<super::account_picker::AccountPicker>>,
+    /// Usage overlay (None = not visible)
+    usage_overlay: Option<RefCell<super::usage_overlay::UsageOverlay>>,
 }
 
 /// A placeholder provider for remote mode (never actually called)

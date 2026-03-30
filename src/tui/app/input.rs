@@ -851,6 +851,11 @@ pub(super) fn handle_modal_key(
         return Ok(true);
     }
 
+    if app.usage_overlay.is_some() {
+        app.handle_usage_overlay_key(code, modifiers)?;
+        return Ok(true);
+    }
+
     if app.copy_selection_mode {
         if modifiers.contains(KeyModifiers::CONTROL)
             && matches!(code, KeyCode::Char('c') | KeyCode::Char('d'))

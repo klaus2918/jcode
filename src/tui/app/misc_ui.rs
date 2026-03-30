@@ -2,6 +2,37 @@ use super::*;
 
 /// Update cost calculation based on token usage (for API-key providers)
 impl App {
+    pub(super) fn open_usage_overlay_loading(&mut self) {
+        self.usage_overlay = Some(std::cell::RefCell::new(
+            crate::tui::usage_overlay::UsageOverlay::loading(),
+        ));
+        self.set_status_notice("Usage → refreshing");
+    }
+
+    pub(super) fn handle_usage_overlay_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Result<()> {
+        use crate::tui::usage_overlay::OverlayAction;
+
+        let Some(overlay_cell) = self.usage_overlay.as_ref() else {
+            return Ok(());
+        };
+
+        let action = {
+            let mut overlay = overlay_cell.borrow_mut();
+            overlay.handle_overlay_key(code, modifiers)?
+        };
+
+        if matches!(action, OverlayAction::Close) {
+            self.usage_overlay = None;
+            self.set_status_notice("Usage closed");
+        }
+
+        Ok(())
+    }
+
     pub(super) fn update_cost_impl(&mut self) {
         let provider_name = self.provider.name().to_lowercase();
 

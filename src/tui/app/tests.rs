@@ -1153,18 +1153,33 @@ fn test_usage_report_shows_jcode_scaffold_when_subscription_mode_active() {
     crate::subscription_catalog::apply_runtime_env();
 
     let mut app = create_test_app();
+    app.open_usage_overlay_loading();
     app.handle_usage_report(Vec::new());
 
-    let msg = app
-        .display_messages()
-        .last()
-        .expect("missing /usage scaffold response");
-    assert_eq!(msg.role, "system");
-    assert!(msg.content.contains("Jcode Subscription"));
-    assert!(msg.content.contains("Use `/subscription`"));
-    assert!(msg.content.contains("$20 Starter"));
+    let overlay = app
+        .usage_overlay
+        .as_ref()
+        .expect("missing /usage overlay")
+        .borrow();
+    assert_eq!(overlay.selected_item_title(), Some("Jcode Subscription"));
+    let detail = overlay.selected_item_detail_text();
+    assert!(detail.contains("Jcode Subscription"));
+    assert!(detail.contains("Use `/subscription`"));
+    assert!(detail.contains("$20 Starter"));
 
     crate::subscription_catalog::clear_runtime_env();
+}
+
+#[test]
+fn test_usage_overlay_esc_closes_modal() {
+    let mut app = create_test_app();
+    app.open_usage_overlay_loading();
+    assert!(app.usage_overlay.is_some());
+
+    app.handle_key(KeyCode::Esc, KeyModifiers::empty())
+        .expect("close usage overlay");
+
+    assert!(app.usage_overlay.is_none());
 }
 
 #[test]
