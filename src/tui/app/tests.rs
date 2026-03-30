@@ -7387,6 +7387,25 @@ fn test_remote_tui_state_shows_startup_elapsed_in_header() {
 }
 
 #[test]
+fn test_remote_startup_phase_does_not_require_duplicate_status_notice() {
+    let mut app = App::new_for_remote(None);
+    app.set_remote_startup_phase(crate::tui::app::RemoteStartupPhase::Connecting);
+
+    assert_eq!(
+        crate::tui::TuiState::provider_model(&app),
+        "connecting to server…"
+    );
+    assert_eq!(app.status_notice(), None);
+
+    app.set_remote_startup_phase(crate::tui::app::RemoteStartupPhase::LoadingSession);
+    assert_eq!(
+        crate::tui::TuiState::provider_model(&app),
+        "loading session…"
+    );
+    assert_eq!(app.status_notice(), None);
+}
+
+#[test]
 fn test_remote_tui_state_shows_reconnecting_phase_in_header() {
     let mut app = App::new_for_remote(None);
     app.set_remote_startup_phase(crate::tui::app::RemoteStartupPhase::Reconnecting { attempt: 3 });

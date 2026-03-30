@@ -75,10 +75,8 @@ impl App {
             if self.display_messages.is_empty() {
                 if self.server_spawning {
                     self.set_remote_startup_phase(super::RemoteStartupPhase::StartingServer);
-                    self.set_status_notice("Starting server...");
                 } else {
                     self.set_remote_startup_phase(super::RemoteStartupPhase::Connecting);
-                    self.set_status_notice("Connecting to server...");
                 }
             }
             terminal.draw(|frame| crate::tui::ui::draw(frame, &self))?;

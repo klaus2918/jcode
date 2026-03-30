@@ -614,7 +614,6 @@ pub(in crate::tui::app) async fn handle_post_connect<B: ratatui::backend::Backen
         app.clear_remote_startup_phase();
     } else if !remote.has_loaded_history() {
         app.set_remote_startup_phase(super::super::RemoteStartupPhase::LoadingSession);
-        app.set_status_notice("Loading session...");
     } else {
         app.clear_remote_startup_phase();
     }
