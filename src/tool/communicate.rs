@@ -284,6 +284,8 @@ struct CommunicateInput {
     session_ids: Option<Vec<String>>,
     #[serde(default)]
     timeout_minutes: Option<u64>,
+    #[serde(default)]
+    wake: Option<bool>,
 }
 
 impl CommunicateInput {
@@ -348,6 +350,10 @@ impl Tool for CommunicateTool {
                 "message": {
                     "type": "string",
                     "description": "For 'message'/'broadcast'/'dm'/'channel': the message to send. For 'assign_task': optional additional message."
+                },
+                "wake": {
+                    "type": "boolean",
+                    "description": "For 'message'/'broadcast'/'dm'/'channel': when true, immediately kick the recipient agent(s) into processing the message instead of waiting for later input. When false, deliver the message without waking them. If omitted, preserves the current default behavior."
                 },
                 "to_session": {
                     "type": "string",
@@ -508,6 +514,7 @@ impl Tool for CommunicateTool {
                     message: message.clone(),
                     to_session: None,
                     channel: None,
+                    wake: params.wake,
                 };
 
                 match send_request(request) {
@@ -536,6 +543,7 @@ impl Tool for CommunicateTool {
                     message: message.clone(),
                     to_session: Some(to_session.clone()),
                     channel: None,
+                    wake: params.wake,
                 };
 
                 match send_request(request) {
@@ -564,6 +572,7 @@ impl Tool for CommunicateTool {
                     message: message.clone(),
                     to_session: None,
                     channel: Some(channel.clone()),
+                    wake: params.wake,
                 };
 
                 match send_request(request) {

@@ -304,6 +304,8 @@ pub enum Request {
         to_session: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         channel: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wake: Option<bool>,
     },
 
     /// List agents and their activity

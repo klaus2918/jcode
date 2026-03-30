@@ -936,6 +936,7 @@ pub(super) async fn handle_client(
                 message,
                 to_session,
                 channel,
+                wake,
             } => {
                 handle_comm_message(
                     id,
@@ -943,6 +944,7 @@ pub(super) async fn handle_client(
                     message,
                     to_session,
                     channel,
+                    wake,
                     &client_event_tx,
                     &sessions,
                     &soft_interrupt_queues,

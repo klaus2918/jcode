@@ -7,6 +7,7 @@ use super::{
 };
 use crate::agent::Agent;
 use crate::protocol::{AgentInfo, ContextEntry, NotificationType, ServerEvent};
+use jcode_agent_runtime::SoftInterruptSource;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -726,7 +727,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn comm_message_does_not_queue_soft_interrupt_for_connected_session() {
+    async fn comm_message_default_does_not_queue_soft_interrupt_for_connected_session() {
         let sender = test_agent().await;
         let target = test_agent().await;
 
@@ -857,6 +858,145 @@ mod tests {
         assert!(
             pending.is_empty(),
             "connected interactive session should not get synthetic user-message interrupt"
+        );
+    }
+
+    #[tokio::test]
+    async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session() {
+        let sender = test_agent().await;
+        let target = test_agent().await;
+
+        let sender_id = sender.lock().await.session_id().to_string();
+        let target_id = target.lock().await.session_id().to_string();
+        let target_queue = target.lock().await.soft_interrupt_queue();
+
+        let sessions = Arc::new(RwLock::new(HashMap::from([
+            (sender_id.clone(), sender.clone()),
+            (target_id.clone(), target.clone()),
+        ])));
+        let soft_interrupt_queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
+        crate::server::register_session_interrupt_queue(
+            &soft_interrupt_queues,
+            &target_id,
+            target_queue.clone(),
+        )
+        .await;
+
+        let (sender_event_tx, _sender_event_rx) = mpsc::unbounded_channel();
+        let (target_event_tx, mut target_event_rx) = mpsc::unbounded_channel();
+        let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+
+        let swarm_id = "swarm-test".to_string();
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([
+            (
+                sender_id.clone(),
+                SwarmMember {
+                    session_id: sender_id.clone(),
+                    event_tx: sender_event_tx,
+                    working_dir: None,
+                    swarm_id: Some(swarm_id.clone()),
+                    swarm_enabled: true,
+                    status: "ready".to_string(),
+                    detail: None,
+                    friendly_name: Some("falcon".to_string()),
+                    role: "coordinator".to_string(),
+                    joined_at: Instant::now(),
+                    last_status_change: Instant::now(),
+                    is_headless: false,
+                },
+            ),
+            (
+                target_id.clone(),
+                SwarmMember {
+                    session_id: target_id.clone(),
+                    event_tx: target_event_tx,
+                    working_dir: None,
+                    swarm_id: Some(swarm_id.clone()),
+                    swarm_enabled: true,
+                    status: "ready".to_string(),
+                    detail: None,
+                    friendly_name: Some("bear".to_string()),
+                    role: "agent".to_string(),
+                    joined_at: Instant::now(),
+                    last_status_change: Instant::now(),
+                    is_headless: false,
+                },
+            ),
+        ])));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
+            swarm_id.clone(),
+            HashSet::from([sender_id.clone(), target_id.clone()]),
+        )])));
+        let channel_subscriptions = Arc::new(RwLock::new(HashMap::new()));
+        let event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>> =
+            Arc::new(RwLock::new(std::collections::VecDeque::new()));
+        let event_counter = Arc::new(AtomicU64::new(0));
+        let (swarm_event_tx, _) = broadcast::channel(16);
+        let client_connections = Arc::new(RwLock::new(HashMap::from([(
+            "client-1".to_string(),
+            ClientConnectionInfo {
+                client_id: "client-1".to_string(),
+                session_id: target_id.clone(),
+                debug_client_id: None,
+                connected_at: Instant::now(),
+                last_seen: Instant::now(),
+            },
+        )])));
+
+        let _busy_guard = target.lock().await;
+
+        handle_comm_message(
+            1,
+            sender_id.clone(),
+            "hello now".to_string(),
+            Some(target_id.clone()),
+            None,
+            Some(true),
+            &client_event_tx,
+            &sessions,
+            &soft_interrupt_queues,
+            &swarm_members,
+            &swarms_by_id,
+            &channel_subscriptions,
+            &event_history,
+            &event_counter,
+            &swarm_event_tx,
+            &client_connections,
+        )
+        .await;
+
+        match target_event_rx.recv().await.expect("target notification") {
+            ServerEvent::Notification {
+                from_session,
+                from_name,
+                notification_type,
+                message,
+            } => {
+                assert_eq!(from_session, sender_id);
+                assert_eq!(from_name.as_deref(), Some("falcon"));
+                match notification_type {
+                    NotificationType::Message { scope, channel } => {
+                        assert_eq!(scope.as_deref(), Some("dm"));
+                        assert_eq!(channel, None);
+                    }
+                    other => panic!("unexpected notification type: {:?}", other),
+                }
+                assert_eq!(message, "DM from falcon: hello now");
+            }
+            other => panic!("unexpected event: {:?}", other),
+        }
+
+        match client_event_rx.recv().await.expect("done event") {
+            ServerEvent::Done { id } => assert_eq!(id, 1),
+            other => panic!("unexpected client event: {:?}", other),
+        }
+
+        let pending = target_queue.lock().expect("target queue lock");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].content, "DM from falcon: hello now");
+        assert_eq!(
+            pending[0].source,
+            jcode_agent_runtime::SoftInterruptSource::System
         );
     }
 
