@@ -621,6 +621,15 @@ fn render_context_bar(
             "other",
         ));
     }
+    if info.prompt_overlay_chars > 0 {
+        raw.push((
+            "🧩",
+            "overlay".into(),
+            info.prompt_overlay_chars / 4,
+            other_c,
+            "other",
+        ));
+    }
 
     if info.tool_defs_chars > 0 {
         let lbl = if info.tool_defs_count > 0 {

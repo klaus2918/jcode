@@ -52,6 +52,8 @@ pub struct ContextInfo {
     pub selfdev_chars: usize,
     /// Memory section size (chars)
     pub memory_chars: usize,
+    /// Prompt overlay section size (chars)
+    pub prompt_overlay_chars: usize,
 
     // === Dynamic (Conversation) ===
     /// Tool definitions sent to API (chars)
@@ -111,6 +113,9 @@ impl ContextInfo {
         }
         if self.memory_chars > 0 {
             parts.push(("mem", self.memory_chars, "🧠"));
+        }
+        if self.prompt_overlay_chars > 0 {
+            parts.push(("overlay", self.prompt_overlay_chars, "🧩"));
         }
         parts
     }
@@ -200,6 +205,13 @@ pub fn build_system_prompt_full(
     info.has_global_claude_md = md_info.has_global_claude_md;
     info.global_claude_md_chars = md_info.global_claude_md_chars;
 
+    // Add optional prompt overlays from ~/.jcode/ and ./.jcode/
+    let (overlay_content, overlay_chars) = load_prompt_overlay_files_from_dir(working_dir);
+    if let Some(content) = overlay_content {
+        info.prompt_overlay_chars = overlay_chars;
+        parts.push(content);
+    }
+
     if let Some(memory) = memory_prompt {
         info.memory_chars = memory.len();
         parts.push(memory.to_string());
@@ -273,6 +285,13 @@ pub fn build_system_prompt_split(
     info.global_agents_md_chars = md_info.global_agents_md_chars;
     info.has_global_claude_md = md_info.has_global_claude_md;
     info.global_claude_md_chars = md_info.global_claude_md_chars;
+
+    // Add optional prompt overlays from ~/.jcode/ and ./.jcode/
+    let (overlay_content, overlay_chars) = load_prompt_overlay_files_from_dir(working_dir);
+    if let Some(content) = overlay_content {
+        info.prompt_overlay_chars = overlay_chars;
+        static_parts.push(content);
+    }
 
     // Add available skills list (fairly static)
     if !available_skills.is_empty() {
@@ -577,6 +596,50 @@ pub fn load_claude_md_files_from_dir(working_dir: Option<&Path>) -> (Option<Stri
     }
 }
 
+/// Load optional prompt overlay markdown from ~/.jcode/ and ./.jcode/
+fn load_prompt_overlay_files_from_dir(working_dir: Option<&Path>) -> (Option<String>, usize) {
+    let mut contents = vec![];
+    let mut total_chars = 0usize;
+
+    let load_file = |path: &Path, label: &str| -> Option<(String, usize)> {
+        if path.exists() {
+            std::fs::read_to_string(path).ok().map(|content| {
+                let raw_size = content.len();
+                let formatted = format!("# {}\n\n{}", label, content.trim());
+                (formatted, raw_size)
+            })
+        } else {
+            None
+        }
+    };
+
+    let project_dir = working_dir.unwrap_or(Path::new("."));
+    if let Some((content, size)) = load_file(
+        &project_dir.join(".jcode").join("prompt-overlay.md"),
+        "Project Prompt Overlay (.jcode/prompt-overlay.md)",
+    ) {
+        total_chars += size;
+        contents.push(content);
+    }
+
+    if let Ok(global_overlay) = crate::storage::jcode_dir().map(|dir| dir.join("prompt-overlay.md"))
+    {
+        if let Some((content, size)) = load_file(
+            &global_overlay,
+            "Global Prompt Overlay (~/.jcode/prompt-overlay.md)",
+        ) {
+            total_chars += size;
+            contents.push(content);
+        }
+    }
+
+    if contents.is_empty() {
+        (None, 0)
+    } else {
+        (Some(contents.join("\n\n")), total_chars)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,6 +715,53 @@ mod tests {
         let (split, _info) = build_system_prompt_split(None, &[], false, None, None);
         assert!(split.dynamic_part.contains("Time: "));
         assert!(split.dynamic_part.contains("Timezone: UTC"));
+    }
+
+    #[test]
+    fn test_prompt_overlay_files_are_loaded_from_project_and_global_jcode_dirs() {
+        let _guard = crate::storage::lock_test_env();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = tempfile::TempDir::new().unwrap();
+        crate::env::set_var("JCODE_HOME", temp.path());
+        std::fs::create_dir_all(temp.path()).unwrap();
+        std::fs::write(
+            temp.path().join("prompt-overlay.md"),
+            "global prompt overlay instructions",
+        )
+        .unwrap();
+
+        let project_dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(project_dir.path().join(".jcode")).unwrap();
+        std::fs::write(
+            project_dir.path().join(".jcode/prompt-overlay.md"),
+            "project prompt overlay instructions",
+        )
+        .unwrap();
+
+        let direct = load_prompt_overlay_files_from_dir(Some(project_dir.path()));
+
+        assert!(direct.0.is_some(), "expected prompt overlay content");
+        let direct_content = direct.0.unwrap();
+        assert!(
+            direct_content.contains("project prompt overlay instructions"),
+            "expected project prompt overlay content"
+        );
+        assert!(
+            direct_content.contains("global prompt overlay instructions"),
+            "expected global prompt overlay content"
+        );
+
+        let (prompt, info) =
+            build_system_prompt_full(None, &[], false, None, Some(project_dir.path()));
+        assert!(prompt.contains("project prompt overlay instructions"));
+        assert!(prompt.contains("global prompt overlay instructions"));
+        assert!(info.prompt_overlay_chars > 0);
+
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
     }
 
     #[test]

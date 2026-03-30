@@ -202,6 +202,9 @@ Start with the highest-leverage cache boundaries:
   - prompt overlays
   - routing/theme/layout data
 - Prefer those over direct Rust source edits whenever possible.
+- 2026-03-30: landed the first prompt-overlay seam for system-prompt customization without a rebuild.
+  jcode now loads `~/.jcode/prompt-overlay.md` and `./.jcode/prompt-overlay.md` into the
+  static prompt, which is a low-risk first step toward the broader issue #32 customization plan.
 
 ## Scenario Measurements (2026-03-24)
 
