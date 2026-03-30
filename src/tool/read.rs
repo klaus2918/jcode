@@ -233,6 +233,7 @@ impl Tool for ReadTool {
                 end,
                 total_lines
             )),
+            detail: None,
         }));
 
         // Add metadata

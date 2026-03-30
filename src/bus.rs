@@ -133,6 +133,8 @@ pub struct FileTouch {
     pub op: FileOp,
     /// Human-readable summary like "edited lines 45-60" or "read 200 lines"
     pub summary: Option<String>,
+    /// Optional compact preview of what changed. Keep this short and already truncated.
+    pub detail: Option<String>,
 }
 
 /// Status of a background task

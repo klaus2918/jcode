@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 use similar::{ChangeTag, TextDiff};
 use std::path::Path;
 
+const FILE_TOUCH_PREVIEW_MAX_LINES: usize = 6;
+const FILE_TOUCH_PREVIEW_MAX_BYTES: usize = 240;
+
 pub struct EditTool;
 
 impl EditTool {
@@ -108,8 +111,12 @@ impl Tool for EditTool {
         // Write back
         tokio::fs::write(&path, &new_content).await?;
 
+        // Generate a diff with line numbers
+        let diff = generate_diff(&params.old_string, &params.new_string, start_line);
+
         // Publish file touch event for swarm coordination
         let end_line = start_line + params.new_string.lines().count().saturating_sub(1);
+        let detail = build_file_touch_preview(&diff);
         Bus::global().publish(BusEvent::FileTouch(FileTouch {
             session_id: ctx.session_id.clone(),
             path: path.to_path_buf(),
@@ -121,10 +128,8 @@ impl Tool for EditTool {
                 occurrences,
                 if occurrences == 1 { "" } else { "s" }
             )),
+            detail,
         }));
-
-        // Generate a diff with line numbers
-        let diff = generate_diff(&params.old_string, &params.new_string, start_line);
 
         // Extract context around the edit to help with consecutive edits
         let end_line = start_line + params.new_string.lines().count().saturating_sub(1);
@@ -190,6 +195,34 @@ fn generate_diff(old: &str, new: &str, start_line: usize) -> String {
     } else {
         output.trim_end().to_string()
     }
+}
+
+fn build_file_touch_preview(diff: &str) -> Option<String> {
+    let trimmed = diff.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut lines = trimmed.lines();
+    let mut preview = lines
+        .by_ref()
+        .take(FILE_TOUCH_PREVIEW_MAX_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut truncated = lines.next().is_some();
+
+    if preview.len() > FILE_TOUCH_PREVIEW_MAX_BYTES {
+        preview = crate::util::truncate_str(&preview, FILE_TOUCH_PREVIEW_MAX_BYTES)
+            .trim_end()
+            .to_string();
+        truncated = true;
+    }
+
+    if truncated {
+        preview.push_str("\n…");
+    }
+
+    Some(preview)
 }
 
 /// Extract lines around the edited region, returns (start_line, end_line, content)

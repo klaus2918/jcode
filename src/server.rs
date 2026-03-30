@@ -328,6 +328,7 @@ impl Server {
                             timestamp: Instant::now(),
                             absolute_time: std::time::SystemTime::now(),
                             summary: touch.summary.clone(),
+                            detail: touch.detail.clone(),
                         });
                     }
                     {
@@ -357,6 +358,7 @@ impl Server {
                                 path: path.to_string_lossy().to_string(),
                                 op: touch.op.as_str().to_string(),
                                 summary: touch.summary.clone(),
+                                detail: touch.detail.clone(),
                             },
                         )
                         .await;
@@ -448,6 +450,8 @@ impl Server {
                                     notification_type: NotificationType::FileConflict {
                                         path: path.display().to_string(),
                                         operation: prev.op.as_str().to_string(),
+                                        summary: prev.summary.clone(),
+                                        detail: prev.detail.clone(),
                                     },
                                     message: alert_msg.clone(),
                                 };
@@ -493,6 +497,8 @@ impl Server {
                                     notification_type: NotificationType::FileConflict {
                                         path: path.display().to_string(),
                                         operation: touch.op.as_str().to_string(),
+                                        summary: touch.summary.clone(),
+                                        detail: touch.detail.clone(),
                                     },
                                     message: alert_msg.clone(),
                                 };

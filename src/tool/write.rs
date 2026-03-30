@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 use similar::{ChangeTag, TextDiff};
 use std::path::Path;
 
+const FILE_TOUCH_PREVIEW_MAX_LINES: usize = 6;
+const FILE_TOUCH_PREVIEW_MAX_BYTES: usize = 240;
+
 pub struct WriteTool;
 
 impl WriteTool {
@@ -74,6 +77,12 @@ impl Tool for WriteTool {
 
         let _new_len = params.content.len();
         let line_count = params.content.lines().count();
+        let diff = if let Some(old) = old_content.as_deref() {
+            generate_diff_summary(old, &params.content)
+        } else {
+            generate_diff_summary("", &params.content)
+        };
+        let detail = build_file_touch_preview(&diff);
 
         // Publish file touch event for swarm coordination
         Bus::global().publish(BusEvent::FileTouch(FileTouch {
@@ -85,14 +94,10 @@ impl Tool for WriteTool {
             } else {
                 format!("created new file ({} lines)", line_count)
             }),
+            detail,
         }));
 
         if existed {
-            let diff = if let Some(ref old) = old_content {
-                generate_diff_summary(old, &params.content)
-            } else {
-                String::new()
-            };
             Ok(ToolOutput::new(format!(
                 "Updated {} ({} lines){}\n{}",
                 params.file_path,
@@ -160,6 +165,34 @@ fn generate_diff_summary(old: &str, new: &str) -> String {
     }
 
     output.trim_end().to_string()
+}
+
+fn build_file_touch_preview(diff: &str) -> Option<String> {
+    let trimmed = diff.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut lines = trimmed.lines();
+    let mut preview = lines
+        .by_ref()
+        .take(FILE_TOUCH_PREVIEW_MAX_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut truncated = lines.next().is_some();
+
+    if preview.len() > FILE_TOUCH_PREVIEW_MAX_BYTES {
+        preview = crate::util::truncate_str(&preview, FILE_TOUCH_PREVIEW_MAX_BYTES)
+            .trim_end()
+            .to_string();
+        truncated = true;
+    }
+
+    if truncated {
+        preview.push_str("\n…");
+    }
+
+    Some(preview)
 }
 
 #[cfg(test)]

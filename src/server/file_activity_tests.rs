@@ -13,6 +13,7 @@ fn access(session_id: &str, op: FileOp, age_ms: u64) -> FileAccess {
             .unwrap_or(now),
         absolute_time: SystemTime::now(),
         summary: None,
+        detail: None,
     }
 }
 

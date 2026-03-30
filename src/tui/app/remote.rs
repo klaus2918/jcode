@@ -325,6 +325,53 @@ fn compact_plan_message_body(message: &str) -> String {
     message.to_string()
 }
 
+fn compact_swarm_path(path: &str) -> String {
+    let trimmed = path.trim();
+    let parts: Vec<&str> = trimmed
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .collect();
+
+    if parts.len() <= 4 {
+        trimmed.to_string()
+    } else {
+        format!("…/{}", parts[parts.len() - 4..].join("/"))
+    }
+}
+
+fn sanitize_code_fence_content(text: &str) -> String {
+    text.replace("```", "``\u{200b}`")
+}
+
+fn file_activity_summary_line(operation: &str, summary: Option<&str>) -> String {
+    summary
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+        .map(capitalize)
+        .unwrap_or_else(|| capitalize(operation))
+}
+
+fn format_file_activity_message(
+    path: &str,
+    operation: &str,
+    summary: Option<&str>,
+    detail: Option<&str>,
+) -> String {
+    let mut message = format!(
+        "`{}`\n\n{}",
+        compact_swarm_path(path),
+        file_activity_summary_line(operation, summary)
+    );
+
+    if let Some(detail) = detail.map(str::trim).filter(|detail| !detail.is_empty()) {
+        message.push_str("\n\n```text\n");
+        message.push_str(&sanitize_code_fence_content(detail));
+        message.push_str("\n```");
+    }
+
+    message
+}
+
 fn present_swarm_notification(
     sender: &str,
     notification_type: &NotificationType,
@@ -389,10 +436,20 @@ fn present_swarm_notification(
             message: format!("{} = {}", key, value).trim().to_string(),
             status_notice: format!("Shared context: {}", key),
         },
-        NotificationType::FileConflict { path, operation } => SwarmNotificationPresentation {
+        NotificationType::FileConflict {
+            path,
+            operation,
+            summary,
+            detail,
+        } => SwarmNotificationPresentation {
             title: format!("File activity · {}", sender),
-            message: format!("{} {}", operation, path).trim().to_string(),
-            status_notice: format!("{} {}", operation, path),
+            message: format_file_activity_message(
+                path,
+                operation,
+                summary.as_deref(),
+                detail.as_deref(),
+            ),
+            status_notice: format!("File activity · {}", compact_swarm_path(path)),
         },
     }
 }
@@ -1066,6 +1123,41 @@ mod tests {
         assert_eq!(presentation.title, "Plan · sheep");
         assert_eq!(presentation.message, "4 items · v1");
         assert_eq!(presentation.status_notice, "Swarm plan updated");
+    }
+
+    #[test]
+    fn present_swarm_notification_formats_file_activity_with_compact_path_and_preview() {
+        let presentation = present_swarm_notification(
+            "moss",
+            &NotificationType::FileConflict {
+                path: "/home/jeremy/jcode/src/tool/communicate.rs".to_string(),
+                operation: "edited".to_string(),
+                summary: Some("edited lines 323-348 (1 occurrence)".to_string()),
+                detail: Some("323- old line\n323+ new line".to_string()),
+            },
+            "⚠️ File activity: /home/jeremy/jcode/src/tool/communicate.rs — moss just edited this file you previously worked with: edited lines 323-348 (1 occurrence)",
+        );
+
+        assert_eq!(presentation.title, "File activity · moss");
+        assert!(
+            presentation
+                .message
+                .contains("`…/jcode/src/tool/communicate.rs`")
+        );
+        assert!(
+            presentation
+                .message
+                .contains("Edited lines 323-348 (1 occurrence)")
+        );
+        assert!(
+            presentation
+                .message
+                .contains("```text\n323- old line\n323+ new line\n```")
+        );
+        assert_eq!(
+            presentation.status_notice,
+            "File activity · …/jcode/src/tool/communicate.rs"
+        );
     }
 }
 

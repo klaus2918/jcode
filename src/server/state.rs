@@ -18,6 +18,7 @@ pub struct FileAccess {
     pub timestamp: Instant,
     pub absolute_time: std::time::SystemTime,
     pub summary: Option<String>,
+    pub detail: Option<String>,
 }
 
 pub(super) fn latest_peer_touches(
@@ -115,6 +116,8 @@ pub enum SwarmEventType {
         path: String,
         op: String,
         summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
     /// A notification was broadcast
     Notification {
