@@ -94,12 +94,28 @@ struct BuildRequest {
     session_title: Option<String>,
     reason: String,
     repo_dir: String,
+    #[serde(default)]
+    repo_scope: String,
+    #[serde(default)]
+    worktree_scope: String,
     command: String,
     requested_at: String,
     started_at: Option<String>,
     completed_at: Option<String>,
     state: BuildRequestState,
     version: Option<String>,
+    #[serde(default)]
+    dedupe_key: Option<String>,
+    #[serde(default)]
+    requested_source: Option<build::SourceState>,
+    #[serde(default)]
+    built_source: Option<build::SourceState>,
+    #[serde(default)]
+    published_version: Option<String>,
+    #[serde(default)]
+    last_progress: Option<String>,
+    #[serde(default)]
+    validated: bool,
     error: Option<String>,
     output_file: Option<String>,
     status_file: Option<String>,
@@ -170,6 +186,13 @@ impl BuildRequest {
         Ok(pending)
     }
 
+    fn pending_requests_for_scope(worktree_scope: &str) -> Result<Vec<Self>> {
+        Ok(Self::pending_requests()?
+            .into_iter()
+            .filter(|request| request.worktree_scope == worktree_scope)
+            .collect())
+    }
+
     fn attached_watchers(parent_request_id: &str) -> Result<Vec<Self>> {
         Ok(Self::load_all()?
             .into_iter()
@@ -180,16 +203,10 @@ impl BuildRequest {
             .collect())
     }
 
-    fn find_duplicate_pending(
-        repo_dir: &Path,
-        reason: &str,
-        version: Option<&str>,
-    ) -> Result<Option<Self>> {
-        Ok(Self::pending_requests()?.into_iter().find(|request| {
-            request.repo_dir == repo_dir.display().to_string()
-                && request.reason == reason
-                && request.version.as_deref() == version
-        }))
+    fn find_duplicate_pending(worktree_scope: &str, dedupe_key: &str) -> Result<Option<Self>> {
+        Ok(Self::pending_requests_for_scope(worktree_scope)?
+            .into_iter()
+            .find(|request| request.dedupe_key.as_deref() == Some(dedupe_key)))
     }
 
     fn find_by_request_or_task(
@@ -298,12 +315,7 @@ struct BuildLockGuard {
     path: PathBuf,
 }
 
-#[derive(Debug, Clone)]
-struct SelfDevBuildCommand {
-    program: String,
-    args: Vec<String>,
-    display: String,
-}
+type SelfDevBuildCommand = build::SelfDevBuildCommand;
 
 #[cfg(unix)]
 impl Drop for BuildLockGuard {
@@ -465,6 +477,19 @@ pub fn selfdev_status_output() -> Result<ToolOutput> {
         status.push_str("**Canary:** none\n");
     }
 
+    if let Some(pending) = manifest.pending_activation.as_ref() {
+        status.push_str(&format!(
+            "**Pending activation:** {} for session `{}`\n",
+            pending.new_version, pending.session_id
+        ));
+        if let Some(previous) = pending.previous_current_version.as_deref() {
+            status.push_str(&format!("**Rollback target:** {}\n", previous));
+        }
+        if let Some(fingerprint) = pending.source_fingerprint.as_deref() {
+            status.push_str(&format!("**Pending source fingerprint:** `{}`\n", fingerprint));
+        }
+    }
+
     status.push_str("\n## Debug Socket\n\n");
     status.push_str(&format!(
         "**Path:** {}\n",
@@ -510,12 +535,25 @@ pub fn selfdev_status_output() -> Result<ToolOutput> {
             if let Some(version) = request.version.as_deref() {
                 status.push_str(&format!("   Target version: `{}`\n", version));
             }
+            if let Some(source) = request.requested_source.as_ref() {
+                status.push_str(&format!(
+                    "   Source fingerprint: `{}` (dirty={}, changed_paths={})\n",
+                    source.fingerprint, source.dirty, source.changed_paths
+                ));
+            }
+            if let Some(progress) = request.last_progress.as_deref() {
+                status.push_str(&format!("   Progress: {}\n", progress));
+            }
             if let Some(task_id) = request.background_task_id.as_deref() {
                 status.push_str(&format!("   Task: `{}`\n", task_id));
             }
             if let Some(started_at) = request.started_at.as_deref() {
                 status.push_str(&format!("   Started: {}\n", started_at));
             }
+            if let Some(published) = request.published_version.as_deref() {
+                status.push_str(&format!("   Published version: `{}`\n", published));
+            }
+            status.push_str(&format!("   Validated: {}\n", request.validated));
             if !watchers.is_empty() {
                 let watcher_names = watchers
                     .iter()
@@ -827,43 +865,21 @@ impl SelfDevTool {
     }
 
     fn build_command(repo_dir: &Path) -> SelfDevBuildCommand {
-        let wrapper = repo_dir.join("scripts").join("dev_cargo.sh");
-        if wrapper.is_file() {
-            return SelfDevBuildCommand {
-                program: "bash".to_string(),
-                args: vec![
-                    wrapper.to_string_lossy().into_owned(),
-                    "build".to_string(),
-                    "--release".to_string(),
-                    "--bin".to_string(),
-                    "jcode".to_string(),
-                ],
-                display: "scripts/dev_cargo.sh build --release --bin jcode".to_string(),
-            };
-        }
-
-        SelfDevBuildCommand {
-            program: "cargo".to_string(),
-            args: vec![
-                "build".to_string(),
-                "--release".to_string(),
-                "--bin".to_string(),
-                "jcode".to_string(),
-            ],
-            display: "cargo build --release --bin jcode".to_string(),
-        }
+        build::selfdev_build_command(repo_dir)
     }
 
-    fn build_lock_path() -> Result<PathBuf> {
-        Ok(storage::jcode_dir()?.join("selfdev-build.lock"))
+    fn build_lock_path(worktree_scope: &str) -> Result<PathBuf> {
+        let dir = storage::jcode_dir()?.join("selfdev-build-locks");
+        storage::ensure_dir(&dir)?;
+        Ok(dir.join(format!("{}.lock", worktree_scope)))
     }
 
     #[cfg(unix)]
-    fn try_acquire_build_lock() -> Result<Option<BuildLockGuard>> {
+    fn try_acquire_build_lock(worktree_scope: &str) -> Result<Option<BuildLockGuard>> {
         use std::fs::OpenOptions;
         use std::os::fd::AsRawFd;
 
-        let path = Self::build_lock_path()?;
+        let path = Self::build_lock_path(worktree_scope)?;
         let file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -878,10 +894,10 @@ impl SelfDevTool {
     }
 
     #[cfg(not(unix))]
-    fn try_acquire_build_lock() -> Result<Option<BuildLockGuard>> {
+    fn try_acquire_build_lock(worktree_scope: &str) -> Result<Option<BuildLockGuard>> {
         use std::fs::OpenOptions;
 
-        let path = Self::build_lock_path()?;
+        let path = Self::build_lock_path(worktree_scope)?;
         match OpenOptions::new().create_new(true).write(true).open(&path) {
             Ok(file) => Ok(Some(BuildLockGuard { _file: file, path })),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
@@ -895,30 +911,41 @@ impl SelfDevTool {
             .unwrap_or((None, None))
     }
 
-    fn requested_build_version(repo_dir: &Path) -> Result<String> {
+    fn requested_source_state(repo_dir: &Path) -> Result<build::SourceState> {
         if Self::is_test_session() {
-            return Ok("test-build".to_string());
+            return Ok(build::SourceState {
+                repo_scope: "test-repo-scope".to_string(),
+                worktree_scope: "test-worktree-scope".to_string(),
+                short_hash: "test-build".to_string(),
+                full_hash: "test-build-full".to_string(),
+                dirty: true,
+                fingerprint: "test-fingerprint".to_string(),
+                version_label: "test-build".to_string(),
+                changed_paths: 0,
+            });
         }
-        let info = build::current_build_info(repo_dir)?;
-        Ok(if info.dirty {
-            format!("{}-dirty", info.hash)
-        } else {
-            info.hash
-        })
+        build::current_source_state(repo_dir)
     }
 
-    fn newest_active_request() -> Result<Option<BuildRequest>> {
-        Ok(BuildRequest::pending_requests()?
+    fn newest_active_request(worktree_scope: &str) -> Result<Option<BuildRequest>> {
+        Ok(BuildRequest::pending_requests_for_scope(worktree_scope)?
             .into_iter()
             .find(|request| request.state == BuildRequestState::Building))
+    }
+
+    fn build_dedupe_key(source: &build::SourceState, command: &SelfDevBuildCommand) -> String {
+        format!(
+            "{}:{}:{}",
+            source.worktree_scope, source.fingerprint, command.display
+        )
     }
 
     fn next_request_id() -> String {
         format!("selfdev-build-{}", uuid::Uuid::new_v4().simple())
     }
 
-    fn current_queue_position(request_id: &str) -> Result<Option<usize>> {
-        Ok(BuildRequest::pending_requests()?
+    fn current_queue_position(request_id: &str, worktree_scope: &str) -> Result<Option<usize>> {
+        Ok(BuildRequest::pending_requests_for_scope(worktree_scope)?
             .into_iter()
             .position(|request| request.request_id == request_id)
             .map(|index| index + 1))
@@ -930,10 +957,14 @@ impl SelfDevTool {
         let _ = file.flush().await;
     }
 
-    async fn wait_for_turn(request_id: &str, file: &mut tokio::fs::File) -> Result<BuildLockGuard> {
+    async fn wait_for_turn(
+        request_id: &str,
+        worktree_scope: &str,
+        file: &mut tokio::fs::File,
+    ) -> Result<BuildLockGuard> {
         let mut last_note: Option<String> = None;
         loop {
-            let pending = BuildRequest::pending_requests()?;
+            let pending = BuildRequest::pending_requests_for_scope(worktree_scope)?;
             let my_index = pending
                 .iter()
                 .position(|request| request.request_id == request_id)
@@ -942,7 +973,7 @@ impl SelfDevTool {
                 })?;
 
             if my_index == 0 {
-                if let Some(lock) = Self::try_acquire_build_lock()? {
+                if let Some(lock) = Self::try_acquire_build_lock(worktree_scope)? {
                     return Ok(lock);
                 }
             }
@@ -1161,14 +1192,22 @@ impl SelfDevTool {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to open output file: {}", e))?;
 
-        let _lock = Self::wait_for_turn(&request_id, &mut queue_file).await?;
+        let worktree_scope = request.worktree_scope.clone();
+        let _lock = Self::wait_for_turn(&request_id, &worktree_scope, &mut queue_file).await?;
+        let expected_source = request
+            .requested_source
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Missing requested source state for {}", request_id))?;
+        let actual_source = if Self::is_test_session() {
+            expected_source.clone()
+        } else {
+            build::ensure_source_state_matches(&repo_dir, &expected_source)?
+        };
         request.state = BuildRequestState::Building;
         request.started_at = Some(Utc::now().to_rfc3339());
-        request.version = if Self::is_test_session() {
-            Some("test-build".to_string())
-        } else {
-            build::current_git_hash(&repo_dir).ok()
-        };
+        request.version = Some(expected_source.version_label.clone());
+        request.built_source = Some(actual_source.clone());
+        request.last_progress = Some("building".to_string());
         request.save()?;
         Self::append_output_line(&mut queue_file, format!("Build starting now: {}", reason)).await;
         drop(queue_file);
@@ -1180,9 +1219,16 @@ impl SelfDevTool {
                 Self::stream_build_command(repo_dir.clone(), command.clone(), output_path.clone())
                     .await?;
             if result.error.is_none() {
-                build::publish_local_current_build(&repo_dir)?;
+                let source_after_build = build::ensure_source_state_matches(&repo_dir, &expected_source)?;
+                let published = build::publish_local_current_build_for_source(&repo_dir, &source_after_build)?;
                 let mut manifest = build::BuildManifest::load()?;
                 manifest.add_to_history(build::current_build_info(&repo_dir)?)?;
+                let mut request = BuildRequest::load(&request_id)?
+                    .ok_or_else(|| anyhow::anyhow!("Missing queued build request {}", request_id))?;
+                request.published_version = Some(published.version.clone());
+                request.validated = true;
+                request.last_progress = Some("published and smoke-tested".to_string());
+                request.save()?;
             }
             result
         };
@@ -1196,6 +1242,9 @@ impl SelfDevTool {
             BuildRequestState::Completed
         };
         request.error = result.error.clone();
+        if result.error.is_some() {
+            request.last_progress = Some("failed".to_string());
+        }
         request.save()?;
         Ok(result)
     }
@@ -1258,11 +1307,12 @@ impl SelfDevTool {
                 anyhow::anyhow!("Could not find the jcode repository directory for selfdev build")
             })?;
 
-        let requested_version = SelfDevTool::requested_build_version(&repo_dir)?;
-        let blocker = SelfDevTool::newest_active_request()?;
-        let duplicate =
-            BuildRequest::find_duplicate_pending(&repo_dir, &reason, Some(&requested_version))?;
+        let requested_source = SelfDevTool::requested_source_state(&repo_dir)?;
         let command = SelfDevTool::build_command(&repo_dir);
+        let dedupe_key = SelfDevTool::build_dedupe_key(&requested_source, &command);
+        let blocker = SelfDevTool::newest_active_request(&requested_source.worktree_scope)?;
+        let duplicate =
+            BuildRequest::find_duplicate_pending(&requested_source.worktree_scope, &dedupe_key)?;
         let (session_short_name, session_title) = SelfDevTool::load_session_labels(&ctx.session_id);
         let request_id = SelfDevTool::next_request_id();
         let notify = notify.unwrap_or(true);
@@ -1276,12 +1326,20 @@ impl SelfDevTool {
                 session_title,
                 reason: reason.clone(),
                 repo_dir: repo_dir.display().to_string(),
+                repo_scope: requested_source.repo_scope.clone(),
+                worktree_scope: requested_source.worktree_scope.clone(),
                 command: command.display.clone(),
                 requested_at: Utc::now().to_rfc3339(),
                 started_at: None,
                 completed_at: None,
                 state: BuildRequestState::Attached,
-                version: Some(requested_version.clone()),
+                version: Some(requested_source.version_label.clone()),
+                dedupe_key: Some(dedupe_key.clone()),
+                requested_source: Some(requested_source.clone()),
+                built_source: None,
+                published_version: None,
+                last_progress: Some("attached to existing build".to_string()),
+                validated: false,
                 error: None,
                 output_file: None,
                 status_file: None,
@@ -1313,13 +1371,14 @@ impl SelfDevTool {
             request.save()?;
 
             let output = format!(
-                "Matching self-dev build already queued/running, so this request was attached instead of spawning a duplicate build.\n\n- Your request ID: `{}`\n- Watcher task ID: `{}`\n- Existing request: `{}`\n- Requested by: {}\n- Reason: {}\n- Target version: `{}`\n\nYou will{} be notified when the existing build finishes.",
+                "Matching self-dev build already queued/running, so this request was attached instead of spawning a duplicate build.\n\n- Your request ID: `{}`\n- Watcher task ID: `{}`\n- Existing request: `{}`\n- Requested by: {}\n- Reason: {}\n- Target version: `{}`\n- Source fingerprint: `{}`\n\nYou will{} be notified when the existing build finishes.",
                 request_id,
                 info.task_id,
                 existing.request_id,
                 existing.display_owner(),
                 existing.reason,
-                requested_version,
+                requested_source.version_label,
+                requested_source.fingerprint,
                 if notify { "" } else { " not" }
             );
 
@@ -1338,6 +1397,10 @@ impl SelfDevTool {
                     "session_title": existing.session_title,
                     "reason": existing.reason,
                     "version": existing.version,
+                    "source_fingerprint": existing
+                        .requested_source
+                        .as_ref()
+                        .map(|source| source.fingerprint.clone()),
                 }
             })));
         }
@@ -1350,18 +1413,32 @@ impl SelfDevTool {
             session_title,
             reason: reason.clone(),
             repo_dir: repo_dir.display().to_string(),
+            repo_scope: requested_source.repo_scope.clone(),
+            worktree_scope: requested_source.worktree_scope.clone(),
             command: command.display.clone(),
             requested_at: Utc::now().to_rfc3339(),
             started_at: None,
             completed_at: None,
             state: BuildRequestState::Queued,
-            version: Some(requested_version.clone()),
+            version: Some(requested_source.version_label.clone()),
+            dedupe_key: Some(dedupe_key),
+            requested_source: Some(requested_source.clone()),
+            built_source: None,
+            published_version: None,
+            last_progress: Some("queued".to_string()),
+            validated: false,
             error: None,
             output_file: None,
             status_file: None,
             attached_to_request_id: None,
         };
         request.save()?;
+
+        let queue_position = SelfDevTool::current_queue_position(
+            &request_id,
+            &requested_source.worktree_scope,
+        )?
+        .unwrap_or(1);
 
         let request_id_for_task = request_id.clone();
         let repo_dir_for_task = repo_dir.clone();
@@ -1389,14 +1466,13 @@ impl SelfDevTool {
         request.output_file = Some(info.output_file.display().to_string());
         request.status_file = Some(info.status_file.display().to_string());
         request.save()?;
-
-        let queue_position = SelfDevTool::current_queue_position(&request_id)?.unwrap_or(1);
         let mut output = format!(
-            "Self-dev build queued in background.\n\n- Request ID: `{}`\n- Task ID: `{}`\n- Reason: {}\n- Target version: `{}`\n- Command: `{}`\n- Queue position: {}\n- Output file: `{}`\n- Status file: `{}`\n\nYou will{} be notified when the build completes.",
+            "Self-dev build queued in background.\n\n- Request ID: `{}`\n- Task ID: `{}`\n- Reason: {}\n- Target version: `{}`\n- Source fingerprint: `{}`\n- Command: `{}`\n- Queue position: {}\n- Output file: `{}`\n- Status file: `{}`\n\nYou will{} be notified when the build completes.",
             request_id,
             info.task_id,
             reason,
-            requested_version,
+            requested_source.version_label,
+            requested_source.fingerprint,
             command.display,
             queue_position,
             info.output_file.display(),
@@ -1424,13 +1500,18 @@ impl SelfDevTool {
             "output_file": info.output_file.to_string_lossy(),
             "status_file": info.status_file.to_string_lossy(),
             "queue_position": queue_position,
-            "version": requested_version,
+            "version": requested_source.version_label,
+            "source_fingerprint": requested_source.fingerprint,
             "blocked_by": blocker.as_ref().map(|request| json!({
                 "session_id": request.session_id,
                 "session_short_name": request.session_short_name,
                 "session_title": request.session_title,
                 "reason": request.reason,
                 "version": request.version,
+                "source_fingerprint": request
+                    .requested_source
+                    .as_ref()
+                    .map(|source| source.fingerprint.clone()),
             }))
         })))
     }
@@ -1604,25 +1685,41 @@ impl SelfDevTool {
             ));
         }
 
-        let hash = if SelfDevTool::is_test_session() {
-            "test-reload-hash".to_string()
+        let source = if SelfDevTool::is_test_session() {
+            build::SourceState {
+                repo_scope: "test-repo-scope".to_string(),
+                worktree_scope: "test-worktree-scope".to_string(),
+                short_hash: "test-reload-hash".to_string(),
+                full_hash: "test-reload-hash-full".to_string(),
+                dirty: true,
+                fingerprint: "test-reload-fingerprint".to_string(),
+                version_label: "test-reload-hash".to_string(),
+                changed_paths: 0,
+            }
         } else {
-            build::current_git_hash(&repo_dir)?
+            build::current_source_state(&repo_dir)?
         };
+        let hash = source.version_label.clone();
         let version_before = env!("JCODE_VERSION").to_string();
-
-        // Publish the newly built binary as the active current build so reload,
-        // launcher sessions, and self-dev spawns all converge on the same binary.
-        if !SelfDevTool::is_test_session() {
-            build::publish_local_current_build(&repo_dir)?;
-            build::install_version(&repo_dir, &hash)?;
-            build::update_canary_symlink(&hash)?;
-        }
+        let published = if SelfDevTool::is_test_session() {
+            None
+        } else {
+            Some(build::publish_local_current_build_for_source(&repo_dir, &source)?)
+        };
 
         // Update manifest - track what we're testing
         let mut manifest = build::BuildManifest::load()?;
         manifest.canary = Some(hash.clone());
         manifest.canary_status = Some(build::CanaryStatus::Testing);
+        manifest.set_pending_activation(build::PendingActivation {
+            session_id: session_id.to_string(),
+            new_version: hash.clone(),
+            previous_current_version: published
+                .as_ref()
+                .and_then(|published| published.previous_current_version.clone()),
+            source_fingerprint: Some(source.fingerprint.clone()),
+            requested_at: chrono::Utc::now(),
+        })?;
         manifest.save()?;
 
         // Save reload context for continuation after restart
@@ -1661,6 +1758,7 @@ impl SelfDevTool {
         let ack = server::wait_for_reload_ack(&request_id, timeout)
             .await
             .map_err(|error| {
+                let _ = build::rollback_pending_activation_for_session(session_id);
                 anyhow::anyhow!(
                     "Timed out waiting for the server to begin reload after {}s: {}. The reload signal may not have been picked up; check that the connected server is running a build with unified self-dev reload support and try restarting the shared server.",
                     timeout.as_secs(),
@@ -1677,10 +1775,39 @@ impl SelfDevTool {
         ));
 
         match execution_mode {
-            ToolExecutionMode::Direct => Ok(ToolOutput::new(format!(
-                "Reload acknowledged for build {}. Server is restarting now.",
-                ack.hash
-            ))),
+            ToolExecutionMode::Direct => {
+                if SelfDevTool::is_test_session() {
+                    return Ok(ToolOutput::new(format!(
+                        "Reload acknowledged for build {}. Server is restarting now.",
+                        ack.hash
+                    )));
+                }
+                match server::await_reload_handoff(&server::socket_path(), timeout).await {
+                    server::ReloadWaitStatus::Ready => {
+                        let _ = build::complete_pending_activation_for_session(session_id);
+                        Ok(ToolOutput::new(format!(
+                            "Reload completed successfully for build {}. Server reported ready.",
+                            ack.hash
+                        )))
+                    }
+                    server::ReloadWaitStatus::Failed(detail) => {
+                        let _ = build::rollback_pending_activation_for_session(session_id);
+                        Err(anyhow::anyhow!(
+                            "Reload was acknowledged for build {}, but the replacement server failed before becoming ready: {}",
+                            ack.hash,
+                            detail.unwrap_or_else(|| "unknown reload failure".to_string())
+                        ))
+                    }
+                    server::ReloadWaitStatus::Idle | server::ReloadWaitStatus::Waiting { .. } => {
+                        let _ = build::rollback_pending_activation_for_session(session_id);
+                        Err(anyhow::anyhow!(
+                            "Reload was acknowledged for build {}, but readiness could not be confirmed within {}s.",
+                            ack.hash,
+                            timeout.as_secs()
+                        ))
+                    }
+                }
+            }
             ToolExecutionMode::AgentTurn => {
                 let sleep_forever = async {
                     loop {
@@ -1863,6 +1990,20 @@ mod tests {
         )
         .expect("cargo toml");
         temp
+    }
+
+    fn test_source_state(repo_dir: &std::path::Path) -> build::SourceState {
+        build::SourceState {
+            repo_scope: "test-repo-scope".to_string(),
+            worktree_scope: build::worktree_scope_key(repo_dir)
+                .unwrap_or_else(|_| "test-worktree".to_string()),
+            short_hash: "test-build".to_string(),
+            full_hash: "test-build-full".to_string(),
+            dirty: true,
+            fingerprint: "test-fingerprint".to_string(),
+            version_label: "test-build".to_string(),
+            changed_paths: 0,
+        }
     }
 
     async fn wait_for_task_completion(task_id: &str) -> background::TaskStatusFile {
@@ -2212,13 +2353,13 @@ mod tests {
         let second_task_id = second_meta["task_id"].as_str().expect("second task id");
 
         assert_eq!(first_meta["queue_position"].as_u64(), Some(1));
-        assert_eq!(second_meta["queue_position"].as_u64(), Some(2));
-        assert!(second.output.contains("second reason"));
+        assert_eq!(second_meta["deduped"].as_bool(), Some(true));
+        assert!(second.output.contains("attached instead of spawning a duplicate build"));
 
         let status_output = selfdev_status_output().expect("status output");
         assert!(status_output.output.contains("## Build Queue"));
         assert!(status_output.output.contains("first reason"));
-        assert!(status_output.output.contains("second reason"));
+        assert!(status_output.output.contains("Attached watchers: 1"));
         assert!(
             status_output
                 .output
@@ -2384,6 +2525,7 @@ mod tests {
         session.save().expect("save session");
 
         let stale_status_path = temp_home.path().join("missing-selfdev.status.json");
+        let source = test_source_state(std::path::Path::new("/tmp/jcode"));
         let request = BuildRequest {
             request_id: "stale-request".to_string(),
             background_task_id: Some("missing-task".to_string()),
@@ -2392,12 +2534,20 @@ mod tests {
             session_title: Some("Stale Build".to_string()),
             reason: "stale reason".to_string(),
             repo_dir: "/tmp/jcode".to_string(),
+            repo_scope: source.repo_scope.clone(),
+            worktree_scope: source.worktree_scope.clone(),
             command: "scripts/dev_cargo.sh build --release --bin jcode".to_string(),
             requested_at: Utc::now().to_rfc3339(),
             started_at: Some(Utc::now().to_rfc3339()),
             completed_at: None,
             state: BuildRequestState::Building,
             version: Some("stale-build".to_string()),
+            dedupe_key: Some("stale-dedupe".to_string()),
+            requested_source: Some(source),
+            built_source: None,
+            published_version: None,
+            last_progress: Some("building".to_string()),
+            validated: false,
             error: None,
             output_file: None,
             status_file: Some(stale_status_path.display().to_string()),
@@ -2458,6 +2608,7 @@ mod tests {
         )
         .expect("write stale status file");
 
+        let source = test_source_state(repo.path());
         let stale_request = BuildRequest {
             request_id: "stale-queued-request".to_string(),
             background_task_id: Some("stale-task".to_string()),
@@ -2466,12 +2617,20 @@ mod tests {
             session_title: Some("Stale Build".to_string()),
             reason: "stale blocker".to_string(),
             repo_dir: repo.path().display().to_string(),
+            repo_scope: source.repo_scope.clone(),
+            worktree_scope: source.worktree_scope.clone(),
             command: "scripts/dev_cargo.sh build --release --bin jcode".to_string(),
             requested_at: Utc::now().to_rfc3339(),
             started_at: Some(Utc::now().to_rfc3339()),
             completed_at: None,
             state: BuildRequestState::Queued,
             version: Some("test-build".to_string()),
+            dedupe_key: Some("stale-dedupe".to_string()),
+            requested_source: Some(source),
+            built_source: None,
+            published_version: None,
+            last_progress: Some("queued".to_string()),
+            validated: false,
             error: None,
             output_file: None,
             status_file: Some(stale_status_path.display().to_string()),

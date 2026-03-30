@@ -8,6 +8,72 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
+const FNV_OFFSET_BASIS_64: u64 = 0xcbf29ce484222325;
+const FNV_PRIME_64: u64 = 0x100000001b3;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SelfDevBuildCommand {
+    pub program: String,
+    pub args: Vec<String>,
+    pub display: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceState {
+    pub repo_scope: String,
+    pub worktree_scope: String,
+    pub short_hash: String,
+    pub full_hash: String,
+    pub dirty: bool,
+    pub fingerprint: String,
+    pub version_label: String,
+    pub changed_paths: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublishedBuild {
+    pub version: String,
+    pub source_fingerprint: String,
+    pub versioned_path: PathBuf,
+    pub current_link: PathBuf,
+    pub launcher_link: PathBuf,
+    pub previous_current_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingActivation {
+    pub session_id: String,
+    pub new_version: String,
+    pub previous_current_version: Option<String>,
+    pub source_fingerprint: Option<String>,
+    pub requested_at: DateTime<Utc>,
+}
+
+fn stable_hash_update(state: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *state ^= u64::from(*byte);
+        *state = state.wrapping_mul(FNV_PRIME_64);
+    }
+}
+
+fn stable_hash_str(state: &mut u64, value: &str) {
+    stable_hash_update(state, value.as_bytes());
+}
+
+fn stable_hash_hex(bytes: &[u8]) -> String {
+    let mut state = FNV_OFFSET_BASIS_64;
+    stable_hash_update(&mut state, bytes);
+    format!("{state:016x}")
+}
+
+fn canonicalize_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn hash_path_scope(path: &Path) -> String {
+    stable_hash_hex(canonicalize_or_self(path).to_string_lossy().as_bytes())
+}
+
 /// Get the jcode repository directory
 pub fn get_repo_dir() -> Option<PathBuf> {
     // First try: compile-time directory
@@ -66,6 +132,48 @@ pub fn binary_name() -> &'static str {
 
 pub fn release_binary_path(repo_dir: &std::path::Path) -> PathBuf {
     repo_dir.join("target").join("release").join(binary_name())
+}
+
+pub fn selfdev_build_command(repo_dir: &Path) -> SelfDevBuildCommand {
+    let wrapper = repo_dir.join("scripts").join("dev_cargo.sh");
+    if wrapper.is_file() {
+        return SelfDevBuildCommand {
+            program: "bash".to_string(),
+            args: vec![
+                wrapper.to_string_lossy().into_owned(),
+                "build".to_string(),
+                "--release".to_string(),
+                "--bin".to_string(),
+                "jcode".to_string(),
+            ],
+            display: "scripts/dev_cargo.sh build --release --bin jcode".to_string(),
+        };
+    }
+
+    SelfDevBuildCommand {
+        program: "cargo".to_string(),
+        args: vec![
+            "build".to_string(),
+            "--release".to_string(),
+            "--bin".to_string(),
+            "jcode".to_string(),
+        ],
+        display: "cargo build --release --bin jcode".to_string(),
+    }
+}
+
+pub fn run_selfdev_build(repo_dir: &Path) -> Result<SelfDevBuildCommand> {
+    let build = selfdev_build_command(repo_dir);
+    let status = Command::new(&build.program)
+        .args(&build.args)
+        .current_dir(repo_dir)
+        .status()?;
+
+    if !status.success() {
+        anyhow::bail!("Build failed: {}", build.display);
+    }
+
+    Ok(build)
 }
 
 pub fn current_binary_built_at() -> Option<DateTime<Utc>> {
@@ -296,6 +404,12 @@ pub struct BuildInfo {
     pub commit_message: Option<String>,
     /// Whether build is from dirty working tree
     pub dirty: bool,
+    /// Stable fingerprint of the source state used to produce the build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_fingerprint: Option<String>,
+    /// Immutable published version label, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_label: Option<String>,
 }
 
 /// Manifest tracking build versions and their status
@@ -315,6 +429,9 @@ pub struct BuildManifest {
     /// Last crash information (if canary crashed)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_crash: Option<CrashInfo>,
+    /// Pending activation being validated across reload/resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_activation: Option<PendingActivation>,
 }
 
 /// Information about a crash during canary testing
@@ -423,6 +540,16 @@ impl BuildManifest {
         self.save()
     }
 
+    pub fn set_pending_activation(&mut self, activation: PendingActivation) -> Result<()> {
+        self.pending_activation = Some(activation);
+        self.save()
+    }
+
+    pub fn clear_pending_activation(&mut self) -> Result<()> {
+        self.pending_activation = None;
+        self.save()
+    }
+
     /// Add build to history
     pub fn add_to_history(&mut self, info: BuildInfo) -> Result<()> {
         // Keep last 20 builds
@@ -430,6 +557,43 @@ impl BuildManifest {
         self.history.truncate(20);
         self.save()
     }
+}
+
+pub fn complete_pending_activation_for_session(session_id: &str) -> Result<Option<String>> {
+    let mut manifest = BuildManifest::load()?;
+    let Some(pending) = manifest.pending_activation.clone() else {
+        return Ok(None);
+    };
+    if pending.session_id != session_id {
+        return Ok(None);
+    }
+
+    manifest.canary = Some(pending.new_version.clone());
+    manifest.canary_session = Some(session_id.to_string());
+    manifest.canary_status = Some(CanaryStatus::Passed);
+    manifest.pending_activation = None;
+    manifest.last_crash = None;
+    manifest.save()?;
+    Ok(Some(pending.new_version))
+}
+
+pub fn rollback_pending_activation_for_session(session_id: &str) -> Result<Option<String>> {
+    let mut manifest = BuildManifest::load()?;
+    let Some(pending) = manifest.pending_activation.clone() else {
+        return Ok(None);
+    };
+    if pending.session_id != session_id {
+        return Ok(None);
+    }
+
+    if let Some(previous) = pending.previous_current_version.as_deref() {
+        update_current_symlink(previous)?;
+        update_launcher_symlink_to_current()?;
+    }
+    manifest.canary_status = Some(CanaryStatus::Failed);
+    manifest.pending_activation = None;
+    manifest.save()?;
+    Ok(Some(pending.new_version))
 }
 
 /// Which binary to use
@@ -496,14 +660,110 @@ pub fn current_version_file() -> Result<PathBuf> {
     Ok(builds_dir()?.join("current-version"))
 }
 
-fn repo_build_version(repo_dir: &std::path::Path) -> Result<String> {
-    let hash = current_git_hash(repo_dir)?;
-    let dirty = is_working_tree_dirty(repo_dir)?;
-    Ok(if dirty {
-        format!("{}-dirty", hash)
+fn git_output_bytes(repo_dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = Command::new("git").args(args).current_dir(repo_dir).output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {} failed with status {:?}",
+            args.join(" "),
+            output.status.code()
+        );
+    }
+    Ok(output.stdout)
+}
+
+fn git_common_dir(repo_dir: &Path) -> Result<PathBuf> {
+    let output = git_output_bytes(repo_dir, &["rev-parse", "--git-common-dir"])?;
+    let raw = String::from_utf8_lossy(&output).trim().to_string();
+    if raw.is_empty() {
+        anyhow::bail!("git rev-parse --git-common-dir returned an empty path");
+    }
+    let path = PathBuf::from(raw);
+    let absolute = if path.is_absolute() {
+        path
     } else {
-        hash
+        repo_dir.join(path)
+    };
+    Ok(canonicalize_or_self(&absolute))
+}
+
+pub fn repo_scope_key(repo_dir: &Path) -> Result<String> {
+    Ok(hash_path_scope(&git_common_dir(repo_dir)?))
+}
+
+pub fn worktree_scope_key(repo_dir: &Path) -> Result<String> {
+    Ok(hash_path_scope(repo_dir))
+}
+
+fn append_untracked_file_fingerprint(state: &mut u64, repo_dir: &Path, relative: &str) {
+    stable_hash_str(state, relative);
+    let path = repo_dir.join(relative);
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_file() => {
+            stable_hash_update(state, &meta.len().to_le_bytes());
+            match std::fs::read(&path) {
+                Ok(bytes) => stable_hash_update(state, &bytes),
+                Err(err) => stable_hash_str(state, &format!("read-error:{err}")),
+            }
+        }
+        Ok(meta) => {
+            stable_hash_str(state, if meta.is_dir() { "dir" } else { "other" });
+        }
+        Err(err) => stable_hash_str(state, &format!("missing:{err}")),
+    }
+}
+
+pub fn current_source_state(repo_dir: &Path) -> Result<SourceState> {
+    let short_hash = current_git_hash(repo_dir)?;
+    let full_hash = current_git_hash_full(repo_dir)?;
+    let status = git_output_bytes(repo_dir, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+    let diff = git_output_bytes(repo_dir, &["diff", "--binary", "HEAD"])?;
+    let untracked = git_output_bytes(repo_dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+
+    let dirty = !status.is_empty();
+    let changed_paths = status.split(|byte| *byte == 0).filter(|entry| !entry.is_empty()).count();
+
+    let mut state = FNV_OFFSET_BASIS_64;
+    stable_hash_str(&mut state, &full_hash);
+    stable_hash_update(&mut state, &status);
+    stable_hash_update(&mut state, &diff);
+    for path in untracked.split(|byte| *byte == 0).filter(|entry| !entry.is_empty()) {
+        let relative = String::from_utf8_lossy(path);
+        append_untracked_file_fingerprint(&mut state, repo_dir, &relative);
+    }
+    let fingerprint = format!("{state:016x}");
+    let version_label = if dirty {
+        format!("{}-dirty-{}", short_hash, &fingerprint[..12])
+    } else {
+        short_hash.clone()
+    };
+
+    Ok(SourceState {
+        repo_scope: repo_scope_key(repo_dir)?,
+        worktree_scope: worktree_scope_key(repo_dir)?,
+        short_hash,
+        full_hash,
+        dirty,
+        fingerprint,
+        version_label,
+        changed_paths,
     })
+}
+
+pub fn ensure_source_state_matches(repo_dir: &Path, expected: &SourceState) -> Result<SourceState> {
+    let current = current_source_state(repo_dir)?;
+    if current.fingerprint != expected.fingerprint {
+        anyhow::bail!(
+            "Source tree drift detected while waiting/building (expected {}, now {}). Refusing to publish or attach this build to the original request.",
+            expected.fingerprint,
+            current.fingerprint
+        );
+    }
+    Ok(current)
+}
+
+fn repo_build_version(repo_dir: &std::path::Path) -> Result<String> {
+    Ok(current_source_state(repo_dir)?.version_label)
 }
 
 /// Get the current git hash
@@ -566,17 +826,17 @@ pub fn get_commit_message(repo_dir: &std::path::Path, hash: &str) -> Result<Stri
 
 /// Build info for current state
 pub fn current_build_info(repo_dir: &std::path::Path) -> Result<BuildInfo> {
-    let hash = current_git_hash(repo_dir)?;
-    let full_hash = current_git_hash_full(repo_dir)?;
-    let dirty = is_working_tree_dirty(repo_dir)?;
-    let commit_message = get_commit_message(repo_dir, &hash).ok();
+    let source = current_source_state(repo_dir)?;
+    let commit_message = get_commit_message(repo_dir, &source.short_hash).ok();
 
     Ok(BuildInfo {
-        hash,
-        full_hash,
+        hash: source.short_hash,
+        full_hash: source.full_hash,
         built_at: Utc::now(),
         commit_message,
-        dirty,
+        dirty: source.dirty,
+        source_fingerprint: Some(source.fingerprint),
+        version_label: Some(source.version_label),
     })
 }
 
@@ -604,6 +864,37 @@ pub fn install_binary_at_version(source: &std::path::Path, version: &str) -> Res
     crate::platform::set_permissions_executable(&dest)?;
 
     Ok(dest)
+}
+
+pub fn smoke_test_binary(binary: &Path) -> Result<()> {
+    let output = Command::new(binary)
+        .args(["version", "--json"])
+        .env("JCODE_NON_INTERACTIVE", "1")
+        .output()?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "Binary smoke test failed for {} with exit code {:?}: {}",
+            binary.display(),
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|err| {
+        anyhow::anyhow!(
+            "Binary smoke test for {} returned invalid JSON: {}",
+            binary.display(),
+            err
+        )
+    })?;
+    if value.get("version").is_none() {
+        anyhow::bail!(
+            "Binary smoke test for {} returned JSON without a version field",
+            binary.display()
+        );
+    }
+    Ok(())
 }
 
 fn update_channel_symlink(channel: &str, version: &str) -> Result<PathBuf> {
@@ -641,20 +932,37 @@ pub fn update_current_symlink(version: &str) -> Result<PathBuf> {
     Ok(current_link)
 }
 
+pub fn publish_local_current_build_for_source(
+    repo_dir: &Path,
+    source: &SourceState,
+) -> Result<PublishedBuild> {
+    let binary = release_binary_path(repo_dir);
+    if !binary.exists() {
+        anyhow::bail!("Binary not found at {:?}", binary);
+    }
+
+    smoke_test_binary(&binary)?;
+    let previous_current_version = read_current_version()?;
+    let versioned_path = install_binary_at_version(&binary, &source.version_label)?;
+    smoke_test_binary(&versioned_path)?;
+    let current_link = update_current_symlink(&source.version_label)?;
+    let launcher_link = update_launcher_symlink_to_current()?;
+
+    Ok(PublishedBuild {
+        version: source.version_label.clone(),
+        source_fingerprint: source.fingerprint.clone(),
+        versioned_path,
+        current_link,
+        launcher_link,
+        previous_current_version,
+    })
+}
+
 /// Install the local release binary into immutable versions and make it the active `current`
 /// build + launcher, while keeping `stable` untouched.
 pub fn publish_local_current_build(repo_dir: &std::path::Path) -> Result<PathBuf> {
-    let source = release_binary_path(repo_dir);
-    if !source.exists() {
-        anyhow::bail!("Binary not found at {:?}", source);
-    }
-
-    let version = repo_build_version(repo_dir)?;
-    let versioned = install_binary_at_version(&source, &version)?;
-    update_current_symlink(&version)?;
-    update_launcher_symlink_to_current()?;
-
-    Ok(versioned)
+    let source = current_source_state(repo_dir)?;
+    Ok(publish_local_current_build_for_source(repo_dir, &source)?.versioned_path)
 }
 
 /// Install release binary into immutable versions, promote it to stable, and also make it the
@@ -783,6 +1091,56 @@ pub fn clear_build_progress() -> Result<()> {
 mod tests {
     use super::*;
 
+    fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp_home.path());
+        let result = f();
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+        result
+    }
+
+    fn create_git_repo_fixture() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join(".git")).expect("create .git dir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"jcode\"\nversion = \"0.0.0\"\n",
+        )
+        .expect("write Cargo.toml");
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git config name");
+        std::process::Command::new("git")
+            .args(["add", "Cargo.toml"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git commit");
+        temp
+    }
+
     #[test]
     fn test_build_manifest_default() {
         let manifest = BuildManifest::default();
@@ -865,5 +1223,66 @@ mod tests {
             serde_json::to_string(&CanaryStatus::Passed).unwrap(),
             "\"passed\""
         );
+    }
+
+    #[test]
+    fn dirty_source_state_uses_fingerprint_in_version_label() {
+        let repo = create_git_repo_fixture();
+        std::fs::write(repo.path().join("notes.txt"), "dirty change\n").expect("write dirty file");
+
+        let state = current_source_state(repo.path()).expect("source state");
+        assert!(state.dirty);
+        assert!(state.version_label.starts_with(&format!("{}-dirty-", state.short_hash)));
+        assert!(state.version_label.len() > state.short_hash.len() + 7);
+    }
+
+    #[test]
+    fn pending_activation_can_complete_and_roll_back() {
+        with_temp_jcode_home(|| {
+            let current_version = "stable-prev";
+            install_binary_at_version(std::env::current_exe().as_ref().unwrap(), current_version)
+                .expect("install previous version");
+            update_current_symlink(current_version).expect("publish previous current");
+
+            let mut manifest = BuildManifest::default();
+            manifest
+                .set_pending_activation(PendingActivation {
+                    session_id: "session-a".to_string(),
+                    new_version: "canary-next".to_string(),
+                    previous_current_version: Some(current_version.to_string()),
+                    source_fingerprint: Some("fingerprint-a".to_string()),
+                    requested_at: Utc::now(),
+                })
+                .expect("set pending activation");
+
+            let completed = complete_pending_activation_for_session("session-a")
+                .expect("complete activation")
+                .expect("completed version");
+            assert_eq!(completed, "canary-next");
+            let manifest = BuildManifest::load().expect("load manifest");
+            assert!(manifest.pending_activation.is_none());
+            assert_eq!(manifest.canary.as_deref(), Some("canary-next"));
+            assert_eq!(manifest.canary_status, Some(CanaryStatus::Passed));
+
+            let mut manifest = BuildManifest::load().expect("reload manifest");
+            manifest
+                .set_pending_activation(PendingActivation {
+                    session_id: "session-b".to_string(),
+                    new_version: "canary-bad".to_string(),
+                    previous_current_version: Some(current_version.to_string()),
+                    source_fingerprint: Some("fingerprint-b".to_string()),
+                    requested_at: Utc::now(),
+                })
+                .expect("set second pending activation");
+
+            let rolled_back = rollback_pending_activation_for_session("session-b")
+                .expect("rollback activation")
+                .expect("rolled back version");
+            assert_eq!(rolled_back, "canary-bad");
+            let restored = read_current_version()
+                .expect("read current version")
+                .expect("restored current version");
+            assert_eq!(restored, current_version);
+        });
     }
 }
