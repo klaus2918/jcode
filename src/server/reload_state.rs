@@ -147,18 +147,6 @@ pub async fn inspect_reload_wait_status(
     max_age: Duration,
     last_known_pid: Option<u32>,
 ) -> ReloadWaitStatus {
-    if is_server_ready(socket_path).await || has_live_listener(socket_path).await {
-        if recent_reload_state(max_age).is_some() || last_known_pid.is_some() {
-            crate::logging::info(&format!(
-                "inspect_reload_wait_status: socket {} is ready/live (last_known_pid={:?}, state={})",
-                socket_path.display(),
-                last_known_pid,
-                reload_state_summary(max_age)
-            ));
-        }
-        return ReloadWaitStatus::Ready;
-    }
-
     if let Some(state) = recent_reload_state(max_age) {
         let status = match state.phase {
             ReloadPhase::SocketReady => ReloadWaitStatus::Ready,
@@ -184,6 +172,18 @@ pub async fn inspect_reload_wait_status(
             reload_state_summary(max_age)
         ));
         return status;
+    }
+
+    if is_server_ready(socket_path).await || has_live_listener(socket_path).await {
+        if last_known_pid.is_some() {
+            crate::logging::info(&format!(
+                "inspect_reload_wait_status: socket {} is ready/live without active marker (last_known_pid={:?}, state={})",
+                socket_path.display(),
+                last_known_pid,
+                reload_state_summary(max_age)
+            ));
+        }
+        return ReloadWaitStatus::Ready;
     }
 
     if let Some(pid) = last_known_pid {

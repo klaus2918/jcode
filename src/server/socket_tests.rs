@@ -216,6 +216,44 @@ async fn inspect_reload_wait_status_reports_ready_for_socket_ready_marker() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn inspect_reload_wait_status_keeps_waiting_while_starting_marker_is_active_even_if_socket_is_live()
+ {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+    crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
+    ReloadState {
+        request_id: "test-request".to_string(),
+        hash: "test-hash".to_string(),
+        phase: ReloadPhase::Starting,
+        pid: std::process::id(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        detail: None,
+    }
+    .write();
+
+    let socket_path = temp.path().join("jcode.sock");
+    let _listener = Listener::bind(&socket_path).expect("bind listener");
+
+    let status = inspect_reload_wait_status(&socket_path, Duration::from_secs(30), None).await;
+    assert_eq!(
+        status,
+        ReloadWaitStatus::Waiting {
+            pid: Some(std::process::id())
+        }
+    );
+
+    clear_reload_marker();
+    if let Some(prev_runtime) = prev_runtime {
+        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+    } else {
+        crate::env::remove_var("JCODE_RUNTIME_DIR");
+    }
+}
+
 #[tokio::test]
 async fn inspect_reload_wait_status_reports_idle_without_marker_or_listener() {
     let _guard = crate::storage::lock_test_env();
