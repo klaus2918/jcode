@@ -1,6 +1,6 @@
 use anyhow::Result;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 #[cfg(test)]

@@ -373,9 +373,6 @@ fn dedup_sources(sources: Vec<(String, String)>) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
         vars: Vec<(String, Option<String>)>,
@@ -529,7 +526,7 @@ mod tests {
 
     #[test]
     fn matrix_openrouter_like_sources_include_all_static_profiles() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let guard = EnvGuard::save(&[
             "JCODE_OPENROUTER_API_KEY_NAME",
             "JCODE_OPENROUTER_ENV_FILE",
@@ -560,7 +557,7 @@ mod tests {
 
     #[test]
     fn matrix_openrouter_like_sources_accept_valid_overrides() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let _guard = EnvGuard::save(&[
             "JCODE_OPENROUTER_API_KEY_NAME",
             "JCODE_OPENROUTER_ENV_FILE",
@@ -583,7 +580,7 @@ mod tests {
 
     #[test]
     fn matrix_openrouter_like_sources_reject_invalid_overrides() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let _guard = EnvGuard::save(&[
             "JCODE_OPENROUTER_API_KEY_NAME",
             "JCODE_OPENROUTER_ENV_FILE",
@@ -597,17 +594,21 @@ mod tests {
         crate::env::set_var("JCODE_OPENAI_COMPAT_ENV_FILE", "../bad-compat.env");
 
         let sources = openrouter_like_api_key_sources();
-        assert!(!sources
-            .iter()
-            .any(|(key, _)| key == "bad-key-name" || key == "bad key"));
-        assert!(!sources
-            .iter()
-            .any(|(_, file)| file == "../bad.env" || file == "../bad-compat.env"));
+        assert!(
+            !sources
+                .iter()
+                .any(|(key, _)| key == "bad-key-name" || key == "bad key")
+        );
+        assert!(
+            !sources
+                .iter()
+                .any(|(_, file)| file == "../bad.env" || file == "../bad-compat.env")
+        );
     }
 
     #[test]
     fn matrix_openai_compatible_profile_overrides_apply_when_valid() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let _guard = EnvGuard::save(&[
             "JCODE_OPENAI_COMPAT_API_BASE",
             "JCODE_OPENAI_COMPAT_API_KEY_NAME",
@@ -635,7 +636,7 @@ mod tests {
 
     #[test]
     fn matrix_openai_compatible_profile_overrides_reject_invalid_values() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let _guard = EnvGuard::save(&[
             "JCODE_OPENAI_COMPAT_API_BASE",
             "JCODE_OPENAI_COMPAT_API_KEY_NAME",
@@ -654,27 +655,25 @@ mod tests {
 
     #[test]
     fn matrix_openai_compatible_profile_overrides_read_from_env_file() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::tempdir().expect("tempdir");
-        let config_root = temp.path().join("config");
-        std::fs::create_dir_all(config_root.join("jcode")).expect("config dir");
+        let config_root = temp.path().join("config").join("jcode");
+        std::fs::create_dir_all(&config_root).expect("config dir");
 
         let _guard = EnvGuard::save(&[
-            "XDG_CONFIG_HOME",
+            "JCODE_HOME",
             "JCODE_OPENAI_COMPAT_API_BASE",
             "JCODE_OPENAI_COMPAT_API_KEY_NAME",
             "JCODE_OPENAI_COMPAT_ENV_FILE",
             "JCODE_OPENAI_COMPAT_DEFAULT_MODEL",
         ]);
-        crate::env::set_var("XDG_CONFIG_HOME", &config_root);
+        crate::env::set_var("JCODE_HOME", temp.path());
         crate::env::remove_var("JCODE_OPENAI_COMPAT_API_BASE");
         crate::env::remove_var("JCODE_OPENAI_COMPAT_API_KEY_NAME");
         crate::env::remove_var("JCODE_OPENAI_COMPAT_ENV_FILE");
         crate::env::remove_var("JCODE_OPENAI_COMPAT_DEFAULT_MODEL");
         std::fs::write(
-            config_root
-                .join("jcode")
-                .join(OPENAI_COMPAT_PROFILE.env_file),
+            config_root.join(OPENAI_COMPAT_PROFILE.env_file),
             concat!(
                 "JCODE_OPENAI_COMPAT_API_BASE=https://api.example.com/v1\n",
                 "JCODE_OPENAI_COMPAT_API_KEY_NAME=EXAMPLE_API_KEY\n",
@@ -693,16 +692,16 @@ mod tests {
 
     #[test]
     fn matrix_load_api_key_from_env_or_config_prefers_env() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::tempdir().expect("tempdir");
-        let config_root = temp.path().join("config");
-        std::fs::create_dir_all(config_root.join("jcode")).expect("config dir");
+        let config_root = temp.path().join("config").join("jcode");
+        std::fs::create_dir_all(&config_root).expect("config dir");
 
-        let _guard = EnvGuard::save(&["XDG_CONFIG_HOME", "OPENCODE_API_KEY"]);
-        crate::env::set_var("XDG_CONFIG_HOME", &config_root);
+        let _guard = EnvGuard::save(&["JCODE_HOME", "OPENCODE_API_KEY"]);
+        crate::env::set_var("JCODE_HOME", temp.path());
         crate::env::set_var("OPENCODE_API_KEY", "env-secret");
         std::fs::write(
-            config_root.join("jcode").join("opencode.env"),
+            config_root.join("opencode.env"),
             "OPENCODE_API_KEY=file-secret\n",
         )
         .expect("env file");
@@ -715,16 +714,16 @@ mod tests {
 
     #[test]
     fn matrix_load_api_key_from_env_or_config_reads_config_file() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::tempdir().expect("tempdir");
-        let config_root = temp.path().join("config");
-        std::fs::create_dir_all(config_root.join("jcode")).expect("config dir");
+        let config_root = temp.path().join("config").join("jcode");
+        std::fs::create_dir_all(&config_root).expect("config dir");
 
-        let _guard = EnvGuard::save(&["XDG_CONFIG_HOME", "OPENCODE_API_KEY"]);
-        crate::env::set_var("XDG_CONFIG_HOME", &config_root);
+        let _guard = EnvGuard::save(&["JCODE_HOME", "OPENCODE_API_KEY"]);
+        crate::env::set_var("JCODE_HOME", temp.path());
         crate::env::remove_var("OPENCODE_API_KEY");
         std::fs::write(
-            config_root.join("jcode").join("opencode.env"),
+            config_root.join("opencode.env"),
             "OPENCODE_API_KEY=file-secret\n",
         )
         .expect("env file");
@@ -737,20 +736,17 @@ mod tests {
 
     #[test]
     fn load_api_key_accepts_legacy_zai_key_name() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::storage::lock_test_env();
         let temp = tempfile::tempdir().expect("tempdir");
-        let config_root = temp.path().join("config");
-        std::fs::create_dir_all(config_root.join("jcode")).expect("config dir");
+        let config_root = temp.path().join("config").join("jcode");
+        std::fs::create_dir_all(&config_root).expect("config dir");
 
-        let _guard = EnvGuard::save(&["XDG_CONFIG_HOME", "ZHIPU_API_KEY", "ZAI_API_KEY"]);
-        crate::env::set_var("XDG_CONFIG_HOME", &config_root);
+        let _guard = EnvGuard::save(&["JCODE_HOME", "ZHIPU_API_KEY", "ZAI_API_KEY"]);
+        crate::env::set_var("JCODE_HOME", temp.path());
         crate::env::remove_var("ZHIPU_API_KEY");
         crate::env::remove_var("ZAI_API_KEY");
-        std::fs::write(
-            config_root.join("jcode").join("zai.env"),
-            "ZAI_API_KEY=legacy-secret\n",
-        )
-        .expect("env file");
+        std::fs::write(config_root.join("zai.env"), "ZAI_API_KEY=legacy-secret\n")
+            .expect("env file");
 
         assert_eq!(
             load_api_key_from_env_or_config("ZHIPU_API_KEY", "zai.env").as_deref(),
