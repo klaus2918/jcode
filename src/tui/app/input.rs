@@ -440,7 +440,7 @@ impl App {
 }
 
 pub(super) fn handle_alternate_enter(app: &mut App) {
-    if app.activate_model_picker_from_preview() {
+    if app.activate_picker_from_preview() {
         return;
     }
 
@@ -912,7 +912,7 @@ pub(super) fn handle_global_control_shortcuts(
 }
 
 pub(super) fn handle_enter(app: &mut App) -> bool {
-    if app.activate_model_picker_from_preview() {
+    if app.activate_picker_from_preview() {
         return true;
     }
     if !app.input.is_empty() {
@@ -1143,6 +1143,16 @@ impl App {
 
         if handle_modal_key(self, code, modifiers)? {
             return Ok(());
+        }
+
+        if self.pending_provider_failover.is_some() && !self.is_processing {
+            if code == KeyCode::Esc {
+                self.cancel_pending_provider_failover("Provider auto-switch canceled");
+                return Ok(());
+            }
+            if !is_scroll_only_key(self, code, modifiers) {
+                self.cancel_pending_provider_failover("Provider auto-switch canceled");
+            }
         }
 
         if handle_pre_control_shortcuts(self, code, modifiers) {
@@ -1467,6 +1477,9 @@ impl App {
             "model" => {
                 "`/model`\nOpen model picker.\n\n`/model <name>`\nSwitch model.\n\n`/model <name>@<provider>`\nPin OpenRouter routing (`@auto` clears pin)."
             }
+            "agents" => {
+                "`/agents`\nOpen the agent-model config picker.\n\n`/agents <swarm|review|judge|memory|ambient>`\nJump straight to that agent role's saved model override."
+            }
             "subagent" => {
                 "`/subagent <prompt>`\nLaunch a subagent immediately.\n\nOptional flags:\n- `--type <kind>` sets the subagent type (default `general`)\n- `--model <name>` overrides the subagent model for this run\n- `--continue <session_id>` resumes an existing subagent session"
             }
@@ -1475,6 +1488,12 @@ impl App {
             }
             "btw" => {
                 "`/btw <question>`\nAsk a side question about the current session and route the answer into the side panel.\n\nCurrent v1 behavior:\n- uses the side panel as the response surface\n- asks only from current session context\n- should not read files or run tools other than `side_panel`"
+            }
+            "catchup" => {
+                "`/catchup`\nOpen the Catch Up picker for finished sessions that need attention.\n\n`/catchup next`\nTeleport to the next session needing attention and open a Catch Up brief in the side panel.\n\n`/catchup list`\nAlias for opening the picker."
+            }
+            "back" => {
+                "`/back`\nReturn to the previous session you came from via Catch Up.\n\nWorks after a `/catchup next` jump or after selecting a session from the Catch Up picker."
             }
             "subagent-model" => {
                 "`/subagent-model`\nShow the current subagent model policy for this session.\n\n`/subagent-model <name>`\nPin a fixed model for future subagents in this session.\n\n`/subagent-model inherit`\nReset to using the current active model."
@@ -1573,7 +1592,7 @@ impl App {
 
     /// Submit input - just sets up message and flags, processing happens in next loop iteration
     pub(super) fn submit_input(&mut self) {
-        if self.activate_model_picker_from_preview() {
+        if self.activate_picker_from_preview() {
             return;
         }
 

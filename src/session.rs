@@ -150,6 +150,7 @@ pub struct StoredMessage {
 #[serde(rename_all = "snake_case")]
 pub enum StoredDisplayRole {
     System,
+    BackgroundTask,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1375,6 +1376,7 @@ pub fn render_messages(session: &Session) -> Vec<RenderedMessage> {
     for msg in &session.messages {
         let role = match msg.display_role {
             Some(StoredDisplayRole::System) => "system",
+            Some(StoredDisplayRole::BackgroundTask) => "background_task",
             None => match msg.role {
                 Role::User => "user",
                 Role::Assistant => "assistant",
@@ -1979,6 +1981,29 @@ mod tests {
         assert_eq!(rendered.len(), 1);
         assert_eq!(rendered[0].role, "system");
         assert!(rendered[0].content.contains("Background Task Completed"));
+    }
+
+    #[test]
+    fn test_render_messages_honors_background_task_display_role_override() {
+        let mut session = Session::create_with_id(
+            "session_background_task_role_test".to_string(),
+            None,
+            Some("background task role test".to_string()),
+        );
+
+        session.add_message_with_display_role(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "**Background task** `abc123` · `bash` · ✓ completed · 7.1s · exit 0\n\n_No output captured._\n\n_Full output:_ `bg action=\"output\" task_id=\"abc123\"`".to_string(),
+                cache_control: None,
+            }],
+            Some(StoredDisplayRole::BackgroundTask),
+        );
+
+        let rendered = render_messages(&session);
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].role, "background_task");
+        assert!(rendered[0].content.contains("**Background task**"));
     }
 }
 

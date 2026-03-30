@@ -118,6 +118,9 @@ pub struct Config {
     /// Provider configuration
     pub provider: ProviderConfig,
 
+    /// Agent-specific model defaults
+    pub agents: AgentsConfig,
+
     /// Ambient mode configuration
     pub ambient: AmbientConfig,
 
@@ -135,6 +138,25 @@ pub struct Config {
 
     /// Auto-judge configuration
     pub autojudge: AutoJudgeConfig,
+}
+
+/// Agent-specific model defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentsConfig {
+    /// Optional default model override for spawned swarm/subagent sessions.
+    pub swarm_model: Option<String>,
+    /// Optional default model override for the memory sidecar.
+    pub memory_model: Option<String>,
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        Self {
+            swarm_model: None,
+            memory_model: None,
+        }
+    }
 }
 
 /// Automatic end-of-turn code review configuration.
@@ -519,6 +541,33 @@ impl Default for FeatureConfig {
 }
 
 /// Provider configuration
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CrossProviderFailoverMode {
+    /// Do not resend the prompt to another provider automatically.
+    #[default]
+    Manual,
+    /// Show a 3-second cancelable countdown, then resend on another provider.
+    Countdown,
+}
+
+impl CrossProviderFailoverMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Countdown => "countdown",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "manual" => Some(Self::Manual),
+            "countdown" | "auto" | "automatic" => Some(Self::Countdown),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -536,6 +585,8 @@ pub struct ProviderConfig {
     pub openai_native_compaction_mode: String,
     /// Token threshold at which OpenAI auto native compaction should trigger.
     pub openai_native_compaction_threshold_tokens: usize,
+    /// How to handle cross-provider failover when the same input would be resent elsewhere.
+    pub cross_provider_failover: CrossProviderFailoverMode,
     /// Copilot premium request mode: "normal", "one", or "zero"
     /// "zero" means all requests are free (no premium requests consumed)
     pub copilot_premium: Option<String>,
@@ -551,6 +602,7 @@ impl Default for ProviderConfig {
             openai_service_tier: None,
             openai_native_compaction_mode: "auto".to_string(),
             openai_native_compaction_threshold_tokens: 200_000,
+            cross_provider_failover: CrossProviderFailoverMode::Manual,
             copilot_premium: None,
         }
     }
@@ -1102,6 +1154,11 @@ impl Config {
                 }
             }
         }
+        if let Ok(v) = std::env::var("JCODE_CROSS_PROVIDER_FAILOVER") {
+            if let Some(mode) = CrossProviderFailoverMode::parse(&v) {
+                self.provider.cross_provider_failover = mode;
+            }
+        }
 
         // Copilot premium mode: env var overrides config
         // If set in config but not in env, propagate config -> env
@@ -1380,6 +1437,10 @@ openai_reasoning_effort = "high"
 # OpenAI service tier override (priority|flex)
 # Set `priority` to match Codex /fast behavior (higher speed, higher usage)
 # openai_service_tier = "priority"
+# Cross-provider failover when the same prompt would be resent elsewhere.
+# manual = show a notice and let you switch yourself (default)
+# countdown = 3-second countdown before retrying on another provider; press Esc to cancel
+cross_provider_failover = "manual"
 # Copilot premium mode: "normal" (default), "one" (first msg only), "zero" (all free)
 # Set to "zero" if you have premium Copilot and want free requests
 # copilot_premium = "zero"
@@ -1528,6 +1589,14 @@ desktop_notifications = true
 - OpenAI service tier: {}
 - OpenAI native compaction: {}
 - OpenAI native compaction threshold ratio: {:.2}
+- Cross-provider failover: {}
+
+**Agent models:**
+- Swarm / subagent: {}
+- Review: {}
+- Judge: {}
+- Memory: {}
+- Ambient: {}
 
 **Gateway:**
 - Enabled: {}
@@ -1639,6 +1708,27 @@ desktop_notifications = true
                 .unwrap_or("(default)"),
             self.provider.openai_native_compaction_mode.as_str(),
             self.provider.openai_native_compaction_threshold_tokens,
+            self.provider.cross_provider_failover.as_str(),
+            self.agents
+                .swarm_model
+                .as_deref()
+                .unwrap_or("(inherit current session)"),
+            self.autoreview
+                .model
+                .as_deref()
+                .unwrap_or("(inherit current session)"),
+            self.autojudge
+                .model
+                .as_deref()
+                .unwrap_or("(inherit current session)"),
+            self.agents
+                .memory_model
+                .as_deref()
+                .unwrap_or("(sidecar auto-select)"),
+            self.ambient
+                .model
+                .as_deref()
+                .unwrap_or("(provider default)"),
             self.gateway.enabled,
             self.gateway.bind_addr,
             self.gateway.port,

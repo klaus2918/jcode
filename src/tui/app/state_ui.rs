@@ -32,7 +32,7 @@ fn infer_spawned_session_startup_hints(message: &str) -> Option<(String, (String
 
     let parent_session_id = message.split('`').nth(1).unwrap_or("parent");
     let body = format!(
-        "🔍 {} session started for parent `{}`.\n\nThis session is analysis-only: it will inspect the recent work, send exactly one DM back to the parent session, and stop. It should not continue the work or modify repo state.",
+        "🔍 {} session started for parent `{}`.\n\nThis session is analysis-only: it will inspect the recent work, send exactly one DM back to the parent session, and stop. It should not continue the work or modify repo state.\n\nJudge sessions use a user-visible mirror of the parent conversation: user prompts, visible assistant replies, and shallow tool-call summaries — not the parent's full hidden tool context.",
         label, parent_session_id
     );
 
@@ -598,6 +598,7 @@ impl App {
             ("/?".into(), "Alias for /help"),
             ("/commands".into(), "Alias for /help"),
             ("/model".into(), "List or switch models"),
+            ("/agents".into(), "Configure models for agent roles"),
             ("/subagent".into(), "Launch a subagent manually"),
             (
                 "/observe".into(),
@@ -769,6 +770,19 @@ impl App {
             return self.rank_suggestions(input, suggestions);
         }
 
+        if prefix.starts_with("/agents ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    ("/agents swarm".into(), "Configure swarm/subagent model"),
+                    ("/agents review".into(), "Configure code review model"),
+                    ("/agents judge".into(), "Configure judge model"),
+                    ("/agents memory".into(), "Configure memory sidecar model"),
+                    ("/agents ambient".into(), "Configure ambient model"),
+                ],
+            );
+        }
+
         if prefix.starts_with("/subagent-model ") {
             let mut suggestions = vec![
                 (
@@ -903,6 +917,10 @@ impl App {
         // /model opens the interactive picker, and `/model <name>` supports direct completion.
         if prefix_trimmed == "/model" || prefix_trimmed == "/models" {
             return vec![("/model".into(), "Open model picker or type `/model <name>`")];
+        }
+
+        if prefix_trimmed == "/agents" {
+            return vec![("/agents".into(), "Open agent model config picker")];
         }
 
         if prefix.starts_with("/help ") || prefix.starts_with("/? ") {
@@ -1351,6 +1369,7 @@ impl App {
                 | "/btw"
                 | "/observe"
                 | "/model"
+                | "/agents"
                 | "/effort"
                 | "/fast"
                 | "/transport"

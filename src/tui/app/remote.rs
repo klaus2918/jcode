@@ -654,6 +654,31 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
     let _ = check_debug_command(app, remote).await;
 
     if !app.is_processing {
+        if let Some(request) = app.take_pending_catchup_resume() {
+            match remote.resume_session(&request.target_session_id).await {
+                Ok(()) => {
+                    let label = crate::id::extract_session_name(&request.target_session_id)
+                        .map(|name| name.to_string())
+                        .unwrap_or_else(|| request.target_session_id.clone());
+                    let show_brief = request.show_brief;
+                    app.begin_in_flight_catchup_resume(request);
+                    app.set_status_notice(if show_brief {
+                        format!("Catch Up → {}", label)
+                    } else {
+                        format!("Back → {}", label)
+                    });
+                    return;
+                }
+                Err(err) => {
+                    app.clear_in_flight_catchup_resume();
+                    app.push_display_message(DisplayMessage::error(format!(
+                        "Failed to switch Catch Up session: {}",
+                        err
+                    )));
+                }
+            }
+        }
+
         if let Some(target_session) = crate::tui::workspace_client::take_pending_resume_session() {
             match remote.resume_session(&target_session).await {
                 Ok(()) => {
@@ -2561,6 +2586,8 @@ pub(super) fn handle_server_event(
                     return false;
                 }
             }
+            let is_failover_prompt =
+                crate::provider::parse_failover_prompt_message(&message).is_some();
             app.push_display_message(DisplayMessage {
                 role: "error".to_string(),
                 content: message,
@@ -2579,7 +2606,8 @@ pub(super) fn handle_server_event(
             app.thinking_buffer.clear();
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
-            if !app.schedule_pending_remote_retry("⚠ Remote request failed.") {
+            if !is_failover_prompt && !app.schedule_pending_remote_retry("⚠ Remote request failed.")
+            {
                 app.clear_pending_remote_retry();
             }
             false
@@ -2787,6 +2815,8 @@ pub(super) fn handle_server_event(
                     "Ignoring duplicate History event for active session after local state was restored",
                 );
             }
+
+            app.maybe_show_catchup_after_history(&session_id);
 
             if was_interrupted == Some(true) && !app.display_messages.is_empty() {
                 crate::logging::info(
@@ -3815,7 +3845,7 @@ async fn handle_remote_key_internal(
         && modifiers.contains(KeyModifiers::CONTROL)
         && !app.input.trim().starts_with('/')
     {
-        if app.activate_model_picker_from_preview() {
+        if app.activate_picker_from_preview() {
             return Ok(());
         }
 
@@ -3921,7 +3951,7 @@ async fn handle_remote_key_internal(
             app.autocomplete();
         }
         KeyCode::Enter => {
-            if app.activate_model_picker_from_preview() {
+            if app.activate_picker_from_preview() {
                 return Ok(());
             }
             if !app.input.is_empty() {
@@ -4036,6 +4066,10 @@ async fn handle_remote_key_internal(
 
                 if trimmed == "/model" || trimmed == "/models" {
                     app.open_model_picker();
+                    return Ok(());
+                }
+
+                if super::commands::handle_agents_command(app, trimmed) {
                     return Ok(());
                 }
 

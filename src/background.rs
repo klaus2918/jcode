@@ -563,6 +563,14 @@ impl BackgroundTaskManager {
         )
     }
 
+    /// Best-effort synchronous check for whether a task is still live in this process.
+    pub fn is_live_task(&self, task_id: &str) -> bool {
+        let Ok(tasks) = self.tasks.try_read() else {
+            return false;
+        };
+        tasks.contains_key(task_id)
+    }
+
     /// Get full output of a task
     pub async fn output(&self, task_id: &str) -> Option<String> {
         let output_path = self.output_path_for(task_id);

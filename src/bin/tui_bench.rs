@@ -509,9 +509,16 @@ fn session_to_display_messages(session: &Session, max_messages: usize) -> Vec<Di
         if text.trim().is_empty() {
             continue;
         }
-        if message.display_role == Some(StoredDisplayRole::System) {
-            out.push(DisplayMessage::system(text));
-            continue;
+        match message.display_role {
+            Some(StoredDisplayRole::System) => {
+                out.push(DisplayMessage::system(text));
+                continue;
+            }
+            Some(StoredDisplayRole::BackgroundTask) => {
+                out.push(DisplayMessage::background_task(text));
+                continue;
+            }
+            None => {}
         }
         match message.role {
             Role::User => out.push(DisplayMessage::user(text)),

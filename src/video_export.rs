@@ -90,6 +90,25 @@ fn get_terminal_font() -> (String, f64) {
     ("JetBrains Mono".to_string(), 11.0)
 }
 
+fn swarm_export_grid(pane_count: u16) -> (u16, u16) {
+    let cols = match pane_count {
+        0 | 1 => 1,
+        2 => 2,
+        4 => 4,
+        _ => 2,
+    };
+    let rows = ((pane_count + cols - 1) / cols).max(1);
+    (cols, rows)
+}
+
+fn swarm_export_font_size(base_font_size: f64, pane_count: u16, cols: u16, rows: u16) -> f64 {
+    if pane_count == 4 && cols == 4 && rows == 1 {
+        (base_font_size * 0.8).max(8.0)
+    } else {
+        base_font_size
+    }
+}
+
 pub async fn export_video(
     session: &crate::session::Session,
     timeline: &[TimelineEvent],
@@ -151,20 +170,23 @@ pub async fn export_swarm_video(
 
     crate::tui::mermaid::set_video_export_mode(true);
 
-    let (font_family, font_size) = get_terminal_font();
+    let pane_count = panes.len() as u16;
+    let (cols, rows) = swarm_export_grid(pane_count);
+    let (font_family, base_font_size) = get_terminal_font();
+    let font_size = swarm_export_font_size(base_font_size, pane_count, cols, rows);
     eprintln!(
-        "  Rendering swarm replay at {}x{}, {}fps, {:.1}x speed ({} panes, font: {} {}pt)...",
+        "  Rendering swarm replay at {}x{}, {}fps, {:.1}x speed ({} panes, layout: {}x{}, font: {} {:.1}pt)...",
         width,
         height,
         fps,
         speed,
         panes.len(),
+        cols,
+        rows,
         font_family,
         font_size
     );
 
-    let pane_count = panes.len() as u16;
-    let cols = if pane_count <= 2 { pane_count } else { 2 };
     let rows = ((pane_count + cols - 1) / cols).max(1);
     let pane_width = (width / cols).max(1);
     let pane_height = (height / rows).max(1);
@@ -189,7 +211,7 @@ pub async fn export_swarm_video(
         });
     }
 
-    let frames = crate::replay::compose_swarm_buffers(&rendered_panes, width, height, fps);
+    let frames = crate::replay::compose_swarm_buffers(&rendered_panes, width, height, fps, cols);
     crate::tui::mermaid::set_video_export_mode(false);
 
     let font_px = font_size * 96.0 / 72.0;
@@ -1066,4 +1088,24 @@ fn box_drawing_to_svg(
         ));
     }
     Some(svg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{swarm_export_font_size, swarm_export_grid};
+
+    #[test]
+    fn four_pane_swarm_export_prefers_single_row() {
+        assert_eq!(swarm_export_grid(1), (1, 1));
+        assert_eq!(swarm_export_grid(2), (2, 1));
+        assert_eq!(swarm_export_grid(4), (4, 1));
+        assert_eq!(swarm_export_grid(5), (2, 3));
+    }
+
+    #[test]
+    fn four_wide_swarm_export_uses_smaller_font() {
+        assert!((swarm_export_font_size(11.0, 4, 4, 1) - 8.8).abs() < f64::EPSILON);
+        assert!((swarm_export_font_size(11.0, 4, 2, 2) - 11.0).abs() < f64::EPSILON);
+        assert!((swarm_export_font_size(9.0, 4, 4, 1) - 8.0).abs() < f64::EPSILON);
+    }
 }

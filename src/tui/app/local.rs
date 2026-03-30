@@ -46,6 +46,7 @@ pub(super) fn handle_tick(app: &mut App) {
     }
     app.refresh_side_panel_linked_content_if_due();
     app.poll_compaction_completion();
+    app.maybe_progress_provider_failover_countdown();
     app.check_debug_command();
     app.check_stable_version();
     app.maybe_finish_background_client_reload();
@@ -212,7 +213,7 @@ fn handle_background_task_completed(app: &mut App, task: BackgroundTaskCompleted
     }
 
     let notification = format_background_task_notification_markdown(&task);
-    app.push_display_message(DisplayMessage::system(notification.clone()));
+    app.push_display_message(DisplayMessage::background_task(notification.clone()));
     app.set_status_notice(background_task_status_notice(&task));
 
     if !app.is_processing {
@@ -231,7 +232,7 @@ fn handle_background_task_completed(app: &mut App, task: BackgroundTaskCompleted
                 text: format_background_task_notification_markdown(&task),
                 cache_control: None,
             }],
-            Some(StoredDisplayRole::System),
+            Some(StoredDisplayRole::BackgroundTask),
         );
         let _ = app.session.save();
     }

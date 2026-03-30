@@ -39,6 +39,18 @@ impl App {
         }
 
         self.queued_messages = queued_messages;
+        if self.has_queued_followups() {
+            self.is_processing = true;
+            self.status = ProcessingStatus::Sending;
+            if self.processing_started.is_none() {
+                self.processing_started = Some(Instant::now());
+            }
+            if self.is_remote {
+                self.pending_queued_dispatch = true;
+            } else {
+                self.pending_turn = true;
+            }
+        }
     }
 
     pub(super) async fn begin_remote_send(
@@ -179,6 +191,7 @@ impl App {
             last_api_completed: None,
             last_turn_input_tokens: None,
             pending_turn: false,
+            pending_provider_failover: None,
             session_save_pending: false,
             streaming_tool_calls: Vec::new(),
             provider_session_id: None,
@@ -332,6 +345,10 @@ impl App {
             changelog_scroll: None,
             help_scroll: None,
             session_picker_overlay: None,
+            session_picker_mode: SessionPickerMode::Resume,
+            catchup_return_stack: Vec::new(),
+            pending_catchup_resume: None,
+            in_flight_catchup_resume: None,
             login_picker_overlay: None,
             account_picker_overlay: None,
         };
@@ -444,6 +461,7 @@ impl App {
             last_api_completed: None,
             last_turn_input_tokens: None,
             pending_turn: false,
+            pending_provider_failover: None,
             session_save_pending: false,
             streaming_tool_calls: Vec::new(),
             provider_session_id: None,
@@ -597,6 +615,10 @@ impl App {
             changelog_scroll: None,
             help_scroll: None,
             session_picker_overlay: None,
+            session_picker_mode: SessionPickerMode::Resume,
+            catchup_return_stack: Vec::new(),
+            pending_catchup_resume: None,
+            in_flight_catchup_resume: None,
             login_picker_overlay: None,
             account_picker_overlay: None,
         };

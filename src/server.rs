@@ -82,14 +82,14 @@ pub use self::reload_state::{
 };
 
 #[cfg(unix)]
+pub use self::socket::spawn_server_notify;
+#[cfg(unix)]
 use self::socket::{acquire_daemon_lock, mark_close_on_exec};
-use self::socket::{signal_ready_fd, socket_has_live_listener};
 pub use self::socket::{
     cleanup_socket_pair, connect_socket, debug_socket_path, has_live_listener, is_server_ready,
     set_socket_path, socket_path, wait_for_server_ready,
 };
-#[cfg(unix)]
-pub use self::socket::spawn_server_notify;
+use self::socket::{signal_ready_fd, socket_has_live_listener};
 
 pub use self::util::ServerIdentity;
 use self::util::{
@@ -586,6 +586,20 @@ impl Server {
         ));
         crate::logging::info(&format!("Server listening on {:?}", self.socket_path));
         crate::logging::info(&format!("Debug socket on {:?}", self.debug_socket_path));
+
+        // Warm the first per-client registry in the background so the initial
+        // client attach can overlap this work with terminal/UI startup instead
+        // of paying the entire cost on the critical path after connect.
+        let registry_warm_provider = Arc::clone(&self.provider);
+        tokio::spawn(async move {
+            let start = Instant::now();
+            let provider = registry_warm_provider.fork();
+            let _ = crate::tool::Registry::new(provider).await;
+            crate::logging::info(&format!(
+                "Registry prewarm completed in {}ms",
+                start.elapsed().as_millis()
+            ));
+        });
 
         let registry_info = crate::registry::ServerInfo {
             id: self.identity.id.clone(),

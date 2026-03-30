@@ -1225,7 +1225,10 @@ mod tests {
             "prompt": "fallback"
         }))
         .expect("spawn payload should deserialize");
-        assert_eq!(preferred.spawn_initial_message().as_deref(), Some("preferred"));
+        assert_eq!(
+            preferred.spawn_initial_message().as_deref(),
+            Some("preferred")
+        );
     }
 
     #[test]

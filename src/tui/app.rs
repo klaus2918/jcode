@@ -37,6 +37,7 @@ use tokio::sync::RwLock;
 use tokio::time::interval;
 
 mod auth;
+mod catchup;
 mod commands;
 mod conversation_state;
 mod copy_selection;
@@ -72,6 +73,27 @@ struct PendingRemoteMessage {
     auto_retry: bool,
     retry_attempts: u8,
     retry_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingProviderFailover {
+    prompt: crate::provider::ProviderFailoverPrompt,
+    deadline: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum SessionPickerMode {
+    #[default]
+    Resume,
+    CatchUp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PendingCatchupResume {
+    pub target_session_id: String,
+    pub source_session_id: Option<String>,
+    pub queue_position: Option<(usize, usize)>,
+    pub show_brief: bool,
 }
 
 const MEMORY_INJECTION_SUPPRESSION_SECS: u64 = 90;
@@ -356,6 +378,8 @@ pub struct App {
     last_turn_input_tokens: Option<u64>,
     // Pending turn to process (allows UI to redraw before processing starts)
     pending_turn: bool,
+    // Pending cross-provider resend after a failover warning/countdown.
+    pending_provider_failover: Option<PendingProviderFailover>,
     // Local session file write to flush once the first "sending" frame is visible.
     session_save_pending: bool,
     // Tool calls detected during streaming (shown in real-time with details)
@@ -630,6 +654,10 @@ pub struct App {
     help_scroll: Option<usize>,
     /// Session picker overlay (None = not visible)
     session_picker_overlay: Option<RefCell<super::session_picker::SessionPicker>>,
+    session_picker_mode: SessionPickerMode,
+    catchup_return_stack: Vec<String>,
+    pending_catchup_resume: Option<PendingCatchupResume>,
+    in_flight_catchup_resume: Option<PendingCatchupResume>,
     /// Login picker overlay (None = not visible)
     login_picker_overlay: Option<RefCell<super::login_picker::LoginPicker>>,
     /// Account picker overlay (None = not visible)

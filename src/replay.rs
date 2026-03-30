@@ -689,6 +689,7 @@ pub fn compose_swarm_buffers(
     width: u16,
     height: u16,
     fps: u32,
+    cols: u16,
 ) -> Vec<(f64, ratatui::buffer::Buffer)> {
     use ratatui::{buffer::Buffer, layout::Rect};
 
@@ -704,7 +705,7 @@ pub fn compose_swarm_buffers(
         .fold(0.0, f64::max);
 
     let pane_count = pane_frames.len() as u16;
-    let cols = if pane_count <= 2 { pane_count } else { 2 };
+    let cols = cols.clamp(1, pane_count.max(1));
     let rows = ((pane_count + cols - 1) / cols).max(1);
     let pane_width = (width / cols).max(1);
     let pane_height = (height / rows).max(1);
@@ -1335,7 +1336,7 @@ mod tests {
             },
         ];
 
-        let frames = compose_swarm_buffers(&panes, 8, 2, 1);
+        let frames = compose_swarm_buffers(&panes, 8, 2, 1, 2);
         assert!(!frames.is_empty());
         let buf = &frames[0].1;
         assert_eq!(buf[(0, 0)].symbol(), "L");

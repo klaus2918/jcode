@@ -130,6 +130,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     ));
     lines.push(help_entry("/model", "List or switch models"));
     lines.push(help_entry("/model <name>", "Switch to a different model"));
+    lines.push(help_entry("/agents", "Configure models for agent roles"));
     lines.push(help_entry(
         "/effort <level>",
         "Set reasoning effort (none|low|medium|high|xhigh)",
@@ -198,7 +199,23 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "/workspace [status|on|off|add]",
         "Enable and manage the Niri-style session workspace",
     ));
+    lines.push(help_entry(
+        "/catchup [next|list]",
+        "Jump to finished sessions and open a Catch Up brief",
+    ));
+    lines.push(help_entry(
+        "/back",
+        "Return to the previous Catch Up source session",
+    ));
     lines.push(help_entry("/resume", "Browse and resume previous sessions"));
+    lines.push(help_entry(
+        "/catchup [next]",
+        "Jump into finished sessions with a side-panel brief",
+    ));
+    lines.push(help_entry(
+        "/back",
+        "Return to the previous Catch Up session",
+    ));
     lines.push(help_entry("/save [label]", "Bookmark session for /resume"));
     lines.push(help_entry(
         "/unsave",

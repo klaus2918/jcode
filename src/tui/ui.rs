@@ -72,7 +72,8 @@ use memory_ui::{
 use memory_ui::{group_into_tiles, render_memory_tiles, split_by_display_width};
 use messages::get_cached_message_lines;
 pub(crate) use messages::{
-    render_assistant_message, render_swarm_message, render_system_message, render_tool_message,
+    render_assistant_message, render_background_task_message, render_swarm_message,
+    render_system_message, render_tool_message,
 };
 use picker_ui::draw_picker_line;
 pub use pinned_ui::SidePanelDebugStats;
@@ -1713,7 +1714,8 @@ impl FullPrepCacheState {
         if let Some(pos) = self.entries.iter().position(|entry| entry.key == key) {
             self.entries.remove(pos);
         }
-        self.entries.push_front(FullPrepCacheEntry { key, prepared });
+        self.entries
+            .push_front(FullPrepCacheEntry { key, prepared });
         while self.entries.len() > FULL_PREP_CACHE_MAX_ENTRIES {
             self.entries.pop_back();
         }

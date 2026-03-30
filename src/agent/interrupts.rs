@@ -19,6 +19,7 @@ pub struct SoftInterruptMessage {
 pub enum SoftInterruptSource {
     User,
     System,
+    BackgroundTask,
 }
 
 impl SoftInterruptSource {
@@ -26,6 +27,7 @@ impl SoftInterruptSource {
         match self {
             Self::User => None,
             Self::System => Some(StoredDisplayRole::System),
+            Self::BackgroundTask => Some(StoredDisplayRole::BackgroundTask),
         }
     }
 
@@ -33,6 +35,7 @@ impl SoftInterruptSource {
         match self {
             Self::User => None,
             Self::System => Some("system".to_string()),
+            Self::BackgroundTask => Some("background_task".to_string()),
         }
     }
 }

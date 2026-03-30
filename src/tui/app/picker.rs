@@ -1,17 +1,162 @@
 use super::*;
 use crate::tui::session_picker::{self, OverlayAction, PickerResult, SessionPicker};
 use crate::tui::{
-    AccountPickerSelection, ModelEntry, PickerKind, PickerSelection, PickerState, RouteOption,
+    AccountPickerSelection, AgentModelTarget, ModelEntry, PickerKind, PickerSelection, PickerState,
+    RouteOption,
 };
 
 enum InlinePickerPreviewRequest {
     Model {
         filter: String,
     },
+    Login {
+        filter: String,
+    },
     Account {
         provider_filter: Option<String>,
         filter: String,
     },
+}
+
+fn catchup_candidates(current_session_id: &str) -> Vec<crate::tui::session_picker::SessionInfo> {
+    session_picker::load_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|session| session.id != current_session_id && session.needs_catchup)
+        .collect()
+}
+
+fn catchup_queue_position(current_session_id: &str, session_id: &str) -> Option<(usize, usize)> {
+    let candidates = catchup_candidates(current_session_id);
+    let total = candidates.len();
+    candidates
+        .iter()
+        .position(|session| session.id == session_id)
+        .map(|idx| (idx + 1, total))
+}
+
+fn parse_agent_model_target(input: &str) -> Option<AgentModelTarget> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "swarm" | "agent" | "agents" | "subagent" | "subagents" => Some(AgentModelTarget::Swarm),
+        "review" | "reviewer" | "code-review" | "codereview" => Some(AgentModelTarget::Review),
+        "judge" | "judging" | "execution-judge" | "autojudge" => Some(AgentModelTarget::Judge),
+        "memory" | "memories" | "sidecar" => Some(AgentModelTarget::Memory),
+        "ambient" => Some(AgentModelTarget::Ambient),
+        _ => None,
+    }
+}
+
+fn agent_model_target_label(target: AgentModelTarget) -> &'static str {
+    match target {
+        AgentModelTarget::Swarm => "Swarm / subagent",
+        AgentModelTarget::Review => "Code review",
+        AgentModelTarget::Judge => "Judge",
+        AgentModelTarget::Memory => "Memory",
+        AgentModelTarget::Ambient => "Ambient",
+    }
+}
+
+fn agent_model_target_slug(target: AgentModelTarget) -> &'static str {
+    match target {
+        AgentModelTarget::Swarm => "swarm",
+        AgentModelTarget::Review => "review",
+        AgentModelTarget::Judge => "judge",
+        AgentModelTarget::Memory => "memory",
+        AgentModelTarget::Ambient => "ambient",
+    }
+}
+
+fn agent_model_target_config_path(target: AgentModelTarget) -> &'static str {
+    match target {
+        AgentModelTarget::Swarm => "agents.swarm_model",
+        AgentModelTarget::Review => "autoreview.model",
+        AgentModelTarget::Judge => "autojudge.model",
+        AgentModelTarget::Memory => "agents.memory_model",
+        AgentModelTarget::Ambient => "ambient.model",
+    }
+}
+
+fn load_agent_model_override(target: AgentModelTarget) -> Option<String> {
+    let cfg = crate::config::Config::load();
+    match target {
+        AgentModelTarget::Swarm => cfg.agents.swarm_model,
+        AgentModelTarget::Review => cfg.autoreview.model,
+        AgentModelTarget::Judge => cfg.autojudge.model,
+        AgentModelTarget::Memory => cfg.agents.memory_model,
+        AgentModelTarget::Ambient => cfg.ambient.model,
+    }
+}
+
+fn save_agent_model_override(target: AgentModelTarget, model: Option<&str>) -> anyhow::Result<()> {
+    let mut cfg = crate::config::Config::load();
+    let value = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    match target {
+        AgentModelTarget::Swarm => cfg.agents.swarm_model = value,
+        AgentModelTarget::Review => cfg.autoreview.model = value,
+        AgentModelTarget::Judge => cfg.autojudge.model = value,
+        AgentModelTarget::Memory => cfg.agents.memory_model = value,
+        AgentModelTarget::Ambient => cfg.ambient.model = value,
+    }
+    cfg.save()
+}
+
+fn model_entry_base_name(entry: &ModelEntry) -> String {
+    if entry.effort.is_some() {
+        entry
+            .name
+            .rsplit_once(" (")
+            .map(|(base, _)| base.to_string())
+            .unwrap_or_else(|| entry.name.clone())
+    } else {
+        entry.name.clone()
+    }
+}
+
+fn model_entry_saved_spec(entry: &ModelEntry) -> String {
+    let bare_name = model_entry_base_name(entry);
+    let route = entry.routes.get(entry.selected_route);
+    if let Some(route) = route {
+        if route.api_method == "copilot" {
+            format!("copilot:{}", bare_name)
+        } else if route.api_method == "cursor" {
+            format!("cursor:{}", bare_name)
+        } else if route.api_method == "openrouter" && route.provider != "auto" {
+            if bare_name.contains('/') {
+                format!("{}@{}", bare_name, route.provider)
+            } else {
+                format!("anthropic/{}@{}", bare_name, route.provider)
+            }
+        } else {
+            bare_name
+        }
+    } else {
+        bare_name
+    }
+}
+
+fn agent_model_default_summary(target: AgentModelTarget, app: &App) -> String {
+    match target {
+        AgentModelTarget::Swarm => load_agent_model_override(target)
+            .or_else(|| app.session.subagent_model.clone())
+            .unwrap_or_else(|| app.provider.model()),
+        AgentModelTarget::Review => load_agent_model_override(target)
+            .or_else(|| super::commands::preferred_one_shot_review_override().map(|(m, _)| m))
+            .or_else(|| app.session.model.clone())
+            .unwrap_or_else(|| app.provider.model()),
+        AgentModelTarget::Judge => load_agent_model_override(target)
+            .or_else(|| super::commands::preferred_one_shot_review_override().map(|(m, _)| m))
+            .or_else(|| app.session.model.clone())
+            .unwrap_or_else(|| app.provider.model()),
+        AgentModelTarget::Memory => {
+            load_agent_model_override(target).unwrap_or_else(|| "sidecar auto-select".to_string())
+        }
+        AgentModelTarget::Ambient => {
+            load_agent_model_override(target).unwrap_or_else(|| "provider default".to_string())
+        }
+    }
 }
 
 impl App {
@@ -35,19 +180,120 @@ impl App {
         None
     }
 
-    fn account_picker_preview_request(input: &str) -> Option<InlinePickerPreviewRequest> {
-        let _ = input;
+    pub(super) fn login_picker_preview_filter(input: &str) -> Option<String> {
+        let trimmed = input.trim_start();
+        let rest = trimmed.strip_prefix("/login")?;
+        if rest.is_empty() {
+            return Some(String::new());
+        }
+        if rest
+            .chars()
+            .next()
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false)
+        {
+            return Some(rest.trim_start().to_string());
+        }
         None
     }
 
-    fn inline_picker_preview_request(input: &str) -> Option<InlinePickerPreviewRequest> {
+    fn account_picker_preview_request(&self, input: &str) -> Option<InlinePickerPreviewRequest> {
+        let trimmed = input.trim_start();
+        let rest = trimmed
+            .strip_prefix("/account")
+            .or_else(|| trimmed.strip_prefix("/accounts"))?;
+
+        if rest.is_empty() {
+            return Some(InlinePickerPreviewRequest::Account {
+                provider_filter: None,
+                filter: String::new(),
+            });
+        }
+
+        if !rest
+            .chars()
+            .next()
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false)
+        {
+            return None;
+        }
+
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            return Some(InlinePickerPreviewRequest::Account {
+                provider_filter: None,
+                filter: String::new(),
+            });
+        }
+
+        let mut parts = rest.split_whitespace();
+        let first = parts.next()?;
+        let remainder = parts.collect::<Vec<_>>().join(" ");
+        let remainder = remainder.trim();
+
+        match first {
+            "switch" | "use" | "add" | "login" | "remove" | "rm" | "delete"
+            | "default-provider" | "default-model" => return None,
+            "list" | "ls" => {
+                return Some(InlinePickerPreviewRequest::Account {
+                    provider_filter: None,
+                    filter: String::new(),
+                });
+            }
+            _ => {}
+        }
+
+        let provider = crate::provider_catalog::resolve_login_provider(first);
+        let provider_filter =
+            provider.and_then(|provider| self.inline_account_picker_scope_key(Some(provider.id)));
+
+        if provider.is_some() && provider_filter.is_none() {
+            return None;
+        }
+
+        if let Some(provider_filter) = provider_filter {
+            if remainder.is_empty() {
+                return Some(InlinePickerPreviewRequest::Account {
+                    provider_filter: Some(provider_filter),
+                    filter: String::new(),
+                });
+            }
+
+            let subcommand = remainder.split_whitespace().next().unwrap_or_default();
+            match subcommand {
+                "list" | "ls" => Some(InlinePickerPreviewRequest::Account {
+                    provider_filter: Some(provider_filter),
+                    filter: String::new(),
+                }),
+                "settings" | "login" | "add" | "switch" | "use" | "remove" | "rm" | "delete"
+                | "transport" | "effort" | "fast" | "premium" | "api-base" | "api-key-name"
+                | "env-file" | "default-model" => None,
+                _ => Some(InlinePickerPreviewRequest::Account {
+                    provider_filter: Some(provider_filter),
+                    filter: remainder.to_string(),
+                }),
+            }
+        } else {
+            Some(InlinePickerPreviewRequest::Account {
+                provider_filter: None,
+                filter: rest.to_string(),
+            })
+        }
+    }
+
+    fn inline_picker_preview_request(&self, input: &str) -> Option<InlinePickerPreviewRequest> {
         Self::model_picker_preview_filter(input)
             .map(|filter| InlinePickerPreviewRequest::Model { filter })
-            .or_else(|| Self::account_picker_preview_request(input))
+            .or_else(|| {
+                Self::login_picker_preview_filter(input)
+                    .map(|filter| InlinePickerPreviewRequest::Login { filter })
+            })
+            .or_else(|| self.account_picker_preview_request(input))
     }
 
     pub(super) fn sync_model_picker_preview_from_input(&mut self) {
-        let Some(request) = Self::inline_picker_preview_request(&self.input) else {
+        let Some(request) = self.inline_picker_preview_request(&self.input) else {
             if self
                 .picker_state
                 .as_ref()
@@ -63,6 +309,9 @@ impl App {
             (_, None) => true,
             (InlinePickerPreviewRequest::Model { .. }, Some(picker)) => {
                 picker.preview && picker.kind != PickerKind::Model
+            }
+            (InlinePickerPreviewRequest::Login { .. }, Some(picker)) => {
+                !picker.preview || picker.kind != PickerKind::Login
             }
             (
                 InlinePickerPreviewRequest::Account {
@@ -91,7 +340,10 @@ impl App {
                                 PickerSelection::Account(AccountPickerSelection::OpenCenter {
                                     provider_filter: Some(ref provider_id),
                                 }) => Some(provider_id.as_str()),
-                                PickerSelection::Model => None,
+                                PickerSelection::Model
+                                | PickerSelection::Login(_)
+                                | PickerSelection::AgentTarget(_)
+                                | PickerSelection::AgentModelChoice { .. } => None,
                                 PickerSelection::Account(AccountPickerSelection::OpenCenter {
                                     provider_filter: None,
                                 }) => None,
@@ -104,6 +356,7 @@ impl App {
             let saved_cursor = self.cursor_pos;
             match &request {
                 InlinePickerPreviewRequest::Model { .. } => self.open_model_picker(),
+                InlinePickerPreviewRequest::Login { .. } => self.open_login_picker_inline(),
                 InlinePickerPreviewRequest::Account {
                     provider_filter, ..
                 } => self.open_account_picker(provider_filter.as_deref()),
@@ -120,6 +373,7 @@ impl App {
             if picker.preview {
                 picker.filter = match request {
                     InlinePickerPreviewRequest::Model { filter }
+                    | InlinePickerPreviewRequest::Login { filter }
                     | InlinePickerPreviewRequest::Account { filter, .. } => filter,
                 };
                 Self::apply_picker_filter(picker);
@@ -127,7 +381,7 @@ impl App {
         }
     }
 
-    pub(super) fn activate_model_picker_from_preview(&mut self) -> bool {
+    pub(super) fn activate_picker_from_preview(&mut self) -> bool {
         if !self
             .picker_state
             .as_ref()
@@ -144,6 +398,201 @@ impl App {
         self.cursor_pos = 0;
         let _ = self.handle_picker_key(KeyCode::Enter, KeyModifiers::NONE);
         true
+    }
+
+    pub(super) fn open_agents_picker(&mut self) {
+        let models = [
+            AgentModelTarget::Swarm,
+            AgentModelTarget::Review,
+            AgentModelTarget::Judge,
+            AgentModelTarget::Memory,
+            AgentModelTarget::Ambient,
+        ]
+        .into_iter()
+        .map(|target| {
+            let configured = load_agent_model_override(target);
+            let summary = configured
+                .clone()
+                .unwrap_or_else(|| agent_model_default_summary(target, self));
+            ModelEntry {
+                name: agent_model_target_label(target).to_string(),
+                routes: vec![RouteOption {
+                    provider: summary,
+                    api_method: agent_model_target_config_path(target).to_string(),
+                    available: true,
+                    detail: format!("/agents {}", agent_model_target_slug(target)),
+                    estimated_reference_cost_micros: None,
+                }],
+                selection: PickerSelection::AgentTarget(target),
+                selected_route: 0,
+                is_current: false,
+                is_default: configured.is_some(),
+                recommended: false,
+                recommendation_rank: usize::MAX,
+                old: false,
+                created_date: None,
+                effort: None,
+            }
+        })
+        .collect();
+
+        self.picker_state = Some(PickerState {
+            kind: PickerKind::Model,
+            filtered: (0..5).collect(),
+            models,
+            selected: 0,
+            column: 0,
+            filter: String::new(),
+            preview: false,
+        });
+        self.input.clear();
+        self.cursor_pos = 0;
+    }
+
+    pub(super) fn open_login_picker_inline(&mut self) {
+        let status = crate::auth::AuthStatus::check_fast();
+        let providers = crate::provider_catalog::tui_login_providers();
+        let models = providers
+            .into_iter()
+            .map(|provider| {
+                let auth_state = status.state_for_provider(provider);
+                let state_label = match auth_state {
+                    crate::auth::AuthState::Available => "configured",
+                    crate::auth::AuthState::Expired => "attention",
+                    crate::auth::AuthState::NotConfigured => "setup",
+                };
+                let method_detail = status.method_detail_for_provider(provider);
+                ModelEntry {
+                    name: provider.display_name.to_string(),
+                    routes: vec![RouteOption {
+                        provider: provider.auth_kind.label().to_string(),
+                        api_method: state_label.to_string(),
+                        available: true,
+                        detail: format!("{} · {}", method_detail, provider.menu_detail),
+                        estimated_reference_cost_micros: None,
+                    }],
+                    selection: PickerSelection::Login(provider),
+                    selected_route: 0,
+                    is_current: auth_state == crate::auth::AuthState::Available,
+                    is_default: false,
+                    recommended: provider.recommended,
+                    recommendation_rank: usize::MAX,
+                    old: false,
+                    created_date: None,
+                    effort: None,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        self.picker_state = Some(PickerState {
+            kind: PickerKind::Login,
+            filtered: (0..models.len()).collect(),
+            models,
+            selected: 0,
+            column: 0,
+            filter: String::new(),
+            preview: false,
+        });
+        self.input.clear();
+        self.cursor_pos = 0;
+    }
+
+    pub(super) fn open_agent_model_picker(&mut self, target: AgentModelTarget) {
+        let configured = load_agent_model_override(target);
+        let inherit_summary = agent_model_default_summary(target, self);
+        self.open_model_picker();
+
+        if let Some(ref mut picker) = self.picker_state {
+            if target == AgentModelTarget::Memory {
+                picker.models.retain(|entry| {
+                    matches!(
+                        crate::provider::provider_for_model(&model_entry_base_name(entry)),
+                        Some("openai" | "claude")
+                    )
+                });
+            }
+
+            for entry in &mut picker.models {
+                let matches_saved = configured.as_deref().map(|saved| {
+                    let base = model_entry_base_name(entry);
+                    model_entry_saved_spec(entry) == saved || base == saved
+                }) == Some(true);
+                entry.selection = PickerSelection::AgentModelChoice {
+                    target,
+                    clear_override: false,
+                };
+                entry.is_current = matches_saved;
+                entry.is_default = false;
+            }
+
+            if let Some(saved) = configured.as_deref() {
+                let already_present = picker.models.iter().any(|entry| {
+                    model_entry_saved_spec(entry) == saved || model_entry_base_name(entry) == saved
+                });
+                if !already_present {
+                    picker.models.insert(
+                        0,
+                        ModelEntry {
+                            name: saved.to_string(),
+                            routes: vec![RouteOption {
+                                provider: "saved override".to_string(),
+                                api_method: agent_model_target_config_path(target).to_string(),
+                                available: true,
+                                detail: "not in current picker catalog".to_string(),
+                                estimated_reference_cost_micros: None,
+                            }],
+                            selection: PickerSelection::AgentModelChoice {
+                                target,
+                                clear_override: false,
+                            },
+                            selected_route: 0,
+                            is_current: true,
+                            is_default: false,
+                            recommended: false,
+                            recommendation_rank: usize::MAX,
+                            old: false,
+                            created_date: None,
+                            effort: None,
+                        },
+                    );
+                }
+            }
+
+            picker.models.insert(
+                0,
+                ModelEntry {
+                    name: format!("inherit ({})", inherit_summary),
+                    routes: vec![RouteOption {
+                        provider: "default".to_string(),
+                        api_method: agent_model_target_config_path(target).to_string(),
+                        available: true,
+                        detail: "clear saved override".to_string(),
+                        estimated_reference_cost_micros: None,
+                    }],
+                    selection: PickerSelection::AgentModelChoice {
+                        target,
+                        clear_override: true,
+                    },
+                    selected_route: 0,
+                    is_current: configured.is_none(),
+                    is_default: false,
+                    recommended: false,
+                    recommendation_rank: usize::MAX,
+                    old: false,
+                    created_date: None,
+                    effort: None,
+                },
+            );
+
+            picker.filtered = (0..picker.models.len()).collect();
+            picker.selected = picker
+                .models
+                .iter()
+                .position(|entry| entry.is_current)
+                .unwrap_or(0);
+            picker.column = 0;
+            picker.filter.clear();
+        }
     }
 
     pub(super) fn open_model_picker(&mut self) {
@@ -694,6 +1143,7 @@ impl App {
             Ok((server_groups, orphan_sessions)) => {
                 let picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
                 self.session_picker_overlay = Some(RefCell::new(picker));
+                self.session_picker_mode = SessionPickerMode::Resume;
             }
             Err(e) => {
                 self.push_display_message(DisplayMessage::error(format!(
@@ -704,40 +1154,137 @@ impl App {
         }
     }
 
-    pub(super) fn handle_session_picker_selection(&mut self, session_id: &str) {
-        let exe = launch_client_executable();
-        let mut cwd = std::env::current_dir().unwrap_or_default();
-        if let Ok(session) = crate::session::Session::load(session_id) {
-            if let Some(dir) = session.working_dir.as_deref() {
-                if std::path::Path::new(dir).is_dir() {
-                    cwd = std::path::PathBuf::from(dir);
-                }
-            }
+    pub(super) fn open_catchup_picker(&mut self) {
+        let current_session_id = super::commands::active_session_id(self);
+        if catchup_candidates(&current_session_id).is_empty() {
+            self.push_display_message(DisplayMessage::system(
+                "No sessions currently need catch up.".to_string(),
+            ));
+            self.set_status_notice("Catch Up: none waiting");
+            return;
         }
-        let socket = std::env::var("JCODE_SOCKET").ok();
-        match spawn_in_new_terminal(&exe, session_id, &cwd, socket.as_deref()) {
-            Ok(true) => {
-                let name = crate::id::extract_session_name(session_id)
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| session_id.to_string());
-                self.push_display_message(DisplayMessage::system(format!(
-                    "Resumed **{}** in new window.",
-                    name,
-                )));
-                self.set_status_notice(format!("Resumed {}", name));
-            }
-            Ok(false) => {
-                self.push_display_message(DisplayMessage::system(format!(
-                    "No terminal found. Resume manually:\n```\njcode --resume {}\n```",
-                    session_id,
-                )));
+
+        match session_picker::load_sessions_grouped() {
+            Ok((server_groups, orphan_sessions)) => {
+                let mut picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
+                picker.activate_catchup_filter();
+                self.session_picker_overlay = Some(RefCell::new(picker));
+                self.session_picker_mode = SessionPickerMode::CatchUp;
             }
             Err(e) => {
                 self.push_display_message(DisplayMessage::error(format!(
-                    "Failed to open window: {}\n\nResume manually: `jcode --resume {}`",
-                    e, session_id,
+                    "Failed to load catch-up sessions: {}",
+                    e
                 )));
             }
+        }
+    }
+
+    pub(super) fn handle_session_picker_selection(&mut self, session_ids: &[String]) {
+        if session_ids.is_empty() {
+            return;
+        }
+
+        if self.session_picker_mode == SessionPickerMode::CatchUp {
+            let current_session_id = super::commands::active_session_id(self);
+            let mut names = Vec::with_capacity(session_ids.len());
+            for session_id in session_ids {
+                let queue_position = catchup_queue_position(&current_session_id, session_id);
+                self.queue_catchup_resume(
+                    session_id.to_string(),
+                    Some(current_session_id.clone()),
+                    queue_position,
+                    true,
+                );
+                names.push(
+                    crate::id::extract_session_name(session_id)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| session_id.to_string()),
+                );
+            }
+
+            if names.len() == 1 {
+                self.push_display_message(DisplayMessage::system(format!(
+                    "Queued Catch Up for **{}**.",
+                    names[0],
+                )));
+                self.set_status_notice(format!("Catch Up → {}", names[0]));
+            } else {
+                self.push_display_message(DisplayMessage::system(format!(
+                    "Queued Catch Up for **{} sessions**: {}.",
+                    names.len(),
+                    names.join(", "),
+                )));
+                self.set_status_notice(format!("Catch Up → {} sessions", names.len()));
+            }
+            return;
+        }
+
+        let exe = launch_client_executable();
+        let default_cwd = std::env::current_dir().unwrap_or_default();
+        let socket = std::env::var("JCODE_SOCKET").ok();
+        let mut spawned = 0usize;
+        let mut failed = Vec::new();
+        let mut names = Vec::with_capacity(session_ids.len());
+
+        for session_id in session_ids {
+            let mut cwd = default_cwd.clone();
+            if let Ok(session) = crate::session::Session::load(session_id) {
+                if let Some(dir) = session.working_dir.as_deref() {
+                    if std::path::Path::new(dir).is_dir() {
+                        cwd = std::path::PathBuf::from(dir);
+                    }
+                }
+            }
+
+            let name = crate::id::extract_session_name(session_id)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| session_id.to_string());
+            match spawn_in_new_terminal(&exe, session_id, &cwd, socket.as_deref()) {
+                Ok(true) => {
+                    spawned += 1;
+                    names.push(name);
+                }
+                Ok(false) | Err(_) => failed.push(session_id.clone()),
+            }
+        }
+
+        if spawned > 0 && failed.is_empty() {
+            if names.len() == 1 {
+                self.push_display_message(DisplayMessage::system(format!(
+                    "Resumed **{}** in new window.",
+                    names[0],
+                )));
+                self.set_status_notice(format!("Resumed {}", names[0]));
+            } else {
+                self.push_display_message(DisplayMessage::system(format!(
+                    "Resumed **{} sessions** in new windows: {}.",
+                    names.len(),
+                    names.join(", "),
+                )));
+                self.set_status_notice(format!("Resumed {} sessions", names.len()));
+            }
+            return;
+        }
+
+        let manual: Vec<String> = failed
+            .iter()
+            .map(|id| format!("  jcode --resume {}", id))
+            .collect();
+
+        if spawned > 0 {
+            self.push_display_message(DisplayMessage::system(format!(
+                "Resumed **{} session(s)** in new windows. {} failed:\n```\n{}\n```",
+                spawned,
+                failed.len(),
+                manual.join("\n")
+            )));
+            self.set_status_notice(format!("Resumed {} session(s)", spawned));
+        } else {
+            self.push_display_message(DisplayMessage::system(format!(
+                "No terminal found. Resume manually:\n```\n{}\n```",
+                manual.join("\n")
+            )));
         }
     }
 
@@ -834,13 +1381,15 @@ impl App {
             OverlayAction::Continue => {}
             OverlayAction::Close => {
                 self.session_picker_overlay = None;
+                self.session_picker_mode = SessionPickerMode::Resume;
             }
-            OverlayAction::Selected(PickerResult::Selected(id)) => {
-                self.session_picker_overlay = None;
-                self.handle_session_picker_selection(&id);
+            OverlayAction::Selected(PickerResult::Selected(ids)) => {
+                self.handle_session_picker_selection(&ids);
+                if let Some(picker_cell) = self.session_picker_overlay.as_ref() {
+                    picker_cell.borrow_mut().clear_selected_sessions();
+                }
             }
             OverlayAction::Selected(PickerResult::RestoreAllCrashed) => {
-                self.session_picker_overlay = None;
                 self.handle_batch_crash_restore();
             }
         }
@@ -965,17 +1514,12 @@ impl App {
                     }
                     let idx = picker.filtered[picker.selected];
                     let entry = &picker.models[idx];
+                    if !matches!(entry.selection, PickerSelection::Model) {
+                        return Ok(());
+                    }
                     let route = entry.routes.get(entry.selected_route);
 
-                    let bare_name = if entry.effort.is_some() {
-                        entry
-                            .name
-                            .rsplit_once(" (")
-                            .map(|(base, _)| base.to_string())
-                            .unwrap_or_else(|| entry.name.clone())
-                    } else {
-                        entry.name.clone()
-                    };
+                    let bare_name = model_entry_base_name(entry);
 
                     let (model_spec, provider_key) = if let Some(r) = route {
                         let spec = if r.api_method == "copilot" {
@@ -1064,16 +1608,55 @@ impl App {
                         self.picker_state = None;
                         self.handle_account_picker_selection(selection);
                     }
-                    PickerSelection::Model => {
-                        let bare_name = if entry.effort.is_some() {
-                            entry
-                                .name
-                                .rsplit_once(" (")
-                                .map(|(base, _)| base.to_string())
-                                .unwrap_or_else(|| entry.name.clone())
+                    PickerSelection::Login(provider) => {
+                        self.picker_state = None;
+                        self.start_login_provider(provider);
+                    }
+                    PickerSelection::AgentTarget(target) => {
+                        self.open_agent_model_picker(target);
+                    }
+                    PickerSelection::AgentModelChoice {
+                        target,
+                        clear_override,
+                    } => {
+                        self.picker_state = None;
+                        let result = if clear_override {
+                            save_agent_model_override(target, None)
                         } else {
-                            entry.name.clone()
+                            let spec = model_entry_saved_spec(&entry);
+                            save_agent_model_override(target, Some(&spec))
                         };
+                        match result {
+                            Ok(()) => {
+                                let label = agent_model_target_label(target);
+                                if clear_override {
+                                    self.push_display_message(DisplayMessage::system(format!(
+                                        "{} model override cleared. It now inherits `{}`.",
+                                        label,
+                                        agent_model_default_summary(target, self)
+                                    )));
+                                    self.set_status_notice(format!("{} model: inherit", label));
+                                } else {
+                                    let spec = model_entry_saved_spec(&entry);
+                                    self.push_display_message(DisplayMessage::system(format!(
+                                        "Saved {} model override: `{}`.",
+                                        label, spec
+                                    )));
+                                    self.set_status_notice(format!("{} model → {}", label, spec));
+                                }
+                            }
+                            Err(error) => {
+                                self.push_display_message(DisplayMessage::error(format!(
+                                    "Failed to save {} model override: {}",
+                                    agent_model_target_label(target),
+                                    error
+                                )));
+                                self.set_status_notice("Agent model save failed");
+                            }
+                        }
+                    }
+                    PickerSelection::Model => {
+                        let bare_name = model_entry_base_name(&entry);
 
                         let spec = if route.api_method == "openrouter" && route.provider != "auto" {
                             if entry.name.contains('/') {
@@ -1232,9 +1815,29 @@ impl App {
                             PickerSelection::Account(AccountPickerSelection::OpenCenter {
                                 ..
                             }) => "manage",
-                            PickerSelection::Model => "",
+                            PickerSelection::Model
+                            | PickerSelection::Login(_)
+                            | PickerSelection::AgentTarget(_)
+                            | PickerSelection::AgentModelChoice { .. } => "",
                         };
                         format!("{} {} {}", m.name, provider, state)
+                    } else if picker.kind == PickerKind::Login {
+                        let auth_kind = m
+                            .routes
+                            .get(m.selected_route)
+                            .map(|route| route.provider.as_str())
+                            .unwrap_or("");
+                        let state = m
+                            .routes
+                            .get(m.selected_route)
+                            .map(|route| route.api_method.as_str())
+                            .unwrap_or("");
+                        let detail = m
+                            .routes
+                            .get(m.selected_route)
+                            .map(|route| route.detail.as_str())
+                            .unwrap_or("");
+                        format!("{} {} {} {}", m.name, auth_kind, state, detail)
                     } else {
                         m.name.clone()
                     };

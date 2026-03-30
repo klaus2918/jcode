@@ -133,7 +133,10 @@ fn account_picker_state_label(entry: &crate::tui::ModelEntry) -> &'static str {
         crate::tui::PickerSelection::Account(crate::tui::AccountPickerSelection::OpenCenter {
             ..
         }) => "manage",
-        crate::tui::PickerSelection::Model => "—",
+        crate::tui::PickerSelection::Model
+        | crate::tui::PickerSelection::Login(_)
+        | crate::tui::PickerSelection::AgentTarget(_)
+        | crate::tui::PickerSelection::AgentModelChoice { .. } => "—",
     }
 }
 
@@ -164,13 +167,19 @@ fn picker_render_width(picker: &crate::tui::PickerState, max_width: usize) -> us
         return marker_width + title_width + state_width;
     }
 
-    let mut max_model_len = if picker.kind == crate::tui::PickerKind::Account {
+    let mut max_model_len = if matches!(
+        picker.kind,
+        crate::tui::PickerKind::Account | crate::tui::PickerKind::Login
+    ) {
         display_width("ACCOUNT")
     } else {
         display_width("MODEL")
     };
     let mut max_provider_len = display_width("PROVIDER");
-    let mut max_via_len = if picker.kind == crate::tui::PickerKind::Account {
+    let mut max_via_len = if matches!(
+        picker.kind,
+        crate::tui::PickerKind::Account | crate::tui::PickerKind::Login
+    ) {
         display_width("ACTION")
     } else {
         display_width("VIA")

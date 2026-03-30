@@ -694,14 +694,19 @@ mod tests {
         assert_eq!(member.status, "running");
         assert_eq!(member.detail.as_deref(), Some("startup queued"));
         assert_eq!(member.swarm_id.as_deref(), Some("swarm-1"));
-        assert_eq!(member.working_dir.as_deref(), Some(std::path::Path::new("/tmp/worktree")));
+        assert_eq!(
+            member.working_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/worktree"))
+        );
         drop(members);
 
-        assert!(swarms_by_id
-            .read()
-            .await
-            .get("swarm-1")
-            .is_some_and(|members| members.contains("child-1")));
+        assert!(
+            swarms_by_id
+                .read()
+                .await
+                .get("swarm-1")
+                .is_some_and(|members| members.contains("child-1"))
+        );
 
         let history = event_history.read().await;
         assert!(history.iter().any(|event| {

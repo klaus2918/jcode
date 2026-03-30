@@ -2,6 +2,7 @@
 
 use crate::background::{self, TaskResult};
 use crate::build;
+use crate::bus::BackgroundTaskStatus;
 use crate::cli::tui_launch;
 use crate::protocol::{ServerEvent, TranscriptMode};
 use crate::server;
@@ -62,6 +63,7 @@ pub struct SelfDevLaunchResult {
     pub launched: bool,
     pub test_mode: bool,
     pub exe: Option<PathBuf>,
+    pub inherited_context: bool,
 }
 
 impl SelfDevLaunchResult {
@@ -150,15 +152,22 @@ impl BuildRequest {
     }
 
     fn pending_requests() -> Result<Vec<Self>> {
-        Ok(Self::load_all()?
-            .into_iter()
-            .filter(|request| {
-                matches!(
-                    request.state,
-                    BuildRequestState::Queued | BuildRequestState::Building
-                )
-            })
-            .collect())
+        let mut pending = Vec::new();
+
+        for mut request in Self::load_all()? {
+            if !matches!(
+                request.state,
+                BuildRequestState::Queued | BuildRequestState::Building
+            ) {
+                continue;
+            }
+
+            if request.reconcile_pending_state()? {
+                pending.push(request);
+            }
+        }
+
+        Ok(pending)
     }
 
     fn attached_watchers(parent_request_id: &str) -> Result<Vec<Self>> {
@@ -207,6 +216,81 @@ impl BuildRequest {
         }
         self.session_id.clone()
     }
+
+    fn status_path(&self) -> Option<PathBuf> {
+        self.status_file.as_ref().map(PathBuf::from).or_else(|| {
+            self.background_task_id.as_ref().map(|task_id| {
+                std::env::temp_dir()
+                    .join("jcode-bg-tasks")
+                    .join(format!("{}.status.json", task_id))
+            })
+        })
+    }
+
+    fn mark_stale(&mut self, detail: impl Into<String>) -> Result<()> {
+        self.state = BuildRequestState::Failed;
+        self.completed_at = Some(Utc::now().to_rfc3339());
+        self.error = Some(detail.into());
+        self.save()
+    }
+
+    fn reconcile_pending_state(&mut self) -> Result<bool> {
+        let Some(task_id) = self.background_task_id.as_deref() else {
+            self.mark_stale("Self-dev build request is missing its background task id.")?;
+            return Ok(false);
+        };
+
+        let Some(status_path) = self.status_path() else {
+            self.mark_stale("Self-dev build request is missing its task status path.")?;
+            return Ok(false);
+        };
+
+        let Some(task_status) = (if status_path.exists() && status_path.is_file() {
+            storage::read_json::<background::TaskStatusFile>(&status_path).ok()
+        } else {
+            None
+        }) else {
+            self.mark_stale(
+                "Background task status file is missing; pruning stale self-dev build request.",
+            )?;
+            return Ok(false);
+        };
+
+        match task_status.status {
+            BackgroundTaskStatus::Running => {
+                if task_status.detached || background::global().is_live_task(task_id) {
+                    Ok(true)
+                } else {
+                    self.mark_stale(
+                        "Background task is no longer live; pruning stale self-dev build request.",
+                    )?;
+                    Ok(false)
+                }
+            }
+            BackgroundTaskStatus::Completed => {
+                self.state = BuildRequestState::Completed;
+                self.completed_at = task_status
+                    .completed_at
+                    .clone()
+                    .or_else(|| Some(Utc::now().to_rfc3339()));
+                self.error = None;
+                self.save()?;
+                Ok(false)
+            }
+            BackgroundTaskStatus::Failed => {
+                self.state = BuildRequestState::Failed;
+                self.completed_at = task_status
+                    .completed_at
+                    .clone()
+                    .or_else(|| Some(Utc::now().to_rfc3339()));
+                self.error = task_status.error.clone().or_else(|| {
+                    Some("Background task failed without an error message.".to_string())
+                });
+                self.save()?;
+                Ok(false)
+            }
+        }
+    }
 }
 
 struct BuildLockGuard {
@@ -228,14 +312,49 @@ impl Drop for BuildLockGuard {
     }
 }
 
-pub fn enter_selfdev_session(working_dir: Option<&Path>) -> Result<SelfDevLaunchResult> {
+pub fn enter_selfdev_session(
+    parent_session_id: Option<&str>,
+    working_dir: Option<&Path>,
+) -> Result<SelfDevLaunchResult> {
     let repo_dir = SelfDevTool::resolve_repo_dir(working_dir).ok_or_else(|| {
         anyhow::anyhow!("Could not find the jcode repository to enter self-dev mode")
     })?;
 
-    let mut session = session::Session::create(None, Some("Self-development session".to_string()));
+    let mut inherited_context = false;
+    let mut session = if let Some(parent_session_id) = parent_session_id {
+        match session::Session::load(parent_session_id) {
+            Ok(parent) => {
+                let mut child = session::Session::create(
+                    Some(parent_session_id.to_string()),
+                    Some("Self-development session".to_string()),
+                );
+                child.replace_messages(parent.messages.clone());
+                child.compaction = parent.compaction.clone();
+                child.model = parent.model.clone();
+                child.provider_key = parent.provider_key.clone();
+                child.subagent_model = parent.subagent_model.clone();
+                child.improve_mode = parent.improve_mode;
+                child.autoreview_enabled = parent.autoreview_enabled;
+                child.autojudge_enabled = parent.autojudge_enabled;
+                child.memory_injections = parent.memory_injections.clone();
+                child.replay_events = parent.replay_events.clone();
+                inherited_context = true;
+                child
+            }
+            Err(err) => {
+                crate::logging::warn(&format!(
+                    "Failed to load parent session {} for self-dev enter; starting fresh session: {}",
+                    parent_session_id, err
+                ));
+                session::Session::create(None, Some("Self-development session".to_string()))
+            }
+        }
+    } else {
+        session::Session::create(None, Some("Self-development session".to_string()))
+    };
     session.set_canary("self-dev");
     session.working_dir = Some(repo_dir.display().to_string());
+    session.status = session::SessionStatus::Closed;
     session.save()?;
 
     let session_id = session.id.clone();
@@ -247,6 +366,7 @@ pub fn enter_selfdev_session(working_dir: Option<&Path>) -> Result<SelfDevLaunch
             launched: false,
             test_mode: true,
             exe: None,
+            inherited_context,
         });
     }
 
@@ -259,6 +379,7 @@ pub fn enter_selfdev_session(working_dir: Option<&Path>) -> Result<SelfDevLaunch
         launched,
         test_mode: false,
         exe: Some(exe),
+        inherited_context,
     })
 }
 
@@ -1379,7 +1500,7 @@ impl SelfDevTool {
     }
 
     async fn do_enter(&self, prompt: Option<String>, ctx: &ToolContext) -> Result<ToolOutput> {
-        let launch = enter_selfdev_session(ctx.working_dir.as_deref())?;
+        let launch = enter_selfdev_session(Some(&ctx.session_id), ctx.working_dir.as_deref())?;
 
         if launch.test_mode {
             let mut output = format!(
@@ -1397,7 +1518,8 @@ impl SelfDevTool {
                 "session_id": launch.session_id,
                 "repo_dir": launch.repo_dir,
                 "launched": false,
-                "test_mode": true
+                "test_mode": true,
+                "inherited_context": launch.inherited_context
             })));
         }
 
@@ -1414,7 +1536,8 @@ impl SelfDevTool {
             .with_metadata(json!({
                 "session_id": launch.session_id,
                 "repo_dir": launch.repo_dir,
-                "launched": false
+                "launched": false,
+                "inherited_context": launch.inherited_context
             }))
             .with_title(format!("selfdev enter: {}", command_preview)));
         }
@@ -1446,11 +1569,16 @@ impl SelfDevTool {
             None
         };
 
+        if launch.inherited_context {
+            output.push_str("\n- Context: cloned from the current session");
+        }
+
         Ok(ToolOutput::new(output).with_metadata(json!({
             "session_id": launch.session_id,
             "repo_dir": launch.repo_dir,
             "launched": true,
-            "prompt_delivered": prompt_delivery
+            "prompt_delivered": prompt_delivery,
+            "inherited_context": launch.inherited_context
         })))
     }
 
@@ -1900,8 +2028,30 @@ mod tests {
         let _test_guard = EnvVarGuard::set("JCODE_TEST_SESSION", "1");
         let repo = create_repo_fixture();
 
+        let mut parent = session::Session::create(None, Some("Origin Session".to_string()));
+        parent.working_dir = Some("/tmp/origin-project".to_string());
+        parent.model = Some("gpt-test".to_string());
+        parent.provider_key = Some("openai".to_string());
+        parent.subagent_model = Some("gpt-subagent".to_string());
+        parent.add_message(
+            crate::message::Role::User,
+            vec![crate::message::ContentBlock::Text {
+                text: "hello from parent".to_string(),
+                cache_control: None,
+            }],
+        );
+        parent.compaction = Some(session::StoredCompactionState {
+            summary_text: "summary".to_string(),
+            openai_encrypted_content: None,
+            covers_up_to_turn: 1,
+            original_turn_count: 1,
+            compacted_count: 1,
+        });
+        parent.record_replay_display_message("system", None, "remember this context");
+        parent.save().expect("save parent session");
+
         let tool = SelfDevTool::new();
-        let ctx = create_test_context("origin-session", Some(repo.path().to_path_buf()));
+        let ctx = create_test_context(&parent.id, Some(repo.path().to_path_buf()));
         let output = tool
             .execute(
                 json!({"action": "enter", "prompt": "Work on jcode itself"}),
@@ -1916,17 +2066,61 @@ mod tests {
                 .output
                 .contains("Test mode skipped launching a new terminal")
         );
+        assert!(
+            output.output.contains("Seed prompt captured"),
+            "test-mode enter should still report captured prompt"
+        );
 
         let metadata = output.metadata.expect("metadata");
         let session_id = metadata["session_id"]
             .as_str()
             .expect("session id metadata");
+        assert_eq!(metadata["inherited_context"].as_bool(), Some(true));
         let session = session::Session::load(session_id).expect("load spawned session");
         assert!(
             session.is_canary,
             "spawned session should be canary/self-dev"
         );
         assert_eq!(session.testing_build.as_deref(), Some("self-dev"));
+        assert_eq!(
+            session.working_dir.as_deref(),
+            Some(repo.path().to_string_lossy().as_ref())
+        );
+        assert_eq!(session.parent_id.as_deref(), Some(parent.id.as_str()));
+        assert_eq!(session.messages.len(), parent.messages.len());
+        assert_eq!(session.messages[0].content_preview(), "hello from parent");
+        assert_eq!(session.compaction, parent.compaction);
+        assert_eq!(session.model, parent.model);
+        assert_eq!(session.provider_key, parent.provider_key);
+        assert_eq!(session.subagent_model, parent.subagent_model);
+        assert_eq!(session.replay_events, parent.replay_events);
+    }
+
+    #[tokio::test]
+    async fn enter_falls_back_to_fresh_session_when_parent_missing() {
+        let _storage_guard = crate::storage::lock_test_env();
+        let _lock = lock_env();
+        let temp_home = tempfile::TempDir::new().expect("temp home");
+        let _home_guard = EnvVarGuard::set("JCODE_HOME", temp_home.path());
+        let _test_guard = EnvVarGuard::set("JCODE_TEST_SESSION", "1");
+        let repo = create_repo_fixture();
+
+        let tool = SelfDevTool::new();
+        let ctx = create_test_context("missing-parent", Some(repo.path().to_path_buf()));
+        let output = tool
+            .execute(json!({"action": "enter"}), ctx)
+            .await
+            .expect("selfdev enter should succeed without a persisted parent session");
+
+        let metadata = output.metadata.expect("metadata");
+        let session_id = metadata["session_id"]
+            .as_str()
+            .expect("session id metadata");
+        assert_eq!(metadata["inherited_context"].as_bool(), Some(false));
+
+        let session = session::Session::load(session_id).expect("load spawned session");
+        assert!(session.messages.is_empty());
+        assert!(session.parent_id.is_none());
         assert_eq!(
             session.working_dir.as_deref(),
             Some(repo.path().to_string_lossy().as_ref())
@@ -2176,5 +2370,142 @@ mod tests {
         let first_meta = first.metadata.expect("first metadata");
         let first_status = wait_for_task_completion(first_meta["task_id"].as_str().unwrap()).await;
         assert_eq!(first_status.status, BackgroundTaskStatus::Completed);
+    }
+
+    #[test]
+    fn status_output_prunes_stale_pending_requests() {
+        let _storage_guard = crate::storage::lock_test_env();
+        let _lock = lock_env();
+        let temp_home = tempfile::TempDir::new().expect("temp home");
+        let _home_guard = EnvVarGuard::set("JCODE_HOME", temp_home.path());
+
+        let mut session = session::Session::create(None, Some("Stale Build".to_string()));
+        session.short_name = Some("ghost".to_string());
+        session.save().expect("save session");
+
+        let stale_status_path = temp_home.path().join("missing-selfdev.status.json");
+        let request = BuildRequest {
+            request_id: "stale-request".to_string(),
+            background_task_id: Some("missing-task".to_string()),
+            session_id: session.id.clone(),
+            session_short_name: session.short_name.clone(),
+            session_title: Some("Stale Build".to_string()),
+            reason: "stale reason".to_string(),
+            repo_dir: "/tmp/jcode".to_string(),
+            command: "scripts/dev_cargo.sh build --release --bin jcode".to_string(),
+            requested_at: Utc::now().to_rfc3339(),
+            started_at: Some(Utc::now().to_rfc3339()),
+            completed_at: None,
+            state: BuildRequestState::Building,
+            version: Some("stale-build".to_string()),
+            error: None,
+            output_file: None,
+            status_file: Some(stale_status_path.display().to_string()),
+            attached_to_request_id: None,
+        };
+        request.save().expect("save stale request");
+
+        let status_output = selfdev_status_output().expect("status output");
+        assert!(
+            !status_output.output.contains("stale reason"),
+            "stale request should be pruned from queue output"
+        );
+
+        let request = BuildRequest::load("stale-request")
+            .expect("load stale request")
+            .expect("stale request exists");
+        assert_eq!(request.state, BuildRequestState::Failed);
+        assert!(
+            request
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("pruning stale self-dev build request"),
+            "stale request should record why it was pruned"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_ignores_stale_pending_requests_when_computing_queue_position() {
+        let _storage_guard = crate::storage::lock_test_env();
+        let _lock = lock_env();
+        let temp_home = tempfile::TempDir::new().expect("temp home");
+        let _home_guard = EnvVarGuard::set("JCODE_HOME", temp_home.path());
+        let _test_guard = EnvVarGuard::set("JCODE_TEST_SESSION", "1");
+        let repo = create_repo_fixture();
+
+        let mut stale_session = session::Session::create(None, Some("Stale Build".to_string()));
+        stale_session.short_name = Some("ghost".to_string());
+        stale_session.save().expect("save stale session");
+
+        let stale_status_path = temp_home.path().join("stale-running.status.json");
+        storage::write_json(
+            &stale_status_path,
+            &background::TaskStatusFile {
+                task_id: "stale-task".to_string(),
+                tool_name: "selfdev-build".to_string(),
+                session_id: stale_session.id.clone(),
+                status: BackgroundTaskStatus::Running,
+                exit_code: None,
+                error: None,
+                started_at: Utc::now().to_rfc3339(),
+                completed_at: None,
+                duration_secs: None,
+                pid: None,
+                detached: false,
+                notify: true,
+            },
+        )
+        .expect("write stale status file");
+
+        let stale_request = BuildRequest {
+            request_id: "stale-queued-request".to_string(),
+            background_task_id: Some("stale-task".to_string()),
+            session_id: stale_session.id.clone(),
+            session_short_name: stale_session.short_name.clone(),
+            session_title: Some("Stale Build".to_string()),
+            reason: "stale blocker".to_string(),
+            repo_dir: repo.path().display().to_string(),
+            command: "scripts/dev_cargo.sh build --release --bin jcode".to_string(),
+            requested_at: Utc::now().to_rfc3339(),
+            started_at: Some(Utc::now().to_rfc3339()),
+            completed_at: None,
+            state: BuildRequestState::Queued,
+            version: Some("test-build".to_string()),
+            error: None,
+            output_file: None,
+            status_file: Some(stale_status_path.display().to_string()),
+            attached_to_request_id: None,
+        };
+        stale_request.save().expect("save stale queued request");
+
+        let mut live_session = session::Session::create(None, Some("Live Build".to_string()));
+        live_session.short_name = Some("alpha".to_string());
+        live_session.save().expect("save live session");
+
+        let tool = SelfDevTool::new();
+        let output = tool
+            .execute(
+                json!({"action": "build", "reason": "fresh build"}),
+                create_test_context(&live_session.id, Some(repo.path().to_path_buf())),
+            )
+            .await
+            .expect("build should queue");
+
+        let metadata = output.metadata.expect("build metadata");
+        assert_eq!(metadata["queue_position"].as_u64(), Some(1));
+        assert!(
+            !output.output.contains("Currently blocked by"),
+            "stale queued requests should not block new builds"
+        );
+
+        let stale_request = BuildRequest::load("stale-queued-request")
+            .expect("load stale queued request")
+            .expect("stale queued request exists");
+        assert_eq!(stale_request.state, BuildRequestState::Failed);
+
+        let task_id = metadata["task_id"].as_str().expect("task id");
+        let status = wait_for_task_completion(task_id).await;
+        assert_eq!(status.status, BackgroundTaskStatus::Completed);
     }
 }

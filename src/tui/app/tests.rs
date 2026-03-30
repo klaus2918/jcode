@@ -138,6 +138,88 @@ fn create_jcode_repo_fixture() -> tempfile::TempDir {
     temp
 }
 
+#[test]
+fn test_handle_turn_error_failover_prompt_manual_mode_shows_system_notice() {
+    with_temp_jcode_home(|| {
+        write_test_config("[provider]\ncross_provider_failover = \"manual\"\n");
+        let mut app = create_test_app();
+        let prompt = crate::provider::ProviderFailoverPrompt {
+            from_provider: "claude".to_string(),
+            from_label: "Anthropic".to_string(),
+            to_provider: "openai".to_string(),
+            to_label: "OpenAI".to_string(),
+            reason: "OAuth usage exhausted".to_string(),
+            estimated_input_chars: 48_000,
+            estimated_input_tokens: 12_000,
+        };
+
+        app.handle_turn_error(failover_error_message(&prompt));
+
+        let last = app.display_messages.last().expect("display message");
+        assert_eq!(last.role, "system");
+        assert!(last.content.contains("did **not** resend your prompt"));
+        assert!(last.content.contains("/model"));
+        assert!(app.pending_provider_failover.is_none());
+    });
+}
+
+#[test]
+fn test_handle_turn_error_failover_prompt_countdown_can_switch_and_retry() {
+    with_temp_jcode_home(|| {
+        write_test_config("[provider]\ncross_provider_failover = \"countdown\"\n");
+        let (mut app, active_provider) = create_switchable_test_app("claude");
+        let prompt = crate::provider::ProviderFailoverPrompt {
+            from_provider: "claude".to_string(),
+            from_label: "Anthropic".to_string(),
+            to_provider: "openai".to_string(),
+            to_label: "OpenAI".to_string(),
+            reason: "OAuth usage exhausted".to_string(),
+            estimated_input_chars: 32_000,
+            estimated_input_tokens: 8_000,
+        };
+
+        app.handle_turn_error(failover_error_message(&prompt));
+        assert!(app.pending_provider_failover.is_some());
+
+        if let Some(pending) = app.pending_provider_failover.as_mut() {
+            pending.deadline = Instant::now() - Duration::from_secs(1);
+        }
+        app.maybe_progress_provider_failover_countdown();
+
+        assert!(app.pending_provider_failover.is_none());
+        assert!(app.pending_turn);
+        assert_eq!(active_provider.lock().unwrap().as_str(), "openai");
+        assert_eq!(app.session.model.as_deref(), Some("gpt-test"));
+    });
+}
+
+#[test]
+fn test_cancel_pending_provider_failover_clears_countdown() {
+    with_temp_jcode_home(|| {
+        write_test_config("[provider]\ncross_provider_failover = \"countdown\"\n");
+        let (mut app, _active_provider) = create_switchable_test_app("claude");
+        let prompt = crate::provider::ProviderFailoverPrompt {
+            from_provider: "claude".to_string(),
+            from_label: "Anthropic".to_string(),
+            to_provider: "openai".to_string(),
+            to_label: "OpenAI".to_string(),
+            reason: "OAuth usage exhausted".to_string(),
+            estimated_input_chars: 16_000,
+            estimated_input_tokens: 4_000,
+        };
+
+        app.handle_turn_error(failover_error_message(&prompt));
+        assert!(app.pending_provider_failover.is_some());
+
+        app.cancel_pending_provider_failover("Provider auto-switch canceled");
+
+        assert!(app.pending_provider_failover.is_none());
+        let last = app.display_messages.last().expect("display message");
+        assert_eq!(last.role, "system");
+        assert!(last.content.contains("Canceled provider auto-switch"));
+    });
+}
+
 #[derive(Clone)]
 struct FastMockProvider {
     service_tier: StdArc<StdMutex<Option<String>>>,
@@ -176,6 +258,74 @@ impl Provider for FastMockProvider {
         *self.service_tier.lock().unwrap() = normalized;
         Ok(())
     }
+}
+
+#[derive(Clone)]
+struct SwitchableMockProvider {
+    active_provider: StdArc<StdMutex<String>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for SwitchableMockProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[crate::message::ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        unimplemented!("SwitchableMockProvider")
+    }
+
+    fn name(&self) -> &str {
+        "switchable-mock"
+    }
+
+    fn model(&self) -> String {
+        match self.active_provider.lock().unwrap().as_str() {
+            "openai" => "gpt-test".to_string(),
+            _ => "claude-test".to_string(),
+        }
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+
+    fn switch_active_provider_to(&self, provider: &str) -> Result<()> {
+        *self.active_provider.lock().unwrap() = provider.to_string();
+        Ok(())
+    }
+}
+
+fn create_switchable_test_app(initial_provider: &str) -> (App, StdArc<StdMutex<String>>) {
+    ensure_test_jcode_home_if_unset();
+    clear_persisted_test_ui_state();
+    crate::tui::ui::clear_test_render_state_for_tests();
+
+    let active_provider = StdArc::new(StdMutex::new(initial_provider.to_string()));
+    let provider: Arc<dyn Provider> = Arc::new(SwitchableMockProvider {
+        active_provider: active_provider.clone(),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+    let mut app = App::new(provider, registry);
+    app.queue_mode = false;
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    (app, active_provider)
+}
+
+fn write_test_config(contents: &str) {
+    let path = crate::config::Config::path().expect("config path");
+    std::fs::create_dir_all(path.parent().expect("config dir")).expect("config dir");
+    std::fs::write(path, contents).expect("write config");
+}
+
+fn failover_error_message(prompt: &crate::provider::ProviderFailoverPrompt) -> String {
+    format!(
+        "[jcode-provider-failover]{}\nignored",
+        serde_json::to_string(prompt).expect("serialize failover prompt")
+    )
 }
 
 fn create_fast_test_app() -> App {
@@ -1448,12 +1598,16 @@ fn test_account_picker_prompt_new_openai_label_cancel_clears_prompt() {
 }
 
 #[test]
-fn test_login_command_opens_login_picker_overlay() {
+fn test_login_command_opens_inline_login_picker() {
     let mut app = create_test_app();
     app.input = "/login".to_string();
     app.submit_input();
 
-    assert!(app.login_picker_overlay.is_some());
+    let picker = app
+        .picker_state
+        .as_ref()
+        .expect("/login should open inline login picker");
+    assert_eq!(picker.kind, crate::tui::PickerKind::Login);
     assert!(app.pending_login.is_none());
 }
 
@@ -3120,6 +3274,20 @@ fn test_model_picker_preview_filter_parsing() {
 }
 
 #[test]
+fn test_login_picker_preview_filter_parsing() {
+    assert_eq!(
+        App::login_picker_preview_filter("/login"),
+        Some(String::new())
+    );
+    assert_eq!(
+        App::login_picker_preview_filter("/login   zai"),
+        Some("zai".to_string())
+    );
+    assert_eq!(App::login_picker_preview_filter("/loginx"), None);
+    assert_eq!(App::login_picker_preview_filter("hello /login"), None);
+}
+
+#[test]
 fn test_agents_command_opens_agent_picker() {
     let mut app = create_test_app();
     app.input = "/agents".to_string();
@@ -3352,6 +3520,56 @@ fn test_model_picker_preview_arrow_keys_navigate() {
 }
 
 #[test]
+fn test_login_picker_preview_stays_open_and_updates_filter() {
+    let mut app = create_test_app();
+
+    for c in "/login za".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+            .unwrap();
+    }
+
+    let picker = app
+        .picker_state
+        .as_ref()
+        .expect("login picker preview should be open");
+    assert!(picker.preview);
+    assert_eq!(picker.kind, crate::tui::PickerKind::Login);
+    assert_eq!(picker.filter, "za");
+    assert!(
+        picker
+            .filtered
+            .iter()
+            .any(|&i| picker.models[i].name == "Z.AI")
+    );
+    assert_eq!(app.input(), "/login za");
+}
+
+#[test]
+fn test_login_picker_preview_enter_starts_login_flow() {
+    let mut app = create_test_app();
+
+    for c in "/login zai".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+            .unwrap();
+    }
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+        .unwrap();
+
+    assert!(app.picker_state.is_none());
+    match app.pending_login {
+        Some(crate::tui::app::auth::PendingLogin::ApiKeyProfile {
+            provider,
+            openai_compatible_profile: Some(profile),
+            ..
+        }) => {
+            assert_eq!(provider, "Z.AI");
+            assert_eq!(profile.id, crate::provider_catalog::ZAI_PROFILE.id);
+        }
+        ref other => panic!("unexpected pending login state: {other:?}"),
+    }
+}
+
+#[test]
 fn test_subagent_model_command_sets_and_resets_session_preference() {
     let mut app = create_test_app();
 
@@ -3474,7 +3692,10 @@ fn test_pending_remote_dispatch_counts_as_processing_for_tui_state() {
 
     assert!(app.is_processing());
     assert!(crate::tui::TuiState::is_processing(&app));
-    assert!(matches!(crate::tui::TuiState::status(&app), ProcessingStatus::Sending));
+    assert!(matches!(
+        crate::tui::TuiState::status(&app),
+        ProcessingStatus::Sending
+    ));
 }
 
 #[test]

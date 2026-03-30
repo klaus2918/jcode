@@ -1,8 +1,8 @@
 use super::{App, DisplayMessage, ImproveMode, ProcessingStatus};
 use crate::bus::{Bus, BusEvent, ManualToolCompleted, ToolEvent, ToolStatus};
 use crate::id;
-use crate::message::{ContentBlock, Message, Role};
-use crate::session::Session;
+use crate::message::{ContentBlock, Message, Role, ToolCall};
+use crate::session::{Session, StoredMessage};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -16,6 +16,225 @@ fn review_session_read_only_guardrails() -> &'static str {
 - Do not continue implementation, fix issues, or take follow-up actions yourself.\n\
 - If additional work is needed, describe it in your DM to the parent session instead.\n\
 \n"
+}
+
+fn judge_session_visible_context_notice() -> &'static str {
+    "Important context for this judge session:\n\
+- This session contains a user-visible mirror of the parent conversation, not the full original implementation context.\n\
+- It includes the user's prompts, the assistant's visible replies, and shallow summaries of visible tool calls.\n\
+- It intentionally omits deep tool-result details and hidden internal context beyond what the user could see.\n\
+- Base your judgment on this mirror, then verify claims by inspecting repo state or tests directly when needed.\n\
+\n"
+}
+
+fn is_judge_session_title(title: Option<&str>) -> bool {
+    matches!(title, Some("judge" | "autojudge"))
+}
+
+fn judge_transcript_text_message(role: Role, text: String) -> StoredMessage {
+    StoredMessage {
+        id: id::new_id("message"),
+        role,
+        content: vec![ContentBlock::Text {
+            text,
+            cache_control: None,
+        }],
+        display_role: None,
+        timestamp: None,
+        tool_duration_ms: None,
+        token_usage: None,
+    }
+}
+
+fn truncate_judge_visible_text(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let truncated: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{}…", truncated.trim_end())
+}
+
+fn judge_visible_value_summary(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Bool(v) => Some(v.to_string()),
+        serde_json::Value::Number(v) => Some(v.to_string()),
+        serde_json::Value::String(v) => Some(truncate_judge_visible_text(v, 120)),
+        serde_json::Value::Array(values) => Some(format!(
+            "{} item{}",
+            values.len(),
+            if values.len() == 1 { "" } else { "s" }
+        )),
+        serde_json::Value::Object(map) => Some(format!(
+            "{} field{}",
+            map.len(),
+            if map.len() == 1 { "" } else { "s" }
+        )),
+    }
+}
+
+fn judge_visible_tool_summary(tool: &ToolCall) -> Option<String> {
+    let obj = tool.input.as_object()?;
+    let preferred_keys = [
+        "file_path",
+        "command",
+        "pattern",
+        "query",
+        "url",
+        "path",
+        "subject",
+        "channel",
+        "action",
+        "description",
+        "task_id",
+        "target_session",
+        "to_session",
+        "model",
+        "reason",
+    ];
+    let mut parts = Vec::new();
+    for key in preferred_keys {
+        let Some(value) = obj.get(key) else {
+            continue;
+        };
+        let Some(summary) = judge_visible_value_summary(value) else {
+            continue;
+        };
+        if summary.is_empty() {
+            continue;
+        }
+        parts.push(format!("{}={}", key, summary));
+        if parts.len() >= 2 {
+            break;
+        }
+    }
+
+    if parts.is_empty() {
+        if obj.contains_key("patch_text") {
+            let lines = obj
+                .get("patch_text")
+                .and_then(|v| v.as_str())
+                .map(|text| text.lines().count())
+                .unwrap_or(0);
+            return Some(format!("patch_text={} lines", lines));
+        }
+        if obj.contains_key("tool_calls") {
+            let count = obj
+                .get("tool_calls")
+                .and_then(|v| v.as_array())
+                .map(|items| items.len())
+                .unwrap_or(0);
+            return Some(format!(
+                "tool_calls={} item{}",
+                count,
+                if count == 1 { "" } else { "s" }
+            ));
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
+}
+
+fn build_judge_visible_transcript_messages(parent_session: &Session) -> Vec<StoredMessage> {
+    let mut transcript = Vec::new();
+
+    for rendered in crate::session::render_messages(parent_session) {
+        match rendered.role.as_str() {
+            "user" => {
+                if !rendered.content.trim().is_empty() {
+                    transcript.push(judge_transcript_text_message(
+                        Role::User,
+                        rendered.content.trim().to_string(),
+                    ));
+                }
+            }
+            "assistant" => {
+                let mut text = rendered.content.trim().to_string();
+                if !rendered.tool_calls.is_empty() {
+                    let visible_tools = rendered
+                        .tool_calls
+                        .iter()
+                        .map(|name| format!("`{}`", name))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if text.is_empty() {
+                        text = format!(
+                            "Visible tool call{}: {}",
+                            if rendered.tool_calls.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            },
+                            visible_tools
+                        );
+                    } else {
+                        text.push_str(&format!(
+                            "\n\nVisible tool call{}: {}",
+                            if rendered.tool_calls.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            },
+                            visible_tools
+                        ));
+                    }
+                }
+                if !text.trim().is_empty() {
+                    transcript.push(judge_transcript_text_message(Role::Assistant, text));
+                }
+            }
+            "tool" => {
+                let text = if let Some(tool) = rendered.tool_data.as_ref() {
+                    let status = if rendered.content.trim_start().starts_with("Error:")
+                        || rendered.content.trim_start().starts_with("error:")
+                        || rendered.content.trim_start().starts_with("Failed:")
+                    {
+                        "failed"
+                    } else {
+                        "completed"
+                    };
+                    let summary = judge_visible_tool_summary(tool)
+                        .map(|summary| format!(" — {}", summary))
+                        .unwrap_or_default();
+                    format!(
+                        "Visible tool call: `{}`{} ({}). Detailed tool output is intentionally omitted from this judge transcript.",
+                        tool.name, summary, status
+                    )
+                } else {
+                    "Visible tool call completed. Detailed tool output is intentionally omitted from this judge transcript.".to_string()
+                };
+                transcript.push(judge_transcript_text_message(Role::Assistant, text));
+            }
+            "system" => {}
+            _ => {}
+        }
+    }
+
+    transcript
+}
+
+fn apply_judge_visible_context_if_needed(session: &mut Session, title_override: Option<&str>) {
+    let effective_title = title_override.or(session.title.as_deref());
+    if !is_judge_session_title(effective_title) {
+        return;
+    }
+
+    let Some(parent_session_id) = session.parent_id.clone() else {
+        return;
+    };
+    let Ok(parent_session) = Session::load(&parent_session_id) else {
+        return;
+    };
+
+    let transcript = build_judge_visible_transcript_messages(&parent_session);
+    session.replace_messages(transcript);
+    session.compaction = None;
+    session.provider_session_id = None;
 }
 
 pub(super) fn reset_current_session(app: &mut App) {
@@ -246,7 +465,11 @@ If judgment is needed:\n\
 \n\
 Do not ask the user anything unless absolutely necessary. Keep your own session concise.",
         parent_session_id,
-        review_session_read_only_guardrails(),
+        format!(
+            "{}{}",
+            judge_session_visible_context_notice(),
+            review_session_read_only_guardrails()
+        ),
         parent_session_id,
         parent_session_id
     )
@@ -291,6 +514,7 @@ pub(super) fn build_judge_startup_message(parent_session_id: &str) -> String {
     format!(
         "You are the one-shot judge for parent session `{}`.\n\
 Your job is to inspect the recent work, determine whether a judgment pass is needed, and perform that judgment if needed.\n\
+{}\
 \n\
 First read only the conversation history you actually need:\n\
 1. Use `conversation_search` with `stats=true` to learn the history size.\n\
@@ -319,6 +543,7 @@ If judgment is needed:\n\
 \n\
 Do not ask the user anything unless absolutely necessary. Keep your own session concise.",
         parent_session_id,
+        judge_session_visible_context_notice(),
         review_session_read_only_guardrails(),
         parent_session_id,
         parent_session_id
@@ -1505,11 +1730,114 @@ fn handle_btw_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+fn load_catchup_candidates(app: &App) -> Vec<crate::tui::session_picker::SessionInfo> {
+    let current_session_id = active_session_id(app);
+    crate::tui::session_picker::load_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|session| session.id != current_session_id && session.needs_catchup)
+        .collect()
+}
+
+fn handle_catchup_command(app: &mut App, trimmed: &str) -> bool {
+    if !trimmed.starts_with("/catchup") {
+        return false;
+    }
+    if !app.is_remote {
+        app.push_display_message(DisplayMessage::error(
+            "`/catchup` currently requires a connected shared server session.".to_string(),
+        ));
+        return true;
+    }
+
+    let rest = trimmed.strip_prefix("/catchup").unwrap_or_default().trim();
+    match rest {
+        "" | "list" | "show" => {
+            app.open_catchup_picker();
+            true
+        }
+        "next" => {
+            if app.is_processing {
+                app.set_status_notice("Finish current work before Catch Up");
+                return true;
+            }
+            let candidates = load_catchup_candidates(app);
+            let total = candidates.len();
+            let Some(target) = candidates.first() else {
+                app.push_display_message(DisplayMessage::system(
+                    "No sessions currently need catch up.".to_string(),
+                ));
+                app.set_status_notice("Catch Up: none waiting");
+                return true;
+            };
+
+            let source_session_id = active_session_id(app);
+            let target_name = crate::id::extract_session_name(&target.id)
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| target.id.clone());
+            app.queue_catchup_resume(
+                target.id.clone(),
+                Some(source_session_id),
+                Some((1, total)),
+                true,
+            );
+            app.push_display_message(DisplayMessage::system(format!(
+                "Queued Catch Up for **{}**.",
+                target_name,
+            )));
+            app.set_status_notice(format!("Catch Up → {}", target_name));
+            true
+        }
+        _ => {
+            app.push_display_message(DisplayMessage::error(
+                "Usage: `/catchup [next|list]`".to_string(),
+            ));
+            true
+        }
+    }
+}
+
+fn handle_back_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed != "/back" {
+        return false;
+    }
+    if !app.is_remote {
+        app.push_display_message(DisplayMessage::error(
+            "`/back` currently requires a connected shared server session.".to_string(),
+        ));
+        return true;
+    }
+    if app.is_processing {
+        app.set_status_notice("Finish current work before going back");
+        return true;
+    }
+    let Some(target) = app.pop_catchup_return_target() else {
+        app.push_display_message(DisplayMessage::system(
+            "No previous Catch Up session is available.".to_string(),
+        ));
+        app.set_status_notice("Back: empty");
+        return true;
+    };
+
+    let target_name = crate::id::extract_session_name(&target)
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| target.clone());
+    app.queue_catchup_resume(target, None, None, false);
+    app.push_display_message(DisplayMessage::system(format!(
+        "Queued return to **{}**.",
+        target_name,
+    )));
+    app.set_status_notice(format!("Back → {}", target_name));
+    true
+}
+
 pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
     if handle_subagent_model_command(app, trimmed)
         || handle_subagent_command(app, trimmed)
         || handle_observe_command(app, trimmed)
         || handle_btw_command(app, trimmed)
+        || handle_catchup_command(app, trimmed)
+        || handle_back_command(app, trimmed)
         || handle_autoreview_command_local(app, trimmed)
         || handle_autojudge_command_local(app, trimmed)
         || handle_review_command_local(app, trimmed)
@@ -1890,7 +2218,10 @@ fn handle_selfdev_command(app: &mut App, trimmed: &str) -> bool {
         Some(rest.to_string())
     };
 
-    match crate::tool::selfdev::enter_selfdev_session(active_working_dir(app).as_deref()) {
+    match crate::tool::selfdev::enter_selfdev_session(
+        Some(&active_session_id(app)),
+        active_working_dir(app).as_deref(),
+    ) {
         Ok(launch) => {
             let mut message = if launch.test_mode {
                 format!(
@@ -1914,6 +2245,10 @@ fn handle_selfdev_command(app: &mut App, trimmed: &str) -> bool {
                     ))
                 )
             };
+
+            if launch.inherited_context {
+                message.push_str("\n\nContext was cloned from the current session.");
+            }
 
             if let Some(prompt_text) = prompt {
                 if launch.launched && !launch.test_mode {
@@ -2089,6 +2424,45 @@ fn parse_alignment_value(raw: &str) -> Option<bool> {
     }
 }
 
+fn parse_agents_target(raw: &str) -> Option<crate::tui::AgentModelTarget> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "swarm" | "agent" | "agents" | "subagent" | "subagents" => {
+            Some(crate::tui::AgentModelTarget::Swarm)
+        }
+        "review" | "reviewer" | "code-review" | "codereview" => {
+            Some(crate::tui::AgentModelTarget::Review)
+        }
+        "judge" | "judging" | "execution-judge" | "autojudge" => {
+            Some(crate::tui::AgentModelTarget::Judge)
+        }
+        "memory" | "memories" | "sidecar" => Some(crate::tui::AgentModelTarget::Memory),
+        "ambient" => Some(crate::tui::AgentModelTarget::Ambient),
+        _ => None,
+    }
+}
+
+pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
+    if !trimmed.starts_with("/agents") {
+        return false;
+    }
+
+    let rest = trimmed.strip_prefix("/agents").unwrap_or_default().trim();
+    if rest.is_empty() {
+        app.open_agents_picker();
+        return true;
+    }
+
+    let Some(target) = parse_agents_target(rest) else {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: `/agents` or `/agents <swarm|review|judge|memory|ambient>`".to_string(),
+        ));
+        return true;
+    };
+
+    app.open_agent_model_picker(target);
+    true
+}
+
 fn handle_alignment_command(app: &mut App, trimmed: &str) -> bool {
     if !trimmed.starts_with("/alignment") {
         return false;
@@ -2138,6 +2512,10 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     use crate::bus::{Bus, BusEvent};
 
     if handle_alignment_command(app, trimmed) {
+        return true;
+    }
+
+    if handle_agents_command(app, trimmed) {
         return true;
     }
 

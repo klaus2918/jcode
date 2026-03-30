@@ -1,4 +1,5 @@
 use super::*;
+use crate::message::parse_background_task_notification_markdown;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use unicode_width::UnicodeWidthStr;
@@ -212,6 +213,124 @@ pub(crate) fn render_system_message(
         for span in &mut line.spans {
             span.style.fg = Some(system_message_color());
         }
+    }
+    lines
+}
+
+pub(crate) fn render_background_task_message(
+    msg: &DisplayMessage,
+    width: u16,
+    diff_mode: crate::config::DiffDisplayMode,
+) -> Vec<Line<'static>> {
+    let Some(parsed) = parse_background_task_notification_markdown(&msg.content) else {
+        return render_system_message(msg, width, diff_mode);
+    };
+
+    let centered = markdown::center_code_blocks();
+    let (title, border_color, status_color, preview_color) = if parsed.status.starts_with('✓') {
+        (
+            "✓ background task",
+            rgb(100, 180, 100),
+            rgb(120, 210, 140),
+            rgb(214, 240, 220),
+        )
+    } else if parsed.status.starts_with('✗') {
+        (
+            "✗ background task",
+            rgb(220, 100, 100),
+            rgb(255, 150, 150),
+            rgb(255, 225, 225),
+        )
+    } else {
+        (
+            "◌ background task",
+            rgb(255, 193, 94),
+            rgb(255, 214, 120),
+            rgb(255, 241, 214),
+        )
+    };
+
+    let border_style = Style::default().fg(border_color);
+    let label_style = Style::default().fg(dim_color());
+    let task_style = Style::default().fg(accent_color()).bold();
+    let tool_style = Style::default().fg(tool_color());
+    let status_style = Style::default().fg(status_color).bold();
+    let preview_style = Style::default().fg(preview_color);
+    let command_style = Style::default().fg(rgb(130, 184, 255));
+
+    let max_box_width = if centered {
+        (width.saturating_sub(4) as usize).min(120)
+    } else {
+        (width.saturating_sub(2) as usize).min(96)
+    }
+    .max(16);
+    let inner_width = max_box_width.saturating_sub(4).max(1);
+
+    let mut box_content: Vec<Line<'static>> = vec![
+        Line::from(vec![
+            Span::styled("task ", label_style),
+            Span::styled(parsed.task_id.clone(), task_style),
+            Span::styled(" · ", label_style),
+            Span::styled(parsed.tool_name.clone(), tool_style),
+        ]),
+        Line::from(vec![
+            Span::styled(parsed.status.clone(), status_style),
+            Span::styled(" · ", label_style),
+            Span::styled(parsed.duration.clone(), label_style),
+            Span::styled(" · ", label_style),
+            Span::styled(parsed.exit_label.clone(), label_style),
+        ]),
+    ];
+
+    box_content.push(Line::from(""));
+    box_content.push(Line::from(Span::styled("Preview", label_style)));
+
+    match parsed.preview.as_deref() {
+        Some(preview) => {
+            let preview_lines: Vec<&str> = preview.lines().collect();
+            let shown_lines = preview_lines.len().min(4);
+            for line in preview_lines.iter().take(shown_lines) {
+                if line.is_empty() {
+                    box_content.push(Line::from(""));
+                    continue;
+                }
+                for chunk in split_by_display_width(line, inner_width) {
+                    box_content.push(Line::from(Span::styled(chunk, preview_style)));
+                }
+            }
+            if preview_lines.len() > shown_lines {
+                let remaining = preview_lines.len() - shown_lines;
+                box_content.push(Line::from(Span::styled(
+                    format!(
+                        "… +{} more line{}",
+                        remaining,
+                        if remaining == 1 { "" } else { "s" }
+                    ),
+                    label_style,
+                )));
+            }
+        }
+        None => {
+            box_content.push(Line::from(Span::styled("No output captured.", label_style)));
+        }
+    }
+
+    box_content.push(Line::from(""));
+    box_content.push(Line::from(Span::styled("Full output", label_style)));
+    for (idx, chunk) in split_by_display_width(&parsed.full_output_command, inner_width)
+        .into_iter()
+        .enumerate()
+    {
+        let prefix = if idx == 0 { "run " } else { "    " };
+        box_content.push(Line::from(vec![
+            Span::styled(prefix, label_style),
+            Span::styled(chunk, command_style),
+        ]));
+    }
+
+    let mut lines = render_rounded_box(title, box_content, max_box_width, border_style);
+    if centered {
+        left_pad_lines_for_centered_mode(&mut lines, width);
     }
     lines
 }
@@ -680,6 +799,33 @@ mod tests {
             );
         }
         crate::tui::markdown::set_center_code_blocks(saved);
+    }
+
+    #[test]
+    fn render_background_task_message_uses_box_and_truncates_preview_lines() {
+        let msg = DisplayMessage::background_task(
+            "**Background task** `bg123` · `bash` · ✓ completed · 7.1s · exit 0\n\n```text\nline 1\nline 2\nline 3\nline 4\nline 5\n```\n\n_Full output:_ `bg action=\"output\" task_id=\"bg123\"`",
+        );
+
+        let lines = render_background_task_message(&msg, 80, crate::config::DiffDisplayMode::Off);
+        let plain = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(plain.contains("background task"));
+        assert!(plain.contains("task bg123 · bash"));
+        assert!(plain.contains("Preview"));
+        assert!(plain.contains("line 1"));
+        assert!(plain.contains("… +1 more line"));
+        assert!(plain.contains("Full output"));
+        assert!(plain.contains("bg action=\"output\" task_id=\"bg123\""));
     }
 
     #[test]

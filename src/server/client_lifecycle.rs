@@ -338,7 +338,7 @@ pub(super) async fn handle_client(
                             agent_guard.queue_soft_interrupt(
                                 notification,
                                 false,
-                                SoftInterruptSource::System,
+                                SoftInterruptSource::BackgroundTask,
                             );
                         }
                     }

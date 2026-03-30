@@ -205,7 +205,7 @@ impl App {
     }
 
     pub(super) fn show_interactive_login(&mut self) {
-        self.open_login_picker();
+        self.open_login_picker_inline();
         self.set_status_notice("Login: choose a provider");
     }
 

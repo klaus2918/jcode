@@ -17,6 +17,7 @@ use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
+use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
@@ -272,6 +273,13 @@ pub trait Provider: Send + Sync {
         Vec::new()
     }
 
+    /// Switch the active provider for the current session when supported.
+    fn switch_active_provider_to(&self, _provider: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "This provider does not support active provider switching"
+        ))
+    }
+
     /// Simple completion that returns text directly (no streaming).
     /// Useful for internal tasks like compaction summaries.
     /// Default implementation uses complete() and collects the response.
@@ -430,6 +438,35 @@ impl CompletionMode<'_> {
     }
 }
 
+const PROVIDER_FAILOVER_PROMPT_PREFIX: &str = "[jcode-provider-failover]";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct ProviderFailoverPrompt {
+    pub from_provider: String,
+    pub from_label: String,
+    pub to_provider: String,
+    pub to_label: String,
+    pub reason: String,
+    pub estimated_input_chars: usize,
+    pub estimated_input_tokens: usize,
+}
+
+impl ProviderFailoverPrompt {
+    fn to_error_message(&self) -> String {
+        let payload = serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string());
+        format!(
+            "{PROVIDER_FAILOVER_PROMPT_PREFIX}{payload}\n{} is unavailable; switching to {} would resend about {} input tokens (~{} chars).",
+            self.from_label, self.to_label, self.estimated_input_tokens, self.estimated_input_chars,
+        )
+    }
+}
+
+pub(crate) fn parse_failover_prompt_message(message: &str) -> Option<ProviderFailoverPrompt> {
+    let line = message.lines().next()?.trim();
+    let json = line.strip_prefix(PROVIDER_FAILOVER_PROMPT_PREFIX)?;
+    serde_json::from_str(json).ok()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FailoverDecision {
     None,
@@ -456,6 +493,32 @@ impl FailoverDecision {
 }
 
 impl MultiProvider {
+    fn estimate_request_input(
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        mode: CompletionMode<'_>,
+    ) -> (usize, usize) {
+        let mut chars = serde_json::to_string(messages)
+            .map(|value| value.len())
+            .unwrap_or(0)
+            + serde_json::to_string(tools)
+                .map(|value| value.len())
+                .unwrap_or(0);
+        match mode {
+            CompletionMode::Unified { system } => {
+                chars += system.len();
+            }
+            CompletionMode::Split {
+                system_static,
+                system_dynamic,
+            } => {
+                chars += system_static.len() + system_dynamic.len();
+            }
+        }
+        let tokens = chars / 4;
+        (chars, tokens)
+    }
+
     fn new_with_auth_status(auth_status: auth::AuthStatus) -> Self {
         let has_claude_creds = auth::claude::load_credentials().is_ok();
         let has_openai_creds = auth::codex::load_credentials().is_ok();
@@ -744,6 +807,25 @@ impl MultiProvider {
 
     fn set_active_provider(&self, provider: ActiveProvider) {
         *self.active.write().unwrap() = provider;
+    }
+
+    fn build_failover_prompt(
+        &self,
+        from: ActiveProvider,
+        to: ActiveProvider,
+        reason: String,
+        estimated_input_chars: usize,
+        estimated_input_tokens: usize,
+    ) -> ProviderFailoverPrompt {
+        ProviderFailoverPrompt {
+            from_provider: Self::provider_key(from).to_string(),
+            from_label: Self::provider_label(from).to_string(),
+            to_provider: Self::provider_key(to).to_string(),
+            to_label: Self::provider_label(to).to_string(),
+            reason,
+            estimated_input_chars,
+            estimated_input_tokens,
+        }
     }
 
     fn provider_is_configured(&self, provider: ActiveProvider) -> bool {
@@ -1035,10 +1117,26 @@ impl MultiProvider {
         let active = self.active_provider();
         let sequence = Self::fallback_sequence_for(active, self.forced_provider);
         let mut notes: Vec<String> = Vec::new();
+        let mut failover_reason: Option<String> = None;
+        let (estimated_input_chars, estimated_input_tokens) =
+            Self::estimate_request_input(messages, tools, mode);
 
         for candidate in sequence {
             let label = Self::provider_label(candidate);
             let key = Self::provider_key(candidate);
+
+            if candidate != active && failover_reason.is_some() {
+                let prompt = self.build_failover_prompt(
+                    active,
+                    candidate,
+                    failover_reason
+                        .clone()
+                        .unwrap_or_else(|| "provider unavailable".to_string()),
+                    estimated_input_chars,
+                    estimated_input_tokens,
+                );
+                return Err(anyhow::anyhow!(prompt.to_error_message()));
+            }
 
             if !self.provider_is_configured(candidate) {
                 let note = format!("{}: not configured", label);
@@ -1062,6 +1160,7 @@ impl MultiProvider {
                         label,
                         detail
                     ));
+                    failover_reason = Some(detail.clone());
                 }
                 notes.push(note);
                 continue;
@@ -1076,6 +1175,7 @@ impl MultiProvider {
                         label,
                         reason
                     ));
+                    failover_reason = Some(reason.clone());
                 }
                 notes.push(note);
                 record_provider_unavailable_for_account(key, &reason);
@@ -1139,6 +1239,9 @@ impl MultiProvider {
                     if decision.should_failover() {
                         if decision.should_mark_provider_unavailable() {
                             record_provider_unavailable_for_account(key, &summary);
+                        }
+                        if candidate == active {
+                            failover_reason = Some(summary);
                         }
                     } else {
                         return Err(err);
@@ -2932,6 +3035,20 @@ impl Provider for MultiProvider {
             ActiveProvider::Cursor => None,
             ActiveProvider::OpenRouter => None,
         }
+    }
+
+    fn switch_active_provider_to(&self, provider: &str) -> Result<()> {
+        let target = Self::parse_provider_hint(provider)
+            .ok_or_else(|| anyhow::anyhow!("Unknown provider `{}`", provider))?;
+        if !self.provider_is_configured(target) {
+            anyhow::bail!(
+                "Provider `{}` is not configured in this session",
+                Self::provider_key(target)
+            );
+        }
+        self.set_active_provider(target);
+        self.auto_select_multi_account_for_provider(target);
+        Ok(())
     }
 }
 

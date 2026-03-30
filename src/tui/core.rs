@@ -407,6 +407,18 @@ impl DisplayMessage {
         }
     }
 
+    /// Create a background task completion message (dedicated card display)
+    pub fn background_task(content: impl Into<String>) -> Self {
+        Self {
+            role: "background_task".to_string(),
+            content: content.into(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        }
+    }
+
     /// Create a memory injection message (bordered box display)
     pub fn memory(title: impl Into<String>, content: impl Into<String>) -> Self {
         Self {

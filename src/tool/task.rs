@@ -39,6 +39,7 @@ impl SubagentTool {
         requested_model
             .or(existing_session_model)
             .or(parent_subagent_model)
+            .or(crate::config::config().agents.swarm_model.as_deref())
             .unwrap_or(provider_model)
             .to_string()
     }

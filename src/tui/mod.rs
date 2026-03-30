@@ -349,6 +349,7 @@ pub fn cache_ttl_for_provider(provider: &str) -> Option<u64> {
 pub enum PickerKind {
     Model,
     Account,
+    Login,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,10 +360,25 @@ pub enum AccountPickerSelection {
     OpenCenter { provider_filter: Option<String> },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentModelTarget {
+    Swarm,
+    Review,
+    Judge,
+    Memory,
+    Ambient,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickerSelection {
     Model,
     Account(AccountPickerSelection),
+    Login(crate::provider_catalog::LoginProviderDescriptor),
+    AgentTarget(AgentModelTarget),
+    AgentModelChoice {
+        target: AgentModelTarget,
+        clear_override: bool,
+    },
 }
 
 /// Unified inline picker with three columns.

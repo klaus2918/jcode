@@ -1,6 +1,150 @@
 use super::*;
 
 impl App {
+    fn format_failover_count(value: usize) -> String {
+        match value {
+            0..=999 => value.to_string(),
+            1_000..=999_999 => format!("{:.1}k", value as f64 / 1_000.0),
+            _ => format!("{:.1}M", value as f64 / 1_000_000.0),
+        }
+    }
+
+    fn format_failover_input_summary(prompt: &crate::provider::ProviderFailoverPrompt) -> String {
+        format!(
+            "about **{} input tokens** (~{} chars)",
+            Self::format_failover_count(prompt.estimated_input_tokens),
+            Self::format_failover_count(prompt.estimated_input_chars),
+        )
+    }
+
+    fn failover_config_hint() -> &'static str {
+        "Set `[provider].cross_provider_failover = \"countdown\"` in `~/.jcode/config.toml` to enable a 3-second cancelable auto-switch."
+    }
+
+    fn apply_provider_switch_for_failover(
+        &mut self,
+        prompt: &crate::provider::ProviderFailoverPrompt,
+    ) -> anyhow::Result<String> {
+        self.provider
+            .switch_active_provider_to(&prompt.to_provider)?;
+        self.provider_session_id = None;
+        self.session.provider_session_id = None;
+        self.upstream_provider = None;
+        let active_model = self.provider.model();
+        self.update_context_limit_for_model(&active_model);
+        self.session.model = Some(active_model.clone());
+        let _ = self.session.save();
+        Ok(active_model)
+    }
+
+    pub(super) fn cancel_pending_provider_failover(&mut self, notice: impl Into<String>) {
+        let Some(pending) = self.pending_provider_failover.take() else {
+            return;
+        };
+        self.push_display_message(DisplayMessage::system(format!(
+            "⏸ **Canceled provider auto-switch** — kept **{}** active.\n\nYou can switch manually with `/model`, then resend. {}",
+            pending.prompt.from_label,
+            Self::failover_config_hint(),
+        )));
+        self.set_status_notice(notice);
+    }
+
+    pub(super) fn maybe_progress_provider_failover_countdown(&mut self) {
+        let Some(pending) = self.pending_provider_failover.clone() else {
+            return;
+        };
+        if self.is_processing {
+            return;
+        }
+        let now = Instant::now();
+        if now < pending.deadline {
+            let remaining = pending.deadline.saturating_duration_since(now).as_secs() + 1;
+            self.set_status_notice(format!(
+                "Provider auto-switch → {} in {}s (Esc to cancel)",
+                pending.prompt.to_label, remaining
+            ));
+            return;
+        }
+
+        self.pending_provider_failover = None;
+        match self.apply_provider_switch_for_failover(&pending.prompt) {
+            Ok(active_model) => {
+                self.push_display_message(DisplayMessage::system(format!(
+                    "⚡ **Auto-switched provider** after countdown: **{}** → **{}**.\n\nResending {} on model `{}`.",
+                    pending.prompt.from_label,
+                    pending.prompt.to_label,
+                    Self::format_failover_input_summary(&pending.prompt),
+                    active_model,
+                )));
+                self.set_status_notice(format!(
+                    "Provider → {} (retrying)",
+                    pending.prompt.to_label
+                ));
+                self.pending_turn = true;
+            }
+            Err(error) => {
+                self.push_display_message(DisplayMessage::error(format!(
+                    "Failed to switch provider to {}: {}",
+                    pending.prompt.to_label, error
+                )));
+                self.set_status_notice("Provider switch failed");
+            }
+        }
+    }
+
+    fn handle_provider_failover_prompt(&mut self, prompt: crate::provider::ProviderFailoverPrompt) {
+        let input_summary = Self::format_failover_input_summary(&prompt);
+        let manual_message = format!(
+            "⚠ **{} became unavailable** — jcode did **not** resend your prompt to **{}** automatically.\n\nReason: {}\n\nRetrying elsewhere would send {}.\n\nTo switch manually now, use `/model` and pick a model from **{}**, then resend. {}",
+            prompt.from_label,
+            prompt.to_label,
+            prompt.reason,
+            input_summary,
+            prompt.to_label,
+            Self::failover_config_hint(),
+        );
+
+        match crate::config::Config::load()
+            .provider
+            .cross_provider_failover
+        {
+            crate::config::CrossProviderFailoverMode::Manual if !self.is_remote => {
+                self.push_display_message(DisplayMessage::system(manual_message));
+                self.set_status_notice(format!(
+                    "{} unavailable; switch manually if desired",
+                    prompt.from_label
+                ));
+            }
+            crate::config::CrossProviderFailoverMode::Countdown if !self.is_remote => {
+                self.pending_provider_failover = Some(super::PendingProviderFailover {
+                    prompt: prompt.clone(),
+                    deadline: Instant::now() + Duration::from_secs(3),
+                });
+                self.push_display_message(DisplayMessage::system(format!(
+                    "⚠ **{} became unavailable** — jcode will switch to **{}** in **3 seconds** unless you cancel.\n\nReason: {}\n\nRetrying would send {}. Press **Esc** to cancel.",
+                    prompt.from_label,
+                    prompt.to_label,
+                    prompt.reason,
+                    input_summary,
+                )));
+                self.set_status_notice(format!(
+                    "Provider auto-switch → {} in 3s (Esc to cancel)",
+                    prompt.to_label
+                ));
+            }
+            _ => {
+                self.push_display_message(DisplayMessage::system(format!(
+                    "{}\n\n_Automatic countdown switching is only available in local sessions right now._",
+                    manual_message,
+                )));
+                self.set_status_notice(format!(
+                    "{} unavailable; manual switch suggested",
+                    prompt.from_label
+                ));
+            }
+        }
+    }
+
     pub(super) fn cycle_model(&mut self, direction: i8) {
         let models = self.provider.available_models_for_switching();
         if models.is_empty() {
@@ -178,6 +322,11 @@ impl App {
     pub(super) fn handle_turn_error(&mut self, error: impl Into<String>) {
         let error = error.into();
         self.last_stream_error = Some(error.clone());
+
+        if let Some(prompt) = crate::provider::parse_failover_prompt_message(&error) {
+            self.handle_provider_failover_prompt(prompt);
+            return;
+        }
 
         if is_context_limit_error(&error) {
             let recovery = self.auto_recover_context_limit();

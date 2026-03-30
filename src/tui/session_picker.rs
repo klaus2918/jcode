@@ -50,6 +50,7 @@ pub struct SessionInfo {
     pub saved: bool,
     pub save_label: Option<String>,
     pub status: SessionStatus,
+    pub needs_catchup: bool,
     pub estimated_tokens: usize,
     pub messages_preview: Vec<PreviewMessage>,
     /// Lowercased searchable text used by picker filtering
@@ -517,7 +518,7 @@ fn crashed_sessions_from_all_sessions(sessions: &[SessionInfo]) -> Option<Crashe
 
 #[derive(Clone, Debug)]
 pub enum PickerResult {
-    Selected(String),
+    Selected(Vec<String>),
     RestoreAllCrashed,
 }
 
@@ -567,6 +568,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
             }
 
             let status = session.status.clone();
+            let needs_catchup = crate::catchup::needs_catchup(&stem, session.updated_at, &status);
 
             // Skip sessions with no messages
             if session.messages.is_empty() {
@@ -604,6 +606,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
                 saved: session.saved,
                 save_label: session.save_label,
                 status,
+                needs_catchup,
                 estimated_tokens,
                 messages_preview,
                 search_index,
@@ -748,6 +751,7 @@ enum PaneFocus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SessionFilterMode {
     All,
+    CatchUp,
     Saved,
     ClaudeCode,
     Codex,
@@ -758,7 +762,8 @@ enum SessionFilterMode {
 impl SessionFilterMode {
     fn next(self) -> Self {
         match self {
-            Self::All => Self::Saved,
+            Self::All => Self::CatchUp,
+            Self::CatchUp => Self::Saved,
             Self::Saved => Self::ClaudeCode,
             Self::ClaudeCode => Self::Codex,
             Self::Codex => Self::Pi,
@@ -770,7 +775,8 @@ impl SessionFilterMode {
     fn previous(self) -> Self {
         match self {
             Self::All => Self::OpenCode,
-            Self::Saved => Self::All,
+            Self::CatchUp => Self::All,
+            Self::Saved => Self::CatchUp,
             Self::ClaudeCode => Self::Saved,
             Self::Codex => Self::ClaudeCode,
             Self::Pi => Self::Codex,
@@ -781,6 +787,7 @@ impl SessionFilterMode {
     fn label(self) -> Option<&'static str> {
         match self {
             Self::All => None,
+            Self::CatchUp => Some("⏭ catch up"),
             Self::Saved => Some("📌 saved"),
             Self::ClaudeCode => Some("🧵 Claude Code"),
             Self::Codex => Some("🧠 Codex"),
@@ -857,6 +864,8 @@ pub struct SessionPicker {
     hidden_test_count: usize,
     /// Which pane has keyboard focus
     focus: PaneFocus,
+    /// Sessions explicitly selected for multi-resume / multi-catchup.
+    selected_session_ids: HashSet<String>,
     last_mouse_scroll: Option<std::time::Instant>,
 }
 
@@ -890,6 +899,7 @@ impl SessionPicker {
             search_active: false,
             hidden_test_count,
             focus: PaneFocus::Sessions,
+            selected_session_ids: HashSet::new(),
             last_mouse_scroll: None,
         };
         picker.rebuild_items();
@@ -944,10 +954,16 @@ impl SessionPicker {
             search_active: false,
             hidden_test_count,
             focus: PaneFocus::Sessions,
+            selected_session_ids: HashSet::new(),
             last_mouse_scroll: None,
         };
         picker.rebuild_items();
         picker
+    }
+
+    pub fn activate_catchup_filter(&mut self) {
+        self.filter_mode = SessionFilterMode::CatchUp;
+        self.rebuild_items();
     }
 
     pub fn selected_session(&self) -> Option<&SessionInfo> {
@@ -959,6 +975,40 @@ impl SessionPicker {
                 .copied()
                 .and_then(|session_ref| self.session_by_ref(session_ref))
         })
+    }
+
+    fn selection_or_current_ids(&self) -> Vec<String> {
+        if !self.selected_session_ids.is_empty() {
+            return self
+                .visible_sessions
+                .iter()
+                .filter_map(|session_ref| self.session_by_ref(*session_ref))
+                .filter(|session| self.selected_session_ids.contains(&session.id))
+                .map(|session| session.id.clone())
+                .collect();
+        }
+
+        self.selected_session()
+            .map(|session| vec![session.id.clone()])
+            .unwrap_or_default()
+    }
+
+    fn selection_count(&self) -> usize {
+        self.selected_session_ids.len()
+    }
+
+    fn toggle_selected_session(&mut self) {
+        let Some(session_id) = self.selected_session().map(|session| session.id.clone()) else {
+            return;
+        };
+
+        if !self.selected_session_ids.insert(session_id.clone()) {
+            self.selected_session_ids.remove(&session_id);
+        }
+    }
+
+    pub fn clear_selected_sessions(&mut self) {
+        self.selected_session_ids.clear();
     }
 
     fn selected_session_ref(&self) -> Option<SessionRef> {
@@ -1206,6 +1256,7 @@ impl SessionPicker {
     fn session_matches_filter_mode(session: &SessionInfo, filter_mode: SessionFilterMode) -> bool {
         match filter_mode {
             SessionFilterMode::All => true,
+            SessionFilterMode::CatchUp => session.needs_catchup,
             SessionFilterMode::Saved => session.saved,
             SessionFilterMode::ClaudeCode => Self::session_is_claude_code(session),
             SessionFilterMode::Codex => Self::session_is_codex(session),
@@ -1260,6 +1311,7 @@ impl SessionPicker {
 
     /// Rebuild the items list based on current filters.
     fn rebuild_items(&mut self) {
+        let current_selected_id = self.selected_session().map(|session| session.id.clone());
         let show_test = self.show_test_sessions;
         let filter_mode = self.filter_mode;
         let query = self.search_query.clone();
@@ -1296,8 +1348,20 @@ impl SessionPicker {
                     .count()
             };
 
-            let first = self.item_to_session.iter().position(|x| x.is_some());
-            self.list_state.select(first);
+            let visible_ids: std::collections::HashSet<String> = self
+                .visible_sessions
+                .iter()
+                .filter_map(|session_ref| self.session_by_ref(*session_ref))
+                .map(|session| session.id.clone())
+                .collect();
+            self.selected_session_ids
+                .retain(|id| visible_ids.contains(id));
+
+            let selected = current_selected_id
+                .as_deref()
+                .and_then(|id| self.find_item_index_for_session_id(id))
+                .or_else(|| self.item_to_session.iter().position(|x| x.is_some()));
+            self.list_state.select(selected);
             self.scroll_offset = 0;
             self.auto_scroll_preview = true;
             return;
@@ -1449,10 +1513,35 @@ impl SessionPicker {
                 .count()
         };
 
-        let first = self.item_to_session.iter().position(|x| x.is_some());
-        self.list_state.select(first);
+        let visible_ids: std::collections::HashSet<String> = self
+            .visible_sessions
+            .iter()
+            .filter_map(|session_ref| self.session_by_ref(*session_ref))
+            .map(|session| session.id.clone())
+            .collect();
+        self.selected_session_ids
+            .retain(|id| visible_ids.contains(id));
+
+        let selected = current_selected_id
+            .as_deref()
+            .and_then(|id| self.find_item_index_for_session_id(id))
+            .or_else(|| self.item_to_session.iter().position(|x| x.is_some()));
+        self.list_state.select(selected);
         self.scroll_offset = 0;
         self.auto_scroll_preview = true;
+    }
+
+    fn find_item_index_for_session_id(&self, session_id: &str) -> Option<usize> {
+        self.item_to_session
+            .iter()
+            .enumerate()
+            .find_map(|(item_idx, session_idx)| {
+                session_idx
+                    .and_then(|visible_idx| self.visible_sessions.get(visible_idx).copied())
+                    .and_then(|session_ref| self.session_by_ref(session_ref))
+                    .filter(|session| session.id == session_id)
+                    .map(|_| item_idx)
+            })
     }
 
     /// Toggle debug session visibility
@@ -1554,7 +1643,7 @@ impl SessionPicker {
 
     /// Handle a key event when used as an overlay inside the main TUI.
     /// Returns:
-    /// - `Some(PickerResult::Selected(id))` if user selected a session
+    /// - `Some(PickerResult::Selected(ids))` if user selected one or more sessions
     /// - `Some(PickerResult::RestoreAllCrashed)` if user chose batch restore
     /// - `None` if the overlay should close (Esc/q/Ctrl+C)
     /// - The method returns `Ok(true)` to keep the overlay open (still navigating)
@@ -1575,10 +1664,11 @@ impl SessionPicker {
                     if self.visible_sessions.is_empty() {
                         self.search_query.clear();
                         self.rebuild_items();
-                    } else if let Some(s) = self.selected_session() {
-                        return Ok(OverlayAction::Selected(PickerResult::Selected(
-                            s.id.clone(),
-                        )));
+                    } else {
+                        let ids = self.selection_or_current_ids();
+                        if !ids.is_empty() {
+                            return Ok(OverlayAction::Selected(PickerResult::Selected(ids)));
+                        }
                     }
                 }
                 KeyCode::Backspace => {
@@ -1609,11 +1699,13 @@ impl SessionPicker {
                 return Ok(OverlayAction::Close);
             }
             KeyCode::Char('q') => return Ok(OverlayAction::Close),
+            KeyCode::Char(' ') => {
+                self.toggle_selected_session();
+            }
             KeyCode::Enter => {
-                if let Some(s) = self.selected_session() {
-                    return Ok(OverlayAction::Selected(PickerResult::Selected(
-                        s.id.clone(),
-                    )));
+                let ids = self.selection_or_current_ids();
+                if !ids.is_empty() {
+                    return Ok(OverlayAction::Selected(PickerResult::Selected(ids)));
                 }
             }
             KeyCode::Char('R') | KeyCode::Char('B') | KeyCode::Char('b') => {
@@ -1687,6 +1779,7 @@ impl SessionPicker {
 
         let created_ago = format_time_ago(session.created_at);
         let in_batch_restore = self.crashed_session_ids.contains(&session.id);
+        let is_marked = self.selected_session_ids.contains(&session.id);
 
         // Name style
         let name_style = if is_selected {
@@ -1700,6 +1793,14 @@ impl SessionPicker {
         let canary_marker = if session.is_canary { " 🔬" } else { "" };
         let debug_marker = if session.is_debug { " 🧪" } else { "" };
         let saved_marker = if session.saved { " 📌" } else { "" };
+        let selection_marker = if is_marked { "[x] " } else { "[ ] " };
+        let selection_style = if is_marked {
+            Style::default()
+                .fg(rgb(140, 220, 160))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(rgb(90, 90, 90))
+        };
 
         // Status indicator with color and time label
         let time_ago = format_time_ago(session.last_message_time);
@@ -1719,7 +1820,7 @@ impl SessionPicker {
 
         // Line 1: icon + name + status + time context
         let mut line1_spans = vec![
-            Span::styled("  ", Style::default()), // Indent for sessions under server
+            Span::styled(selection_marker, selection_style),
             Span::styled(
                 format!("{} ", session.icon),
                 Style::default().fg(rgb(110, 210, 255)),
@@ -1937,13 +2038,20 @@ impl SessionPicker {
             ));
         }
 
+        if self.selection_count() > 0 {
+            title_parts.push(Span::styled(
+                format!("  ✓ {} selected", self.selection_count()),
+                Style::default().fg(rgb(140, 220, 160)),
+            ));
+        }
+
         title_parts.push(Span::styled(" ", Style::default()));
 
         // Help text on the right
         let help = if self.search_active {
             " type to filter, Esc cancel "
         } else {
-            " s next filter · S prev · d debug · / search · h/l focus · ↑↓ · Enter · q "
+            " Space select · Enter resume · s next filter · S prev · d debug · / search · h/l focus · ↑↓ · q "
         };
 
         let border_dim: Color = rgb(70, 70, 70);
@@ -2128,6 +2236,18 @@ impl SessionPicker {
             );
         }
 
+        if self.selected_session_ids.contains(&session.id) {
+            lines.push(
+                Line::from(vec![Span::styled(
+                    "✓ Selected for multi-resume",
+                    Style::default()
+                        .fg(rgb(140, 220, 160))
+                        .add_modifier(Modifier::BOLD),
+                )])
+                .alignment(align),
+            );
+        }
+
         lines.push(Line::from("").alignment(align));
         lines.push(
             Line::from(vec![Span::styled(
@@ -2232,6 +2352,24 @@ impl SessionPicker {
                 }
                 "system" => {
                     let md_lines = super::ui::render_system_message(
+                        &DisplayMessage {
+                            role: msg.role.clone(),
+                            content: msg.content.clone(),
+                            tool_calls: msg.tool_calls.clone(),
+                            duration_secs: None,
+                            title: None,
+                            tool_data: msg.tool_data.clone(),
+                        },
+                        assistant_width,
+                        crate::config::DiffDisplayMode::Off,
+                    );
+                    for line in md_lines {
+                        lines.push(super::ui::align_if_unset(line, align));
+                        rendered_messages += 1;
+                    }
+                }
+                "background_task" => {
+                    let md_lines = super::ui::render_background_task_message(
                         &DisplayMessage {
                             role: msg.role.clone(),
                             content: msg.content.clone(),
@@ -2516,10 +2654,11 @@ impl SessionPicker {
                                         self.search_query.clear();
                                         self.rebuild_items();
                                     } else {
-                                        // Select current item
-                                        break Ok(self
-                                            .selected_session()
-                                            .map(|s| PickerResult::Selected(s.id.clone())));
+                                        let ids = self.selection_or_current_ids();
+                                        if ids.is_empty() {
+                                            break Ok(None);
+                                        }
+                                        break Ok(Some(PickerResult::Selected(ids)));
                                     }
                                 }
                                 KeyCode::Backspace => {
@@ -2554,10 +2693,15 @@ impl SessionPicker {
                             KeyCode::Char('q') => {
                                 break Ok(None);
                             }
+                            KeyCode::Char(' ') => {
+                                self.toggle_selected_session();
+                            }
                             KeyCode::Enter => {
-                                break Ok(self
-                                    .selected_session()
-                                    .map(|s| PickerResult::Selected(s.id.clone())));
+                                let ids = self.selection_or_current_ids();
+                                if ids.is_empty() {
+                                    break Ok(None);
+                                }
+                                break Ok(Some(PickerResult::Selected(ids)));
                             }
                             KeyCode::Char('R') | KeyCode::Char('B') | KeyCode::Char('b') => {
                                 if self.crashed_sessions.is_some() {
@@ -2704,6 +2848,7 @@ mod tests {
             saved: false,
             save_label: None,
             status,
+            needs_catchup: false,
             estimated_tokens: 200,
             messages_preview,
             search_index,
@@ -2976,6 +3121,7 @@ mod tests {
     fn test_filter_mode_cycles_through_requested_session_sources() {
         let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
         saved.saved = true;
+        saved.needs_catchup = true;
 
         let claude_code = make_session(
             "imported_cc_demo",
@@ -2998,6 +3144,15 @@ mod tests {
 
         assert_eq!(picker.filter_mode, SessionFilterMode::All);
         assert_eq!(picker.visible_sessions.len(), 5);
+
+        picker.cycle_filter_mode();
+        assert_eq!(picker.filter_mode, SessionFilterMode::CatchUp);
+        assert_eq!(picker.visible_sessions.len(), 1);
+        assert!(
+            picker
+                .visible_session_iter()
+                .all(|session| session.needs_catchup)
+        );
 
         picker.cycle_filter_mode();
         assert_eq!(picker.filter_mode, SessionFilterMode::Saved);
@@ -3057,12 +3212,67 @@ mod tests {
         picker
             .handle_overlay_key(KeyCode::Char('s'), KeyModifiers::empty())
             .unwrap();
-        assert_eq!(picker.filter_mode, SessionFilterMode::Saved);
+        assert_eq!(picker.filter_mode, SessionFilterMode::CatchUp);
 
         picker
             .handle_overlay_key(KeyCode::Char('S'), KeyModifiers::empty())
             .unwrap();
         assert_eq!(picker.filter_mode, SessionFilterMode::All);
+    }
+
+    #[test]
+    fn test_space_selects_multiple_sessions_and_enter_returns_them() {
+        let mut newer = make_session("session_newer", "newer", false, SessionStatus::Closed);
+        let mut older = make_session("session_older", "older", false, SessionStatus::Closed);
+        newer.last_message_time = Utc::now();
+        older.last_message_time = Utc::now() - ChronoDuration::minutes(1);
+
+        let mut picker = SessionPicker::new(vec![older, newer]);
+
+        picker
+            .handle_overlay_key(KeyCode::Char(' '), KeyModifiers::empty())
+            .unwrap();
+        picker
+            .handle_overlay_key(KeyCode::Down, KeyModifiers::empty())
+            .unwrap();
+        picker
+            .handle_overlay_key(KeyCode::Char(' '), KeyModifiers::empty())
+            .unwrap();
+
+        let action = picker
+            .handle_overlay_key(KeyCode::Enter, KeyModifiers::empty())
+            .unwrap();
+
+        match action {
+            OverlayAction::Selected(PickerResult::Selected(ids)) => {
+                assert_eq!(
+                    ids,
+                    vec!["session_older".to_string(), "session_newer".to_string()]
+                );
+            }
+            other => panic!("expected selected sessions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_rebuild_items_prunes_selected_sessions_hidden_by_filter() {
+        let mut saved = make_session("session_saved", "saved", false, SessionStatus::Closed);
+        saved.saved = true;
+        let normal = make_session("session_normal", "normal", false, SessionStatus::Closed);
+
+        let mut picker = SessionPicker::new(vec![saved, normal]);
+        picker
+            .selected_session_ids
+            .insert("session_saved".to_string());
+        picker
+            .selected_session_ids
+            .insert("session_normal".to_string());
+
+        picker.filter_mode = SessionFilterMode::Saved;
+        picker.rebuild_items();
+
+        assert_eq!(picker.selected_session_ids.len(), 1);
+        assert!(picker.selected_session_ids.contains("session_saved"));
     }
 
     #[test]

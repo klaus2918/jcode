@@ -62,7 +62,26 @@ impl Sidecar {
     /// Create a new sidecar client, auto-selecting the best available backend.
     /// Prefers OpenAI (codex-spark) if creds exist, falls back to Claude.
     pub fn new() -> Self {
-        let (backend, model) = if auth::codex::load_credentials().is_ok() {
+        let configured_model = crate::config::config().agents.memory_model.clone();
+        let (backend, model) = if let Some(model) = configured_model {
+            match crate::provider::provider_for_model(&model) {
+                Some("openai") => (SidecarBackend::OpenAI, model),
+                Some("claude") => (SidecarBackend::Claude, model),
+                _ => {
+                    crate::logging::warn(&format!(
+                        "Ignoring unsupported memory sidecar model override '{}'; expected an OpenAI or Claude model",
+                        model
+                    ));
+                    if auth::codex::load_credentials().is_ok() {
+                        (SidecarBackend::OpenAI, SIDECAR_OPENAI_MODEL.to_string())
+                    } else if auth::claude::load_credentials().is_ok() {
+                        (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string())
+                    } else {
+                        (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string())
+                    }
+                }
+            }
+        } else if auth::codex::load_credentials().is_ok() {
             (SidecarBackend::OpenAI, SIDECAR_OPENAI_MODEL.to_string())
         } else if auth::claude::load_credentials().is_ok() {
             (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string())

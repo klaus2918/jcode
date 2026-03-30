@@ -235,6 +235,11 @@ impl Provider for JcodeProvider {
     fn drain_startup_notices(&self) -> Vec<String> {
         self.inner.drain_startup_notices()
     }
+
+    fn switch_active_provider_to(&self, provider: &str) -> Result<()> {
+        self.ensure_runtime_mode();
+        self.inner.switch_active_provider_to(provider)
+    }
 }
 
 #[cfg(test)]
