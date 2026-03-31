@@ -1211,7 +1211,14 @@ fn test_usage_report_updates_usage_picker_rows() {
 
     let picker = app.picker_state.as_ref().expect("missing usage picker");
     assert_eq!(picker.kind, crate::tui::PickerKind::Usage);
-    assert!(picker.models.iter().any(|entry| entry.name == "OpenAI (ChatGPT)"));
+    let entry = picker
+        .models
+        .iter()
+        .find(|entry| entry.name == "OpenAI (ChatGPT)")
+        .expect("missing OpenAI usage row");
+    assert!(entry.routes[0].api_method.contains("5h 82%"));
+    assert!(entry.routes[0].detail.contains("82%"));
+    assert!(entry.routes[0].detail.contains("plan pro"));
 }
 
 #[test]

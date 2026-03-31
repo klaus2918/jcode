@@ -749,6 +749,30 @@ impl App {
             }
         }
 
+        fn compact_limit_summary(limit: &crate::usage::UsageLimit) -> String {
+            let reset = limit
+                .resets_at
+                .as_deref()
+                .map(crate::usage::format_reset_time)
+                .map(|relative| format!(" · resets {}", relative))
+                .unwrap_or_default();
+            format!(
+                "{} {}{}",
+                limit.name,
+                crate::usage::format_usage_bar(limit.usage_percent, 8),
+                reset
+            )
+        }
+
+        fn compact_extra_info(provider: &crate::usage::ProviderUsage) -> Vec<String> {
+            provider
+                .extra_info
+                .iter()
+                .take(2)
+                .map(|(key, value)| format!("{} {}", key, value))
+                .collect()
+        }
+
         let existing_usage_picker = self.picker_state.as_ref().and_then(|picker| {
             (picker.kind == PickerKind::Usage).then(|| {
                 let selected_id = picker.filtered.get(picker.selected).and_then(|idx| {
@@ -834,24 +858,24 @@ impl App {
                 .iter()
                 .max_by(|left, right| left.usage_percent.total_cmp(&right.usage_percent));
 
+            let compact_limits = provider
+                .limits
+                .iter()
+                .map(compact_limit_summary)
+                .collect::<Vec<_>>();
+            let compact_extra = compact_extra_info(provider);
+
             let subtitle = if let Some(err) = &provider.error {
-                crate::util::truncate_str(err, 56).to_string()
-            } else if let Some(limit) = highest_limit {
-                format!(
-                    "{} window{} · highest {} {:.0}%",
-                    provider.limits.len(),
-                    if provider.limits.len() == 1 { "" } else { "s" },
-                    limit.name,
-                    limit.usage_percent
-                )
-            } else if !provider.extra_info.is_empty() {
-                format!(
-                    "{} detail field{}",
-                    provider.extra_info.len(),
-                    if provider.extra_info.len() == 1 { "" } else { "s" }
-                )
+                crate::util::truncate_str(err, 96).to_string()
             } else {
-                "No usage data returned".to_string()
+                let mut parts = Vec::new();
+                parts.extend(compact_limits.iter().cloned());
+                parts.extend(compact_extra.iter().cloned());
+                if parts.is_empty() {
+                    "No usage data returned".to_string()
+                } else {
+                    crate::util::truncate_str(&parts.join(" · "), 120).to_string()
+                }
             };
 
             let mut detail_lines = vec![format!("## {}", provider.provider_name)];
@@ -896,11 +920,14 @@ impl App {
                 subtitle,
                 status,
                 window_summary: if let Some(limit) = highest_limit {
-                    format!("{:.0}%", limit.usage_percent)
+                    format!("{} {:.0}%", limit.name, limit.usage_percent)
                 } else if provider.error.is_some() {
                     "error".to_string()
                 } else if !provider.extra_info.is_empty() {
-                    format!("{} info", provider.extra_info.len())
+                    compact_extra
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| format!("{} info", provider.extra_info.len()))
                 } else {
                     "setup".to_string()
                 },
