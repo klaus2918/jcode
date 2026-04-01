@@ -223,7 +223,9 @@ fn install_recorded_path() -> Option<PathBuf> {
 }
 
 fn version_recorded_path() -> Option<PathBuf> {
-    storage::jcode_dir().ok().map(|d| d.join("telemetry_version_sent"))
+    storage::jcode_dir()
+        .ok()
+        .map(|d| d.join("telemetry_version_sent"))
 }
 
 fn write_private_file(path: &PathBuf, value: &str) {
@@ -303,7 +305,10 @@ fn mark_tool_feature_usage(state: &mut SessionTelemetry, name: &str, input: &Val
         _ => {}
     }
 
-    if matches!(name, "write" | "edit" | "multiedit" | "patch" | "apply_patch") {
+    if matches!(
+        name,
+        "write" | "edit" | "multiedit" | "patch" | "apply_patch"
+    ) {
         state.file_write_calls += 1;
     }
 

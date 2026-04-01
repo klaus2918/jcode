@@ -313,33 +313,34 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
     let model_width = width.saturating_sub(marker_width + provider_width + via_width);
 
     let kind = picker.kind;
-    let (col_widths, col_labels, col_logical): ([usize; 3], [&str; 3], [usize; 3]) = if is_account_picker {
-        (
-            [account_title_width, account_state_width, 0],
-            [kind.primary_label(), kind.secondary_label(is_preview), ""],
-            [0, 0, 0],
-        )
-    } else if is_preview {
-        (
-            [provider_width, model_width, via_width],
-            [
-                kind.secondary_label(true),
-                kind.primary_label(),
-                kind.tertiary_label(),
-            ],
-            [1, 0, 2],
-        )
-    } else {
-        (
-            [model_width, provider_width, via_width],
-            [
-                kind.primary_label(),
-                kind.secondary_label(false),
-                kind.tertiary_label(),
-            ],
-            [0, 1, 2],
-        )
-    };
+    let (col_widths, col_labels, col_logical): ([usize; 3], [&str; 3], [usize; 3]) =
+        if is_account_picker {
+            (
+                [account_title_width, account_state_width, 0],
+                [kind.primary_label(), kind.secondary_label(is_preview), ""],
+                [0, 0, 0],
+            )
+        } else if is_preview {
+            (
+                [provider_width, model_width, via_width],
+                [
+                    kind.secondary_label(true),
+                    kind.primary_label(),
+                    kind.tertiary_label(),
+                ],
+                [1, 0, 2],
+            )
+        } else {
+            (
+                [model_width, provider_width, via_width],
+                [
+                    kind.primary_label(),
+                    kind.secondary_label(false),
+                    kind.tertiary_label(),
+                ],
+                [0, 1, 2],
+            )
+        };
 
     let mut header_spans: Vec<Span> = Vec::new();
 
@@ -467,15 +468,15 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
         let unavailable = route.map(|r| !r.available).unwrap_or(true);
         let display_name = picker_entry_display_name(entry);
         let account_action_color = match &entry.action {
-            crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Add {
-                ..
-            }) => Some(rgb(140, 220, 170)),
+            crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Add { .. }) => {
+                Some(rgb(140, 220, 170))
+            }
             crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Replace {
                 ..
             }) => Some(rgb(240, 200, 120)),
-            crate::tui::PickerAction::Account(
-                crate::tui::AccountPickerAction::OpenCenter { .. },
-            ) => Some(rgb(150, 190, 255)),
+            crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::OpenCenter {
+                ..
+            }) => Some(rgb(150, 190, 255)),
             _ => None,
         };
         let primary_style = if unavailable {
@@ -727,12 +728,10 @@ mod tests {
                 detail: String::new(),
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::tui::PickerAction::Account(
-                crate::tui::AccountPickerAction::Switch {
-                    provider_id: "claude".to_string(),
-                    label: "work".to_string(),
-                },
-            ),
+            action: crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Switch {
+                provider_id: "claude".to_string(),
+                label: "work".to_string(),
+            }),
             selected_option: 0,
             is_current: true,
             is_default: false,

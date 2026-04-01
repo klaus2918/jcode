@@ -11,7 +11,7 @@ impl App {
 
     pub(super) fn open_usage_picker_loading(&mut self) {
         use crate::tui::usage_overlay::UsageOverlayStatus;
-        use crate::tui::{PickerEntry, PickerKind, PickerAction, PickerState, PickerOption};
+        use crate::tui::{PickerAction, PickerEntry, PickerKind, PickerOption, PickerState};
 
         let detail_lines = vec![
             "## Refreshing usage".to_string(),

@@ -965,11 +965,9 @@ impl App {
                 detail: format!("create {}", next_claude),
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::tui::PickerAction::Account(
-                crate::tui::AccountPickerAction::Add {
-                    provider_id: "claude".to_string(),
-                },
-            ),
+            action: crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Add {
+                provider_id: "claude".to_string(),
+            }),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -989,11 +987,9 @@ impl App {
                 detail: format!("create {}", next_openai),
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::tui::PickerAction::Account(
-                crate::tui::AccountPickerAction::Add {
-                    provider_id: "openai".to_string(),
-                },
-            ),
+            action: crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Add {
+                provider_id: "openai".to_string(),
+            }),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -1023,12 +1019,10 @@ impl App {
                 },
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::tui::PickerAction::Account(
-                crate::tui::AccountPickerAction::Replace {
-                    provider_id: "claude".to_string(),
-                    label: replace_claude,
-                },
-            ),
+            action: crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Replace {
+                provider_id: "claude".to_string(),
+                label: replace_claude,
+            }),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -1058,12 +1052,10 @@ impl App {
                 },
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::tui::PickerAction::Account(
-                crate::tui::AccountPickerAction::Replace {
-                    provider_id: "openai".to_string(),
-                    label: replace_openai,
-                },
-            ),
+            action: crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Replace {
+                provider_id: "openai".to_string(),
+                label: replace_openai,
+            }),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -1170,11 +1162,9 @@ impl App {
                 detail: format!("create {}", next_label),
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::tui::PickerAction::Account(
-                crate::tui::AccountPickerAction::Add {
-                    provider_id: "claude".to_string(),
-                },
-            ),
+            action: crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Add {
+                provider_id: "claude".to_string(),
+            }),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -1204,12 +1194,10 @@ impl App {
                 },
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::tui::PickerAction::Account(
-                crate::tui::AccountPickerAction::Replace {
-                    provider_id: "claude".to_string(),
-                    label: replace_target,
-                },
-            ),
+            action: crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Replace {
+                provider_id: "claude".to_string(),
+                label: replace_target,
+            }),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -1316,11 +1304,9 @@ impl App {
                 detail: format!("create {}", next_label),
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::tui::PickerAction::Account(
-                crate::tui::AccountPickerAction::Add {
-                    provider_id: "openai".to_string(),
-                },
-            ),
+            action: crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Add {
+                provider_id: "openai".to_string(),
+            }),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -1350,12 +1336,10 @@ impl App {
                 },
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::tui::PickerAction::Account(
-                crate::tui::AccountPickerAction::Replace {
-                    provider_id: "openai".to_string(),
-                    label: replace_target,
-                },
-            ),
+            action: crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Replace {
+                provider_id: "openai".to_string(),
+                label: replace_target,
+            }),
             selected_option: 0,
             is_current: false,
             is_default: false,
