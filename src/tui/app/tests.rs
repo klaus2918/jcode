@@ -1195,6 +1195,20 @@ fn test_usage_command_opens_usage_picker_loading() {
 }
 
 #[test]
+fn test_usage_submit_input_opens_usage_picker_loading() {
+    let mut app = create_test_app();
+    app.input = "/usage".to_string();
+
+    app.submit_input();
+
+    let picker = app.picker_state.as_ref().expect("missing usage picker");
+    assert_eq!(picker.kind, crate::tui::PickerKind::Usage);
+    assert!(!picker.preview);
+    assert_eq!(picker.models[0].name, "Refreshing usage");
+    assert!(app.display_messages().is_empty());
+}
+
+#[test]
 fn test_usage_report_updates_usage_picker_rows() {
     let mut app = create_test_app();
     app.open_usage_picker_loading();
