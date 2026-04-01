@@ -1560,7 +1560,7 @@ impl App {
                 "`/context`\nShow the full session context snapshot: prompt/context composition, compaction state, model/provider/runtime details, queued work, todos, and side-panel state."
             }
             "usage" => {
-                "`/usage`\nFetch and display subscription usage limits for connected providers. Today this shows OAuth provider windows (Anthropic, OpenAI/ChatGPT); jcode subscription budget reporting is scaffolded but not yet backed by a live billing service."
+                "`/usage`\nFetch and display usage limits for connected providers. This view is limited to real provider/account usage data and reset windows."
             }
             "subscription" => {
                 "`/subscription`\nShow curated jcode subscription status for this session, including router config, runtime mode, curated models, and planned tier budget scaffolding."

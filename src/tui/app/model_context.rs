@@ -792,58 +792,8 @@ impl App {
             })
         });
 
-        let jcode_runtime = crate::subscription_catalog::is_runtime_mode_enabled();
         let mut rows = Vec::new();
         let mut summary = UsageOverlaySummary::default();
-
-        if jcode_runtime {
-            rows.push(UsageViewRow {
-                id: "jcode".to_string(),
-                title: "Jcode Subscription".to_string(),
-                subtitle: "Scaffold only · curated router status".to_string(),
-                status: UsageOverlayStatus::Info,
-                window_summary: "scaffold".to_string(),
-                detail_lines: vec![
-                    "## Jcode Subscription".to_string(),
-                    "Live billing/usage reporting is not connected yet for the curated jcode-managed subscription path.".to_string(),
-                    "".to_string(),
-                    "## Runtime".to_string(),
-                    format!(
-                        "• Runtime mode: {}",
-                        if jcode_runtime { "active" } else { "inactive" }
-                    ),
-                    format!(
-                        "• Router base: {}",
-                        crate::subscription_catalog::configured_api_base().unwrap_or_else(|| {
-                            crate::subscription_catalog::DEFAULT_JCODE_API_BASE.to_string()
-                        })
-                    ),
-                    format!(
-                        "• Curated models: {}",
-                        crate::subscription_catalog::curated_models()
-                            .iter()
-                            .map(|model| model.display_name)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                    "".to_string(),
-                    "## Planned usable budgets".to_string(),
-                    format!(
-                        "• {}: ${:.2} usable",
-                        crate::subscription_catalog::JcodeTier::Starter20.display_name(),
-                        crate::subscription_catalog::JcodeTier::Starter20.usable_budget_usd()
-                    ),
-                    format!(
-                        "• {}: ${:.2} usable",
-                        crate::subscription_catalog::JcodeTier::Pro100.display_name(),
-                        crate::subscription_catalog::JcodeTier::Pro100.usable_budget_usd()
-                    ),
-                    "".to_string(),
-                    "• Use `/subscription` for the full curated subscription status scaffold."
-                        .to_string(),
-                ],
-            });
-        }
 
         for provider in &results {
             let status = provider_status(provider);
@@ -937,11 +887,12 @@ impl App {
             });
         }
 
-        if results.is_empty() && !jcode_runtime {
+        if results.is_empty() {
             rows.push(UsageViewRow {
                 id: "setup".to_string(),
                 title: "No connected providers".to_string(),
-                subtitle: "Add Claude or OpenAI OAuth to inspect subscription usage".to_string(),
+                subtitle: "Add Claude or OpenAI OAuth to inspect connected-provider usage"
+                    .to_string(),
                 status: UsageOverlayStatus::Info,
                 window_summary: "setup".to_string(),
                 detail_lines: vec![
@@ -949,41 +900,9 @@ impl App {
                     "No providers with OAuth credentials found.".to_string(),
                     "".to_string(),
                     "## Next steps".to_string(),
-                    "• Use `/login anthropic` to connect Claude OAuth.".to_string(),
+                    "• Use `/login claude` to connect Claude OAuth.".to_string(),
                     "• Use `/login openai` to connect ChatGPT / Codex OAuth.".to_string(),
                 ],
-            });
-        }
-
-        if self.total_input_tokens > 0 || self.total_output_tokens > 0 {
-            summary.session_visible = true;
-            let mut subtitle = format!(
-                "{} in · {} out",
-                format_token_count(self.total_input_tokens),
-                format_token_count(self.total_output_tokens)
-            );
-            if self.total_cost > 0.0 {
-                subtitle.push_str(&format!(" · ${:.4}", self.total_cost));
-            }
-
-            let mut detail_lines = vec![
-                "## Current session".to_string(),
-                format!("• Input tokens: {}", self.total_input_tokens),
-                format!("• Output tokens: {}", self.total_output_tokens),
-            ];
-            if self.total_cost > 0.0 {
-                detail_lines.push(format!("• Estimated cost: ${:.4}", self.total_cost));
-            }
-
-            rows.push(UsageViewRow {
-                id: "session".to_string(),
-                title: "Session Usage".to_string(),
-                subtitle,
-                status: UsageOverlayStatus::Info,
-                window_summary: format_token_count(
-                    self.total_input_tokens + self.total_output_tokens,
-                ),
-                detail_lines,
             });
         }
 

@@ -1147,7 +1147,7 @@ fn test_subscription_command_shows_jcode_status_scaffold() {
 }
 
 #[test]
-fn test_usage_report_shows_jcode_scaffold_when_subscription_mode_active() {
+fn test_usage_report_shows_no_connected_providers_when_results_empty() {
     let _guard = crate::storage::lock_test_env();
     crate::subscription_catalog::clear_runtime_env();
     crate::subscription_catalog::apply_runtime_env();
@@ -1161,11 +1161,10 @@ fn test_usage_report_shows_jcode_scaffold_when_subscription_mode_active() {
         .as_ref()
         .expect("missing /usage overlay")
         .borrow();
-    assert_eq!(overlay.selected_item_title(), Some("Jcode Subscription"));
+    assert_eq!(overlay.selected_item_title(), Some("No connected providers"));
     let detail = overlay.selected_item_detail_text();
-    assert!(detail.contains("Jcode Subscription"));
-    assert!(detail.contains("Use `/subscription`"));
-    assert!(detail.contains("$20 Starter"));
+    assert!(detail.contains("No connected providers"));
+    assert!(detail.contains("Use `/login openai`"));
 
     crate::subscription_catalog::clear_runtime_env();
 }

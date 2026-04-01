@@ -673,7 +673,7 @@ impl App {
             ("/version".into(), "Show current version"),
             ("/changelog".into(), "Show recent changes in this build"),
             ("/info".into(), "Show session info and tokens"),
-            ("/usage".into(), "Show subscription usage limits"),
+            ("/usage".into(), "Show connected provider usage limits"),
             (
                 "/subscription".into(),
                 "Show jcode subscription status and account details",
