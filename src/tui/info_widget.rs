@@ -617,7 +617,6 @@ pub struct AmbientWidgetData {
 }
 
 const PAGE_SWITCH_SECONDS: u64 = 30;
-pub(crate) const MAX_MEMORY_EVENTS: usize = 4;
 
 /// Data to display in the info widget
 #[derive(Debug, Default, Clone)]
@@ -1608,7 +1607,6 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
     let mut lines: Vec<Line> = Vec::new();
     let max_width = inner.width as usize;
     let activity = info.activity.as_ref();
-    let pipeline = activity.and_then(|state| state.pipeline.as_ref());
 
     lines.push(render_memory_header_line(info, activity, max_width));
 
@@ -1623,13 +1621,11 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
             }
         }
 
-        if let Some(pipeline) = pipeline {
-            for line in render_memory_pipeline_lines(pipeline, max_width) {
-                if lines.len() >= inner.height as usize {
-                    break;
-                }
-                lines.push(line);
+        for line in render_memory_pipeline_display_lines(activity, max_width) {
+            if lines.len() >= inner.height as usize {
+                break;
             }
+            lines.push(line);
         }
 
         if lines.len() < inner.height as usize {
@@ -1840,7 +1836,102 @@ fn render_memory_pipeline_lines(pipeline: &PipelineState, max_width: usize) -> V
     ]
 }
 
-fn render_memory_last_trace_line(activity: &MemoryActivity, max_width: usize) -> Option<Line<'static>> {
+fn render_memory_pipeline_display_lines(
+    activity: &MemoryActivity,
+    max_width: usize,
+) -> Vec<Line<'static>> {
+    if let Some(pipeline) = &activity.pipeline {
+        return render_memory_pipeline_lines(pipeline, max_width);
+    }
+
+    let (search, verify, inject, maintain, verify_progress) =
+        fallback_pipeline_statuses(&activity.state);
+
+    vec![
+        render_memory_step_line(
+            "╭ ",
+            "Find matches",
+            &search,
+            memory_step_detail("search", &search, None, None),
+            max_width,
+        ),
+        render_memory_step_line(
+            "├ ",
+            "Check relevance",
+            &verify,
+            memory_step_detail("verify", &verify, None, verify_progress),
+            max_width,
+        ),
+        render_memory_step_line(
+            "├ ",
+            "Inject context",
+            &inject,
+            memory_step_detail("inject", &inject, None, None),
+            max_width,
+        ),
+        render_memory_step_line(
+            "╰ ",
+            "Update memory",
+            &maintain,
+            memory_step_detail("maintain", &maintain, None, None),
+            max_width,
+        ),
+    ]
+}
+
+fn fallback_pipeline_statuses(
+    state: &MemoryState,
+) -> (StepStatus, StepStatus, StepStatus, StepStatus, Option<(usize, usize)>) {
+    match state {
+        MemoryState::Idle => (
+            StepStatus::Pending,
+            StepStatus::Pending,
+            StepStatus::Pending,
+            StepStatus::Pending,
+            None,
+        ),
+        MemoryState::Embedding => (
+            StepStatus::Running,
+            StepStatus::Pending,
+            StepStatus::Pending,
+            StepStatus::Pending,
+            None,
+        ),
+        MemoryState::SidecarChecking { count } => (
+            StepStatus::Done,
+            StepStatus::Running,
+            StepStatus::Pending,
+            StepStatus::Pending,
+            Some((0, *count)),
+        ),
+        MemoryState::FoundRelevant { .. } => (
+            StepStatus::Done,
+            StepStatus::Done,
+            StepStatus::Running,
+            StepStatus::Pending,
+            None,
+        ),
+        MemoryState::Extracting { .. } | MemoryState::Maintaining { .. } => (
+            StepStatus::Done,
+            StepStatus::Done,
+            StepStatus::Done,
+            StepStatus::Running,
+            None,
+        ),
+        MemoryState::ToolAction { .. } => (
+            StepStatus::Pending,
+            StepStatus::Pending,
+            StepStatus::Pending,
+            StepStatus::Running,
+            None,
+        ),
+    }
+}
+
+fn render_memory_last_trace_line(
+    activity: &MemoryActivity,
+    max_width: usize,
+) -> Option<Line<'static>> {
     let event = activity
         .recent_events
         .iter()
@@ -3219,6 +3310,37 @@ mod tests {
     }
 
     #[test]
+    fn memory_widget_shows_option_a_steps_without_pipeline_object() {
+        let data = InfoWidgetData {
+            memory_info: Some(MemoryInfo {
+                sidecar_model: Some("openai · gpt-5.3-codex-spark".to_string()),
+                activity: Some(MemoryActivity {
+                    state: MemoryState::SidecarChecking { count: 3 },
+                    state_since: Instant::now(),
+                    pipeline: None,
+                    recent_events: Vec::new(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let text = render_memory_widget(&data, Rect::new(0, 0, 40, 8))
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_lowercase();
+
+        assert!(text.contains("find matches"), "{text}");
+        assert!(text.contains("check relevance"), "{text}");
+        assert!(text.contains("inject context"), "{text}");
+        assert!(text.contains("update memory"), "{text}");
+        assert!(text.contains("checking 3 candidate"), "{text}");
+    }
+
+    #[test]
     fn memory_activity_priority_is_elevated_while_processing() {
         let mut idle_data = InfoWidgetData {
             memory_info: Some(MemoryInfo {
@@ -3710,11 +3832,7 @@ fn memory_last_trace_summary(activity: &MemoryActivity) -> Option<String> {
         .iter()
         .find(|event| is_traceworthy_memory_event(event))?;
     let (_, text, _) = format_event_for_expanded(event, 120);
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn memory_state_detail(state: &MemoryState) -> Option<String> {
@@ -3744,8 +3862,6 @@ fn memory_state_detail(state: &MemoryState) -> Option<String> {
 fn render_memory_expanded(info: &MemoryInfo, inner: Rect) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
     let max_width = inner.width.saturating_sub(2) as usize;
-    let dim = rgb(100, 100, 110);
-    let label_color = rgb(140, 140, 150);
 
     lines.push(render_memory_header_line(
         info,
@@ -3760,37 +3876,10 @@ fn render_memory_expanded(info: &MemoryInfo, inner: Rect) -> Vec<Line<'static>> 
     }
 
     if let Some(activity) = &info.activity {
-        if let Some(pipeline) = &activity.pipeline {
-            lines.extend(render_memory_pipeline_lines(pipeline, max_width));
-        }
+        lines.extend(render_memory_pipeline_display_lines(activity, max_width));
 
-        let interesting_events: Vec<&MemoryEvent> = activity
-            .recent_events
-            .iter()
-            .filter(|e| is_traceworthy_memory_event(e))
-            .take(MAX_MEMORY_EVENTS)
-            .collect();
-
-        if !interesting_events.is_empty() {
-            lines.push(Line::from(vec![Span::styled(
-                "Recent activity",
-                Style::default().fg(label_color).bold(),
-            )]));
-
-            for event in interesting_events {
-                let age = format_age(event.timestamp.elapsed());
-                let (icon, text, color) =
-                    format_event_for_expanded(event, max_width.saturating_sub(10));
-                if text.is_empty() {
-                    continue;
-                }
-
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {} ", icon), Style::default().fg(color)),
-                    Span::styled(text, Style::default().fg(label_color)),
-                    Span::styled(format!("  {}", age), Style::default().fg(dim)),
-                ]));
-            }
+        if let Some(last_line) = render_memory_last_trace_line(activity, max_width) {
+            lines.push(last_line);
         }
     }
 

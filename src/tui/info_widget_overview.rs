@@ -1,5 +1,5 @@
 use super::info_widget::{
-    AuthMethod, InfoWidgetData, MAX_MEMORY_EVENTS, UsageProvider, is_traceworthy_memory_event,
+    AuthMethod, InfoWidgetData, UsageProvider, is_traceworthy_memory_event,
 };
 
 pub(crate) const MAX_TODO_LINES: usize = 12;
@@ -212,23 +212,18 @@ fn expanded_memory_height(data: &InfoWidgetData) -> u16 {
         if info.total_count > 0 || info.activity.is_some() || info.sidecar_model.is_some() {
             let mut height = 1u16;
             if info.activity.is_some() {
-                height += 1;
+                height += 1 + 4;
             }
             if info.sidecar_model.is_some() {
                 height += 1;
             }
             if let Some(activity) = &info.activity {
-                if activity.pipeline.is_some() {
-                    height += 4;
-                }
-                let interesting_events = activity
+                if activity
                     .recent_events
                     .iter()
-                    .filter(|event| is_traceworthy_memory_event(event))
-                    .count()
-                    .min(MAX_MEMORY_EVENTS) as u16;
-                if interesting_events > 0 {
-                    height += 1 + interesting_events;
+                    .any(|event| is_traceworthy_memory_event(event))
+                {
+                    height += 1;
                 }
             }
             return height;
