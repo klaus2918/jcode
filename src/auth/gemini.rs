@@ -153,7 +153,6 @@ pub fn load_tokens() -> Result<GeminiTokens> {
     if cli_path.exists()
         && crate::config::Config::external_auth_source_allowed(GEMINI_CLI_AUTH_SOURCE_ID)
     {
-        crate::storage::harden_secret_file_permissions(&cli_path);
         let raw = std::fs::read_to_string(&cli_path)
             .with_context(|| format!("Failed to read {}", cli_path.display()))?;
         let imported: GeminiCliOAuthCredentials = serde_json::from_str(&raw)
@@ -718,6 +717,64 @@ mod tests {
         assert_eq!(tokens.access_token, "at-123");
         assert_eq!(tokens.refresh_token, "rt-456");
         assert_eq!(tokens.expires_at, 4102444800000);
+
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+        if let Some(prev_trusted) = prev_trusted {
+            crate::env::set_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES", prev_trusted);
+        } else {
+            crate::env::remove_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn imports_cli_oauth_tokens_without_changing_external_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = lock_test_env();
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_trusted = std::env::var_os("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES");
+        crate::env::set_var("JCODE_HOME", temp.path());
+        crate::env::set_var(
+            "JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES",
+            GEMINI_CLI_AUTH_SOURCE_ID,
+        );
+
+        let cli_path = gemini_cli_oauth_path().expect("cli path");
+        std::fs::create_dir_all(cli_path.parent().unwrap()).expect("create cli dir");
+        std::fs::write(
+            &cli_path,
+            r#"{"access_token":"at-123","refresh_token":"rt-456","expiry_date":4102444800000}"#,
+        )
+        .expect("write cli token file");
+        std::fs::set_permissions(
+            cli_path.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("set dir perms");
+        std::fs::set_permissions(&cli_path, std::fs::Permissions::from_mode(0o644))
+            .expect("set file perms");
+
+        let tokens = load_tokens().expect("load tokens");
+        assert_eq!(tokens.access_token, "at-123");
+
+        let dir_mode = std::fs::metadata(cli_path.parent().unwrap())
+            .expect("stat dir")
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&cli_path)
+            .expect("stat file")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o755);
+        assert_eq!(file_mode, 0o644);
 
         if let Some(prev_home) = prev_home {
             crate::env::set_var("JCODE_HOME", prev_home);

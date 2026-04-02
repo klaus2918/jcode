@@ -473,7 +473,6 @@ fn load_jcode_credentials() -> Result<ClaudeCredentials> {
 
 fn load_claude_code_credentials() -> Result<ClaudeCredentials> {
     let path = claude_code_path()?;
-    crate::storage::harden_secret_file_permissions(&path);
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Could not read credentials from {:?}", path))?;
 
@@ -494,7 +493,6 @@ fn load_claude_code_credentials() -> Result<ClaudeCredentials> {
 
 pub fn load_opencode_credentials() -> Result<ClaudeCredentials> {
     let path = opencode_path()?;
-    crate::storage::harden_secret_file_permissions(&path);
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Could not read OpenCode credentials from {:?}", path))?;
 
@@ -855,6 +853,44 @@ mod tests {
         let json = r#"{}"#;
         let file: CredentialsFile = serde_json::from_str(json).unwrap();
         assert!(file.claude_ai_oauth.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_claude_code_credentials_does_not_change_external_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+
+        let path = claude_code_path().expect("claude code path");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("create dir");
+        std::fs::write(
+            &path,
+            r#"{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt","expiresAt":4102444800000}}"#,
+        )
+        .expect("write file");
+        std::fs::set_permissions(path.parent().unwrap(), std::fs::Permissions::from_mode(0o755))
+            .expect("set dir perms");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("set file perms");
+
+        let _ = load_claude_code_credentials().expect("load external claude creds");
+
+        let dir_mode = std::fs::metadata(path.parent().unwrap())
+            .expect("stat dir")
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&path)
+            .expect("stat file")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(dir_mode, 0o755);
+        assert_eq!(file_mode, 0o644);
     }
 
     #[test]

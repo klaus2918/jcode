@@ -425,7 +425,6 @@ fn load_legacy_api_key_credentials() -> Result<CodexCredentials> {
 
 fn load_legacy_auth_file() -> Result<LegacyAuthFile> {
     let path = legacy_auth_path()?;
-    crate::storage::harden_secret_file_permissions(&path);
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Could not read credentials from {:?}", path))?;
     serde_json::from_str(&content).context("Could not parse Codex credentials")
@@ -791,6 +790,55 @@ mod tests {
             legacy_path.exists(),
             "legacy auth file should remain in place"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_credentials_reads_legacy_oauth_without_changing_external_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().unwrap();
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+        let _allow = EnvVarGuard::set(ALLOW_LEGACY_AUTH_ENV, "1");
+        set_active_account_override(None);
+
+        let legacy_path = temp
+            .path()
+            .join("external")
+            .join(".codex")
+            .join("auth.json");
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &legacy_path,
+            r#"{
+                "tokens": {
+                    "access_token": "at_legacy",
+                    "refresh_token": "rt_legacy",
+                    "account_id": "acct_legacy",
+                    "expires_at": 4102444800000
+                }
+            }"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            legacy_path.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::set_permissions(&legacy_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let creds = load_credentials().expect("load legacy oauth");
+        assert_eq!(creds.access_token, "at_legacy");
+
+        let dir_mode = std::fs::metadata(legacy_path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&legacy_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o755);
+        assert_eq!(file_mode, 0o644);
     }
 
     #[test]

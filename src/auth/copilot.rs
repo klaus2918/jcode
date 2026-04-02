@@ -185,7 +185,6 @@ fn copilot_config_dir() -> PathBuf {
 /// Parse a Copilot config JSON file to extract the oauth_token.
 /// Format: { "github.com": { "oauth_token": "gho_xxxx", "user": "..." } }
 fn load_token_from_json(path: &PathBuf) -> Result<String> {
-    crate::storage::harden_secret_file_permissions(path);
     let data = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
 
@@ -757,6 +756,30 @@ mod tests {
         } else {
             crate::env::remove_var("XDG_CONFIG_HOME");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_token_from_json_does_not_change_external_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("hosts.json");
+        std::fs::write(
+            &path,
+            r#"{"github.com":{"oauth_token":"gho_test","user":"tester"}}"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let token = load_token_from_json(&path).expect("load token");
+        assert_eq!(token, "gho_test");
+
+        let dir_mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o755);
+        assert_eq!(file_mode, 0o644);
     }
 
     #[test]

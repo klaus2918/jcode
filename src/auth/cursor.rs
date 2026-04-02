@@ -334,7 +334,6 @@ pub fn load_access_token_from_env_or_file() -> Result<CursorDirectTokens> {
     if file_path.exists()
         && crate::config::Config::external_auth_source_allowed(CURSOR_AUTH_FILE_SOURCE_ID)
     {
-        crate::storage::harden_secret_file_permissions(&file_path);
         let raw = std::fs::read_to_string(&file_path)
             .with_context(|| format!("Failed to read {}", file_path.display()))?;
         let parsed: CursorAuthFileData = serde_json::from_str(&raw)
@@ -699,6 +698,54 @@ mod tests {
     fn load_api_key_empty_env_falls_through() {
         let key_str = "";
         assert!(key_str.trim().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_access_token_from_auth_file_does_not_change_external_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::storage::lock_test_env();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_trusted = std::env::var_os("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES");
+        let temp = TempDir::new().unwrap();
+        crate::env::set_var("JCODE_HOME", temp.path());
+        crate::env::set_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES", CURSOR_AUTH_FILE_SOURCE_ID);
+
+        let path = cursor_auth_file_path().expect("cursor auth path");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"accessToken":"at-test","refreshToken":"rt-test"}"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(path.parent().unwrap(), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let tokens = load_access_token_from_env_or_file().expect("load auth file token");
+        assert_eq!(tokens.access_token, "at-test");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("rt-test"));
+
+        let dir_mode = std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o755);
+        assert_eq!(file_mode, 0o644);
+
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+        if let Some(prev_trusted) = prev_trusted {
+            crate::env::set_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES", prev_trusted);
+        } else {
+            crate::env::remove_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES");
+        }
     }
 
     #[test]
