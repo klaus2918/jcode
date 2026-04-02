@@ -44,6 +44,7 @@ mod copy_selection;
 mod debug;
 mod dictation;
 mod event_wrappers;
+mod handterm_native_scroll;
 mod helpers;
 mod input;
 mod local;

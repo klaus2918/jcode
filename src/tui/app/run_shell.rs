@@ -7,6 +7,8 @@ impl App {
         let mut event_stream = EventStream::new();
         let mut redraw_period = crate::tui::redraw_interval(&self);
         let mut redraw_interval = interval(redraw_period);
+        let mut handterm_native_scroll =
+            super::handterm_native_scroll::HandtermNativeScrollClient::connect_from_env();
         // Subscribe to bus for background task completion notifications
         let mut bus_receiver = Bus::global().subscribe();
 
@@ -19,6 +21,9 @@ impl App {
 
             // Draw UI
             terminal.draw(|frame| crate::tui::ui::draw(frame, &self))?;
+            if let Some(native) = handterm_native_scroll.as_mut() {
+                native.sync_from_app(&self);
+            }
 
             if self.should_quit {
                 break;
@@ -43,6 +48,16 @@ impl App {
                     }
                     event = event_stream.next() => {
                         local::handle_terminal_event(&mut self, &mut terminal, event)?;
+                    }
+                    command = async {
+                        match handterm_native_scroll.as_mut() {
+                            Some(native) => native.recv().await,
+                            None => futures::future::pending::<Option<super::handterm_native_scroll::HostToApp>>().await,
+                        }
+                    } => {
+                        if let Some(command) = command {
+                            self.apply_handterm_native_scroll(command);
+                        }
                     }
                     // Handle background task completion notifications
                     bus_event = bus_receiver.recv() => {
@@ -69,6 +84,8 @@ impl App {
         let mut event_stream = EventStream::new();
         let mut redraw_period = crate::tui::redraw_interval(&self);
         let mut redraw_interval = interval(redraw_period);
+        let mut handterm_native_scroll =
+            super::handterm_native_scroll::HandtermNativeScrollClient::connect_from_env();
         let mut remote_state = remote::RemoteRunState::default();
 
         'outer: loop {
@@ -121,6 +138,9 @@ impl App {
                 }
 
                 terminal.draw(|frame| crate::tui::ui::draw(frame, &self))?;
+                if let Some(native) = handterm_native_scroll.as_mut() {
+                    native.sync_from_app(&self);
+                }
 
                 if self.should_quit {
                     break 'outer;
@@ -152,6 +172,16 @@ impl App {
                     }
                     event = event_stream.next() => {
                         remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, event).await?;
+                    }
+                    command = async {
+                        match handterm_native_scroll.as_mut() {
+                            Some(native) => native.recv().await,
+                            None => futures::future::pending::<Option<super::handterm_native_scroll::HostToApp>>().await,
+                        }
+                    } => {
+                        if let Some(command) = command {
+                            self.apply_handterm_native_scroll(command);
+                        }
                     }
                     bus_event = bus_receiver_remote.recv() => {
                         remote::handle_bus_event(&mut self, &mut remote_conn, bus_event).await;

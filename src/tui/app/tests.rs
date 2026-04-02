@@ -2979,6 +2979,30 @@ fn test_mouse_scroll_events_are_classified_as_scroll_only() {
 }
 
 #[test]
+fn test_handterm_native_scroll_command_updates_chat_offset() {
+    let mut app = create_test_app();
+    let (_scroll_app, mut terminal) = create_scroll_test_app(50, 12, 0, 24);
+    terminal
+        .draw(|f| crate::tui::ui::draw(f, &app))
+        .expect("draw failed");
+    crate::tui::ui::record_layout_snapshot(Rect::new(0, 0, 50, 12), None, None);
+
+    app.auto_scroll_paused = true;
+    app.scroll_offset = 6;
+    app.apply_handterm_native_scroll(super::handterm_native_scroll::HostToApp::Scroll {
+        pane: super::handterm_native_scroll::PaneKind::Chat,
+        delta: -2,
+    });
+    assert_eq!(app.scroll_offset, 4);
+
+    app.apply_handterm_native_scroll(super::handterm_native_scroll::HostToApp::Scroll {
+        pane: super::handterm_native_scroll::PaneKind::Chat,
+        delta: 3,
+    });
+    assert_eq!(app.scroll_offset, 7);
+}
+
+#[test]
 fn test_mouse_scroll_help_overlay_updates_help_scroll() {
     let mut app = create_test_app();
     app.help_scroll = Some(5);
