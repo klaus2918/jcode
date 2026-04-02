@@ -334,6 +334,8 @@ pub struct MemoryInfo {
     pub by_category: HashMap<String, usize>,
     /// Whether sidecar is available
     pub sidecar_available: bool,
+    /// Selected sidecar model/backend label for memory work
+    pub sidecar_model: Option<String>,
     /// Current memory activity
     pub activity: Option<MemoryActivity>,
     /// Graph topology for visualization (node positions + edges)
@@ -751,7 +753,7 @@ impl InfoWidgetData {
             WidgetKind::MemoryActivity => self
                 .memory_info
                 .as_ref()
-                .map(|m| m.total_count > 0 || m.activity.is_some())
+                .map(|m| m.total_count > 0 || m.activity.is_some() || m.sidecar_model.is_some())
                 .unwrap_or(false),
             WidgetKind::SwarmStatus => false,
             WidgetKind::BackgroundTasks => self
@@ -1084,9 +1086,7 @@ pub(crate) fn calculate_widget_height(
             }
             h
         }
-        WidgetKind::Tips => {
-            tips_widget_height(inner_width)
-        }
+        WidgetKind::Tips => tips_widget_height(inner_width),
         WidgetKind::GitStatus => {
             let Some(info) = &data.git_info else {
                 return 0;
@@ -1601,7 +1601,7 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
     if inner.width == 0 || inner.height == 0 {
         return Vec::new();
     }
-    if info.total_count == 0 && info.activity.is_none() {
+    if info.total_count == 0 && info.activity.is_none() && info.sidecar_model.is_none() {
         return Vec::new();
     }
 
@@ -1617,6 +1617,12 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
             lines.push(render_memory_status_line(activity, max_width));
         }
 
+        if lines.len() < inner.height as usize {
+            if let Some(model_line) = render_memory_model_line(info, max_width) {
+                lines.push(model_line);
+            }
+        }
+
         if let Some(pipeline) = pipeline {
             for line in render_memory_pipeline_lines(pipeline, max_width) {
                 if lines.len() >= inner.height as usize {
@@ -1624,39 +1630,16 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
                 }
                 lines.push(line);
             }
-        } else if lines.len() < inner.height as usize {
-            lines.push(render_memory_summary_line(info, max_width));
-            if let Some(category_line) = render_memory_category_line(info, max_width) {
-                if lines.len() < inner.height as usize {
-                    lines.push(category_line);
-                }
+        }
+
+        if lines.len() < inner.height as usize {
+            if let Some(trace_line) = render_memory_last_trace_line(activity, max_width) {
+                lines.push(trace_line);
             }
         }
     } else if lines.len() < inner.height as usize {
-        lines.push(render_memory_summary_line(info, max_width));
-        if let Some(category_line) = render_memory_category_line(info, max_width) {
-            if lines.len() < inner.height as usize {
-                lines.push(category_line);
-            }
-        }
-    }
-
-    if lines.len() < inner.height as usize {
-        lines.push(render_memory_trace_store_line(info, max_width));
-    }
-
-    if lines.len() < inner.height as usize && !info.graph_nodes.is_empty() {
-        let remaining = inner.height as usize - lines.len();
-        if pipeline.is_none() && remaining >= 3 {
-            let topology_rect = Rect::new(0, 0, inner.width, remaining.min(3) as u16);
-            for line in render_memory_topology_lines(info, topology_rect) {
-                if lines.len() >= inner.height as usize {
-                    break;
-                }
-                lines.push(line);
-            }
-        } else {
-            lines.push(render_memory_trace_graph_line(info, max_width));
+        if let Some(model_line) = render_memory_model_line(info, max_width) {
+            lines.push(model_line);
         }
     }
 
@@ -1665,15 +1648,11 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
 }
 
 fn render_memory_header_line(
-    info: &MemoryInfo,
+    _info: &MemoryInfo,
     activity: Option<&MemoryActivity>,
     max_width: usize,
 ) -> Line<'static> {
-    let title = if info.total_count > 0 {
-        format!("Memory {}", info.total_count)
-    } else {
-        "Memory".to_string()
-    };
+    let title = "Memory".to_string();
     let (badge, badge_color) = memory_status_badge(activity);
     let badge_text = format!(" {} ", badge);
     let title_width = UnicodeWidthStr::width(title.as_str());
@@ -1732,6 +1711,10 @@ fn memory_status_badge(activity: Option<&MemoryActivity>) -> (String, Color) {
                 },
             );
         }
+
+        if pipeline.is_complete() {
+            return ("DONE".to_string(), rgb(100, 200, 100));
+        }
     }
 
     match &activity.state {
@@ -1745,55 +1728,20 @@ fn memory_status_badge(activity: Option<&MemoryActivity>) -> (String, Color) {
     }
 }
 
-fn render_memory_summary_line(info: &MemoryInfo, max_width: usize) -> Line<'static> {
-    let mut parts = Vec::new();
-    if info.project_count > 0 {
-        parts.push(format!("{} project", info.project_count));
-    }
-    if info.global_count > 0 {
-        parts.push(format!("{} global", info.global_count));
-    }
-    if parts.is_empty() {
-        parts.push(format!("{} total", info.total_count));
-    }
-    if info.sidecar_available {
-        parts.push("sidecar ok".to_string());
-    }
-
-    Line::from(vec![Span::styled(
-        truncate_smart(&parts.join(" · "), max_width),
-        Style::default().fg(rgb(160, 160, 170)),
-    )])
-}
-
-fn render_memory_category_line(info: &MemoryInfo, max_width: usize) -> Option<Line<'static>> {
-    if info.by_category.is_empty() {
+fn render_memory_model_line(info: &MemoryInfo, max_width: usize) -> Option<Line<'static>> {
+    let model = info.sidecar_model.as_deref()?.trim();
+    if model.is_empty() {
         return None;
     }
 
-    let mut cats: Vec<(&String, &usize)> = info.by_category.iter().collect();
-    cats.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-    let cat_str = cats
-        .iter()
-        .take(4)
-        .map(|(name, count)| format!("{} {}", format_memory_category_label(name), count))
-        .collect::<Vec<_>>()
-        .join(" · ");
-
-    Some(Line::from(vec![Span::styled(
-        truncate_with_ellipsis(&cat_str, max_width),
-        Style::default().fg(rgb(110, 110, 122)),
-    )]))
-}
-
-fn format_memory_category_label(category: &str) -> &'static str {
-    match category {
-        "fact" => "facts",
-        "preference" => "prefs",
-        "entity" => "entities",
-        "correction" => "fixes",
-        _ => "other",
-    }
+    let available = max_width.saturating_sub(7);
+    Some(Line::from(vec![
+        Span::styled("Model: ", Style::default().fg(rgb(120, 120, 130))),
+        Span::styled(
+            truncate_with_ellipsis(model, available),
+            Style::default().fg(rgb(140, 200, 255)).bold(),
+        ),
+    ]))
 }
 
 fn render_memory_status_line(activity: &MemoryActivity, max_width: usize) -> Line<'static> {
@@ -1805,9 +1753,15 @@ fn render_memory_status_line(activity: &MemoryActivity, max_width: usize) -> Lin
                 .as_ref()
                 .map(memory_pipeline_progress_summary)
         })
-        .unwrap_or_else(|| "ready".to_string());
+        .or_else(|| memory_last_trace_summary(activity))
+        .unwrap_or_else(|| "idle".to_string());
+    let prefix = if activity.is_processing() {
+        "Now: "
+    } else {
+        "Last: "
+    };
     let age = format_age(activity.state_since.elapsed());
-    let prefix_width = UnicodeWidthStr::width("Now: ");
+    let prefix_width = UnicodeWidthStr::width(prefix);
     let age_width = UnicodeWidthStr::width(age.as_str()) + 3;
     let summary_width = UnicodeWidthStr::width(summary.as_str());
     let show_age = prefix_width + summary_width + age_width <= max_width;
@@ -1818,7 +1772,7 @@ fn render_memory_status_line(activity: &MemoryActivity, max_width: usize) -> Lin
     };
 
     let mut spans = vec![
-        Span::styled("Now: ", Style::default().fg(rgb(120, 120, 130))),
+        Span::styled(prefix, Style::default().fg(rgb(120, 120, 130))),
         Span::styled(
             truncate_smart(&summary, available),
             Style::default().fg(badge_color).bold(),
@@ -1886,32 +1840,24 @@ fn render_memory_pipeline_lines(pipeline: &PipelineState, max_width: usize) -> V
     ]
 }
 
-fn render_memory_trace_store_line(info: &MemoryInfo, max_width: usize) -> Line<'static> {
-    let mut parts = vec![format!("{} total", info.total_count)];
-    if info.project_count > 0 || info.global_count > 0 {
-        parts.push(format!("{}p/{}g", info.project_count, info.global_count));
+fn render_memory_last_trace_line(activity: &MemoryActivity, max_width: usize) -> Option<Line<'static>> {
+    let event = activity
+        .recent_events
+        .iter()
+        .find(|event| is_traceworthy_memory_event(event))?;
+    let (icon, text, color) = format_event_for_expanded(event, max_width.saturating_sub(8));
+    if text.is_empty() {
+        return None;
     }
-    if info.sidecar_available {
-        parts.push("sidecar ok".to_string());
-    }
-    Line::from(vec![
-        Span::styled("store ", Style::default().fg(rgb(140, 140, 150))),
+
+    Some(Line::from(vec![
+        Span::styled("Last: ", Style::default().fg(rgb(120, 120, 130))),
+        Span::styled(format!("{} ", icon), Style::default().fg(color)),
         Span::styled(
-            truncate_smart(&parts.join(" · "), max_width),
+            truncate_with_ellipsis(&text, max_width.saturating_sub(7)),
             Style::default().fg(rgb(160, 160, 170)),
         ),
-    ])
-}
-
-fn render_memory_trace_graph_line(info: &MemoryInfo, max_width: usize) -> Line<'static> {
-    let summary = format!("{}n · {}e", info.graph_nodes.len(), info.graph_edges.len());
-    Line::from(vec![
-        Span::styled("graph ", Style::default().fg(rgb(140, 140, 150))),
-        Span::styled(
-            truncate_smart(&summary, max_width),
-            Style::default().fg(rgb(120, 220, 180)),
-        ),
-    ])
+    ]))
 }
 
 fn render_memory_step_line(
@@ -3127,18 +3073,13 @@ mod tests {
     }
 
     #[test]
-    fn memory_widget_uses_full_graph_height_when_idle() {
+    fn memory_widget_shows_sidecar_model_when_idle() {
         let info = MemoryInfo {
             total_count: 3,
             project_count: 2,
             global_count: 1,
             sidecar_available: true,
-            graph_nodes: vec![
-                node("fact", "build uses release binary", 1),
-                node("preference", "Prefer small commits", 2),
-                node("tag", "workflow", 1),
-            ],
-            graph_edges: vec![edge(0, 1, "relates_to"), edge(1, 2, "has_tag")],
+            sidecar_model: Some("openai · gpt-5.3-codex-spark".to_string()),
             ..Default::default()
         };
         let data = InfoWidgetData {
@@ -3146,7 +3087,7 @@ mod tests {
             ..Default::default()
         };
 
-        let text = render_memory_widget(&data, Rect::new(0, 0, 28, 5))
+        let text = render_memory_widget(&data, Rect::new(0, 0, 40, 5))
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
@@ -3155,10 +3096,11 @@ mod tests {
             .to_lowercase();
 
         assert!(text.contains("memory"));
-        assert!(text.contains("store"));
-        assert!(text.contains("3 total"));
-        assert!(text.contains("2p/1g"));
-        assert!(text.contains("graph"));
+        assert!(text.contains("model:"));
+        assert!(text.contains("openai"));
+        assert!(text.contains("gpt-5.3"));
+        assert!(!text.contains("3 total"));
+        assert!(!text.contains("2p/1g"));
     }
 
     #[test]
@@ -3174,6 +3116,7 @@ mod tests {
                 total_count: 7,
                 project_count: 4,
                 global_count: 3,
+                sidecar_model: Some("openai · gpt-5.3-codex-spark".to_string()),
                 activity: Some(MemoryActivity {
                     state: MemoryState::SidecarChecking { count: 3 },
                     state_since: now - Duration::from_secs(12),
@@ -3207,7 +3150,7 @@ mod tests {
             ..Default::default()
         };
 
-        let text = render_memory_widget(&data, Rect::new(0, 0, 28, 6))
+        let text = render_memory_widget(&data, Rect::new(0, 0, 40, 7))
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
@@ -3223,6 +3166,56 @@ mod tests {
         assert!(text.contains("update memory"));
         assert!(text.contains("now:"));
         assert!(text.contains("checking 3 candidate"));
+        assert!(text.contains("model:"));
+        assert!(text.contains("openai"));
+        assert!(text.contains("gpt-5.3"));
+        assert!(!text.contains("4 project"));
+        assert!(!text.contains("3 global"));
+    }
+
+    #[test]
+    fn memory_widget_marks_completed_pipeline_even_when_state_is_idle() {
+        let now = Instant::now();
+        let mut pipeline = PipelineState::new();
+        pipeline.search = StepStatus::Done;
+        pipeline.verify = StepStatus::Done;
+        pipeline.inject = StepStatus::Done;
+        pipeline.maintain = StepStatus::Done;
+
+        let data = InfoWidgetData {
+            memory_info: Some(MemoryInfo {
+                sidecar_model: Some("openai · gpt-5.3-codex-spark".to_string()),
+                activity: Some(MemoryActivity {
+                    state: MemoryState::Idle,
+                    state_since: now - Duration::from_secs(4),
+                    pipeline: Some(pipeline),
+                    recent_events: vec![MemoryEvent {
+                        kind: MemoryEventKind::MemoryInjected {
+                            count: 1,
+                            prompt_chars: 42,
+                            age_ms: 12,
+                            preview: "prefers terse answers".to_string(),
+                            items: Vec::new(),
+                        },
+                        timestamp: now - Duration::from_secs(3),
+                        detail: None,
+                    }],
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let text = render_memory_widget(&data, Rect::new(0, 0, 40, 4))
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_lowercase();
+
+        assert!(text.contains("done"));
+        assert!(text.contains("last:"));
     }
 
     #[test]
@@ -3638,11 +3631,7 @@ fn render_todos_compact(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'static
 
 fn render_memory_compact(info: &MemoryInfo, inner_width: u16) -> Vec<Line<'static>> {
     let max_width = inner_width.saturating_sub(2) as usize;
-    let title = if info.total_count > 0 {
-        format!("Memory {}", info.total_count)
-    } else {
-        "Memory".to_string()
-    };
+    let title = "Memory".to_string();
     let summary = info
         .activity
         .as_ref()
@@ -3652,20 +3641,10 @@ fn render_memory_compact(info: &MemoryInfo, inner_width: u16) -> Vec<Line<'stati
                 .as_ref()
                 .map(memory_pipeline_progress_summary)
                 .or_else(|| memory_active_summary(&activity.state))
+                .or_else(|| memory_last_trace_summary(activity))
         })
-        .unwrap_or_else(|| {
-            let mut parts = Vec::new();
-            if info.project_count > 0 {
-                parts.push(format!("{}p", info.project_count));
-            }
-            if info.global_count > 0 {
-                parts.push(format!("{}g", info.global_count));
-            }
-            if parts.is_empty() {
-                parts.push("idle".to_string());
-            }
-            parts.join(" · ")
-        });
+        .or_else(|| info.sidecar_model.clone())
+        .unwrap_or_else(|| "idle".to_string());
 
     let title_width = UnicodeWidthStr::width(title.as_str());
     let summary_width = max_width.saturating_sub(title_width + 5);
@@ -3715,6 +3694,29 @@ fn memory_active_summary(state: &MemoryState) -> Option<String> {
     }
 }
 
+pub(crate) fn is_traceworthy_memory_event(event: &MemoryEvent) -> bool {
+    !matches!(
+        event.kind,
+        MemoryEventKind::EmbeddingStarted
+            | MemoryEventKind::SidecarStarted
+            | MemoryEventKind::SidecarNotRelevant
+            | MemoryEventKind::SidecarComplete { .. }
+    )
+}
+
+fn memory_last_trace_summary(activity: &MemoryActivity) -> Option<String> {
+    let event = activity
+        .recent_events
+        .iter()
+        .find(|event| is_traceworthy_memory_event(event))?;
+    let (_, text, _) = format_event_for_expanded(event, 120);
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 fn memory_state_detail(state: &MemoryState) -> Option<String> {
     match state {
         MemoryState::Idle => None,
@@ -3750,38 +3752,22 @@ fn render_memory_expanded(info: &MemoryInfo, inner: Rect) -> Vec<Line<'static>> 
         info.activity.as_ref(),
         max_width,
     ));
-    lines.push(render_memory_summary_line(info, max_width));
-    if let Some(category_line) = render_memory_category_line(info, max_width) {
-        lines.push(category_line);
+    if let Some(activity) = &info.activity {
+        lines.push(render_memory_status_line(activity, max_width));
+    }
+    if let Some(model_line) = render_memory_model_line(info, max_width) {
+        lines.push(model_line);
     }
 
     if let Some(activity) = &info.activity {
-        lines.push(render_memory_status_line(activity, max_width));
-
         if let Some(pipeline) = &activity.pipeline {
             lines.extend(render_memory_pipeline_lines(pipeline, max_width));
-        } else if let Some(summary) = memory_active_summary(&activity.state) {
-            lines.push(Line::from(vec![
-                Span::styled("╰ ", Style::default().fg(rgb(80, 80, 92))),
-                Span::styled(
-                    truncate_with_ellipsis(&summary, max_width.saturating_sub(2)),
-                    Style::default().fg(rgb(160, 160, 170)),
-                ),
-            ]));
         }
 
         let interesting_events: Vec<&MemoryEvent> = activity
             .recent_events
             .iter()
-            .filter(|e| {
-                !matches!(
-                    e.kind,
-                    MemoryEventKind::EmbeddingStarted
-                        | MemoryEventKind::SidecarStarted
-                        | MemoryEventKind::SidecarNotRelevant
-                        | MemoryEventKind::SidecarComplete { .. }
-                )
-            })
+            .filter(|e| is_traceworthy_memory_event(e))
             .take(MAX_MEMORY_EVENTS)
             .collect();
 
@@ -3806,8 +3792,6 @@ fn render_memory_expanded(info: &MemoryInfo, inner: Rect) -> Vec<Line<'static>> 
                 ]));
             }
         }
-    } else if !info.graph_nodes.is_empty() {
-        lines.push(render_memory_trace_graph_line(info, max_width));
     }
 
     lines.truncate(inner.height as usize);

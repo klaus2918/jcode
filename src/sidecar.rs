@@ -98,6 +98,19 @@ impl Sidecar {
         }
     }
 
+    /// Return the currently selected sidecar model name.
+    pub fn model_name(&self) -> &str {
+        &self.model
+    }
+
+    /// Return the currently selected backend label.
+    pub fn backend_name(&self) -> &'static str {
+        match self.backend {
+            SidecarBackend::OpenAI => "openai",
+            SidecarBackend::Claude => "claude",
+        }
+    }
+
     /// Set custom max tokens
     #[allow(dead_code)]
     pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {

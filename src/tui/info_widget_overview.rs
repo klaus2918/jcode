@@ -1,5 +1,5 @@
 use super::info_widget::{
-    AuthMethod, InfoWidgetData, MAX_MEMORY_EVENTS, MemoryState, UsageProvider,
+    AuthMethod, InfoWidgetData, MAX_MEMORY_EVENTS, UsageProvider, is_traceworthy_memory_event,
 };
 
 pub(crate) const MAX_TODO_LINES: usize = 12;
@@ -120,7 +120,7 @@ fn compact_todos_height(data: &InfoWidgetData) -> u16 {
 
 fn compact_memory_height(data: &InfoWidgetData) -> u16 {
     if let Some(info) = &data.memory_info {
-        if info.total_count > 0 || info.activity.is_some() {
+        if info.total_count > 0 || info.activity.is_some() || info.sidecar_model.is_some() {
             return 1;
         }
     }
@@ -209,24 +209,27 @@ fn expanded_todos_height(data: &InfoWidgetData) -> u16 {
 
 fn expanded_memory_height(data: &InfoWidgetData) -> u16 {
     if let Some(info) = &data.memory_info {
-        if info.total_count > 0 || info.activity.is_some() {
-            let mut height = 2u16;
-            if !info.by_category.is_empty() {
+        if info.total_count > 0 || info.activity.is_some() || info.sidecar_model.is_some() {
+            let mut height = 1u16;
+            if info.activity.is_some() {
+                height += 1;
+            }
+            if info.sidecar_model.is_some() {
                 height += 1;
             }
             if let Some(activity) = &info.activity {
-                height += 1;
                 if activity.pipeline.is_some() {
                     height += 4;
-                } else if !matches!(activity.state, MemoryState::Idle) {
-                    height += 1;
                 }
-                let interesting_events = activity.recent_events.len().min(MAX_MEMORY_EVENTS) as u16;
+                let interesting_events = activity
+                    .recent_events
+                    .iter()
+                    .filter(|event| is_traceworthy_memory_event(event))
+                    .count()
+                    .min(MAX_MEMORY_EVENTS) as u16;
                 if interesting_events > 0 {
                     height += 1 + interesting_events;
                 }
-            } else if !info.graph_nodes.is_empty() {
-                height += 1;
             }
             return height;
         }
@@ -272,6 +275,7 @@ mod tests {
                 project_count: 2,
                 global_count: 1,
                 by_category: HashMap::from([("fact".to_string(), 3usize)]),
+                sidecar_model: Some("openai · gpt-5.3-codex-spark".to_string()),
                 ..Default::default()
             }),
             ..Default::default()

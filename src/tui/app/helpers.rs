@@ -1068,6 +1068,12 @@ pub(super) fn gather_memory_info(memory_enabled: bool) -> Option<MemoryInfo> {
     }
 
     let activity = crate::memory::get_activity();
+    let sidecar = crate::sidecar::Sidecar::new();
+    let sidecar_model = Some(format!(
+        "{} · {}",
+        sidecar.backend_name(),
+        sidecar.model_name()
+    ));
 
     if let Ok(guard) = CACHE.lock() {
         if let Some((ts, ref cached)) = *guard {
@@ -1075,10 +1081,12 @@ pub(super) fn gather_memory_info(memory_enabled: bool) -> Option<MemoryInfo> {
                 return match cached.clone() {
                     Some(mut info) => {
                         info.activity = activity.clone();
+                        info.sidecar_model = sidecar_model.clone();
                         Some(info)
                     }
                     None => activity.clone().map(|activity| MemoryInfo {
                         sidecar_available: true,
+                        sidecar_model: sidecar_model.clone(),
                         activity: Some(activity),
                         ..Default::default()
                     }),
@@ -1122,13 +1130,14 @@ pub(super) fn gather_memory_info(memory_enabled: bool) -> Option<MemoryInfo> {
         global_graph.as_ref(),
     );
 
-    let result = if total_count > 0 || activity.is_some() {
+    let result = if total_count > 0 || activity.is_some() || sidecar_model.is_some() {
         Some(MemoryInfo {
             total_count,
             project_count,
             global_count,
             by_category,
             sidecar_available: true,
+            sidecar_model,
             activity,
             graph_nodes,
             graph_edges,
