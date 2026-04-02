@@ -8,19 +8,19 @@ mod failover;
 pub mod gemini;
 pub mod jcode;
 pub mod models;
-mod selection;
 pub mod openai;
 pub(crate) mod openai_request;
 pub mod openrouter;
 pub mod pricing;
+mod selection;
 
 use crate::auth;
 use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::Stream;
 #[cfg(test)]
 use failover::FailoverDecision;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
@@ -379,23 +379,19 @@ use self::pricing::{cheapness_for_route, openrouter_pricing_from_model_pricing};
 /// MultiProvider wraps multiple providers and allows seamless model switching
 pub struct MultiProvider {
     /// Claude Code CLI provider
-    claude: Option<claude::ClaudeProvider>,
+    claude: RwLock<Option<Arc<claude::ClaudeProvider>>>,
     /// Direct Anthropic API provider (no Python dependency)
-    anthropic: Option<anthropic::AnthropicProvider>,
-    openai: Option<openai::OpenAIProvider>,
+    anthropic: RwLock<Option<Arc<anthropic::AnthropicProvider>>>,
+    openai: RwLock<Option<Arc<openai::OpenAIProvider>>>,
     /// GitHub Copilot API provider (direct API, hot-swappable after login)
     copilot_api: RwLock<Option<Arc<copilot::CopilotApiProvider>>>,
     /// Gemini provider (hot-swappable after login)
-    gemini: RwLock<Option<gemini::GeminiProvider>>,
+    gemini: RwLock<Option<Arc<gemini::GeminiProvider>>>,
     /// Cursor provider (native/direct API, hot-swappable after login)
     cursor: RwLock<Option<Arc<cursor::CursorCliProvider>>>,
     /// OpenRouter API provider (200+ models from various providers, hot-swappable after login)
     openrouter: RwLock<Option<Arc<openrouter::OpenRouterProvider>>>,
     active: RwLock<ActiveProvider>,
-    has_claude_creds: bool,
-    has_openai_creds: bool,
-    has_gemini_creds: bool,
-    has_cursor_creds: bool,
     /// Use Claude CLI instead of direct API (legacy mode)
     use_claude_cli: bool,
     /// Notifications generated during provider/account auto-selection.
@@ -495,13 +491,13 @@ impl MultiProvider {
             crate::logging::info(
                 "Using deprecated Claude CLI provider (forced by JCODE_USE_CLAUDE_CLI=1)",
             );
-            Some(claude::ClaudeProvider::new())
+            Some(Arc::new(claude::ClaudeProvider::new()))
         } else {
             None
         };
 
         let anthropic = if has_claude_creds && !use_claude_cli {
-            Some(anthropic::AnthropicProvider::new())
+            Some(Arc::new(anthropic::AnthropicProvider::new()))
         } else {
             None
         };
@@ -510,6 +506,7 @@ impl MultiProvider {
             auth::codex::load_credentials()
                 .ok()
                 .map(openai::OpenAIProvider::new)
+                .map(Arc::new)
         } else {
             None
         };
@@ -535,7 +532,7 @@ impl MultiProvider {
         };
 
         let gemini_provider = if has_gemini_creds {
-            Some(gemini::GeminiProvider::new())
+            Some(Arc::new(gemini::GeminiProvider::new()))
         } else {
             None
         };
@@ -632,18 +629,14 @@ impl MultiProvider {
         }
 
         let result = Self {
-            claude,
-            anthropic,
-            openai,
+            claude: RwLock::new(claude),
+            anthropic: RwLock::new(anthropic),
+            openai: RwLock::new(openai),
             copilot_api: RwLock::new(copilot_api),
             gemini: RwLock::new(gemini_provider),
             cursor: RwLock::new(cursor_provider),
             openrouter: RwLock::new(openrouter),
             active: RwLock::new(active),
-            has_claude_creds,
-            has_openai_creds,
-            has_gemini_creds,
-            has_cursor_creds,
             use_claude_cli,
             startup_notices: RwLock::new(Vec::new()),
             forced_provider,
@@ -665,12 +658,53 @@ impl MultiProvider {
         result
     }
 
+    fn claude_provider(&self) -> Option<Arc<claude::ClaudeProvider>> {
+        self.claude.read().unwrap().clone()
+    }
+
+    fn anthropic_provider(&self) -> Option<Arc<anthropic::AnthropicProvider>> {
+        self.anthropic.read().unwrap().clone()
+    }
+
+    fn openai_provider(&self) -> Option<Arc<openai::OpenAIProvider>> {
+        self.openai.read().unwrap().clone()
+    }
+
+    fn gemini_provider(&self) -> Option<Arc<gemini::GeminiProvider>> {
+        self.gemini.read().unwrap().clone()
+    }
+
+    fn has_claude_runtime(&self) -> bool {
+        self.anthropic_provider().is_some() || self.claude_provider().is_some()
+    }
+
+    fn spawn_post_auth_model_refresh(provider: Arc<dyn Provider>, provider_label: &'static str) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+
+        handle.spawn(async move {
+            provider.invalidate_credentials().await;
+            match provider.prefetch_models().await {
+                Ok(()) => {
+                    crate::bus::Bus::global().publish(crate::bus::BusEvent::ModelsUpdated);
+                }
+                Err(err) => {
+                    crate::logging::info(&format!(
+                        "Failed to refresh {} models after auth change: {}",
+                        provider_label, err
+                    ));
+                }
+            }
+        });
+    }
+
     fn provider_is_configured(&self, provider: ActiveProvider) -> bool {
         match provider {
-            ActiveProvider::Claude => self.anthropic.is_some() || self.claude.is_some(),
-            ActiveProvider::OpenAI => self.openai.is_some(),
+            ActiveProvider::Claude => self.has_claude_runtime(),
+            ActiveProvider::OpenAI => self.openai_provider().is_some(),
             ActiveProvider::Copilot => self.copilot_api.read().unwrap().is_some(),
-            ActiveProvider::Gemini => self.gemini.read().unwrap().is_some(),
+            ActiveProvider::Gemini => self.gemini_provider().is_some(),
             ActiveProvider::Cursor => self.cursor.read().unwrap().is_some(),
             ActiveProvider::OpenRouter => self.openrouter.read().unwrap().is_some(),
         }
@@ -939,11 +973,11 @@ impl MultiProvider {
         match provider {
             ActiveProvider::Claude => {
                 // Prefer direct Anthropic API if available.
-                if let Some(ref anthropic) = self.anthropic {
+                if let Some(anthropic) = self.anthropic_provider() {
                     anthropic
                         .complete(messages, tools, system, resume_session_id)
                         .await
-                } else if let Some(ref claude) = self.claude {
+                } else if let Some(claude) = self.claude_provider() {
                     claude
                         .complete(messages, tools, system, resume_session_id)
                         .await
@@ -954,7 +988,7 @@ impl MultiProvider {
                 }
             }
             ActiveProvider::OpenAI => {
-                if let Some(ref openai) = self.openai {
+                if let Some(openai) = self.openai_provider() {
                     openai
                         .complete(messages, tools, system, resume_session_id)
                         .await
@@ -1027,7 +1061,7 @@ impl MultiProvider {
         match provider {
             ActiveProvider::Claude => {
                 // Prefer direct Anthropic API for best caching support.
-                if let Some(ref anthropic) = self.anthropic {
+                if let Some(anthropic) = self.anthropic_provider() {
                     anthropic
                         .complete_split(
                             messages,
@@ -1037,7 +1071,7 @@ impl MultiProvider {
                             resume_session_id,
                         )
                         .await
-                } else if let Some(ref claude) = self.claude {
+                } else if let Some(claude) = self.claude_provider() {
                     claude
                         .complete_split(
                             messages,
@@ -1054,7 +1088,7 @@ impl MultiProvider {
                 }
             }
             ActiveProvider::OpenAI => {
-                if let Some(ref openai) = self.openai {
+                if let Some(openai) = self.openai_provider() {
                     openai
                         .complete_split(
                             messages,
@@ -1146,7 +1180,7 @@ impl MultiProvider {
     }
 
     fn spawn_openai_catalog_refresh_if_needed(&self) {
-        if !self.has_openai_creds {
+        if self.openai_provider().is_none() {
             return;
         }
         if !begin_openai_model_catalog_refresh() {
@@ -1175,7 +1209,10 @@ impl MultiProvider {
     /// Create with explicit initial provider preference
     pub fn with_preference(prefer_openai: bool) -> Self {
         let provider = Self::new();
-        if provider.forced_provider.is_none() && prefer_openai && provider.openai.is_some() {
+        if provider.forced_provider.is_none()
+            && prefer_openai
+            && provider.openai_provider().is_some()
+        {
             *provider.active.write().unwrap() = ActiveProvider::OpenAI;
         }
         provider
@@ -1183,7 +1220,10 @@ impl MultiProvider {
 
     pub fn with_preference_fast(prefer_openai: bool) -> Self {
         let provider = Self::new_fast();
-        if provider.forced_provider.is_none() && prefer_openai && provider.openai.is_some() {
+        if provider.forced_provider.is_none()
+            && prefer_openai
+            && provider.openai_provider().is_some()
+        {
             *provider.active.write().unwrap() = ActiveProvider::OpenAI;
         }
         provider
@@ -1238,7 +1278,7 @@ impl MultiProvider {
                     ));
                     clear_all_provider_unavailability_for_account();
                     clear_all_model_unavailability_for_account();
-                    if let Some(ref anthropic) = self.anthropic {
+                    if let Some(anthropic) = self.anthropic_provider() {
                         let _ = tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current()
                                 .block_on(anthropic.invalidate_credentials())
@@ -1251,7 +1291,7 @@ impl MultiProvider {
                     ));
                     clear_all_provider_unavailability_for_account();
                     clear_all_model_unavailability_for_account();
-                    if let Some(ref openai) = self.openai {
+                    if let Some(openai) = self.openai_provider() {
                         let _ = tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current()
                                 .block_on(openai.invalidate_credentials())
@@ -1290,7 +1330,7 @@ impl MultiProvider {
     /// Check if Anthropic OAuth usage is exhausted (both 5hr and 7d at 100%)
     fn is_claude_usage_exhausted(&self) -> bool {
         // Only check if we have Anthropic credentials
-        if self.anthropic.is_none() && self.claude.is_none() {
+        if !self.has_claude_runtime() {
             return false;
         }
 
@@ -1320,7 +1360,7 @@ impl MultiProvider {
     }
 
     fn is_openai_usage_exhausted(&self) -> bool {
-        if self.openai.is_none() {
+        if self.openai_provider().is_none() {
             return false;
         }
 
@@ -1383,17 +1423,16 @@ impl Provider for MultiProvider {
         match self.active_provider() {
             ActiveProvider::Claude => {
                 // Prefer anthropic if available
-                if let Some(ref anthropic) = self.anthropic {
+                if let Some(anthropic) = self.anthropic_provider() {
                     anthropic.model()
-                } else if let Some(ref claude) = self.claude {
+                } else if let Some(claude) = self.claude_provider() {
                     claude.model()
                 } else {
                     "claude-opus-4-5-20251101".to_string()
                 }
             }
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .map(|o| o.model())
                 .unwrap_or_else(|| "gpt-5.4".to_string()),
             ActiveProvider::Copilot => self
@@ -1404,10 +1443,7 @@ impl Provider for MultiProvider {
                 .map(|o| o.model())
                 .unwrap_or_else(|| "claude-sonnet-4".to_string()),
             ActiveProvider::Gemini => self
-                .gemini
-                .read()
-                .unwrap()
-                .as_ref()
+                .gemini_provider()
                 .map(|o| o.model())
                 .unwrap_or_else(|| "gemini-2.5-pro".to_string()),
             ActiveProvider::Cursor => self
@@ -1537,9 +1573,9 @@ impl Provider for MultiProvider {
                 };
                 if target_active != forced {
                     let has_target_creds = match target_active {
-                        ActiveProvider::Claude => self.claude.is_some() || self.anthropic.is_some(),
-                        ActiveProvider::OpenAI => self.openai.is_some(),
-                        ActiveProvider::Gemini => self.gemini.read().unwrap().is_some(),
+                        ActiveProvider::Claude => self.has_claude_runtime(),
+                        ActiveProvider::OpenAI => self.openai_provider().is_some(),
+                        ActiveProvider::Gemini => self.gemini_provider().is_some(),
                         ActiveProvider::Cursor => self.cursor.read().unwrap().is_some(),
                         ActiveProvider::OpenRouter => self.openrouter.read().unwrap().is_some(),
                         ActiveProvider::Copilot => self.copilot_api.read().unwrap().is_some(),
@@ -1564,7 +1600,7 @@ impl Provider for MultiProvider {
         }
 
         if target_provider == Some("claude") {
-            if self.claude.is_none() && self.anthropic.is_none() {
+            if !self.has_claude_runtime() {
                 return Err(anyhow::anyhow!(
                     "Claude credentials not available. Run `claude` to log in first."
                 ));
@@ -1572,35 +1608,35 @@ impl Provider for MultiProvider {
             // Switch active provider to Claude
             *self.active.write().unwrap() = ActiveProvider::Claude;
             // Set on whichever is available
-            if let Some(ref anthropic) = self.anthropic {
+            if let Some(anthropic) = self.anthropic_provider() {
                 anthropic.set_model(model)
-            } else if let Some(ref claude) = self.claude {
+            } else if let Some(claude) = self.claude_provider() {
                 claude.set_model(model)
             } else {
                 Ok(())
             }
         } else if target_provider == Some("openai") {
-            if self.openai.is_none() {
+            if self.openai_provider().is_none() {
                 return Err(anyhow::anyhow!(
                     "OpenAI credentials not available. Run `jcode login --provider openai` first."
                 ));
             }
             // Switch active provider to OpenAI
             *self.active.write().unwrap() = ActiveProvider::OpenAI;
-            if let Some(ref openai) = self.openai {
+            if let Some(openai) = self.openai_provider() {
                 openai.set_model(model)
             } else {
                 Ok(())
             }
         } else if target_provider == Some("gemini") {
-            let gemini_guard = self.gemini.read().unwrap();
-            if gemini_guard.is_none() {
+            let gemini = self.gemini_provider();
+            if gemini.is_none() {
                 return Err(anyhow::anyhow!(
                     "Gemini credentials not available. Run `jcode login --provider gemini` first."
                 ));
             }
             *self.active.write().unwrap() = ActiveProvider::Gemini;
-            if let Some(ref gemini) = *gemini_guard {
+            if let Some(gemini) = gemini {
                 gemini.set_model(model)
             } else {
                 Ok(())
@@ -1636,16 +1672,16 @@ impl Provider for MultiProvider {
             // Unknown model - try current provider
             match self.active_provider() {
                 ActiveProvider::Claude => {
-                    if let Some(ref anthropic) = self.anthropic {
+                    if let Some(anthropic) = self.anthropic_provider() {
                         anthropic.set_model(model)
-                    } else if let Some(ref claude) = self.claude {
+                    } else if let Some(claude) = self.claude_provider() {
                         claude.set_model(model)
                     } else {
                         Err(anyhow::anyhow!("Unknown model: {}", model))
                     }
                 }
                 ActiveProvider::OpenAI => {
-                    if let Some(ref openai) = self.openai {
+                    if let Some(openai) = self.openai_provider() {
                         openai.set_model(model)
                     } else {
                         Err(anyhow::anyhow!("Unknown model: {}", model))
@@ -1697,17 +1733,16 @@ impl Provider for MultiProvider {
     fn available_models_for_switching(&self) -> Vec<String> {
         match self.active_provider() {
             ActiveProvider::Claude => {
-                if let Some(ref anthropic) = self.anthropic {
+                if let Some(anthropic) = self.anthropic_provider() {
                     anthropic.available_models_for_switching()
-                } else if let Some(ref claude) = self.claude {
+                } else if let Some(claude) = self.claude_provider() {
                     claude.available_models_for_switching()
                 } else {
                     Vec::new()
                 }
             }
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .map(|openai| openai.available_models_for_switching())
                 .unwrap_or_default(),
             ActiveProvider::Copilot => self
@@ -1812,7 +1847,7 @@ impl Provider for MultiProvider {
         self.spawn_openai_catalog_refresh_if_needed();
 
         let mut routes = Vec::new();
-        let has_oauth = self.has_claude_creds && !self.use_claude_cli;
+        let has_oauth = self.has_claude_runtime();
         let has_api_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
 
         // Anthropic models (oauth and/or api-key)
@@ -1873,7 +1908,7 @@ impl Provider for MultiProvider {
         // OpenAI models
         for model in known_openai_model_ids() {
             let availability = model_availability_for_account(&model);
-            let (available, detail) = if !self.has_openai_creds {
+            let (available, detail) = if self.openai_provider().is_none() {
                 (false, "no credentials".to_string())
             } else {
                 match availability.state {
@@ -2108,13 +2143,13 @@ impl Provider for MultiProvider {
     }
 
     async fn prefetch_models(&self) -> Result<()> {
-        if let Some(ref anthropic) = self.anthropic {
+        if let Some(anthropic) = self.anthropic_provider() {
             anthropic.prefetch_models().await?;
         }
-        if let Some(ref claude) = self.claude {
+        if let Some(claude) = self.claude_provider() {
             claude.prefetch_models().await?;
         }
-        if let Some(ref openai) = self.openai {
+        if let Some(openai) = self.openai_provider() {
             openai.prefetch_models().await?;
         }
         let openrouter = { self.openrouter.read().unwrap().clone() };
@@ -2128,7 +2163,7 @@ impl Provider for MultiProvider {
             }
         }
         {
-            let gemini = self.gemini.read().unwrap().clone();
+            let gemini = self.gemini_provider();
             if let Some(gemini) = gemini {
                 gemini.prefetch_models().await?;
             }
@@ -2143,6 +2178,26 @@ impl Provider for MultiProvider {
     }
 
     fn on_auth_changed(&self) {
+        if self.use_claude_cli {
+            if self.claude_provider().is_none() && crate::auth::claude::load_credentials().is_ok() {
+                crate::logging::info("Hot-initialized Claude CLI provider after auth change");
+                *self.claude.write().unwrap() = Some(Arc::new(claude::ClaudeProvider::new()));
+            }
+        } else if self.anthropic_provider().is_none()
+            && crate::auth::claude::load_credentials().is_ok()
+        {
+            crate::logging::info("Hot-initialized Anthropic provider after auth change");
+            *self.anthropic.write().unwrap() = Some(Arc::new(anthropic::AnthropicProvider::new()));
+        }
+
+        if self.openai_provider().is_none()
+            && let Ok(credentials) = crate::auth::codex::load_credentials()
+        {
+            crate::logging::info("Hot-initialized OpenAI provider after auth change");
+            *self.openai.write().unwrap() =
+                Some(Arc::new(openai::OpenAIProvider::new(credentials)));
+        }
+
         if openrouter::OpenRouterProvider::has_credentials() {
             match openrouter::OpenRouterProvider::new() {
                 Ok(provider) => {
@@ -2187,7 +2242,7 @@ impl Provider for MultiProvider {
         let already_has_gemini = self.gemini.read().unwrap().is_some();
         if !already_has_gemini && crate::auth::gemini::load_tokens().is_ok() {
             crate::logging::info("Hot-initialized Gemini provider after login");
-            *self.gemini.write().unwrap() = Some(gemini::GeminiProvider::new());
+            *self.gemini.write().unwrap() = Some(Arc::new(gemini::GeminiProvider::new()));
         }
 
         let already_has_cursor = self.cursor.read().unwrap().is_some();
@@ -2200,13 +2255,31 @@ impl Provider for MultiProvider {
             crate::logging::info("Hot-initialized Cursor provider after login");
             *self.cursor.write().unwrap() = Some(Arc::new(cursor::CursorCliProvider::new()));
         }
+        if let Some(anthropic) = self.anthropic_provider() {
+            Self::spawn_post_auth_model_refresh(anthropic, "Anthropic");
+        }
+        if let Some(claude) = self.claude_provider() {
+            Self::spawn_post_auth_model_refresh(claude, "Claude");
+        }
+        if let Some(openai) = self.openai_provider() {
+            Self::spawn_post_auth_model_refresh(openai, "OpenAI");
+        }
+        if let Some(gemini) = self.gemini_provider() {
+            Self::spawn_post_auth_model_refresh(gemini, "Gemini");
+        }
+        if let Some(cursor) = self.cursor.read().unwrap().clone() {
+            Self::spawn_post_auth_model_refresh(cursor, "Cursor");
+        }
+        if let Some(openrouter) = self.openrouter.read().unwrap().clone() {
+            Self::spawn_post_auth_model_refresh(openrouter, "OpenRouter");
+        }
     }
 
     async fn invalidate_credentials(&self) {
-        if let Some(ref anthropic) = self.anthropic {
+        if let Some(anthropic) = self.anthropic_provider() {
             anthropic.invalidate_credentials().await;
         }
-        if let Some(ref openai) = self.openai {
+        if let Some(openai) = self.openai_provider() {
             openai.invalidate_credentials().await;
         }
     }
@@ -2215,18 +2288,16 @@ impl Provider for MultiProvider {
         match self.active_provider() {
             ActiveProvider::Claude => {
                 // Direct API does NOT handle tools internally - jcode executes them
-                if self.anthropic.is_some() {
+                if self.anthropic_provider().is_some() {
                     false
                 } else {
-                    self.claude
-                        .as_ref()
+                    self.claude_provider()
                         .map(|c| c.handles_tools_internally())
                         .unwrap_or(false)
                 }
             }
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .map(|o| o.handles_tools_internally())
                 .unwrap_or(false),
             ActiveProvider::Copilot => self
@@ -2251,7 +2322,7 @@ impl Provider for MultiProvider {
     fn reasoning_effort(&self) -> Option<String> {
         match self.active_provider() {
             ActiveProvider::Claude => None,
-            ActiveProvider::OpenAI => self.openai.as_ref().and_then(|o| o.reasoning_effort()),
+            ActiveProvider::OpenAI => self.openai_provider().and_then(|o| o.reasoning_effort()),
             ActiveProvider::Copilot => None,
             ActiveProvider::Gemini => None,
             ActiveProvider::Cursor => None,
@@ -2262,8 +2333,7 @@ impl Provider for MultiProvider {
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
         match self.active_provider() {
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .ok_or_else(|| anyhow::anyhow!("OpenAI provider not available"))?
                 .set_reasoning_effort(effort),
             _ => Err(anyhow::anyhow!(
@@ -2275,8 +2345,7 @@ impl Provider for MultiProvider {
     fn available_efforts(&self) -> Vec<&'static str> {
         match self.active_provider() {
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .map(|o| o.available_efforts())
                 .unwrap_or_default(),
             ActiveProvider::Copilot => vec![],
@@ -2288,7 +2357,7 @@ impl Provider for MultiProvider {
 
     fn service_tier(&self) -> Option<String> {
         match self.active_provider() {
-            ActiveProvider::OpenAI => self.openai.as_ref().and_then(|o| o.service_tier()),
+            ActiveProvider::OpenAI => self.openai_provider().and_then(|o| o.service_tier()),
             _ => None,
         }
     }
@@ -2296,8 +2365,7 @@ impl Provider for MultiProvider {
     fn set_service_tier(&self, service_tier: &str) -> Result<()> {
         match self.active_provider() {
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .ok_or_else(|| anyhow::anyhow!("OpenAI provider not available"))?
                 .set_service_tier(service_tier),
             _ => Err(anyhow::anyhow!(
@@ -2309,8 +2377,7 @@ impl Provider for MultiProvider {
     fn available_service_tiers(&self) -> Vec<&'static str> {
         match self.active_provider() {
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .map(|o| o.available_service_tiers())
                 .unwrap_or_default(),
             _ => vec![],
@@ -2320,8 +2387,7 @@ impl Provider for MultiProvider {
     fn native_compaction_mode(&self) -> Option<String> {
         match self.active_provider() {
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .and_then(|o| o.native_compaction_mode()),
             _ => None,
         }
@@ -2330,8 +2396,7 @@ impl Provider for MultiProvider {
     fn native_compaction_threshold_tokens(&self) -> Option<usize> {
         match self.active_provider() {
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .and_then(|o| o.native_compaction_threshold_tokens()),
             _ => None,
         }
@@ -2339,7 +2404,7 @@ impl Provider for MultiProvider {
 
     fn transport(&self) -> Option<String> {
         match self.active_provider() {
-            ActiveProvider::OpenAI => self.openai.as_ref().and_then(|o| o.transport()),
+            ActiveProvider::OpenAI => self.openai_provider().and_then(|o| o.transport()),
             _ => None,
         }
     }
@@ -2347,8 +2412,7 @@ impl Provider for MultiProvider {
     fn set_transport(&self, transport: &str) -> Result<()> {
         match self.active_provider() {
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .ok_or_else(|| anyhow::anyhow!("OpenAI provider not available"))?
                 .set_transport(transport),
             _ => Err(anyhow::anyhow!(
@@ -2360,8 +2424,7 @@ impl Provider for MultiProvider {
     fn available_transports(&self) -> Vec<&'static str> {
         match self.active_provider() {
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .map(|o| o.available_transports())
                 .unwrap_or_default(),
             ActiveProvider::Gemini => vec![],
@@ -2373,18 +2436,16 @@ impl Provider for MultiProvider {
     fn supports_compaction(&self) -> bool {
         match self.active_provider() {
             ActiveProvider::Claude => {
-                if self.anthropic.is_some() {
+                if self.anthropic_provider().is_some() {
                     true
                 } else {
-                    self.claude
-                        .as_ref()
+                    self.claude_provider()
                         .map(|c| c.supports_compaction())
                         .unwrap_or(false)
                 }
             }
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .map(|o| o.supports_compaction())
                 .unwrap_or(false),
             ActiveProvider::Copilot => self
@@ -2395,10 +2456,7 @@ impl Provider for MultiProvider {
                 .map(|o| o.supports_compaction())
                 .unwrap_or(false),
             ActiveProvider::Gemini => self
-                .gemini
-                .read()
-                .unwrap()
-                .as_ref()
+                .gemini_provider()
                 .map(|o| o.supports_compaction())
                 .unwrap_or(false),
             ActiveProvider::Cursor => self
@@ -2421,18 +2479,16 @@ impl Provider for MultiProvider {
     fn uses_jcode_compaction(&self) -> bool {
         match self.active_provider() {
             ActiveProvider::Claude => {
-                if self.anthropic.is_some() {
+                if self.anthropic_provider().is_some() {
                     true
                 } else {
-                    self.claude
-                        .as_ref()
+                    self.claude_provider()
                         .map(|c| c.uses_jcode_compaction())
                         .unwrap_or(false)
                 }
             }
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .map(|o| o.uses_jcode_compaction())
                 .unwrap_or(false),
             ActiveProvider::Copilot => self
@@ -2474,7 +2530,7 @@ impl Provider for MultiProvider {
     ) -> Result<NativeCompactionResult> {
         match self.active_provider() {
             ActiveProvider::Claude => {
-                if let Some(anthropic) = self.anthropic.as_ref() {
+                if let Some(anthropic) = self.anthropic_provider() {
                     anthropic
                         .native_compact(
                             messages,
@@ -2482,7 +2538,7 @@ impl Provider for MultiProvider {
                             existing_openai_encrypted_content,
                         )
                         .await
-                } else if let Some(claude) = self.claude.as_ref() {
+                } else if let Some(claude) = self.claude_provider() {
                     claude
                         .native_compact(
                             messages,
@@ -2495,7 +2551,7 @@ impl Provider for MultiProvider {
                 }
             }
             ActiveProvider::OpenAI => {
-                if let Some(openai) = self.openai.as_ref() {
+                if let Some(openai) = self.openai_provider() {
                     openai
                         .native_compact(
                             messages,
@@ -2587,17 +2643,16 @@ impl Provider for MultiProvider {
     fn context_window(&self) -> usize {
         match self.active_provider() {
             ActiveProvider::Claude => {
-                if let Some(ref anthropic) = self.anthropic {
+                if let Some(anthropic) = self.anthropic_provider() {
                     anthropic.context_window()
-                } else if let Some(ref claude) = self.claude {
+                } else if let Some(claude) = self.claude_provider() {
                     claude.context_window()
                 } else {
                     DEFAULT_CONTEXT_LIMIT
                 }
             }
             ActiveProvider::OpenAI => self
-                .openai
-                .as_ref()
+                .openai_provider()
                 .map(|o| o.context_window())
                 .unwrap_or(DEFAULT_CONTEXT_LIMIT),
             ActiveProvider::Copilot => self
@@ -2635,20 +2690,22 @@ impl Provider for MultiProvider {
         let current_model = self.model();
         let active = self.active_provider();
 
-        let claude = if matches!(active, ActiveProvider::Claude) && self.claude.is_some() {
-            Some(claude::ClaudeProvider::new())
+        let claude = if matches!(active, ActiveProvider::Claude) && self.claude_provider().is_some()
+        {
+            Some(Arc::new(claude::ClaudeProvider::new()))
         } else {
             None
         };
-        let anthropic = if self.anthropic.is_some() {
-            Some(anthropic::AnthropicProvider::new())
+        let anthropic = if self.anthropic_provider().is_some() {
+            Some(Arc::new(anthropic::AnthropicProvider::new()))
         } else {
             None
         };
-        let openai = if self.openai.is_some() {
+        let openai = if self.openai_provider().is_some() {
             auth::codex::load_credentials()
                 .ok()
                 .map(openai::OpenAIProvider::new)
+                .map(Arc::new)
         } else {
             None
         };
@@ -2666,18 +2723,14 @@ impl Provider for MultiProvider {
         };
 
         let provider = Self {
-            claude,
-            anthropic,
-            openai,
+            claude: RwLock::new(claude),
+            anthropic: RwLock::new(anthropic),
+            openai: RwLock::new(openai),
             copilot_api: RwLock::new(copilot_api),
             gemini: RwLock::new(gemini_provider),
             cursor: RwLock::new(cursor_provider),
             openrouter: RwLock::new(openrouter),
             active: RwLock::new(active),
-            has_claude_creds: self.has_claude_creds,
-            has_openai_creds: self.has_openai_creds,
-            has_gemini_creds: self.has_gemini_creds,
-            has_cursor_creds: self.has_cursor_creds,
             use_claude_cli: self.use_claude_cli,
             startup_notices: RwLock::new(Vec::new()),
             forced_provider: self.forced_provider,
@@ -2698,10 +2751,11 @@ impl Provider for MultiProvider {
         match self.active_provider() {
             // Direct API doesn't use native result sender
             ActiveProvider::Claude => {
-                if self.anthropic.is_some() {
+                if self.anthropic_provider().is_some() {
                     None
                 } else {
-                    self.claude.as_ref().and_then(|c| c.native_result_sender())
+                    self.claude_provider()
+                        .and_then(|c| c.native_result_sender())
                 }
             }
             ActiveProvider::OpenAI => None,
@@ -2765,22 +2819,103 @@ mod tests {
 
     fn test_multi_provider_with_cursor() -> MultiProvider {
         MultiProvider {
-            claude: None,
-            anthropic: None,
-            openai: None,
+            claude: RwLock::new(None),
+            anthropic: RwLock::new(None),
+            openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
             gemini: RwLock::new(None),
             cursor: RwLock::new(Some(Arc::new(cursor::CursorCliProvider::new()))),
             openrouter: RwLock::new(None),
             active: RwLock::new(ActiveProvider::Cursor),
-            has_claude_creds: false,
-            has_openai_creds: false,
-            has_gemini_creds: false,
-            has_cursor_creds: true,
             use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             forced_provider: None,
         }
+    }
+
+    #[test]
+    fn test_on_auth_changed_hot_initializes_openai_and_marks_routes_available() {
+        with_clean_provider_test_env(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build tokio runtime");
+            let _enter = runtime.enter();
+
+            let provider = MultiProvider {
+                claude: RwLock::new(None),
+                anthropic: RwLock::new(None),
+                openai: RwLock::new(None),
+                copilot_api: RwLock::new(None),
+                gemini: RwLock::new(None),
+                cursor: RwLock::new(None),
+                openrouter: RwLock::new(None),
+                active: RwLock::new(ActiveProvider::OpenAI),
+                use_claude_cli: false,
+                startup_notices: RwLock::new(Vec::new()),
+                forced_provider: Some(ActiveProvider::OpenAI),
+            };
+
+            crate::auth::codex::upsert_account_from_tokens(
+                "openai-1",
+                "test-access-token",
+                "test-refresh-token",
+                None,
+                None,
+            )
+            .expect("save test OpenAI auth");
+
+            provider.on_auth_changed();
+
+            assert!(provider.openai_provider().is_some());
+            assert!(provider.model_routes().iter().any(|route| {
+                route.provider == "OpenAI" && route.api_method == "openai-oauth" && route.available
+            }));
+        });
+    }
+
+    #[test]
+    fn test_on_auth_changed_hot_initializes_anthropic_and_marks_routes_available() {
+        with_clean_provider_test_env(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build tokio runtime");
+            let _enter = runtime.enter();
+
+            let provider = MultiProvider {
+                claude: RwLock::new(None),
+                anthropic: RwLock::new(None),
+                openai: RwLock::new(None),
+                copilot_api: RwLock::new(None),
+                gemini: RwLock::new(None),
+                cursor: RwLock::new(None),
+                openrouter: RwLock::new(None),
+                active: RwLock::new(ActiveProvider::Claude),
+                use_claude_cli: false,
+                startup_notices: RwLock::new(Vec::new()),
+                forced_provider: Some(ActiveProvider::Claude),
+            };
+
+            crate::auth::claude::upsert_account(crate::auth::claude::AnthropicAccount {
+                label: "claude-1".to_string(),
+                access: "test-access-token".to_string(),
+                refresh: "test-refresh-token".to_string(),
+                expires: i64::MAX,
+                email: None,
+                subscription_type: None,
+            })
+            .expect("save test Claude auth");
+
+            provider.on_auth_changed();
+
+            assert!(provider.anthropic_provider().is_some());
+            assert!(provider.model_routes().iter().any(|route| {
+                route.provider == "Anthropic"
+                    && route.api_method == "claude-oauth"
+                    && route.available
+            }));
+        });
     }
 
     #[test]
@@ -3179,18 +3314,14 @@ mod tests {
         crate::env::remove_var("JCODE_FORCE_PROVIDER");
 
         let provider = MultiProvider {
-            claude: None,
-            anthropic: None,
-            openai: None,
+            claude: RwLock::new(None),
+            anthropic: RwLock::new(None),
+            openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
             gemini: RwLock::new(None),
             cursor: RwLock::new(None),
             openrouter: RwLock::new(None),
             active: RwLock::new(ActiveProvider::OpenAI),
-            has_claude_creds: false,
-            has_openai_creds: false,
-            has_gemini_creds: false,
-            has_cursor_creds: false,
             use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             forced_provider: Some(ActiveProvider::OpenAI),
@@ -3298,18 +3429,14 @@ mod tests {
     #[test]
     fn test_no_provider_error_mentions_tokens_and_details() {
         let provider = MultiProvider {
-            claude: None,
-            anthropic: None,
-            openai: None,
+            claude: RwLock::new(None),
+            anthropic: RwLock::new(None),
+            openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
             gemini: RwLock::new(None),
             cursor: RwLock::new(None),
             openrouter: RwLock::new(None),
             active: RwLock::new(ActiveProvider::OpenAI),
-            has_claude_creds: false,
-            has_openai_creds: false,
-            has_gemini_creds: false,
-            has_cursor_creds: false,
             use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             forced_provider: None,
