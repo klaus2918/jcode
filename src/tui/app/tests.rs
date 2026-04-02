@@ -3003,6 +3003,61 @@ fn test_handterm_native_scroll_command_updates_chat_offset() {
 }
 
 #[test]
+fn test_handterm_native_scroll_client_roundtrips_over_socket() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+
+    let _lock = crate::storage::lock_test_env();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("handterm-scroll.sock");
+    let listener = UnixListener::bind(&socket_path).expect("bind unix listener");
+    unsafe {
+        std::env::set_var("HANDTERM_NATIVE_SCROLL_SOCKET", &socket_path);
+    }
+
+    let mut client = super::handterm_native_scroll::HandtermNativeScrollClient::connect_from_env()
+        .expect("native scroll client should connect from env");
+    let (mut server, _) = listener.accept().expect("accept client");
+    server
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("set read timeout");
+
+    let (mut app, mut terminal) = create_scroll_test_app(50, 12, 0, 24);
+    app.auto_scroll_paused = true;
+    app.scroll_offset = 6;
+    let _ = render_and_snap(&app, &mut terminal);
+
+    client.sync_from_app(&app);
+
+    let mut buf = [0u8; 4096];
+    let n = server.read(&mut buf).expect("read pane snapshot");
+    let line = std::str::from_utf8(&buf[..n]).expect("utf8 snapshot");
+    assert!(line.contains("pane_snapshot"));
+    assert!(line.contains("chat"));
+    assert!(line.contains("\"position\":6"));
+
+    server
+        .write_all(b"{\"type\":\"scroll\",\"pane\":\"chat\",\"delta\":-2}\n")
+        .expect("write host scroll command");
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let command = runtime
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), client.recv())
+                .await
+                .expect("timeout waiting for scroll command")
+        })
+        .expect("scroll command should arrive");
+
+    app.apply_handterm_native_scroll(command);
+    assert_eq!(app.scroll_offset, 4);
+
+    unsafe {
+        std::env::remove_var("HANDTERM_NATIVE_SCROLL_SOCKET");
+    }
+}
+
+#[test]
 fn test_mouse_scroll_help_overlay_updates_help_scroll() {
     let mut app = create_test_app();
     app.help_scroll = Some(5);
