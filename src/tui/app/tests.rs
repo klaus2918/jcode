@@ -4189,6 +4189,49 @@ fn test_model_picker_remote_falls_back_to_current_model_when_catalog_empty() {
 }
 
 #[test]
+fn test_handle_server_event_available_models_updated_replaces_remote_model_catalog() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.remote_available_entries = vec!["old-model".to_string()];
+    app.remote_model_options = vec![crate::provider::ModelRoute {
+        model: "old-model".to_string(),
+        provider: "OldProvider".to_string(),
+        api_method: "old-api".to_string(),
+        available: false,
+        detail: "old".to_string(),
+        cheapness: None,
+    }];
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::AvailableModelsUpdated {
+            available_models: vec!["new-model".to_string(), "second-model".to_string()],
+            available_model_routes: vec![crate::provider::ModelRoute {
+                model: "new-model".to_string(),
+                provider: "OpenAI".to_string(),
+                api_method: "openai-oauth".to_string(),
+                available: true,
+                detail: String::new(),
+                cheapness: None,
+            }],
+        },
+        &mut remote,
+    );
+
+    assert_eq!(
+        app.remote_available_entries,
+        vec!["new-model".to_string(), "second-model".to_string()]
+    );
+    assert_eq!(app.remote_model_options.len(), 1);
+    assert_eq!(app.remote_model_options[0].model, "new-model");
+    assert_eq!(app.remote_model_options[0].provider, "OpenAI");
+    assert!(app.remote_model_options[0].available);
+}
+
+#[test]
 fn test_model_picker_copilot_models_have_copilot_route() {
     let mut app = create_test_app();
     configure_test_remote_models_with_copilot(&mut app);

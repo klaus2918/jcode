@@ -2817,6 +2817,25 @@ mod tests {
         result
     }
 
+    fn enter_test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime")
+    }
+
+    fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        let prev = std::env::var_os(key);
+        crate::env::set_var(key, value);
+        let result = f();
+        if let Some(prev) = prev {
+            crate::env::set_var(key, prev);
+        } else {
+            crate::env::remove_var(key);
+        }
+        result
+    }
+
     fn test_multi_provider_with_cursor() -> MultiProvider {
         MultiProvider {
             claude: RwLock::new(None),
@@ -2836,10 +2855,7 @@ mod tests {
     #[test]
     fn test_on_auth_changed_hot_initializes_openai_and_marks_routes_available() {
         with_clean_provider_test_env(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build tokio runtime");
+            let runtime = enter_test_runtime();
             let _enter = runtime.enter();
 
             let provider = MultiProvider {
@@ -2877,10 +2893,7 @@ mod tests {
     #[test]
     fn test_on_auth_changed_hot_initializes_anthropic_and_marks_routes_available() {
         with_clean_provider_test_env(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build tokio runtime");
+            let runtime = enter_test_runtime();
             let _enter = runtime.enter();
 
             let provider = MultiProvider {
@@ -2915,6 +2928,145 @@ mod tests {
                     && route.api_method == "claude-oauth"
                     && route.available
             }));
+        });
+    }
+
+    #[test]
+    fn test_on_auth_changed_hot_initializes_openrouter_and_marks_routes_available() {
+        with_clean_provider_test_env(|| {
+            with_env_var("OPENROUTER_API_KEY", "test-openrouter-key", || {
+                with_env_var("JCODE_OPENROUTER_MODEL_CATALOG", "0", || {
+                    let runtime = enter_test_runtime();
+                    let _enter = runtime.enter();
+
+                    let provider = MultiProvider {
+                        claude: RwLock::new(None),
+                        anthropic: RwLock::new(None),
+                        openai: RwLock::new(None),
+                        copilot_api: RwLock::new(None),
+                        gemini: RwLock::new(None),
+                        cursor: RwLock::new(None),
+                        openrouter: RwLock::new(None),
+                        active: RwLock::new(ActiveProvider::OpenRouter),
+                        use_claude_cli: false,
+                        startup_notices: RwLock::new(Vec::new()),
+                        forced_provider: Some(ActiveProvider::OpenRouter),
+                    };
+
+                    provider.on_auth_changed();
+
+                    assert!(provider.openrouter.read().unwrap().is_some());
+                    assert!(
+                        provider
+                            .model_routes()
+                            .iter()
+                            .any(|route| { route.api_method == "openrouter" && route.available })
+                    );
+                })
+            })
+        });
+    }
+
+    #[test]
+    fn test_on_auth_changed_hot_initializes_copilot_and_marks_routes_available() {
+        with_clean_provider_test_env(|| {
+            with_env_var("GITHUB_TOKEN", "gho_test_token", || {
+                crate::auth::AuthStatus::invalidate_cache();
+                let runtime = enter_test_runtime();
+                let _enter = runtime.enter();
+
+                let provider = MultiProvider {
+                    claude: RwLock::new(None),
+                    anthropic: RwLock::new(None),
+                    openai: RwLock::new(None),
+                    copilot_api: RwLock::new(None),
+                    gemini: RwLock::new(None),
+                    cursor: RwLock::new(None),
+                    openrouter: RwLock::new(None),
+                    active: RwLock::new(ActiveProvider::Copilot),
+                    use_claude_cli: false,
+                    startup_notices: RwLock::new(Vec::new()),
+                    forced_provider: Some(ActiveProvider::Copilot),
+                };
+
+                provider.on_auth_changed();
+
+                assert!(provider.copilot_api.read().unwrap().is_some());
+                assert!(provider.model_routes().iter().any(|route| {
+                    route.provider == "Copilot" && route.api_method == "copilot" && route.available
+                }));
+            })
+        });
+    }
+
+    #[test]
+    fn test_on_auth_changed_hot_initializes_gemini_and_marks_routes_available() {
+        with_clean_provider_test_env(|| {
+            let runtime = enter_test_runtime();
+            let _enter = runtime.enter();
+
+            crate::auth::gemini::save_tokens(&crate::auth::gemini::GeminiTokens {
+                access_token: "test-access-token".to_string(),
+                refresh_token: "test-refresh-token".to_string(),
+                expires_at: i64::MAX,
+                email: None,
+            })
+            .expect("save test Gemini auth");
+
+            let provider = MultiProvider {
+                claude: RwLock::new(None),
+                anthropic: RwLock::new(None),
+                openai: RwLock::new(None),
+                copilot_api: RwLock::new(None),
+                gemini: RwLock::new(None),
+                cursor: RwLock::new(None),
+                openrouter: RwLock::new(None),
+                active: RwLock::new(ActiveProvider::Gemini),
+                use_claude_cli: false,
+                startup_notices: RwLock::new(Vec::new()),
+                forced_provider: Some(ActiveProvider::Gemini),
+            };
+
+            provider.on_auth_changed();
+
+            assert!(provider.gemini_provider().is_some());
+            assert!(provider.model_routes().iter().any(|route| {
+                route.provider == "Gemini"
+                    && route.api_method == "code-assist-oauth"
+                    && route.available
+            }));
+        });
+    }
+
+    #[test]
+    fn test_on_auth_changed_hot_initializes_cursor_and_marks_routes_available() {
+        with_clean_provider_test_env(|| {
+            with_env_var("CURSOR_API_KEY", "cursor-test-key", || {
+                crate::auth::AuthStatus::invalidate_cache();
+                let runtime = enter_test_runtime();
+                let _enter = runtime.enter();
+
+                let provider = MultiProvider {
+                    claude: RwLock::new(None),
+                    anthropic: RwLock::new(None),
+                    openai: RwLock::new(None),
+                    copilot_api: RwLock::new(None),
+                    gemini: RwLock::new(None),
+                    cursor: RwLock::new(None),
+                    openrouter: RwLock::new(None),
+                    active: RwLock::new(ActiveProvider::Cursor),
+                    use_claude_cli: false,
+                    startup_notices: RwLock::new(Vec::new()),
+                    forced_provider: Some(ActiveProvider::Cursor),
+                };
+
+                provider.on_auth_changed();
+
+                assert!(provider.cursor.read().unwrap().is_some());
+                assert!(provider.model_routes().iter().any(|route| {
+                    route.provider == "Cursor" && route.api_method == "cursor" && route.available
+                }));
+            })
         });
     }
 
