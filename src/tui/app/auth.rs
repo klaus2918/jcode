@@ -52,6 +52,10 @@ pub(super) enum PendingLogin {
     CursorApiKey,
     /// GitHub Copilot device flow in progress (polling in background)
     Copilot,
+    /// Waiting for the user to choose which external auth sources to import.
+    AutoImportSelection {
+        candidates: Vec<crate::cli::provider_init::ExternalAuthReviewCandidate>,
+    },
     /// Interactive provider selection (user picks a number)
     ProviderSelection,
 }
@@ -248,10 +252,30 @@ impl App {
     ) {
         match provider.target {
             crate::provider_catalog::LoginProviderTarget::AutoImport => {
-                self.push_display_message(DisplayMessage::error(
-                    "Auto Import is currently available from the CLI login flow. Run `jcode login --provider auto-import`."
-                        .to_string(),
-                ));
+                match crate::cli::provider_init::pending_external_auth_review_candidates() {
+                    Ok(candidates) if candidates.is_empty() => {
+                        self.push_display_message(DisplayMessage::system(
+                            "No importable external logins were found.".to_string(),
+                        ));
+                        self.set_status_notice("Login: no external imports found");
+                    }
+                    Ok(candidates) => {
+                        self.push_display_message(DisplayMessage::system(
+                            crate::cli::provider_init::format_external_auth_review_candidates_markdown(
+                                &candidates,
+                            ),
+                        ));
+                        self.set_status_notice("Login: choose sources to import");
+                        self.pending_login = Some(PendingLogin::AutoImportSelection { candidates });
+                    }
+                    Err(err) => {
+                        self.push_display_message(DisplayMessage::error(format!(
+                            "Failed to inspect external login sources: {}",
+                            err
+                        )));
+                        self.set_status_notice("Login: auto import failed");
+                    }
+                }
             }
             crate::provider_catalog::LoginProviderTarget::Jcode => self.start_jcode_login(),
             crate::provider_catalog::LoginProviderTarget::Claude => self.start_claude_login(),
@@ -2659,9 +2683,13 @@ impl App {
         }
 
         if trimmed.is_empty() {
-            self.push_display_message(DisplayMessage::system(
-                "Login still in progress. Complete it in your browser, or paste the callback URL / authorization code here. Type `/cancel` to abort.".to_string(),
-            ));
+            let help = match &pending {
+                PendingLogin::AutoImportSelection { .. } => {
+                    "Auto import is waiting for your selection. Reply with `a` to approve all, `1,3` to approve specific sources, or `/cancel` to abort.".to_string()
+                }
+                _ => "Login still in progress. Complete it in your browser, or paste the callback URL / authorization code here. Type `/cancel` to abort.".to_string(),
+            };
+            self.push_display_message(DisplayMessage::system(help));
             self.pending_login = Some(pending);
             return;
         }
@@ -3054,6 +3082,44 @@ impl App {
                         .to_string(),
                 ));
                 self.pending_login = Some(PendingLogin::Copilot);
+            }
+            PendingLogin::AutoImportSelection { candidates } => {
+                let selected = match crate::cli::provider_init::parse_external_auth_review_selection(
+                    &input,
+                    candidates.len(),
+                ) {
+                    Ok(selected) => selected,
+                    Err(err) => {
+                        self.push_display_message(DisplayMessage::error(err.to_string()));
+                        self.pending_login = Some(PendingLogin::AutoImportSelection { candidates });
+                        return;
+                    }
+                };
+
+                self.set_status_notice("Login: importing approved sources...");
+                tokio::spawn(async move {
+                    match crate::cli::provider_init::run_external_auth_auto_import_candidates(
+                        &candidates,
+                        &selected,
+                    )
+                    .await
+                    {
+                        Ok(outcome) => {
+                            Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                                provider: "auto-import".to_string(),
+                                success: outcome.imported > 0,
+                                message: outcome.render_markdown(),
+                            }));
+                        }
+                        Err(err) => {
+                            Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                                provider: "auto-import".to_string(),
+                                success: false,
+                                message: format!("Auto import failed: {}", err),
+                            }));
+                        }
+                    }
+                });
             }
             PendingLogin::ProviderSelection => {
                 let providers = crate::provider_catalog::tui_login_providers();
