@@ -98,94 +98,41 @@ pub fn get_active_account_override() -> Option<String> {
 }
 
 pub fn primary_account_label() -> String {
-    canonical_account_label(1)
+    crate::auth::account_store::canonical_account_label(ACCOUNT_LABEL_PREFIX, 1)
 }
 
 pub fn next_account_label() -> Result<String> {
     let auth = load_auth_file()?;
-    Ok(canonical_account_label(auth.anthropic_accounts.len() + 1))
+    Ok(crate::auth::account_store::next_account_label(
+        ACCOUNT_LABEL_PREFIX,
+        auth.anthropic_accounts.len(),
+    ))
 }
 
 pub fn login_target_label(requested: Option<&str>) -> Result<String> {
     let auth = load_auth_file()?;
-    if let Some(requested) = requested
-        .map(str::trim)
-        .filter(|requested| !requested.is_empty())
-    {
-        if auth
-            .anthropic_accounts
-            .iter()
-            .any(|account| account.label == requested)
-        {
-            return Ok(requested.to_string());
-        }
-        return Ok(canonical_account_label(auth.anthropic_accounts.len() + 1));
-    }
-
-    Ok(auth
-        .active_anthropic_account
-        .or_else(|| {
-            auth.anthropic_accounts
-                .first()
-                .map(|account| account.label.clone())
-        })
-        .unwrap_or_else(primary_account_label))
-}
-
-fn canonical_account_label(index: usize) -> String {
-    format!("{ACCOUNT_LABEL_PREFIX}-{index}")
+    Ok(crate::auth::account_store::login_target_label(
+        ACCOUNT_LABEL_PREFIX,
+        requested,
+        auth.active_anthropic_account,
+        &auth.anthropic_accounts,
+        |account| account.label.as_str(),
+    ))
 }
 
 fn relabel_accounts(auth: &mut JcodeAuthFile) -> bool {
-    let label_map = auth
-        .anthropic_accounts
-        .iter()
-        .enumerate()
-        .map(|(index, account)| (account.label.clone(), canonical_account_label(index + 1)))
-        .collect::<Vec<_>>();
-    let mut changed = false;
-
-    for (account, (_, canonical_label)) in auth.anthropic_accounts.iter_mut().zip(label_map.iter())
-    {
-        if account.label != *canonical_label {
-            account.label = canonical_label.clone();
-            changed = true;
-        }
+    let outcome = crate::auth::account_store::relabel_accounts(
+        ACCOUNT_LABEL_PREFIX,
+        &mut auth.anthropic_accounts,
+        &mut auth.active_anthropic_account,
+        get_active_account_override(),
+        |account| account.label.as_str(),
+        |account, label| account.label = label,
+    );
+    if let Some(label) = outcome.canonical_override_label {
+        set_active_account_override(Some(label));
     }
-
-    let desired_active = if auth.anthropic_accounts.is_empty() {
-        None
-    } else {
-        auth.active_anthropic_account
-            .as_deref()
-            .and_then(|label| {
-                label_map
-                    .iter()
-                    .find(|(original, _)| original == label)
-                    .map(|(_, canonical)| canonical.clone())
-            })
-            .or_else(|| {
-                auth.anthropic_accounts
-                    .first()
-                    .map(|account| account.label.clone())
-            })
-    };
-
-    if auth.active_anthropic_account != desired_active {
-        auth.active_anthropic_account = desired_active;
-        changed = true;
-    }
-
-    if let Some(override_label) = get_active_account_override()
-        && let Some((_, canonical_label)) = label_map
-            .iter()
-            .find(|(original, _)| original == &override_label)
-        && override_label != *canonical_label
-    {
-        set_active_account_override(Some(canonical_label.clone()));
-    }
-
-    changed
+    outcome.changed
 }
 
 // -- Claude Code credentials file format --
@@ -295,21 +242,25 @@ pub fn list_accounts() -> Result<Vec<AnthropicAccount>> {
 
 /// Get the label of the currently active account (runtime override > file > first account).
 pub fn active_account_label() -> Option<String> {
-    if let Some(override_label) = get_active_account_override() {
-        return Some(override_label);
-    }
     let auth = load_auth_file().ok()?;
-    auth.active_anthropic_account
-        .or_else(|| auth.anthropic_accounts.first().map(|a| a.label.clone()))
+    crate::auth::account_store::active_account_label(
+        get_active_account_override(),
+        auth.active_anthropic_account,
+        &auth.anthropic_accounts,
+        |account| account.label.as_str(),
+    )
 }
 
 /// Persist the active account choice to disk (and set the runtime override).
 pub fn set_active_account(label: &str) -> Result<()> {
     let mut auth = load_auth_file()?;
-    if !auth.anthropic_accounts.iter().any(|a| a.label == label) {
-        anyhow::bail!("No account with label '{}' found", label);
-    }
-    auth.active_anthropic_account = Some(label.to_string());
+    crate::auth::account_store::set_active_account(
+        label,
+        &auth.anthropic_accounts,
+        &mut auth.active_anthropic_account,
+        "No account with label '{}' found",
+        |account| account.label.as_str(),
+    )?;
     save_auth_file(&auth)?;
     set_active_account_override(Some(label.to_string()));
     Ok(())
@@ -318,27 +269,14 @@ pub fn set_active_account(label: &str) -> Result<()> {
 /// Add or update an account. Returns the label used.
 pub fn upsert_account(account: AnthropicAccount) -> Result<String> {
     let mut auth = load_auth_file()?;
-    let requested_label = account.label.clone();
-
-    if let Some(existing) = auth
-        .anthropic_accounts
-        .iter_mut()
-        .find(|a| a.label == requested_label)
-    {
-        *existing = account;
-        save_auth_file(&auth)?;
-        return Ok(requested_label);
-    }
-
-    let label = canonical_account_label(auth.anthropic_accounts.len() + 1);
-    let mut account = account;
-    account.label = label.clone();
-    auth.anthropic_accounts.push(account);
-
-    if auth.active_anthropic_account.is_none() || auth.anthropic_accounts.len() == 1 {
-        auth.active_anthropic_account = Some(label.clone());
-    }
-
+    let label = crate::auth::account_store::upsert_account(
+        ACCOUNT_LABEL_PREFIX,
+        &mut auth.anthropic_accounts,
+        &mut auth.active_anthropic_account,
+        account,
+        |account| account.label.as_str(),
+        |account, label| account.label = label,
+    );
     save_auth_file(&auth)?;
     Ok(label)
 }

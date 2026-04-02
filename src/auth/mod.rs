@@ -1,4 +1,5 @@
 pub mod antigravity;
+pub mod account_store;
 pub mod azure;
 pub mod claude;
 pub mod codex;
