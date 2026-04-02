@@ -1340,9 +1340,6 @@ impl Config {
     }
 
     pub fn external_auth_source_allowed_for_path(source_id: &str, path: &std::path::Path) -> bool {
-        if Self::external_auth_source_allowed(source_id) {
-            return true;
-        }
         let Ok(entry) = Self::trusted_external_auth_path_entry(source_id, path) else {
             return false;
         };
@@ -2066,20 +2063,25 @@ mod tests {
         assert!(cfg.external_auth_source_allowed_for_path_config("test_source", &path));
     }
 
+    #[test]
+    fn test_external_auth_source_allowed_for_path_ignores_broad_legacy_entry() {
+        let _guard = crate::storage::lock_test_env();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        std::fs::write(&path, "{}\n").expect("write auth file");
+
+        let mut cfg = Config::default();
+        cfg.auth.trusted_external_sources = vec!["test_source".to_string()];
+
+        assert!(!cfg.external_auth_source_allowed_for_path_config("test_source", &path));
+    }
+
     impl Config {
         fn external_auth_source_allowed_for_path_config(
             &self,
             source_id: &str,
             path: &PathBuf,
         ) -> bool {
-            if self
-                .auth
-                .trusted_external_sources
-                .iter()
-                .any(|value| value.trim().eq_ignore_ascii_case(source_id))
-            {
-                return true;
-            }
             let Ok(entry) = Self::trusted_external_auth_path_entry(source_id, path) else {
                 return false;
             };

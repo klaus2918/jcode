@@ -705,12 +705,7 @@ mod tests {
         let _guard = lock_test_env();
         let temp = tempfile::TempDir::new().expect("tempdir");
         let prev_home = std::env::var_os("JCODE_HOME");
-        let prev_trusted = std::env::var_os("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES");
         crate::env::set_var("JCODE_HOME", temp.path());
-        crate::env::set_var(
-            "JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES",
-            GEMINI_CLI_AUTH_SOURCE_ID,
-        );
 
         let cli_path = gemini_cli_oauth_path().expect("cli path");
         std::fs::create_dir_all(cli_path.parent().unwrap()).expect("create cli dir");
@@ -719,6 +714,8 @@ mod tests {
             r#"{"access_token":"at-123","refresh_token":"rt-456","expiry_date":4102444800000}"#,
         )
         .expect("write cli token file");
+        crate::config::Config::allow_external_auth_source_for_path(GEMINI_CLI_AUTH_SOURCE_ID, &cli_path)
+            .expect("trust cli auth path");
 
         let tokens = load_tokens().expect("load tokens");
         assert_eq!(tokens.access_token, "at-123");
@@ -730,11 +727,6 @@ mod tests {
         } else {
             crate::env::remove_var("JCODE_HOME");
         }
-        if let Some(prev_trusted) = prev_trusted {
-            crate::env::set_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES", prev_trusted);
-        } else {
-            crate::env::remove_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES");
-        }
     }
 
     #[cfg(unix)]
@@ -745,12 +737,7 @@ mod tests {
         let _guard = lock_test_env();
         let temp = tempfile::TempDir::new().expect("tempdir");
         let prev_home = std::env::var_os("JCODE_HOME");
-        let prev_trusted = std::env::var_os("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES");
         crate::env::set_var("JCODE_HOME", temp.path());
-        crate::env::set_var(
-            "JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES",
-            GEMINI_CLI_AUTH_SOURCE_ID,
-        );
 
         let cli_path = gemini_cli_oauth_path().expect("cli path");
         std::fs::create_dir_all(cli_path.parent().unwrap()).expect("create cli dir");
@@ -766,6 +753,8 @@ mod tests {
         .expect("set dir perms");
         std::fs::set_permissions(&cli_path, std::fs::Permissions::from_mode(0o644))
             .expect("set file perms");
+        crate::config::Config::allow_external_auth_source_for_path(GEMINI_CLI_AUTH_SOURCE_ID, &cli_path)
+            .expect("trust cli auth path");
 
         let tokens = load_tokens().expect("load tokens");
         assert_eq!(tokens.access_token, "at-123");
@@ -787,11 +776,6 @@ mod tests {
             crate::env::set_var("JCODE_HOME", prev_home);
         } else {
             crate::env::remove_var("JCODE_HOME");
-        }
-        if let Some(prev_trusted) = prev_trusted {
-            crate::env::set_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES", prev_trusted);
-        } else {
-            crate::env::remove_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES");
         }
     }
 }

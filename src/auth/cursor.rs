@@ -719,10 +719,8 @@ mod tests {
 
         let _guard = crate::storage::lock_test_env();
         let prev_home = std::env::var_os("JCODE_HOME");
-        let prev_trusted = std::env::var_os("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES");
         let temp = TempDir::new().unwrap();
         crate::env::set_var("JCODE_HOME", temp.path());
-        crate::env::set_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES", CURSOR_AUTH_FILE_SOURCE_ID);
 
         let path = cursor_auth_file_path().expect("cursor auth path");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -734,6 +732,8 @@ mod tests {
         std::fs::set_permissions(path.parent().unwrap(), std::fs::Permissions::from_mode(0o755))
             .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        crate::config::Config::allow_external_auth_source_for_path(CURSOR_AUTH_FILE_SOURCE_ID, &path)
+            .expect("trust cursor auth path");
 
         let tokens = load_access_token_from_env_or_file().expect("load auth file token");
         assert_eq!(tokens.access_token, "at-test");
@@ -752,11 +752,6 @@ mod tests {
             crate::env::set_var("JCODE_HOME", prev_home);
         } else {
             crate::env::remove_var("JCODE_HOME");
-        }
-        if let Some(prev_trusted) = prev_trusted {
-            crate::env::set_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES", prev_trusted);
-        } else {
-            crate::env::remove_var("JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES");
         }
     }
 
