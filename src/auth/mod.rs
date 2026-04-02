@@ -5,6 +5,7 @@ pub mod claude;
 pub mod codex;
 pub mod copilot;
 pub mod cursor;
+pub mod external;
 pub mod gemini;
 pub mod google;
 pub mod login_flows;
@@ -139,6 +140,7 @@ impl AuthStatus {
     pub fn has_any_untrusted_external_auth() -> bool {
         crate::auth::codex::has_unconsented_legacy_credentials()
             || crate::auth::claude::has_unconsented_external_auth().is_some()
+            || crate::auth::external::has_any_unconsented_external_auth()
             || crate::auth::gemini::has_unconsented_cli_auth()
             || crate::auth::copilot::has_unconsented_external_auth().is_some()
             || crate::auth::cursor::has_unconsented_external_auth().is_some()

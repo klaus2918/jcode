@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Command;
 
 /// VSCode's OAuth client ID for GitHub Copilot device flow.
 /// This is the well-known client ID used by VS Code, OpenCode, and other tools.
@@ -14,35 +16,51 @@ pub const COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/
 
 /// Copilot API base URL
 pub const COPILOT_API_BASE: &str = "https://api.githubcopilot.com";
+pub const COPILOT_CONFIG_JSON_SOURCE_ID: &str = "copilot_config_json";
 pub const COPILOT_HOSTS_AUTH_SOURCE_ID: &str = "copilot_hosts_json";
 pub const COPILOT_APPS_AUTH_SOURCE_ID: &str = "copilot_apps_json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalCopilotAuthSource {
+    ConfigJson,
     HostsJson,
     AppsJson,
+    OpenCodeAuth,
+    PiAuth,
 }
 
 impl ExternalCopilotAuthSource {
     pub fn source_id(self) -> &'static str {
         match self {
+            Self::ConfigJson => COPILOT_CONFIG_JSON_SOURCE_ID,
             Self::HostsJson => COPILOT_HOSTS_AUTH_SOURCE_ID,
             Self::AppsJson => COPILOT_APPS_AUTH_SOURCE_ID,
+            Self::OpenCodeAuth => crate::auth::external::OPENCODE_AUTH_JSON_SOURCE_ID,
+            Self::PiAuth => crate::auth::external::PI_AUTH_JSON_SOURCE_ID,
         }
     }
 
     pub fn display_name(self) -> &'static str {
         match self {
+            Self::ConfigJson => "GitHub Copilot CLI ~/.copilot/config.json",
             Self::HostsJson => "GitHub Copilot CLI hosts.json",
             Self::AppsJson => "GitHub Copilot apps.json",
+            Self::OpenCodeAuth => "OpenCode auth.json",
+            Self::PiAuth => "pi auth.json",
         }
     }
 
     pub fn path(self) -> PathBuf {
-        let config_dir = copilot_config_dir();
         match self {
-            Self::HostsJson => config_dir.join("hosts.json"),
-            Self::AppsJson => config_dir.join("apps.json"),
+            Self::ConfigJson => copilot_cli_dir().join("config.json"),
+            Self::HostsJson => legacy_copilot_config_dir().join("hosts.json"),
+            Self::AppsJson => legacy_copilot_config_dir().join("apps.json"),
+            Self::OpenCodeAuth => crate::auth::external::ExternalAuthSource::OpenCode
+                .path()
+                .unwrap_or_default(),
+            Self::PiAuth => crate::auth::external::ExternalAuthSource::Pi
+                .path()
+                .unwrap_or_default(),
         }
     }
 }
@@ -97,18 +115,32 @@ impl CopilotApiToken {
 /// Load a GitHub OAuth token from standard Copilot/CLI config locations.
 ///
 /// Checks in order:
-/// 1. GITHUB_TOKEN environment variable
-/// 2. ~/.config/github-copilot/hosts.json (Copilot CLI)
-/// 3. ~/.config/github-copilot/apps.json (VS Code)
+/// 1. COPILOT_GITHUB_TOKEN environment variable
+/// 2. GH_TOKEN environment variable
+/// 3. GITHUB_TOKEN environment variable
+/// 4. ~/.copilot/config.json (official Copilot CLI plaintext fallback)
+/// 5. ~/.config/github-copilot/hosts.json (legacy Copilot CLI)
+/// 6. ~/.config/github-copilot/apps.json (legacy VS Code)
+/// 7. trusted OpenCode/pi auth.json OAuth entries
+/// 8. gh auth token fallback
 pub fn load_github_token() -> Result<String> {
-    // 1. Environment variable
-    if let Ok(token) = std::env::var("GITHUB_TOKEN")
-        && !token.trim().is_empty()
-    {
-        return Ok(token.trim().to_string());
+    for env_key in ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] {
+        if let Ok(token) = std::env::var(env_key)
+            && !token.trim().is_empty()
+        {
+            return Ok(token.trim().to_string());
+        }
     }
 
-    // 2. hosts.json (Copilot CLI login)
+    let config_path = ExternalCopilotAuthSource::ConfigJson.path();
+    if crate::config::Config::external_auth_source_allowed_for_path(
+        COPILOT_CONFIG_JSON_SOURCE_ID,
+        &config_path,
+    ) && let Ok(token) = load_token_from_config_json(&config_path)
+    {
+        return Ok(token);
+    }
+
     let hosts_path = ExternalCopilotAuthSource::HostsJson.path();
     if crate::config::Config::external_auth_source_allowed_for_path(COPILOT_HOSTS_AUTH_SOURCE_ID, &hosts_path)
         && let Ok(token) = load_token_from_json(&hosts_path)
@@ -116,7 +148,6 @@ pub fn load_github_token() -> Result<String> {
         return Ok(token);
     }
 
-    // 3. apps.json (VS Code)
     let apps_path = ExternalCopilotAuthSource::AppsJson.path();
     if crate::config::Config::external_auth_source_allowed_for_path(COPILOT_APPS_AUTH_SOURCE_ID, &apps_path)
         && let Ok(token) = load_token_from_json(&apps_path)
@@ -124,9 +155,17 @@ pub fn load_github_token() -> Result<String> {
         return Ok(token);
     }
 
+    if let Some(token) = crate::auth::external::load_copilot_oauth_token() {
+        return Ok(token);
+    }
+
+    if let Some(token) = load_token_from_gh_cli() {
+        return Ok(token);
+    }
+
     anyhow::bail!(
         "GitHub Copilot token not found. \
-         Set GITHUB_TOKEN, or run `gh auth login` / `gh extension install github/gh-copilot && gh copilot` \
+         Set COPILOT_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN, or run `gh auth login` / `gh extension install github/gh-copilot && gh copilot` \
          to authenticate."
     )
 }
@@ -138,19 +177,48 @@ pub fn has_copilot_credentials() -> bool {
 
 pub fn preferred_external_auth_source() -> Option<ExternalCopilotAuthSource> {
     [
+        ExternalCopilotAuthSource::ConfigJson,
         ExternalCopilotAuthSource::HostsJson,
         ExternalCopilotAuthSource::AppsJson,
+        ExternalCopilotAuthSource::OpenCodeAuth,
+        ExternalCopilotAuthSource::PiAuth,
     ]
     .into_iter()
-    .find(|source| source.path().exists())
+    .find(|source| match source {
+        ExternalCopilotAuthSource::OpenCodeAuth => {
+            let path = source.path();
+            path.exists()
+                && !crate::auth::external::source_allowed(crate::auth::external::ExternalAuthSource::OpenCode)
+                && crate::auth::external::source_has_copilot_oauth(
+                    crate::auth::external::ExternalAuthSource::OpenCode,
+                )
+        }
+        ExternalCopilotAuthSource::PiAuth => {
+            let path = source.path();
+            path.exists()
+                && !crate::auth::external::source_allowed(crate::auth::external::ExternalAuthSource::Pi)
+                && crate::auth::external::source_has_copilot_oauth(
+                    crate::auth::external::ExternalAuthSource::Pi,
+                )
+        }
+        _ => source.path().exists(),
+    })
 }
 
 pub fn has_unconsented_external_auth() -> Option<ExternalCopilotAuthSource> {
     let source = preferred_external_auth_source()?;
-    let allowed = crate::config::Config::external_auth_source_allowed_for_path(
-        source.source_id(),
-        &source.path(),
-    );
+    let allowed = match source {
+        ExternalCopilotAuthSource::OpenCodeAuth => {
+            crate::auth::external::source_allowed(crate::auth::external::ExternalAuthSource::OpenCode)
+        }
+        ExternalCopilotAuthSource::PiAuth => {
+            crate::auth::external::source_allowed(crate::auth::external::ExternalAuthSource::Pi)
+        }
+        _ => crate::config::Config::external_auth_source_allowed_for_path(
+            source.source_id(),
+            &source.path(),
+        ),
+    };
     if allowed {
         None
     } else {
@@ -159,12 +227,38 @@ pub fn has_unconsented_external_auth() -> Option<ExternalCopilotAuthSource> {
 }
 
 pub fn trust_external_auth_source(source: ExternalCopilotAuthSource) -> Result<()> {
-    crate::config::Config::allow_external_auth_source_for_path(source.source_id(), &source.path())?;
+    match source {
+        ExternalCopilotAuthSource::OpenCodeAuth => {
+            crate::auth::external::trust_external_auth_source(
+                crate::auth::external::ExternalAuthSource::OpenCode,
+            )?;
+        }
+        ExternalCopilotAuthSource::PiAuth => {
+            crate::auth::external::trust_external_auth_source(
+                crate::auth::external::ExternalAuthSource::Pi,
+            )?;
+        }
+        _ => {
+            crate::config::Config::allow_external_auth_source_for_path(
+                source.source_id(),
+                &source.path(),
+            )?;
+        }
+    }
     super::AuthStatus::invalidate_cache();
     Ok(())
 }
 
-fn copilot_config_dir() -> PathBuf {
+fn copilot_cli_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("JCODE_HOME") {
+        return PathBuf::from(path).join("external").join(".copilot");
+    }
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".copilot")
+}
+
+fn legacy_copilot_config_dir() -> PathBuf {
     if let Ok(path) = std::env::var("JCODE_HOME") {
         return PathBuf::from(path)
             .join("external")
@@ -184,6 +278,63 @@ fn copilot_config_dir() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_default();
         PathBuf::from(home).join(".config").join("github-copilot")
     }
+}
+
+fn load_token_from_config_json(path: &PathBuf) -> Result<String> {
+    let path = crate::storage::validate_external_auth_file(path)?;
+    let data = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let value: Value = serde_json::from_str(&data)
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
+    find_token_in_value(&value)
+        .ok_or_else(|| anyhow::anyhow!("No GitHub token found in {}", path.display()))
+}
+
+fn find_token_in_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(token) => normalize_candidate_token(token),
+        Value::Array(items) => items.iter().find_map(find_token_in_value),
+        Value::Object(map) => {
+            for key in ["oauth_token", "token", "github_token", "access_token"] {
+                if let Some(token) = map.get(key).and_then(find_token_in_value) {
+                    return Some(token);
+                }
+            }
+            map.values().find_map(find_token_in_value)
+        }
+        _ => None,
+    }
+}
+
+fn normalize_candidate_token(token: &str) -> Option<String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+
+    if token.starts_with("gho_")
+        || token.starts_with("ghu_")
+        || token.starts_with("github_pat_")
+        || token.starts_with("ghs_")
+    {
+        return Some(token.to_string());
+    }
+
+    None
+}
+
+fn load_token_from_gh_cli() -> Option<String> {
+    if !crate::auth::command_exists("gh") {
+        return None;
+    }
+
+    let output = Command::new("gh").args(["auth", "token"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let token = String::from_utf8(output.stdout).ok()?;
+    normalize_candidate_token(&token)
 }
 
 /// Parse a Copilot config JSON file to extract the oauth_token.
@@ -377,7 +528,7 @@ pub async fn poll_for_access_token(
 
 /// Save a GitHub OAuth token to the standard Copilot config location.
 pub fn save_github_token(token: &str, username: &str) -> Result<()> {
-    let config_dir = copilot_config_dir();
+    let config_dir = legacy_copilot_config_dir();
     std::fs::create_dir_all(&config_dir)
         .with_context(|| format!("Failed to create {}", config_dir.display()))?;
     crate::platform::set_directory_permissions_owner_only(&config_dir)
@@ -657,6 +808,34 @@ mod tests {
     }
 
     #[test]
+    fn load_token_from_copilot_config_json() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "auth": {
+                    "token": "ghu_config_token"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let token = load_token_from_config_json(&path).unwrap();
+        assert_eq!(token, "ghu_config_token");
+    }
+
+    #[test]
+    fn normalize_candidate_token_rejects_empty_and_unknown_values() {
+        assert_eq!(normalize_candidate_token("gho_valid"), Some("gho_valid".to_string()));
+        assert_eq!(normalize_candidate_token("ghu_valid"), Some("ghu_valid".to_string()));
+        assert_eq!(normalize_candidate_token("github_pat_valid"), Some("github_pat_valid".to_string()));
+        assert_eq!(normalize_candidate_token("ghp_classic"), None);
+        assert_eq!(normalize_candidate_token("   "), None);
+    }
+
+    #[test]
     fn save_and_load_github_token() {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("github-copilot");
@@ -711,13 +890,13 @@ mod tests {
     }
 
     #[test]
-    fn copilot_config_dir_uses_jcode_home_external_dir() {
+    fn legacy_copilot_config_dir_uses_jcode_home_external_dir() {
         let _guard = crate::storage::lock_test_env();
         let dir = TempDir::new().unwrap();
         let prev = std::env::var_os("JCODE_HOME");
         crate::env::set_var("JCODE_HOME", dir.path());
 
-        let path = copilot_config_dir();
+        let path = legacy_copilot_config_dir();
         assert_eq!(
             path,
             dir.path()

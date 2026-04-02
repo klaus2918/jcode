@@ -127,13 +127,24 @@ pub fn tokens_path() -> Result<std::path::PathBuf> {
 
 pub fn load_tokens() -> Result<AntigravityTokens> {
     let path = tokens_path()?;
-    if !path.exists() {
-        anyhow::bail!("No Antigravity tokens found. Run `jcode login --provider antigravity`.");
+    if path.exists() {
+        crate::storage::harden_secret_file_permissions(&path);
+        return crate::storage::read_json(&path).map_err(|_| {
+            anyhow::anyhow!("No Antigravity tokens found. Run `jcode login --provider antigravity`.")
+        });
     }
-    crate::storage::harden_secret_file_permissions(&path);
-    crate::storage::read_json(&path).map_err(|_| {
-        anyhow::anyhow!("No Antigravity tokens found. Run `jcode login --provider antigravity`.")
-    })
+
+    if let Some(tokens) = crate::auth::external::load_antigravity_oauth_tokens() {
+        return Ok(AntigravityTokens {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_at: tokens.expires_at,
+            email: None,
+            project_id: None,
+        });
+    }
+
+    anyhow::bail!("No Antigravity tokens found. Run `jcode login --provider antigravity`.");
 }
 
 pub fn save_tokens(tokens: &AntigravityTokens) -> Result<()> {

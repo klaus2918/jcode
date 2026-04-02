@@ -358,7 +358,18 @@ pub fn has_unconsented_external_auth() -> Option<ExternalClaudeAuthSource> {
     let allowed = source
         .path()
         .ok()
-        .map(|path| crate::config::Config::external_auth_source_allowed_for_path(source.source_id(), &path))
+        .map(|path| match source {
+            ExternalClaudeAuthSource::OpenCode => {
+                crate::config::Config::external_auth_source_allowed_for_path(source.source_id(), &path)
+                    || crate::config::Config::external_auth_source_allowed_for_path(
+                        crate::auth::external::OPENCODE_AUTH_JSON_SOURCE_ID,
+                        &path,
+                    )
+            }
+            ExternalClaudeAuthSource::ClaudeCode => {
+                crate::config::Config::external_auth_source_allowed_for_path(source.source_id(), &path)
+            }
+        })
         .unwrap_or(false);
     if allowed {
         None
@@ -368,7 +379,14 @@ pub fn has_unconsented_external_auth() -> Option<ExternalClaudeAuthSource> {
 }
 
 pub fn trust_external_auth_source(source: ExternalClaudeAuthSource) -> Result<()> {
-    crate::config::Config::allow_external_auth_source_for_path(source.source_id(), &source.path()?)?;
+    let path = source.path()?;
+    crate::config::Config::allow_external_auth_source_for_path(source.source_id(), &path)?;
+    if matches!(source, ExternalClaudeAuthSource::OpenCode) {
+        crate::config::Config::allow_external_auth_source_for_path(
+            crate::auth::external::OPENCODE_AUTH_JSON_SOURCE_ID,
+            &path,
+        )?;
+    }
     super::AuthStatus::invalidate_cache();
     Ok(())
 }
@@ -415,7 +433,13 @@ pub fn load_credentials() -> Result<ClaudeCredentials> {
 
     if opencode_path()
         .ok()
-        .map(|path| crate::config::Config::external_auth_source_allowed_for_path(OPENCODE_AUTH_SOURCE_ID, &path))
+        .map(|path| {
+            crate::config::Config::external_auth_source_allowed_for_path(OPENCODE_AUTH_SOURCE_ID, &path)
+                || crate::config::Config::external_auth_source_allowed_for_path(
+                    crate::auth::external::OPENCODE_AUTH_JSON_SOURCE_ID,
+                    &path,
+                )
+        })
         .unwrap_or(false)
         && let Ok(creds) = load_opencode_credentials()
     {
@@ -507,25 +531,32 @@ pub fn load_opencode_credentials() -> Result<ClaudeCredentials> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Could not read OpenCode credentials from {:?}", path))?;
 
-    let auth: OpenCodeAuth =
-        serde_json::from_str(&content).context("Could not parse OpenCode credentials")?;
-
-    let anthropic = auth
-        .anthropic
+    let anthropic = serde_json::from_str::<OpenCodeAuth>(&content)
+        .ok()
+        .and_then(|auth| auth.anthropic)
+        .map(|anthropic| ClaudeCredentials {
+            access_token: anthropic.access,
+            refresh_token: anthropic.refresh,
+            expires_at: anthropic.expires,
+            subscription_type: Some("max".to_string()),
+        })
+        .or_else(|| {
+            crate::auth::external::load_anthropic_oauth_tokens().map(|tokens| ClaudeCredentials {
+                access_token: tokens.access_token,
+                refresh_token: tokens.refresh_token,
+                expires_at: tokens.expires_at,
+                subscription_type: Some("max".to_string()),
+            })
+        })
         .context("No anthropic OAuth credentials in OpenCode auth file")?;
 
     let now_ms = chrono::Utc::now().timestamp_millis();
-    if anthropic.expires <= now_ms {
+    if anthropic.expires_at <= now_ms {
         crate::logging::info("OpenCode Anthropic token expired; will attempt refresh.");
     }
     crate::logging::info("Using OpenCode Anthropic credentials");
 
-    Ok(ClaudeCredentials {
-        access_token: anthropic.access,
-        refresh_token: anthropic.refresh,
-        expires_at: anthropic.expires,
-        subscription_type: Some("max".to_string()),
-    })
+    Ok(anthropic)
 }
 
 #[cfg(test)]

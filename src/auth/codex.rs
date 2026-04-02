@@ -336,6 +336,24 @@ pub fn load_credentials() -> Result<CodexCredentials> {
         }
     }
 
+    if let Some(tokens) = crate::auth::external::load_openai_oauth_tokens() {
+        let creds = CodexCredentials {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            id_token: None,
+            account_id: None,
+            expires_at: Some(tokens.expires_at),
+        };
+        if creds
+            .expires_at
+            .map(|expires_at| expires_at > now_ms)
+            .unwrap_or(true)
+        {
+            return Ok(creds);
+        }
+        expired_candidates.push(("external", creds));
+    }
+
     if let Some(api_key) = env_api_key {
         return Ok(CodexCredentials {
             access_token: api_key,

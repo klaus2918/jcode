@@ -253,6 +253,10 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
         }
     }
 
+    if let Some(key) = crate::auth::external::load_api_key_for_env(env_key) {
+        return Some(key);
+    }
+
     None
 }
 

@@ -189,6 +189,15 @@ pub fn load_tokens() -> Result<GeminiTokens> {
         }
     }
 
+    if let Some(tokens) = crate::auth::external::load_gemini_oauth_tokens() {
+        return Ok(GeminiTokens {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_at: tokens.expires_at,
+            email: None,
+        });
+    }
+
     anyhow::bail!("No Gemini OAuth tokens found. Run `jcode login --provider gemini`.")
 }
 
