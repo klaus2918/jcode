@@ -45,7 +45,10 @@ impl ExternalAuthSource {
 const SOURCES: [ExternalAuthSource; 2] = [ExternalAuthSource::OpenCode, ExternalAuthSource::Pi];
 
 pub fn trust_external_auth_source(source: ExternalAuthSource) -> Result<()> {
-    crate::config::Config::allow_external_auth_source_for_path(source.source_id(), &source.path()?)?;
+    crate::config::Config::allow_external_auth_source_for_path(
+        source.source_id(),
+        &source.path()?,
+    )?;
     super::AuthStatus::invalidate_cache();
     Ok(())
 }
@@ -54,7 +57,44 @@ pub fn has_any_unconsented_external_auth() -> bool {
     SOURCES
         .into_iter()
         .filter(|source| source.path().map(|path| path.exists()).unwrap_or(false))
-        .any(|source| !source_allowed(source))
+        .any(|source| !source_allowed(source) && source_has_supported_auth(source))
+}
+
+pub fn unconsented_sources() -> Vec<ExternalAuthSource> {
+    SOURCES
+        .into_iter()
+        .filter(|source| source.path().map(|path| path.exists()).unwrap_or(false))
+        .filter(|source| !source_allowed(*source) && source_has_supported_auth(*source))
+        .collect()
+}
+
+pub fn source_provider_labels(source: ExternalAuthSource) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if source_contains_oauth_provider(source, &["openai-codex", "openai_codex", "openai"])
+        .unwrap_or(false)
+    {
+        labels.push("OpenAI/Codex");
+    }
+    if source_contains_oauth_provider(source, &["anthropic", "claude"]).unwrap_or(false) {
+        labels.push("Claude");
+    }
+    if source_contains_oauth_provider(source, &["google-gemini-cli", "gemini-cli", "gemini"])
+        .unwrap_or(false)
+    {
+        labels.push("Gemini");
+    }
+    if source_contains_oauth_provider(source, &["google-antigravity", "antigravity"])
+        .unwrap_or(false)
+    {
+        labels.push("Antigravity");
+    }
+    if source_contains_oauth_provider(source, &["github-copilot", "copilot"]).unwrap_or(false) {
+        labels.push("GitHub Copilot");
+    }
+    if source_contains_supported_api_key(source).unwrap_or(false) {
+        labels.push("OpenRouter/API-key providers");
+    }
+    labels
 }
 
 pub fn preferred_unconsented_api_key_source() -> Option<ExternalAuthSource> {
@@ -62,8 +102,7 @@ pub fn preferred_unconsented_api_key_source() -> Option<ExternalAuthSource> {
         .into_iter()
         .filter(|source| source.path().map(|path| path.exists()).unwrap_or(false))
         .find(|source| {
-            !source_allowed(*source)
-                && source_contains_supported_api_key(*source).unwrap_or(false)
+            !source_allowed(*source) && source_contains_supported_api_key(*source).unwrap_or(false)
         })
 }
 
@@ -88,7 +127,11 @@ pub fn preferred_unconsented_anthropic_oauth_source() -> Option<ExternalAuthSour
 }
 
 pub fn preferred_unconsented_gemini_oauth_source() -> Option<ExternalAuthSource> {
-    preferred_unconsented_oauth_source_for_candidates(&["google-gemini-cli", "gemini-cli", "gemini"])
+    preferred_unconsented_oauth_source_for_candidates(&[
+        "google-gemini-cli",
+        "gemini-cli",
+        "gemini",
+    ])
 }
 
 pub fn preferred_unconsented_antigravity_oauth_source() -> Option<ExternalAuthSource> {
@@ -108,15 +151,12 @@ pub fn load_api_key_for_env(env_key: &str) -> Option<String> {
 }
 
 pub fn load_openai_oauth_tokens() -> Option<ExternalOAuthTokens> {
-    load_oauth_tokens_for_candidates(&[
-        "openai-codex",
-        "openai_codex",
-        "openai",
-    ])
+    load_oauth_tokens_for_candidates(&["openai-codex", "openai_codex", "openai"])
 }
 
 pub fn load_copilot_oauth_token() -> Option<String> {
-    load_oauth_tokens_for_candidates(&["github-copilot", "copilot"]).map(|tokens| tokens.access_token)
+    load_oauth_tokens_for_candidates(&["github-copilot", "copilot"])
+        .map(|tokens| tokens.access_token)
 }
 
 pub fn source_has_copilot_oauth(source: ExternalAuthSource) -> bool {
@@ -145,10 +185,12 @@ pub fn source_allowed(source: ExternalAuthSource) -> bool {
     }
 
     match source {
-        ExternalAuthSource::OpenCode => crate::config::Config::external_auth_source_allowed_for_path(
-            crate::auth::claude::OPENCODE_AUTH_SOURCE_ID,
-            &path,
-        ),
+        ExternalAuthSource::OpenCode => {
+            crate::config::Config::external_auth_source_allowed_for_path(
+                crate::auth::claude::OPENCODE_AUTH_SOURCE_ID,
+                &path,
+            )
+        }
         ExternalAuthSource::Pi => false,
     }
 }
@@ -194,12 +236,39 @@ fn preferred_unconsented_oauth_source_for_candidates(
         })
 }
 
-fn source_contains_supported_api_key(source: ExternalAuthSource) -> Result<bool> {
-    let auth = load_auth_map(source)?;
-    Ok(auth.values().any(|entry| extract_api_key(source, entry).is_some()))
+fn source_has_supported_auth(source: ExternalAuthSource) -> bool {
+    source_contains_supported_api_key(source).unwrap_or(false)
+        || source_contains_oauth_provider(
+            source,
+            &[
+                "openai-codex",
+                "openai_codex",
+                "openai",
+                "anthropic",
+                "claude",
+                "google-gemini-cli",
+                "gemini-cli",
+                "gemini",
+                "google-antigravity",
+                "antigravity",
+                "github-copilot",
+                "copilot",
+            ],
+        )
+        .unwrap_or(false)
 }
 
-fn source_contains_oauth_provider(source: ExternalAuthSource, provider_keys: &[&str]) -> Result<bool> {
+fn source_contains_supported_api_key(source: ExternalAuthSource) -> Result<bool> {
+    let auth = load_auth_map(source)?;
+    Ok(auth
+        .values()
+        .any(|entry| extract_api_key(source, entry).is_some()))
+}
+
+fn source_contains_oauth_provider(
+    source: ExternalAuthSource,
+    provider_keys: &[&str],
+) -> Result<bool> {
     let auth = load_auth_map(source)?;
     Ok(provider_keys.iter().any(|provider_key| {
         auth.get(*provider_key)
@@ -276,16 +345,8 @@ fn extract_oauth_tokens(entry: &Value) -> Option<ExternalOAuthTokens> {
         return None;
     }
 
-    let access_token = object
-        .get("access")?
-        .as_str()?
-        .trim()
-        .to_string();
-    let refresh_token = object
-        .get("refresh")?
-        .as_str()?
-        .trim()
-        .to_string();
+    let access_token = object.get("access")?.as_str()?.trim().to_string();
+    let refresh_token = object.get("refresh")?.as_str()?.trim().to_string();
     let expires_at = object.get("expires")?.as_i64()?;
 
     if access_token.is_empty() || refresh_token.is_empty() {
@@ -486,6 +547,45 @@ mod tests {
             preferred_unconsented_api_key_source_for_env("OPENCODE_API_KEY"),
             Some(ExternalAuthSource::OpenCode)
         );
+
+        if let Some(prev) = prev {
+            crate::env::set_var("JCODE_HOME", prev);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+    }
+
+    #[test]
+    fn source_provider_labels_reports_supported_oauth_and_api_key_imports() {
+        let _guard = crate::storage::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let prev = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", dir.path());
+
+        let path = ExternalAuthSource::OpenCode.path().unwrap();
+        write_auth_file(
+            &path,
+            serde_json::json!({
+                "openai": {
+                    "type": "oauth",
+                    "access": "sk-access",
+                    "refresh": "refresh",
+                    "expires": chrono::Utc::now().timestamp_millis() + 60_000
+                },
+                "anthropic": {
+                    "type": "oauth",
+                    "access": "claude-access",
+                    "refresh": "refresh",
+                    "expires": chrono::Utc::now().timestamp_millis() + 60_000
+                },
+                "openrouter": { "type": "api", "key": "sk-or-test" }
+            }),
+        );
+
+        let labels = source_provider_labels(ExternalAuthSource::OpenCode);
+        assert!(labels.contains(&"OpenAI/Codex"));
+        assert!(labels.contains(&"Claude"));
+        assert!(labels.contains(&"OpenRouter/API-key providers"));
 
         if let Some(prev) = prev {
             crate::env::set_var("JCODE_HOME", prev);
