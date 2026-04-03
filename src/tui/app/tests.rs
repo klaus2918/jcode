@@ -863,8 +863,13 @@ fn test_observe_updates_latest_tool_context_only() {
     app.observe_tool_result(&tool_call, "1 use std::path::Path;", false, Some("read"));
 
     let page = app.side_panel.focused_page().expect("missing observe page");
+    let token_label = crate::util::format_approx_token_count(crate::util::estimate_tokens(
+        "1 use std::path::Path;",
+    ));
     assert!(page.content.contains("Latest tool result added to context"));
     assert!(page.content.contains("Status: completed"));
+    assert!(page.content.contains("Returned to context"));
+    assert!(page.content.contains(&token_label));
     assert!(page.content.contains("1 use std::path::Path;"));
     assert!(
         !page
@@ -6508,9 +6513,33 @@ fn test_handle_server_event_remote_observe_tracks_tool_exec_and_done() {
     );
 
     let page = app.side_panel.focused_page().expect("missing observe page");
+    let token_label =
+        crate::util::format_approx_token_count(crate::util::estimate_tokens("1 fn main() {}"));
     assert!(page.content.contains("Latest tool result added to context"));
     assert!(page.content.contains("Status: completed"));
+    assert!(page.content.contains("Returned to context"));
+    assert!(page.content.contains(&token_label));
     assert!(page.content.contains("1 fn main() {}"));
+}
+
+#[test]
+fn test_observe_marks_large_tool_results() {
+    let mut app = create_test_app();
+    app.input = "/observe on".to_string();
+    app.submit_input();
+
+    let tool_call = crate::message::ToolCall {
+        id: "tool_big".to_string(),
+        name: "read".to_string(),
+        input: serde_json::json!({"file_path": "large.txt"}),
+        intent: None,
+    };
+    let output = "x".repeat(48_000);
+    app.observe_tool_result(&tool_call, &output, false, Some("read"));
+
+    let page = app.side_panel.focused_page().expect("missing observe page");
+    assert!(page.content.contains("12k tok"));
+    assert!(page.content.contains("very large"));
 }
 
 #[test]

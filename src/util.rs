@@ -14,6 +14,61 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+pub const APPROX_CHARS_PER_TOKEN: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApproxTokenSeverity {
+    Normal,
+    Warning,
+    Danger,
+}
+
+/// Estimate token count using jcode's existing chars-per-token heuristic.
+pub fn estimate_tokens(s: &str) -> usize {
+    s.len() / APPROX_CHARS_PER_TOKEN
+}
+
+/// Format a number with ASCII thousands separators.
+pub fn format_number(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (idx, ch) in digits.chars().enumerate() {
+        if idx > 0 && (digits.len() - idx) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Format a token count in the compact style used by the TUI.
+pub fn format_approx_token_count(tokens: usize) -> String {
+    match tokens {
+        0..=999 => format!("{} tok", tokens),
+        1_000..=9_999 => {
+            let whole = tokens / 1_000;
+            let tenth = (tokens % 1_000) / 100;
+            if tenth == 0 {
+                format!("{}k tok", whole)
+            } else {
+                format!("{}.{}k tok", whole, tenth)
+            }
+        }
+        _ => format!("{}k tok", tokens / 1_000),
+    }
+}
+
+/// Light severity levels for tool outputs that are unusually large for context.
+pub fn approx_tool_output_token_severity(tokens: usize) -> ApproxTokenSeverity {
+    if tokens >= 12_000 {
+        ApproxTokenSeverity::Danger
+    } else if tokens >= 4_000 {
+        ApproxTokenSeverity::Warning
+    } else {
+        ApproxTokenSeverity::Normal
+    }
+}
+
 /// Format an anyhow error including its full cause chain.
 ///
 /// This preserves actionable upstream details such as HTTP status/body instead of
@@ -105,5 +160,41 @@ mod tests {
         assert_eq!(sse_data_line("data: {\"ok\":true}"), Some("{\"ok\":true}"));
         assert_eq!(sse_data_line("data:{\"ok\":true}"), Some("{\"ok\":true}"));
         assert_eq!(sse_data_line("event: message"), None);
+    }
+
+    #[test]
+    fn test_format_number_adds_commas() {
+        assert_eq!(format_number(0), "0");
+        assert_eq!(format_number(12), "12");
+        assert_eq!(format_number(1_234), "1,234");
+        assert_eq!(format_number(12_345_678), "12,345,678");
+    }
+
+    #[test]
+    fn test_format_approx_token_count_compacts_thousands() {
+        assert_eq!(format_approx_token_count(999), "999 tok");
+        assert_eq!(format_approx_token_count(1_000), "1k tok");
+        assert_eq!(format_approx_token_count(1_900), "1.9k tok");
+        assert_eq!(format_approx_token_count(10_000), "10k tok");
+    }
+
+    #[test]
+    fn test_approx_tool_output_token_severity_thresholds() {
+        assert_eq!(
+            approx_tool_output_token_severity(3_999),
+            ApproxTokenSeverity::Normal
+        );
+        assert_eq!(
+            approx_tool_output_token_severity(4_000),
+            ApproxTokenSeverity::Warning
+        );
+        assert_eq!(
+            approx_tool_output_token_severity(11_999),
+            ApproxTokenSeverity::Warning
+        );
+        assert_eq!(
+            approx_tool_output_token_severity(12_000),
+            ApproxTokenSeverity::Danger
+        );
     }
 }

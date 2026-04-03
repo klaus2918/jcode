@@ -114,15 +114,18 @@ pub(crate) fn render_assistant_message(
     width: u16,
     _diff_mode: crate::config::DiffDisplayMode,
 ) -> Vec<Line<'static>> {
-    let content_width = width as usize;
     let centered = markdown::center_code_blocks();
-    let mut lines = markdown::render_markdown_with_width(&msg.content, Some(content_width));
+    let wrap_width = centered_wrap_width(width, centered, 96);
+    let mut lines = markdown::render_markdown_with_width(&msg.content, Some(wrap_width));
     if !msg.tool_calls.is_empty() {
         lines.extend(render_assistant_tool_call_lines(
             &msg.tool_calls,
-            content_width,
-            centered,
+            wrap_width,
+            false,
         ));
+    }
+    if centered {
+        super::left_pad_lines_to_block_width(&mut lines, width, wrap_width);
     }
     lines
 }
@@ -589,6 +592,7 @@ pub(crate) fn render_tool_message(
     };
 
     let centered = markdown::center_code_blocks();
+    let token_badge = tool_output_token_badge(&msg.content);
 
     if tools_ui::is_memory_store_tool(tc) && !msg.content.starts_with("Error:") {
         let content = tc
@@ -602,7 +606,7 @@ pub(crate) fn render_tool_message(
             .and_then(|v| v.as_str())
             .or_else(|| tc.input.get("tag").and_then(|v| v.as_str()))
             .unwrap_or("fact");
-        let title = format!("🧠 saved ({})", category);
+        let title = format!("🧠 saved ({}) · {}", category, token_badge.label.as_str());
         let border_style = Style::default().fg(rgb(255, 200, 100));
         let text_style = Style::default().fg(dim_color());
         let max_box = (width.saturating_sub(4) as usize).min(72);
@@ -652,9 +656,10 @@ pub(crate) fn render_tool_message(
             let count = entries.len();
             let tiles = group_into_tiles(entries);
             let header_text = format!(
-                "🧠 recalled {} memor{}",
+                "🧠 recalled {} memor{} · {}",
                 count,
-                if count == 1 { "y" } else { "ies" }
+                if count == 1 { "y" } else { "ies" },
+                token_badge.label.as_str()
             );
             let header = Line::from(Span::styled(header_text, border_style));
             let total_width = (width.saturating_sub(4) as usize).min(120);
@@ -677,10 +682,29 @@ pub(crate) fn render_tool_message(
         ("✓", rgb(100, 180, 100))
     };
 
+    let is_edit_tool = matches!(
+        tc.name.as_str(),
+        "edit" | "Edit" | "write" | "multiedit" | "patch" | "Patch" | "apply_patch" | "ApplyPatch"
+    );
+    let (additions, deletions) = if is_edit_tool {
+        diff_change_counts_for_tool(tc, &msg.content)
+    } else {
+        (0, 0)
+    };
+
     let row_width = width.saturating_sub(1) as usize;
-    let reserved_summary_width = row_width.saturating_sub(UnicodeWidthStr::width(
-        format!("  {} {} ", icon, tc.name).as_str(),
-    ));
+    let base_prefix = format!("  {} {} ", icon, tc.name);
+    let token_suffix_width =
+        UnicodeWidthStr::width(format!(" · {}", token_badge.label.as_str()).as_str());
+    let edit_suffix_width = if is_edit_tool {
+        UnicodeWidthStr::width(format!(" (+{} -{})", additions, deletions).as_str())
+    } else {
+        0
+    };
+    let reserved_summary_width = row_width
+        .saturating_sub(UnicodeWidthStr::width(base_prefix.as_str()))
+        .saturating_sub(token_suffix_width)
+        .saturating_sub(edit_suffix_width);
 
     let summary = if tc.name == "subagent" {
         msg.title
@@ -697,16 +721,6 @@ pub(crate) fn render_tool_message(
             })
     } else {
         tools_ui::get_tool_summary_with_budget(tc, 50, Some(reserved_summary_width))
-    };
-
-    let is_edit_tool = matches!(
-        tc.name.as_str(),
-        "edit" | "Edit" | "write" | "multiedit" | "patch" | "Patch" | "apply_patch" | "ApplyPatch"
-    );
-    let (additions, deletions) = if is_edit_tool {
-        diff_change_counts_for_tool(tc, &msg.content)
-    } else {
-        (0, 0)
     };
 
     let mut tool_line = vec![
@@ -727,6 +741,11 @@ pub(crate) fn render_tool_message(
         ));
         tool_line.push(Span::styled(")", Style::default().fg(dim_color())));
     }
+    tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
+    tool_line.push(Span::styled(
+        token_badge.label,
+        Style::default().fg(token_badge.color),
+    ));
 
     lines.push(super::truncate_line_with_ellipsis_to_width(
         &Line::from(tool_line),
@@ -735,7 +754,7 @@ pub(crate) fn render_tool_message(
 
     if tc.name == "batch" {
         if let Some(calls) = tc.input.get("tool_calls").and_then(|v| v.as_array()) {
-            let sub_results = tools_ui::parse_batch_sub_results(&msg.content);
+            let sub_results = tools_ui::parse_batch_sub_outputs(&msg.content);
 
             for (i, call) in calls.iter().enumerate() {
                 let raw_name = call
@@ -752,7 +771,8 @@ pub(crate) fn render_tool_message(
                     intent: None,
                 };
 
-                let sub_errored = sub_results.get(i).copied().unwrap_or(false);
+                let sub_result = sub_results.get(i);
+                let sub_errored = sub_result.map(|result| result.errored).unwrap_or(false);
                 let (sub_icon, sub_icon_color) = if sub_errored {
                     ("✗", rgb(220, 100, 100))
                 } else {
@@ -765,6 +785,7 @@ pub(crate) fn render_tool_message(
                     sub_icon_color,
                     50,
                     Some(row_width),
+                    sub_result.map(|result| result.content.as_str()),
                 ));
             }
         }
@@ -919,6 +940,24 @@ pub(crate) fn render_tool_message(
     }
 
     lines
+}
+
+struct ToolOutputTokenBadge {
+    label: String,
+    color: Color,
+}
+
+fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
+    let tokens = crate::util::estimate_tokens(content);
+    let color = match crate::util::approx_tool_output_token_severity(tokens) {
+        crate::util::ApproxTokenSeverity::Normal => rgb(118, 118, 118),
+        crate::util::ApproxTokenSeverity::Warning => rgb(214, 184, 92),
+        crate::util::ApproxTokenSeverity::Danger => rgb(224, 118, 118),
+    };
+    ToolOutputTokenBadge {
+        label: crate::util::format_approx_token_count(tokens),
+        color,
+    }
 }
 
 #[cfg(test)]
@@ -1076,6 +1115,44 @@ mod tests {
             first_pad > 0,
             "tool summary should still be padded/centered as a block: {tool_lines:?}"
         );
+        assert!(
+            lines
+                .iter()
+                .skip(1)
+                .all(|line| line.alignment == Some(ratatui::layout::Alignment::Left)),
+            "centered tool summary should use a shared left-aligned block pad"
+        );
+
+        crate::tui::markdown::set_center_code_blocks(saved);
+    }
+
+    #[test]
+    fn render_assistant_message_centered_mode_left_aligns_markdown_block_with_shared_padding() {
+        let saved = crate::tui::markdown::center_code_blocks();
+        crate::tui::markdown::set_center_code_blocks(true);
+        let msg = DisplayMessage::assistant(
+            "streaming-block streaming-block streaming-block streaming-block",
+        );
+
+        let lines = render_assistant_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+        let content_line = lines
+            .iter()
+            .find(|line| extract_line_text(line).contains("streaming-block"))
+            .expect("expected assistant markdown line");
+
+        let first_pad = extract_line_text(content_line)
+            .chars()
+            .take_while(|c| *c == ' ')
+            .count();
+        assert!(
+            first_pad > 0,
+            "expected centered assistant padding: {lines:?}"
+        );
+        assert_eq!(
+            content_line.alignment,
+            Some(ratatui::layout::Alignment::Left),
+            "centered assistant markdown should use left-aligned block padding"
+        );
 
         crate::tui::markdown::set_center_code_blocks(saved);
     }
@@ -1203,6 +1280,58 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("subagent Verify subagent model (general · gpt-5.4)"));
+    }
+
+    #[test]
+    fn render_tool_message_shows_token_badge() {
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: "x".repeat(7_600),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_2".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"file_path": "src/main.rs"}),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+        let badge_span = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("1.9k tok"))
+            .expect("missing token badge");
+
+        assert_eq!(badge_span.style.fg, Some(rgb(118, 118, 118)));
+    }
+
+    #[test]
+    fn render_tool_message_colors_high_token_badge() {
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: "x".repeat(48_000),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_3".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"file_path": "src/main.rs"}),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+        let badge_span = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("12k tok"))
+            .expect("missing token badge");
+
+        assert_eq!(badge_span.style.fg, Some(rgb(224, 118, 118)));
     }
 }
 

@@ -253,6 +253,21 @@ pub(crate) fn left_aligned_content_inset(width: u16, centered: bool) -> u16 {
     if centered || width <= 1 { 0 } else { 1 }
 }
 
+pub(crate) fn left_pad_lines_to_block_width(
+    lines: &mut [Line<'static>],
+    width: u16,
+    block_width: usize,
+) {
+    let block_width = block_width.min(width as usize);
+    let pad = (width as usize).saturating_sub(block_width) / 2;
+    for line in lines {
+        if pad > 0 {
+            line.spans.insert(0, Span::raw(" ".repeat(pad)));
+        }
+        line.alignment = Some(ratatui::layout::Alignment::Left);
+    }
+}
+
 const RIGHT_RAIL_HEADER_HEIGHT: u16 = 1;
 
 fn right_rail_border_style(focused: bool, focus_color: Color) -> Style {
@@ -4242,6 +4257,19 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_batch_sub_outputs_strips_footer_and_tracks_errors() {
+        let content = "--- [1] read ---\n1234\n\n--- [2] grep ---\nError: 12345678\n\nCompleted: 1 succeeded, 1 failed";
+
+        let results = tools_ui::parse_batch_sub_outputs(content);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].content, "1234");
+        assert!(!results[0].errored);
+        assert_eq!(results[1].content, "Error: 12345678");
+        assert!(results[1].errored);
+    }
+
+    #[test]
     fn test_render_tool_message_batch_flat_subcall_params_include_read_details() {
         let msg = DisplayMessage {
             role: "tool".to_string(),
@@ -4280,6 +4308,43 @@ mod tests {
                 .any(|line| line.contains("read src/main.rs:2320-2540")),
             "missing second read summary in {:?}",
             rendered
+        );
+    }
+
+    #[test]
+    fn test_render_tool_message_batch_subcalls_show_individual_token_badges() {
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content:
+                "--- [1] read ---\n1234\n\n--- [2] grep ---\n12345678\n\nCompleted: 2 succeeded, 0 failed"
+                    .to_string(),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: Some(ToolCall {
+                id: "call_batch_tokens".to_string(),
+                name: "batch".to_string(),
+                input: serde_json::json!({
+                    "tool_calls": [
+                        {"tool": "read", "file_path": "src/session.rs", "offset": 0, "limit": 1},
+                        {"tool": "grep", "pattern": "TODO", "path": "src"}
+                    ]
+                }),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+        let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
+
+        assert_eq!(rendered.len(), 3, "rendered={rendered:?}");
+        assert!(
+            rendered[1].contains("read src/session.rs:0-1") && rendered[1].contains("1 tok"),
+            "rendered={rendered:?}"
+        );
+        assert!(
+            rendered[2].contains("grep 'TODO' in src") && rendered[2].contains("2 tok"),
+            "rendered={rendered:?}"
         );
     }
 
@@ -4432,8 +4497,14 @@ mod tests {
             intent: None,
         };
 
-        let line =
-            tools_ui::render_batch_subcall_line(&tool, "✓", rgb(100, 180, 100), 32, Some(160));
+        let line = tools_ui::render_batch_subcall_line(
+            &tool,
+            "✓",
+            rgb(100, 180, 100),
+            32,
+            Some(160),
+            None,
+        );
         let rendered = extract_line_text(&line);
 
         assert!(
@@ -4991,6 +5062,55 @@ mod tests {
             first_rendered, second_rendered,
             "prepared frame cache should invalidate on same-length streaming text changes"
         );
+    }
+
+    #[test]
+    fn test_prepare_messages_centered_streaming_uses_shared_left_padding() {
+        let state = TestState {
+            centered_mode: true,
+            status: ProcessingStatus::Streaming,
+            streaming_text: "streaming-block streaming-block streaming-block streaming-block streaming-block streaming-block streaming-block streaming-block".to_string(),
+            anim_elapsed: 10.0,
+            ..Default::default()
+        };
+
+        let prepared = prepare::prepare_messages(&state, 120, 20);
+        let stream_lines: Vec<&Line<'static>> = prepared
+            .wrapped_lines
+            .iter()
+            .filter(|line| extract_line_text(line).contains("streaming-block"))
+            .collect();
+
+        assert!(
+            stream_lines.len() >= 2,
+            "expected wrapped centered streaming lines: {:?}",
+            prepared
+                .wrapped_lines
+                .iter()
+                .map(extract_line_text)
+                .collect::<Vec<_>>()
+        );
+
+        let first_pad = extract_line_text(stream_lines[0])
+            .chars()
+            .take_while(|c| *c == ' ')
+            .count();
+        assert!(first_pad > 0, "expected visible streaming left pad");
+        for line in stream_lines {
+            assert_eq!(
+                line.alignment,
+                Some(Alignment::Left),
+                "centered streaming lines should use left-aligned block padding"
+            );
+            assert_eq!(
+                extract_line_text(line)
+                    .chars()
+                    .take_while(|c| *c == ' ')
+                    .count(),
+                first_pad,
+                "streamed assistant lines should share one stable left pad"
+            );
+        }
     }
 
     #[test]

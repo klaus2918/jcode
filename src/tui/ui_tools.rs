@@ -1,6 +1,6 @@
 use crate::message::ToolCall;
 
-use super::{dim_color, tool_color};
+use super::{dim_color, rgb, tool_color};
 use ratatui::prelude::*;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -28,29 +28,71 @@ pub(super) fn resolve_display_tool_name(name: &str) -> &str {
 ///   <output or Error: ...>
 ///   --- [2] tool_name ---
 ///   ...
-pub(super) fn parse_batch_sub_results(content: &str) -> Vec<bool> {
-    let mut results = Vec::new();
-    let mut current_errored = false;
-    let mut in_section = false;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BatchSubResult {
+    pub errored: bool,
+    pub content: String,
+}
 
-    for line in content.lines() {
-        if line.starts_with("--- [") && line.ends_with(" ---") {
-            if in_section {
-                results.push(current_errored);
+fn is_batch_section_header(line: &str) -> bool {
+    line.starts_with("--- [") && line.ends_with(" ---")
+}
+
+fn is_batch_footer_line(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("Completed: ") else {
+        return false;
+    };
+    let Some((successes, rest)) = rest.split_once(" succeeded, ") else {
+        return false;
+    };
+    let Some(failures) = rest.strip_suffix(" failed") else {
+        return false;
+    };
+
+    !successes.is_empty()
+        && !failures.is_empty()
+        && successes.chars().all(|ch| ch.is_ascii_digit())
+        && failures.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn finalize_batch_section(raw: &str) -> BatchSubResult {
+    let mut content = raw.trim_end_matches(['\n', '\r']).to_string();
+    if let Some((body, footer)) = content.rsplit_once("\n\n") {
+        if is_batch_footer_line(footer.trim()) {
+            content = body.trim_end_matches(['\n', '\r']).to_string();
+        }
+    } else if is_batch_footer_line(content.trim()) {
+        content.clear();
+    }
+
+    let errored = content.lines().any(|line| {
+        line.starts_with("Error:") || line.starts_with("error:") || line.starts_with("Failed:")
+    });
+
+    BatchSubResult { errored, content }
+}
+
+pub(super) fn parse_batch_sub_outputs(content: &str) -> Vec<BatchSubResult> {
+    let mut results = Vec::new();
+    let mut current_content_start: Option<usize> = None;
+    let mut current_pos = 0usize;
+
+    for line in content.split_inclusive('\n') {
+        let line_start = current_pos;
+        current_pos += line.len();
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+
+        if is_batch_section_header(trimmed) {
+            if let Some(start) = current_content_start.replace(current_pos) {
+                results.push(finalize_batch_section(&content[start..line_start]));
             }
-            in_section = true;
-            current_errored = false;
-        } else if in_section
-            && (line.starts_with("Error:")
-                || line.starts_with("error:")
-                || line.starts_with("Failed:"))
-        {
-            current_errored = true;
         }
     }
-    if in_section {
-        results.push(current_errored);
+
+    if let Some(start) = current_content_start {
+        results.push(finalize_batch_section(&content[start..]));
     }
+
     results
 }
 
@@ -1055,9 +1097,23 @@ pub(super) fn render_batch_subcall_line(
     icon_color: Color,
     bash_max_chars: usize,
     max_width: Option<usize>,
+    output_content: Option<&str>,
 ) -> Line<'static> {
     let display_name = resolve_display_tool_name(&tool.name).to_string();
-    let reserved = UnicodeWidthStr::width(format!("    {} {}", icon, display_name).as_str()) + 1;
+    let token_badge = output_content.map(|content| {
+        let tokens = crate::util::estimate_tokens(content);
+        let color = match crate::util::approx_tool_output_token_severity(tokens) {
+            crate::util::ApproxTokenSeverity::Normal => rgb(118, 118, 118),
+            crate::util::ApproxTokenSeverity::Warning => rgb(214, 184, 92),
+            crate::util::ApproxTokenSeverity::Danger => rgb(224, 118, 118),
+        };
+        (crate::util::format_approx_token_count(tokens), color)
+    });
+    let reserved = UnicodeWidthStr::width(format!("    {} {}", icon, display_name).as_str())
+        + 1
+        + token_badge.as_ref().map_or(0, |(label, _)| {
+            UnicodeWidthStr::width(format!(" · {label}").as_str())
+        });
     let summary_budget = max_width.map(|w| w.saturating_sub(reserved));
     let summary = get_tool_summary_with_budget(tool, bash_max_chars, summary_budget);
 
@@ -1070,6 +1126,10 @@ pub(super) fn render_batch_subcall_line(
             format!(" {}", summary),
             Style::default().fg(dim_color()),
         ));
+    }
+    if let Some((label, color)) = token_badge {
+        spans.push(Span::styled(" · ", Style::default().fg(dim_color())));
+        spans.push(Span::styled(label, Style::default().fg(color)));
     }
 
     Line::from(spans)
