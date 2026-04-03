@@ -1505,7 +1505,7 @@ impl Agent {
 
             let tools = self.tool_definitions().await;
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
-            let memory_pending = self.build_memory_prompt_nonblocking(&messages);
+            let memory_pending = self.build_memory_prompt_nonblocking(&messages, None);
             // Use split prompt for better caching - static content cached, dynamic not
             let split_prompt = self.build_system_prompt_split(None);
 
@@ -2274,7 +2274,15 @@ impl Agent {
 
             let tools = self.tool_definitions().await;
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
-            let memory_pending = self.build_memory_prompt_nonblocking(&messages);
+            let memory_pending = self.build_memory_prompt_nonblocking(
+                &messages,
+                Some(std::sync::Arc::new({
+                    let event_tx = event_tx.clone();
+                    move |event| {
+                        let _ = event_tx.send(event);
+                    }
+                })),
+            );
             // Use split prompt for better caching - static content cached, dynamic not
             let split_prompt = self.build_system_prompt_split(None);
 
@@ -3031,7 +3039,15 @@ impl Agent {
 
             let tools = self.tool_definitions().await;
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
-            let memory_pending = self.build_memory_prompt_nonblocking(&messages);
+            let memory_pending = self.build_memory_prompt_nonblocking(
+                &messages,
+                Some(std::sync::Arc::new({
+                    let event_tx = event_tx.clone();
+                    move |event| {
+                        let _ = event_tx.send(event);
+                    }
+                })),
+            );
             // Use split prompt for better caching - static content cached, dynamic not
             let split_prompt = self.build_system_prompt_split(None);
 

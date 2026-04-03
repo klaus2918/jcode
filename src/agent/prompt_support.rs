@@ -72,6 +72,7 @@ impl Agent {
     pub(super) fn build_memory_prompt_nonblocking(
         &self,
         messages: &[Message],
+        memory_event_tx: Option<crate::memory::MemoryEventSink>,
     ) -> Option<crate::memory::PendingMemory> {
         if !self.memory_enabled {
             return None;
@@ -87,7 +88,7 @@ impl Agent {
             .map(|dir| crate::memory::MemoryManager::new().with_project_dir(dir))
             .unwrap_or_default();
         let shared_messages: std::sync::Arc<[Message]> = messages.to_vec().into();
-        manager.spawn_relevance_check(session_id, shared_messages.clone());
+        manager.spawn_relevance_check(session_id, shared_messages.clone(), memory_event_tx);
 
         crate::memory_agent::update_context_sync_with_dir(
             session_id,

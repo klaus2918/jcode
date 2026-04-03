@@ -32,6 +32,61 @@ pub enum CommDeliveryMode {
     Wake,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryStateSnapshot {
+    Idle,
+    Embedding,
+    SidecarChecking { count: usize },
+    FoundRelevant { count: usize },
+    Extracting { reason: String },
+    Maintaining { phase: String },
+    ToolAction { action: String, detail: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryStepStatusSnapshot {
+    Pending,
+    Running,
+    Done,
+    Error,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryStepResultSnapshot {
+    pub summary: String,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryPipelineSnapshot {
+    pub search: MemoryStepStatusSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_result: Option<MemoryStepResultSnapshot>,
+    pub verify: MemoryStepStatusSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_result: Option<MemoryStepResultSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_progress: Option<(usize, usize)>,
+    pub inject: MemoryStepStatusSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject_result: Option<MemoryStepResultSnapshot>,
+    pub maintain: MemoryStepStatusSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintain_result: Option<MemoryStepResultSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryActivitySnapshot {
+    pub state: MemoryStateSnapshot,
+    #[serde(default)]
+    pub state_age_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<MemoryPipelineSnapshot>,
+}
+
 /// A message in conversation history (for sync)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryMessage {
@@ -596,6 +651,10 @@ pub enum ServerEvent {
         #[serde(default)]
         computed_age_ms: u64,
     },
+
+    /// Memory activity state update for remote clients.
+    #[serde(rename = "memory_activity")]
+    MemoryActivity { activity: MemoryActivitySnapshot },
 
     /// Context compaction occurred (background summary or emergency drop)
     #[serde(rename = "compaction")]
@@ -1560,6 +1619,48 @@ mod tests {
                 assert_eq!(mode, TranscriptMode::Replace);
             }
             _ => panic!("expected Transcript event"),
+        }
+    }
+
+    #[test]
+    fn test_memory_activity_event_roundtrip() {
+        let event = ServerEvent::MemoryActivity {
+            activity: MemoryActivitySnapshot {
+                state: MemoryStateSnapshot::SidecarChecking { count: 3 },
+                state_age_ms: 275,
+                pipeline: Some(MemoryPipelineSnapshot {
+                    search: MemoryStepStatusSnapshot::Done,
+                    search_result: Some(MemoryStepResultSnapshot {
+                        summary: "5 hits".to_string(),
+                        latency_ms: 14,
+                    }),
+                    verify: MemoryStepStatusSnapshot::Running,
+                    verify_result: None,
+                    verify_progress: Some((1, 3)),
+                    inject: MemoryStepStatusSnapshot::Pending,
+                    inject_result: None,
+                    maintain: MemoryStepStatusSnapshot::Pending,
+                    maintain_result: None,
+                }),
+            },
+        };
+
+        let json = encode_event(&event);
+        assert!(json.contains("\"type\":\"memory_activity\""));
+        let decoded: ServerEvent = serde_json::from_str(json.trim()).unwrap();
+        match decoded {
+            ServerEvent::MemoryActivity { activity } => {
+                assert_eq!(
+                    activity.state,
+                    MemoryStateSnapshot::SidecarChecking { count: 3 }
+                );
+                assert_eq!(activity.state_age_ms, 275);
+                let pipeline = activity.pipeline.expect("pipeline snapshot");
+                assert_eq!(pipeline.search, MemoryStepStatusSnapshot::Done);
+                assert_eq!(pipeline.verify, MemoryStepStatusSnapshot::Running);
+                assert_eq!(pipeline.verify_progress, Some((1, 3)));
+            }
+            _ => panic!("expected MemoryActivity event"),
         }
     }
 

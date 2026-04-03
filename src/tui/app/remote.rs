@@ -339,8 +339,13 @@ pub(super) async fn handle_terminal_event(
 #[cfg(test)]
 mod tests {
     use super::reconnect;
-    use super::{RemoteRunState, process_remote_followups};
+    use super::{RemoteRunState, handle_server_event, process_remote_followups};
+    use crate::protocol::{
+        MemoryActivitySnapshot, MemoryPipelineSnapshot, MemoryStateSnapshot,
+        MemoryStepStatusSnapshot, ServerEvent,
+    };
     use crate::provider::Provider;
+    use crate::tui::info_widget::{MemoryState, StepStatus};
     use anyhow::Result;
     use std::sync::Arc;
 
@@ -444,6 +449,49 @@ mod tests {
         let last = app.display_messages().last().expect("missing info message");
         assert_eq!(last.role, "system");
         assert!(last.content.contains("display.auto_server_reload = false"));
+    }
+
+    #[test]
+    fn handle_server_event_applies_remote_memory_activity_snapshot() {
+        crate::memory::clear_activity();
+
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut app = create_test_app();
+        app.memory_enabled = true;
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        handle_server_event(
+            &mut app,
+            ServerEvent::MemoryActivity {
+                activity: MemoryActivitySnapshot {
+                    state: MemoryStateSnapshot::SidecarChecking { count: 3 },
+                    state_age_ms: 180,
+                    pipeline: Some(MemoryPipelineSnapshot {
+                        search: MemoryStepStatusSnapshot::Done,
+                        search_result: None,
+                        verify: MemoryStepStatusSnapshot::Running,
+                        verify_result: None,
+                        verify_progress: Some((1, 3)),
+                        inject: MemoryStepStatusSnapshot::Pending,
+                        inject_result: None,
+                        maintain: MemoryStepStatusSnapshot::Pending,
+                        maintain_result: None,
+                    }),
+                },
+            },
+            &mut remote,
+        );
+
+        let activity = crate::memory::get_activity().expect("memory activity should be populated");
+        assert_eq!(activity.state, MemoryState::SidecarChecking { count: 3 });
+        let pipeline = activity.pipeline.expect("pipeline should be restored");
+        assert_eq!(pipeline.search, StepStatus::Done);
+        assert_eq!(pipeline.verify, StepStatus::Running);
+        assert_eq!(pipeline.verify_progress, Some((1, 3)));
+        assert!(activity.state_since.elapsed().as_millis() >= 100);
+
+        crate::memory::clear_activity();
     }
 }
 
@@ -2021,6 +2069,12 @@ pub(super) fn handle_server_event(
                 };
                 app.push_display_message(DisplayMessage::memory(summary, display_prompt));
                 app.set_status_notice(format!("🧠 {} relevant {} injected", count, plural));
+            }
+            false
+        }
+        ServerEvent::MemoryActivity { activity } => {
+            if app.memory_enabled {
+                crate::memory::apply_remote_activity_snapshot(&activity);
             }
             false
         }

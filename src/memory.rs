@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
 #[path = "memory/activity.rs"]
@@ -28,8 +28,8 @@ mod activity;
 mod pending;
 
 pub use activity::{
-    add_event, check_staleness, clear_activity, get_activity, pipeline_start, pipeline_update,
-    record_injected_prompt, set_state,
+    activity_snapshot, add_event, apply_remote_activity_snapshot, check_staleness, clear_activity,
+    get_activity, pipeline_start, pipeline_update, record_injected_prompt, set_state,
 };
 #[cfg(test)]
 use pending::insert_pending_memory_for_test;
@@ -43,8 +43,17 @@ use pending::{begin_memory_check, finish_memory_check};
 
 const LEGACY_NOTE_CATEGORY: &str = "note";
 
+pub type MemoryEventSink = Arc<dyn Fn(crate::protocol::ServerEvent) + Send + Sync>;
+
 pub fn memory_sidecar_enabled() -> bool {
     crate::config::config().agents.memory_sidecar_enabled
+}
+
+fn emit_memory_activity(event_tx: Option<&MemoryEventSink>) {
+    let (Some(event_tx), Some(activity)) = (event_tx, activity_snapshot()) else {
+        return;
+    };
+    (event_tx)(crate::protocol::ServerEvent::MemoryActivity { activity });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1874,6 +1883,7 @@ impl MemoryManager {
         &self,
         session_id: &str,
         messages: std::sync::Arc<[crate::message::Message]>,
+        event_tx: Option<MemoryEventSink>,
     ) {
         let sid = session_id.to_string();
 
@@ -1889,7 +1899,10 @@ impl MemoryManager {
                 test_mode: false,
             };
 
-            match manager.get_relevant_parallel(&sid, &messages).await {
+            match manager
+                .get_relevant_parallel(&sid, &messages, event_tx.clone())
+                .await
+            {
                 Ok((Some(prompt), memory_ids, display_prompt)) => {
                     let count = prompt
                         .lines()
@@ -1916,9 +1929,11 @@ impl MemoryManager {
                     if memory_sidecar_enabled() {
                         add_event(MemoryEventKind::SidecarComplete { latency_ms: 0 });
                     }
+                    emit_memory_activity(event_tx.as_ref());
                 }
                 Ok((None, _, _)) => {
                     set_state(MemoryState::Idle);
+                    emit_memory_activity(event_tx.as_ref());
                 }
                 Err(e) => {
                     crate::logging::error(&format!("Background memory check failed: {}", e));
@@ -1926,6 +1941,7 @@ impl MemoryManager {
                         message: e.to_string(),
                     });
                     set_state(MemoryState::Idle);
+                    emit_memory_activity(event_tx.as_ref());
                 }
             }
 
@@ -1942,6 +1958,7 @@ impl MemoryManager {
         &self,
         session_id: &str,
         messages: &[crate::message::Message],
+        event_tx: Option<MemoryEventSink>,
     ) -> Result<(Option<String>, Vec<String>, Option<String>)> {
         let context = format_context_for_relevance(messages);
         if context.is_empty() {
@@ -1955,6 +1972,7 @@ impl MemoryManager {
         set_state(MemoryState::Embedding);
         add_event(MemoryEventKind::EmbeddingStarted);
         pipeline_update(|p| p.search = StepStatus::Running);
+        emit_memory_activity(event_tx.as_ref());
 
         let embedding_start = Instant::now();
         let candidates =
@@ -1977,6 +1995,7 @@ impl MemoryManager {
                             p.maintain = StepStatus::Skipped;
                         });
                         set_state(MemoryState::Idle);
+                        emit_memory_activity(event_tx.as_ref());
                         return Ok((None, Vec::new(), None));
                     }
                     pipeline_update(|p| {
@@ -2004,6 +2023,7 @@ impl MemoryManager {
                             latency_ms: embedding_start.elapsed().as_millis() as u64,
                         });
                     });
+                    emit_memory_activity(event_tx.as_ref());
 
                     top_k_by_score(
                         self.collect_memories_scoped(MemoryScope::All)?
@@ -2043,6 +2063,7 @@ impl MemoryManager {
                 p.maintain = StepStatus::Skipped;
             });
             set_state(MemoryState::Idle);
+            emit_memory_activity(event_tx.as_ref());
             return Ok((None, Vec::new(), None));
         }
 
@@ -2066,6 +2087,7 @@ impl MemoryManager {
                     p.maintain = StepStatus::Skipped;
                 });
                 set_state(MemoryState::Idle);
+                emit_memory_activity(event_tx.as_ref());
                 return Ok((None, Vec::new(), None));
             }
 
@@ -2081,6 +2103,7 @@ impl MemoryManager {
             set_state(MemoryState::FoundRelevant {
                 count: relevant.len(),
             });
+            emit_memory_activity(event_tx.as_ref());
 
             let prompt = format_relevant_prompt(&relevant, MEMORY_RELEVANCE_MAX_RESULTS);
             let display_prompt =
@@ -2093,6 +2116,7 @@ impl MemoryManager {
                     latency_ms: 0,
                 });
             });
+            emit_memory_activity(event_tx.as_ref());
 
             return Ok((prompt, relevant_ids, display_prompt));
         }
@@ -2107,6 +2131,7 @@ impl MemoryManager {
             p.verify = StepStatus::Running;
             p.verify_progress = Some((0, total_candidates));
         });
+        emit_memory_activity(event_tx.as_ref());
 
         let sidecar = Sidecar::new();
         let mut relevant = Vec::new();
@@ -2181,6 +2206,7 @@ impl MemoryManager {
                     total_candidates,
                 ));
             });
+            emit_memory_activity(event_tx.as_ref());
         }
 
         let verify_latency_ms = embedding_start.elapsed().as_millis() as u64;
@@ -2197,6 +2223,7 @@ impl MemoryManager {
                 p.maintain = StepStatus::Skipped;
             });
             set_state(MemoryState::Idle);
+            emit_memory_activity(event_tx.as_ref());
             return Ok((None, Vec::new(), None));
         }
 
@@ -2212,6 +2239,7 @@ impl MemoryManager {
         set_state(MemoryState::FoundRelevant {
             count: relevant.len(),
         });
+        emit_memory_activity(event_tx.as_ref());
 
         let prompt = format_relevant_prompt(&relevant, MEMORY_RELEVANCE_MAX_RESULTS);
         let display_prompt =
@@ -2225,6 +2253,7 @@ impl MemoryManager {
                 latency_ms: 0,
             });
         });
+        emit_memory_activity(event_tx.as_ref());
 
         Ok((prompt, relevant_ids, display_prompt))
     }
