@@ -10,11 +10,15 @@ pub mod gemini;
 pub mod google;
 pub mod login_flows;
 pub mod oauth;
+pub mod refresh_state;
+pub mod validation;
 
 use crate::provider_catalog::LoginProviderAuthStateKey;
 use crate::provider_catalog::LoginProviderDescriptor;
 use crate::provider_catalog::openrouter_like_api_key_sources;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::Instant;
 
@@ -78,7 +82,7 @@ pub struct ProviderAuth {
 }
 
 /// State of a single auth credential
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthState {
     /// Credential is available and valid
     Available,
@@ -87,6 +91,145 @@ pub enum AuthState {
     /// Credential is not configured
     #[default]
     NotConfigured,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthCredentialSource {
+    #[default]
+    None,
+    EnvironmentVariable,
+    AppConfigFile,
+    JcodeManagedFile,
+    TrustedExternalFile,
+    TrustedExternalAppState,
+    LocalCliSession,
+    AzureDefaultCredential,
+    Mixed,
+}
+
+impl AuthCredentialSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::EnvironmentVariable => "environment variable",
+            Self::AppConfigFile => "app config file",
+            Self::JcodeManagedFile => "jcode-managed file",
+            Self::TrustedExternalFile => "trusted external file",
+            Self::TrustedExternalAppState => "trusted external app state",
+            Self::LocalCliSession => "local CLI session",
+            Self::AzureDefaultCredential => "Azure DefaultAzureCredential",
+            Self::Mixed => "mixed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthExpiryConfidence {
+    #[default]
+    Unknown,
+    Exact,
+    PresenceOnly,
+    ConfigurationOnly,
+    NotApplicable,
+}
+
+impl AuthExpiryConfidence {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Exact => "exact timestamp",
+            Self::PresenceOnly => "presence only",
+            Self::ConfigurationOnly => "configuration only",
+            Self::NotApplicable => "not applicable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthRefreshSupport {
+    #[default]
+    Unknown,
+    Automatic,
+    Conditional,
+    ManualRelogin,
+    ExternalManaged,
+    NotApplicable,
+}
+
+impl AuthRefreshSupport {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Automatic => "automatic",
+            Self::Conditional => "conditional",
+            Self::ManualRelogin => "manual re-login",
+            Self::ExternalManaged => "external/manual",
+            Self::NotApplicable => "not applicable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthValidationMethod {
+    #[default]
+    Unknown,
+    PresenceCheck,
+    TimestampCheck,
+    ConfigurationCheck,
+    TrustedImportScan,
+    CommandProbe,
+    CompositeProbe,
+}
+
+impl AuthValidationMethod {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::PresenceCheck => "presence check",
+            Self::TimestampCheck => "timestamp check",
+            Self::ConfigurationCheck => "configuration check",
+            Self::TrustedImportScan => "trusted import scan",
+            Self::CommandProbe => "command probe",
+            Self::CompositeProbe => "composite probe",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderAuthAssessment {
+    pub state: AuthState,
+    pub method_detail: String,
+    pub credential_source: AuthCredentialSource,
+    pub credential_source_detail: String,
+    pub expiry_confidence: AuthExpiryConfidence,
+    pub refresh_support: AuthRefreshSupport,
+    pub validation_method: AuthValidationMethod,
+    pub last_validation: Option<crate::auth::validation::ProviderValidationRecord>,
+    pub last_refresh: Option<crate::auth::refresh_state::ProviderRefreshRecord>,
+}
+
+impl ProviderAuthAssessment {
+    pub fn health_summary(&self) -> String {
+        let mut parts = vec![
+            format!("source: {}", self.credential_source_detail),
+            format!("expiry: {}", self.expiry_confidence.label()),
+            format!("refresh: {}", self.refresh_support.label()),
+            format!("probe: {}", self.validation_method.label()),
+        ];
+
+        if let Some(record) = self.last_refresh.as_ref() {
+            parts.push(format!(
+                "last refresh: {}",
+                crate::auth::refresh_state::format_record_label(record)
+            ));
+        }
+
+        parts.join(" · ")
+    }
 }
 
 impl AuthStatus {
@@ -326,6 +469,129 @@ impl AuthStatus {
                 }
                 _ => provider.auth_status_method.to_string(),
             },
+        }
+    }
+
+    pub fn assessment_for_provider(
+        &self,
+        provider: LoginProviderDescriptor,
+    ) -> ProviderAuthAssessment {
+        let state = self.state_for_provider(provider);
+        let method_detail = self.method_detail_for_provider(provider);
+        let last_validation = crate::auth::validation::get(provider.id);
+        let last_refresh = crate::auth::refresh_state::get(provider.id);
+
+        let (
+            credential_source,
+            credential_source_detail,
+            expiry_confidence,
+            refresh_support,
+            validation_method,
+        ) = match provider.target {
+            crate::provider_catalog::LoginProviderTarget::AutoImport => (
+                if Self::has_any_untrusted_external_auth() {
+                    AuthCredentialSource::TrustedExternalFile
+                } else {
+                    AuthCredentialSource::None
+                },
+                if Self::has_any_untrusted_external_auth() {
+                    "untrusted external auth sources detected".to_string()
+                } else {
+                    "none detected".to_string()
+                },
+                AuthExpiryConfidence::Unknown,
+                AuthRefreshSupport::ExternalManaged,
+                AuthValidationMethod::TrustedImportScan,
+            ),
+            crate::provider_catalog::LoginProviderTarget::Jcode => {
+                let (source, detail) = summarize_sources(vec![
+                    env_source(crate::subscription_catalog::JCODE_API_KEY_ENV),
+                    config_source(
+                        crate::subscription_catalog::JCODE_API_KEY_ENV,
+                        crate::subscription_catalog::JCODE_ENV_FILE,
+                        "~/.config/jcode/jcode-subscription.env",
+                    ),
+                ]);
+                (
+                    source,
+                    detail,
+                    AuthExpiryConfidence::NotApplicable,
+                    AuthRefreshSupport::NotApplicable,
+                    AuthValidationMethod::PresenceCheck,
+                )
+            }
+            crate::provider_catalog::LoginProviderTarget::OpenRouter => {
+                let (source, detail) = summarize_sources(vec![
+                    env_source("OPENROUTER_API_KEY"),
+                    config_source(
+                        "OPENROUTER_API_KEY",
+                        "openrouter.env",
+                        "~/.config/jcode/openrouter.env",
+                    ),
+                    external_api_key_source("OPENROUTER_API_KEY"),
+                ]);
+                (
+                    source,
+                    detail,
+                    AuthExpiryConfidence::NotApplicable,
+                    AuthRefreshSupport::NotApplicable,
+                    AuthValidationMethod::PresenceCheck,
+                )
+            }
+            crate::provider_catalog::LoginProviderTarget::Azure => {
+                let (source, detail) = summarize_sources(vec![
+                    azure_entra_source(),
+                    env_source(crate::auth::azure::API_KEY_ENV),
+                    config_source(
+                        crate::auth::azure::API_KEY_ENV,
+                        crate::auth::azure::ENV_FILE,
+                        "~/.config/jcode/azure-openai.env",
+                    ),
+                ]);
+                (
+                    source,
+                    detail,
+                    AuthExpiryConfidence::ConfigurationOnly,
+                    if crate::auth::azure::uses_entra_id() {
+                        AuthRefreshSupport::Automatic
+                    } else {
+                        AuthRefreshSupport::NotApplicable
+                    },
+                    AuthValidationMethod::ConfigurationCheck,
+                )
+            }
+            crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
+                let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
+                let (source, detail) = summarize_sources(vec![
+                    env_source(&resolved.api_key_env),
+                    config_source(
+                        &resolved.api_key_env,
+                        &resolved.env_file,
+                        format!("~/.config/jcode/{}", resolved.env_file),
+                    ),
+                    external_api_key_source(&resolved.api_key_env),
+                ]);
+                (
+                    source,
+                    detail,
+                    AuthExpiryConfidence::NotApplicable,
+                    AuthRefreshSupport::NotApplicable,
+                    AuthValidationMethod::PresenceCheck,
+                )
+            }
+            _ => assessment_for_key(self, provider.auth_state_key, state),
+        };
+
+        ProviderAuthAssessment {
+            state,
+            method_detail,
+            credential_source,
+            credential_source_detail,
+            expiry_confidence,
+            refresh_support,
+            validation_method,
+            last_validation,
+            last_refresh,
         }
     }
 
@@ -601,6 +867,474 @@ impl AuthStatus {
 
         status
     }
+}
+
+fn assessment_for_key(
+    status: &AuthStatus,
+    key: LoginProviderAuthStateKey,
+    state: AuthState,
+) -> (
+    AuthCredentialSource,
+    String,
+    AuthExpiryConfidence,
+    AuthRefreshSupport,
+    AuthValidationMethod,
+) {
+    match key {
+        LoginProviderAuthStateKey::Anthropic => {
+            let (source, detail) = summarize_sources(vec![
+                anthropic_oauth_source(status),
+                env_source("ANTHROPIC_API_KEY"),
+            ]);
+            (
+                source,
+                detail,
+                if status.anthropic.has_oauth {
+                    AuthExpiryConfidence::Exact
+                } else if status.anthropic.has_api_key {
+                    AuthExpiryConfidence::NotApplicable
+                } else {
+                    AuthExpiryConfidence::Unknown
+                },
+                if status.anthropic.has_oauth {
+                    AuthRefreshSupport::Automatic
+                } else if status.anthropic.has_api_key {
+                    AuthRefreshSupport::NotApplicable
+                } else {
+                    AuthRefreshSupport::Unknown
+                },
+                if status.anthropic.has_oauth {
+                    AuthValidationMethod::TimestampCheck
+                } else {
+                    AuthValidationMethod::PresenceCheck
+                },
+            )
+        }
+        LoginProviderAuthStateKey::OpenAi => {
+            let (source, detail) = summarize_sources(vec![
+                openai_oauth_source(status),
+                openai_api_key_source(status),
+            ]);
+            (
+                source,
+                detail,
+                if status.openai_has_oauth {
+                    AuthExpiryConfidence::Exact
+                } else if status.openai_has_api_key {
+                    AuthExpiryConfidence::NotApplicable
+                } else {
+                    AuthExpiryConfidence::Unknown
+                },
+                if status.openai_has_oauth {
+                    AuthRefreshSupport::Automatic
+                } else if status.openai_has_api_key {
+                    AuthRefreshSupport::NotApplicable
+                } else {
+                    AuthRefreshSupport::Unknown
+                },
+                if status.openai_has_oauth {
+                    AuthValidationMethod::TimestampCheck
+                } else {
+                    AuthValidationMethod::PresenceCheck
+                },
+            )
+        }
+        LoginProviderAuthStateKey::Copilot => {
+            let (source, detail) = summarize_sources(vec![copilot_source()]);
+            (
+                source,
+                detail,
+                if state == AuthState::Available {
+                    AuthExpiryConfidence::PresenceOnly
+                } else {
+                    AuthExpiryConfidence::Unknown
+                },
+                AuthRefreshSupport::ManualRelogin,
+                AuthValidationMethod::CompositeProbe,
+            )
+        }
+        LoginProviderAuthStateKey::Antigravity => {
+            let (source, detail) = summarize_sources(vec![antigravity_source()]);
+            (
+                source,
+                detail,
+                if state == AuthState::NotConfigured {
+                    AuthExpiryConfidence::Unknown
+                } else {
+                    AuthExpiryConfidence::Exact
+                },
+                AuthRefreshSupport::Automatic,
+                AuthValidationMethod::TimestampCheck,
+            )
+        }
+        LoginProviderAuthStateKey::Gemini => {
+            let (source, detail) = summarize_sources(vec![gemini_source()]);
+            (
+                source,
+                detail,
+                if state == AuthState::NotConfigured {
+                    AuthExpiryConfidence::Unknown
+                } else {
+                    AuthExpiryConfidence::Exact
+                },
+                AuthRefreshSupport::Automatic,
+                AuthValidationMethod::TimestampCheck,
+            )
+        }
+        LoginProviderAuthStateKey::Cursor => {
+            let (source, detail) = summarize_sources(vec![cursor_source()]);
+            (
+                source,
+                detail,
+                if state == AuthState::Available {
+                    AuthExpiryConfidence::PresenceOnly
+                } else {
+                    AuthExpiryConfidence::Unknown
+                },
+                AuthRefreshSupport::Conditional,
+                AuthValidationMethod::CompositeProbe,
+            )
+        }
+        LoginProviderAuthStateKey::Google => {
+            let (source, detail) = summarize_sources(vec![google_source()]);
+            (
+                source,
+                detail,
+                if state == AuthState::NotConfigured {
+                    AuthExpiryConfidence::Unknown
+                } else {
+                    AuthExpiryConfidence::Exact
+                },
+                AuthRefreshSupport::Automatic,
+                AuthValidationMethod::TimestampCheck,
+            )
+        }
+        LoginProviderAuthStateKey::Jcode
+        | LoginProviderAuthStateKey::Azure
+        | LoginProviderAuthStateKey::OpenRouterLike
+        | LoginProviderAuthStateKey::ExternalImport => (
+            AuthCredentialSource::None,
+            "not configured".to_string(),
+            AuthExpiryConfidence::Unknown,
+            AuthRefreshSupport::Unknown,
+            AuthValidationMethod::Unknown,
+        ),
+    }
+}
+
+fn summarize_sources(
+    sources: Vec<Option<(AuthCredentialSource, String)>>,
+) -> (AuthCredentialSource, String) {
+    let mut collected = Vec::new();
+    for source in sources.into_iter().flatten() {
+        if !collected.iter().any(|(_, detail)| detail == &source.1) {
+            collected.push(source);
+        }
+    }
+    match collected.len() {
+        0 => (AuthCredentialSource::None, "not configured".to_string()),
+        1 => collected.into_iter().next().unwrap(),
+        _ => (
+            AuthCredentialSource::Mixed,
+            collected
+                .into_iter()
+                .map(|(_, detail)| detail)
+                .collect::<Vec<_>>()
+                .join(" + "),
+        ),
+    }
+}
+
+fn env_source(env_key: &str) -> Option<(AuthCredentialSource, String)> {
+    env_var_nonempty(env_key).then(|| {
+        (
+            AuthCredentialSource::EnvironmentVariable,
+            format!("{env_key} environment variable"),
+        )
+    })
+}
+
+fn config_source(
+    env_key: &str,
+    file_name: &str,
+    path_label: impl Into<String>,
+) -> Option<(AuthCredentialSource, String)> {
+    config_file_has_key(file_name, env_key).then(|| {
+        (
+            AuthCredentialSource::AppConfigFile,
+            format!("{} ({env_key})", path_label.into()),
+        )
+    })
+}
+
+fn external_api_key_source(env_key: &str) -> Option<(AuthCredentialSource, String)> {
+    crate::auth::external::load_api_key_for_env(env_key).map(|_| {
+        (
+            AuthCredentialSource::TrustedExternalFile,
+            format!("trusted external auth import ({env_key})"),
+        )
+    })
+}
+
+fn azure_entra_source() -> Option<(AuthCredentialSource, String)> {
+    crate::auth::azure::uses_entra_id().then(|| {
+        (
+            AuthCredentialSource::AzureDefaultCredential,
+            "Azure DefaultAzureCredential".to_string(),
+        )
+    })
+}
+
+fn anthropic_oauth_source(status: &AuthStatus) -> Option<(AuthCredentialSource, String)> {
+    if !status.anthropic.has_oauth {
+        return None;
+    }
+    if !crate::auth::claude::list_accounts()
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Some((
+            AuthCredentialSource::JcodeManagedFile,
+            "~/.jcode/auth.json".to_string(),
+        ));
+    }
+    if let Some(source) = crate::auth::claude::preferred_external_auth_source()
+        && let Ok(path) = source.path()
+        && crate::config::Config::external_auth_source_allowed_for_path(source.source_id(), &path)
+    {
+        return Some((
+            AuthCredentialSource::TrustedExternalFile,
+            format!("trusted external file ({})", path.display()),
+        ));
+    }
+    if crate::auth::external::load_anthropic_oauth_tokens().is_some() {
+        return Some((
+            AuthCredentialSource::TrustedExternalFile,
+            "trusted external auth import".to_string(),
+        ));
+    }
+    None
+}
+
+fn openai_oauth_source(status: &AuthStatus) -> Option<(AuthCredentialSource, String)> {
+    if !status.openai_has_oauth {
+        return None;
+    }
+    if !crate::auth::codex::list_accounts()
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Some((
+            AuthCredentialSource::JcodeManagedFile,
+            "~/.jcode/openai-auth.json".to_string(),
+        ));
+    }
+    if crate::auth::codex::legacy_auth_allowed() && crate::auth::codex::legacy_auth_source_exists()
+    {
+        return Some((
+            AuthCredentialSource::TrustedExternalFile,
+            "trusted legacy Codex auth file".to_string(),
+        ));
+    }
+    if crate::auth::external::load_openai_oauth_tokens().is_some() {
+        return Some((
+            AuthCredentialSource::TrustedExternalFile,
+            "trusted external auth import".to_string(),
+        ));
+    }
+    None
+}
+
+fn openai_api_key_source(status: &AuthStatus) -> Option<(AuthCredentialSource, String)> {
+    if !status.openai_has_api_key {
+        return None;
+    }
+    env_source("OPENAI_API_KEY").or_else(|| {
+        (crate::auth::codex::legacy_auth_allowed()
+            && crate::auth::codex::legacy_auth_source_exists())
+        .then(|| {
+            (
+                AuthCredentialSource::TrustedExternalFile,
+                "trusted legacy Codex API key".to_string(),
+            )
+        })
+    })
+}
+
+fn gemini_source() -> Option<(AuthCredentialSource, String)> {
+    if let Ok(path) = crate::auth::gemini::tokens_path()
+        && path.exists()
+    {
+        return Some((
+            AuthCredentialSource::JcodeManagedFile,
+            format!("{}", path.display()),
+        ));
+    }
+    if let Ok(path) = crate::auth::gemini::gemini_cli_oauth_path()
+        && path.exists()
+        && crate::config::Config::external_auth_source_allowed_for_path(
+            crate::auth::gemini::GEMINI_CLI_AUTH_SOURCE_ID,
+            &path,
+        )
+    {
+        return Some((
+            AuthCredentialSource::TrustedExternalFile,
+            format!("trusted Gemini CLI file ({})", path.display()),
+        ));
+    }
+    crate::auth::external::load_gemini_oauth_tokens().map(|_| {
+        (
+            AuthCredentialSource::TrustedExternalFile,
+            "trusted external auth import".to_string(),
+        )
+    })
+}
+
+fn antigravity_source() -> Option<(AuthCredentialSource, String)> {
+    if let Ok(path) = crate::auth::antigravity::tokens_path()
+        && path.exists()
+    {
+        return Some((
+            AuthCredentialSource::JcodeManagedFile,
+            format!("{}", path.display()),
+        ));
+    }
+    crate::auth::external::load_antigravity_oauth_tokens().map(|_| {
+        (
+            AuthCredentialSource::TrustedExternalFile,
+            "trusted external auth import".to_string(),
+        )
+    })
+}
+
+fn google_source() -> Option<(AuthCredentialSource, String)> {
+    if let (Ok(tokens_path), Ok(credentials_path)) = (
+        crate::auth::google::tokens_path(),
+        crate::auth::google::credentials_path(),
+    ) && tokens_path.exists()
+        && credentials_path.exists()
+    {
+        return Some((
+            AuthCredentialSource::JcodeManagedFile,
+            format!("{} + {}", credentials_path.display(), tokens_path.display()),
+        ));
+    }
+    None
+}
+
+fn cursor_source() -> Option<(AuthCredentialSource, String)> {
+    if env_var_nonempty("CURSOR_ACCESS_TOKEN") || env_var_nonempty("CURSOR_API_KEY") {
+        return Some((
+            AuthCredentialSource::EnvironmentVariable,
+            "CURSOR_ACCESS_TOKEN / CURSOR_API_KEY environment variable".to_string(),
+        ));
+    }
+    if let Ok(file_path) = crate::auth::cursor::cursor_auth_file_path()
+        && file_path.exists()
+        && crate::config::Config::external_auth_source_allowed_for_path(
+            crate::auth::cursor::CURSOR_AUTH_FILE_SOURCE_ID,
+            &file_path,
+        )
+    {
+        return Some((
+            AuthCredentialSource::TrustedExternalFile,
+            format!("trusted Cursor auth file ({})", file_path.display()),
+        ));
+    }
+    if let Some(source) = crate::auth::cursor::preferred_external_auth_source()
+        && matches!(
+            source,
+            crate::auth::cursor::ExternalCursorAuthSource::CursorVscdb
+        )
+        && let Ok(path) = source.path()
+    {
+        return Some((
+            AuthCredentialSource::TrustedExternalAppState,
+            format!("trusted Cursor app state ({})", path.display()),
+        ));
+    }
+    if config_source("CURSOR_API_KEY", "cursor.env", "~/.config/jcode/cursor.env").is_some() {
+        return config_source("CURSOR_API_KEY", "cursor.env", "~/.config/jcode/cursor.env");
+    }
+    if crate::auth::cursor::has_cursor_agent_auth() {
+        return Some((
+            AuthCredentialSource::LocalCliSession,
+            "cursor-agent authenticated session".to_string(),
+        ));
+    }
+    None
+}
+
+fn copilot_source() -> Option<(AuthCredentialSource, String)> {
+    if env_var_nonempty("COPILOT_GITHUB_TOKEN")
+        || env_var_nonempty("GH_TOKEN")
+        || env_var_nonempty("GITHUB_TOKEN")
+    {
+        return Some((
+            AuthCredentialSource::EnvironmentVariable,
+            "COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN".to_string(),
+        ));
+    }
+
+    for source in [
+        crate::auth::copilot::ExternalCopilotAuthSource::ConfigJson,
+        crate::auth::copilot::ExternalCopilotAuthSource::HostsJson,
+        crate::auth::copilot::ExternalCopilotAuthSource::AppsJson,
+    ] {
+        let path = source.path();
+        if path.exists()
+            && crate::config::Config::external_auth_source_allowed_for_path(
+                source.source_id(),
+                &path,
+            )
+        {
+            return Some((
+                AuthCredentialSource::TrustedExternalFile,
+                format!("trusted Copilot file ({})", path.display()),
+            ));
+        }
+    }
+
+    if crate::auth::external::load_copilot_oauth_token().is_some() {
+        return Some((
+            AuthCredentialSource::TrustedExternalFile,
+            "trusted external auth import".to_string(),
+        ));
+    }
+
+    crate::auth::copilot::load_github_token().ok().map(|_| {
+        (
+            AuthCredentialSource::LocalCliSession,
+            "gh CLI token fallback".to_string(),
+        )
+    })
+}
+
+fn env_var_nonempty(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn config_file_has_key(file_name: &str, env_key: &str) -> bool {
+    let Ok(config_dir) = crate::storage::app_config_dir() else {
+        return false;
+    };
+    let path = config_dir.join(file_name);
+    config_file_contains_assignment(&path, env_key)
+}
+
+fn config_file_contains_assignment(path: &Path, env_key: &str) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let prefix = format!("{env_key}=");
+    content.lines().any(|line| {
+        line.strip_prefix(&prefix)
+            .map(|value| !value.trim().trim_matches('"').trim_matches('\'').is_empty())
+            .unwrap_or(false)
+    })
 }
 
 fn api_key_available(env_key: &str, file_name: &str) -> bool {

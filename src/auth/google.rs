@@ -272,44 +272,58 @@ fn read_manual_callback_code(expected_state: &str) -> Result<String> {
 }
 
 pub async fn refresh_tokens(tokens: &GoogleTokens) -> Result<GoogleTokens> {
-    let creds = load_credentials()?;
-    let client = reqwest::Client::new();
+    let result: Result<GoogleTokens> = async {
+        let creds = load_credentials()?;
+        let client = reqwest::Client::new();
 
-    let resp = client
-        .post(TOKEN_URL)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("client_id", &creds.client_id),
-            ("client_secret", &creds.client_secret),
-            ("refresh_token", &tokens.refresh_token),
-        ])
-        .send()
-        .await?;
+        let resp = client
+            .post(TOKEN_URL)
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", &creds.client_id),
+                ("client_secret", &creds.client_secret),
+                ("refresh_token", &tokens.refresh_token),
+            ])
+            .send()
+            .await?;
 
-    if !resp.status().is_success() {
-        let text = resp.text().await?;
-        anyhow::bail!("Google token refresh failed: {}", text);
+        if !resp.status().is_success() {
+            let text = resp.text().await?;
+            anyhow::bail!("Google token refresh failed: {}", text);
+        }
+
+        #[derive(Deserialize)]
+        struct RefreshResponse {
+            access_token: String,
+            expires_in: i64,
+        }
+
+        let refresh_resp: RefreshResponse = resp.json().await?;
+        let expires_at = chrono::Utc::now().timestamp_millis() + (refresh_resp.expires_in * 1000);
+
+        let new_tokens = GoogleTokens {
+            access_token: refresh_resp.access_token,
+            refresh_token: tokens.refresh_token.clone(),
+            expires_at,
+            tier: tokens.tier,
+            email: tokens.email.clone(),
+        };
+
+        save_tokens(&new_tokens)?;
+        Ok(new_tokens)
+    }
+    .await;
+
+    match &result {
+        Ok(_) => {
+            let _ = crate::auth::refresh_state::record_success("google");
+        }
+        Err(err) => {
+            let _ = crate::auth::refresh_state::record_failure("google", err.to_string());
+        }
     }
 
-    #[derive(Deserialize)]
-    struct RefreshResponse {
-        access_token: String,
-        expires_in: i64,
-    }
-
-    let refresh_resp: RefreshResponse = resp.json().await?;
-    let expires_at = chrono::Utc::now().timestamp_millis() + (refresh_resp.expires_in * 1000);
-
-    let new_tokens = GoogleTokens {
-        access_token: refresh_resp.access_token,
-        refresh_token: tokens.refresh_token.clone(),
-        expires_at,
-        tier: tokens.tier,
-        email: tokens.email.clone(),
-    };
-
-    save_tokens(&new_tokens)?;
-    Ok(new_tokens)
+    result
 }
 
 pub async fn get_valid_token() -> Result<String> {

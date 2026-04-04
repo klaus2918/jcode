@@ -168,51 +168,65 @@ pub async fn load_or_refresh_tokens() -> Result<AntigravityTokens> {
 }
 
 pub async fn refresh_tokens(tokens: &AntigravityTokens) -> Result<AntigravityTokens> {
-    let client = reqwest::Client::new();
-    let client_id = antigravity_client_id()?;
-    let client_secret = antigravity_client_secret()?;
-    let resp = client
-        .post(GOOGLE_TOKEN_URL)
-        .header(reqwest::header::USER_AGENT, GOOGLE_OAUTH_USER_AGENT)
-        .form(&vec![
-            ("grant_type", "refresh_token".to_string()),
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-            ("refresh_token", tokens.refresh_token.clone()),
-        ])
-        .send()
-        .await
-        .context("Failed to refresh Antigravity OAuth token")?;
+    let result: Result<AntigravityTokens> = async {
+        let client = reqwest::Client::new();
+        let client_id = antigravity_client_id()?;
+        let client_secret = antigravity_client_secret()?;
+        let resp = client
+            .post(GOOGLE_TOKEN_URL)
+            .header(reqwest::header::USER_AGENT, GOOGLE_OAUTH_USER_AGENT)
+            .form(&vec![
+                ("grant_type", "refresh_token".to_string()),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+                ("refresh_token", tokens.refresh_token.clone()),
+            ])
+            .send()
+            .await
+            .context("Failed to refresh Antigravity OAuth token")?;
 
-    if !resp.status().is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Antigravity token refresh failed: {}", body.trim());
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Antigravity token refresh failed: {}", body.trim());
+        }
+
+        let token_resp: GoogleTokenResponse = resp
+            .json()
+            .await
+            .context("Failed to parse Antigravity refresh response")?;
+
+        let mut refreshed = AntigravityTokens {
+            access_token: token_resp.access_token,
+            refresh_token: token_resp
+                .refresh_token
+                .unwrap_or_else(|| tokens.refresh_token.clone()),
+            expires_at: chrono::Utc::now().timestamp_millis() + (token_resp.expires_in * 1000),
+            email: tokens.email.clone(),
+            project_id: tokens.project_id.clone(),
+        };
+
+        if refreshed.email.is_none() {
+            refreshed.email = fetch_email(&refreshed.access_token).await.ok();
+        }
+        if refreshed.project_id.is_none() {
+            refreshed.project_id = fetch_project_id(&refreshed.access_token).await.ok();
+        }
+
+        save_tokens(&refreshed)?;
+        Ok(refreshed)
+    }
+    .await;
+
+    match &result {
+        Ok(_) => {
+            let _ = crate::auth::refresh_state::record_success("antigravity");
+        }
+        Err(err) => {
+            let _ = crate::auth::refresh_state::record_failure("antigravity", err.to_string());
+        }
     }
 
-    let token_resp: GoogleTokenResponse = resp
-        .json()
-        .await
-        .context("Failed to parse Antigravity refresh response")?;
-
-    let mut refreshed = AntigravityTokens {
-        access_token: token_resp.access_token,
-        refresh_token: token_resp
-            .refresh_token
-            .unwrap_or_else(|| tokens.refresh_token.clone()),
-        expires_at: chrono::Utc::now().timestamp_millis() + (token_resp.expires_in * 1000),
-        email: tokens.email.clone(),
-        project_id: tokens.project_id.clone(),
-    };
-
-    if refreshed.email.is_none() {
-        refreshed.email = fetch_email(&refreshed.access_token).await.ok();
-    }
-    if refreshed.project_id.is_none() {
-        refreshed.project_id = fetch_project_id(&refreshed.access_token).await.ok();
-    }
-
-    save_tokens(&refreshed)?;
-    Ok(refreshed)
+    result
 }
 
 pub async fn login() -> Result<AntigravityTokens> {

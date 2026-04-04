@@ -451,41 +451,55 @@ async fn refresh_direct_access_token(
     client: &Client,
     refresh_token: &str,
 ) -> Result<CursorDirectTokens> {
-    let request = CursorRefreshRequest {
-        grant_type: "refresh_token",
-        client_id: CURSOR_OAUTH_CLIENT_ID,
-        refresh_token,
-    };
+    let result: Result<CursorDirectTokens> = async {
+        let request = CursorRefreshRequest {
+            grant_type: "refresh_token",
+            client_id: CURSOR_OAUTH_CLIENT_ID,
+            refresh_token,
+        };
 
-    let response = client
-        .post(format!("{CURSOR_API_BASE}/oauth/token"))
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&request)
-        .send()
-        .await
-        .context("Failed to refresh Cursor access token")?;
+        let response = client
+            .post(format!("{CURSOR_API_BASE}/oauth/token"))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to refresh Cursor access token")?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "Cursor access token refresh failed ({}): {}",
-            status,
-            body.trim()
-        );
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "Cursor access token refresh failed ({}): {}",
+                status,
+                body.trim()
+            );
+        }
+
+        let parsed: CursorRefreshResponse = response
+            .json()
+            .await
+            .context("Failed to decode Cursor token refresh response")?;
+        Ok(CursorDirectTokens {
+            access_token: parsed.access_token,
+            refresh_token: parsed
+                .refresh_token
+                .or_else(|| Some(refresh_token.to_string())),
+            source: "cursor_refresh",
+        })
+    }
+    .await;
+
+    match &result {
+        Ok(_) => {
+            let _ = crate::auth::refresh_state::record_success("cursor");
+        }
+        Err(err) => {
+            let _ = crate::auth::refresh_state::record_failure("cursor", err.to_string());
+        }
     }
 
-    let parsed: CursorRefreshResponse = response
-        .json()
-        .await
-        .context("Failed to decode Cursor token refresh response")?;
-    Ok(CursorDirectTokens {
-        access_token: parsed.access_token,
-        refresh_token: parsed
-            .refresh_token
-            .or_else(|| Some(refresh_token.to_string())),
-        source: "cursor_refresh",
-    })
+    result
 }
 
 async fn exchange_api_key_for_tokens(client: &Client, api_key: &str) -> Result<CursorDirectTokens> {

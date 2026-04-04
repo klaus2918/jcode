@@ -233,40 +233,54 @@ pub async fn load_or_refresh_tokens() -> Result<GeminiTokens> {
 }
 
 pub async fn refresh_tokens(tokens: &GeminiTokens) -> Result<GeminiTokens> {
-    let client_id = gemini_client_id();
-    let client_secret = gemini_client_secret();
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(GOOGLE_TOKEN_URL)
-        .form(&vec![
-            ("grant_type", "refresh_token".to_string()),
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-            ("refresh_token", tokens.refresh_token.clone()),
-        ])
-        .send()
-        .await
-        .context("Failed to refresh Gemini OAuth token")?;
+    let result: Result<GeminiTokens> = async {
+        let client_id = gemini_client_id();
+        let client_secret = gemini_client_secret();
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(GOOGLE_TOKEN_URL)
+            .form(&vec![
+                ("grant_type", "refresh_token".to_string()),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+                ("refresh_token", tokens.refresh_token.clone()),
+            ])
+            .send()
+            .await
+            .context("Failed to refresh Gemini OAuth token")?;
 
-    if !resp.status().is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Gemini token refresh failed: {}", body.trim());
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Gemini token refresh failed: {}", body.trim());
+        }
+
+        let token_resp: GoogleTokenResponse = resp
+            .json()
+            .await
+            .context("Failed to parse Gemini refresh response")?;
+        let refreshed = GeminiTokens {
+            access_token: token_resp.access_token,
+            refresh_token: token_resp
+                .refresh_token
+                .unwrap_or_else(|| tokens.refresh_token.clone()),
+            expires_at: chrono::Utc::now().timestamp_millis() + (token_resp.expires_in * 1000),
+            email: tokens.email.clone(),
+        };
+        save_tokens(&refreshed)?;
+        Ok(refreshed)
+    }
+    .await;
+
+    match &result {
+        Ok(_) => {
+            let _ = crate::auth::refresh_state::record_success("gemini");
+        }
+        Err(err) => {
+            let _ = crate::auth::refresh_state::record_failure("gemini", err.to_string());
+        }
     }
 
-    let token_resp: GoogleTokenResponse = resp
-        .json()
-        .await
-        .context("Failed to parse Gemini refresh response")?;
-    let refreshed = GeminiTokens {
-        access_token: token_resp.access_token,
-        refresh_token: token_resp
-            .refresh_token
-            .unwrap_or_else(|| tokens.refresh_token.clone()),
-        expires_at: chrono::Utc::now().timestamp_millis() + (token_resp.expires_in * 1000),
-        email: tokens.email.clone(),
-    };
-    save_tokens(&refreshed)?;
-    Ok(refreshed)
+    result
 }
 
 pub async fn login() -> Result<GeminiTokens> {

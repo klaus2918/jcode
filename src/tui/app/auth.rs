@@ -185,6 +185,7 @@ impl App {
 
     pub(super) fn show_auth_status(&mut self) {
         let status = crate::auth::AuthStatus::check();
+        let validation = crate::auth::validation::load_all();
         let icon = |state: crate::auth::AuthState| match state {
             crate::auth::AuthState::Available => "ok",
             crate::auth::AuthState::Expired => "needs attention",
@@ -192,14 +193,20 @@ impl App {
         };
         let providers = crate::provider_catalog::auth_status_login_providers();
         let mut message = String::from(
-            "**Authentication Status:**\n\n| Provider | Status | Method |\n|----------|--------|--------|\n",
+            "**Authentication Status:**\n\n| Provider | Status | Method | Health | Validation |\n|----------|--------|--------|--------|------------|\n",
         );
         for provider in providers {
+            let assessment = status.assessment_for_provider(provider);
             message.push_str(&format!(
-                "| {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} |\n",
                 provider.display_name,
-                icon(status.state_for_provider(provider)),
-                status.method_detail_for_provider(provider),
+                icon(assessment.state),
+                assessment.method_detail,
+                assessment.health_summary(),
+                validation
+                    .get(provider.id)
+                    .map(crate::auth::validation::format_record_label)
+                    .unwrap_or_else(|| "not validated".to_string()),
             ));
         }
         message.push_str(
@@ -446,6 +453,7 @@ impl App {
         use crate::tui::account_picker::{AccountPicker, AccountPickerCommand, AccountPickerItem};
 
         let status = crate::auth::AuthStatus::check_fast();
+        let validation = crate::auth::validation::load_all();
         let cfg = crate::config::Config::load();
         let providers: Vec<_> = match provider_filter {
             Some(provider_id) => match resolve_account_provider_descriptor(provider_id) {
@@ -506,6 +514,10 @@ impl App {
         for provider in providers {
             let auth_state = status.state_for_provider(provider);
             let method_detail = status.method_detail_for_provider(provider);
+            let validation_detail = validation
+                .get(provider.id)
+                .map(crate::auth::validation::format_record_label)
+                .unwrap_or_else(|| "not validated".to_string());
             match auth_state {
                 crate::auth::AuthState::Available => summary.ready_count += 1,
                 crate::auth::AuthState::Expired => summary.attention_count += 1,
@@ -532,7 +544,10 @@ impl App {
                     provider.id,
                     provider.display_name,
                     "Saved auth entry",
-                    format!("{} - {}", state_label, method_detail),
+                    format!(
+                        "{} - {} - {}",
+                        state_label, method_detail, validation_detail
+                    ),
                     AccountPickerCommand::SubmitInput(format!("/account {} settings", provider.id)),
                 ));
             }
@@ -541,7 +556,10 @@ impl App {
                 provider.id,
                 provider.display_name,
                 "Provider settings",
-                format!("{} - {}", state_label, method_detail),
+                format!(
+                    "{} - {} - {}",
+                    state_label, method_detail, validation_detail
+                ),
                 AccountPickerCommand::SubmitInput(format!("/account {} settings", provider.id)),
             ));
             items.push(AccountPickerItem::action(
@@ -4095,6 +4113,7 @@ fn save_openai_compat_setting(app: &mut App, setting: OpenAiCompatSetting, value
 
 fn render_provider_settings_markdown(app: &App, provider_id: &str) -> String {
     let status = crate::auth::AuthStatus::check();
+    let validation = crate::auth::validation::load_all();
     let cfg = crate::config::Config::load();
     let Some(provider) = resolve_account_provider_descriptor(provider_id) else {
         return format!("Unknown provider `{}`.", provider_id);
@@ -4108,6 +4127,13 @@ fn render_provider_settings_markdown(app: &App, provider_id: &str) -> String {
         "- Auth: {} ({})",
         provider.auth_kind.label(),
         status.method_detail_for_provider(provider)
+    ));
+    lines.push(format!(
+        "- Validation: {}",
+        validation
+            .get(provider.id)
+            .map(crate::auth::validation::format_record_label)
+            .unwrap_or_else(|| "not validated".to_string())
     ));
     lines.push(format!("- Login command: `/account {} login`", provider.id));
     lines.push(String::new());

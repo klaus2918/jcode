@@ -855,47 +855,60 @@ pub fn load_claude_tokens_for_account(label: &str) -> Result<OAuthTokens> {
 
 /// Refresh Claude OAuth tokens
 pub async fn refresh_claude_tokens(refresh_token: &str) -> Result<OAuthTokens> {
-    let client = reqwest::Client::new();
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-        ("client_id", claude::CLIENT_ID),
-    ];
-    let resp = client
-        .post(claude::TOKEN_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .form(&params)
-        .send()
-        .await?;
+    let result: Result<OAuthTokens> = async {
+        let client = reqwest::Client::new();
+        let params = [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", claude::CLIENT_ID),
+        ];
+        let resp = client
+            .post(claude::TOKEN_URL)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&params)
+            .send()
+            .await?;
 
-    if !resp.status().is_success() {
-        let text = resp.text().await?;
-        anyhow::bail!("Token refresh failed: {}", text);
+        if !resp.status().is_success() {
+            let text = resp.text().await?;
+            anyhow::bail!("Token refresh failed: {}", text);
+        }
+
+        #[derive(Deserialize)]
+        struct TokenResponse {
+            access_token: String,
+            refresh_token: String,
+            expires_in: i64,
+        }
+
+        let tokens: TokenResponse = resp.json().await?;
+        let expires_at = chrono::Utc::now().timestamp_millis() + (tokens.expires_in * 1000);
+
+        let oauth_tokens = OAuthTokens {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_at,
+            id_token: None,
+        };
+
+        let active_label =
+            claude_auth::active_account_label().unwrap_or_else(claude_auth::primary_account_label);
+        save_claude_tokens_for_account(&oauth_tokens, &active_label)?;
+
+        Ok(oauth_tokens)
+    }
+    .await;
+
+    match &result {
+        Ok(_) => {
+            let _ = crate::auth::refresh_state::record_success("claude");
+        }
+        Err(err) => {
+            let _ = crate::auth::refresh_state::record_failure("claude", err.to_string());
+        }
     }
 
-    #[derive(Deserialize)]
-    struct TokenResponse {
-        access_token: String,
-        refresh_token: String,
-        expires_in: i64,
-    }
-
-    let tokens: TokenResponse = resp.json().await?;
-    let expires_at = chrono::Utc::now().timestamp_millis() + (tokens.expires_in * 1000);
-
-    let oauth_tokens = OAuthTokens {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        expires_at,
-        id_token: None,
-    };
-
-    // Save the refreshed tokens to the active account
-    let active_label =
-        claude_auth::active_account_label().unwrap_or_else(claude_auth::primary_account_label);
-    save_claude_tokens_for_account(&oauth_tokens, &active_label)?;
-
-    Ok(oauth_tokens)
+    result
 }
 
 /// Refresh Claude OAuth tokens for a specific account.
@@ -903,44 +916,58 @@ pub async fn refresh_claude_tokens_for_account(
     refresh_token: &str,
     label: &str,
 ) -> Result<OAuthTokens> {
-    let client = reqwest::Client::new();
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-        ("client_id", claude::CLIENT_ID),
-    ];
-    let resp = client
-        .post(claude::TOKEN_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .form(&params)
-        .send()
-        .await?;
+    let result: Result<OAuthTokens> = async {
+        let client = reqwest::Client::new();
+        let params = [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", claude::CLIENT_ID),
+        ];
+        let resp = client
+            .post(claude::TOKEN_URL)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&params)
+            .send()
+            .await?;
 
-    if !resp.status().is_success() {
-        let text = resp.text().await?;
-        anyhow::bail!("Token refresh failed for account '{}': {}", label, text);
+        if !resp.status().is_success() {
+            let text = resp.text().await?;
+            anyhow::bail!("Token refresh failed for account '{}': {}", label, text);
+        }
+
+        #[derive(Deserialize)]
+        struct TokenResponse {
+            access_token: String,
+            refresh_token: String,
+            expires_in: i64,
+        }
+
+        let tokens: TokenResponse = resp.json().await?;
+        let expires_at = chrono::Utc::now().timestamp_millis() + (tokens.expires_in * 1000);
+
+        let oauth_tokens = OAuthTokens {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_at,
+            id_token: None,
+        };
+
+        save_claude_tokens_for_account(&oauth_tokens, label)?;
+
+        Ok(oauth_tokens)
+    }
+    .await;
+
+    match &result {
+        Ok(_) => {
+            let _ = crate::auth::refresh_state::record_success("claude");
+        }
+        Err(err) => {
+            let _ = crate::auth::refresh_state::record_failure("claude", err.to_string());
+        }
     }
 
-    #[derive(Deserialize)]
-    struct TokenResponse {
-        access_token: String,
-        refresh_token: String,
-        expires_in: i64,
-    }
-
-    let tokens: TokenResponse = resp.json().await?;
-    let expires_at = chrono::Utc::now().timestamp_millis() + (tokens.expires_in * 1000);
-
-    let oauth_tokens = OAuthTokens {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        expires_at,
-        id_token: None,
-    };
-
-    save_claude_tokens_for_account(&oauth_tokens, label)?;
-
-    Ok(oauth_tokens)
+    result
 }
 
 /// Save OpenAI tokens to auth file
@@ -979,49 +1006,63 @@ async fn refresh_openai_tokens_inner(
     refresh_token: &str,
     label: Option<&str>,
 ) -> Result<OAuthTokens> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(openai::TOKEN_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(format!(
-            "grant_type=refresh_token&client_id={}&refresh_token={}",
-            openai::CLIENT_ID,
-            urlencoding::encode(refresh_token)
-        ))
-        .send()
-        .await?;
+    let result: Result<OAuthTokens> = async {
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(openai::TOKEN_URL)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(format!(
+                "grant_type=refresh_token&client_id={}&refresh_token={}",
+                openai::CLIENT_ID,
+                urlencoding::encode(refresh_token)
+            ))
+            .send()
+            .await?;
 
-    if !resp.status().is_success() {
-        let text = resp.text().await?;
-        anyhow::bail!("OpenAI token refresh failed: {}", text);
+        if !resp.status().is_success() {
+            let text = resp.text().await?;
+            anyhow::bail!("OpenAI token refresh failed: {}", text);
+        }
+
+        #[derive(Deserialize)]
+        struct TokenResponse {
+            access_token: String,
+            refresh_token: String,
+            expires_in: i64,
+            id_token: Option<String>,
+        }
+
+        let tokens: TokenResponse = resp.json().await?;
+        let expires_at = chrono::Utc::now().timestamp_millis() + (tokens.expires_in * 1000);
+
+        let oauth_tokens = OAuthTokens {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_at,
+            id_token: tokens.id_token,
+        };
+
+        if let Some(label) = label {
+            save_openai_tokens_for_account(&oauth_tokens, label)?;
+        } else {
+            crate::logging::info(
+                "Refreshed OpenAI/Codex tokens from an external source without storing them in jcode auth",
+            );
+        }
+        Ok(oauth_tokens)
+    }
+    .await;
+
+    match &result {
+        Ok(_) => {
+            let _ = crate::auth::refresh_state::record_success("openai");
+        }
+        Err(err) => {
+            let _ = crate::auth::refresh_state::record_failure("openai", err.to_string());
+        }
     }
 
-    #[derive(Deserialize)]
-    struct TokenResponse {
-        access_token: String,
-        refresh_token: String,
-        expires_in: i64,
-        id_token: Option<String>,
-    }
-
-    let tokens: TokenResponse = resp.json().await?;
-    let expires_at = chrono::Utc::now().timestamp_millis() + (tokens.expires_in * 1000);
-
-    let oauth_tokens = OAuthTokens {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        expires_at,
-        id_token: tokens.id_token,
-    };
-
-    if let Some(label) = label {
-        save_openai_tokens_for_account(&oauth_tokens, label)?;
-    } else {
-        crate::logging::info(
-            "Refreshed OpenAI/Codex tokens from an external source without storing them in jcode auth",
-        );
-    }
-    Ok(oauth_tokens)
+    result
 }
 
 /// Build a Claude token exchange request (extracted for testability).
