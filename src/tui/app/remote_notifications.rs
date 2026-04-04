@@ -184,6 +184,11 @@ pub(super) fn present_swarm_notification(
                 message: trimmed.to_string(),
                 status_notice: "Swarm update".to_string(),
             },
+            Some("background_task") => SwarmNotificationPresentation {
+                title: "Background task".to_string(),
+                message: trimmed.to_string(),
+                status_notice: "Background task update".to_string(),
+            },
             Some(other) => SwarmNotificationPresentation {
                 title: format!("{} · {}", capitalize(other), sender),
                 message: trimmed.to_string(),
@@ -254,6 +259,22 @@ mod tests {
             "Implement compaction asymptotic fixes — You own the compaction task."
         );
         assert_eq!(presentation.status_notice, "Task assigned by sheep");
+    }
+
+    #[test]
+    fn present_swarm_notification_formats_background_task_scope_cleanly() {
+        let presentation = present_swarm_notification(
+            "background task",
+            &NotificationType::Message {
+                scope: Some("background_task".to_string()),
+                channel: None,
+            },
+            "Background task failed · selfdev-build · exit 101",
+        );
+
+        assert_eq!(presentation.title, "Background task");
+        assert_eq!(presentation.message, "Background task failed · selfdev-build · exit 101");
+        assert_eq!(presentation.status_notice, "Background task update");
     }
 
     #[test]
