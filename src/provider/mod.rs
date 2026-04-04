@@ -2190,9 +2190,9 @@ impl Provider for MultiProvider {
             *self.anthropic.write().unwrap() = Some(Arc::new(anthropic::AnthropicProvider::new()));
         }
 
-        if self.openai_provider().is_none()
-            && let Ok(credentials) = crate::auth::codex::load_credentials()
-        {
+        if let Some(openai) = self.openai_provider() {
+            openai.reload_credentials_now();
+        } else if let Ok(credentials) = crate::auth::codex::load_credentials() {
             crate::logging::info("Hot-initialized OpenAI provider after auth change");
             *self.openai.write().unwrap() =
                 Some(Arc::new(openai::OpenAIProvider::new(credentials)));
@@ -2887,6 +2887,59 @@ mod tests {
             assert!(provider.model_routes().iter().any(|route| {
                 route.provider == "OpenAI" && route.api_method == "openai-oauth" && route.available
             }));
+        });
+    }
+
+    #[test]
+    fn test_on_auth_changed_refreshes_existing_openai_provider_credentials() {
+        with_clean_provider_test_env(|| {
+            let runtime = enter_test_runtime();
+            let _enter = runtime.enter();
+
+            crate::auth::codex::upsert_account_from_tokens(
+                "openai-1",
+                "stale-access-token",
+                "test-refresh-token",
+                None,
+                None,
+            )
+            .expect("save stale test OpenAI auth");
+
+            let existing = Arc::new(openai::OpenAIProvider::new(
+                crate::auth::codex::load_credentials().expect("load stale openai credentials"),
+            ));
+
+            crate::auth::codex::upsert_account_from_tokens(
+                "openai-1",
+                "fresh-access-token",
+                "test-refresh-token",
+                None,
+                None,
+            )
+            .expect("save fresh test OpenAI auth");
+
+            let provider = MultiProvider {
+                claude: RwLock::new(None),
+                anthropic: RwLock::new(None),
+                openai: RwLock::new(Some(existing.clone())),
+                copilot_api: RwLock::new(None),
+                gemini: RwLock::new(None),
+                cursor: RwLock::new(None),
+                openrouter: RwLock::new(None),
+                active: RwLock::new(ActiveProvider::OpenAI),
+                use_claude_cli: false,
+                startup_notices: RwLock::new(Vec::new()),
+                forced_provider: Some(ActiveProvider::OpenAI),
+            };
+
+            provider.on_auth_changed();
+
+            let openai = provider
+                .openai_provider()
+                .expect("existing openai provider");
+            let loaded =
+                runtime.block_on(async { openai.credentials.read().await.access_token.clone() });
+            assert_eq!(loaded, "fresh-access-token");
         });
     }
 

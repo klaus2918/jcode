@@ -391,6 +391,25 @@ impl OpenAIProvider {
         }
     }
 
+    pub(crate) fn reload_credentials_now(&self) {
+        if let Ok(credentials) = crate::auth::codex::load_credentials() {
+            match self.credentials.try_write() {
+                Ok(mut guard) => {
+                    *guard = credentials;
+                }
+                Err(_) => {
+                    crate::logging::info(
+                        "OpenAI credentials were updated on disk, but the in-memory credential lock was busy; async refresh will retry",
+                    );
+                }
+            }
+        }
+
+        if let Ok(mut persistent_ws) = self.persistent_ws.try_lock() {
+            *persistent_ws = None;
+        }
+    }
+
     fn is_chatgpt_mode(credentials: &CodexCredentials) -> bool {
         !credentials.refresh_token.is_empty() || credentials.id_token.is_some()
     }
@@ -912,6 +931,10 @@ impl Provider for OpenAIProvider {
 
     fn name(&self) -> &str {
         "openai"
+    }
+
+    fn on_auth_changed(&self) {
+        self.reload_credentials_now();
     }
 
     fn model(&self) -> String {
