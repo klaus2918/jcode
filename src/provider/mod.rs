@@ -2937,8 +2937,7 @@ mod tests {
             let openai = provider
                 .openai_provider()
                 .expect("existing openai provider");
-            let loaded =
-                runtime.block_on(async { openai.credentials.read().await.access_token.clone() });
+            let loaded = runtime.block_on(async { openai.test_access_token().await });
             assert_eq!(loaded, "fresh-access-token");
         });
     }
