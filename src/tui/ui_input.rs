@@ -232,37 +232,81 @@ fn display_connection_type(connection_type: &str) -> String {
     match connection_type.trim() {
         "https/sse" => "https".to_string(),
         "websocket/persistent-fresh" => "websocket".to_string(),
-        "websocket/persistent-reuse" => "websocket reuse".to_string(),
+        "websocket/persistent-reuse" => "reused websocket".to_string(),
         other => other.to_string(),
     }
 }
 
-fn append_stream_route(status_text: &mut String, app: &dyn TuiState) {
-    if let Some(upstream) = app.upstream_provider() {
-        status_text.push_str(&format!(" · via {}", upstream));
+fn normalize_status_detail(detail: &str) -> Option<String> {
+    let trimmed = detail.trim();
+    if trimmed.is_empty() {
+        return None;
     }
+
+    Some(
+        match trimmed {
+            "fresh websocket" => "websocket",
+            "reusing websocket" => "reused websocket",
+            "websocket healthcheck" => "checking websocket",
+            other => other,
+        }
+        .to_string(),
+    )
+}
+
+fn transport_label_overlaps(left: &str, right: &str) -> bool {
+    let left = left.trim().to_ascii_lowercase();
+    let right = right.trim().to_ascii_lowercase();
+    !left.is_empty()
+        && !right.is_empty()
+        && (left == right || left.contains(&right) || right.contains(&left))
+}
+
+fn collect_transport_context_labels(
+    detail: Option<String>,
+    connection: Option<String>,
+    upstream: Option<String>,
+) -> Vec<String> {
+    let mut labels = Vec::new();
+
+    if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
+        labels.push(detail);
+    }
+
+    if let Some(connection) = connection.filter(|conn| !conn.trim().is_empty()) {
+        let overlaps_existing = labels
+            .iter()
+            .any(|existing| transport_label_overlaps(existing, &connection));
+        if !overlaps_existing {
+            labels.push(connection);
+        }
+    }
+
+    if let Some(upstream) = upstream
+        .map(|upstream| upstream.trim().to_string())
+        .filter(|upstream| !upstream.is_empty())
+    {
+        labels.push(format!("via {}", upstream));
+    }
+
+    labels
+}
+
+fn transport_context_labels(app: &dyn TuiState) -> Vec<String> {
+    collect_transport_context_labels(
+        app.status_detail()
+            .and_then(|detail| normalize_status_detail(&detail)),
+        app.connection_type()
+            .map(|conn| display_connection_type(&conn))
+            .filter(|conn| !conn.is_empty()),
+        app.upstream_provider(),
+    )
 }
 
 fn append_transport_context(status_text: &mut String, app: &dyn TuiState) {
-    let detail = app
-        .status_detail()
-        .map(|detail| detail.trim().to_string())
-        .filter(|detail| !detail.is_empty());
-    let connection = app
-        .connection_type()
-        .map(|conn| display_connection_type(&conn))
-        .filter(|conn| !conn.is_empty());
-
-    if let Some(detail) = detail.as_deref() {
-        status_text.push_str(&format!(" · {}", detail));
+    for label in transport_context_labels(app) {
+        status_text.push_str(&format!(" · {}", label));
     }
-    if let Some(connection) = connection
-        .as_deref()
-        .filter(|conn| detail.as_deref() != Some(*conn))
-    {
-        status_text.push_str(&format!(" · {}", connection));
-    }
-    append_stream_route(status_text, app);
 }
 
 fn batch_progress_state(
@@ -546,25 +590,9 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                         Style::default().fg(dim_color()),
                     ));
                 }
-                if let Some(detail) = app
-                    .status_detail()
-                    .map(|detail| detail.trim().to_string())
-                    .filter(|detail| !detail.is_empty())
-                {
+                for label in transport_context_labels(app) {
                     spans.push(Span::styled(
-                        format!(" · {}", detail),
-                        Style::default().fg(dim_color()),
-                    ));
-                }
-                if let Some(conn) = app.connection_type() {
-                    spans.push(Span::styled(
-                        format!(" · {}", conn),
-                        Style::default().fg(dim_color()),
-                    ));
-                }
-                if let Some(upstream) = app.upstream_provider() {
-                    spans.push(Span::styled(
-                        format!(" · via {}", upstream),
+                        format!(" · {}", label),
                         Style::default().fg(dim_color()),
                     ));
                 }
@@ -800,7 +828,48 @@ mod tests {
         );
         assert_eq!(
             display_connection_type("websocket/persistent-reuse"),
-            "websocket reuse"
+            "reused websocket"
+        );
+    }
+
+    #[test]
+    fn normalize_status_detail_uses_reader_friendly_labels() {
+        assert_eq!(
+            normalize_status_detail("fresh websocket").as_deref(),
+            Some("websocket")
+        );
+        assert_eq!(
+            normalize_status_detail("reusing websocket").as_deref(),
+            Some("reused websocket")
+        );
+        assert_eq!(
+            normalize_status_detail("websocket healthcheck").as_deref(),
+            Some("checking websocket")
+        );
+        assert_eq!(
+            normalize_status_detail("https fallback").as_deref(),
+            Some("https fallback")
+        );
+    }
+
+    #[test]
+    fn collect_transport_context_labels_dedupes_overlapping_transport_text() {
+        assert_eq!(
+            collect_transport_context_labels(
+                normalize_status_detail("reusing websocket"),
+                Some(display_connection_type("websocket/persistent-reuse")),
+                Some("OpenRouter".to_string())
+            ),
+            vec!["reused websocket".to_string(), "via OpenRouter".to_string()]
+        );
+
+        assert_eq!(
+            collect_transport_context_labels(
+                normalize_status_detail("https fallback"),
+                Some(display_connection_type("https/sse")),
+                None,
+            ),
+            vec!["https fallback".to_string()]
         );
     }
 

@@ -980,11 +980,9 @@ impl Provider for OpenAIProvider {
                 ));
 
                 let use_websocket = matches!(transport, OpenAITransport::WebSocket);
-                if use_websocket {
-                    emit_status_detail(&tx, "fresh websocket").await;
-                } else if force_https_for_request {
+                if !use_websocket && force_https_for_request {
                     emit_status_detail(&tx, "https fallback").await;
-                } else {
+                } else if !use_websocket {
                     emit_status_detail(&tx, "https").await;
                 }
                 let result = if use_websocket {
@@ -1922,7 +1920,7 @@ async fn try_persistent_ws_continuation(
     }
 
     if persistent_ws_idle_needs_healthcheck(state.last_activity_at.elapsed()) {
-        emit_status_detail(tx, "websocket healthcheck").await;
+        emit_status_detail(tx, "checking websocket").await;
     }
 
     match ensure_persistent_ws_is_healthy(state).await {
@@ -2025,7 +2023,6 @@ async fn try_persistent_ws_continuation(
             connection: "websocket/persistent-reuse".to_string(),
         }))
         .await;
-    emit_status_detail(tx, "reusing websocket").await;
 
     // Send the continuation request on the existing WebSocket
     let send_started_at = Instant::now();
@@ -2336,7 +2333,6 @@ async fn stream_response_websocket_persistent(
             connection: "websocket/persistent-fresh".to_string(),
         }))
         .await;
-    emit_status_detail(&tx, "fresh websocket").await;
 
     let mut request_event = request;
     if !request_event.is_object() {
