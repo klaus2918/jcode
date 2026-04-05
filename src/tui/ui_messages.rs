@@ -623,6 +623,9 @@ pub(crate) fn render_tool_message(
         for line in box_lines {
             lines.push(line);
         }
+        if centered {
+            left_pad_lines_for_centered_mode(&mut lines, width);
+        }
         return lines;
     }
 
@@ -664,6 +667,9 @@ pub(crate) fn render_tool_message(
                 render_memory_tiles(&tiles, total_width, border_style, text_style, Some(header));
             for line in tile_lines {
                 lines.push(line);
+            }
+            if centered {
+                left_pad_lines_for_centered_mode(&mut lines, width);
             }
             return lines;
         }
@@ -1333,6 +1339,109 @@ mod tests {
             .expect("missing token badge");
 
         assert_eq!(badge_span.style.fg, Some(rgb(224, 118, 118)));
+    }
+
+    #[test]
+    fn render_tool_message_memory_recall_centered_mode_left_aligns_with_padding() {
+        let saved = crate::tui::markdown::center_code_blocks();
+        crate::tui::markdown::set_center_code_blocks(true);
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: concat!(
+                "- [fact] Centered mode should keep the recall card centered\n",
+                "- [preference] The user likes visible side gutters"
+            )
+            .to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_memory_recall_centered".to_string(),
+                name: "memory".to_string(),
+                input: serde_json::json!({
+                    "action": "recall",
+                    "query": "centered mode"
+                }),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+
+        assert!(!rendered.is_empty(), "expected rendered recall card");
+        assert!(
+            rendered.iter().all(|line| line.starts_with("  ")),
+            "centered recall card should include shared left padding: {rendered:?}"
+        );
+        assert_eq!(
+            lines[0].alignment,
+            Some(ratatui::layout::Alignment::Left),
+            "centered recall card header should be left-aligned after padding"
+        );
+        assert!(
+            rendered[0]
+                .trim_start()
+                .starts_with("🧠 recalled 2 memories"),
+            "unexpected recall header: {rendered:?}"
+        );
+
+        crate::tui::markdown::set_center_code_blocks(saved);
+    }
+
+    #[test]
+    fn render_tool_message_memory_store_centered_mode_left_aligns_with_padding() {
+        let saved = crate::tui::markdown::center_code_blocks();
+        crate::tui::markdown::set_center_code_blocks(true);
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: "Saved memory".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_memory_store_centered".to_string(),
+                name: "memory".to_string(),
+                input: serde_json::json!({
+                    "action": "remember",
+                    "category": "fact",
+                    "content": "Centered mode should pad saved memory cards too"
+                }),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+
+        assert!(!rendered.is_empty(), "expected rendered saved-memory card");
+        assert!(
+            rendered.iter().all(|line| line.starts_with("  ")),
+            "centered saved-memory card should include shared left padding: {rendered:?}"
+        );
+        assert_eq!(
+            lines[0].alignment,
+            Some(ratatui::layout::Alignment::Left),
+            "centered saved-memory card should be left-aligned after padding"
+        );
+
+        crate::tui::markdown::set_center_code_blocks(saved);
     }
 }
 
