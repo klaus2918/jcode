@@ -252,6 +252,47 @@ fn extract_text_from_value(value: &serde_json::Value) -> String {
     out.join(" ")
 }
 
+fn extract_block_text_from_value(value: &serde_json::Value) -> String {
+    fn visit(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(text) => {
+                if !text.trim().is_empty() {
+                    out.push(text.trim().to_string());
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    visit(item, out);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                if let Some(text) = map.get("text").and_then(|v| v.as_str()) {
+                    if !text.trim().is_empty() {
+                        out.push(text.trim().to_string());
+                    }
+                    return;
+                }
+                if let Some(text) = map.get("title").and_then(|v| v.as_str()) {
+                    if !text.trim().is_empty() {
+                        out.push(text.trim().to_string());
+                    }
+                }
+                for (key, nested) in map {
+                    if key == "type" || key == "title" {
+                        continue;
+                    }
+                    visit(nested, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::new();
+    visit(value, &mut out);
+    out.join(" ")
+}
+
 fn truncate_title_text(text: &str, max_chars: usize) -> String {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -262,6 +303,30 @@ fn truncate_title_text(text: &str, max_chars: usize) -> String {
     }
     let truncated: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{}…", truncated.trim_end())
+}
+
+fn parse_timestamp_value(
+    value: Option<&serde_json::Value>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    value
+        .and_then(|v| v.as_str())
+        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
+fn codex_title_candidate(text: &str) -> Option<String> {
+    let cleaned = text.replace("<environment_context>", "");
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    if cleaned.starts_with("# AGENTS.md instructions")
+        || cleaned.starts_with("<permissions instructions>")
+        || cleaned.contains("\n<INSTRUCTIONS>")
+    {
+        return None;
+    }
+    Some(truncate_title_text(cleaned, 72))
 }
 
 fn is_empty_session_file(path: &Path) -> bool {
@@ -799,7 +864,12 @@ fn load_codex_session_info(path: &Path) -> Result<Option<SessionInfo>> {
         return Ok(None);
     };
     let header: serde_json::Value = serde_json::from_str(&first_line?)?;
-    let session_id = header
+    let meta = if header.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
+        header.get("payload").unwrap_or(&header)
+    } else {
+        &header
+    };
+    let session_id = meta
         .get("id")
         .and_then(|v| v.as_str())
         .unwrap_or_default()
@@ -808,15 +878,15 @@ fn load_codex_session_info(path: &Path) -> Result<Option<SessionInfo>> {
         return Ok(None);
     }
 
-    let created_at = header
-        .get("timestamp")
-        .and_then(|v| v.as_str())
-        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
-        .map(|dt| dt.with_timezone(&chrono::Utc))
+    let created_at = parse_timestamp_value(meta.get("timestamp"))
+        .or_else(|| parse_timestamp_value(header.get("timestamp")))
         .unwrap_or_else(chrono::Utc::now);
 
     let mut title: Option<String> = None;
-    let mut working_dir: Option<String> = None;
+    let mut working_dir: Option<String> = meta
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let mut model: Option<String> = None;
     let mut last_message_time = created_at;
     let mut user_message_count = 0usize;
@@ -833,48 +903,65 @@ fn load_codex_session_info(path: &Path) -> Result<Option<SessionInfo>> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
             continue;
         };
-        if value.get("type").and_then(|v| v.as_str()) != Some("message") {
-            continue;
-        }
-        let Some(role) = value.get("role").and_then(|v| v.as_str()) else {
+        let line_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let (role, content_value, timestamp_value, model_value) = if line_type == "message" {
+            let Some(role) = value.get("role").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            (
+                role,
+                value.get("content").unwrap_or(&serde_json::Value::Null),
+                value.get("timestamp"),
+                value.get("model"),
+            )
+        } else if line_type == "response_item" {
+            let Some(payload) = value.get("payload") else {
+                continue;
+            };
+            if payload.get("type").and_then(|v| v.as_str()) != Some("message") {
+                continue;
+            }
+            let Some(role) = payload.get("role").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            (
+                role,
+                payload.get("content").unwrap_or(&serde_json::Value::Null),
+                value.get("timestamp").or_else(|| payload.get("timestamp")),
+                payload.get("model"),
+            )
+        } else {
             continue;
         };
-        let text =
-            extract_text_from_value(value.get("content").unwrap_or(&serde_json::Value::Null));
+
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+
+        let text = extract_block_text_from_value(content_value);
         if title.is_none() && role == "user" {
-            let cleaned = text.replace("<environment_context>", "");
-            let cleaned = cleaned.trim();
-            if !cleaned.is_empty() {
-                title = Some(truncate_title_text(cleaned, 72));
-            }
+            title = codex_title_candidate(&text);
         }
         if working_dir.is_none() {
-            if let Some(content) = value.get("content") {
-                let content_text = extract_text_from_value(content);
-                if let Some(cwd_line) = content_text.lines().find(|line| line.contains("<cwd>")) {
-                    let cwd = cwd_line
-                        .replace("<cwd>", "")
-                        .replace("</cwd>", "")
-                        .trim()
-                        .to_string();
-                    if !cwd.is_empty() {
-                        working_dir = Some(cwd);
-                    }
+            let content_text = extract_block_text_from_value(content_value);
+            if let Some(cwd_line) = content_text.lines().find(|line| line.contains("<cwd>")) {
+                let cwd = cwd_line
+                    .replace("<cwd>", "")
+                    .replace("</cwd>", "")
+                    .trim()
+                    .to_string();
+                if !cwd.is_empty() {
+                    working_dir = Some(cwd);
                 }
             }
         }
         if model.is_none() {
-            model = value
-                .get("model")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            model = model_value.and_then(|v| v.as_str()).map(|s| s.to_string());
         }
-        if let Some(ts) = value
-            .get("timestamp")
-            .and_then(|v| v.as_str())
-            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-        {
+        if let Some(ts) = parse_timestamp_value(timestamp_value) {
             last_message_time = ts;
         }
         message_count += 1;
@@ -1440,5 +1527,41 @@ mod tests {
         assert!(preview[0].content.contains("Fix the flaky test"));
         assert_eq!(preview[1].role, "assistant");
         assert!(preview[1].content.contains("I found the race condition"));
+    }
+
+    #[test]
+    fn load_sessions_includes_modern_codex_sessions() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+
+        let codex_dir = temp.path().join("external/.codex/sessions/2026/04/05");
+        std::fs::create_dir_all(&codex_dir).expect("create codex dir");
+
+        let transcript_path = codex_dir.join("rollout-2026-04-05T19-00-00-test.jsonl");
+        std::fs::write(
+            &transcript_path,
+            concat!(
+                "{\"timestamp\":\"2026-04-05T19:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019d-codex-test\",\"timestamp\":\"2026-04-05T18:59:00Z\",\"cwd\":\"/tmp/codex-demo\",\"source\":\"cli\"}}\n",
+                "{\"timestamp\":\"2026-04-05T19:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions for /tmp/codex-demo\\n\\n<INSTRUCTIONS>ignored</INSTRUCTIONS>\"}]}}\n",
+                "{\"timestamp\":\"2026-04-05T19:00:03Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Fix the OpenAI usage widget\"}]}}\n",
+                "{\"timestamp\":\"2026-04-05T19:00:05Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"I found the issue.\"}]}}\n"
+            ),
+        )
+        .expect("write codex transcript");
+
+        let sessions = load_sessions().expect("load sessions");
+        let session = sessions
+            .iter()
+            .find(|session| matches!(session.resume_target, ResumeTarget::CodexSession { .. }))
+            .expect("codex session present");
+
+        assert_eq!(session.source, SessionSource::Codex);
+        assert_eq!(session.id, "codex:019d-codex-test");
+        assert_eq!(session.title, "Fix the OpenAI usage widget");
+        assert_eq!(session.message_count, 3);
+        assert_eq!(session.user_message_count, 2);
+        assert_eq!(session.assistant_message_count, 1);
+        assert_eq!(session.working_dir.as_deref(), Some("/tmp/codex-demo"));
     }
 }
