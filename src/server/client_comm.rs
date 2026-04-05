@@ -5,6 +5,7 @@ use super::{
     subscribe_session_to_channel, truncate_detail, unsubscribe_session_from_channel,
 };
 use crate::agent::Agent;
+use crate::id::extract_session_name;
 use crate::protocol::{
     AgentInfo, CommDeliveryMode, ContextEntry, NotificationType, ServerEvent, SwarmChannelInfo,
 };
@@ -31,6 +32,49 @@ async fn friendly_name_for_session(
     members
         .get(session_id)
         .and_then(|member| member.friendly_name.clone())
+}
+
+async fn resolve_dm_target_session(
+    target: &str,
+    swarm_session_ids: &[String],
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+) -> Result<String, String> {
+    if swarm_session_ids.iter().any(|session_id| session_id == target) {
+        return Ok(target.to_string());
+    }
+
+    let target_lower = target.to_ascii_lowercase();
+    let members = swarm_members.read().await;
+    let mut matches: Vec<String> = swarm_session_ids
+        .iter()
+        .filter(|session_id| {
+            members.get(*session_id).is_some_and(|member| {
+                member
+                    .friendly_name
+                    .as_deref()
+                    .map(|name| name.eq_ignore_ascii_case(target))
+                    .unwrap_or(false)
+                    || extract_session_name(session_id)
+                        .map(|name| name.eq_ignore_ascii_case(target))
+                        .unwrap_or(false)
+                    || session_id.to_ascii_lowercase() == target_lower
+            })
+        })
+        .cloned()
+        .collect();
+
+    matches.sort();
+    matches.dedup();
+
+    match matches.len() {
+        0 => Err(format!("DM failed: session '{}' not in swarm", target)),
+        1 => Ok(matches.remove(0)),
+        _ => Err(format!(
+            "DM failed: session '{}' is ambiguous in swarm; matches: {}",
+            target,
+            matches.join(", ")
+        )),
+    }
 }
 
 async fn run_message_in_live_session_if_idle(
@@ -542,7 +586,23 @@ pub(super) async fn handle_comm_message(
                 .unwrap_or_default()
         };
 
-        if let Some(ref target) = to_session {
+        let resolved_to_session = if let Some(ref target) = to_session {
+            match resolve_dm_target_session(target, &swarm_session_ids, swarm_members).await {
+                Ok(session_id) => Some(session_id),
+                Err(message) => {
+                    let _ = client_event_tx.send(ServerEvent::Error {
+                        id,
+                        message,
+                        retry_after_secs: None,
+                    });
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some(ref target) = resolved_to_session {
             if !swarm_session_ids.contains(target) {
                 let _ = client_event_tx.send(ServerEvent::Error {
                     id,
@@ -553,7 +613,7 @@ pub(super) async fn handle_comm_message(
             }
         }
 
-        let scope = if to_session.is_some() {
+        let scope = if resolved_to_session.is_some() {
             "dm"
         } else if channel.is_some() {
             "channel"
@@ -563,7 +623,7 @@ pub(super) async fn handle_comm_message(
 
         let members = swarm_members.read().await;
 
-        let target_sessions: Vec<String> = if let Some(target) = to_session.clone() {
+        let target_sessions: Vec<String> = if let Some(target) = resolved_to_session {
             vec![target]
         } else if let Some(ref channel_name) = channel {
             let subs = channel_subscriptions.read().await;
@@ -1100,6 +1160,243 @@ mod tests {
                 assert_eq!(peer.detail.as_deref(), Some("working on tests"));
             }
             other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn comm_message_accepts_friendly_name_dm_target() {
+        let sender = test_agent().await;
+        let target = test_agent().await;
+
+        let sender_id = sender.lock().await.session_id().to_string();
+        let target_id = target.lock().await.session_id().to_string();
+        let swarm_id = "swarm-test".to_string();
+
+        let sessions = Arc::new(RwLock::new(HashMap::from([
+            (sender_id.clone(), sender.clone()),
+            (target_id.clone(), target.clone()),
+        ])));
+        let soft_interrupt_queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
+
+        let (sender_event_tx, _sender_event_rx) = mpsc::unbounded_channel();
+        let (target_event_tx, mut target_event_rx) = mpsc::unbounded_channel();
+        let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([
+            (
+                sender_id.clone(),
+                SwarmMember {
+                    session_id: sender_id.clone(),
+                    event_tx: sender_event_tx,
+                    working_dir: None,
+                    swarm_id: Some(swarm_id.clone()),
+                    swarm_enabled: true,
+                    status: "ready".to_string(),
+                    detail: None,
+                    friendly_name: Some("falcon".to_string()),
+                    role: "coordinator".to_string(),
+                    joined_at: Instant::now(),
+                    last_status_change: Instant::now(),
+                    is_headless: false,
+                },
+            ),
+            (
+                target_id.clone(),
+                SwarmMember {
+                    session_id: target_id.clone(),
+                    event_tx: target_event_tx,
+                    working_dir: None,
+                    swarm_id: Some(swarm_id.clone()),
+                    swarm_enabled: true,
+                    status: "ready".to_string(),
+                    detail: None,
+                    friendly_name: Some("bear".to_string()),
+                    role: "agent".to_string(),
+                    joined_at: Instant::now(),
+                    last_status_change: Instant::now(),
+                    is_headless: false,
+                },
+            ),
+        ])));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
+            swarm_id.clone(),
+            HashSet::from([sender_id.clone(), target_id.clone()]),
+        )])));
+        let channel_subscriptions = Arc::new(RwLock::new(HashMap::new()));
+        let event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>> =
+            Arc::new(RwLock::new(std::collections::VecDeque::new()));
+        let event_counter = Arc::new(AtomicU64::new(0));
+        let (swarm_event_tx, _) = broadcast::channel(16);
+        let client_connections = Arc::new(RwLock::new(HashMap::new()));
+
+        handle_comm_message(
+            1,
+            sender_id.clone(),
+            "hello bear".to_string(),
+            Some("bear".to_string()),
+            None,
+            Some(CommDeliveryMode::Notify),
+            None,
+            &client_event_tx,
+            &sessions,
+            &soft_interrupt_queues,
+            &swarm_members,
+            &swarms_by_id,
+            &channel_subscriptions,
+            &event_history,
+            &event_counter,
+            &swarm_event_tx,
+            &client_connections,
+        )
+        .await;
+
+        match target_event_rx.recv().await.expect("target notification") {
+            ServerEvent::Notification {
+                from_session,
+                from_name,
+                notification_type,
+                message,
+            } => {
+                assert_eq!(from_session, sender_id);
+                assert_eq!(from_name.as_deref(), Some("falcon"));
+                match notification_type {
+                    NotificationType::Message { scope, channel } => {
+                        assert_eq!(scope.as_deref(), Some("dm"));
+                        assert_eq!(channel, None);
+                    }
+                    other => panic!("unexpected notification type: {:?}", other),
+                }
+                assert_eq!(message, "DM from falcon: hello bear");
+            }
+            other => panic!("unexpected event: {:?}", other),
+        }
+
+        match client_event_rx.recv().await.expect("done event") {
+            ServerEvent::Done { id } => assert_eq!(id, 1),
+            other => panic!("unexpected client event: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
+        let sender = test_agent().await;
+        let target_one = test_agent().await;
+        let target_two = test_agent().await;
+
+        let sender_id = sender.lock().await.session_id().to_string();
+        let target_one_id = target_one.lock().await.session_id().to_string();
+        let target_two_id = target_two.lock().await.session_id().to_string();
+        let swarm_id = "swarm-test".to_string();
+
+        let sessions = Arc::new(RwLock::new(HashMap::from([
+            (sender_id.clone(), sender.clone()),
+            (target_one_id.clone(), target_one.clone()),
+            (target_two_id.clone(), target_two.clone()),
+        ])));
+        let soft_interrupt_queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
+
+        let (sender_event_tx, _sender_event_rx) = mpsc::unbounded_channel();
+        let (target_one_event_tx, _target_one_event_rx) = mpsc::unbounded_channel();
+        let (target_two_event_tx, _target_two_event_rx) = mpsc::unbounded_channel();
+        let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([
+            (
+                sender_id.clone(),
+                SwarmMember {
+                    session_id: sender_id.clone(),
+                    event_tx: sender_event_tx,
+                    working_dir: None,
+                    swarm_id: Some(swarm_id.clone()),
+                    swarm_enabled: true,
+                    status: "ready".to_string(),
+                    detail: None,
+                    friendly_name: Some("falcon".to_string()),
+                    role: "coordinator".to_string(),
+                    joined_at: Instant::now(),
+                    last_status_change: Instant::now(),
+                    is_headless: false,
+                },
+            ),
+            (
+                target_one_id.clone(),
+                SwarmMember {
+                    session_id: target_one_id.clone(),
+                    event_tx: target_one_event_tx,
+                    working_dir: None,
+                    swarm_id: Some(swarm_id.clone()),
+                    swarm_enabled: true,
+                    status: "ready".to_string(),
+                    detail: None,
+                    friendly_name: Some("bear".to_string()),
+                    role: "agent".to_string(),
+                    joined_at: Instant::now(),
+                    last_status_change: Instant::now(),
+                    is_headless: false,
+                },
+            ),
+            (
+                target_two_id.clone(),
+                SwarmMember {
+                    session_id: target_two_id.clone(),
+                    event_tx: target_two_event_tx,
+                    working_dir: None,
+                    swarm_id: Some(swarm_id.clone()),
+                    swarm_enabled: true,
+                    status: "ready".to_string(),
+                    detail: None,
+                    friendly_name: Some("bear".to_string()),
+                    role: "agent".to_string(),
+                    joined_at: Instant::now(),
+                    last_status_change: Instant::now(),
+                    is_headless: false,
+                },
+            ),
+        ])));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
+            swarm_id.clone(),
+            HashSet::from([
+                sender_id.clone(),
+                target_one_id.clone(),
+                target_two_id.clone(),
+            ]),
+        )])));
+        let channel_subscriptions = Arc::new(RwLock::new(HashMap::new()));
+        let event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>> =
+            Arc::new(RwLock::new(std::collections::VecDeque::new()));
+        let event_counter = Arc::new(AtomicU64::new(0));
+        let (swarm_event_tx, _) = broadcast::channel(16);
+        let client_connections = Arc::new(RwLock::new(HashMap::new()));
+
+        handle_comm_message(
+            1,
+            sender_id,
+            "hello bears".to_string(),
+            Some("bear".to_string()),
+            None,
+            None,
+            None,
+            &client_event_tx,
+            &sessions,
+            &soft_interrupt_queues,
+            &swarm_members,
+            &swarms_by_id,
+            &channel_subscriptions,
+            &event_history,
+            &event_counter,
+            &swarm_event_tx,
+            &client_connections,
+        )
+        .await;
+
+        match client_event_rx.recv().await.expect("error event") {
+            ServerEvent::Error { id, message, .. } => {
+                assert_eq!(id, 1);
+                assert!(message.contains("ambiguous in swarm"), "{message}");
+                assert!(message.contains(&target_one_id), "{message}");
+                assert!(message.contains(&target_two_id), "{message}");
+            }
+            other => panic!("unexpected client event: {:?}", other),
         }
     }
 }
