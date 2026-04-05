@@ -716,6 +716,19 @@ impl MultiProvider {
                 Some(Self::usage_exhausted_reason(provider))
             }
             ActiveProvider::OpenAI if self.is_openai_usage_exhausted() => {
+                let usage = crate::usage::get_openai_usage_sync();
+                let provider_summary = self
+                    .openai_provider()
+                    .map(|provider| provider.diagnostic_state_summary())
+                    .unwrap_or_else(|| {
+                        "transport_mode=unknown persistent_ws=unavailable".to_string()
+                    });
+                crate::logging::warn(&format!(
+                    "OpenAI limit diag: local precheck blocking request reason={} usage=({}) provider=({})",
+                    Self::usage_exhausted_reason(provider),
+                    usage.diagnostic_fields(),
+                    provider_summary
+                ));
                 Some(Self::usage_exhausted_reason(provider))
             }
             _ => None,

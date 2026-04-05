@@ -170,6 +170,67 @@ struct PersistentWsState {
     last_input_item_count: usize,
 }
 
+#[derive(Debug, Clone)]
+struct PersistentWsDiagSnapshot {
+    present: bool,
+    connected_age_ms: Option<u128>,
+    idle_age_ms: Option<u128>,
+    message_count: Option<usize>,
+    last_input_item_count: Option<usize>,
+    previous_response_id_present: Option<bool>,
+}
+
+impl PersistentWsDiagSnapshot {
+    fn absent() -> Self {
+        Self {
+            present: false,
+            connected_age_ms: None,
+            idle_age_ms: None,
+            message_count: None,
+            last_input_item_count: None,
+            previous_response_id_present: None,
+        }
+    }
+
+    fn log_fields(&self) -> String {
+        if !self.present {
+            return "persistent_ws=absent".to_string();
+        }
+
+        format!(
+            "persistent_ws=present connected_age_ms={} idle_age_ms={} message_count={} last_input_items={} previous_response_id_present={}",
+            self.connected_age_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            self.idle_age_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            self.message_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            self.last_input_item_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            self.previous_response_id_present
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+        )
+    }
+}
+
+impl PersistentWsState {
+    fn diag_snapshot(&self) -> PersistentWsDiagSnapshot {
+        PersistentWsDiagSnapshot {
+            present: true,
+            connected_age_ms: Some(self.connected_at.elapsed().as_millis()),
+            idle_age_ms: Some(self.last_activity_at.elapsed().as_millis()),
+            message_count: Some(self.message_count),
+            last_input_item_count: Some(self.last_input_item_count),
+            previous_response_id_present: Some(!self.last_response_id.is_empty()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct WsInputStats {
     total_items: usize,
@@ -654,6 +715,29 @@ impl OpenAIProvider {
 
         current.strip_suffix("[1m]").unwrap_or(&current).to_string()
     }
+
+    fn diagnostic_persistent_ws_summary(&self) -> String {
+        match self.persistent_ws.try_lock() {
+            Ok(guard) => guard
+                .as_ref()
+                .map(|state| state.diag_snapshot().log_fields())
+                .unwrap_or_else(|| PersistentWsDiagSnapshot::absent().log_fields()),
+            Err(_) => "persistent_ws=busy".to_string(),
+        }
+    }
+
+    pub fn diagnostic_state_summary(&self) -> String {
+        let transport_mode = self
+            .transport_mode
+            .try_read()
+            .map(|mode| mode.as_str().to_string())
+            .unwrap_or_else(|_| "busy".to_string());
+        format!(
+            "transport_mode={} {}",
+            transport_mode,
+            self.diagnostic_persistent_ws_summary()
+        )
+    }
 }
 
 fn extract_selfdev_section(system: &str) -> Option<&str> {
@@ -736,6 +820,15 @@ impl Provider for OpenAIProvider {
             OpenAITransportMode::WebSocket => true,
             OpenAITransportMode::Auto => Self::should_prefer_websocket(&model_id),
         };
+        let usage_snapshot = crate::usage::get_openai_usage_sync();
+        crate::logging::info(&format!(
+            "OpenAI limit diag: request start model={} transport_mode={} websocket_preferred={} usage=({}) provider=({})",
+            model_id,
+            transport_mode_snapshot.as_str(),
+            use_websocket_transport,
+            usage_snapshot.diagnostic_fields(),
+            self.diagnostic_state_summary()
+        ));
 
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(100);
 
@@ -1289,6 +1382,11 @@ async fn stream_response(
     tx: mpsc::Sender<Result<StreamEvent>>,
 ) -> Result<(), OpenAIStreamFailure> {
     use crate::message::ConnectionPhase;
+    let usage_snapshot = crate::usage::get_openai_usage_sync();
+    crate::logging::info(&format!(
+        "OpenAI limit diag: starting fresh HTTPS request usage=({})",
+        usage_snapshot.diagnostic_fields()
+    ));
     let _ = tx
         .send(Ok(StreamEvent::ConnectionPhase {
             phase: ConnectionPhase::Authenticating,
@@ -1333,6 +1431,12 @@ async fn stream_response(
         connect_ms,
         response.status()
     ));
+    if response.status().is_success() && usage_snapshot.exhausted() {
+        crate::logging::warn(&format!(
+            "OpenAI limit diag: fresh HTTPS request accepted while local usage indicates exhausted usage=({})",
+            usage_snapshot.diagnostic_fields()
+        ));
+    }
 
     if !response.status().is_success() {
         let status = response.status();
@@ -1802,6 +1906,13 @@ async fn try_persistent_ws_continuation(
 
     let incremental_stats = summarize_ws_input(&incremental_items);
     let previous_response_id = state.last_response_id.clone();
+    let usage_snapshot = crate::usage::get_openai_usage_sync();
+    crate::logging::info(&format!(
+        "OpenAI limit diag: attempting persistent WS reuse previous_response_id_present={} usage=({}) state=({})",
+        !previous_response_id.is_empty(),
+        usage_snapshot.diagnostic_fields(),
+        state.diag_snapshot().log_fields()
+    ));
     crate::logging::info(&format!(
         "Persistent WS continuation: previous_response_id={} {} tool_callback={} (was {} now {})",
         previous_response_id,
@@ -1964,6 +2075,14 @@ async fn try_persistent_ws_continuation(
                                     id,
                                     incremental_stats.log_fields(),
                                 ));
+                                let usage_snapshot = crate::usage::get_openai_usage_sync();
+                                if usage_snapshot.exhausted() {
+                                    crate::logging::warn(&format!(
+                                        "OpenAI limit diag: persistent WS reuse accepted request while local usage indicates exhausted usage=({}) state=({})",
+                                        usage_snapshot.diagnostic_fields(),
+                                        state.diag_snapshot().log_fields()
+                                    ));
+                                }
                             }
                         }
                     }
@@ -2069,6 +2188,11 @@ async fn stream_response_websocket_persistent(
         .map(|m| m.to_string());
 
     let access_token = openai_access_token(&credentials).await?;
+    let usage_snapshot = crate::usage::get_openai_usage_sync();
+    crate::logging::info(&format!(
+        "OpenAI limit diag: opening fresh persistent WS request usage=({})",
+        usage_snapshot.diagnostic_fields()
+    ));
     let creds = credentials.read().await;
     let is_chatgpt_mode = !creds.refresh_token.is_empty() || creds.id_token.is_some();
     let ws_url = OpenAIProvider::responses_ws_url(&creds);
@@ -2298,6 +2422,12 @@ async fn stream_response_websocket_persistent(
                                         id,
                                         request_input_stats.log_fields(),
                                     ));
+                                    if usage_snapshot.exhausted() {
+                                        crate::logging::warn(&format!(
+                                            "OpenAI limit diag: fresh WS request accepted while local usage indicates exhausted usage=({})",
+                                            usage_snapshot.diagnostic_fields()
+                                        ));
+                                    }
                                 }
                             }
                         }

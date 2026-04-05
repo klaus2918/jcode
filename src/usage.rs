@@ -193,6 +193,66 @@ pub struct OpenAIUsageData {
 }
 
 impl OpenAIUsageData {
+    pub fn age_ms(&self) -> Option<u128> {
+        self.fetched_at.map(|t| t.elapsed().as_millis())
+    }
+
+    pub fn freshness_state(&self) -> &'static str {
+        if self.fetched_at.is_none() {
+            "unknown"
+        } else if self.is_stale() {
+            "stale"
+        } else {
+            "fresh"
+        }
+    }
+
+    pub fn exhausted(&self) -> bool {
+        if self.hard_limit_reached {
+            return true;
+        }
+
+        if !self.has_limits() {
+            return false;
+        }
+
+        let five_hour_exhausted = self
+            .five_hour
+            .as_ref()
+            .map(|w| w.usage_ratio >= 0.99)
+            .unwrap_or(false);
+        let seven_day_exhausted = self
+            .seven_day
+            .as_ref()
+            .map(|w| w.usage_ratio >= 0.99)
+            .unwrap_or(false);
+
+        five_hour_exhausted && seven_day_exhausted
+    }
+
+    pub fn diagnostic_fields(&self) -> String {
+        let fmt_ratio = |window: Option<&OpenAIUsageWindow>| {
+            window
+                .map(|w| format!("{:.1}%", w.usage_ratio * 100.0))
+                .unwrap_or_else(|| "unknown".to_string())
+        };
+
+        format!(
+            "freshness={} age_ms={} exhausted={} hard_limit_reached={} has_limits={} five_hour={} seven_day={} spark={} last_error={}",
+            self.freshness_state(),
+            self.age_ms()
+                .map(|age| age.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            self.exhausted(),
+            self.hard_limit_reached,
+            self.has_limits(),
+            fmt_ratio(self.five_hour.as_ref()),
+            fmt_ratio(self.seven_day.as_ref()),
+            fmt_ratio(self.spark.as_ref()),
+            self.last_error.as_deref().unwrap_or("none")
+        )
+    }
+
     pub fn is_stale(&self) -> bool {
         if usage_reset_passed([
             self.five_hour.as_ref().and_then(|w| w.resets_at.as_deref()),
@@ -435,6 +495,30 @@ fn cached_openai_usage(cache_key: &str) -> Option<OpenAIUsageData> {
 
 fn store_openai_usage(cache_key: String, data: OpenAIUsageData) {
     if let Ok(mut map) = openai_usage_cache().lock() {
+        let previous = map.get(&cache_key).cloned();
+        let previous_exhausted = previous
+            .as_ref()
+            .map(OpenAIUsageData::exhausted)
+            .unwrap_or(false);
+        let current_exhausted = data.exhausted();
+        let previous_hard_limit = previous
+            .as_ref()
+            .map(|usage| usage.hard_limit_reached)
+            .unwrap_or(false);
+        if previous.is_none()
+            || previous_exhausted != current_exhausted
+            || previous_hard_limit != data.hard_limit_reached
+        {
+            crate::logging::info(&format!(
+                "OpenAI limit diag: usage cache update key={} prev_exhausted={} new_exhausted={} prev_hard_limit={} new_hard_limit={} snapshot=({})",
+                cache_key,
+                previous_exhausted,
+                current_exhausted,
+                previous_hard_limit,
+                data.hard_limit_reached,
+                data.diagnostic_fields()
+            ));
+        }
         map.insert(cache_key, data);
     }
 }
