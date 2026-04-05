@@ -379,35 +379,6 @@ fn command_display(program: &Path, args: &[String]) -> String {
         .join(" ")
 }
 
-fn resolve_cli_executable(name: &str) -> PathBuf {
-    let candidate = PathBuf::from(name);
-    if candidate.components().count() > 1 || candidate.is_absolute() {
-        return candidate;
-    }
-
-    let mut search_dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).collect())
-        .unwrap_or_default();
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        for extra in [".npm-global/bin", ".local/bin", ".cargo/bin"] {
-            let path = home.join(extra);
-            if !search_dirs.iter().any(|existing| existing == &path) {
-                search_dirs.push(path);
-            }
-        }
-    }
-
-    for dir in search_dirs {
-        let path = dir.join(name);
-        if path.is_file() {
-            return path;
-        }
-    }
-
-    PathBuf::from(name)
-}
-
 pub(super) fn build_resume_command(
     target: &ResumeTarget,
     socket: Option<&str>,
@@ -420,20 +391,23 @@ pub(super) fn build_resume_command(
             (exe, args, title)
         }
         ResumeTarget::ClaudeCodeSession { session_id } => {
-            let exe = resolve_cli_executable("claude");
-            let args = vec!["--resume".to_string(), session_id.clone()];
+            let exe = launch_client_executable();
+            let imported_id = crate::import::imported_claude_code_session_id(session_id);
+            let args = resume_invocation_args(&imported_id, socket);
             let title = format!("🧵 Claude Code {}", &session_id[..session_id.len().min(8)]);
             (exe, args, title)
         }
         ResumeTarget::CodexSession { session_id } => {
-            let exe = resolve_cli_executable("codex");
-            let args = vec!["resume".to_string(), session_id.clone()];
+            let exe = launch_client_executable();
+            let imported_id = crate::import::imported_codex_session_id(session_id);
+            let args = resume_invocation_args(&imported_id, socket);
             let title = format!("🧠 Codex {}", &session_id[..session_id.len().min(8)]);
             (exe, args, title)
         }
         ResumeTarget::PiSession { session_path } => {
-            let exe = resolve_cli_executable("pi");
-            let args = vec!["--session".to_string(), session_path.clone()];
+            let exe = launch_client_executable();
+            let imported_id = crate::import::imported_pi_session_id(session_path);
+            let args = resume_invocation_args(&imported_id, socket);
             let title = format!(
                 "π Pi {}",
                 Path::new(session_path)
@@ -444,8 +418,9 @@ pub(super) fn build_resume_command(
             (exe, args, title)
         }
         ResumeTarget::OpenCodeSession { session_id } => {
-            let exe = resolve_cli_executable("opencode");
-            let args = vec!["--session".to_string(), session_id.clone()];
+            let exe = launch_client_executable();
+            let imported_id = crate::import::imported_opencode_session_id(session_id);
+            let args = resume_invocation_args(&imported_id, socket);
             let title = format!("◌ OpenCode {}", &session_id[..session_id.len().min(8)]);
             (exe, args, title)
         }
@@ -806,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn build_resume_command_uses_claude_code_cli() {
+    fn build_resume_command_uses_imported_jcode_session_for_claude_code() {
         let (program, args, title) = build_resume_command(
             &ResumeTarget::ClaudeCodeSession {
                 session_id: "claude-session-123".to_string(),
@@ -816,14 +791,40 @@ mod tests {
 
         assert_eq!(
             program.file_name().and_then(|name| name.to_str()),
-            Some("claude")
+            Some("jcode")
         );
         assert_eq!(
             args,
-            vec!["--resume".to_string(), "claude-session-123".to_string()]
+            vec![
+                "--resume".to_string(),
+                crate::import::imported_claude_code_session_id("claude-session-123")
+            ]
         );
         assert!(title.contains("Claude Code"));
         assert!(title.contains("claude-s"));
+    }
+
+    #[test]
+    fn build_resume_command_uses_imported_jcode_session_for_codex() {
+        let (program, args, title) = build_resume_command(
+            &ResumeTarget::CodexSession {
+                session_id: "codex-session-123".to_string(),
+            },
+            None,
+        );
+
+        assert_eq!(
+            program.file_name().and_then(|name| name.to_str()),
+            Some("jcode")
+        );
+        assert_eq!(
+            args,
+            vec![
+                "--resume".to_string(),
+                crate::import::imported_codex_session_id("codex-session-123")
+            ]
+        );
+        assert!(title.contains("Codex"));
     }
 
     #[test]

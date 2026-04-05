@@ -8,7 +8,11 @@ use crate::session::{Session, SessionStatus, StoredMessage};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::path::PathBuf;
 
 /// Entry in the Claude Code sessions-index.json file
@@ -285,6 +289,79 @@ pub fn import_session(session_id: &str) -> Result<Session> {
     import_session_from_file(&session_file, session_id)
 }
 
+pub fn imported_claude_code_session_id(session_id: &str) -> String {
+    format!("imported_cc_{}", session_id)
+}
+
+pub fn imported_codex_session_id(session_id: &str) -> String {
+    format!("imported_codex_{}", session_id)
+}
+
+pub fn imported_opencode_session_id(session_id: &str) -> String {
+    format!("imported_opencode_{}", session_id)
+}
+
+pub fn imported_pi_session_id(session_path: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(session_path.as_bytes());
+    let digest = hasher.finalize();
+    format!("imported_pi_{}", hex::encode(&digest[..8]))
+}
+
+pub fn imported_session_id_for_target(
+    target: &crate::tui::session_picker::ResumeTarget,
+) -> Option<String> {
+    match target {
+        crate::tui::session_picker::ResumeTarget::JcodeSession { session_id } => {
+            Some(session_id.clone())
+        }
+        crate::tui::session_picker::ResumeTarget::ClaudeCodeSession { session_id } => {
+            Some(imported_claude_code_session_id(session_id))
+        }
+        crate::tui::session_picker::ResumeTarget::CodexSession { session_id } => {
+            Some(imported_codex_session_id(session_id))
+        }
+        crate::tui::session_picker::ResumeTarget::PiSession { session_path } => {
+            Some(imported_pi_session_id(session_path))
+        }
+        crate::tui::session_picker::ResumeTarget::OpenCodeSession { session_id } => {
+            Some(imported_opencode_session_id(session_id))
+        }
+    }
+}
+
+pub fn resolve_resume_target_to_jcode(
+    target: &crate::tui::session_picker::ResumeTarget,
+) -> Result<crate::tui::session_picker::ResumeTarget> {
+    use crate::tui::session_picker::ResumeTarget;
+
+    let session_id = match target {
+        ResumeTarget::JcodeSession { session_id } => {
+            return Ok(ResumeTarget::JcodeSession {
+                session_id: session_id.clone(),
+            });
+        }
+        ResumeTarget::ClaudeCodeSession { session_id } => {
+            import_session(session_id)?;
+            imported_claude_code_session_id(session_id)
+        }
+        ResumeTarget::CodexSession { session_id } => {
+            import_codex_session(session_id)?;
+            imported_codex_session_id(session_id)
+        }
+        ResumeTarget::PiSession { session_path } => {
+            import_pi_session(session_path)?;
+            imported_pi_session_id(session_path)
+        }
+        ResumeTarget::OpenCodeSession { session_id } => {
+            import_opencode_session(session_id)?;
+            imported_opencode_session_id(session_id)
+        }
+    };
+
+    Ok(ResumeTarget::JcodeSession { session_id })
+}
+
 /// Import a Claude Code session from a file path
 pub fn import_session_from_file(path: &PathBuf, session_id: &str) -> Result<Session> {
     let content = std::fs::read_to_string(path)
@@ -410,9 +487,10 @@ pub fn import_session_from_file(path: &PathBuf, session_id: &str) -> Result<Sess
         });
 
     // Create jcode session
-    let jcode_session_id = format!("imported_cc_{}", session_id);
+    let jcode_session_id = imported_claude_code_session_id(session_id);
     let mut session = Session::create_with_id(jcode_session_id, None, title);
     session.provider_session_id = Some(session_id.to_string());
+    session.provider_key = Some("claude-code".to_string());
     session.working_dir = working_dir;
     session.model = model;
     session.created_at = created_at;
@@ -456,6 +534,470 @@ pub fn import_session_from_file(path: &PathBuf, session_id: &str) -> Result<Sess
     session.save()?;
 
     Ok(session)
+}
+
+fn collect_files_recursive(root: &Path, extension: &str) -> Vec<PathBuf> {
+    fn walk(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, extension, out);
+            } else if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case(extension))
+                .unwrap_or(false)
+            {
+                out.push(path);
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    walk(root, extension, &mut files);
+    files.sort();
+    files
+}
+
+fn parse_rfc3339(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
+    value
+        .and_then(|v| v.as_str())
+        .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn extract_text_from_json_value(value: &serde_json::Value) -> String {
+    fn visit(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(text) => {
+                if !text.trim().is_empty() {
+                    out.push(text.trim().to_string());
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    visit(item, out);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                if let Some(text) = map.get("text").and_then(|v| v.as_str()) {
+                    if !text.trim().is_empty() {
+                        out.push(text.trim().to_string());
+                    }
+                    return;
+                }
+                if let Some(text) = map.get("title").and_then(|v| v.as_str()) {
+                    if !text.trim().is_empty() {
+                        out.push(text.trim().to_string());
+                    }
+                }
+                for (key, nested) in map {
+                    if key == "type" || key == "title" {
+                        continue;
+                    }
+                    visit(nested, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::new();
+    visit(value, &mut out);
+    out.join(" ")
+}
+
+fn codex_title_candidate(text: &str) -> Option<String> {
+    let cleaned = text.replace("<environment_context>", "");
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    if cleaned.starts_with("# AGENTS.md instructions")
+        || cleaned.starts_with("<permissions instructions>")
+        || cleaned.contains("\n<INSTRUCTIONS>")
+    {
+        return None;
+    }
+    Some(truncate_title(cleaned))
+}
+
+fn append_text_message(
+    session: &mut Session,
+    role: Role,
+    text: String,
+    timestamp: Option<DateTime<Utc>>,
+) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    session.append_stored_message(StoredMessage {
+        id: crate::id::new_id("msg"),
+        role,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+        display_role: None,
+        timestamp,
+        tool_duration_ms: None,
+        token_usage: None,
+    });
+}
+
+fn finalize_imported_session(
+    mut session: Session,
+    created_at: DateTime<Utc>,
+    updated_at: Option<DateTime<Utc>>,
+) -> Result<Session> {
+    session.created_at = created_at;
+    session.updated_at = updated_at.unwrap_or(created_at);
+    session.last_active_at = updated_at.or(Some(created_at));
+    session.status = SessionStatus::Closed;
+    session.save()?;
+    Ok(session)
+}
+
+fn find_codex_session_file(session_id: &str) -> Result<PathBuf> {
+    let root = crate::storage::user_home_path(".codex/sessions")?;
+    for path in collect_files_recursive(&root, "jsonl") {
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
+        let mut lines = BufReader::new(file).lines();
+        let Some(Ok(first_line)) = lines.next() else {
+            continue;
+        };
+        let Ok(header) = serde_json::from_str::<serde_json::Value>(&first_line) else {
+            continue;
+        };
+        let meta = if header.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
+            header.get("payload").unwrap_or(&header)
+        } else {
+            &header
+        };
+        if meta.get("id").and_then(|v| v.as_str()) == Some(session_id) {
+            return Ok(path);
+        }
+    }
+    anyhow::bail!("Codex session {} not found", session_id)
+}
+
+pub fn import_codex_session(session_id: &str) -> Result<Session> {
+    let path = find_codex_session_file(session_id)?;
+    let file = File::open(&path)?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    let Some(first_line) = lines.next() else {
+        anyhow::bail!("Codex session {} is empty", session_id)
+    };
+    let header: serde_json::Value = serde_json::from_str(&first_line?)?;
+    let meta = if header.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
+        header.get("payload").unwrap_or(&header)
+    } else {
+        &header
+    };
+
+    let created_at = parse_rfc3339(meta.get("timestamp"))
+        .or_else(|| parse_rfc3339(header.get("timestamp")))
+        .unwrap_or_else(Utc::now);
+    let mut updated_at = Some(created_at);
+    let mut title: Option<String> = None;
+    let mut working_dir = meta
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let mut model: Option<String> = None;
+    let mut session = Session::create_with_id(imported_codex_session_id(session_id), None, None);
+    session.provider_session_id = Some(session_id.to_string());
+    session.provider_key = Some("openai-codex".to_string());
+
+    for line in lines {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        let line_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let (role, content_value, timestamp_value, model_value) = if line_type == "message" {
+            let Some(role) = value.get("role").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            (
+                role,
+                value.get("content").unwrap_or(&serde_json::Value::Null),
+                value.get("timestamp"),
+                value.get("model"),
+            )
+        } else if line_type == "response_item" {
+            let Some(payload) = value.get("payload") else {
+                continue;
+            };
+            if payload.get("type").and_then(|v| v.as_str()) != Some("message") {
+                continue;
+            }
+            let Some(role) = payload.get("role").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            (
+                role,
+                payload.get("content").unwrap_or(&serde_json::Value::Null),
+                value.get("timestamp").or_else(|| payload.get("timestamp")),
+                payload.get("model"),
+            )
+        } else {
+            continue;
+        };
+
+        let role = match role {
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            _ => continue,
+        };
+        let text = extract_text_from_json_value(content_value);
+        if title.is_none() && role == Role::User {
+            title = codex_title_candidate(&text);
+        }
+        if working_dir.is_none() {
+            let cwd_text = extract_text_from_json_value(content_value);
+            if let Some(cwd_line) = cwd_text.lines().find(|line| line.contains("<cwd>")) {
+                let cwd = cwd_line
+                    .replace("<cwd>", "")
+                    .replace("</cwd>", "")
+                    .trim()
+                    .to_string();
+                if !cwd.is_empty() {
+                    working_dir = Some(cwd);
+                }
+            }
+        }
+        if model.is_none() {
+            model = model_value.and_then(|v| v.as_str()).map(|s| s.to_string());
+        }
+        let timestamp = parse_rfc3339(timestamp_value);
+        if timestamp.is_some() {
+            updated_at = timestamp;
+        }
+        append_text_message(&mut session, role, text, timestamp);
+    }
+
+    session.title = title.or_else(|| Some(format!("Codex session {}", session_id)));
+    session.working_dir = working_dir;
+    session.model = model;
+    finalize_imported_session(session, created_at, updated_at)
+}
+
+pub fn import_pi_session(session_path: &str) -> Result<Session> {
+    let path = PathBuf::from(session_path);
+    let file = File::open(&path)?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    let Some(first_line) = lines.next() else {
+        anyhow::bail!("Pi session file is empty: {}", path.display())
+    };
+    let header: serde_json::Value = serde_json::from_str(&first_line?)?;
+    if header.get("type").and_then(|v| v.as_str()) != Some("session") {
+        anyhow::bail!("Invalid Pi session header in {}", path.display())
+    }
+
+    let provider_session_id = header
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let created_at = parse_rfc3339(header.get("timestamp")).unwrap_or_else(Utc::now);
+    let mut updated_at = Some(created_at);
+    let mut title: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut provider_key: Option<String> = Some("pi".to_string());
+    let mut session = Session::create_with_id(imported_pi_session_id(session_path), None, None);
+    session.provider_session_id = if provider_session_id.is_empty() {
+        None
+    } else {
+        Some(provider_session_id)
+    };
+    session.working_dir = header
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    for line in lines {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        let timestamp = parse_rfc3339(value.get("timestamp"));
+        if timestamp.is_some() {
+            updated_at = timestamp;
+        }
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("model_change") => {
+                provider_key = value
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or(provider_key);
+                model = value
+                    .get("modelId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or(model);
+            }
+            Some("message") => {
+                let Some(message) = value.get("message") else {
+                    continue;
+                };
+                let role = match message.get("role").and_then(|v| v.as_str()) {
+                    Some("user") => Role::User,
+                    Some("assistant") => Role::Assistant,
+                    _ => continue,
+                };
+                let text = extract_text_from_json_value(
+                    message.get("content").unwrap_or(&serde_json::Value::Null),
+                );
+                if title.is_none() && role == Role::User && !text.trim().is_empty() {
+                    title = Some(truncate_title(&text));
+                }
+                if model.is_none() {
+                    model = message
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                }
+                append_text_message(&mut session, role, text, timestamp);
+            }
+            _ => {}
+        }
+    }
+
+    session.title = title.or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .map(|stem| format!("Pi session {}", stem))
+    });
+    session.provider_key = provider_key;
+    session.model = model;
+    finalize_imported_session(session, created_at, updated_at)
+}
+
+fn find_opencode_session_file(session_id: &str) -> Result<PathBuf> {
+    let root = crate::storage::user_home_path(".local/share/opencode/storage/session")?;
+    for path in collect_files_recursive(&root, "json") {
+        let Ok(value) = serde_json::from_reader::<_, serde_json::Value>(File::open(&path)?) else {
+            continue;
+        };
+        if value.get("id").and_then(|v| v.as_str()) == Some(session_id) {
+            return Ok(path);
+        }
+    }
+    anyhow::bail!("OpenCode session {} not found", session_id)
+}
+
+pub fn import_opencode_session(session_id: &str) -> Result<Session> {
+    let session_path = find_opencode_session_file(session_id)?;
+    let value: serde_json::Value = serde_json::from_reader(File::open(&session_path)?)?;
+    let created_at = value
+        .get("time")
+        .and_then(|time| time.get("created"))
+        .and_then(|v| v.as_i64())
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .unwrap_or_else(Utc::now);
+    let mut updated_at = value
+        .get("time")
+        .and_then(|time| time.get("updated"))
+        .and_then(|v| v.as_i64())
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .or(Some(created_at));
+    let mut session = Session::create_with_id(imported_opencode_session_id(session_id), None, None);
+    session.provider_session_id = Some(session_id.to_string());
+    session.provider_key = Some("opencode".to_string());
+    session.working_dir = value
+        .get("directory")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    session.title = value
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(truncate_title);
+
+    let messages_root = crate::storage::user_home_path(&format!(
+        ".local/share/opencode/storage/message/{}",
+        session_id
+    ))?;
+    let mut messages: Vec<(Option<DateTime<Utc>>, Role, String)> = Vec::new();
+    let mut model: Option<String> = None;
+    let mut provider_key = session.provider_key.clone();
+
+    if messages_root.exists() {
+        for msg_path in collect_files_recursive(&messages_root, "json") {
+            let Ok(msg_value) =
+                serde_json::from_reader::<_, serde_json::Value>(File::open(&msg_path)?)
+            else {
+                continue;
+            };
+            let role = match msg_value.get("role").and_then(|v| v.as_str()) {
+                Some("user") => Role::User,
+                Some("assistant") => Role::Assistant,
+                _ => continue,
+            };
+            let text = msg_value
+                .get("content")
+                .map(extract_text_from_json_value)
+                .filter(|text| !text.trim().is_empty())
+                .or_else(|| msg_value.get("summary").map(extract_text_from_json_value))
+                .unwrap_or_default();
+            if model.is_none() {
+                model = msg_value
+                    .get("modelID")
+                    .or_else(|| msg_value.get("model").and_then(|m| m.get("modelID")))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+            }
+            if provider_key.as_deref() == Some("opencode") {
+                provider_key = msg_value
+                    .get("providerID")
+                    .or_else(|| msg_value.get("model").and_then(|m| m.get("providerID")))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or(provider_key);
+            }
+            let timestamp = msg_value
+                .get("time")
+                .and_then(|time| time.get("created"))
+                .and_then(|v| v.as_i64())
+                .and_then(DateTime::<Utc>::from_timestamp_millis);
+            if timestamp.is_some() {
+                updated_at = timestamp;
+            }
+            messages.push((timestamp, role, text));
+        }
+    }
+
+    messages.sort_by_key(|(timestamp, _, _)| *timestamp);
+    for (timestamp, role, text) in messages {
+        append_text_message(&mut session, role, text, timestamp);
+    }
+
+    if session.title.is_none() {
+        session.title = Some(format!("OpenCode session {}", session_id));
+    }
+    session.provider_key = provider_key;
+    session.model = model;
+    finalize_imported_session(session, created_at, updated_at)
 }
 
 /// Truncate a string to use as a title (first line, max 80 chars)
@@ -508,6 +1050,29 @@ pub fn print_sessions_table(sessions: &[ClaudeCodeSessionInfo]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+            let prev = std::env::var_os(key);
+            crate::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(prev) = self.prev.take() {
+                crate::env::set_var(self.key, prev);
+            } else {
+                crate::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn test_truncate_title() {
@@ -574,9 +1139,8 @@ mod tests {
     #[test]
     fn test_discover_projects_uses_sandboxed_external_home() {
         let _guard = crate::storage::lock_test_env();
-        let prev_home = std::env::var_os("JCODE_HOME");
         let temp = tempfile::TempDir::new().unwrap();
-        crate::env::set_var("JCODE_HOME", temp.path());
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
 
         let project_dir = temp.path().join("external/.claude/projects/demo");
         std::fs::create_dir_all(&project_dir).unwrap();
@@ -588,11 +1152,137 @@ mod tests {
 
         let projects = discover_projects().unwrap();
         assert_eq!(projects, vec![project_dir.join("sessions-index.json")]);
+    }
 
-        if let Some(prev_home) = prev_home {
-            crate::env::set_var("JCODE_HOME", prev_home);
-        } else {
-            crate::env::remove_var("JCODE_HOME");
-        }
+    #[test]
+    fn test_import_pi_session_creates_jcode_snapshot() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().unwrap();
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+
+        let pi_dir = temp.path().join("external/.pi/agent/sessions/project");
+        std::fs::create_dir_all(&pi_dir).unwrap();
+        let session_path = pi_dir.join("session.jsonl");
+        std::fs::write(
+            &session_path,
+            concat!(
+                "{\"type\":\"session\",\"id\":\"pi-session-1\",\"timestamp\":\"2026-04-05T19:00:00Z\",\"cwd\":\"/tmp/pi-demo\"}\n",
+                "{\"type\":\"model_change\",\"timestamp\":\"2026-04-05T19:00:01Z\",\"provider\":\"pi\",\"modelId\":\"pi-model\"}\n",
+                "{\"type\":\"message\",\"timestamp\":\"2026-04-05T19:00:02Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello pi\"}]}}\n",
+                "{\"type\":\"message\",\"timestamp\":\"2026-04-05T19:00:03Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hi back\"}]}}\n"
+            ),
+        )
+        .unwrap();
+
+        let imported = import_pi_session(&session_path.to_string_lossy()).unwrap();
+        assert_eq!(
+            imported.id,
+            imported_pi_session_id(&session_path.to_string_lossy())
+        );
+        assert_eq!(imported.provider_key.as_deref(), Some("pi"));
+        assert_eq!(imported.model.as_deref(), Some("pi-model"));
+        assert_eq!(imported.working_dir.as_deref(), Some("/tmp/pi-demo"));
+        assert_eq!(imported.messages.len(), 2);
+    }
+
+    #[test]
+    fn test_import_opencode_session_creates_jcode_snapshot() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().unwrap();
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+
+        let session_dir = temp
+            .path()
+            .join("external/.local/share/opencode/storage/session/global");
+        let message_dir = temp
+            .path()
+            .join("external/.local/share/opencode/storage/message/ses_test_opencode");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::create_dir_all(&message_dir).unwrap();
+
+        std::fs::write(
+            session_dir.join("ses_test_opencode.json"),
+            concat!(
+                "{",
+                "\"id\":\"ses_test_opencode\",",
+                "\"directory\":\"/tmp/opencode-demo\",",
+                "\"title\":\"OpenCode imported\",",
+                "\"time\":{\"created\":1775415600000,\"updated\":1775415605000}",
+                "}"
+            ),
+        )
+        .unwrap();
+
+        std::fs::write(
+            message_dir.join("msg-user.json"),
+            concat!(
+                "{",
+                "\"role\":\"user\",",
+                "\"time\":{\"created\":1775415601000},",
+                "\"summary\":{\"title\":\"Investigate provider routing\"},",
+                "\"model\":{\"providerID\":\"opencode\",\"modelID\":\"big-pickle\"}",
+                "}"
+            ),
+        )
+        .unwrap();
+
+        std::fs::write(
+            message_dir.join("msg-assistant.json"),
+            concat!(
+                "{",
+                "\"role\":\"assistant\",",
+                "\"time\":{\"created\":1775415602000},",
+                "\"summary\":{\"title\":\"Found the bad provider switch\"},",
+                "\"providerID\":\"opencode\",",
+                "\"modelID\":\"big-pickle\"",
+                "}"
+            ),
+        )
+        .unwrap();
+
+        let imported = import_opencode_session("ses_test_opencode").unwrap();
+        assert_eq!(
+            imported.id,
+            imported_opencode_session_id("ses_test_opencode")
+        );
+        assert_eq!(imported.provider_key.as_deref(), Some("opencode"));
+        assert_eq!(imported.model.as_deref(), Some("big-pickle"));
+        assert_eq!(imported.working_dir.as_deref(), Some("/tmp/opencode-demo"));
+        assert_eq!(imported.messages.len(), 2);
+    }
+
+    #[test]
+    fn test_resolve_resume_target_to_jcode_imports_codex_session() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().unwrap();
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+
+        let codex_dir = temp.path().join("external/.codex/sessions/2026/04/05");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(
+            codex_dir.join("rollout.jsonl"),
+            concat!(
+                "{\"timestamp\":\"2026-04-05T19:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-resolve-test\",\"timestamp\":\"2026-04-05T18:59:00Z\",\"cwd\":\"/tmp/codex-resolve\"}}\n",
+                "{\"timestamp\":\"2026-04-05T19:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Fix codex resume\"}]}}\n",
+                "{\"timestamp\":\"2026-04-05T19:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Done\"}]}}\n"
+            ),
+        )
+        .unwrap();
+
+        let resolved = resolve_resume_target_to_jcode(
+            &crate::tui::session_picker::ResumeTarget::CodexSession {
+                session_id: "codex-resolve-test".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved,
+            crate::tui::session_picker::ResumeTarget::JcodeSession {
+                session_id: imported_codex_session_id("codex-resolve-test"),
+            }
+        );
+        let loaded = Session::load(&imported_codex_session_id("codex-resolve-test")).unwrap();
+        assert_eq!(loaded.messages.len(), 2);
     }
 }

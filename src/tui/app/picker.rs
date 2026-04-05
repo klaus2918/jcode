@@ -1315,14 +1315,23 @@ impl App {
                     format!("OpenCode {}", &session_id[..session_id.len().min(8)])
                 }
             };
-            match spawn_resume_target_in_new_terminal(target, &cwd, socket.as_deref()) {
+            let resolved_target = match crate::import::resolve_resume_target_to_jcode(target) {
+                Ok(target) => target,
+                Err(err) => {
+                    failed.push(format!("failed to import {}: {}", name, err));
+                    continue;
+                }
+            };
+
+            match spawn_resume_target_in_new_terminal(&resolved_target, &cwd, socket.as_deref()) {
                 Ok(true) => {
                     spawned += 1;
                     names.push(name);
                 }
-                Ok(false) | Err(_) => {
-                    failed.push(resume_target_manual_command(target, socket.as_deref()))
-                }
+                Ok(false) | Err(_) => failed.push(resume_target_manual_command(
+                    &resolved_target,
+                    socket.as_deref(),
+                )),
             }
         }
 

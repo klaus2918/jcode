@@ -643,6 +643,13 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
     };
 
     for stem in candidates {
+        if stem.starts_with("imported_cc_")
+            || stem.starts_with("imported_codex_")
+            || stem.starts_with("imported_pi_")
+            || stem.starts_with("imported_opencode_")
+        {
+            continue;
+        }
         let path = sessions_dir.join(format!("{stem}.json"));
         if let Ok(session) = load_session_summary(&path) {
             let short_name = session
