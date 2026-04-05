@@ -94,6 +94,8 @@ struct BashInput {
     run_in_background: Option<bool>,
     #[serde(default = "default_true")]
     notify: bool,
+    #[serde(default)]
+    wake: bool,
 }
 
 fn default_true() -> bool {
@@ -147,6 +149,10 @@ impl Tool for BashTool {
                 "notify": {
                     "type": "boolean",
                     "description": "For background tasks: send a notification to the agent when the task completes (default: true). Set to false to suppress completion notifications."
+                },
+                "wake": {
+                    "type": "boolean",
+                    "description": "For background tasks: wake the agent/session when the task completes. If the session is idle it continues immediately; otherwise the completion is queued as a soft interrupt. Defaults to false."
                 }
             }
         })
@@ -446,6 +452,7 @@ impl BashTool {
                         pid,
                         &started_at,
                         params.notify,
+                        params.wake,
                     )
                     .await;
                 let output = format!(
@@ -482,12 +489,14 @@ impl BashTool {
         let description = params.description.clone();
         let working_dir = ctx.working_dir.clone();
 
-        let notify = params.notify;
+        let wake = params.wake;
+        let notify = params.notify || wake;
         let info = crate::background::global()
             .spawn_with_notify(
                 "bash",
                 &ctx.session_id,
                 notify,
+                wake,
                 move |output_path| async move {
                     let mut cmd = build_shell_command(&command);
                     cmd.kill_on_drop(true)
@@ -578,7 +587,9 @@ impl BashTool {
             )
             .await;
 
-        let notify_msg = if notify {
+        let notify_msg = if wake {
+            "The agent will be woken when the task completes."
+        } else if notify {
             "You will be notified when the task completes."
         } else {
             "Notifications disabled. Use `bg` tool to check status."

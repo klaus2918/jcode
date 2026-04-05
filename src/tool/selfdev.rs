@@ -33,6 +33,9 @@ struct SelfDevInput {
     /// Whether to notify the requesting agent when the queued background build completes.
     #[serde(default)]
     notify: Option<bool>,
+    /// Whether to wake the requesting agent when the queued background build completes.
+    #[serde(default)]
+    wake: Option<bool>,
     /// Build request id for actions like cancel-build.
     #[serde(default)]
     request_id: Option<String>,
@@ -759,6 +762,10 @@ impl Tool for SelfDevTool {
                     "type": "boolean",
                     "description": "For action='build': notify the requesting agent when the queued background build completes (default: true)."
                 },
+                "wake": {
+                    "type": "boolean",
+                    "description": "For action='build': wake the requesting agent when the queued background build completes. Defaults to true."
+                },
                 "request_id": {
                     "type": "string",
                     "description": "For action='cancel-build': build request id to cancel."
@@ -780,7 +787,10 @@ impl Tool for SelfDevTool {
 
         let result = match action.as_str() {
             "enter" => self.do_enter(params.prompt, &ctx).await,
-            "build" => self.do_build(params.reason, params.notify, &ctx).await,
+            "build" => {
+                self.do_build(params.reason, params.notify, params.wake, &ctx)
+                    .await
+            }
             "cancel-build" => {
                 self.do_cancel_build(params.request_id, params.task_id, &ctx)
                     .await
@@ -1298,6 +1308,7 @@ impl SelfDevTool {
         &self,
         reason: Option<String>,
         notify: Option<bool>,
+        wake: Option<bool>,
         ctx: &ToolContext,
     ) -> Result<ToolOutput> {
         let reason = reason
@@ -1321,7 +1332,8 @@ impl SelfDevTool {
             BuildRequest::find_duplicate_pending(&requested_source.worktree_scope, &dedupe_key)?;
         let (session_short_name, session_title) = SelfDevTool::load_session_labels(&ctx.session_id);
         let request_id = SelfDevTool::next_request_id();
-        let notify = notify.unwrap_or(true);
+        let wake = wake.unwrap_or(true);
+        let notify = notify.unwrap_or(true) || wake;
 
         if let Some(existing) = duplicate {
             let mut request = BuildRequest {
@@ -1360,6 +1372,7 @@ impl SelfDevTool {
                     "selfdev-build-watch",
                     &ctx.session_id,
                     notify,
+                    wake,
                     move |output_path| async move {
                         SelfDevTool::follow_existing_build(
                             request_id_for_task,
@@ -1376,8 +1389,15 @@ impl SelfDevTool {
             request.status_file = Some(info.status_file.display().to_string());
             request.save()?;
 
+            let delivery = if wake {
+                "The requesting agent will be woken when the existing build finishes."
+            } else if notify {
+                "You will be notified when the existing build finishes."
+            } else {
+                "Completion delivery is disabled for this watcher."
+            };
             let output = format!(
-                "Matching self-dev build already queued/running, so this request was attached instead of spawning a duplicate build.\n\n- Your request ID: `{}`\n- Watcher task ID: `{}`\n- Existing request: `{}`\n- Requested by: {}\n- Reason: {}\n- Target version: `{}`\n- Source fingerprint: `{}`\n\nYou will{} be notified when the existing build finishes.",
+                "Matching self-dev build already queued/running, so this request was attached instead of spawning a duplicate build.\n\n- Your request ID: `{}`\n- Watcher task ID: `{}`\n- Existing request: `{}`\n- Requested by: {}\n- Reason: {}\n- Target version: `{}`\n- Source fingerprint: `{}`\n\n{}",
                 request_id,
                 info.task_id,
                 existing.request_id,
@@ -1385,7 +1405,7 @@ impl SelfDevTool {
                 existing.reason,
                 requested_source.version_label,
                 requested_source.fingerprint,
-                if notify { "" } else { " not" }
+                delivery
             );
 
             return Ok(ToolOutput::new(output).with_metadata(json!({
@@ -1453,6 +1473,7 @@ impl SelfDevTool {
                 "selfdev-build",
                 &ctx.session_id,
                 notify,
+                wake,
                 move |output_path| async move {
                     SelfDevTool::run_build_request(
                         request_id_for_task,
@@ -1470,8 +1491,15 @@ impl SelfDevTool {
         request.output_file = Some(info.output_file.display().to_string());
         request.status_file = Some(info.status_file.display().to_string());
         request.save()?;
+        let delivery = if wake {
+            "The requesting agent will be woken when the build completes."
+        } else if notify {
+            "You will be notified when the build completes."
+        } else {
+            "Completion delivery is disabled for this build request."
+        };
         let mut output = format!(
-            "Self-dev build queued in background.\n\n- Request ID: `{}`\n- Task ID: `{}`\n- Reason: {}\n- Target version: `{}`\n- Source fingerprint: `{}`\n- Command: `{}`\n- Queue position: {}\n- Output file: `{}`\n- Status file: `{}`\n\nYou will{} be notified when the build completes.",
+            "Self-dev build queued in background.\n\n- Request ID: `{}`\n- Task ID: `{}`\n- Reason: {}\n- Target version: `{}`\n- Source fingerprint: `{}`\n- Command: `{}`\n- Queue position: {}\n- Output file: `{}`\n- Status file: `{}`\n\n{}",
             request_id,
             info.task_id,
             reason,
@@ -1481,7 +1509,7 @@ impl SelfDevTool {
             queue_position,
             info.output_file.display(),
             info.status_file.display(),
-            if notify { "" } else { " not" }
+            delivery
         );
 
         if let Some(ref blocker) = blocker {
@@ -2614,6 +2642,7 @@ mod tests {
                 pid: None,
                 detached: false,
                 notify: true,
+                wake: true,
             },
         )
         .expect("write stale status file");

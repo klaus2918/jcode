@@ -36,8 +36,7 @@ use super::{
 use crate::agent::Agent;
 use crate::bus::{Bus, BusEvent};
 use crate::id;
-use crate::message::format_background_task_notification_markdown;
-use crate::protocol::{NotificationType, Request, ServerEvent, decode_request, encode_event};
+use crate::protocol::{Request, ServerEvent, decode_request, encode_event};
 use crate::provider::Provider;
 use crate::tool::Registry;
 use crate::transport::Stream;
@@ -331,26 +330,6 @@ pub(super) async fn handle_client(
                     Ok(BusEvent::BatchProgress(progress)) => {
                         if progress.session_id == client_session_id {
                             let _ = client_event_tx.send(ServerEvent::BatchProgress { progress });
-                        }
-                    }
-                    Ok(BusEvent::BackgroundTaskCompleted(ref task)) => {
-                        if task.notify && task.session_id == client_session_id {
-                            let notification = format_background_task_notification_markdown(task);
-                            let _ = client_event_tx.send(ServerEvent::Notification {
-                                from_session: "background_task".to_string(),
-                                from_name: Some("background task".to_string()),
-                                notification_type: NotificationType::Message {
-                                    scope: Some("background_task".to_string()),
-                                    channel: None,
-                                },
-                                message: notification.clone(),
-                            });
-                            let agent_guard = agent.lock().await;
-                            agent_guard.queue_soft_interrupt(
-                                notification,
-                                false,
-                                SoftInterruptSource::BackgroundTask,
-                            );
                         }
                     }
                     Ok(BusEvent::SidePanelUpdated(update)) => {

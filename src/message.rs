@@ -996,6 +996,7 @@ mod tests {
             output_file: std::path::PathBuf::from("/tmp/output.log"),
             duration_secs: 7.1,
             notify: true,
+            wake: false,
         });
 
         assert!(
@@ -1018,6 +1019,7 @@ mod tests {
             output_file: std::path::PathBuf::from("/tmp/output.log"),
             duration_secs: 1.0,
             notify: true,
+            wake: false,
         });
 
         assert!(rendered.contains("✗ failed"));
@@ -1036,6 +1038,7 @@ mod tests {
             output_file: std::path::PathBuf::from("/tmp/output.log"),
             duration_secs: 7.1,
             notify: true,
+            wake: false,
         });
 
         let parsed = parse_background_task_notification_markdown(&rendered)

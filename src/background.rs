@@ -41,10 +41,16 @@ pub struct TaskStatusFile {
     pub detached: bool,
     #[serde(default = "default_true")]
     pub notify: bool,
+    #[serde(default)]
+    pub wake: bool,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn normalize_delivery(notify: bool, wake: bool) -> (bool, bool) {
+    (notify || wake, wake)
 }
 
 /// Information returned when a background task is started
@@ -211,6 +217,7 @@ impl BackgroundTaskManager {
             output_file: output_path,
             duration_secs: duration_secs.unwrap_or_default(),
             notify: status.notify,
+            wake: status.wake,
         }));
 
         status
@@ -235,7 +242,9 @@ impl BackgroundTaskManager {
         pid: u32,
         started_at: &str,
         notify: bool,
+        wake: bool,
     ) {
+        let (notify, wake) = normalize_delivery(notify, wake);
         let status = TaskStatusFile {
             task_id: info.task_id.clone(),
             tool_name: tool_name.to_string(),
@@ -249,6 +258,7 @@ impl BackgroundTaskManager {
             pid: Some(pid),
             detached: true,
             notify,
+            wake,
         };
         self.write_status_file(&info.status_file, &status).await;
     }
@@ -267,7 +277,7 @@ impl BackgroundTaskManager {
         F: FnOnce(PathBuf) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<TaskResult>> + Send,
     {
-        self.spawn_with_notify(tool_name, session_id, true, execute_fn)
+        self.spawn_with_notify(tool_name, session_id, true, false, execute_fn)
             .await
     }
 
@@ -277,12 +287,14 @@ impl BackgroundTaskManager {
         tool_name: &str,
         session_id: &str,
         notify: bool,
+        wake: bool,
         execute_fn: F,
     ) -> BackgroundTaskInfo
     where
         F: FnOnce(PathBuf) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<TaskResult>> + Send,
     {
+        let (notify, wake) = normalize_delivery(notify, wake);
         let task_id = Self::generate_task_id();
         let output_path = self.output_dir.join(format!("{}.output", task_id));
         let status_path = self.output_dir.join(format!("{}.status.json", task_id));
@@ -301,6 +313,7 @@ impl BackgroundTaskManager {
             pid: None,
             detached: false,
             notify,
+            wake,
         };
         if let Ok(json) = serde_json::to_string_pretty(&initial_status) {
             let _ = std::fs::write(&status_path, json);
@@ -313,6 +326,7 @@ impl BackgroundTaskManager {
         let session_id_owned = session_id.to_string();
         let started_at = Instant::now();
         let notify_flag = notify;
+        let wake_flag = wake;
 
         // Spawn the background task
         let handle = tokio::spawn(async move {
@@ -348,6 +362,7 @@ impl BackgroundTaskManager {
                 pid: None,
                 detached: false,
                 notify: notify_flag,
+                wake: wake_flag,
             };
             if let Ok(json) = serde_json::to_string_pretty(&final_status) {
                 let _ = tokio::fs::write(&status_path_clone, json).await;
@@ -376,6 +391,7 @@ impl BackgroundTaskManager {
                 output_file: output_path_clone,
                 duration_secs,
                 notify: notify_flag,
+                wake: wake_flag,
             }));
 
             result
@@ -430,6 +446,7 @@ impl BackgroundTaskManager {
             pid: None,
             detached: false,
             notify: true,
+            wake: false,
         };
         if let Ok(json) = serde_json::to_string_pretty(&initial_status) {
             let _ = std::fs::write(&status_path, json);
@@ -484,6 +501,7 @@ impl BackgroundTaskManager {
                 pid: None,
                 detached: false,
                 notify: true,
+                wake: false,
             };
             if let Ok(json) = serde_json::to_string_pretty(&final_status) {
                 let _ = tokio::fs::write(&status_path_clone, json).await;
@@ -505,6 +523,7 @@ impl BackgroundTaskManager {
                 output_file: output_path_clone,
                 duration_secs,
                 notify: true,
+                wake: false,
             }));
 
             Ok(TaskResult { exit_code, error })
@@ -597,6 +616,7 @@ impl BackgroundTaskManager {
                 pid: None,
                 detached: false,
                 notify: true,
+                wake: false,
             };
             if let Ok(json) = serde_json::to_string_pretty(&final_status) {
                 let _ = fs::write(&task.status_path, json).await;

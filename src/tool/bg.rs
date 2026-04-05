@@ -140,6 +140,8 @@ impl Tool for BgTool {
                         if let Some(exit_code) = task.exit_code {
                             output.push_str(&format!("Exit code: {}\n", exit_code));
                         }
+                        output.push_str(&format!("Notify: {}\n", task.notify));
+                        output.push_str(&format!("Wake: {}\n", task.wake));
                         if let Some(error) = task.error {
                             output.push_str(&format!("Error: {}\n", error));
                         }

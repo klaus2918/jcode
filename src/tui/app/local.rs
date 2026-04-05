@@ -235,6 +235,15 @@ fn handle_background_task_completed(app: &mut App, task: BackgroundTaskCompleted
             Some(StoredDisplayRole::BackgroundTask),
         );
         let _ = app.session.save();
+
+        if task.wake {
+            app.pending_turn = true;
+            app.is_processing = true;
+            app.status = ProcessingStatus::Sending;
+            if app.processing_started.is_none() {
+                app.processing_started = Some(std::time::Instant::now());
+            }
+        }
     }
 }
 

@@ -5216,6 +5216,7 @@ fn test_handle_background_task_completed_renders_markdown_preview() {
         output_file: std::env::temp_dir().join("bg123.output"),
         duration_secs: 7.1,
         notify: true,
+        wake: false,
     });
 
     super::local::handle_bus_event(&mut app, Ok(event));
@@ -5241,6 +5242,32 @@ fn test_handle_background_task_completed_renders_markdown_preview() {
         app.status_notice(),
         Some("Background task completed · bash".to_string())
     );
+}
+
+#[test]
+fn test_handle_background_task_completed_with_wake_starts_pending_turn() {
+    let mut app = create_test_app();
+    let event = BusEvent::BackgroundTaskCompleted(BackgroundTaskCompleted {
+        task_id: "bgwake".to_string(),
+        tool_name: "selfdev-build".to_string(),
+        session_id: app.session.id.clone(),
+        status: BackgroundTaskStatus::Completed,
+        exit_code: Some(0),
+        output_preview: "done\n".to_string(),
+        output_file: std::env::temp_dir().join("bgwake.output"),
+        duration_secs: 1.2,
+        notify: true,
+        wake: true,
+    });
+
+    super::local::handle_bus_event(&mut app, Ok(event));
+
+    assert!(app.pending_turn);
+    assert!(app.is_processing());
+    assert!(matches!(
+        crate::tui::TuiState::status(&app),
+        ProcessingStatus::Sending
+    ));
 }
 
 #[test]
@@ -7353,6 +7380,7 @@ fn test_reload_persisted_background_tasks_note_mentions_running_task() {
         std::process::id(),
         &started_at,
         true,
+        false,
     ));
 
     let note = reload_persisted_background_tasks_note(&session_id);
@@ -7389,6 +7417,7 @@ fn test_finalize_reload_reconnect_mentions_persisted_background_task() {
         std::process::id(),
         &started_at,
         true,
+        false,
     ));
 
     remote::finalize_reload_reconnect(
