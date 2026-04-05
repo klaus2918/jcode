@@ -3284,6 +3284,7 @@ mod tests {
         input: String,
         cursor_pos: usize,
         display_messages: Vec<DisplayMessage>,
+        messages_version: u64,
         streaming_text: String,
         batch_progress: Option<crate::bus::BatchProgress>,
         queued_messages: Vec<String>,
@@ -3307,7 +3308,7 @@ mod tests {
             Vec::new()
         }
         fn display_messages_version(&self) -> u64 {
-            0
+            self.messages_version
         }
         fn streaming_text(&self) -> &str {
             &self.streaming_text
@@ -5131,6 +5132,72 @@ mod tests {
         assert_ne!(
             first_rendered, second_rendered,
             "prepared frame cache should invalidate on same-length streaming text changes"
+        );
+    }
+
+    #[test]
+    fn test_prepare_messages_tool_row_refreshes_after_message_version_bump() {
+        let tool_call = ToolCall {
+            id: "tool-1".to_string(),
+            name: "read".to_string(),
+            input: serde_json::json!({"file_path": "src/main.rs"}),
+            intent: None,
+        };
+
+        let placeholder = DisplayMessage {
+            role: "tool".to_string(),
+            content: "pending".to_string(),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: Some(tool_call.clone()),
+        };
+        let final_message = DisplayMessage {
+            role: "tool".to_string(),
+            content: "x".repeat(7_600),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: Some(tool_call),
+        };
+
+        let first = TestState {
+            display_messages: vec![placeholder],
+            messages_version: 0,
+            ..Default::default()
+        };
+        let refreshed = TestState {
+            display_messages: vec![final_message],
+            messages_version: 1,
+            ..Default::default()
+        };
+
+        let first_rendered: Vec<String> = prepare::prepare_messages(&first, 120, 20)
+            .wrapped_lines
+            .iter()
+            .map(extract_line_text)
+            .collect();
+        let refreshed_rendered: Vec<String> = prepare::prepare_messages(&refreshed, 120, 20)
+            .wrapped_lines
+            .iter()
+            .map(extract_line_text)
+            .collect();
+
+        assert!(
+            first_rendered.iter().any(|line| line.contains("1 tok")),
+            "expected initial render to reflect placeholder tool output: {first_rendered:?}"
+        );
+        assert!(
+            refreshed_rendered
+                .iter()
+                .any(|line| line.contains("1.9k tok")),
+            "expected refreshed render to include final tool token badge: {refreshed_rendered:?}"
+        );
+        assert!(
+            refreshed_rendered
+                .iter()
+                .any(|line| line.contains("✓ read src/main.rs · 1.9k tok")),
+            "expected refreshed tool row summary in final render: {refreshed_rendered:?}"
         );
     }
 
