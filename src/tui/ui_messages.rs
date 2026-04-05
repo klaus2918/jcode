@@ -121,10 +121,17 @@ pub(crate) fn render_assistant_message(
         markdown::recenter_structured_blocks_for_display(&mut lines, width as usize);
     }
     if !msg.tool_calls.is_empty() {
+        if lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| !span.content.trim().is_empty())
+        }) {
+            lines.push(Line::default().alignment(ratatui::layout::Alignment::Left));
+        }
         lines.extend(render_assistant_tool_call_lines(
             &msg.tool_calls,
             wrap_width,
-            false,
+            centered,
         ));
     }
     lines
@@ -1072,9 +1079,10 @@ mod tests {
         };
 
         let lines = render_assistant_message(&msg, 20, crate::config::DiffDisplayMode::Off);
+        assert_eq!(extract_line_text(&lines[1]), "");
         let tool_lines: Vec<String> = lines
             .iter()
-            .skip(1)
+            .skip(2)
             .map(|line| {
                 line.spans
                     .iter()
@@ -1117,9 +1125,10 @@ mod tests {
         };
 
         let lines = render_assistant_message(&msg, 28, crate::config::DiffDisplayMode::Off);
+        assert_eq!(extract_line_text(&lines[1]), "");
         let tool_lines: Vec<String> = lines
             .iter()
-            .skip(1)
+            .skip(2)
             .map(|line| {
                 line.spans
                     .iter()
@@ -1140,10 +1149,32 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .skip(1)
+                .skip(2)
                 .all(|line| line.alignment == Some(ratatui::layout::Alignment::Left)),
             "centered tool summary should use a shared left-aligned block pad"
         );
+
+        crate::tui::markdown::set_center_code_blocks(saved);
+    }
+
+    #[test]
+    fn render_assistant_message_without_body_does_not_add_extra_blank_line_before_tool_summary() {
+        let saved = crate::tui::markdown::center_code_blocks();
+        crate::tui::markdown::set_center_code_blocks(false);
+        let msg = DisplayMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            tool_calls: vec!["read".to_string()],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        };
+
+        let lines = render_assistant_message(&msg, 28, crate::config::DiffDisplayMode::Off);
+        let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
+
+        assert_eq!(rendered.len(), 1, "rendered={rendered:?}");
+        assert!(rendered[0].contains("tool:"), "rendered={rendered:?}");
 
         crate::tui::markdown::set_center_code_blocks(saved);
     }
