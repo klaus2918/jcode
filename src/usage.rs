@@ -931,10 +931,9 @@ fn openai_snapshot_from_usage(
 ) -> AccountUsageSnapshot {
     let five_hour_ratio = usage.five_hour.as_ref().map(|window| window.usage_ratio);
     let seven_day_ratio = usage.seven_day.as_ref().map(|window| window.usage_ratio);
-    let exhausted = usage.hard_limit_reached
-        || (usage.has_limits()
-            && five_hour_ratio.map(|ratio| ratio >= 0.99).unwrap_or(false)
-            && seven_day_ratio.map(|ratio| ratio >= 0.99).unwrap_or(false));
+    let exhausted = usage.has_limits()
+        && five_hour_ratio.map(|ratio| ratio >= 0.99).unwrap_or(false)
+        && seven_day_ratio.map(|ratio| ratio >= 0.99).unwrap_or(false);
 
     AccountUsageSnapshot {
         label,
@@ -1170,25 +1169,22 @@ fn parse_bool_value(value: &serde_json::Value) -> Option<bool> {
         })
 }
 
-fn object_contains_key_with_bool(value: &serde_json::Value, key: &str, expected: bool) -> bool {
-    match value {
-        serde_json::Value::Object(map) => {
-            map.get(key).and_then(parse_bool_value) == Some(expected)
-                || map
-                    .values()
-                    .any(|inner| object_contains_key_with_bool(inner, key, expected))
-        }
-        serde_json::Value::Array(items) => items
-            .iter()
-            .any(|inner| object_contains_key_with_bool(inner, key, expected)),
-        _ => false,
-    }
-}
-
 fn parse_openai_hard_limit_reached(json: &serde_json::Value) -> bool {
-    object_contains_key_with_bool(json, "limit_reached", true)
-        || object_contains_key_with_bool(json, "limitReached", true)
-        || object_contains_key_with_bool(json, "allowed", false)
+    let Some(obj) = json.as_object() else {
+        return false;
+    };
+
+    if obj.get("limit_reached").and_then(parse_bool_value) == Some(true)
+        || obj.get("limitReached").and_then(parse_bool_value) == Some(true)
+    {
+        return true;
+    }
+
+    obj.get("rate_limit")
+        .and_then(|rate_limit| rate_limit.as_object())
+        .and_then(|rate_limit| rate_limit.get("allowed"))
+        .and_then(parse_bool_value)
+        == Some(false)
 }
 
 async fn fetch_all_anthropic_usage_reports() -> Vec<ProviderUsage> {
@@ -2045,6 +2041,7 @@ async fn fetch_openai_usage_data() -> OpenAIUsageData {
     match fetch_openai_usage_report().await {
         Some(report) => {
             let mut data = classify_openai_limits(&report.limits);
+            data.hard_limit_reached = report.hard_limit_reached;
             data.fetched_at = Some(Instant::now());
             data.last_error = report.error;
             data
@@ -2581,7 +2578,7 @@ mod tests {
     }
 
     #[test]
-    fn test_openai_snapshot_marks_hard_limit_reached_as_exhausted() {
+    fn test_openai_snapshot_does_not_treat_hard_limit_flag_as_exhausted() {
         let usage = OpenAIUsageData {
             hard_limit_reached: true,
             five_hour: Some(OpenAIUsageWindow {
@@ -2598,13 +2595,13 @@ mod tests {
             &usage,
         );
 
-        assert!(snapshot.exhausted);
+        assert!(!snapshot.exhausted);
         assert_eq!(snapshot.five_hour_ratio, Some(1.0));
         assert_eq!(snapshot.seven_day_ratio, None);
     }
 
     #[test]
-    fn test_parse_openai_hard_limit_reached_detects_nested_denials() {
+    fn test_parse_openai_hard_limit_reached_detects_rate_limit_denials() {
         let json = serde_json::json!({
             "plan_type": "free",
             "rate_limit": {
@@ -2618,6 +2615,23 @@ mod tests {
         });
 
         assert!(parse_openai_hard_limit_reached(&json));
+    }
+
+    #[test]
+    fn test_parse_openai_hard_limit_reached_ignores_unrelated_allowed_flags() {
+        let json = serde_json::json!({
+            "plan_type": "free",
+            "features": {
+                "voice_mode": {
+                    "allowed": false
+                }
+            },
+            "rate_limit": {
+                "allowed": true
+            }
+        });
+
+        assert!(!parse_openai_hard_limit_reached(&json));
     }
 
     #[test]

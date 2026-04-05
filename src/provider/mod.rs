@@ -715,22 +715,6 @@ impl MultiProvider {
             ActiveProvider::Claude if self.is_claude_usage_exhausted() => {
                 Some(Self::usage_exhausted_reason(provider))
             }
-            ActiveProvider::OpenAI if self.is_openai_usage_exhausted() => {
-                let usage = crate::usage::get_openai_usage_sync();
-                let provider_summary = self
-                    .openai_provider()
-                    .map(|provider| provider.diagnostic_state_summary())
-                    .unwrap_or_else(|| {
-                        "transport_mode=unknown persistent_ws=unavailable".to_string()
-                    });
-                crate::logging::warn(&format!(
-                    "OpenAI limit diag: local precheck blocking request reason={} usage=({}) provider=({})",
-                    Self::usage_exhausted_reason(provider),
-                    usage.diagnostic_fields(),
-                    provider_summary
-                ));
-                Some(Self::usage_exhausted_reason(provider))
-            }
             _ => None,
         }
     }
@@ -1266,6 +1250,12 @@ impl MultiProvider {
         if !self.provider_is_configured(provider) {
             return;
         }
+        if provider == ActiveProvider::OpenAI {
+            // Do not client-side gate or rotate OpenAI accounts based on local
+            // usage snapshots. Let the server decide whether a request is
+            // allowed, then react to the actual response.
+            return;
+        }
 
         let Some(probe) = Self::account_usage_probe(provider) else {
             return;
@@ -1351,38 +1341,6 @@ impl MultiProvider {
         // Consider exhausted if both windows are at 99% or higher
         // (give a small buffer for rounding/display issues)
         usage.five_hour >= 0.99 && usage.seven_day >= 0.99
-    }
-
-    fn is_openai_usage_exhausted_from_usage(usage: &crate::usage::OpenAIUsageData) -> bool {
-        if usage.hard_limit_reached {
-            return true;
-        }
-
-        if !usage.has_limits() {
-            return false;
-        }
-
-        let five_hour_exhausted = usage
-            .five_hour
-            .as_ref()
-            .map(|w| w.usage_ratio >= 0.99)
-            .unwrap_or(false);
-        let seven_day_exhausted = usage
-            .seven_day
-            .as_ref()
-            .map(|w| w.usage_ratio >= 0.99)
-            .unwrap_or(false);
-
-        five_hour_exhausted && seven_day_exhausted
-    }
-
-    fn is_openai_usage_exhausted(&self) -> bool {
-        if self.openai_provider().is_none() {
-            return false;
-        }
-
-        let usage = crate::usage::get_openai_usage_sync();
-        Self::is_openai_usage_exhausted_from_usage(&usage)
     }
 }
 
@@ -3556,44 +3514,6 @@ mod tests {
             "expected credentials error, got: {}",
             err
         );
-    }
-
-    #[test]
-    fn test_openai_usage_exhaustion_requires_both_windows() {
-        let mut usage = crate::usage::OpenAIUsageData::default();
-        usage.five_hour = Some(crate::usage::OpenAIUsageWindow {
-            name: "5h".to_string(),
-            usage_ratio: 1.0,
-            resets_at: None,
-        });
-        usage.seven_day = Some(crate::usage::OpenAIUsageWindow {
-            name: "7d".to_string(),
-            usage_ratio: 0.50,
-            resets_at: None,
-        });
-        assert!(!MultiProvider::is_openai_usage_exhausted_from_usage(&usage));
-
-        usage.seven_day = Some(crate::usage::OpenAIUsageWindow {
-            name: "7d".to_string(),
-            usage_ratio: 1.0,
-            resets_at: None,
-        });
-        assert!(MultiProvider::is_openai_usage_exhausted_from_usage(&usage));
-    }
-
-    #[test]
-    fn test_openai_usage_exhaustion_honors_hard_limit_flag() {
-        let usage = crate::usage::OpenAIUsageData {
-            hard_limit_reached: true,
-            five_hour: Some(crate::usage::OpenAIUsageWindow {
-                name: "5h".to_string(),
-                usage_ratio: 1.0,
-                resets_at: None,
-            }),
-            ..Default::default()
-        };
-
-        assert!(MultiProvider::is_openai_usage_exhausted_from_usage(&usage));
     }
 
     #[test]
