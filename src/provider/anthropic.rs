@@ -47,18 +47,9 @@ pub(crate) const OAUTH_BETA_HEADERS: &str =
 const OAUTH_BETA_HEADERS_1M: &str =
     "oauth-2025-04-20,claude-code-20250219,prompt-caching-2024-07-31,context-1m-2025-08-07";
 
-/// Check if this model should default to 1M context (Opus 4.6 and Sonnet 4.6).
-/// As of Claude Code 2.1.75, Max/Team/Enterprise plans get 1M by default.
-fn model_defaults_to_1m(model: &str) -> bool {
-    let base = model.strip_suffix("[1m]").unwrap_or(model);
-    base == "claude-opus-4-6" || base == "claude-sonnet-4-6"
-}
-
 /// Get the appropriate beta headers based on model
 fn oauth_beta_headers(model: &str) -> &'static str {
-    if is_1m_model(model)
-        || (model_defaults_to_1m(model) && crate::auth::claude::is_max_subscription())
-    {
+    if is_1m_model(model) {
         OAUTH_BETA_HEADERS_1M
     } else {
         OAUTH_BETA_HEADERS
@@ -70,10 +61,9 @@ fn is_1m_model(model: &str) -> bool {
     model.ends_with("[1m]")
 }
 
-/// Check if a model effectively uses 1M context (explicit [1m] suffix OR default 1M for Max users)
+/// Check if a model explicitly requests 1M context via the [1m] suffix.
 pub fn effectively_1m(model: &str) -> bool {
     is_1m_model(model)
-        || (model_defaults_to_1m(model) && crate::auth::claude::is_max_subscription())
 }
 
 /// Strip the [1m] suffix to get the actual API model name
@@ -1600,6 +1590,23 @@ mod tests {
         assert!(models.contains(&"claude-sonnet-4-6"));
         assert!(models.contains(&"claude-sonnet-4-6[1m]"));
         assert!(models.contains(&"claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn test_effectively_1m_requires_explicit_suffix() {
+        assert!(!effectively_1m("claude-opus-4-6"));
+        assert!(!effectively_1m("claude-sonnet-4-6"));
+        assert!(effectively_1m("claude-opus-4-6[1m]"));
+        assert!(effectively_1m("claude-sonnet-4-6[1m]"));
+    }
+
+    #[test]
+    fn test_oauth_beta_headers_require_explicit_1m_suffix() {
+        assert_eq!(oauth_beta_headers("claude-opus-4-6"), OAUTH_BETA_HEADERS);
+        assert_eq!(
+            oauth_beta_headers("claude-opus-4-6[1m]"),
+            OAUTH_BETA_HEADERS_1M
+        );
     }
 
     #[tokio::test]

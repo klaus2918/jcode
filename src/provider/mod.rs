@@ -3291,12 +3291,8 @@ mod tests {
     #[test]
     fn test_context_limit_claude() {
         with_clean_provider_test_env(|| {
-            // Default (no subscription info = assumes Max) -> 1M for opus/sonnet 4.6
-            assert_eq!(context_limit_for_model("claude-opus-4-6"), Some(1_048_576));
-            assert_eq!(
-                context_limit_for_model("claude-sonnet-4-6"),
-                Some(1_048_576)
-            );
+            assert_eq!(context_limit_for_model("claude-opus-4-6"), Some(200_000));
+            assert_eq!(context_limit_for_model("claude-sonnet-4-6"), Some(200_000));
             assert_eq!(
                 context_limit_for_model("claude-opus-4-6[1m]"),
                 Some(1_048_576)
