@@ -442,7 +442,12 @@ fn spawn_command_in_new_terminal(
 
     let mut last_spawn_error: Option<std::io::Error> = None;
 
-    for term in resume_terminal_candidates_unix() {
+    #[cfg(unix)]
+    let resume_terminal_candidates = resume_terminal_candidates_unix();
+    #[cfg(not(unix))]
+    let resume_terminal_candidates = resume_terminal_candidates_windows();
+
+    for term in resume_terminal_candidates {
         let mut cmd = Command::new(&term);
         cmd.current_dir(cwd)
             .stdin(Stdio::null())
@@ -450,6 +455,7 @@ fn spawn_command_in_new_terminal(
             .stderr(Stdio::null());
 
         match term.as_str() {
+            #[cfg(unix)]
             "handterm" => {
                 let command = shell_command(
                     &std::iter::once(program.to_string_lossy().into_owned())

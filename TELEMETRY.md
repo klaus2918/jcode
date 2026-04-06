@@ -20,7 +20,7 @@ jcode collects **anonymous, minimal usage statistics** to help understand how ma
 |-------|---------|----------|
 | `id` | `a1b2c3d4-...` | Same random UUID |
 | `event` | `"upgrade"` | Event type |
-| `version` | `"0.9.0"` | Current jcode version |
+| `version` | `"0.9.1"` | Current jcode version |
 | `from_version` | `"0.8.1"` | Previously recorded jcode version |
 | `os` / `arch` | `"linux"` / `"x86_64"` | Environment breakdown |
 
@@ -32,7 +32,7 @@ jcode collects **anonymous, minimal usage statistics** to help understand how ma
 | `event` | `"auth_success"` | Event type |
 | `auth_provider` | `"claude"` | Which provider/account system was configured |
 | `auth_method` | `"oauth"` | Coarse auth method only |
-| `version` / `os` / `arch` | `"0.9.0"` / `"linux"` / `"x86_64"` | Activation funnel dimensions |
+| `version` / `os` / `arch` | `"0.9.1"` / `"linux"` / `"x86_64"` | Activation funnel dimensions |
 
 ### Session Start Event
 
