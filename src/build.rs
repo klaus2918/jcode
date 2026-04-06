@@ -218,6 +218,13 @@ pub fn launcher_dir() -> Result<PathBuf> {
         }
     }
 
+    if let Ok(sandbox_home) = std::env::var("JCODE_HOME") {
+        let trimmed = sandbox_home.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed).join("bin"));
+        }
+    }
+
     #[cfg(windows)]
     {
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
@@ -1226,6 +1233,37 @@ mod tests {
         } else {
             crate::env::remove_var("JCODE_HOME");
         }
+    }
+
+    #[test]
+    fn launcher_dir_uses_sandbox_bin_when_jcode_home_is_set() {
+        with_temp_jcode_home(|| {
+            let launcher_dir = launcher_dir().expect("launcher dir");
+            let expected = storage::jcode_dir().expect("jcode dir").join("bin");
+            assert_eq!(launcher_dir, expected);
+        });
+    }
+
+    #[test]
+    fn update_launcher_symlink_stays_inside_sandbox_home() {
+        with_temp_jcode_home(|| {
+            let version = "sandbox-current";
+            let version_binary =
+                install_binary_at_version(std::env::current_exe().as_ref().unwrap(), version)
+                    .expect("install test version");
+            update_current_symlink(version).expect("update current symlink");
+
+            let launcher = update_launcher_symlink_to_current().expect("update launcher");
+            let expected_launcher = storage::jcode_dir()
+                .expect("jcode dir")
+                .join("bin")
+                .join(binary_name());
+            assert_eq!(launcher, expected_launcher);
+            assert_eq!(
+                std::fs::canonicalize(&launcher).expect("canonical launcher"),
+                std::fs::canonicalize(version_binary).expect("canonical version binary")
+            );
+        });
     }
 
     #[test]
