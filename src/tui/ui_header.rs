@@ -459,19 +459,19 @@ fn build_version_line(text: &str) -> Line<'static> {
         if !prefix.is_empty() {
             spans.push(Span::styled(
                 format!("{} ", prefix),
-                Style::default().fg(dim_color()),
+                Style::default().fg(header_name_color()).bold(),
             ));
         }
         if !version.is_empty() {
             spans.push(Span::styled(
                 version.to_string(),
-                Style::default().fg(rgb(150, 185, 255)).bold(),
+                Style::default().fg(dim_color()),
             ));
         }
     } else {
         spans.push(Span::styled(
             text.to_string(),
-            Style::default().fg(rgb(150, 185, 255)).bold(),
+            Style::default().fg(dim_color()),
         ));
     }
     Line::from(spans)
