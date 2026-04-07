@@ -8178,6 +8178,12 @@ fn test_remote_tui_state_shows_connected_after_startup_phase_clears_without_mode
 
 #[test]
 fn test_remote_tui_state_hides_brief_connecting_phase_without_cached_model() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_model = std::env::var_os("JCODE_MODEL");
+    let prev_provider = std::env::var_os("JCODE_PROVIDER");
+    crate::env::set_var("JCODE_MODEL", "unknown");
+    crate::env::remove_var("JCODE_PROVIDER");
+
     let app = App::new_for_remote(None);
 
     assert_eq!(
@@ -8185,6 +8191,42 @@ fn test_remote_tui_state_hides_brief_connecting_phase_without_cached_model() {
         "connecting to server…"
     );
     assert_eq!(crate::tui::TuiState::provider_name(&app), "");
+
+    if let Some(prev_model) = prev_model {
+        crate::env::set_var("JCODE_MODEL", prev_model);
+    } else {
+        crate::env::remove_var("JCODE_MODEL");
+    }
+    if let Some(prev_provider) = prev_provider {
+        crate::env::set_var("JCODE_PROVIDER", prev_provider);
+    } else {
+        crate::env::remove_var("JCODE_PROVIDER");
+    }
+}
+
+#[test]
+fn test_remote_tui_state_prefers_configured_model_during_brief_connecting_phase() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_model = std::env::var_os("JCODE_MODEL");
+    let prev_provider = std::env::var_os("JCODE_PROVIDER");
+    crate::env::set_var("JCODE_MODEL", "gpt-5.4");
+    crate::env::set_var("JCODE_PROVIDER", "openai");
+
+    let app = App::new_for_remote(None);
+
+    assert_eq!(crate::tui::TuiState::provider_model(&app), "gpt-5.4");
+    assert_eq!(crate::tui::TuiState::provider_name(&app), "openai");
+
+    if let Some(prev_model) = prev_model {
+        crate::env::set_var("JCODE_MODEL", prev_model);
+    } else {
+        crate::env::remove_var("JCODE_MODEL");
+    }
+    if let Some(prev_provider) = prev_provider {
+        crate::env::set_var("JCODE_PROVIDER", prev_provider);
+    } else {
+        crate::env::remove_var("JCODE_PROVIDER");
+    }
 }
 
 #[test]

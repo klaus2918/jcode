@@ -799,6 +799,37 @@ mod tests {
     }
 
     #[test]
+    fn build_persistent_header_prefers_configured_model_during_remote_connect() {
+        let _guard = crate::storage::lock_test_env();
+        let prev_model = std::env::var_os("JCODE_MODEL");
+        let prev_provider = std::env::var_os("JCODE_PROVIDER");
+        crate::env::set_var("JCODE_MODEL", "gpt-5.4");
+        crate::env::set_var("JCODE_PROVIDER", "openai");
+
+        let app = crate::tui::app::App::new_for_remote(None);
+        let lines = build_persistent_header(&app, 80);
+        let rendered = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(rendered.contains("GPT-5.4"));
+        assert!(!rendered.contains("connecting to server…"));
+
+        if let Some(prev_model) = prev_model {
+            crate::env::set_var("JCODE_MODEL", prev_model);
+        } else {
+            crate::env::remove_var("JCODE_MODEL");
+        }
+        if let Some(prev_provider) = prev_provider {
+            crate::env::set_var("JCODE_PROVIDER", prev_provider);
+        } else {
+            crate::env::remove_var("JCODE_PROVIDER");
+        }
+    }
+
+    #[test]
     fn auth_status_line_hides_not_configured_providers() {
         let auth = AuthStatus {
             anthropic: ProviderAuth {

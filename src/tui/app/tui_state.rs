@@ -35,20 +35,46 @@ struct WidgetRouteInfo {
 }
 
 impl App {
+    fn sanitize_remote_model_hint(model: Option<String>) -> Option<String> {
+        model
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty() && !model.eq_ignore_ascii_case("unknown"))
+    }
+
+    fn configured_remote_provider_hint(&self) -> Option<String> {
+        std::env::var("JCODE_PROVIDER")
+            .ok()
+            .or_else(|| crate::config::config().provider.default_provider.clone())
+            .map(|provider| provider.trim().to_string())
+            .filter(|provider| !provider.is_empty())
+    }
+
+    fn configured_remote_model_hint(&self) -> Option<String> {
+        Self::sanitize_remote_model_hint(
+            std::env::var("JCODE_MODEL")
+                .ok()
+                .or_else(|| crate::config::config().provider.default_model.clone()),
+        )
+    }
+
     fn effective_remote_provider_model(&self) -> Option<String> {
-        self.remote_provider_model
-            .clone()
-            .or_else(|| self.session.model.clone())
-            .filter(|model| {
-                let trimmed = model.trim();
-                !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("unknown")
-            })
+        Self::sanitize_remote_model_hint(self.remote_provider_model.clone())
+            .or_else(|| Self::sanitize_remote_model_hint(self.session.model.clone()))
+            .or_else(|| self.configured_remote_model_hint())
     }
 
     fn remote_header_provider_model(&self) -> Option<String> {
+        let effective_model = self.effective_remote_provider_model();
+
         self.remote_startup_phase
             .as_ref()
             .and_then(|phase| {
+                if matches!(phase, super::RemoteStartupPhase::Connecting)
+                    && effective_model.is_some()
+                {
+                    return effective_model.clone();
+                }
+
                 let elapsed = self
                     .remote_startup_phase_started
                     .map(|started| started.elapsed())
@@ -62,7 +88,7 @@ impl App {
                     Some(phase.header_label_with_elapsed(elapsed))
                 }
             })
-            .or_else(|| self.effective_remote_provider_model())
+            .or(effective_model)
             .or_else(|| {
                 (self.remote_session_id.is_some() || self.connection_type.is_some())
                     .then(|| "connected".to_string())
@@ -70,11 +96,14 @@ impl App {
     }
 
     fn remote_header_provider_name(&self) -> Option<String> {
+        let configured_provider_hint = self.configured_remote_provider_hint();
         self.remote_provider_name
             .clone()
             .or_else(|| {
                 self.effective_remote_provider_model().and_then(|model| {
-                    crate::provider::provider_for_model_with_hint(&model, None).map(str::to_string)
+                    crate::provider::provider_for_model_with_hint(&model, None)
+                        .or_else(|| configured_provider_hint.as_deref())
+                        .map(str::to_string)
                 })
             })
             .filter(|provider| !provider.trim().is_empty())
