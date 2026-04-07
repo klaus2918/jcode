@@ -3724,6 +3724,55 @@ fn test_agents_command_suggestions_include_targets() {
 }
 
 #[test]
+fn test_agents_picker_uses_provider_default_when_inherited_model_is_unknown() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.open_agents_picker();
+
+        let picker = app
+            .picker_state
+            .as_ref()
+            .expect("/agents should open the agent picker");
+        let swarm_entry = picker
+            .entries
+            .iter()
+            .find(|entry| {
+                matches!(
+                    entry.action,
+                    crate::tui::PickerAction::AgentTarget(crate::tui::AgentModelTarget::Swarm)
+                )
+            })
+            .expect("swarm entry should exist");
+
+        assert_eq!(swarm_entry.options[0].provider, "provider default");
+    });
+}
+
+#[test]
+fn test_agent_model_picker_inherit_row_uses_provider_default_when_inherited_model_is_unknown() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        configure_test_remote_models(&mut app);
+        app.open_agent_model_picker(crate::tui::AgentModelTarget::Swarm);
+
+        let picker = app
+            .picker_state
+            .as_ref()
+            .expect("agent model picker should open");
+        let inherit_entry = picker.entries.first().expect("inherit row should exist");
+
+        assert_eq!(inherit_entry.name, "inherit (provider default)");
+        assert!(matches!(
+            inherit_entry.action,
+            crate::tui::PickerAction::AgentModelChoice {
+                target: crate::tui::AgentModelTarget::Swarm,
+                clear_override: true,
+            }
+        ));
+    });
+}
+
+#[test]
 fn test_agents_review_picker_saves_config_override() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();

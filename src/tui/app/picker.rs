@@ -243,26 +243,51 @@ fn model_entry_saved_spec(entry: &PickerEntry) -> String {
     }
 }
 
-fn agent_model_default_summary(target: AgentModelTarget, app: &App) -> String {
+fn agent_model_inherit_fallback_label(target: AgentModelTarget) -> &'static str {
     match target {
+        AgentModelTarget::Memory => "sidecar auto-select",
+        AgentModelTarget::Swarm
+        | AgentModelTarget::Review
+        | AgentModelTarget::Judge
+        | AgentModelTarget::Ambient => "provider default",
+    }
+}
+
+fn normalize_agent_model_summary(target: AgentModelTarget, summary: Option<String>) -> String {
+    let fallback = agent_model_inherit_fallback_label(target);
+    let Some(summary) = summary.map(|value| value.trim().to_string()) else {
+        return fallback.to_string();
+    };
+    if summary.is_empty() {
+        return fallback.to_string();
+    }
+
+    match summary.to_ascii_lowercase().as_str() {
+        "unknown" | "(unknown)" | "unknown model" => fallback.to_string(),
+        "(provider default)" => "provider default".to_string(),
+        "(sidecar auto-select)" => "sidecar auto-select".to_string(),
+        _ => summary,
+    }
+}
+
+fn agent_model_default_summary(target: AgentModelTarget, app: &App) -> String {
+    let summary = match target {
         AgentModelTarget::Swarm => load_agent_model_override(target)
             .or_else(|| app.session.subagent_model.clone())
-            .unwrap_or_else(|| app.provider.model()),
+            .or_else(|| Some(app.provider.model())),
         AgentModelTarget::Review => load_agent_model_override(target)
             .or_else(|| super::commands::preferred_one_shot_review_override().map(|(m, _)| m))
             .or_else(|| app.session.model.clone())
-            .unwrap_or_else(|| app.provider.model()),
+            .or_else(|| Some(app.provider.model())),
         AgentModelTarget::Judge => load_agent_model_override(target)
             .or_else(|| super::commands::preferred_one_shot_review_override().map(|(m, _)| m))
             .or_else(|| app.session.model.clone())
-            .unwrap_or_else(|| app.provider.model()),
-        AgentModelTarget::Memory => {
-            load_agent_model_override(target).unwrap_or_else(|| "sidecar auto-select".to_string())
-        }
-        AgentModelTarget::Ambient => {
-            load_agent_model_override(target).unwrap_or_else(|| "provider default".to_string())
-        }
-    }
+            .or_else(|| Some(app.provider.model())),
+        AgentModelTarget::Memory => load_agent_model_override(target),
+        AgentModelTarget::Ambient => load_agent_model_override(target),
+    };
+
+    normalize_agent_model_summary(target, summary)
 }
 
 impl App {
