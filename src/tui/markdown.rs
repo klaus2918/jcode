@@ -13,7 +13,7 @@ use syntect::highlighting::{Style as SynStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::{DiagramDisplayMode, MarkdownSpacingMode, config};
+use crate::config::{config, DiagramDisplayMode, MarkdownSpacingMode};
 use crate::tui::mermaid;
 use crate::tui::ui::{CopyTargetKind, RawCopyTarget};
 
@@ -1146,12 +1146,25 @@ fn preserve_line_oriented_softbreaks(text: &str) -> String {
     let mut fence_len = 0usize;
 
     for (idx, line) in lines.iter().enumerate() {
-        let prev_log_like = idx > 0 && looks_like_line_oriented_transcript_line(lines[idx - 1]);
+        let prev_line = idx.checked_sub(1).map(|prev| lines[prev]);
+        let prev_log_like = prev_line.is_some_and(looks_like_line_oriented_transcript_line);
         let next_log_like =
             idx + 1 < lines.len() && looks_like_line_oriented_transcript_line(lines[idx + 1]);
-        let preserve_softbreak = !in_code_fence
-            && looks_like_line_oriented_transcript_line(line)
-            && (prev_log_like || next_log_like);
+        let line_log_like = looks_like_line_oriented_transcript_line(line);
+        let entering_log_block = !in_code_fence
+            && line_log_like
+            && !prev_log_like
+            && prev_line.is_some_and(|prev| !prev.trim().is_empty());
+        let leaving_log_block = !in_code_fence
+            && line_log_like
+            && !next_log_like
+            && idx + 1 < lines.len()
+            && !lines[idx + 1].trim().is_empty();
+        let preserve_softbreak = !in_code_fence && line_log_like && next_log_like;
+
+        if entering_log_block && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
 
         out.push_str(line);
         if idx + 1 < lines.len() {
@@ -1159,6 +1172,9 @@ fn preserve_line_oriented_softbreaks(text: &str) -> String {
                 out.push_str("  ");
             }
             out.push('\n');
+            if leaving_log_block {
+                out.push('\n');
+            }
         }
 
         if in_code_fence {
@@ -3792,11 +3808,9 @@ mod tests {
         let lines = render_markdown(md);
         let rendered: Vec<String> = lines.iter().map(line_to_string).collect();
 
-        assert!(
-            rendered
-                .iter()
-                .any(|l| l.contains('│') && l.contains('A') && l.contains('B'))
-        );
+        assert!(rendered
+            .iter()
+            .any(|l| l.contains('│') && l.contains('A') && l.contains('B')));
         assert!(rendered.iter().any(|l| l.contains('─') && l.contains('┼')));
     }
 
@@ -4276,11 +4290,9 @@ mod tests {
             first_pad > 0,
             "list block should be centered in centered mode: {rendered:?}"
         );
-        assert!(
-            rendered
-                .iter()
-                .all(|line| line[first_pad..].starts_with("• "))
-        );
+        assert!(rendered
+            .iter()
+            .all(|line| line[first_pad..].starts_with("• ")));
     }
 
     #[test]
@@ -4323,9 +4335,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            vec![
-                "Intro", "", "Body", "", "• one", "• two", "", "Next", "", "Body"
-            ]
+            vec!["Intro", "", "Body", "", "• one", "• two", "", "Next", "", "Body"]
         );
     }
 
@@ -4671,6 +4681,72 @@ mod tests {
                 .iter()
                 .all(|line| !(line.contains("tool: batch") && line.contains("✓ batch 3 calls"))),
             "tool transcript lines should not collapse into one wrapped paragraph: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn test_line_oriented_tool_transcript_followed_by_prose_gets_blank_line() {
+        let md = concat!(
+            "tool: batch\n",
+            "✓ batch 1 calls\n",
+            "Done checking the formatting."
+        );
+
+        let rendered: Vec<String> = render_markdown_with_width(md, Some(48))
+            .iter()
+            .map(line_to_string)
+            .collect();
+
+        let batch_idx = rendered
+            .iter()
+            .position(|line| line.trim_start() == "✓ batch 1 calls")
+            .expect("missing batch transcript line");
+        let prose_idx = rendered
+            .iter()
+            .position(|line| line.trim_start() == "Done checking the formatting.")
+            .expect("missing prose line");
+
+        assert_eq!(
+            prose_idx,
+            batch_idx + 2,
+            "expected a blank line between transcript block and prose: {rendered:?}"
+        );
+        assert!(
+            rendered[batch_idx + 1].trim().is_empty(),
+            "expected separator line to be blank: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn test_prose_before_line_oriented_tool_transcript_gets_blank_line() {
+        let md = concat!(
+            "I checked the repo state.\n",
+            "✓ batch 1 calls\n",
+            "  ✓ read src/main.rs"
+        );
+
+        let rendered: Vec<String> = render_markdown_with_width(md, Some(48))
+            .iter()
+            .map(line_to_string)
+            .collect();
+
+        let prose_idx = rendered
+            .iter()
+            .position(|line| line.trim_start() == "I checked the repo state.")
+            .expect("missing prose line");
+        let transcript_idx = rendered
+            .iter()
+            .position(|line| line.trim_start() == "✓ batch 1 calls")
+            .expect("missing transcript line");
+
+        assert_eq!(
+            transcript_idx,
+            prose_idx + 2,
+            "expected a blank line before transcript block: {rendered:?}"
+        );
+        assert!(
+            rendered[prose_idx + 1].trim().is_empty(),
+            "expected separator line to be blank: {rendered:?}"
         );
     }
 }
