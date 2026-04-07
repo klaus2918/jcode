@@ -413,6 +413,30 @@ pub(super) async fn handle_resume_session(
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) -> Result<()> {
+    let conflicting_live_client = {
+        let connections = client_connections.read().await;
+        connections
+            .values()
+            .find(|info| info.client_id != client_connection_id && info.session_id == session_id)
+            .cloned()
+    };
+
+    if let Some(conflict) = conflicting_live_client {
+        crate::logging::warn(&format!(
+            "Rejecting duplicate live attach for session {} on connection {} because {} is already attached",
+            session_id, client_connection_id, conflict.client_id
+        ));
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: format!(
+                "Session '{}' already has a connected TUI client. jcode does not currently support multiple interactive attachments to the same live session. Close the other window or wait for it to disconnect, then retry.",
+                session_id
+            ),
+            retry_after_secs: Some(1),
+        });
+        return Ok(());
+    }
+
     {
         let mut agent_guard = agent.lock().await;
         agent_guard.mark_closed();
@@ -587,7 +611,7 @@ pub(super) async fn handle_resume_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_reload, mark_remote_reload_started, rename_shutdown_signal,
+        handle_reload, handle_resume_session, mark_remote_reload_started, rename_shutdown_signal,
         session_was_interrupted_by_reload,
     };
     use crate::agent::Agent;
@@ -595,13 +619,19 @@ mod tests {
     use crate::message::{Message, ToolDefinition};
     use crate::protocol::ServerEvent;
     use crate::provider::{EventStream, Provider};
+    use crate::server::{
+        ClientConnectionInfo, FileAccess, SessionInterruptQueues, SwarmEvent, SwarmMember,
+        VersionedPlan,
+    };
     use crate::tool::Registry;
     use anyhow::Result;
     use async_trait::async_trait;
     use jcode_agent_runtime::InterruptSignal;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::path::PathBuf;
     use std::sync::Arc;
-    use tokio::sync::{Mutex, RwLock, mpsc};
+    use std::time::Instant;
+    use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
     struct MockProvider;
 
@@ -641,6 +671,19 @@ mod tests {
     ) -> Agent {
         let mut session =
             crate::session::Session::create_with_id("session_test_reload".to_string(), None, None);
+        session.model = Some("mock".to_string());
+        session.replace_messages(messages);
+        Agent::new_with_session(provider, registry, session, None)
+    }
+
+    fn build_test_agent_with_id(
+        provider: Arc<dyn Provider>,
+        registry: Registry,
+        session_id: &str,
+        messages: Vec<crate::session::StoredMessage>,
+    ) -> Agent {
+        let mut session =
+            crate::session::Session::create_with_id(session_id.to_string(), None, None);
         session.model = Some("mock".to_string());
         session.replace_messages(messages);
         Agent::new_with_session(provider, registry, session, None)
@@ -812,5 +855,152 @@ mod tests {
             .expect("restored session should retain shutdown signal");
         renamed.fire();
         assert!(signal.is_set());
+    }
+
+    #[tokio::test]
+    async fn handle_resume_session_rejects_duplicate_live_tui_attach() {
+        let _guard = crate::storage::lock_test_env();
+        let runtime = tempfile::TempDir::new().expect("create runtime dir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+
+        let target_session_id = "session_existing_live";
+        let temp_session_id = "session_temp_connecting";
+
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+        let existing_registry = Registry::new(provider.clone()).await;
+        let existing_agent = Arc::new(Mutex::new(build_test_agent_with_id(
+            provider.clone(),
+            existing_registry,
+            target_session_id,
+            Vec::new(),
+        )));
+
+        let new_registry = Registry::new(provider.clone()).await;
+        let new_agent = Arc::new(Mutex::new(build_test_agent_with_id(
+            provider.clone(),
+            new_registry.clone(),
+            temp_session_id,
+            Vec::new(),
+        )));
+
+        let sessions = Arc::new(RwLock::new(HashMap::from([
+            (target_session_id.to_string(), Arc::clone(&existing_agent)),
+            (temp_session_id.to_string(), Arc::clone(&new_agent)),
+        ])));
+        let shutdown_signals = Arc::new(RwLock::new(HashMap::<String, InterruptSignal>::new()));
+        let soft_interrupt_queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
+        let now = Instant::now();
+        let client_connections = Arc::new(RwLock::new(HashMap::from([
+            (
+                "conn_existing".to_string(),
+                ClientConnectionInfo {
+                    client_id: "conn_existing".to_string(),
+                    session_id: target_session_id.to_string(),
+                    debug_client_id: Some("debug_existing".to_string()),
+                    connected_at: now,
+                    last_seen: now,
+                },
+            ),
+            (
+                "conn_new".to_string(),
+                ClientConnectionInfo {
+                    client_id: "conn_new".to_string(),
+                    session_id: temp_session_id.to_string(),
+                    debug_client_id: Some("debug_new".to_string()),
+                    connected_at: now,
+                    last_seen: now,
+                },
+            ),
+        ])));
+        let swarm_members = Arc::new(RwLock::new(HashMap::<String, SwarmMember>::new()));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
+        let file_touches = Arc::new(RwLock::new(HashMap::<PathBuf, Vec<FileAccess>>::new()));
+        let files_touched_by_session =
+            Arc::new(RwLock::new(HashMap::<String, HashSet<PathBuf>>::new()));
+        let channel_subscriptions = Arc::new(RwLock::new(HashMap::<
+            String,
+            HashMap<String, HashSet<String>>,
+        >::new()));
+        let channel_subscriptions_by_session = Arc::new(RwLock::new(HashMap::<
+            String,
+            HashMap<String, HashSet<String>>,
+        >::new()));
+        let swarm_plans = Arc::new(RwLock::new(HashMap::<String, VersionedPlan>::new()));
+        let swarm_coordinators = Arc::new(RwLock::new(HashMap::<String, String>::new()));
+        let client_count = Arc::new(RwLock::new(2usize));
+        let (stream_a, _stream_b) = crate::transport::stream_pair().expect("stream pair");
+        let (_reader, writer_half) = stream_a.into_split();
+        let writer = Arc::new(Mutex::new(writer_half));
+        let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
+        let event_history = Arc::new(RwLock::new(VecDeque::<SwarmEvent>::new()));
+        let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (swarm_event_tx, _swarm_event_rx) = broadcast::channel::<SwarmEvent>(8);
+        let mcp_pool = Arc::new(crate::mcp::SharedMcpPool::from_default_config());
+
+        let mut client_selfdev = false;
+        let mut client_session_id = temp_session_id.to_string();
+
+        handle_resume_session(
+            42,
+            target_session_id.to_string(),
+            false,
+            &mut client_selfdev,
+            &mut client_session_id,
+            "conn_new",
+            &new_agent,
+            &provider,
+            &new_registry,
+            &sessions,
+            &shutdown_signals,
+            &soft_interrupt_queues,
+            &client_connections,
+            &swarm_members,
+            &swarms_by_id,
+            &file_touches,
+            &files_touched_by_session,
+            &channel_subscriptions,
+            &channel_subscriptions_by_session,
+            &swarm_plans,
+            &swarm_coordinators,
+            &client_count,
+            &writer,
+            "test-server",
+            "🌿",
+            &client_event_tx,
+            &mcp_pool,
+            &event_history,
+            &event_counter,
+            &swarm_event_tx,
+        )
+        .await
+        .expect("resume should return gracefully with server error event");
+
+        let event = client_event_rx.recv().await.expect("expected server event");
+        match event {
+            ServerEvent::Error {
+                id,
+                message,
+                retry_after_secs,
+            } => {
+                assert_eq!(id, 42);
+                assert!(message.contains("already has a connected TUI client"));
+                assert_eq!(retry_after_secs, Some(1));
+            }
+            other => panic!("expected duplicate-attach error, got {other:?}"),
+        }
+
+        assert_eq!(client_session_id, temp_session_id);
+        let sessions_guard = sessions.read().await;
+        let mapped_agent = sessions_guard
+            .get(target_session_id)
+            .expect("existing live session should remain mapped");
+        assert!(Arc::ptr_eq(mapped_agent, &existing_agent));
+
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
     }
 }
