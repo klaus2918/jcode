@@ -29,9 +29,9 @@ use super::provider_control::{
 };
 use super::{
     AwaitMembersRuntime, ClientConnectionInfo, ClientDebugState, FileAccess,
-    SessionInterruptQueues, SharedContext, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
-    broadcast_swarm_status, enqueue_soft_interrupt, record_swarm_event,
-    register_session_interrupt_queue, swarm_id_for_dir, truncate_detail, update_member_status,
+    SessionInterruptQueues, SharedContext, SwarmEvent, SwarmMember, VersionedPlan,
+    enqueue_soft_interrupt, register_session_interrupt_queue, truncate_detail,
+    update_member_status,
 };
 use crate::agent::Agent;
 use crate::bus::{Bus, BusEvent};
@@ -178,70 +178,6 @@ pub(super) async fn handle_client(
     let (client_event_tx, mut client_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
 
-    // Get the working directory and swarm id (shared across worktrees)
-    let working_dir = std::env::current_dir().ok();
-    let swarm_id = if swarm_enabled {
-        swarm_id_for_dir(working_dir.clone())
-    } else {
-        None
-    };
-
-    // Register this client as a swarm member
-    {
-        let mut members = swarm_members.write().await;
-        let now = Instant::now();
-        members.insert(
-            client_session_id.clone(),
-            SwarmMember {
-                session_id: client_session_id.clone(),
-                event_tx: client_event_tx.clone(),
-                working_dir: working_dir.clone(),
-                swarm_id: swarm_id.clone(),
-                swarm_enabled,
-                status: "spawned".to_string(),
-                detail: None,
-                friendly_name: friendly_name.clone(),
-                role: "agent".to_string(),
-                joined_at: now,
-                last_status_change: now,
-                is_headless: false,
-            },
-        );
-    }
-    // Add to swarm by swarm_id (separate scope to avoid holding swarm_members lock)
-    if let Some(ref swarm_id_ref) = swarm_id {
-        let mut swarms = swarms_by_id.write().await;
-        swarms
-            .entry(swarm_id_ref.to_string())
-            .or_insert_with(HashSet::new)
-            .insert(client_session_id.clone());
-        record_swarm_event(
-            &event_history,
-            &event_counter,
-            &swarm_event_tx,
-            client_session_id.clone(),
-            friendly_name.clone(),
-            Some(swarm_id_ref.to_string()),
-            SwarmEventType::MemberChange {
-                action: "joined".to_string(),
-            },
-        )
-        .await;
-    }
-    if let Some(ref swarm_id_ref) = swarm_id {
-        broadcast_swarm_status(swarm_id_ref, &swarm_members, &swarms_by_id).await;
-    }
-    update_member_status(
-        &client_session_id,
-        "ready",
-        None,
-        &swarm_members,
-        &swarms_by_id,
-        Some(&event_history),
-        Some(&event_counter),
-        Some(&swarm_event_tx),
-    )
-    .await;
     // Spawn event forwarder for this client only
     let writer_clone = Arc::clone(&writer);
     let event_handle = tokio::spawn(async move {
@@ -608,26 +544,132 @@ pub(super) async fn handle_client(
                 id,
                 working_dir: subscribe_working_dir,
                 selfdev,
+                target_session_id,
+                client_has_local_history,
             } => {
-                handle_subscribe(
-                    id,
-                    subscribe_working_dir,
-                    selfdev,
-                    &mut client_selfdev,
-                    &client_session_id,
-                    &friendly_name,
-                    &agent,
-                    &registry,
-                    &swarm_members,
-                    &swarms_by_id,
-                    &channel_subscriptions,
-                    &channel_subscriptions_by_session,
-                    &swarm_plans,
-                    &swarm_coordinators,
-                    &client_event_tx,
-                    &mcp_pool,
-                )
-                .await;
+                if let Some(target_session_id) = target_session_id {
+                    if crate::session::session_exists(&target_session_id) {
+                        let pre_resume_session_id = client_session_id.clone();
+                        if handle_resume_session(
+                            id,
+                            target_session_id.clone(),
+                            client_has_local_history,
+                            &mut client_selfdev,
+                            &mut client_session_id,
+                            &client_connection_id,
+                            &agent,
+                            &provider,
+                            &registry,
+                            &sessions,
+                            &shutdown_signals,
+                            &soft_interrupt_queues,
+                            &client_connections,
+                            &swarm_members,
+                            &swarms_by_id,
+                            &file_touches,
+                            &files_touched_by_session,
+                            &channel_subscriptions,
+                            &channel_subscriptions_by_session,
+                            &swarm_plans,
+                            &swarm_coordinators,
+                            &client_count,
+                            &writer,
+                            &server_name,
+                            &server_icon,
+                            &client_event_tx,
+                            &mcp_pool,
+                            &event_history,
+                            &event_counter,
+                            &swarm_event_tx,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            break;
+                        }
+                        if client_session_id == target_session_id {
+                            handle_subscribe(
+                                id,
+                                subscribe_working_dir,
+                                selfdev,
+                                false,
+                                &mut client_selfdev,
+                                &client_session_id,
+                                &friendly_name,
+                                &agent,
+                                &registry,
+                                swarm_enabled,
+                                &swarm_members,
+                                &swarms_by_id,
+                                &channel_subscriptions,
+                                &channel_subscriptions_by_session,
+                                &swarm_plans,
+                                &swarm_coordinators,
+                                &client_event_tx,
+                                &mcp_pool,
+                                &event_history,
+                                &event_counter,
+                                &swarm_event_tx,
+                            )
+                            .await;
+                        } else {
+                            crate::logging::warn(&format!(
+                                "Target-aware subscribe failed to bind {} from temporary {}",
+                                target_session_id, pre_resume_session_id
+                            ));
+                        }
+                    } else {
+                        handle_subscribe(
+                            id,
+                            subscribe_working_dir,
+                            selfdev,
+                            true,
+                            &mut client_selfdev,
+                            &client_session_id,
+                            &friendly_name,
+                            &agent,
+                            &registry,
+                            swarm_enabled,
+                            &swarm_members,
+                            &swarms_by_id,
+                            &channel_subscriptions,
+                            &channel_subscriptions_by_session,
+                            &swarm_plans,
+                            &swarm_coordinators,
+                            &client_event_tx,
+                            &mcp_pool,
+                            &event_history,
+                            &event_counter,
+                            &swarm_event_tx,
+                        )
+                        .await;
+                    }
+                } else {
+                    handle_subscribe(
+                        id,
+                        subscribe_working_dir,
+                        selfdev,
+                        true,
+                        &mut client_selfdev,
+                        &client_session_id,
+                        &friendly_name,
+                        &agent,
+                        &registry,
+                        swarm_enabled,
+                        &swarm_members,
+                        &swarms_by_id,
+                        &channel_subscriptions,
+                        &channel_subscriptions_by_session,
+                        &swarm_plans,
+                        &swarm_coordinators,
+                        &client_event_tx,
+                        &mcp_pool,
+                        &event_history,
+                        &event_counter,
+                        &swarm_event_tx,
+                    )
+                    .await;
+                }
             }
 
             Request::GetHistory { id } => {

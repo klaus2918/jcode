@@ -59,13 +59,15 @@ impl Client {
 
     /// Subscribe to events
     pub async fn subscribe(&mut self) -> Result<u64> {
-        self.subscribe_with_info(None, None).await
+        self.subscribe_with_info(None, None, None, false).await
     }
 
     pub async fn subscribe_with_info(
         &mut self,
         working_dir: Option<String>,
         selfdev: Option<bool>,
+        target_session_id: Option<String>,
+        client_has_local_history: bool,
     ) -> Result<u64> {
         let id = self.next_id;
         self.next_id += 1;
@@ -74,6 +76,8 @@ impl Client {
             id,
             working_dir,
             selfdev,
+            target_session_id,
+            client_has_local_history,
         };
         let json = serde_json::to_string(&request)? + "\n";
         self.writer.write_all(json.as_bytes()).await?;

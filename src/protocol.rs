@@ -172,6 +172,10 @@ pub enum Request {
         working_dir: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selfdev: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        client_has_local_history: bool,
     },
 
     /// Get full conversation history (for TUI sync on connect)

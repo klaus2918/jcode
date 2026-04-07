@@ -1157,6 +1157,8 @@ mod tests {
                 id,
                 working_dir: Some(working_dir.display().to_string()),
                 selfdev: None,
+                target_session_id: None,
+                client_has_local_history: false,
             })
             .await?;
             self.read_until(

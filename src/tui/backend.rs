@@ -286,42 +286,32 @@ impl RemoteConnection {
         // Subscribe to events
         let subscribe_start = Instant::now();
         let (working_dir, selfdev) = super::subscribe_metadata();
+        let resume_target = resume_session
+            .filter(|session_id| crate::session::session_exists(session_id))
+            .map(|session_id| session_id.to_string());
         conn.send_request(Request::Subscribe {
             id: conn.next_request_id,
             working_dir,
             selfdev,
+            target_session_id: resume_target.clone(),
+            client_has_local_history,
         })
         .await?;
         let subscribe_ms = subscribe_start.elapsed().as_millis();
         conn.next_request_id += 1;
 
-        // If resuming a session, send ResumeSession BEFORE GetHistory.
-        // ResumeSession already returns a full History payload on success, so
-        // avoid an immediate duplicate GetHistory request in that case.
+        // If resuming a session, the target-aware Subscribe attaches directly to
+        // that session and returns History, so avoid a second bootstrap request.
         let bootstrap_request_start = Instant::now();
-        let mut sent_resume_request = false;
         let mut bootstrap_request = "get_history";
-        if let Some(session_id) = resume_session {
-            if crate::session::session_exists(session_id) {
-                conn.send_request(Request::ResumeSession {
-                    id: conn.next_request_id,
-                    session_id: session_id.to_string(),
-                    client_has_local_history,
-                })
-                .await?;
-                conn.next_request_id += 1;
-                sent_resume_request = true;
-                bootstrap_request = "resume_session";
-            }
-        }
-
-        // Request history when not resuming (or when resume ID is missing on disk).
-        if !sent_resume_request {
+        if resume_target.is_none() {
             conn.send_request(Request::GetHistory {
                 id: conn.next_request_id,
             })
             .await?;
             conn.next_request_id += 1;
+        } else {
+            bootstrap_request = "subscribe_resume";
         }
         let bootstrap_request_ms = bootstrap_request_start.elapsed().as_millis();
 

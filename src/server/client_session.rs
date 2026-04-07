@@ -186,15 +186,101 @@ pub(super) async fn handle_clear_session(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn ensure_client_swarm_member(
+    client_session_id: &str,
+    friendly_name: &Option<String>,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+    agent: &Arc<Mutex<Agent>>,
+    swarm_enabled: bool,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
+    event_counter: &Arc<std::sync::atomic::AtomicU64>,
+    swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+) {
+    let (working_dir, derived_swarm_id, fallback_name) = {
+        let agent_guard = agent.lock().await;
+        let working_dir = agent_guard.working_dir().map(PathBuf::from);
+        let derived_swarm_id = if swarm_enabled {
+            swarm_id_for_dir(working_dir.clone())
+        } else {
+            None
+        };
+        let fallback_name = agent_guard.session_short_name().map(|value| value.to_string());
+        (working_dir, derived_swarm_id, fallback_name)
+    };
+
+    let member_name = friendly_name.clone().or(fallback_name);
+    let mut inserted = false;
+    {
+        let mut members = swarm_members.write().await;
+        if let Some(member) = members.get_mut(client_session_id) {
+            member.event_tx = client_event_tx.clone();
+            member.swarm_enabled = swarm_enabled;
+            member.is_headless = false;
+            if member.friendly_name.is_none() {
+                member.friendly_name = member_name.clone();
+            }
+        } else {
+            let now = Instant::now();
+            members.insert(
+                client_session_id.to_string(),
+                SwarmMember {
+                    session_id: client_session_id.to_string(),
+                    event_tx: client_event_tx.clone(),
+                    working_dir: working_dir.clone(),
+                    swarm_id: derived_swarm_id.clone(),
+                    swarm_enabled,
+                    status: "spawned".to_string(),
+                    detail: None,
+                    friendly_name: member_name.clone(),
+                    role: "agent".to_string(),
+                    joined_at: now,
+                    last_status_change: now,
+                    is_headless: false,
+                },
+            );
+            inserted = true;
+        }
+    }
+
+    if inserted {
+        if let Some(ref swarm_id_ref) = derived_swarm_id {
+            let mut swarms = swarms_by_id.write().await;
+            swarms
+                .entry(swarm_id_ref.to_string())
+                .or_insert_with(HashSet::new)
+                .insert(client_session_id.to_string());
+            drop(swarms);
+            super::record_swarm_event(
+                event_history,
+                event_counter,
+                swarm_event_tx,
+                client_session_id.to_string(),
+                member_name,
+                Some(swarm_id_ref.to_string()),
+                crate::server::SwarmEventType::MemberChange {
+                    action: "joined".to_string(),
+                },
+            )
+            .await;
+            broadcast_swarm_status(swarm_id_ref, swarm_members, swarms_by_id).await;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_subscribe(
     id: u64,
     subscribe_working_dir: Option<String>,
     selfdev: Option<bool>,
+    register_mcp_tools: bool,
     client_selfdev: &mut bool,
     client_session_id: &str,
-    _friendly_name: &Option<String>,
+    friendly_name: &Option<String>,
     agent: &Arc<Mutex<Agent>>,
     registry: &Registry,
+    swarm_enabled: bool,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
@@ -205,8 +291,25 @@ pub(super) async fn handle_subscribe(
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
+    event_counter: &Arc<std::sync::atomic::AtomicU64>,
+    swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {
     let subscribe_start = Instant::now();
+    ensure_client_swarm_member(
+        client_session_id,
+        friendly_name,
+        client_event_tx,
+        agent,
+        swarm_enabled,
+        swarm_members,
+        swarms_by_id,
+        event_history,
+        event_counter,
+        swarm_event_tx,
+    )
+    .await;
+
     if let Some(ref dir) = subscribe_working_dir {
         let mut agent_guard = agent.lock().await;
         agent_guard.set_working_dir(dir);
@@ -328,15 +431,19 @@ pub(super) async fn handle_subscribe(
         registry.register_selfdev_tools().await;
     }
 
-    let mcp_register_start = Instant::now();
-    registry
-        .register_mcp_tools(
-            Some(client_event_tx.clone()),
-            Some(Arc::clone(mcp_pool)),
-            Some(client_session_id.to_string()),
-        )
-        .await;
-    let mcp_register_ms = mcp_register_start.elapsed().as_millis();
+    let mcp_register_ms = if register_mcp_tools {
+        let mcp_register_start = Instant::now();
+        registry
+            .register_mcp_tools(
+                Some(client_event_tx.clone()),
+                Some(Arc::clone(mcp_pool)),
+                Some(client_session_id.to_string()),
+            )
+            .await;
+        mcp_register_start.elapsed().as_millis()
+    } else {
+        0
+    };
 
     crate::logging::info(&format!(
         "[TIMING] handle_subscribe: session={}, working_dir_set={}, selfdev={}, mcp_register={}ms, total={}ms",
@@ -346,6 +453,18 @@ pub(super) async fn handle_subscribe(
         mcp_register_ms,
         subscribe_start.elapsed().as_millis(),
     ));
+
+    update_member_status(
+        client_session_id,
+        "ready",
+        None,
+        swarm_members,
+        swarms_by_id,
+        Some(event_history),
+        Some(event_counter),
+        Some(swarm_event_tx),
+    )
+    .await;
 
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }
@@ -492,7 +611,7 @@ pub(super) async fn handle_resume_session(
             .register_mcp_tools(
                 Some(client_event_tx.clone()),
                 Some(Arc::clone(mcp_pool)),
-                Some(client_session_id.clone()),
+                Some(session_id.clone()),
             )
             .await;
     }
