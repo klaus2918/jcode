@@ -448,7 +448,11 @@ pub(crate) fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'st
     };
 
     let w = width as usize;
-    let model_info = if model.is_empty() {
+    let suppress_placeholder_detail = provider_label.is_empty()
+        && upstream.is_none()
+        && matches!(model.as_str(), "" | "connecting to server…" | "connected");
+
+    let model_info = if suppress_placeholder_detail || model.is_empty() {
         String::new()
     } else if let Some(ref provider) = upstream {
         if provider_label.is_empty() {
@@ -773,6 +777,24 @@ mod tests {
 
         assert!(rendered.contains("loading session…"));
         assert!(!rendered.contains("(unknown)"));
+        assert!(!rendered.contains("(remote)"));
+    }
+
+    #[test]
+    fn build_header_lines_hides_secondary_placeholder_during_brief_connecting_phase() {
+        let app = crate::tui::app::App::new_for_remote(None);
+
+        let lines = build_header_lines(&app, 80);
+        let rendered = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(
+            !rendered.contains("connecting to server…"),
+            "brief connecting placeholder should not render the secondary detail line"
+        );
         assert!(!rendered.contains("(remote)"));
     }
 

@@ -8180,7 +8180,10 @@ fn test_remote_tui_state_shows_connected_after_startup_phase_clears_without_mode
 fn test_remote_tui_state_hides_brief_connecting_phase_without_cached_model() {
     let app = App::new_for_remote(None);
 
-    assert_eq!(crate::tui::TuiState::provider_model(&app), "");
+    assert_eq!(
+        crate::tui::TuiState::provider_model(&app),
+        "connecting to server…"
+    );
     assert_eq!(crate::tui::TuiState::provider_name(&app), "");
 }
 
@@ -8224,7 +8227,10 @@ fn test_remote_startup_phase_does_not_require_duplicate_status_notice() {
     let mut app = App::new_for_remote(None);
     app.set_remote_startup_phase(crate::tui::app::RemoteStartupPhase::Connecting);
 
-    assert_eq!(crate::tui::TuiState::provider_model(&app), "");
+    assert_eq!(
+        crate::tui::TuiState::provider_model(&app),
+        "connecting to server…"
+    );
     assert_eq!(app.status_notice(), None);
 
     app.set_remote_startup_phase(crate::tui::app::RemoteStartupPhase::LoadingSession);

@@ -314,7 +314,8 @@ impl crate::tui::TuiState for App {
 
     fn provider_model(&self) -> String {
         if self.is_remote {
-            self.remote_header_provider_model().unwrap_or_default()
+            self.remote_header_provider_model()
+                .unwrap_or_else(|| "connecting to server…".to_string())
         } else {
             self.remote_provider_model
                 .clone()
