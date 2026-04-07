@@ -3332,7 +3332,7 @@ fn test_mouse_scroll_changelog_overlay_updates_changelog_scroll() {
 }
 
 #[test]
-fn test_mouse_scroll_over_unfocused_diagram_resizes_immediately_without_animation() {
+fn test_mouse_scroll_over_unfocused_diagram_does_not_resize_pane() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
@@ -3353,16 +3353,17 @@ fn test_mouse_scroll_over_unfocused_diagram_resizes_immediately_without_animatio
         None,
     );
 
-    app.handle_mouse_event(MouseEvent {
+    let scroll_only = app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::ScrollUp,
         column: 90,
         row: 10,
         modifiers: KeyModifiers::empty(),
     });
 
-    assert_eq!(app.diagram_pane_ratio, 43);
-    assert_eq!(app.diagram_pane_ratio_from, 43);
-    assert_eq!(app.diagram_pane_ratio_target, 43);
+    assert!(scroll_only);
+    assert_eq!(app.diagram_pane_ratio, 40);
+    assert_eq!(app.diagram_pane_ratio_from, 40);
+    assert_eq!(app.diagram_pane_ratio_target, 40);
     assert!(app.diagram_pane_anim_start.is_none());
 
     crate::tui::mermaid::clear_active_diagrams();

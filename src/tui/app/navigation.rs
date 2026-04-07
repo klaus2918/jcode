@@ -775,15 +775,11 @@ impl App {
                 }
                 handled_scroll = true;
             } else {
-                let delta: i8 = match mouse.kind {
-                    MouseEventKind::ScrollUp => 3,
-                    MouseEventKind::ScrollDown => -3,
-                    _ => 0,
-                };
-                if delta != 0 {
-                    self.adjust_diagram_pane_ratio_immediate(delta);
-                    handled_scroll = true;
-                }
+                // Do not resize the pinned diagram pane from plain mouse-wheel
+                // scrolling. That made incidental scrolling over the side pane
+                // unexpectedly change the pane width. Resize remains available
+                // via drag, keyboard shortcuts, and presets.
+                handled_scroll = true;
             }
         }
 
