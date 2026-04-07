@@ -325,7 +325,7 @@ pub(in crate::tui::app) async fn connect_with_retry(
     let connect = RemoteConnection::connect_with_session(
         session_to_resume,
         client_has_local_history,
-        state.reconnect_attempts > 0,
+        state.reconnect_attempts > 0 && client_has_local_history,
     );
     tokio::pin!(connect);
     let mut redraw = disconnected_redraw_interval();

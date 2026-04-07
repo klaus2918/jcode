@@ -1,7 +1,7 @@
 use super::client_state::{HistoryPayloadMode, send_history, spawn_model_prefetch_update};
 use super::{
-    ClientConnectionInfo, ClientDebugState, FileAccess, SessionInterruptQueues, SwarmEvent, SwarmMember,
-    VersionedPlan, broadcast_swarm_status, register_session_interrupt_queue,
+    ClientConnectionInfo, ClientDebugState, FileAccess, SessionInterruptQueues, SwarmEvent,
+    SwarmMember, VersionedPlan, broadcast_swarm_status, register_session_interrupt_queue,
     remove_plan_participant, remove_session_channel_subscriptions, remove_session_file_touches,
     remove_session_interrupt_queue, rename_plan_participant, rename_session_interrupt_queue,
     swarm_id_for_dir, update_member_status,
@@ -206,7 +206,9 @@ async fn ensure_client_swarm_member(
         } else {
             None
         };
-        let fallback_name = agent_guard.session_short_name().map(|value| value.to_string());
+        let fallback_name = agent_guard
+            .session_short_name()
+            .map(|value| value.to_string());
         (working_dir, derived_swarm_id, fallback_name)
     };
 
@@ -534,6 +536,7 @@ pub(super) async fn handle_resume_session(
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) -> Result<()> {
+    let can_take_over_live_session = allow_session_takeover && client_has_local_history;
     let conflicting_live_client = {
         let connections = client_connections.read().await;
         connections
@@ -543,7 +546,7 @@ pub(super) async fn handle_resume_session(
     };
 
     if let Some(conflict) = conflicting_live_client {
-        if allow_session_takeover {
+        if can_take_over_live_session {
             crate::logging::info(&format!(
                 "Taking over live session {} on connection {} by superseding {}",
                 session_id, client_connection_id, conflict.client_id
@@ -568,19 +571,26 @@ pub(super) async fn handle_resume_session(
                 let _ = disconnect_tx.send(());
             }
         } else {
-        crate::logging::warn(&format!(
-            "Rejecting duplicate live attach for session {} on connection {} because {} is already attached",
-            session_id, client_connection_id, conflict.client_id
-        ));
-        let _ = client_event_tx.send(ServerEvent::Error {
-            id,
-            message: format!(
-                "Session '{}' already has a connected TUI client. jcode does not currently support multiple interactive attachments to the same live session. Close the other window or wait for it to disconnect, then retry.",
-                session_id
-            ),
-            retry_after_secs: Some(1),
-        });
-        return Ok(());
+            if allow_session_takeover && !client_has_local_history {
+                crate::logging::warn(&format!(
+                    "Rejecting reconnect takeover for session {} on connection {} because the incoming client has no local history; existing live owner is {}",
+                    session_id, client_connection_id, conflict.client_id
+                ));
+            } else {
+                crate::logging::warn(&format!(
+                    "Rejecting duplicate live attach for session {} on connection {} because {} is already attached",
+                    session_id, client_connection_id, conflict.client_id
+                ));
+            }
+            let _ = client_event_tx.send(ServerEvent::Error {
+                id,
+                message: format!(
+                    "Session '{}' already has a connected TUI client. jcode does not currently support multiple interactive attachments to the same live session. Close the other window or wait for it to disconnect, then retry.",
+                    session_id
+                ),
+                retry_after_secs: Some(1),
+            });
+            return Ok(());
         }
     }
 
@@ -767,8 +777,8 @@ mod tests {
     use crate::protocol::ServerEvent;
     use crate::provider::{EventStream, Provider};
     use crate::server::{
-        ClientConnectionInfo, ClientDebugState, FileAccess, SessionInterruptQueues, SwarmEvent, SwarmMember,
-        VersionedPlan,
+        ClientConnectionInfo, ClientDebugState, FileAccess, SessionInterruptQueues, SwarmEvent,
+        SwarmMember, VersionedPlan,
     };
     use crate::tool::Registry;
     use anyhow::Result;
@@ -1156,7 +1166,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_resume_session_allows_reconnect_takeover() {
+    async fn handle_resume_session_allows_reconnect_takeover_with_local_history() {
         let _guard = crate::storage::lock_test_env();
         let runtime = tempfile::TempDir::new().expect("create runtime dir");
         let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
@@ -1170,7 +1180,9 @@ mod tests {
             None,
             Some("Reconnect Takeover".to_string()),
         );
-        persisted.save().expect("persist reconnect takeover session");
+        persisted
+            .save()
+            .expect("persist reconnect takeover session");
 
         let provider: Arc<dyn Provider> = Arc::new(MockProvider);
         let existing_registry = Registry::new(provider.clone()).await;
@@ -1253,7 +1265,7 @@ mod tests {
         handle_resume_session(
             43,
             target_session_id.to_string(),
-            false,
+            true,
             true,
             &mut client_selfdev,
             &mut client_session_id,
@@ -1296,7 +1308,10 @@ mod tests {
         assert_eq!(client_session_id, target_session_id);
 
         let disconnect_signal = disconnect_rx.recv().await;
-        assert!(disconnect_signal.is_some(), "old client should be told to disconnect");
+        assert!(
+            disconnect_signal.is_some(),
+            "old client should be told to disconnect"
+        );
 
         let connections = client_connections.read().await;
         assert!(!connections.contains_key("conn_existing"));
@@ -1305,6 +1320,175 @@ mod tests {
                 .get("conn_new")
                 .map(|info| info.session_id.as_str()),
             Some(target_session_id)
+        );
+
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_resume_session_rejects_takeover_without_local_history() {
+        let _guard = crate::storage::lock_test_env();
+        let runtime = tempfile::TempDir::new().expect("create runtime dir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+
+        let target_session_id = "session_existing_live_takeover_rejected";
+        let temp_session_id = "session_temp_connecting_takeover_rejected";
+
+        let mut persisted = crate::session::Session::create_with_id(
+            target_session_id.to_string(),
+            None,
+            Some("Reconnect Takeover Rejected".to_string()),
+        );
+        persisted
+            .save()
+            .expect("persist reconnect takeover rejected session");
+
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+        let existing_registry = Registry::new(provider.clone()).await;
+        let existing_agent = Arc::new(Mutex::new(build_test_agent_with_id(
+            provider.clone(),
+            existing_registry,
+            target_session_id,
+            Vec::new(),
+        )));
+
+        let new_registry = Registry::new(provider.clone()).await;
+        let new_agent = Arc::new(Mutex::new(build_test_agent_with_id(
+            provider.clone(),
+            new_registry.clone(),
+            temp_session_id,
+            Vec::new(),
+        )));
+
+        let sessions = Arc::new(RwLock::new(HashMap::from([
+            (target_session_id.to_string(), Arc::clone(&existing_agent)),
+            (temp_session_id.to_string(), Arc::clone(&new_agent)),
+        ])));
+        let shutdown_signals = Arc::new(RwLock::new(HashMap::<String, InterruptSignal>::new()));
+        let soft_interrupt_queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
+        let now = Instant::now();
+        let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel();
+        let client_connections = Arc::new(RwLock::new(HashMap::from([
+            (
+                "conn_existing".to_string(),
+                ClientConnectionInfo {
+                    client_id: "conn_existing".to_string(),
+                    session_id: target_session_id.to_string(),
+                    debug_client_id: Some("debug_existing".to_string()),
+                    connected_at: now,
+                    last_seen: now,
+                    disconnect_tx,
+                },
+            ),
+            (
+                "conn_new".to_string(),
+                ClientConnectionInfo {
+                    client_id: "conn_new".to_string(),
+                    session_id: temp_session_id.to_string(),
+                    debug_client_id: Some("debug_new".to_string()),
+                    connected_at: now,
+                    last_seen: now,
+                    disconnect_tx: mpsc::unbounded_channel().0,
+                },
+            ),
+        ])));
+        let client_debug_state = Arc::new(RwLock::new(ClientDebugState::default()));
+        let swarm_members = Arc::new(RwLock::new(HashMap::<String, SwarmMember>::new()));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::<String, HashSet<String>>::new()));
+        let file_touches = Arc::new(RwLock::new(HashMap::<PathBuf, Vec<FileAccess>>::new()));
+        let files_touched_by_session =
+            Arc::new(RwLock::new(HashMap::<String, HashSet<PathBuf>>::new()));
+        let channel_subscriptions = Arc::new(RwLock::new(HashMap::<
+            String,
+            HashMap<String, HashSet<String>>,
+        >::new()));
+        let channel_subscriptions_by_session = Arc::new(RwLock::new(HashMap::<
+            String,
+            HashMap<String, HashSet<String>>,
+        >::new()));
+        let swarm_plans = Arc::new(RwLock::new(HashMap::<String, VersionedPlan>::new()));
+        let swarm_coordinators = Arc::new(RwLock::new(HashMap::<String, String>::new()));
+        let client_count = Arc::new(RwLock::new(2usize));
+        let (stream_a, _stream_b) = crate::transport::stream_pair().expect("stream pair");
+        let (_reader, writer_half) = stream_a.into_split();
+        let writer = Arc::new(Mutex::new(writer_half));
+        let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
+        let event_history = Arc::new(RwLock::new(VecDeque::<SwarmEvent>::new()));
+        let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (swarm_event_tx, _swarm_event_rx) = broadcast::channel::<SwarmEvent>(8);
+        let mcp_pool = Arc::new(crate::mcp::SharedMcpPool::from_default_config());
+
+        let mut client_selfdev = false;
+        let mut client_session_id = temp_session_id.to_string();
+
+        handle_resume_session(
+            44,
+            target_session_id.to_string(),
+            false,
+            true,
+            &mut client_selfdev,
+            &mut client_session_id,
+            "conn_new",
+            &new_agent,
+            &provider,
+            &new_registry,
+            &sessions,
+            &shutdown_signals,
+            &soft_interrupt_queues,
+            &client_connections,
+            &client_debug_state,
+            &swarm_members,
+            &swarms_by_id,
+            &file_touches,
+            &files_touched_by_session,
+            &channel_subscriptions,
+            &channel_subscriptions_by_session,
+            &swarm_plans,
+            &swarm_coordinators,
+            &client_count,
+            &writer,
+            "test-server",
+            "🌿",
+            &client_event_tx,
+            &mcp_pool,
+            &event_history,
+            &event_counter,
+            &swarm_event_tx,
+        )
+        .await
+        .expect("takeover without local history should return server error");
+
+        let event = client_event_rx.recv().await.expect("expected server event");
+        match event {
+            ServerEvent::Error {
+                id,
+                message,
+                retry_after_secs,
+            } => {
+                assert_eq!(id, 44);
+                assert!(message.contains("already has a connected TUI client"));
+                assert_eq!(retry_after_secs, Some(1));
+            }
+            other => panic!("expected duplicate-attach error, got {other:?}"),
+        }
+
+        assert_eq!(client_session_id, temp_session_id);
+        assert!(
+            disconnect_rx.try_recv().is_err(),
+            "existing live client must not be kicked"
+        );
+        let connections = client_connections.read().await;
+        assert!(connections.contains_key("conn_existing"));
+        assert_eq!(
+            connections
+                .get("conn_new")
+                .map(|info| info.session_id.as_str()),
+            Some(temp_session_id)
         );
 
         if let Some(prev_runtime) = prev_runtime {
