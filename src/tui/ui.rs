@@ -3446,6 +3446,9 @@ mod tests {
         fn queue_mode(&self) -> bool {
             self.queue_mode
         }
+        fn next_prompt_new_session_armed(&self) -> bool {
+            false
+        }
         fn has_stashed_input(&self) -> bool {
             false
         }

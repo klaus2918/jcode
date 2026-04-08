@@ -553,6 +553,10 @@ impl crate::tui::TuiState for App {
         self.queue_mode
     }
 
+    fn next_prompt_new_session_armed(&self) -> bool {
+        self.route_next_prompt_to_new_session
+    }
+
     fn has_stashed_input(&self) -> bool {
         self.stashed_input.is_some()
     }

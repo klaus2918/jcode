@@ -59,7 +59,7 @@ pub(super) fn input_hint_line_height(app: &dyn TuiState) -> u16 {
         && matches!(mode, ComposerMode::SlashCommand | ComposerMode::Chat)
         && (matches!(mode, ComposerMode::SlashCommand) || !app.is_processing());
 
-    if has_suggestions || shell_mode_hint(mode).is_some() {
+    if has_suggestions || shell_mode_hint(mode).is_some() || app.next_prompt_new_session_armed() {
         1
     } else if app.is_processing() && !app.input().is_empty() {
         1
@@ -1126,6 +1126,14 @@ pub(super) fn draw_input(
             shell_hint,
             Style::default().fg(shell_mode_color()),
         )));
+    } else if app.next_prompt_new_session_armed() {
+        hint_shown = true;
+        let hint = "  ↗ Next prompt opens a new session";
+        hint_line = Some(hint.trim().to_string());
+        lines.push(Line::from(Span::styled(
+            hint,
+            Style::default().fg(rgb(120, 200, 255)),
+        )));
     } else if app.is_processing() && !input_text.is_empty() {
         hint_shown = true;
         let hint = if app.queue_mode() {
@@ -1457,6 +1465,8 @@ fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {
     let mode = composer_mode(app.input(), app.is_remote_mode());
     if mode.is_shell() {
         ("$", shell_mode_color())
+    } else if app.next_prompt_new_session_armed() {
+        ("↗", rgb(120, 200, 255))
     } else if app.queue_mode() {
         ("⏳", queued_color())
     } else if let Some(ref conn) = app.connection_type() {

@@ -328,6 +328,103 @@ fn create_switchable_test_app(initial_provider: &str) -> (App, StdArc<StdMutex<S
     (app, active_provider)
 }
 
+#[derive(Clone)]
+struct AuthRefreshingMockProvider {
+    logged_in: StdArc<StdMutex<bool>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for AuthRefreshingMockProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[crate::message::ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        unimplemented!("AuthRefreshingMockProvider")
+    }
+
+    fn name(&self) -> &str {
+        "auth-refresh-mock"
+    }
+
+    fn model(&self) -> String {
+        if *self.logged_in.lock().unwrap() {
+            "claude-opus-4.6".to_string()
+        } else {
+            "gpt-5.4".to_string()
+        }
+    }
+
+    fn available_models_display(&self) -> Vec<String> {
+        if *self.logged_in.lock().unwrap() {
+            vec![
+                "claude-opus-4.6".to_string(),
+                "grok-code-fast-1".to_string(),
+            ]
+        } else {
+            vec!["gpt-5.4".to_string()]
+        }
+    }
+
+    fn model_routes(&self) -> Vec<crate::provider::ModelRoute> {
+        if *self.logged_in.lock().unwrap() {
+            vec![
+                crate::provider::ModelRoute {
+                    model: "claude-opus-4.6".to_string(),
+                    provider: "Copilot".to_string(),
+                    api_method: "copilot".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    cheapness: None,
+                },
+                crate::provider::ModelRoute {
+                    model: "grok-code-fast-1".to_string(),
+                    provider: "Copilot".to_string(),
+                    api_method: "copilot".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    cheapness: None,
+                },
+            ]
+        } else {
+            vec![crate::provider::ModelRoute {
+                model: "gpt-5.4".to_string(),
+                provider: "OpenAI".to_string(),
+                api_method: "openai-oauth".to_string(),
+                available: true,
+                detail: String::new(),
+                cheapness: None,
+            }]
+        }
+    }
+
+    fn on_auth_changed(&self) {
+        *self.logged_in.lock().unwrap() = true;
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+fn create_auth_refresh_test_app() -> App {
+    ensure_test_jcode_home_if_unset();
+    clear_persisted_test_ui_state();
+    crate::tui::ui::clear_test_render_state_for_tests();
+
+    let provider: Arc<dyn Provider> = Arc::new(AuthRefreshingMockProvider {
+        logged_in: StdArc::new(StdMutex::new(false)),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+    let mut app = App::new(provider, registry);
+    app.queue_mode = false;
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app
+}
+
 fn write_test_config(contents: &str) {
     let path = crate::config::Config::path().expect("config path");
     std::fs::create_dir_all(path.parent().expect("config dir")).expect("config dir");
@@ -4082,6 +4179,42 @@ fn test_model_picker_preview_arrow_keys_navigate() {
 }
 
 #[test]
+fn test_login_completed_surfaces_new_provider_models_in_local_model_picker() {
+    let mut app = create_auth_refresh_test_app();
+
+    app.handle_login_completed(crate::bus::LoginCompleted {
+        provider: "copilot".to_string(),
+        success: true,
+        message: "Authenticated as **octocat** via GitHub Copilot.\n\nCopilot models are now available in `/model`."
+            .to_string(),
+    });
+
+    app.open_model_picker();
+
+    let picker = app
+        .inline_interactive_state
+        .as_ref()
+        .expect("model picker should be open");
+
+    let copilot_entry = picker
+        .entries
+        .iter()
+        .find(|entry| entry.name == "claude-opus-4.6")
+        .expect("copilot model should be shown after login");
+
+    assert!(
+        picker
+            .entries
+            .iter()
+            .any(|entry| entry.name == "grok-code-fast-1"),
+        "all newly available Copilot models should appear in /model"
+    );
+    assert!(copilot_entry.options.iter().any(|route| {
+        route.provider == "Copilot" && route.api_method == "copilot" && route.available
+    }));
+}
+
+#[test]
 fn test_login_picker_preview_stays_open_and_updates_filter() {
     let mut app = create_test_app();
 
@@ -4598,6 +4731,67 @@ fn test_model_picker_includes_copilot_models_in_remote_mode() {
         "picker should contain copilot model grok-code-fast-1, got: {:?}",
         model_names
     );
+}
+
+#[test]
+fn test_available_models_updated_event_surfaces_authed_provider_in_remote_model_picker() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.handle_server_event(
+        crate::protocol::ServerEvent::AvailableModelsUpdated {
+            available_models: vec![
+                "claude-opus-4.6".to_string(),
+                "grok-code-fast-1".to_string(),
+            ],
+            available_model_routes: vec![
+                crate::provider::ModelRoute {
+                    model: "claude-opus-4.6".to_string(),
+                    provider: "Copilot".to_string(),
+                    api_method: "copilot".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    cheapness: None,
+                },
+                crate::provider::ModelRoute {
+                    model: "grok-code-fast-1".to_string(),
+                    provider: "Copilot".to_string(),
+                    api_method: "copilot".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    cheapness: None,
+                },
+            ],
+        },
+        &mut remote,
+    );
+
+    app.open_model_picker();
+
+    let picker = app
+        .inline_interactive_state
+        .as_ref()
+        .expect("model picker should be open");
+
+    let copilot_entry = picker
+        .entries
+        .iter()
+        .find(|entry| entry.name == "claude-opus-4.6")
+        .expect("copilot model should be shown after AvailableModelsUpdated");
+
+    assert!(
+        picker
+            .entries
+            .iter()
+            .any(|entry| entry.name == "grok-code-fast-1"),
+        "all auth-updated remote models should appear in /model"
+    );
+    assert!(copilot_entry.options.iter().any(|route| {
+        route.provider == "Copilot" && route.api_method == "copilot" && route.available
+    }));
 }
 
 #[test]
@@ -9151,6 +9345,32 @@ fn render_and_snap(
         .draw(|f| crate::tui::ui::draw(f, app))
         .expect("draw failed");
     buffer_to_text(terminal)
+}
+
+#[test]
+fn test_armed_new_session_mode_shows_input_hint_and_indicator() {
+    let _lock = scroll_render_test_lock();
+
+    let mut app = create_test_app();
+    app.input = "draft prompt".to_string();
+    app.cursor_pos = app.input.len();
+    app.handle_key(KeyCode::Char(' '), KeyModifiers::SUPER)
+        .expect("Super+Space should arm new-session mode");
+
+    let backend = ratatui::backend::TestBackend::new(60, 8);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    let rendered = render_and_snap(&app, &mut terminal);
+
+    assert!(
+        rendered.contains("↗ Next prompt opens a new session"),
+        "rendered UI should show armed-mode hint, got:\n{}",
+        rendered
+    );
+    assert!(
+        rendered.contains("↗"),
+        "rendered UI should show armed-mode indicator icon, got:\n{}",
+        rendered
+    );
 }
 
 #[test]

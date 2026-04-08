@@ -199,6 +199,10 @@ pub trait TuiState {
     fn rate_limit_remaining(&self) -> Option<Duration>;
     /// Whether queue mode is enabled (true = wait, false = immediate)
     fn queue_mode(&self) -> bool;
+    /// Whether the next normal prompt will be routed into a new headed session.
+    fn next_prompt_new_session_armed(&self) -> bool {
+        false
+    }
     /// Whether there is a stashed input (saved via Ctrl+S)
     fn has_stashed_input(&self) -> bool;
     /// Context info (what's loaded in context window - static + dynamic)
