@@ -2,7 +2,7 @@
 
 jcode collects **anonymous, minimal usage statistics** to help understand how many people use jcode, what providers/models are popular, whether onboarding works, which feature families are used, how often sessions succeed, and whether performance/regressions are improving. This data helps prioritize development without collecting prompts or code.
 
-Recent telemetry additions also include: coarse onboarding steps, explicit thumbs-up / thumbs-down feedback, build-channel / dev-mode cleanup flags, session/workflow/tool-category summaries, coarse project language buckets, and retention helpers like active days in the last 7 / 30 days.
+Recent telemetry additions also include: coarse onboarding steps, explicit thumbs-up / thumbs-down feedback, build-channel / dev-mode cleanup flags, session/workflow/tool-category summaries, coarse project language buckets, retention helpers like active days in the last 7 / 30 days, workflow cadence fields for session timing and multi-sessioning, and privacy-safe per-turn timing/outcome metrics.
 
 ## What We Collect
 
@@ -66,6 +66,12 @@ Recent telemetry additions also include: coarse onboarding steps, explicit thumb
 | `provider_start` | `"OpenAI"` | Provider when session started |
 | `model_start` | `"gpt-5.4"` | Model when session started |
 | `resumed_session` | `false` | Whether this was a resumed session |
+| `session_start_hour_utc` | `13` | Coarse hour-of-day bucket for workflow timing |
+| `session_start_weekday_utc` | `2` | Weekday bucket for usage cadence |
+| `previous_session_gap_secs` | `3600` | How long since this install's previous session |
+| `sessions_started_24h` / `sessions_started_7d` | `3` / `8` | How bursty a user's workflow is recently |
+| `active_sessions_at_start` | `2` | Concurrent sessions observed including this one |
+| `other_active_sessions_at_start` | `1` | Other sessions already open when this started |
 
 ### Session End / Crash Event
 
@@ -120,9 +126,42 @@ Recent telemetry additions also include: coarse onboarding steps, explicit thumb
 | `project_lang_*` | `true/false` | Coarse project-language buckets (Rust, JS/TS, Python, Go, Markdown, mixed) |
 | `days_since_install` | `12` | Rough install age in days |
 | `active_days_7d` / `active_days_30d` | `4` / `9` | How many distinct active days this install had recently |
+| `session_start_hour_utc` / `session_end_hour_utc` | `13` / `14` | Session timing buckets for workflow analysis |
+| `session_start_weekday_utc` / `session_end_weekday_utc` | `2` / `2` | Weekday timing buckets |
+| `previous_session_gap_secs` | `1800` | Time since the previous session on this install |
+| `sessions_started_24h` / `sessions_started_7d` | `5` / `12` | Recent session burstiness |
+| `active_sessions_at_start` / `other_active_sessions_at_start` | `2` / `1` | Concurrent-session snapshot at session start |
+| `max_concurrent_sessions` | `3` | Highest concurrent session count seen during the session |
+| `multi_sessioned` | `true` | Whether the user appeared to be running multiple sessions |
 | `resumed_session` | `false` | Whether this session was resumed |
 | `end_reason` | `"normal_exit"` | Coarse end reason |
 | `errors` | `{"provider_timeout": 0, ...}` | Count of errors by category |
+
+### Turn End Event
+
+This is a privacy-safe per-prompt summary event. It contains no prompt text, no response text, and no tool inputs/outputs.
+
+| Field | Example | Purpose |
+|-------|---------|----------|
+| `event` | `"turn_end"` | Event type |
+| `turn_index` | `4` | Which user turn in the session this was |
+| `turn_started_ms` | `182000` | Time from session start to turn start |
+| `turn_active_duration_ms` | `8200` | Active duration until the last meaningful response/tool activity |
+| `idle_before_turn_ms` / `idle_after_turn_ms` | `45000` / `12000` | Workflow pacing around the turn |
+| `assistant_responses` | `1` | Responses produced during this turn |
+| `first_assistant_response_ms` | `1200` | Time to first response within the turn |
+| `first_tool_call_ms` / `first_tool_success_ms` | `900` / `1500` | Tool timing within the turn |
+| `first_file_edit_ms` / `first_test_pass_ms` | `2200` / `4100` | Useful outcome timing within the turn |
+| `tool_calls` / `tool_failures` | `3` / `1` | Coarse tool activity within the turn |
+| `executed_tool_calls` / `executed_tool_successes` / `executed_tool_failures` | `4` / `3` / `1` | Registry tool execution outcomes |
+| `tool_latency_total_ms` / `tool_latency_max_ms` | `2600` / `1400` | Tool latency footprint within the turn |
+| `file_write_calls` / `tests_run` / `tests_passed` | `1` / `1` / `1` | Outcome proxies for coding workflows |
+| `feature_*_used` | `true/false` | Which feature families were touched in the turn |
+| `tool_cat_*` | `0..N` | Tool category mix for the turn |
+| `workflow_*_used` | `true/false` | What kind of workflow this turn looked like |
+| `turn_success` | `true` | Whether the turn produced a useful response/outcome |
+| `turn_abandoned` | `false` | Whether the turn appears to have ended without success |
+| `turn_end_reason` | `"next_user_prompt"` | Why the turn was finalized |
 
 ### Shared Event Metadata
 
@@ -132,7 +171,7 @@ Most events also carry a few coarse quality / cleanup fields:
 |-------|---------|----------|
 | `event_id` | `"uuid"` | Deduplication |
 | `session_id` | `"uuid"` | Joins session-scoped events together |
-| `schema_version` | `2` | Forward-compatible parsing |
+| `schema_version` | `3` | Forward-compatible parsing |
 | `build_channel` | `"release"` / `"selfdev"` / `"local_build"` | Filter out dev/test usage |
 | `is_git_checkout` | `true/false` | Distinguish source-tree usage from installed usage |
 | `is_ci` | `true/false` | Filter CI noise |
@@ -147,6 +186,7 @@ Most events also carry a few coarse quality / cleanup fields:
 - No IP addresses (Cloudflare Workers don't log these by default)
 - No personal information of any kind
 - No error messages or stack traces in telemetry (only coarse categories and end reasons)
+- No exact wall-clock timestamps beyond coarse hour-of-day / weekday buckets
 
 The UUID is randomly generated on first run and stored at `~/.jcode/telemetry_id`. It is not derived from your machine, username, email, or any identifiable information.
 

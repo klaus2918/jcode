@@ -2186,7 +2186,7 @@ fn emit_lifecycle_event(
         };
         let now = Instant::now();
         if let Some(active) = guard.as_mut() {
-            finalize_current_turn(&id, active, now, reason.as_str(), DeliveryMode::Blocking(BLOCKING_LIFECYCLE_TIMEOUT));
+            finalize_current_turn(&id, active, now, reason.as_str(), DeliveryMode::Background);
             observe_session_concurrency(active);
         }
         let state = match guard.as_ref() {

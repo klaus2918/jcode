@@ -28,6 +28,7 @@ wrangler d1 execute jcode-telemetry --remote --file=migrations/0001_expand_event
 wrangler d1 execute jcode-telemetry --remote --file=migrations/0002_transport_metrics.sql
 wrangler d1 execute jcode-telemetry --remote --file=migrations/0003_usage_expansion.sql
 wrangler d1 execute jcode-telemetry --remote --file=migrations/0004_telemetry_phase123.sql
+wrangler d1 execute jcode-telemetry --remote --file=migrations/0005_workflow_turn_telemetry.sql
 ```
 
 Then redeploy the worker:
@@ -51,6 +52,7 @@ npm run migrate:expand
 npm run migrate:transport
 npm run migrate:usage
 npm run migrate:phase123
+npm run migrate:workflow
 
 # Run the health dashboard query
 npm run health
@@ -100,6 +102,15 @@ wrangler d1 execute jcode-telemetry --command "SELECT step, COUNT(DISTINCT telem
 
 # Explicit feedback breakdown
 wrangler d1 execute jcode-telemetry --command "SELECT feedback_rating, feedback_reason, COUNT(*) AS events FROM events WHERE event = 'feedback' GROUP BY feedback_rating, feedback_reason ORDER BY events DESC"
+
+# Session starts by UTC hour (workflow timing)
+wrangler d1 execute jcode-telemetry --command "SELECT session_start_hour_utc, COUNT(*) AS sessions FROM events WHERE event = 'session_start' GROUP BY session_start_hour_utc ORDER BY session_start_hour_utc"
+
+# Multi-sessioning rate
+wrangler d1 execute jcode-telemetry --command "SELECT AVG(CASE WHEN multi_sessioned > 0 THEN 1.0 ELSE 0.0 END) AS multi_session_rate FROM events WHERE event IN ('session_end', 'session_crash') AND created_at > datetime('now', '-30 days')"
+
+# Per-turn latency and success
+wrangler d1 execute jcode-telemetry --command "SELECT AVG(turn_active_duration_ms) AS avg_turn_ms, AVG(CASE WHEN turn_success > 0 THEN 1.0 ELSE 0.0 END) AS turn_success_rate FROM events WHERE event = 'turn_end' AND created_at > datetime('now', '-30 days')"
 
 # Build-channel cleanup for active users
 wrangler d1 execute jcode-telemetry --command "SELECT build_channel, COUNT(DISTINCT telemetry_id) AS users FROM events WHERE event IN ('session_end', 'session_crash') AND created_at > datetime('now', '-30 days') GROUP BY build_channel ORDER BY users DESC"
