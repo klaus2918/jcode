@@ -495,6 +495,141 @@ pub fn derive_session_provider_key(provider_name: &str) -> Option<String> {
 }
 
 impl Session {
+    pub fn debug_memory_profile(&self) -> serde_json::Value {
+        let mut message_block_count = 0usize;
+        let mut text_blocks = 0usize;
+        let mut text_bytes = 0usize;
+        let mut reasoning_blocks = 0usize;
+        let mut reasoning_bytes = 0usize;
+        let mut tool_use_blocks = 0usize;
+        let mut tool_use_input_json_bytes = 0usize;
+        let mut tool_result_blocks = 0usize;
+        let mut tool_result_bytes = 0usize;
+        let mut image_blocks = 0usize;
+        let mut image_data_bytes = 0usize;
+        let mut openai_compaction_blocks = 0usize;
+        let mut openai_compaction_bytes = 0usize;
+
+        for message in &self.messages {
+            message_block_count += message.content.len();
+            for block in &message.content {
+                match block {
+                    ContentBlock::Text { text, .. } => {
+                        text_blocks += 1;
+                        text_bytes += text.len();
+                    }
+                    ContentBlock::Reasoning { text } => {
+                        reasoning_blocks += 1;
+                        reasoning_bytes += text.len();
+                    }
+                    ContentBlock::ToolUse { input, .. } => {
+                        tool_use_blocks += 1;
+                        tool_use_input_json_bytes += estimate_json_bytes(input);
+                    }
+                    ContentBlock::ToolResult { content, .. } => {
+                        tool_result_blocks += 1;
+                        tool_result_bytes += content.len();
+                    }
+                    ContentBlock::Image { data, .. } => {
+                        image_blocks += 1;
+                        image_data_bytes += data.len();
+                    }
+                    ContentBlock::OpenAICompaction { encrypted_content } => {
+                        openai_compaction_blocks += 1;
+                        openai_compaction_bytes += encrypted_content.len();
+                    }
+                }
+            }
+        }
+
+        let session_message_json_bytes: usize = self.messages.iter().map(estimate_json_bytes).sum();
+        let provider_messages_cache_json_bytes: usize = self
+            .provider_messages_cache
+            .iter()
+            .map(estimate_json_bytes)
+            .sum();
+        let env_snapshots_json_bytes: usize =
+            self.env_snapshots.iter().map(estimate_json_bytes).sum();
+        let memory_injections_json_bytes: usize =
+            self.memory_injections.iter().map(estimate_json_bytes).sum();
+        let replay_events_json_bytes: usize =
+            self.replay_events.iter().map(estimate_json_bytes).sum();
+        let compaction_json_bytes = self
+            .compaction
+            .as_ref()
+            .map(estimate_json_bytes)
+            .unwrap_or(0);
+        let compaction_summary_bytes = self
+            .compaction
+            .as_ref()
+            .map(|c| c.summary_text.len())
+            .unwrap_or(0);
+        let compaction_encrypted_bytes = self
+            .compaction
+            .as_ref()
+            .and_then(|c| c.openai_encrypted_content.as_ref())
+            .map(|text| text.len())
+            .unwrap_or(0);
+
+        serde_json::json!({
+            "session_id": self.id,
+            "messages": {
+                "count": self.messages.len(),
+                "content_blocks": message_block_count,
+                "json_bytes": session_message_json_bytes,
+                "text_blocks": text_blocks,
+                "text_bytes": text_bytes,
+                "reasoning_blocks": reasoning_blocks,
+                "reasoning_bytes": reasoning_bytes,
+                "tool_use_blocks": tool_use_blocks,
+                "tool_use_input_json_bytes": tool_use_input_json_bytes,
+                "tool_result_blocks": tool_result_blocks,
+                "tool_result_bytes": tool_result_bytes,
+                "image_blocks": image_blocks,
+                "image_data_bytes": image_data_bytes,
+                "openai_compaction_blocks": openai_compaction_blocks,
+                "openai_compaction_bytes": openai_compaction_bytes,
+            },
+            "compaction": {
+                "present": self.compaction.is_some(),
+                "json_bytes": compaction_json_bytes,
+                "summary_text_bytes": compaction_summary_bytes,
+                "encrypted_content_bytes": compaction_encrypted_bytes,
+            },
+            "env_snapshots": {
+                "count": self.env_snapshots.len(),
+                "json_bytes": env_snapshots_json_bytes,
+            },
+            "memory_injections": {
+                "count": self.memory_injections.len(),
+                "json_bytes": memory_injections_json_bytes,
+            },
+            "replay_events": {
+                "count": self.replay_events.len(),
+                "json_bytes": replay_events_json_bytes,
+            },
+            "provider_messages_cache": {
+                "count": self.provider_messages_cache.len(),
+                "source_len": self.provider_messages_cache_len,
+                "mode": persist_vector_mode_label(self.provider_messages_cache_mode),
+                "json_bytes": provider_messages_cache_json_bytes,
+            },
+            "totals": {
+                "payload_text_bytes": text_bytes
+                    + reasoning_bytes
+                    + tool_result_bytes
+                    + image_data_bytes
+                    + openai_compaction_bytes,
+                "json_bytes": session_message_json_bytes
+                    + provider_messages_cache_json_bytes
+                    + env_snapshots_json_bytes
+                    + memory_injections_json_bytes
+                    + replay_events_json_bytes
+                    + compaction_json_bytes,
+            }
+        })
+    }
+
     fn journal_meta(&self) -> SessionJournalMeta {
         SessionJournalMeta {
             parent_id: self.parent_id.clone(),
@@ -1584,6 +1719,20 @@ fn session_path_in_dir(base: &std::path::Path, session_id: &str) -> PathBuf {
     base.join("sessions").join(format!("{}.json", session_id))
 }
 
+fn estimate_json_bytes<T: Serialize>(value: &T) -> usize {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0)
+}
+
+fn persist_vector_mode_label(mode: PersistVectorMode) -> &'static str {
+    match mode {
+        PersistVectorMode::Clean => "clean",
+        PersistVectorMode::Append => "append",
+        PersistVectorMode::Full => "full",
+    }
+}
+
 pub(crate) fn session_journal_path_from_snapshot(path: &Path) -> PathBuf {
     let mut name = path
         .file_stem()
@@ -1674,6 +1823,53 @@ mod tests {
                 .as_nanos()
         );
         assert!(!session_exists(&random_id));
+    }
+
+    #[test]
+    fn test_debug_memory_profile_reports_messages_and_provider_cache() {
+        let mut session = Session::create_with_id(
+            "session_memory_profile_test".to_string(),
+            None,
+            Some("Memory profile".to_string()),
+        );
+        session.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "hello world".to_string(),
+                cache_control: None,
+            }],
+        );
+        session.add_message(
+            Role::Assistant,
+            vec![
+                ContentBlock::ToolUse {
+                    id: "tool_1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "echo hi"}),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "tool_1".to_string(),
+                    content: "hi".to_string(),
+                    is_error: None,
+                },
+            ],
+        );
+
+        let _ = session.provider_messages();
+        let profile = session.debug_memory_profile();
+
+        assert_eq!(profile["messages"]["count"], 2);
+        assert_eq!(profile["messages"]["text_blocks"], 1);
+        assert_eq!(profile["messages"]["tool_use_blocks"], 1);
+        assert_eq!(profile["messages"]["tool_result_blocks"], 1);
+        assert!(profile["messages"]["json_bytes"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(profile["provider_messages_cache"]["count"], 2);
+        assert!(
+            profile["provider_messages_cache"]["json_bytes"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        );
     }
 
     #[test]

@@ -30,6 +30,7 @@ SERVER COMMANDS (server: prefix or no prefix):
   cancel                   - Cancel in-flight generation (urgent interrupt)
   clear                    - Clear conversation history
   agent:info               - Get comprehensive agent internal state
+  agent:memory             - Get process + session memory breakdown
   jobs                     - List async debug jobs
   job_status:<id>          - Get async job status/output
   job_wait:<id>            - Wait for async job to finish
@@ -114,6 +115,8 @@ CLIENT COMMANDS (client: prefix):
   client:mermaid:render <c> - Render arbitrary mermaid
   client:mermaid:evict     - Clear mermaid cache
   client:markdown:stats    - Get markdown render stats
+  client:markdown:memory   - Markdown highlight cache memory estimate
+  client:memory            - Aggregate client memory profile
   client:overlay:on/off    - Toggle overlay boxes
   client:input             - Get current input buffer
   client:set_input:<text>  - Set input buffer

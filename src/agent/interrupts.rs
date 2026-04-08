@@ -237,6 +237,40 @@ impl Agent {
         })
     }
 
+    pub fn debug_memory_profile(&self) -> serde_json::Value {
+        let process = crate::process_memory::snapshot();
+        let soft_interrupt_text_bytes: usize = self
+            .soft_interrupt_queue
+            .lock()
+            .map(|queue| queue.iter().map(|msg| msg.content.len()).sum())
+            .unwrap_or(0);
+        let pending_alert_text_bytes: usize =
+            self.pending_alerts.iter().map(|alert| alert.len()).sum();
+
+        serde_json::json!({
+            "process": process,
+            "session": self.session.debug_memory_profile(),
+            "interrupts": {
+                "soft_interrupt_count": self.soft_interrupt_count(),
+                "soft_interrupt_text_bytes": soft_interrupt_text_bytes,
+                "pending_alert_count": self.pending_alert_count(),
+                "pending_alert_text_bytes": pending_alert_text_bytes,
+            },
+            "agent": {
+                "memory_enabled": self.memory_enabled,
+                "allowed_tools_count": self.allowed_tools.as_ref().map(|tools| tools.len()),
+                "tool_call_ids": self.tool_call_ids.len(),
+                "tool_result_ids": self.tool_result_ids.len(),
+                "last_usage": {
+                    "input": self.last_usage.input_tokens,
+                    "output": self.last_usage.output_tokens,
+                    "cache_read": self.last_usage.cache_read_input_tokens,
+                    "cache_write": self.last_usage.cache_creation_input_tokens,
+                },
+            }
+        })
+    }
+
     /// Get soft interrupt previews (for debug visibility)
     pub fn soft_interrupts_preview(&self) -> Vec<(String, bool)> {
         self.soft_interrupt_queue

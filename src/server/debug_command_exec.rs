@@ -317,6 +317,12 @@ pub(super) async fn execute_debug_command(
         return Ok(serde_json::to_string_pretty(&info).unwrap_or_else(|_| "{}".to_string()));
     }
 
+    if trimmed == "agent:memory" {
+        let agent = agent.lock().await;
+        let info = agent.debug_memory_profile();
+        return Ok(serde_json::to_string_pretty(&info).unwrap_or_else(|_| "{}".to_string()));
+    }
+
     if trimmed == "last_response" {
         let agent = agent.lock().await;
         return Ok(agent

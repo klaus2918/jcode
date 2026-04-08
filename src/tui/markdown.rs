@@ -43,6 +43,19 @@ pub struct MarkdownDebugStats {
     pub highlight_cache_misses: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MarkdownMemoryProfile {
+    pub process_rss_bytes: Option<u64>,
+    pub process_peak_rss_bytes: Option<u64>,
+    pub process_virtual_bytes: Option<u64>,
+    pub highlight_cache_entries: usize,
+    pub highlight_cache_limit: usize,
+    pub highlight_cache_lines: usize,
+    pub highlight_cache_spans: usize,
+    pub highlight_cache_text_bytes: usize,
+    pub highlight_cache_estimate_bytes: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 struct MarkdownDebugState {
     stats: MarkdownDebugStats,
@@ -1342,10 +1355,54 @@ pub fn debug_stats() -> MarkdownDebugStats {
     MarkdownDebugStats::default()
 }
 
+pub fn debug_memory_profile() -> MarkdownMemoryProfile {
+    let process = crate::process_memory::snapshot();
+    let mut profile = MarkdownMemoryProfile {
+        process_rss_bytes: process.rss_bytes,
+        process_peak_rss_bytes: process.peak_rss_bytes,
+        process_virtual_bytes: process.virtual_bytes,
+        highlight_cache_limit: HIGHLIGHT_CACHE_LIMIT,
+        ..MarkdownMemoryProfile::default()
+    };
+
+    if let Ok(cache) = HIGHLIGHT_CACHE.lock() {
+        profile.highlight_cache_entries = cache.entries.len();
+        for lines in cache.entries.values() {
+            profile.highlight_cache_lines += lines.len();
+            profile.highlight_cache_estimate_bytes += estimate_lines_bytes(lines);
+            for line in lines {
+                profile.highlight_cache_spans += line.spans.len();
+                profile.highlight_cache_text_bytes += line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.len())
+                    .sum::<usize>();
+            }
+        }
+    }
+
+    profile
+}
+
 pub fn reset_debug_stats() {
     if let Ok(mut state) = MARKDOWN_DEBUG.lock() {
         state.stats = MarkdownDebugStats::default();
     }
+}
+
+fn estimate_lines_bytes(lines: &[Line<'static>]) -> usize {
+    lines
+        .iter()
+        .map(|line| {
+            std::mem::size_of::<Line<'static>>()
+                + line.spans.len() * std::mem::size_of::<Span<'static>>()
+                + line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.len())
+                    .sum::<usize>()
+        })
+        .sum()
 }
 
 pub fn debug_stats_json() -> Option<serde_json::Value> {
@@ -4699,6 +4756,20 @@ mod tests {
         assert_eq!(rendered[table_start - 1], "");
         assert_eq!(rendered[table_start + 3], "");
         assert_eq!(rendered.last().map(String::as_str), Some("After"));
+    }
+
+    #[test]
+    fn test_debug_memory_profile_reports_highlight_cache_usage() {
+        if let Ok(mut cache) = HIGHLIGHT_CACHE.lock() {
+            cache.entries.clear();
+        }
+
+        let _ = highlight_code_cached("fn main() { println!(\"hi\"); }", Some("rust"));
+        let profile = debug_memory_profile();
+
+        assert!(profile.highlight_cache_entries >= 1);
+        assert!(profile.highlight_cache_lines >= 1);
+        assert!(profile.highlight_cache_estimate_bytes > 0);
     }
 
     #[test]

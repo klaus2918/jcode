@@ -162,6 +162,15 @@ pub(super) fn execute_client_debug_command(command: &str) -> String {
         return serde_json::to_string_pretty(&profile).unwrap_or_else(|_| "{}".to_string());
     }
 
+    if trimmed == "memory" {
+        let payload = serde_json::json!({
+            "process": crate::process_memory::snapshot(),
+            "markdown": markdown::debug_memory_profile(),
+            "mermaid": mermaid::debug_memory_profile(),
+        });
+        return serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string());
+    }
+
     if trimmed == "mermaid:memory-bench" {
         let result = mermaid::debug_memory_benchmark(40);
         return serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string());
@@ -241,6 +250,11 @@ pub(super) fn execute_client_debug_command(command: &str) -> String {
         return serde_json::to_string_pretty(&stats).unwrap_or_else(|_| "{}".to_string());
     }
 
+    if trimmed == "markdown:memory" {
+        let profile = markdown::debug_memory_profile();
+        return serde_json::to_string_pretty(&profile).unwrap_or_else(|_| "{}".to_string());
+    }
+
     if trimmed == "help" {
         return r#"Client debug commands:
   frame / screen-json      - Get latest visual debug frame (JSON)
@@ -265,6 +279,8 @@ pub(super) fn execute_client_debug_command(command: &str) -> String {
   mermaid:active           - List active diagrams (for pinned widget)
   mermaid:evict            - Clear mermaid cache
   markdown:stats           - Get markdown render stats
+  markdown:memory          - Markdown highlight cache memory estimate
+  memory                   - Aggregate client memory profile
   overlay:on/off/status    - Toggle overlay boxes
   enable                   - Enable visual debug capture
   disable                  - Disable visual debug capture
