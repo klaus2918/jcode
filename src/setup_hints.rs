@@ -1234,12 +1234,68 @@ fn legacy_macos_app_launcher_dir() -> Result<PathBuf> {
 }
 
 #[cfg(any(test, target_os = "macos"))]
+fn macos_app_launcher_info_plist_path(app_dir: &std::path::Path) -> PathBuf {
+    app_dir.join("Contents").join("Info.plist")
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_app_launcher_executable_path(app_dir: &std::path::Path) -> PathBuf {
+    app_dir
+        .join("Contents")
+        .join("MacOS")
+        .join("jcode-launcher")
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_app_launcher_is_valid(app_dir: &std::path::Path) -> bool {
+    app_dir.is_dir()
+        && macos_app_launcher_info_plist_path(app_dir).is_file()
+        && macos_app_launcher_executable_path(app_dir).is_file()
+}
+
+#[cfg(target_os = "macos")]
+fn remove_path_if_exists(path: &std::path::Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect existing path {}", path.display()))?;
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path)
+            .with_context(|| format!("failed to remove directory {}", path.display()))?;
+    } else {
+        std::fs::remove_file(path)
+            .with_context(|| format!("failed to remove file {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn register_macos_app_launcher(app_dir: &std::path::Path) {
+    let _ = std::process::Command::new("touch").arg(app_dir).status();
+
+    let lsregister = std::path::Path::new(
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+    );
+    if lsregister.exists() {
+        let _ = std::process::Command::new(lsregister)
+            .args(["-f", app_dir.to_string_lossy().as_ref()])
+            .status();
+    }
+
+    let _ = std::process::Command::new("mdimport").arg(app_dir).status();
+}
+
+#[cfg(any(test, target_os = "macos"))]
 fn should_refresh_macos_app_launcher_paths(
     state: &SetupHintsState,
     app_dir: &std::path::Path,
     legacy_app_dir: &std::path::Path,
 ) -> bool {
-    !state.desktop_shortcut_created || !app_dir.exists() || legacy_app_dir.exists()
+    !state.desktop_shortcut_created
+        || !macos_app_launcher_is_valid(app_dir)
+        || legacy_app_dir.exists()
 }
 
 #[cfg(target_os = "macos")]
@@ -1323,6 +1379,14 @@ exit 0
 fn install_macos_app_launcher() -> Result<(PathBuf, MacTerminalKind)> {
     let app_dir = macos_app_launcher_dir()?;
     let legacy_app_dir = legacy_macos_app_launcher_dir()?;
+
+    if app_dir.exists() && !macos_app_launcher_is_valid(&app_dir) {
+        remove_path_if_exists(&app_dir)?;
+    }
+    if legacy_app_dir != app_dir && legacy_app_dir.exists() {
+        remove_path_if_exists(&legacy_app_dir)?;
+    }
+
     let contents_dir = app_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     std::fs::create_dir_all(&macos_dir)?;
@@ -1368,11 +1432,14 @@ fn install_macos_app_launcher() -> Result<(PathBuf, MacTerminalKind)> {
     );
     std::fs::write(contents_dir.join("Info.plist"), info_plist)?;
 
-    if legacy_app_dir != app_dir && legacy_app_dir.exists() {
-        let _ = std::fs::remove_dir_all(&legacy_app_dir);
+    if !macos_app_launcher_is_valid(&app_dir) {
+        anyhow::bail!(
+            "launcher bundle is incomplete after setup: {}",
+            app_dir.display()
+        );
     }
 
-    let _ = std::process::Command::new("touch").arg(&app_dir).status();
+    register_macos_app_launcher(&app_dir);
     save_preferred_macos_terminal(terminal)?;
     Ok((app_dir, terminal))
 }
@@ -1614,16 +1681,59 @@ mod tests {
     }
 
     #[test]
-    fn macos_launcher_does_not_refresh_when_new_bundle_exists() {
+    fn macos_launcher_refreshes_when_new_bundle_is_plain_file() {
         let temp = tempfile::tempdir().expect("tempdir");
         let app_dir = temp.path().join("Jcode.app");
         let legacy_app_dir = temp.path().join("jcode.app");
-        std::fs::create_dir_all(&app_dir).expect("create new app dir");
+        std::fs::write(&app_dir, "broken").expect("write broken launcher file");
         let state = SetupHintsState {
             desktop_shortcut_created: true,
             ..SetupHintsState::default()
         };
 
+        assert!(should_refresh_macos_app_launcher_paths(
+            &state,
+            &app_dir,
+            &legacy_app_dir,
+        ));
+    }
+
+    #[test]
+    fn macos_launcher_refreshes_when_bundle_is_incomplete() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app_dir = temp.path().join("Jcode.app");
+        let legacy_app_dir = temp.path().join("jcode.app");
+        std::fs::create_dir_all(app_dir.join("Contents")).expect("create incomplete bundle");
+        std::fs::write(macos_app_launcher_info_plist_path(&app_dir), "plist").expect("write plist");
+        let state = SetupHintsState {
+            desktop_shortcut_created: true,
+            ..SetupHintsState::default()
+        };
+
+        assert!(!macos_app_launcher_is_valid(&app_dir));
+        assert!(should_refresh_macos_app_launcher_paths(
+            &state,
+            &app_dir,
+            &legacy_app_dir,
+        ));
+    }
+
+    #[test]
+    fn macos_launcher_does_not_refresh_when_new_bundle_exists() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app_dir = temp.path().join("Jcode.app");
+        let legacy_app_dir = temp.path().join("jcode.app");
+        std::fs::create_dir_all(app_dir.join("Contents").join("MacOS"))
+            .expect("create new app dir");
+        std::fs::write(macos_app_launcher_info_plist_path(&app_dir), "plist").expect("write plist");
+        std::fs::write(macos_app_launcher_executable_path(&app_dir), "#!/bin/sh\n")
+            .expect("write launcher executable");
+        let state = SetupHintsState {
+            desktop_shortcut_created: true,
+            ..SetupHintsState::default()
+        };
+
+        assert!(macos_app_launcher_is_valid(&app_dir));
         assert!(!should_refresh_macos_app_launcher_paths(
             &state,
             &app_dir,
