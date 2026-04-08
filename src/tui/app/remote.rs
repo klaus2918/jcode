@@ -58,11 +58,15 @@ impl App {
             .position(|pending| pending == content)
         {
             self.pending_soft_interrupts.remove(index);
-        } else {
-            self.pending_soft_interrupts.clear();
         }
-        self.pending_soft_interrupt_requests
-            .retain(|(_, pending)| pending != content);
+
+        if let Some(index) = self
+            .pending_soft_interrupt_requests
+            .iter()
+            .position(|(_, pending)| pending == content)
+        {
+            self.pending_soft_interrupt_requests.remove(index);
+        }
     }
 }
 

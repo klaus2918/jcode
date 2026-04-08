@@ -7371,6 +7371,58 @@ fn test_handle_server_event_soft_interrupt_injected_keeps_other_pending_previews
 }
 
 #[test]
+fn test_handle_server_event_soft_interrupt_injected_duplicate_content_keeps_later_pending_copy() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.pending_soft_interrupts = vec!["same".to_string(), "same".to_string()];
+    app.pending_soft_interrupt_requests = vec![(11, "same".to_string()), (22, "same".to_string())];
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::SoftInterruptInjected {
+            content: "same".to_string(),
+            display_role: Some("user".to_string()),
+            point: "D".to_string(),
+            tools_skipped: None,
+        },
+        &mut remote,
+    );
+
+    assert_eq!(app.pending_soft_interrupts, vec!["same"]);
+    assert_eq!(app.pending_soft_interrupt_requests, vec![(22, "same".to_string())]);
+}
+
+#[test]
+fn test_handle_server_event_soft_interrupt_injected_unrelated_content_keeps_pending_previews() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.pending_soft_interrupts = vec!["first".to_string(), "second".to_string()];
+    app.pending_soft_interrupt_requests =
+        vec![(11, "first".to_string()), (22, "second".to_string())];
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::SoftInterruptInjected {
+            content: "background task notice".to_string(),
+            display_role: Some("system".to_string()),
+            point: "D".to_string(),
+            tools_skipped: None,
+        },
+        &mut remote,
+    );
+
+    assert_eq!(app.pending_soft_interrupts, vec!["first", "second"]);
+    assert_eq!(
+        app.pending_soft_interrupt_requests,
+        vec![(11, "first".to_string()), (22, "second".to_string())]
+    );
+}
+
+#[test]
 fn test_handle_server_event_soft_interrupt_injected_background_task_renders_card_role() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
