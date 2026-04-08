@@ -5807,6 +5807,40 @@ fn test_streaming_tokens() {
 }
 
 #[test]
+fn test_build_turn_footer_uses_compact_duration_labels() {
+    let app = create_test_app();
+
+    assert_eq!(
+        app.build_turn_footer(Some(316.1)),
+        Some("5m 16s".to_string())
+    );
+    assert_eq!(app.build_turn_footer(Some(9.2)), Some("9.2s".to_string()));
+}
+
+#[test]
+fn test_build_turn_footer_combines_compact_duration_with_streaming_stats() {
+    let mut app = create_test_app();
+    app.streaming_input_tokens = 210_000;
+    app.streaming_output_tokens = 440;
+    app.streaming_tps_collect_output = true;
+    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(220));
+
+    let footer = app
+        .build_turn_footer(Some(316.1))
+        .expect("footer with stats");
+
+    assert!(
+        footer.starts_with("5m 16s · "),
+        "unexpected footer: {footer}"
+    );
+    assert!(footer.contains(" tps"), "unexpected footer: {footer}");
+    assert!(
+        footer.ends_with("↑210k ↓440"),
+        "unexpected footer: {footer}"
+    );
+}
+
+#[test]
 fn test_processing_status_display() {
     let status = ProcessingStatus::Sending;
     assert!(matches!(status, ProcessingStatus::Sending));
