@@ -1320,10 +1320,10 @@ impl App {
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| session_id.to_string())
                 }
-                ResumeTarget::ClaudeCodeSession { session_id } => {
+                ResumeTarget::ClaudeCodeSession { session_id, .. } => {
                     format!("Claude Code {}", &session_id[..session_id.len().min(8)])
                 }
-                ResumeTarget::CodexSession { session_id } => {
+                ResumeTarget::CodexSession { session_id, .. } => {
                     format!("Codex {}", &session_id[..session_id.len().min(8)])
                 }
                 ResumeTarget::PiSession { session_path } => std::path::Path::new(session_path)
@@ -1331,7 +1331,7 @@ impl App {
                     .and_then(|s| s.to_str())
                     .unwrap_or("Pi session")
                     .to_string(),
-                ResumeTarget::OpenCodeSession { session_id } => {
+                ResumeTarget::OpenCodeSession { session_id, .. } => {
                     format!("OpenCode {}", &session_id[..session_id.len().min(8)])
                 }
             };

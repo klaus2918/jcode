@@ -91,21 +91,34 @@ impl SessionSource {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResumeTarget {
-    JcodeSession { session_id: String },
-    ClaudeCodeSession { session_id: String },
-    CodexSession { session_id: String },
-    PiSession { session_path: String },
-    OpenCodeSession { session_id: String },
+    JcodeSession {
+        session_id: String,
+    },
+    ClaudeCodeSession {
+        session_id: String,
+        session_path: String,
+    },
+    CodexSession {
+        session_id: String,
+        session_path: String,
+    },
+    PiSession {
+        session_path: String,
+    },
+    OpenCodeSession {
+        session_id: String,
+        session_path: String,
+    },
 }
 
 impl ResumeTarget {
     pub fn stable_id(&self) -> &str {
         match self {
             Self::JcodeSession { session_id } => session_id,
-            Self::ClaudeCodeSession { session_id } => session_id,
-            Self::CodexSession { session_id } => session_id,
+            Self::ClaudeCodeSession { session_id, .. } => session_id,
+            Self::CodexSession { session_id, .. } => session_id,
             Self::PiSession { session_path } => session_path,
-            Self::OpenCodeSession { session_id } => session_id,
+            Self::OpenCodeSession { session_id, .. } => session_id,
         }
     }
 }
@@ -541,8 +554,13 @@ impl SessionPicker {
                     s.resume_target.clone(),
                     match &s.resume_target {
                         ResumeTarget::JcodeSession { session_id } => Some(session_id.clone()),
-                        ResumeTarget::ClaudeCodeSession { session_id } => Some(session_id.clone()),
-                        ResumeTarget::CodexSession { session_id } => Some(session_id.clone()),
+                        ResumeTarget::ClaudeCodeSession { session_id, .. } => {
+                            Some(session_id.clone())
+                        }
+                        ResumeTarget::CodexSession { session_id, .. } => Some(session_id.clone()),
+                        ResumeTarget::OpenCodeSession { session_id, .. } => {
+                            Some(session_id.clone())
+                        }
                         _ => None,
                     },
                     s.external_path.clone(),
@@ -586,7 +604,23 @@ impl SessionPicker {
                 };
                 preview
             }
-            _ => return,
+            ResumeTarget::PiSession { session_path } => {
+                let Some(preview) =
+                    loading::load_pi_preview_from_path(std::path::Path::new(&session_path))
+                else {
+                    return;
+                };
+                preview
+            }
+            ResumeTarget::OpenCodeSession { .. } => {
+                let preview = external_path.as_deref().and_then(|path| {
+                    loading::load_opencode_preview_from_path(std::path::Path::new(path))
+                });
+                let Some(preview) = preview else {
+                    return;
+                };
+                preview
+            }
         };
 
         if let Some(s) = self.session_by_ref_mut(session_ref) {
@@ -1679,6 +1713,7 @@ mod tests {
         claude_code.source = SessionSource::ClaudeCode;
         claude_code.resume_target = ResumeTarget::ClaudeCodeSession {
             session_id: "claude-session-demo".to_string(),
+            session_path: "/tmp/claude-session-demo.jsonl".to_string(),
         };
 
         let mut codex = make_session("session_codex", "codex", false, SessionStatus::Closed);

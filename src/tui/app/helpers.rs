@@ -394,14 +394,14 @@ pub(super) fn build_resume_command(
             let title = resumed_window_title(session_id);
             (exe, args, title)
         }
-        ResumeTarget::ClaudeCodeSession { session_id } => {
+        ResumeTarget::ClaudeCodeSession { session_id, .. } => {
             let exe = launch_client_executable();
             let imported_id = crate::import::imported_claude_code_session_id(session_id);
             let args = resume_invocation_args(&imported_id, socket);
             let title = format!("🧵 Claude Code {}", &session_id[..session_id.len().min(8)]);
             (exe, args, title)
         }
-        ResumeTarget::CodexSession { session_id } => {
+        ResumeTarget::CodexSession { session_id, .. } => {
             let exe = launch_client_executable();
             let imported_id = crate::import::imported_codex_session_id(session_id);
             let args = resume_invocation_args(&imported_id, socket);
@@ -421,7 +421,7 @@ pub(super) fn build_resume_command(
             );
             (exe, args, title)
         }
-        ResumeTarget::OpenCodeSession { session_id } => {
+        ResumeTarget::OpenCodeSession { session_id, .. } => {
             let exe = launch_client_executable();
             let imported_id = crate::import::imported_opencode_session_id(session_id);
             let args = resume_invocation_args(&imported_id, socket);
@@ -809,6 +809,7 @@ mod tests {
         let (program, args, title) = build_resume_command(
             &ResumeTarget::ClaudeCodeSession {
                 session_id: "claude-session-123".to_string(),
+                session_path: "/tmp/claude-session-123.jsonl".to_string(),
             },
             None,
         );
@@ -834,6 +835,7 @@ mod tests {
         let (program, args, title) = build_resume_command(
             &ResumeTarget::CodexSession {
                 session_id: "codex-session-123".to_string(),
+                session_path: "/tmp/codex-session-123.jsonl".to_string(),
             },
             None,
         );

@@ -9,7 +9,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -468,6 +469,82 @@ pub fn list_claude_code_sessions() -> Result<Vec<ClaudeCodeSessionInfo>> {
     Ok(all_sessions)
 }
 
+pub fn list_claude_code_sessions_lazy(scan_limit: usize) -> Result<Vec<ClaudeCodeSessionInfo>> {
+    let mut all_sessions = Vec::new();
+    let mut seen_session_ids = HashSet::new();
+
+    for project_dir in discover_project_dirs()? {
+        let index_path = project_dir.join("sessions-index.json");
+        if index_path.exists() {
+            let content = std::fs::read_to_string(&index_path)
+                .with_context(|| format!("Failed to read {}", index_path.display()))?;
+            let index: SessionsIndex = serde_json::from_str(&content)
+                .with_context(|| format!("Failed to parse {}", index_path.display()))?;
+
+            for entry in index.entries {
+                if entry.is_sidechain.unwrap_or(false) {
+                    continue;
+                }
+
+                let Some(path) = resolve_claude_session_path(&project_dir, &entry) else {
+                    continue;
+                };
+
+                if let Some(session) = claude_code_session_info_from_index(&path, &entry) {
+                    seen_session_ids.insert(session.session_id.clone());
+                    all_sessions.push(session);
+                }
+            }
+        }
+
+        for path in collect_recent_files_recursive(&project_dir, "jsonl", scan_limit) {
+            let Some(session_id) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| stem.to_string())
+            else {
+                continue;
+            };
+            if seen_session_ids.contains(&session_id) {
+                continue;
+            }
+
+            let modified = path
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .map(DateTime::<Utc>::from);
+            let project_path = project_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.replace('-', "/"));
+            let label = format!(
+                "Claude Code session {}",
+                &session_id[..session_id.len().min(8)]
+            );
+            all_sessions.push(ClaudeCodeSessionInfo {
+                session_id: session_id.clone(),
+                first_prompt: label.clone(),
+                summary: Some(label),
+                message_count: 0,
+                created: modified,
+                modified,
+                project_path,
+                full_path: path.to_string_lossy().to_string(),
+            });
+            seen_session_ids.insert(session_id);
+        }
+    }
+
+    all_sessions.sort_by(|a, b| {
+        let a_date = a.modified.or(a.created);
+        let b_date = b.modified.or(b.created);
+        b_date.cmp(&a_date)
+    });
+    all_sessions.truncate(scan_limit);
+    Ok(all_sessions)
+}
+
 /// List sessions filtered by project path
 pub fn list_sessions_for_project(project_filter: &str) -> Result<Vec<ClaudeCodeSessionInfo>> {
     let sessions = list_claude_code_sessions()?;
@@ -578,16 +655,16 @@ pub fn imported_session_id_for_target(
         crate::tui::session_picker::ResumeTarget::JcodeSession { session_id } => {
             Some(session_id.clone())
         }
-        crate::tui::session_picker::ResumeTarget::ClaudeCodeSession { session_id } => {
+        crate::tui::session_picker::ResumeTarget::ClaudeCodeSession { session_id, .. } => {
             Some(imported_claude_code_session_id(session_id))
         }
-        crate::tui::session_picker::ResumeTarget::CodexSession { session_id } => {
+        crate::tui::session_picker::ResumeTarget::CodexSession { session_id, .. } => {
             Some(imported_codex_session_id(session_id))
         }
         crate::tui::session_picker::ResumeTarget::PiSession { session_path } => {
             Some(imported_pi_session_id(session_path))
         }
-        crate::tui::session_picker::ResumeTarget::OpenCodeSession { session_id } => {
+        crate::tui::session_picker::ResumeTarget::OpenCodeSession { session_id, .. } => {
             Some(imported_opencode_session_id(session_id))
         }
     }
@@ -604,20 +681,29 @@ pub fn resolve_resume_target_to_jcode(
                 session_id: session_id.clone(),
             });
         }
-        ResumeTarget::ClaudeCodeSession { session_id } => {
-            import_session(session_id)?;
+        ResumeTarget::ClaudeCodeSession {
+            session_id,
+            session_path,
+        } => {
+            import_session_from_file(Path::new(session_path), session_id)?;
             imported_claude_code_session_id(session_id)
         }
-        ResumeTarget::CodexSession { session_id } => {
-            import_codex_session(session_id)?;
+        ResumeTarget::CodexSession {
+            session_id,
+            session_path,
+        } => {
+            import_codex_session_from_path(Path::new(session_path), Some(session_id))?;
             imported_codex_session_id(session_id)
         }
         ResumeTarget::PiSession { session_path } => {
             import_pi_session(session_path)?;
             imported_pi_session_id(session_path)
         }
-        ResumeTarget::OpenCodeSession { session_id } => {
-            import_opencode_session(session_id)?;
+        ResumeTarget::OpenCodeSession {
+            session_id,
+            session_path,
+        } => {
+            import_opencode_session_from_path(Path::new(session_path), Some(session_id))?;
             imported_opencode_session_id(session_id)
         }
     };
@@ -626,7 +712,7 @@ pub fn resolve_resume_target_to_jcode(
 }
 
 /// Import a Claude Code session from a file path
-pub fn import_session_from_file(path: &PathBuf, session_id: &str) -> Result<Session> {
+pub fn import_session_from_file(path: &Path, session_id: &str) -> Result<Session> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read session file: {}", path.display()))?;
 
@@ -825,6 +911,57 @@ fn collect_files_recursive(root: &Path, extension: &str) -> Vec<PathBuf> {
     files
 }
 
+fn collect_recent_files_recursive(root: &Path, extension: &str, limit: usize) -> Vec<PathBuf> {
+    fn modified_sort_key(path: &Path) -> u64 {
+        path.metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    }
+
+    fn walk(
+        dir: &Path,
+        extension: &str,
+        limit: usize,
+        out: &mut BinaryHeap<Reverse<(u64, PathBuf)>>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, extension, limit, out);
+            } else if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case(extension))
+                .unwrap_or(false)
+            {
+                let key = (modified_sort_key(&path), path);
+                if out.len() < limit {
+                    out.push(Reverse(key));
+                } else if out.peek().map(|smallest| key > smallest.0).unwrap_or(true) {
+                    out.pop();
+                    out.push(Reverse(key));
+                }
+            }
+        }
+    }
+
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut heap: BinaryHeap<Reverse<(u64, PathBuf)>> = BinaryHeap::new();
+    walk(root, extension, limit, &mut heap);
+    let mut files: Vec<(u64, PathBuf)> = heap.into_iter().map(|entry| entry.0).collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    files.into_iter().map(|(_, path)| path).collect()
+}
+
 fn parse_rfc3339(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
     value
         .and_then(|v| v.as_str())
@@ -952,11 +1089,18 @@ fn find_codex_session_file(session_id: &str) -> Result<PathBuf> {
 
 pub fn import_codex_session(session_id: &str) -> Result<Session> {
     let path = find_codex_session_file(session_id)?;
+    import_codex_session_from_path(&path, Some(session_id))
+}
+
+pub fn import_codex_session_from_path(
+    path: &Path,
+    session_id_hint: Option<&str>,
+) -> Result<Session> {
     let file = File::open(&path)?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
     let Some(first_line) = lines.next() else {
-        anyhow::bail!("Codex session {} is empty", session_id)
+        anyhow::bail!("Codex session file is empty: {}", path.display())
     };
     let header: serde_json::Value = serde_json::from_str(&first_line?)?;
     let meta = if header.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
@@ -964,6 +1108,13 @@ pub fn import_codex_session(session_id: &str) -> Result<Session> {
     } else {
         &header
     };
+
+    let session_id = meta
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.is_empty())
+        .or(session_id_hint)
+        .ok_or_else(|| anyhow::anyhow!("Codex session id missing in {}", path.display()))?;
 
     let created_at = parse_rfc3339(meta.get("timestamp"))
         .or_else(|| parse_rfc3339(header.get("timestamp")))
@@ -1172,7 +1323,22 @@ fn find_opencode_session_file(session_id: &str) -> Result<PathBuf> {
 
 pub fn import_opencode_session(session_id: &str) -> Result<Session> {
     let session_path = find_opencode_session_file(session_id)?;
+    import_opencode_session_from_path(&session_path, Some(session_id))
+}
+
+pub fn import_opencode_session_from_path(
+    session_path: &Path,
+    session_id_hint: Option<&str>,
+) -> Result<Session> {
     let value: serde_json::Value = serde_json::from_reader(File::open(&session_path)?)?;
+    let session_id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.is_empty())
+        .or(session_id_hint)
+        .ok_or_else(|| {
+            anyhow::anyhow!("OpenCode session id missing in {}", session_path.display())
+        })?;
     let created_at = value
         .get("time")
         .and_then(|time| time.get("created"))
@@ -1736,6 +1902,10 @@ mod tests {
         let resolved = resolve_resume_target_to_jcode(
             &crate::tui::session_picker::ResumeTarget::CodexSession {
                 session_id: "codex-resolve-test".to_string(),
+                session_path: codex_dir
+                    .join("rollout.jsonl")
+                    .to_string_lossy()
+                    .to_string(),
             },
         )
         .unwrap();

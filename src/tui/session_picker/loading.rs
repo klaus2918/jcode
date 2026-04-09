@@ -207,6 +207,57 @@ fn collect_files_recursive(root: &Path, extension: &str) -> Vec<PathBuf> {
     files
 }
 
+fn collect_recent_files_recursive(root: &Path, extension: &str, limit: usize) -> Vec<PathBuf> {
+    fn modified_sort_key(path: &Path) -> u64 {
+        path.metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    }
+
+    fn walk(
+        dir: &Path,
+        extension: &str,
+        limit: usize,
+        out: &mut BinaryHeap<Reverse<(u64, PathBuf)>>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, extension, limit, out);
+            } else if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case(extension))
+                .unwrap_or(false)
+            {
+                let key = (modified_sort_key(&path), path);
+                if out.len() < limit {
+                    out.push(Reverse(key));
+                } else if out.peek().map(|smallest| key > smallest.0).unwrap_or(true) {
+                    out.pop();
+                    out.push(Reverse(key));
+                }
+            }
+        }
+    }
+
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut heap: BinaryHeap<Reverse<(u64, PathBuf)>> = BinaryHeap::new();
+    walk(root, extension, limit, &mut heap);
+    let mut files: Vec<(u64, PathBuf)> = heap.into_iter().map(|entry| entry.0).collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    files.into_iter().map(|(_, path)| path).collect()
+}
+
 fn push_preview_message(preview: &mut Vec<PreviewMessage>, role: &str, content: String) {
     let content = content.trim();
     if content.is_empty() {
@@ -768,7 +819,7 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
 }
 
 fn load_external_claude_code_sessions(scan_limit: usize) -> Vec<SessionInfo> {
-    let Ok(sessions) = crate::import::list_claude_code_sessions() else {
+    let Ok(sessions) = crate::import::list_claude_code_sessions_lazy(scan_limit) else {
         return Vec::new();
     };
 
@@ -826,7 +877,10 @@ fn load_external_claude_code_sessions(scan_limit: usize) -> Vec<SessionInfo> {
                 server_name: None,
                 server_icon: None,
                 source: SessionSource::ClaudeCode,
-                resume_target: ResumeTarget::ClaudeCodeSession { session_id },
+                resume_target: ResumeTarget::ClaudeCodeSession {
+                    session_id,
+                    session_path: session.full_path.clone(),
+                },
                 external_path: Some(session.full_path),
             }
         })
@@ -887,11 +941,88 @@ fn load_external_codex_sessions(scan_limit: usize) -> Vec<SessionInfo> {
         return Vec::new();
     }
 
-    collect_files_recursive(&root, "jsonl")
+    collect_recent_files_recursive(&root, "jsonl", scan_limit)
         .into_iter()
-        .take(scan_limit)
-        .filter_map(|path| load_codex_session_info(&path).ok().flatten())
+        .filter_map(|path| load_codex_session_stub(&path).ok().flatten())
         .collect()
+}
+
+fn load_codex_session_stub(path: &Path) -> Result<Option<SessionInfo>> {
+    let file = File::open(path)?;
+    let mut lines = BufReader::new(file).lines();
+    let Some(first_line) = lines.next() else {
+        return Ok(None);
+    };
+    let header: serde_json::Value = serde_json::from_str(&first_line?)?;
+    let meta = if header.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
+        header.get("payload").unwrap_or(&header)
+    } else {
+        &header
+    };
+    let session_id = meta
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if session_id.is_empty() {
+        return Ok(None);
+    }
+
+    let created_at = parse_timestamp_value(meta.get("timestamp"))
+        .or_else(|| parse_timestamp_value(header.get("timestamp")))
+        .unwrap_or_else(chrono::Utc::now);
+    let last_message_time = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .map(chrono::DateTime::<chrono::Utc>::from)
+        .unwrap_or(created_at);
+    let working_dir = meta
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let short_name = format!("codex {}", &session_id[..session_id.len().min(8)]);
+    let title = format!("Codex session {}", &session_id[..session_id.len().min(8)]);
+    let search_index = build_search_index(
+        &format!("codex:{session_id}"),
+        &short_name,
+        &title,
+        working_dir.as_deref(),
+        None,
+        &[],
+    );
+
+    Ok(Some(SessionInfo {
+        id: format!("codex:{session_id}"),
+        parent_id: None,
+        short_name,
+        icon: "🧠".to_string(),
+        title,
+        message_count: 0,
+        user_message_count: 0,
+        assistant_message_count: 0,
+        created_at,
+        last_message_time,
+        last_active_at: Some(last_message_time),
+        working_dir,
+        model: None,
+        provider_key: Some("openai-codex".to_string()),
+        is_canary: false,
+        is_debug: false,
+        saved: false,
+        save_label: None,
+        status: SessionStatus::Closed,
+        needs_catchup: false,
+        estimated_tokens: 0,
+        messages_preview: Vec::new(),
+        search_index,
+        server_name: None,
+        server_icon: None,
+        source: SessionSource::Codex,
+        resume_target: ResumeTarget::CodexSession {
+            session_id,
+            session_path: path.to_string_lossy().to_string(),
+        },
+        external_path: Some(path.to_string_lossy().to_string()),
+    }))
 }
 
 fn load_codex_session_info(path: &Path) -> Result<Option<SessionInfo>> {
@@ -1041,7 +1172,10 @@ fn load_codex_session_info(path: &Path) -> Result<Option<SessionInfo>> {
         server_name: None,
         server_icon: None,
         source: SessionSource::Codex,
-        resume_target: ResumeTarget::CodexSession { session_id },
+        resume_target: ResumeTarget::CodexSession {
+            session_id,
+            session_path: path.to_string_lossy().to_string(),
+        },
         external_path: Some(path.to_string_lossy().to_string()),
     }))
 }
@@ -1129,6 +1263,13 @@ pub(super) fn load_codex_preview(session_id: &str) -> Option<Vec<PreviewMessage>
     load_codex_preview_from_path(&path)
 }
 
+pub(super) fn load_pi_preview_from_path(path: &Path) -> Option<Vec<PreviewMessage>> {
+    load_pi_session_info(path)
+        .ok()
+        .flatten()
+        .map(|session| session.messages_preview)
+}
+
 fn load_external_pi_sessions(scan_limit: usize) -> Vec<SessionInfo> {
     let Ok(root) = crate::storage::user_home_path(".pi/agent/sessions") else {
         return Vec::new();
@@ -1137,11 +1278,89 @@ fn load_external_pi_sessions(scan_limit: usize) -> Vec<SessionInfo> {
         return Vec::new();
     }
 
-    collect_files_recursive(&root, "jsonl")
+    collect_recent_files_recursive(&root, "jsonl", scan_limit)
         .into_iter()
-        .take(scan_limit)
-        .filter_map(|path| load_pi_session_info(&path).ok().flatten())
+        .filter_map(|path| load_pi_session_stub(&path).ok().flatten())
         .collect()
+}
+
+fn load_pi_session_stub(path: &Path) -> Result<Option<SessionInfo>> {
+    let file = File::open(path)?;
+    let mut lines = BufReader::new(file).lines();
+    let Some(first_line) = lines.next() else {
+        return Ok(None);
+    };
+    let header: serde_json::Value = serde_json::from_str(&first_line?)?;
+    if header.get("type").and_then(|v| v.as_str()) != Some("session") {
+        return Ok(None);
+    }
+
+    let session_id = header
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if session_id.is_empty() {
+        return Ok(None);
+    }
+
+    let created_at = header
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(chrono::Utc::now);
+    let last_message_time = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .map(chrono::DateTime::<chrono::Utc>::from)
+        .unwrap_or(created_at);
+    let working_dir = header
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let short_name = format!("pi {}", &session_id[..session_id.len().min(8)]);
+    let title = format!("Pi session {}", &session_id[..session_id.len().min(8)]);
+    let search_index = build_search_index(
+        &format!("pi:{session_id}"),
+        &short_name,
+        &title,
+        working_dir.as_deref(),
+        None,
+        &[],
+    );
+
+    Ok(Some(SessionInfo {
+        id: format!("pi:{session_id}"),
+        parent_id: None,
+        short_name,
+        icon: "π".to_string(),
+        title,
+        message_count: 0,
+        user_message_count: 0,
+        assistant_message_count: 0,
+        created_at,
+        last_message_time,
+        last_active_at: Some(last_message_time),
+        working_dir,
+        model: None,
+        provider_key: Some("pi".to_string()),
+        is_canary: false,
+        is_debug: false,
+        saved: false,
+        save_label: None,
+        status: SessionStatus::Closed,
+        needs_catchup: false,
+        estimated_tokens: 0,
+        messages_preview: Vec::new(),
+        search_index,
+        server_name: None,
+        server_icon: None,
+        source: SessionSource::Pi,
+        resume_target: ResumeTarget::PiSession {
+            session_path: path.to_string_lossy().to_string(),
+        },
+        external_path: Some(path.to_string_lossy().to_string()),
+    }))
 }
 
 fn load_pi_session_info(path: &Path) -> Result<Option<SessionInfo>> {
@@ -1307,11 +1526,99 @@ fn load_external_opencode_sessions(scan_limit: usize) -> Vec<SessionInfo> {
         return Vec::new();
     }
 
-    collect_files_recursive(&root, "json")
+    collect_recent_files_recursive(&root, "json", scan_limit)
         .into_iter()
-        .take(scan_limit)
-        .filter_map(|path| load_opencode_session_info(&path).ok().flatten())
+        .filter_map(|path| load_opencode_session_stub(&path).ok().flatten())
         .collect()
+}
+
+pub(super) fn load_opencode_preview_from_path(path: &Path) -> Option<Vec<PreviewMessage>> {
+    load_opencode_session_info(path)
+        .ok()
+        .flatten()
+        .map(|session| session.messages_preview)
+}
+
+fn load_opencode_session_stub(path: &Path) -> Result<Option<SessionInfo>> {
+    let value: serde_json::Value = serde_json::from_reader(File::open(path)?)?;
+    let session_id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if session_id.is_empty() {
+        return Ok(None);
+    }
+
+    let created_at = value
+        .get("time")
+        .and_then(|time| time.get("created"))
+        .and_then(|v| v.as_i64())
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .unwrap_or_else(chrono::Utc::now);
+    let last_message_time = value
+        .get("time")
+        .and_then(|time| time.get("updated"))
+        .and_then(|v| v.as_i64())
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .unwrap_or(created_at);
+    let working_dir = value
+        .get("directory")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let short_name = format!("opencode {}", &session_id[..session_id.len().min(8)]);
+    let title = value
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| truncate_title_text(s, 72))
+        .unwrap_or_else(|| {
+            format!(
+                "OpenCode session {}",
+                &session_id[..session_id.len().min(8)]
+            )
+        });
+    let search_index = build_search_index(
+        &format!("opencode:{session_id}"),
+        &short_name,
+        &title,
+        working_dir.as_deref(),
+        None,
+        &[],
+    );
+
+    Ok(Some(SessionInfo {
+        id: format!("opencode:{session_id}"),
+        parent_id: None,
+        short_name,
+        icon: "◌".to_string(),
+        title,
+        message_count: 0,
+        user_message_count: 0,
+        assistant_message_count: 0,
+        created_at,
+        last_message_time,
+        last_active_at: Some(last_message_time),
+        working_dir,
+        model: None,
+        provider_key: Some("opencode".to_string()),
+        is_canary: false,
+        is_debug: false,
+        saved: false,
+        save_label: None,
+        status: SessionStatus::Closed,
+        needs_catchup: false,
+        estimated_tokens: 0,
+        messages_preview: Vec::new(),
+        search_index,
+        server_name: None,
+        server_icon: None,
+        source: SessionSource::OpenCode,
+        resume_target: ResumeTarget::OpenCodeSession {
+            session_id,
+            session_path: path.to_string_lossy().to_string(),
+        },
+        external_path: Some(path.to_string_lossy().to_string()),
+    }))
 }
 
 fn load_opencode_session_info(path: &Path) -> Result<Option<SessionInfo>> {
@@ -1442,7 +1749,10 @@ fn load_opencode_session_info(path: &Path) -> Result<Option<SessionInfo>> {
         server_name: None,
         server_icon: None,
         source: SessionSource::OpenCode,
-        resume_target: ResumeTarget::OpenCodeSession { session_id },
+        resume_target: ResumeTarget::OpenCodeSession {
+            session_id,
+            session_path: path.to_string_lossy().to_string(),
+        },
         external_path: Some(path.to_string_lossy().to_string()),
     }))
 }
@@ -1710,10 +2020,10 @@ mod tests {
 
         assert_eq!(session.source, SessionSource::Codex);
         assert_eq!(session.id, "codex:019d-codex-test");
-        assert_eq!(session.title, "Fix the OpenAI usage widget");
-        assert_eq!(session.message_count, 3);
-        assert_eq!(session.user_message_count, 2);
-        assert_eq!(session.assistant_message_count, 1);
+        assert_eq!(session.title, "Codex session 019d-cod");
+        assert_eq!(session.message_count, 0);
+        assert_eq!(session.user_message_count, 0);
+        assert_eq!(session.assistant_message_count, 0);
         assert_eq!(session.working_dir.as_deref(), Some("/tmp/codex-demo"));
     }
 }
