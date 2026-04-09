@@ -79,8 +79,13 @@ impl Agent {
         }
 
         let session_id = &self.session.id;
-        let pending = crate::memory::take_pending_memory(session_id);
         let shared_messages: std::sync::Arc<[Message]> = messages.to_vec().into();
+
+        let pending = if crate::message::ends_with_fresh_user_turn(messages) {
+            crate::memory::take_pending_memory(session_id)
+        } else {
+            None
+        };
 
         // Use the persistent memory-agent pipeline as the single source of truth.
         // Running both this and the legacy MemoryManager background retrieval path

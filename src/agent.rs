@@ -392,13 +392,16 @@ impl Agent {
                     if event.is_some() {
                         self.sync_session_compaction_state_from_manager(&manager);
                     }
+                    let user_count = messages
+                        .iter()
+                        .filter(|message| matches!(message.role, Role::User))
+                        .count();
+                    let assistant_count = messages.len().saturating_sub(user_count);
                     logging::info(&format!(
-                        "messages_for_provider (compaction): returning {} messages, roles: {:?}",
+                        "messages_for_provider (compaction): returning {} messages (user={}, assistant={})",
                         messages.len(),
-                        messages
-                            .iter()
-                            .map(|m| format!("{:?}", m.role))
-                            .collect::<Vec<_>>()
+                        user_count,
+                        assistant_count,
                     ));
                     return (messages, event);
                 }
@@ -407,13 +410,16 @@ impl Agent {
                 }
             };
         }
+        let user_count = all_messages
+            .iter()
+            .filter(|message| matches!(message.role, Role::User))
+            .count();
+        let assistant_count = all_messages.len().saturating_sub(user_count);
         logging::info(&format!(
-            "messages_for_provider (session): returning {} messages, roles: {:?}",
+            "messages_for_provider (session): returning {} messages (user={}, assistant={})",
             all_messages.len(),
-            all_messages
-                .iter()
-                .map(|m| format!("{:?}", m.role))
-                .collect::<Vec<_>>()
+            user_count,
+            assistant_count,
         ));
         (all_messages, None)
     }
@@ -4481,6 +4487,53 @@ mod tests {
             !crate::memory::is_memory_injected(&restored_session.id, "memory-stale"),
             "restore should replace stale in-memory dedup state with persisted session data"
         );
+
+        crate::memory::clear_all_pending_memory();
+    }
+
+    #[tokio::test]
+    async fn build_memory_prompt_nonblocking_defers_pending_memory_during_tool_loop() {
+        let _guard = crate::storage::lock_test_env();
+        crate::memory::clear_all_pending_memory();
+
+        let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+        let registry = Registry::new(provider.clone()).await;
+        let agent = Agent::new(provider, registry);
+        let session_id = agent.session.id.clone();
+
+        crate::memory::set_pending_memory_with_ids(
+            &session_id,
+            "remember this later".to_string(),
+            1,
+            vec!["memory-deferred".to_string()],
+        );
+
+        let tool_loop_messages = vec![
+            Message::user("hello"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({}),
+                }],
+                timestamp: Some(chrono::Utc::now()),
+                tool_duration_ms: None,
+            },
+            Message::tool_result("call_1", "ok", false),
+        ];
+
+        let pending = agent.build_memory_prompt_nonblocking(&tool_loop_messages, None);
+        assert!(pending.is_none(), "memory should not inject mid tool loop");
+        assert!(crate::memory::has_pending_memory(&session_id));
+
+        let next_turn_messages = vec![Message::user("follow up")];
+        let pending = agent.build_memory_prompt_nonblocking(&next_turn_messages, None);
+        assert!(
+            pending.is_some(),
+            "memory should inject on the next real user turn"
+        );
+        assert!(!crate::memory::has_pending_memory(&session_id));
 
         crate::memory::clear_all_pending_memory();
     }

@@ -376,7 +376,7 @@ impl Message {
         }
     }
 
-    fn should_skip_timestamp_injection(&self) -> bool {
+    pub fn is_internal_system_reminder(&self) -> bool {
         self.content
             .iter()
             .find_map(|block| match block {
@@ -384,6 +384,10 @@ impl Message {
                 _ => None,
             })
             .is_some_and(|text| text.starts_with("<system-reminder>"))
+    }
+
+    fn should_skip_timestamp_injection(&self) -> bool {
+        self.is_internal_system_reminder()
     }
 
     fn tool_result_tag(&self, ts: &chrono::DateTime<Utc>) -> String {
@@ -438,6 +442,51 @@ impl Message {
             })
             .collect()
     }
+}
+
+pub fn ends_with_fresh_user_turn(messages: &[Message]) -> bool {
+    for msg in messages.iter().rev() {
+        if msg.role != Role::User {
+            return false;
+        }
+
+        if msg
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        {
+            return false;
+        }
+
+        if msg.content.is_empty() {
+            return false;
+        }
+
+        let mut saw_user_text = false;
+        for block in &msg.content {
+            match block {
+                ContentBlock::Text { text, .. } => {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with("<system-reminder>") {
+                        saw_user_text = true;
+                    }
+                }
+                _ => return false,
+            }
+        }
+
+        if saw_user_text {
+            return true;
+        }
+
+        if msg.is_internal_system_reminder() {
+            continue;
+        }
+
+        return false;
+    }
+
+    false
 }
 
 /// Sanitize a tool ID so it matches the pattern `^[a-zA-Z0-9_-]+$`.
@@ -986,6 +1035,49 @@ mod tests {
             }
             other => panic!("expected text block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ends_with_fresh_user_turn_accepts_plain_user_text() {
+        let messages = vec![Message::user("hello")];
+        assert!(ends_with_fresh_user_turn(&messages));
+    }
+
+    #[test]
+    fn ends_with_fresh_user_turn_rejects_trailing_tool_result() {
+        let messages = vec![
+            Message::user("hello"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({}),
+                }],
+                timestamp: Some(Utc::now()),
+                tool_duration_ms: None,
+            },
+            Message::tool_result("call_1", "ok", false),
+        ];
+        assert!(!ends_with_fresh_user_turn(&messages));
+    }
+
+    #[test]
+    fn ends_with_fresh_user_turn_skips_internal_system_reminders() {
+        let messages = vec![
+            Message::user("hello"),
+            Message::user("<system-reminder>\ninternal\n</system-reminder>"),
+        ];
+        assert!(ends_with_fresh_user_turn(&messages));
+    }
+
+    #[test]
+    fn ends_with_fresh_user_turn_rejects_assistant_tail() {
+        let messages = vec![
+            Message::user("hello"),
+            Message::assistant_text("working on it"),
+        ];
+        assert!(!ends_with_fresh_user_turn(&messages));
     }
 
     #[test]

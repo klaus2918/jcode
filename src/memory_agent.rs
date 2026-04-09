@@ -431,23 +431,22 @@ impl MemoryAgent {
         // Step 1: Embed current context
         let start = Instant::now();
         let context_for_embedding = context.clone();
-        let context_embedding = match tokio::task::spawn_blocking(move || {
-            embedding::embed(&context_for_embedding)
-        })
-        .await
-        {
-            Ok(Ok(emb)) => emb,
-            Ok(Err(e)) => {
-                crate::logging::info(&format!("Embedding failed: {}", e));
-                memory::set_state(MemoryState::Idle);
-                return Ok(());
-            }
-            Err(e) => {
-                crate::logging::info(&format!("Embedding task failed: {}", e));
-                memory::set_state(MemoryState::Idle);
-                return Ok(());
-            }
-        };
+        let context_embedding =
+            match tokio::task::spawn_blocking(move || embedding::embed(&context_for_embedding))
+                .await
+            {
+                Ok(Ok(emb)) => emb,
+                Ok(Err(e)) => {
+                    crate::logging::info(&format!("Embedding failed: {}", e));
+                    memory::set_state(MemoryState::Idle);
+                    return Ok(());
+                }
+                Err(e) => {
+                    crate::logging::info(&format!("Embedding task failed: {}", e));
+                    memory::set_state(MemoryState::Idle);
+                    return Ok(());
+                }
+            };
 
         // Check for topic change (comparing against this session's last embedding)
         {

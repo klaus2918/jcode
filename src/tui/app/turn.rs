@@ -1656,7 +1656,11 @@ impl App {
         }
 
         // Take pending memory if available (computed in background during last turn)
-        let pending = crate::memory::take_pending_memory(&self.session.id);
+        let pending = if crate::message::ends_with_fresh_user_turn(messages) {
+            crate::memory::take_pending_memory(&self.session.id)
+        } else {
+            None
+        };
 
         // Send context to memory agent for the NEXT turn (doesn't block current send)
         let shared_messages: std::sync::Arc<[crate::message::Message]> = messages.to_vec().into();
