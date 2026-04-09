@@ -41,7 +41,9 @@ pub(super) enum PendingLogin {
     },
     /// Waiting for user to paste an API key for an OpenAI-compatible provider.
     ApiKeyProfile {
+        provider_id: String,
         provider: String,
+        auth_method: String,
         docs_url: String,
         env_file: String,
         key_name: String,
@@ -64,6 +66,40 @@ pub(super) enum PendingLogin {
     },
     /// Interactive provider selection (user picks a number)
     ProviderSelection,
+}
+
+impl PendingLogin {
+    fn telemetry_context(&self) -> Option<(String, String)> {
+        match self {
+            Self::Claude { .. } | Self::ClaudeAccount { .. } => {
+                Some(("claude".to_string(), "oauth".to_string()))
+            }
+            Self::OpenAi { .. } | Self::OpenAiAccount { .. } => {
+                Some(("openai".to_string(), "oauth".to_string()))
+            }
+            Self::Gemini { .. } => Some(("gemini".to_string(), "oauth".to_string())),
+            Self::Antigravity { .. } => Some(("antigravity".to_string(), "oauth".to_string())),
+            Self::ApiKeyProfile {
+                provider_id,
+                auth_method,
+                ..
+            } => Some((provider_id.clone(), auth_method.clone())),
+            Self::OpenAiCompatibleApiBase { profile } => {
+                let resolved = crate::provider_catalog::resolve_openai_compatible_profile(*profile);
+                Some((
+                    resolved.id,
+                    if resolved.requires_api_key {
+                        "api_key".to_string()
+                    } else {
+                        "local_endpoint".to_string()
+                    },
+                ))
+            }
+            Self::CursorApiKey => Some(("cursor".to_string(), "api_key".to_string())),
+            Self::Copilot => Some(("copilot".to_string(), "device_code".to_string())),
+            Self::AutoImportSelection { .. } | Self::ProviderSelection => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -222,12 +258,15 @@ impl App {
     }
 
     pub(super) fn show_interactive_login(&mut self) {
+        crate::telemetry::record_setup_step_once("login_picker_opened");
         self.open_login_picker_inline();
         self.set_status_notice("Login: choose a provider");
     }
 
     pub(super) fn open_login_picker(&mut self) {
         use crate::tui::login_picker::{LoginPicker, LoginPickerItem, LoginPickerSummary};
+
+        crate::telemetry::record_setup_step_once("login_picker_opened");
 
         let status = crate::auth::AuthStatus::check_fast();
         let providers = crate::provider_catalog::tui_login_providers();
@@ -263,6 +302,7 @@ impl App {
         &mut self,
         provider: crate::provider_catalog::LoginProviderDescriptor,
     ) {
+        crate::telemetry::record_provider_selected(provider.id);
         match provider.target {
             crate::provider_catalog::LoginProviderTarget::AutoImport => {
                 match crate::cli::provider_init::pending_external_auth_review_candidates() {
@@ -297,6 +337,10 @@ impl App {
                 self.start_openrouter_login()
             }
             crate::provider_catalog::LoginProviderTarget::Azure => {
+                crate::telemetry::record_auth_surface_blocked(
+                    provider.id,
+                    provider.auth_kind.label(),
+                );
                 self.push_display_message(DisplayMessage::error(
                     "Azure OpenAI login is currently CLI-only. Run `jcode login --provider azure`."
                         .to_string(),
@@ -312,12 +356,23 @@ impl App {
                 self.start_antigravity_login()
             }
             crate::provider_catalog::LoginProviderTarget::Google => {
+                crate::telemetry::record_auth_surface_blocked(
+                    provider.id,
+                    provider.auth_kind.label(),
+                );
                 self.push_display_message(DisplayMessage::error(
                     "Google/Gmail login is only available from the CLI right now. Run `jcode login --provider google`."
                         .to_string(),
                 ));
             }
         }
+    }
+
+    fn begin_pending_login(&mut self, pending: PendingLogin) {
+        if let Some((provider, method)) = pending.telemetry_context() {
+            crate::telemetry::record_auth_started(&provider, &method);
+        }
+        self.pending_login = Some(pending);
     }
 
     fn start_claude_login(&mut self) {
@@ -336,8 +391,10 @@ impl App {
                 .join(", ")
         )));
         self.set_status_notice("Login: jcode API key...");
-        self.pending_login = Some(PendingLogin::ApiKeyProfile {
+        self.begin_pending_login(PendingLogin::ApiKeyProfile {
+            provider_id: "jcode".to_string(),
             provider: "Jcode Subscription".to_string(),
+            auth_method: "api_key".to_string(),
             docs_url: "https://subscription.jcode.invalid".to_string(),
             env_file: crate::subscription_catalog::JCODE_ENV_FILE.to_string(),
             key_name: crate::subscription_catalog::JCODE_API_KEY_ENV.to_string(),
@@ -392,7 +449,7 @@ impl App {
             auth_url, qr_section
         )));
         self.set_status_notice("Login: paste code...");
-        self.pending_login = Some(PendingLogin::Claude {
+        self.begin_pending_login(PendingLogin::Claude {
             verifier,
             redirect_uri: None,
         });
@@ -442,7 +499,7 @@ impl App {
             label, auth_url, qr_section
         )));
         self.set_status_notice(&format!("Login [{}]: paste code...", label));
-        self.pending_login = Some(PendingLogin::ClaudeAccount {
+        self.begin_pending_login(PendingLogin::ClaudeAccount {
             verifier,
             label: label.to_string(),
             redirect_uri: None,
@@ -459,6 +516,8 @@ impl App {
 
     pub(super) fn open_account_center(&mut self, provider_filter: Option<&str>) {
         use crate::tui::account_picker::{AccountPicker, AccountPickerCommand, AccountPickerItem};
+
+        crate::telemetry::record_setup_step_once("account_center_opened");
 
         let status = crate::auth::AuthStatus::check_fast();
         let validation = crate::auth::validation::load_all();
@@ -2107,7 +2166,7 @@ impl App {
             label, auth_url, browser_line, callback_line, qr_section
         )));
         self.set_status_notice(&format!("Login [{}]: waiting...", label));
-        self.pending_login = Some(PendingLogin::OpenAiAccount {
+        self.begin_pending_login(PendingLogin::OpenAiAccount {
             verifier,
             label: label.to_string(),
             expected_state: state,
@@ -2309,7 +2368,7 @@ impl App {
             auth_url, browser_line, callback_line, qr_section
         )));
         self.set_status_notice("Login: waiting...");
-        self.pending_login = Some(PendingLogin::Gemini {
+        self.begin_pending_login(PendingLogin::Gemini {
             verifier,
             expected_state: pending_state,
             redirect_uri,
@@ -2437,8 +2496,22 @@ impl App {
         } else {
             "Login: paste key..."
         });
-        self.pending_login = Some(PendingLogin::ApiKeyProfile {
+        let provider_id = openai_compatible_profile
+            .map(|profile| profile.id.to_string())
+            .unwrap_or_else(|| match key_name {
+                crate::subscription_catalog::JCODE_API_KEY_ENV => "jcode".to_string(),
+                "OPENROUTER_API_KEY" => "openrouter".to_string(),
+                _ => provider.to_ascii_lowercase().replace(' ', "-"),
+            });
+        let auth_method = if api_key_optional {
+            "local_endpoint"
+        } else {
+            "api_key"
+        };
+        self.begin_pending_login(PendingLogin::ApiKeyProfile {
+            provider_id,
             provider: provider.to_string(),
+            auth_method: auth_method.to_string(),
             docs_url: docs_url.to_string(),
             env_file: env_file.to_string(),
             key_name: key_name.to_string(),
@@ -2451,6 +2524,8 @@ impl App {
 
     fn start_cursor_login(&mut self) {
         let binary = crate::auth::cursor::cursor_agent_cli_path();
+
+        crate::telemetry::record_auth_started("cursor", "cli");
 
         if crate::auth::cursor::has_cursor_agent_cli() {
             self.push_display_message(DisplayMessage::system(format!(
@@ -2466,6 +2541,7 @@ impl App {
                 &["login"],
             ) {
                 Ok(()) => {
+                    crate::telemetry::record_auth_success("cursor", "cli");
                     self.push_display_message(DisplayMessage::system(
                         "Cursor login completed.".to_string(),
                     ));
@@ -2474,6 +2550,7 @@ impl App {
                     return;
                 }
                 Err(e) => {
+                    crate::telemetry::record_auth_failed("cursor", "cli");
                     self.push_display_message(DisplayMessage::error(format!(
                         "Cursor CLI login failed: {}\n\nFalling back to API key mode...",
                         e
@@ -2492,12 +2569,12 @@ impl App {
                 .to_string(),
         ));
         self.set_status_notice("Login: paste cursor key...");
-        self.pending_login = Some(PendingLogin::CursorApiKey);
+        self.begin_pending_login(PendingLogin::CursorApiKey);
     }
 
     fn start_copilot_login(&mut self) {
         self.set_status_notice("Login: copilot device flow...");
-        self.pending_login = Some(PendingLogin::Copilot);
+        self.begin_pending_login(PendingLogin::Copilot);
 
         tokio::spawn(async move {
             let client = reqwest::Client::new();
@@ -2711,7 +2788,7 @@ impl App {
             auth_url, browser_line, callback_line, manual_hint, qr_section
         )));
         self.set_status_notice("Login: antigravity waiting...");
-        self.pending_login = Some(PendingLogin::Antigravity {
+        self.begin_pending_login(PendingLogin::Antigravity {
             verifier,
             expected_state,
             redirect_uri,
@@ -2757,6 +2834,9 @@ impl App {
     pub(super) fn handle_login_input(&mut self, pending: PendingLogin, input: String) {
         let trimmed = input.trim();
         if trimmed == "/cancel" {
+            if let Some((provider, method)) = pending.telemetry_context() {
+                crate::telemetry::record_auth_cancelled(&provider, &method);
+            }
             self.push_display_message(DisplayMessage::system("Login cancelled.".to_string()));
             return;
         }
@@ -3033,7 +3113,9 @@ impl App {
                 ));
             }
             PendingLogin::ApiKeyProfile {
+                provider_id,
                 provider,
+                auth_method,
                 docs_url,
                 env_file,
                 key_name,
@@ -3048,7 +3130,9 @@ impl App {
                         "API key cannot be empty.".to_string(),
                     ));
                     self.pending_login = Some(PendingLogin::ApiKeyProfile {
+                        provider_id,
                         provider,
+                        auth_method,
                         docs_url,
                         env_file,
                         key_name,
@@ -3201,12 +3285,15 @@ impl App {
                         }));
                     }
                     Err(e) => {
+                        crate::telemetry::record_auth_failed(&provider_id, &auth_method);
                         self.push_display_message(DisplayMessage::error(format!(
                             "Failed to save {} key: {}",
                             provider, e
                         )));
                         self.pending_login = Some(PendingLogin::ApiKeyProfile {
+                            provider_id,
                             provider,
+                            auth_method,
                             docs_url,
                             env_file,
                             key_name,
@@ -3273,10 +3360,12 @@ impl App {
                         }));
                     }
                     Err(e) => {
+                        crate::telemetry::record_auth_failed("cursor", "api_key");
                         self.push_display_message(DisplayMessage::error(format!(
                             "Failed to save Cursor API key: {}",
                             e
                         )));
+                        self.pending_login = Some(PendingLogin::CursorApiKey);
                     }
                 }
             }
@@ -3358,6 +3447,17 @@ impl App {
             return;
         }
         crate::auth::AuthStatus::invalidate_cache();
+        if let Some((provider, method)) = self
+            .pending_login
+            .as_ref()
+            .and_then(PendingLogin::telemetry_context)
+        {
+            if login.success {
+                crate::telemetry::record_auth_success(&provider, &method);
+            } else {
+                crate::telemetry::record_auth_failed(&provider, &method);
+            }
+        }
         if login.success {
             self.push_display_message(DisplayMessage::system(login.message));
             self.set_status_notice(&format!("Login: {} ready", login.provider));
