@@ -3,6 +3,36 @@ use crate::logging;
 use crate::message::Message;
 
 impl Agent {
+    pub(super) fn build_memory_prompt_nonblocking_shared(
+        &self,
+        messages: std::sync::Arc<[Message]>,
+        _memory_event_tx: Option<crate::memory::MemoryEventSink>,
+    ) -> Option<crate::memory::PendingMemory> {
+        if !self.memory_enabled {
+            return None;
+        }
+
+        let session_id = &self.session.id;
+
+        let pending = if crate::message::ends_with_fresh_user_turn(&messages) {
+            crate::memory::take_pending_memory(session_id)
+        } else {
+            None
+        };
+
+        // Use the persistent memory-agent pipeline as the single source of truth.
+        // Running both this and the legacy MemoryManager background retrieval path
+        // can prepare overlapping pending prompts for the same turn, which makes
+        // memory injection feel overly aggressive.
+        crate::memory_agent::update_context_sync_with_dir(
+            session_id,
+            messages,
+            self.session.working_dir.clone(),
+        );
+
+        pending
+    }
+
     fn append_current_turn_system_reminder(&self, split: &mut crate::prompt::SplitSystemPrompt) {
         let Some(reminder) = self
             .current_turn_system_reminder
@@ -74,30 +104,7 @@ impl Agent {
         messages: &[Message],
         _memory_event_tx: Option<crate::memory::MemoryEventSink>,
     ) -> Option<crate::memory::PendingMemory> {
-        if !self.memory_enabled {
-            return None;
-        }
-
-        let session_id = &self.session.id;
-        let shared_messages: std::sync::Arc<[Message]> = messages.to_vec().into();
-
-        let pending = if crate::message::ends_with_fresh_user_turn(messages) {
-            crate::memory::take_pending_memory(session_id)
-        } else {
-            None
-        };
-
-        // Use the persistent memory-agent pipeline as the single source of truth.
-        // Running both this and the legacy MemoryManager background retrieval path
-        // can prepare overlapping pending prompts for the same turn, which makes
-        // memory injection feel overly aggressive.
-        crate::memory_agent::update_context_sync_with_dir(
-            session_id,
-            shared_messages,
-            self.session.working_dir.clone(),
-        );
-
-        pending
+        self.build_memory_prompt_nonblocking_shared(messages.to_vec().into(), _memory_event_tx)
     }
 
     /// Legacy blocking memory prompt - kept for fallback

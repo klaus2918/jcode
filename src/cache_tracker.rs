@@ -7,8 +7,7 @@
 //! This is a fallback mechanism for providers like Fireworks (via OpenRouter) that
 //! have automatic caching but don't report cache hit/miss metrics.
 
-use crate::message::Message;
-use sha2::{Digest, Sha256};
+use crate::message::{Message, stable_message_hash};
 use std::collections::VecDeque;
 
 /// Maximum number of prefix hashes to remember (for detecting intermittent violations)
@@ -18,13 +17,13 @@ const MAX_HISTORY: usize = 10;
 #[derive(Debug, Clone, Default)]
 pub struct CacheTracker {
     /// Hash of the previous message prefix
-    previous_prefix_hash: Option<String>,
+    previous_prefix_hash: Option<u64>,
     /// Number of messages in the previous request
     previous_message_count: usize,
     /// Turn counter (number of complete request/response cycles)
     turn_count: u32,
     /// History of prefix hashes for debugging
-    hash_history: VecDeque<String>,
+    hash_history: VecDeque<u64>,
     /// Whether append-only was violated on the last request
     last_violation: Option<CacheViolation>,
 }
@@ -51,25 +50,22 @@ impl CacheTracker {
         Self::default()
     }
 
-    /// Compute a hash of the message prefix (all messages except the last user message)
-    fn compute_prefix_hash(messages: &[Message]) -> String {
-        let mut hasher = Sha256::new();
+    fn hash_label(hash: u64) -> String {
+        format!("{hash:016x}")
+    }
 
-        // Hash all messages - this represents the "prefix" that should be cached
-        for msg in messages {
-            // Hash role
-            hasher.update(format!("{:?}", msg.role).as_bytes());
-
-            // Hash content blocks
-            for block in &msg.content {
-                // Use debug format for consistent serialization
-                hasher.update(format!("{:?}", block).as_bytes());
-            }
+    fn prefix_hashes_for_messages(messages: &[Message]) -> Vec<u64> {
+        let mut prefix_hashes = Vec::with_capacity(messages.len());
+        for message in messages {
+            let message_hash = stable_message_hash(message);
+            let prefix_hash = prefix_hashes
+                .last()
+                .copied()
+                .map(|prev| crate::message::extend_stable_hash(prev, message_hash))
+                .unwrap_or(message_hash);
+            prefix_hashes.push(prefix_hash);
         }
-
-        // Return first 16 hex chars for readability
-        let result = hasher.finalize();
-        hex::encode(&result[..8])
+        prefix_hashes
     }
 
     /// Record a request and check for cache violations
@@ -77,13 +73,39 @@ impl CacheTracker {
     /// Call this BEFORE sending each request to the provider.
     /// Returns Some(violation) if the append-only property was violated.
     pub fn record_request(&mut self, messages: &[Message]) -> Option<CacheViolation> {
+        let prefix_hashes = Self::prefix_hashes_for_messages(messages);
+        self.record_prefix_hashes(&prefix_hashes)
+    }
+
+    pub fn record_prefix_hashes(&mut self, prefix_hashes: &[u64]) -> Option<CacheViolation> {
+        let current_count = prefix_hashes.len();
+        let current_full_hash = prefix_hashes.last().copied();
+        let previous_count = self.previous_message_count;
+        let prefix_hash_at_previous_count = if previous_count == 0 || previous_count > current_count {
+            None
+        } else {
+            Some(prefix_hashes[previous_count - 1])
+        };
+        self.record_prefix_hash_snapshot(
+            current_count,
+            prefix_hash_at_previous_count,
+            current_full_hash,
+        )
+    }
+
+    pub fn record_prefix_hash_snapshot(
+        &mut self,
+        current_count: usize,
+        prefix_hash_at_previous_count: Option<u64>,
+        current_full_hash: Option<u64>,
+    ) -> Option<CacheViolation> {
         self.turn_count += 1;
 
         // First turn - just record the baseline
         if self.turn_count == 1 || self.previous_prefix_hash.is_none() {
-            let hash = Self::compute_prefix_hash(messages);
-            self.previous_prefix_hash = Some(hash.clone());
-            self.previous_message_count = messages.len();
+            let hash = current_full_hash.unwrap_or(0);
+            self.previous_prefix_hash = Some(hash);
+            self.previous_message_count = current_count;
             self.hash_history.push_back(hash);
             if self.hash_history.len() > MAX_HISTORY {
                 self.hash_history.pop_front();
@@ -97,24 +119,23 @@ impl CacheTracker {
 
         // For append-only caching, the current messages should START with
         // all the previous messages (same prefix)
-        if messages.len() < previous_count {
+        if current_count < previous_count {
             // Messages were removed - definite violation
-            let current_hash = Self::compute_prefix_hash(messages);
+            let current_hash = current_full_hash.unwrap_or(0);
             let violation = CacheViolation {
                 turn: self.turn_count,
-                message_count: messages.len(),
-                expected_hash: previous_hash.clone(),
-                actual_hash: current_hash.clone(),
+                message_count: current_count,
+                expected_hash: Self::hash_label(*previous_hash),
+                actual_hash: Self::hash_label(current_hash),
                 reason: format!(
                     "Messages removed: had {} messages, now have {}",
-                    previous_count,
-                    messages.len()
+                    previous_count, current_count
                 ),
             };
 
             // Update state
-            self.previous_prefix_hash = Some(current_hash.clone());
-            self.previous_message_count = messages.len();
+            self.previous_prefix_hash = Some(current_hash);
+            self.previous_message_count = current_count;
             self.hash_history.push_back(current_hash);
             if self.hash_history.len() > MAX_HISTORY {
                 self.hash_history.pop_front();
@@ -124,27 +145,28 @@ impl CacheTracker {
         }
 
         // Check if the prefix (first N messages) matches
-        let prefix = &messages[..previous_count];
-        let prefix_hash = Self::compute_prefix_hash(prefix);
+        let prefix_hash = prefix_hash_at_previous_count.unwrap_or(0);
 
         if prefix_hash != *previous_hash {
             // Prefix changed - violation
-            let current_full_hash = Self::compute_prefix_hash(messages);
             let violation = CacheViolation {
                 turn: self.turn_count,
-                message_count: messages.len(),
-                expected_hash: previous_hash.clone(),
-                actual_hash: prefix_hash.clone(),
+                message_count: current_count,
+                expected_hash: Self::hash_label(*previous_hash),
+                actual_hash: Self::hash_label(prefix_hash),
                 reason: format!(
                     "Prefix modified: first {} messages changed (hash {} -> {})",
-                    previous_count, previous_hash, prefix_hash
+                    previous_count,
+                    Self::hash_label(*previous_hash),
+                    Self::hash_label(prefix_hash)
                 ),
             };
 
             // Update state
-            self.previous_prefix_hash = Some(current_full_hash.clone());
-            self.previous_message_count = messages.len();
-            self.hash_history.push_back(current_full_hash);
+            let current_hash = current_full_hash.unwrap_or(0);
+            self.previous_prefix_hash = Some(current_hash);
+            self.previous_message_count = current_count;
+            self.hash_history.push_back(current_hash);
             if self.hash_history.len() > MAX_HISTORY {
                 self.hash_history.pop_front();
             }
@@ -153,9 +175,9 @@ impl CacheTracker {
         }
 
         // No violation - update state with new full message list
-        let full_hash = Self::compute_prefix_hash(messages);
-        self.previous_prefix_hash = Some(full_hash.clone());
-        self.previous_message_count = messages.len();
+        let full_hash = current_full_hash.unwrap_or(0);
+        self.previous_prefix_hash = Some(full_hash);
+        self.previous_message_count = current_count;
         self.hash_history.push_back(full_hash);
         if self.hash_history.len() > MAX_HISTORY {
             self.hash_history.pop_front();
@@ -173,6 +195,10 @@ impl CacheTracker {
     /// Get the current turn count
     pub fn turn_count(&self) -> u32 {
         self.turn_count
+    }
+
+    pub fn previous_message_count(&self) -> usize {
+        self.previous_message_count
     }
 
     /// Reset the tracker (e.g., when switching models or compacting)

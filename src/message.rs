@@ -444,6 +444,29 @@ impl Message {
     }
 }
 
+const STABLE_HASH_SEED: u64 = 0xcbf29ce484222325;
+const STABLE_HASH_PRIME: u64 = 0x100000001b3;
+
+fn stable_hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hash = STABLE_HASH_SEED;
+    for byte in bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(STABLE_HASH_PRIME);
+    }
+    hash
+}
+
+pub(crate) fn extend_stable_hash(acc: u64, next: u64) -> u64 {
+    stable_hash_bytes(&[acc.to_le_bytes().as_slice(), next.to_le_bytes().as_slice()].concat())
+}
+
+pub(crate) fn stable_message_hash(message: &Message) -> u64 {
+    match serde_json::to_vec(message) {
+        Ok(bytes) => stable_hash_bytes(&bytes),
+        Err(_) => stable_hash_bytes(format!("{:?}", message).as_bytes()),
+    }
+}
+
 pub fn ends_with_fresh_user_turn(messages: &[Message]) -> bool {
     for msg in messages.iter().rev() {
         if msg.role != Role::User {

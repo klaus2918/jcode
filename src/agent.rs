@@ -424,6 +424,44 @@ impl Agent {
         (all_messages, None)
     }
 
+    fn record_client_cache_request(&mut self, messages: &[Message]) {
+        if !self.should_track_client_cache() {
+            return;
+        }
+
+        let fast_snapshot = if !self.provider.uses_jcode_compaction() && self.session.compaction.is_none() {
+            let previous_count = self.cache_tracker.previous_message_count();
+            let prefix_hashes = self.session.provider_message_prefix_hashes();
+            let current_count = prefix_hashes.len();
+            let current_full_hash = prefix_hashes.last().copied();
+            let prefix_hash_at_previous_count = if previous_count == 0 || previous_count > current_count {
+                None
+            } else {
+                Some(prefix_hashes[previous_count - 1])
+            };
+            Some((current_count, prefix_hash_at_previous_count, current_full_hash))
+        } else {
+            None
+        };
+
+        let violation = if let Some((current_count, prefix_hash_at_previous_count, current_full_hash)) = fast_snapshot {
+            self.cache_tracker.record_prefix_hash_snapshot(
+                current_count,
+                prefix_hash_at_previous_count,
+                current_full_hash,
+            )
+        } else {
+            self.cache_tracker.record_request(messages)
+        };
+
+        if let Some(violation) = violation {
+            logging::warn(&format!(
+                "CLIENT_CACHE_VIOLATION: {} | turn={} messages={}",
+                violation.reason, violation.turn, violation.message_count
+            ));
+        }
+    }
+
     fn repair_missing_tool_outputs(&mut self) -> usize {
         if self.tool_output_scan_index > self.session.messages.len() {
             self.reset_tool_output_tracking();
@@ -1562,25 +1600,20 @@ impl Agent {
             }
 
             let tools = self.tool_definitions().await;
+            let messages: std::sync::Arc<[Message]> = messages.into();
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
-            let memory_pending = self.build_memory_prompt_nonblocking(&messages, None);
+            let memory_pending =
+                self.build_memory_prompt_nonblocking_shared(std::sync::Arc::clone(&messages), None);
             // Use split prompt for better caching - static content cached, dynamic not
             let split_prompt = self.build_system_prompt_split(None);
 
             // Check for client-side cache violations before memory injection.
             // Memory is an ephemeral suffix that changes each turn; tracking it would cause
             // false-positive violations every turn (prior turn's memory ≠ current history prefix).
-            if self.should_track_client_cache()
-                && let Some(violation) = self.cache_tracker.record_request(&messages)
-            {
-                logging::warn(&format!(
-                    "CLIENT_CACHE_VIOLATION: {} | turn={} messages={}",
-                    violation.reason, violation.turn, violation.message_count
-                ));
-            }
+            self.record_client_cache_request(&messages);
 
             // Inject memory as a user message at the end (preserves cache prefix)
-            let mut messages_with_memory = messages;
+            let mut messages_with_memory: Vec<Message> = messages.iter().cloned().collect();
             if let Some(memory) = memory_pending.as_ref() {
                 let memory_count = memory.count.max(1);
                 let age_ms = memory.computed_at.elapsed().as_millis() as u64;
@@ -3110,9 +3143,10 @@ impl Agent {
             }
 
             let tools = self.tool_definitions().await;
+            let messages: std::sync::Arc<[Message]> = messages.into();
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
-            let memory_pending = self.build_memory_prompt_nonblocking(
-                &messages,
+            let memory_pending = self.build_memory_prompt_nonblocking_shared(
+                std::sync::Arc::clone(&messages),
                 Some(std::sync::Arc::new({
                     let event_tx = event_tx.clone();
                     move |event| {
@@ -3126,17 +3160,10 @@ impl Agent {
             // Check for client-side cache violations before memory injection.
             // Memory is an ephemeral suffix that changes each turn; tracking it would cause
             // false-positive violations every turn (prior turn's memory ≠ current history prefix).
-            if self.should_track_client_cache()
-                && let Some(violation) = self.cache_tracker.record_request(&messages)
-            {
-                logging::warn(&format!(
-                    "CLIENT_CACHE_VIOLATION: {} | turn={} messages={}",
-                    violation.reason, violation.turn, violation.message_count
-                ));
-            }
+            self.record_client_cache_request(&messages);
 
             // Inject memory as a user message at the end (preserves cache prefix)
-            let mut messages_with_memory = messages;
+            let mut messages_with_memory: Vec<Message> = messages.iter().cloned().collect();
             if let Some(memory) = memory_pending.as_ref() {
                 let memory_count = memory.count.max(1);
                 let computed_age_ms = memory.computed_at.elapsed().as_millis() as u64;
