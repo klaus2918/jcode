@@ -62,6 +62,7 @@ even if they cannot reach the same fast path.
 - Use `scripts/dev_cargo.sh` for local self-dev builds:
   - enables `sccache` automatically if installed
   - prefers `clang + lld` on Linux x86_64
+  - uses the dedicated Cargo `selfdev` profile for `jcode` self-dev build/reload paths
   - can still opt into `mold` via `JCODE_FAST_LINKER=mold`
 - Route refactor-shadow builds through that wrapper.
 
@@ -81,6 +82,11 @@ even if they cannot reach the same fast path.
   while UI/version build-time display comes from the binary mtime at runtime. Validation on this
   machine: two no-op release-jcode runs measured **221.688s then 0.559s**, confirming the main
   crate no longer recompiles just because build metadata changed.
+- 2026-04-09: introduced a dedicated Cargo `selfdev` profile for self-dev iteration. On this
+  machine, the warm local `jcode` self-dev build path dropped from about **56.1s** for
+  `scripts/dev_cargo.sh build --release -p jcode --bin jcode --quiet` to about **16.0s** for
+  `scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode --quiet`, while keeping the
+  normal release/distribution profile unchanged.
 
 ### Phase 3 — Workspace boundary design
 
@@ -290,6 +296,7 @@ Use:
 ```bash
 scripts/dev_cargo.sh check --quiet
 scripts/dev_cargo.sh build --release -p jcode --bin jcode --quiet
+scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode --quiet
 scripts/dev_cargo.sh --print-setup
 ```
 
@@ -297,6 +304,7 @@ The wrapper:
 
 - uses `sccache` automatically when available
 - prefers `lld` locally on Linux x86_64
+- uses the fast `selfdev` Cargo profile for self-dev build/reload workflows
 - avoids hard-forcing a linker mode that may be broken on a given machine
 - can print the currently selected cache/linker setup with `--print-setup`
 
@@ -314,6 +322,7 @@ For compile timing, prefer repeatable touched-file measurements over no-op hot-c
 scripts/bench_compile.sh check --runs 3 --touch src/server.rs
 scripts/bench_compile.sh check --runs 3 --touch src/tool/read.rs
 scripts/bench_compile.sh release-jcode --runs 3
+scripts/bench_compile.sh selfdev-jcode --runs 3
 scripts/bench_compile.sh build -- --package jcode --bin test_api
 ```
 

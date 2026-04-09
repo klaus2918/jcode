@@ -370,7 +370,7 @@ When you make code changes to jcode:
 1. By default, prefer the normal build-and-activate flow: run `jcode self-dev --build` so the new build becomes the active launcher/current build for future `jcode` and Alt+; sessions.
 2. Inside a self-dev session, prefer `selfdev build` with a short `reason` so builds are coordinated across agents, queued in the background, and other agents can see why they are blocked. Identical queued builds may attach to an existing build instead of spawning a duplicate.
 3. If you no longer need your queued/running self-dev build request, use `selfdev cancel-build` with the `request_id` (or `task_id`) returned from `selfdev build`.
-4. If you need build-only iteration outside the coordinated queue, use the fastest practical local build path when one exists (for example `scripts/dev_cargo.sh build --release --bin jcode` in this repo, which enables sccache/fast linker); otherwise use plain `cargo build --release --bin jcode`, then use `selfdev reload`.
+4. If you need build-only iteration outside the coordinated queue, use the fastest practical local build path when one exists (for example `scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode` in this repo, which enables sccache/fast linker and the fast self-dev profile); otherwise use plain `cargo build --profile selfdev -p jcode --bin jcode`, then use `selfdev reload`.
 5. If the local machine does not have enough resources and a remote build host is explicitly configured (for example via `JCODE_REMOTE_HOST` or `scripts/remote_build.sh --host HOST`), you may use the repo's remote build path instead of local cargo builds.
 6. Avoid slow distribution/signoff builds like `release-lto` unless you specifically need to validate a production artifact.
 7. The session continues automatically after restart — you will receive a continuation message
@@ -422,7 +422,7 @@ When you make code changes to jcode:
 1. By default, prefer the normal build-and-activate flow: run `jcode self-dev --build` so the new build becomes the active launcher/current build for future `jcode` and Alt+; sessions.
 2. Inside a self-dev session, prefer `selfdev build` with a short `reason` so builds are coordinated across agents, queued in the background, and other agents can see why they are blocked. Identical queued builds may attach to an existing build instead of spawning a duplicate.
 3. If you no longer need your queued/running self-dev build request, use `selfdev cancel-build` with the `request_id` (or `task_id`) returned from `selfdev build`.
-4. If you need build-only iteration outside the coordinated queue, use the fastest practical local build path when one exists (for example `scripts/dev_cargo.sh build --release --bin jcode` in this repo, which enables sccache/fast linker); otherwise use plain `cargo build --release --bin jcode`, then use `selfdev reload`.
+4. If you need build-only iteration outside the coordinated queue, use the fastest practical local build path when one exists (for example `scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode` in this repo, which enables sccache/fast linker and the fast self-dev profile); otherwise use plain `cargo build --profile selfdev -p jcode --bin jcode`, then use `selfdev reload`.
 5. If the local machine does not have enough resources and a remote build host is explicitly configured (for example via `JCODE_REMOTE_HOST` or `scripts/remote_build.sh --host HOST`), you may use the repo's remote build path instead of local cargo builds.
 6. Avoid slow distribution/signoff builds like `release-lto` unless you specifically need to validate a production artifact.
 7. The session continues automatically after restart — you will receive a continuation message
@@ -749,7 +749,9 @@ mod tests {
         assert!(prompt.contains("cancel-build"));
         assert!(prompt.contains("selfdev reload"));
         assert!(prompt.contains("By default, prefer the normal build-and-activate flow"));
-        assert!(prompt.contains("scripts/dev_cargo.sh build --release --bin jcode"));
+        assert!(
+            prompt.contains("scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode")
+        );
         assert!(prompt.contains("JCODE_REMOTE_HOST"));
     }
 }

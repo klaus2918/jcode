@@ -85,7 +85,7 @@ pub fn get_repo_dir() -> Option<PathBuf> {
 
     // Fallback: check relative to executable
     if let Ok(exe) = std::env::current_exe() {
-        // Assume structure: repo/target/release/<binary> (platform-specific executable name)
+        // Assume structure: repo/target/<profile>/<binary> (platform-specific executable name)
         if let Some(repo) = exe
             .parent()
             .and_then(|p| p.parent())
@@ -130,8 +130,33 @@ pub fn binary_name() -> &'static str {
     }
 }
 
+pub const SELFDEV_CARGO_PROFILE: &str = "selfdev";
+
+fn profile_binary_path(repo_dir: &std::path::Path, profile: &str) -> PathBuf {
+    repo_dir.join("target").join(profile).join(binary_name())
+}
+
 pub fn release_binary_path(repo_dir: &std::path::Path) -> PathBuf {
-    repo_dir.join("target").join("release").join(binary_name())
+    profile_binary_path(repo_dir, "release")
+}
+
+pub fn selfdev_binary_path(repo_dir: &std::path::Path) -> PathBuf {
+    profile_binary_path(repo_dir, SELFDEV_CARGO_PROFILE)
+}
+
+fn binary_mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+}
+
+fn newest_existing_binary(
+    candidates: Vec<(PathBuf, &'static str)>,
+) -> Option<(PathBuf, &'static str)> {
+    candidates
+        .into_iter()
+        .filter(|(path, _)| path.exists())
+        .max_by_key(|(path, _)| binary_mtime(path))
 }
 
 pub fn selfdev_build_command(repo_dir: &Path) -> SelfDevBuildCommand {
@@ -142,11 +167,17 @@ pub fn selfdev_build_command(repo_dir: &Path) -> SelfDevBuildCommand {
             args: vec![
                 wrapper.to_string_lossy().into_owned(),
                 "build".to_string(),
-                "--release".to_string(),
+                "--profile".to_string(),
+                SELFDEV_CARGO_PROFILE.to_string(),
+                "-p".to_string(),
+                "jcode".to_string(),
                 "--bin".to_string(),
                 "jcode".to_string(),
             ],
-            display: "scripts/dev_cargo.sh build --release --bin jcode".to_string(),
+            display: format!(
+                "scripts/dev_cargo.sh build --profile {} -p jcode --bin jcode",
+                SELFDEV_CARGO_PROFILE
+            ),
         };
     }
 
@@ -154,11 +185,17 @@ pub fn selfdev_build_command(repo_dir: &Path) -> SelfDevBuildCommand {
         program: "cargo".to_string(),
         args: vec![
             "build".to_string(),
-            "--release".to_string(),
+            "--profile".to_string(),
+            SELFDEV_CARGO_PROFILE.to_string(),
+            "-p".to_string(),
+            "jcode".to_string(),
             "--bin".to_string(),
             "jcode".to_string(),
         ],
-        display: "cargo build --release --bin jcode".to_string(),
+        display: format!(
+            "cargo build --profile {} -p jcode --bin jcode",
+            SELFDEV_CARGO_PROFILE
+        ),
     }
 }
 
@@ -189,14 +226,13 @@ pub fn current_binary_build_time_string() -> Option<String> {
 }
 
 /// Find the best development binary in the repo.
-/// Checks target/release (the default build output).
+/// Prefers the newest local self-dev or release binary.
 pub fn find_dev_binary(repo_dir: &std::path::Path) -> Option<PathBuf> {
-    let release = release_binary_path(repo_dir);
-    if release.exists() {
-        Some(release)
-    } else {
-        None
-    }
+    newest_existing_binary(vec![
+        (selfdev_binary_path(repo_dir), "repo-selfdev"),
+        (release_binary_path(repo_dir), "repo-release"),
+    ])
+    .map(|(path, _)| path)
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -283,7 +319,7 @@ pub fn update_launcher_symlink_to_stable() -> Result<PathBuf> {
 ///
 /// Order matters:
 /// - Prefer the published `current` channel first (active local build)
-/// - Self-dev sessions can fall back to an unpublished repo build from `target/release`
+/// - Self-dev sessions can fall back to an unpublished repo build from `target/selfdev` or `target/release`
 /// - Then the self-dev canary channel
 /// - Then launcher path
 /// - Then stable channel path
@@ -333,9 +369,16 @@ pub fn client_update_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'s
 pub fn preferred_reload_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'static str)> {
     let candidate = client_update_candidate(is_selfdev_session);
 
-    let repo_release = get_repo_dir()
-        .map(|repo_dir| release_binary_path(&repo_dir))
-        .filter(|path| path.exists());
+    let repo_binary = get_repo_dir().and_then(|repo_dir| {
+        if is_selfdev_session {
+            newest_existing_binary(vec![
+                (selfdev_binary_path(&repo_dir), "repo-selfdev"),
+                (release_binary_path(&repo_dir), "repo-release"),
+            ])
+        } else {
+            newest_existing_binary(vec![(release_binary_path(&repo_dir), "repo-release")])
+        }
+    });
 
     let repo_is_newer = |repo: &Path, current: &Path| {
         let repo_mtime = std::fs::metadata(repo).ok().and_then(|m| m.modified().ok());
@@ -349,11 +392,11 @@ pub fn preferred_reload_candidate(is_selfdev_session: bool) -> Option<(PathBuf, 
         }
     };
 
-    match (repo_release, candidate) {
-        (Some(repo), Some((current, _))) if repo_is_newer(&repo, &current) => {
-            Some((repo, "repo-release"))
+    match (repo_binary, candidate) {
+        (Some((repo, label)), Some((current, _))) if repo_is_newer(&repo, &current) => {
+            Some((repo, label))
         }
-        (Some(repo), None) => Some((repo, "repo-release")),
+        (Some((repo, label)), None) => Some((repo, label)),
         (_, Some(candidate)) => Some(candidate),
         (None, None) => None,
     }
@@ -958,7 +1001,8 @@ pub fn publish_local_current_build_for_source(
     repo_dir: &Path,
     source: &SourceState,
 ) -> Result<PublishedBuild> {
-    let binary = release_binary_path(repo_dir);
+    let binary = find_dev_binary(repo_dir)
+        .ok_or_else(|| anyhow::anyhow!("Binary not found in target/selfdev or target/release"))?;
     if !binary.exists() {
         anyhow::bail!("Binary not found at {:?}", binary);
     }
