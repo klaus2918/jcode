@@ -135,6 +135,7 @@ fn reload_marker_active() -> bool {
 }
 
 pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
+    app.progress_mouse_scroll_animation();
     if let Some(chunk) = app.stream_buffer.flush() {
         app.streaming_text.push_str(&chunk);
     }

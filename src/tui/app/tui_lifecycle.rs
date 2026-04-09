@@ -359,6 +359,8 @@ impl App {
             pending_login: None,
             pending_account_input: None,
             last_mouse_scroll: None,
+            mouse_scroll_target: None,
+            mouse_scroll_queue: 0,
             changelog_scroll: None,
             help_scroll: None,
             session_picker_overlay: None,
@@ -641,6 +643,8 @@ impl App {
             pending_login: None,
             pending_account_input: None,
             last_mouse_scroll: None,
+            mouse_scroll_target: None,
+            mouse_scroll_queue: 0,
             changelog_scroll: None,
             help_scroll: None,
             session_picker_overlay: None,
@@ -726,10 +730,17 @@ impl App {
         }
         self.follow_chat_bottom();
         crate::logging::info(&format!(
-            "Remote startup fast restore: session={}, display_messages={}, images={}",
+            "Remote startup fast restore: session={}, display_messages={}, images={}, load={}ms, render={}ms, images_render={}ms, total={}ms",
             session_id,
             self.display_messages.len(),
-            self.remote_side_pane_images.len()
+            self.remote_side_pane_images.len(),
+            load_start
+                .elapsed()
+                .as_millis()
+                .saturating_sub(render_ms + image_ms),
+            render_ms,
+            image_ms,
+            load_start.elapsed().as_millis()
         ));
     }
 

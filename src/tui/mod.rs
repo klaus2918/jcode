@@ -191,6 +191,10 @@ pub trait TuiState {
     fn status_notice(&self) -> Option<String>;
     /// Whether a transient remote startup phase is active and should keep redraws responsive.
     fn remote_startup_phase_active(&self) -> bool;
+    /// Whether mouse-wheel smoothing has queued lines to animate.
+    fn has_pending_mouse_scroll_animation(&self) -> bool {
+        false
+    }
     /// Optional configured keybinding label for external dictation.
     fn dictation_key_label(&self) -> Option<String>;
     /// Time since app started (for startup animations)
@@ -811,6 +815,7 @@ pub(crate) fn redraw_interval(state: &dyn TuiState) -> Duration {
         || !state.streaming_text().is_empty()
         || state.status_notice().is_some()
         || state.remote_startup_phase_active()
+        || state.has_pending_mouse_scroll_animation()
         || state.has_notification()
         || state.rate_limit_remaining().is_some()
     {

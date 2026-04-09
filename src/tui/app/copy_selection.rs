@@ -433,27 +433,18 @@ impl App {
         pane: crate::tui::CopySelectionPane,
         upward: bool,
     ) -> bool {
-        let amt = self.mouse_scroll_amount();
         match pane {
             crate::tui::CopySelectionPane::Chat => {
-                if upward {
-                    self.scroll_up(amt);
-                } else {
-                    self.scroll_down(amt);
-                }
+                self.enqueue_mouse_scroll(
+                    super::MouseScrollTarget::Chat,
+                    if upward { -1 } else { 1 },
+                );
             }
             crate::tui::CopySelectionPane::SidePane => {
-                let current = if self.diff_pane_scroll == usize::MAX {
-                    crate::tui::ui::last_diff_pane_effective_scroll()
-                } else {
-                    self.diff_pane_scroll
-                };
-                self.diff_pane_scroll = if upward {
-                    current.saturating_sub(amt)
-                } else {
-                    current.saturating_add(amt)
-                };
-                self.diff_pane_auto_scroll = false;
+                self.enqueue_mouse_scroll(
+                    super::MouseScrollTarget::SidePane,
+                    if upward { -1 } else { 1 },
+                );
             }
         }
         true

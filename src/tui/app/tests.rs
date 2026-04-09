@@ -2944,9 +2944,43 @@ fn test_mouse_scroll_over_diff_pane_scrolls_side_panel_without_changing_focus() 
         modifiers: KeyModifiers::empty(),
     });
 
-    assert_eq!(app.diff_pane_scroll, 8);
+    assert_eq!(app.diff_pane_scroll, 6);
     assert!(!app.diff_pane_focus);
     assert!(!app.diff_pane_auto_scroll);
+}
+
+#[test]
+fn test_mouse_scroll_animation_preserves_side_pane_scroll_sensitivity() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::File;
+    app.diff_pane_scroll = 5;
+    app.diff_pane_auto_scroll = true;
+
+    crate::tui::ui::record_layout_snapshot(
+        Rect::new(0, 0, 40, 20),
+        None,
+        Some(Rect::new(40, 0, 20, 20)),
+        None,
+    );
+
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 45,
+        row: 5,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    assert_eq!(app.diff_pane_scroll, 6, "first frame should move one line");
+
+    crate::tui::app::local::handle_tick(&mut app);
+    assert_eq!(app.diff_pane_scroll, 7);
+
+    crate::tui::app::local::handle_tick(&mut app);
+    assert_eq!(
+        app.diff_pane_scroll, 8,
+        "one wheel notch should still total three lines"
+    );
 }
 
 #[test]
@@ -2988,7 +3022,7 @@ fn test_mouse_scroll_over_tool_side_panel_scrolls_shared_right_pane_without_chan
         !scroll_only,
         "side-panel wheel scroll should request an immediate redraw"
     );
-    assert_eq!(app.diff_pane_scroll, 8);
+    assert_eq!(app.diff_pane_scroll, 6);
     assert!(!app.diff_pane_focus);
     assert!(!app.diff_pane_auto_scroll);
 }
@@ -3079,16 +3113,16 @@ fn test_mouse_scroll_over_tool_side_panel_updates_visible_render() {
         row: diff_area.y + diff_area.height.saturating_sub(2).min(3),
         modifiers: KeyModifiers::empty(),
     });
-    assert_eq!(app.diff_pane_scroll, 3);
+    assert_eq!(app.diff_pane_scroll, 1);
 
     let after = render_and_snap(&app, &mut terminal);
-    assert_eq!(crate::tui::ui::last_diff_pane_effective_scroll(), 3);
+    assert_eq!(crate::tui::ui::last_diff_pane_effective_scroll(), 1);
     assert_ne!(
         before, after,
         "hover scrolling should repaint the side panel"
     );
-    assert!(after.contains("side-scroll-04"));
-    assert!(after.contains("side-scroll-05"));
+    assert!(after.contains("side-scroll-02"));
+    assert!(after.contains("side-scroll-03"));
     assert!(!after.contains("side-scroll-01"));
 }
 
@@ -3464,7 +3498,7 @@ fn test_mouse_scroll_help_overlay_updates_help_scroll() {
         scroll_only,
         "help overlay mouse wheel should be scroll-only"
     );
-    assert_eq!(app.help_scroll, Some(8));
+    assert_eq!(app.help_scroll, Some(6));
 
     let scroll_only = app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::ScrollUp,
@@ -3493,7 +3527,7 @@ fn test_mouse_scroll_changelog_overlay_updates_changelog_scroll() {
         scroll_only,
         "changelog overlay mouse wheel should be scroll-only"
     );
-    assert_eq!(app.changelog_scroll, Some(0));
+    assert_eq!(app.changelog_scroll, Some(1));
 
     let scroll_only = app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::ScrollDown,
@@ -3503,7 +3537,7 @@ fn test_mouse_scroll_changelog_overlay_updates_changelog_scroll() {
     });
 
     assert!(scroll_only);
-    assert_eq!(app.changelog_scroll, Some(3));
+    assert_eq!(app.changelog_scroll, Some(2));
 }
 
 #[test]

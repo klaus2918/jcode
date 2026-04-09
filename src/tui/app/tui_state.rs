@@ -441,6 +441,10 @@ impl crate::tui::TuiState for App {
         self.last_stream_activity.map(|t| t.elapsed())
     }
 
+    fn has_pending_mouse_scroll_animation(&self) -> bool {
+        self.mouse_scroll_queue != 0
+    }
+
     fn total_session_tokens(&self) -> Option<(u64, u64)> {
         // In remote mode, use tokens from server
         // Standalone mode doesn't currently track total tokens

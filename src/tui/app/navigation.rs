@@ -3,6 +3,9 @@ use crate::tui::ui::input_ui;
 use ratatui::layout::Rect;
 
 impl App {
+    const MOUSE_SCROLL_INTENT_LINES: i16 = 3;
+    const MOUSE_SCROLL_MAX_QUEUE: i16 = 24;
+
     fn current_visible_diagram_hash(&self) -> Option<u64> {
         if self.diagram_mode != crate::config::DiagramDisplayMode::Pinned
             || !self.diagram_pane_enabled
@@ -243,9 +246,117 @@ impl App {
         }
     }
 
-    fn side_pane_mouse_scroll_amount(&mut self) -> usize {
+    pub(super) fn enqueue_mouse_scroll(&mut self, target: MouseScrollTarget, direction: i16) {
+        if direction == 0 {
+            return;
+        }
+
+        if self.mouse_scroll_target != Some(target) {
+            self.mouse_scroll_target = Some(target);
+            self.mouse_scroll_queue = 0;
+        }
+
         self.last_mouse_scroll = Some(Instant::now());
-        self.side_pane_line_scroll_amount()
+        let delta = direction * Self::MOUSE_SCROLL_INTENT_LINES;
+        self.mouse_scroll_queue = self
+            .mouse_scroll_queue
+            .saturating_add(delta)
+            .clamp(-Self::MOUSE_SCROLL_MAX_QUEUE, Self::MOUSE_SCROLL_MAX_QUEUE);
+        self.drain_mouse_scroll_animation(1);
+    }
+
+    fn mouse_scroll_drain_amount(&self) -> usize {
+        let queued = self.mouse_scroll_queue.unsigned_abs() as usize;
+
+        if queued >= 6 {
+            3
+        } else if queued >= 3 {
+            2
+        } else {
+            1
+        }
+    }
+
+    fn drain_mouse_scroll_animation(&mut self, max_steps: usize) {
+        let Some(target) = self.mouse_scroll_target else {
+            self.mouse_scroll_queue = 0;
+            return;
+        };
+        if self.mouse_scroll_queue == 0 || max_steps == 0 {
+            if self.mouse_scroll_queue == 0 {
+                self.mouse_scroll_target = None;
+            }
+            return;
+        }
+
+        let direction = self.mouse_scroll_queue.signum();
+        let steps = max_steps.min(self.mouse_scroll_queue.unsigned_abs() as usize);
+
+        for _ in 0..steps {
+            if !self.apply_mouse_scroll_step(target, direction) {
+                self.mouse_scroll_queue = 0;
+                self.mouse_scroll_target = None;
+                return;
+            }
+        }
+
+        self.mouse_scroll_queue -= direction * steps as i16;
+        if self.mouse_scroll_queue == 0 {
+            self.mouse_scroll_target = None;
+        }
+    }
+
+    fn apply_mouse_scroll_step(&mut self, target: MouseScrollTarget, direction: i16) -> bool {
+        match target {
+            MouseScrollTarget::Chat => {
+                if direction < 0 {
+                    self.scroll_up(1);
+                } else {
+                    self.scroll_down(1);
+                }
+                true
+            }
+            MouseScrollTarget::SidePane => {
+                let current = if self.diff_pane_scroll == usize::MAX {
+                    super::super::ui::last_diff_pane_effective_scroll()
+                } else {
+                    self.diff_pane_scroll
+                };
+                self.diff_pane_scroll = if direction < 0 {
+                    current.saturating_sub(1)
+                } else {
+                    current.saturating_add(1)
+                };
+                self.diff_pane_auto_scroll = false;
+                true
+            }
+            MouseScrollTarget::HelpOverlay => {
+                let Some(current) = self.help_scroll else {
+                    return false;
+                };
+                self.help_scroll = Some(if direction < 0 {
+                    current.saturating_sub(1)
+                } else {
+                    current.saturating_add(1)
+                });
+                true
+            }
+            MouseScrollTarget::ChangelogOverlay => {
+                let Some(current) = self.changelog_scroll else {
+                    return false;
+                };
+                self.changelog_scroll = Some(if direction < 0 {
+                    current.saturating_sub(1)
+                } else {
+                    current.saturating_add(1)
+                });
+                true
+            }
+        }
+    }
+
+    pub(super) fn progress_mouse_scroll_animation(&mut self) {
+        self.drain_mouse_scroll_animation(self.mouse_scroll_drain_amount());
     }
 
     pub(super) fn cycle_diagram(&mut self, direction: i32) {
@@ -584,15 +695,11 @@ impl App {
         if self.changelog_scroll.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
-                    let amt = self.mouse_scroll_amount();
-                    let current = self.changelog_scroll.unwrap_or(0);
-                    self.changelog_scroll = Some(current.saturating_sub(amt));
+                    self.enqueue_mouse_scroll(MouseScrollTarget::ChangelogOverlay, -1);
                     return true;
                 }
                 MouseEventKind::ScrollDown => {
-                    let amt = self.mouse_scroll_amount();
-                    let current = self.changelog_scroll.unwrap_or(0);
-                    self.changelog_scroll = Some(current.saturating_add(amt));
+                    self.enqueue_mouse_scroll(MouseScrollTarget::ChangelogOverlay, 1);
                     return true;
                 }
                 _ => return false,
@@ -602,15 +709,11 @@ impl App {
         if self.help_scroll.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
-                    let amt = self.mouse_scroll_amount();
-                    let current = self.help_scroll.unwrap_or(0);
-                    self.help_scroll = Some(current.saturating_sub(amt));
+                    self.enqueue_mouse_scroll(MouseScrollTarget::HelpOverlay, -1);
                     return true;
                 }
                 MouseEventKind::ScrollDown => {
-                    let amt = self.mouse_scroll_amount();
-                    let current = self.help_scroll.unwrap_or(0);
-                    self.help_scroll = Some(current.saturating_add(amt));
+                    self.enqueue_mouse_scroll(MouseScrollTarget::HelpOverlay, 1);
                     return true;
                 }
                 _ => return false,
@@ -798,29 +901,18 @@ impl App {
             // in chat while inspecting pinned content. But when the side panel is visible, redraw
             // immediately so scroll/pan feels responsive instead of waiting for the next tick.
             let side_panel_visible = self.side_panel.focused_page().is_some();
-            let amt = self.side_pane_mouse_scroll_amount();
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
-                    let current = if self.diff_pane_scroll == usize::MAX {
-                        super::super::ui::last_diff_pane_effective_scroll()
-                    } else {
-                        self.diff_pane_scroll
-                    };
-                    self.diff_pane_scroll = current.saturating_sub(amt);
-                    self.diff_pane_auto_scroll = false;
+                    self.enqueue_mouse_scroll(MouseScrollTarget::SidePane, -1);
                 }
                 MouseEventKind::ScrollDown => {
-                    if self.diff_pane_scroll == usize::MAX {
-                        self.diff_pane_scroll = super::super::ui::last_diff_pane_effective_scroll();
-                    }
-                    self.diff_pane_scroll = self.diff_pane_scroll.saturating_add(amt);
-                    self.diff_pane_auto_scroll = false;
+                    self.enqueue_mouse_scroll(MouseScrollTarget::SidePane, 1);
                 }
                 MouseEventKind::ScrollLeft if self.side_panel.focused_page().is_some() => {
-                    self.pan_diff_pane_x(-(amt as i32));
+                    self.pan_diff_pane_x(-1);
                 }
                 MouseEventKind::ScrollRight if self.side_panel.focused_page().is_some() => {
-                    self.pan_diff_pane_x(amt as i32);
+                    self.pan_diff_pane_x(1);
                 }
                 _ => {}
             }
@@ -840,23 +932,16 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                let amt = self.mouse_scroll_amount();
-                self.scroll_up(amt);
+                self.enqueue_mouse_scroll(MouseScrollTarget::Chat, -1);
             }
             MouseEventKind::ScrollDown => {
-                let amt = self.mouse_scroll_amount();
-                self.scroll_down(amt);
+                self.enqueue_mouse_scroll(MouseScrollTarget::Chat, 1);
             }
             _ => {
                 return false;
             }
         }
         true
-    }
-
-    pub(super) fn mouse_scroll_amount(&mut self) -> usize {
-        self.last_mouse_scroll = Some(Instant::now());
-        3
     }
 
     pub(super) fn scroll_up(&mut self, amount: usize) {

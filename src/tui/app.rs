@@ -327,6 +327,14 @@ impl ImproveMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MouseScrollTarget {
+    Chat,
+    SidePane,
+    HelpOverlay,
+    ChangelogOverlay,
+}
+
 /// State for an in-progress OAuth/API-key login flow triggered by `/login`.
 /// TUI Application state
 pub struct App {
@@ -687,6 +695,10 @@ pub struct App {
     pending_account_input: Option<auth::PendingAccountInput>,
     /// Last mouse scroll event timestamp (for trackpad velocity detection)
     last_mouse_scroll: Option<Instant>,
+    /// Active smooth-scroll target for queued mouse-wheel motion.
+    mouse_scroll_target: Option<MouseScrollTarget>,
+    /// Remaining queued mouse-wheel lines. Positive = down, negative = up.
+    mouse_scroll_queue: i16,
     /// Scroll offset for changelog overlay (None = not visible)
     changelog_scroll: Option<usize>,
     help_scroll: Option<usize>,
