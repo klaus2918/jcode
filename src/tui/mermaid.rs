@@ -75,6 +75,7 @@ static PENDING_RENDER_REQUESTS: LazyLock<Mutex<HashMap<(u64, u32), PendingDeferr
 
 /// Sender for the shared deferred Mermaid render worker.
 static DEFERRED_RENDER_TX: OnceLock<mpsc::Sender<DeferredRenderTask>> = OnceLock::new();
+static SVG_FONT_DB_PREWARM_STARTED: OnceLock<()> = OnceLock::new();
 
 /// Serialize the actual Mermaid parse/layout/png pipeline.
 ///
@@ -1581,6 +1582,16 @@ fn fast_picker() -> Picker {
     picker
 }
 
+fn prewarm_svg_font_db_async() {
+    SVG_FONT_DB_PREWARM_STARTED.get_or_init(|| {
+        let _ = std::thread::Builder::new()
+            .name("jcode-mermaid-fontdb-prewarm".to_string())
+            .spawn(|| {
+                let _ = &*SVG_FONT_DB;
+            });
+    });
+}
+
 /// Initialize the global picker.
 /// By default this uses a fast non-blocking path and avoids terminal probing.
 /// Set JCODE_MERMAID_PICKER_PROBE=1 to force full stdio capability probing.
@@ -1599,6 +1610,7 @@ pub fn init_picker() {
             }
         },
     });
+    prewarm_svg_font_db_async();
     // Evict old cache files once per process
     CACHE_EVICTED.get_or_init(|| {
         evict_old_cache();
