@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const DEFAULT_PORT: u16 = 8456;
+pub const DEFAULT_PORT: u16 = 8456;
 
 pub const SCOPE_READONLY: &str = "https://www.googleapis.com/auth/gmail.readonly";
 pub const SCOPE_COMPOSE: &str = "https://www.googleapis.com/auth/gmail.compose";
@@ -127,6 +127,25 @@ pub fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
     crate::storage::write_json_secret(&path, tokens)
 }
 
+pub fn build_auth_url(
+    creds: &GoogleCredentials,
+    tier: GmailAccessTier,
+    redirect_uri: &str,
+    challenge: &str,
+    state: &str,
+) -> String {
+    let scopes = tier.scopes().join(" ");
+    format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}&access_type=offline&prompt=consent",
+        AUTHORIZE_URL,
+        urlencoding::encode(&creds.client_id),
+        urlencoding::encode(redirect_uri),
+        urlencoding::encode(&scopes),
+        challenge,
+        state
+    )
+}
+
 pub fn has_tokens() -> bool {
     tokens_path().map(|path| path.exists()).unwrap_or(false)
 }
@@ -136,7 +155,6 @@ pub async fn login(tier: GmailAccessTier, no_browser: bool) -> Result<GoogleToke
     let (verifier, challenge) = super::oauth::generate_pkce_public();
     let state = super::oauth::generate_state_public();
 
-    let scopes = tier.scopes().join(" ");
     let listener = super::oauth::bind_callback_listener(0).ok();
     let redirect_uri = listener
         .as_ref()
@@ -144,15 +162,7 @@ pub async fn login(tier: GmailAccessTier, no_browser: bool) -> Result<GoogleToke
         .map(|addr| format!("http://127.0.0.1:{}", addr.port()))
         .unwrap_or_else(|| format!("http://127.0.0.1:{}", DEFAULT_PORT));
 
-    let auth_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}&access_type=offline&prompt=consent",
-        AUTHORIZE_URL,
-        urlencoding::encode(&creds.client_id),
-        urlencoding::encode(&redirect_uri),
-        urlencoding::encode(&scopes),
-        challenge,
-        state
-    );
+    let auth_url = build_auth_url(&creds, tier, &redirect_uri, &challenge, &state);
 
     eprintln!("\nOpening browser for Google login...\n");
     eprintln!("If the browser didn't open, visit:\n{}\n", auth_url);
@@ -206,7 +216,52 @@ pub async fn login(tier: GmailAccessTier, no_browser: bool) -> Result<GoogleToke
     };
 
     eprintln!("Exchanging code for tokens...");
+    exchange_code(&creds, &verifier, &code, &redirect_uri, tier).await
+}
 
+fn read_manual_callback_code(expected_state: &str) -> Result<String> {
+    use std::io::Write;
+
+    eprintln!("Paste the full callback URL (or query string) here:\n");
+    eprint!("> ");
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("No callback URL entered.");
+    }
+
+    let (code, callback_state) = crate::auth::oauth::parse_callback_input_with_state(trimmed)?;
+    if callback_state != expected_state {
+        anyhow::bail!("OAuth state mismatch. Start login again and use the latest callback URL.");
+    }
+    Ok(code)
+}
+
+pub async fn exchange_callback_input(
+    creds: &GoogleCredentials,
+    verifier: &str,
+    input: &str,
+    expected_state: &str,
+    redirect_uri: &str,
+    tier: GmailAccessTier,
+) -> Result<GoogleTokens> {
+    let (code, callback_state) = crate::auth::oauth::parse_callback_input_with_state(input)?;
+    if callback_state != expected_state {
+        anyhow::bail!("OAuth state mismatch. Start login again and use the latest callback URL.");
+    }
+    exchange_code(creds, verifier, &code, redirect_uri, tier).await
+}
+
+async fn exchange_code(
+    creds: &GoogleCredentials,
+    verifier: &str,
+    code: &str,
+    redirect_uri: &str,
+    tier: GmailAccessTier,
+) -> Result<GoogleTokens> {
     let client = reqwest::Client::new();
     let resp = client
         .post(TOKEN_URL)
@@ -214,9 +269,9 @@ pub async fn login(tier: GmailAccessTier, no_browser: bool) -> Result<GoogleToke
             ("grant_type", "authorization_code"),
             ("client_id", &creds.client_id),
             ("client_secret", &creds.client_secret),
-            ("code", &code),
-            ("code_verifier", &verifier),
-            ("redirect_uri", &redirect_uri),
+            ("code", code),
+            ("code_verifier", verifier),
+            ("redirect_uri", redirect_uri),
         ])
         .send()
         .await?;
@@ -252,27 +307,6 @@ pub async fn login(tier: GmailAccessTier, no_browser: bool) -> Result<GoogleToke
 
     save_tokens(&tokens)?;
     Ok(tokens)
-}
-
-fn read_manual_callback_code(expected_state: &str) -> Result<String> {
-    use std::io::Write;
-
-    eprintln!("Paste the full callback URL (or query string) here:\n");
-    eprint!("> ");
-    std::io::stdout().flush()?;
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("No callback URL entered.");
-    }
-
-    let (code, callback_state) = crate::auth::oauth::parse_callback_input_with_state(trimmed)?;
-    if callback_state != expected_state {
-        anyhow::bail!("OAuth state mismatch. Start login again and use the latest callback URL.");
-    }
-    Ok(code)
 }
 
 pub async fn refresh_tokens(tokens: &GoogleTokens) -> Result<GoogleTokens> {

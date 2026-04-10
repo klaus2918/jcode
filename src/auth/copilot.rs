@@ -6,11 +6,13 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{LazyLock, RwLock};
 
-static GITHUB_TOKEN_CACHE: LazyLock<RwLock<Option<String>>> =
-    LazyLock::new(|| RwLock::new(None));
+static GITHUB_TOKEN_CACHE: LazyLock<RwLock<Option<String>>> = LazyLock::new(|| RwLock::new(None));
 
 fn cached_github_token() -> Option<String> {
-    GITHUB_TOKEN_CACHE.read().ok().and_then(|value| value.clone())
+    GITHUB_TOKEN_CACHE
+        .read()
+        .ok()
+        .and_then(|value| value.clone())
 }
 
 fn cache_github_token(token: &str) {
@@ -387,6 +389,10 @@ fn legacy_copilot_config_dir() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_default();
         PathBuf::from(home).join(".config").join("github-copilot")
     }
+}
+
+pub fn saved_hosts_path() -> PathBuf {
+    legacy_copilot_config_dir().join("hosts.json")
 }
 
 fn load_token_from_config_json(path: &PathBuf) -> Result<String> {
