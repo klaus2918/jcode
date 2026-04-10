@@ -202,7 +202,7 @@ async fn ensure_client_swarm_member(
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
-) {
+) -> bool {
     let (working_dir, derived_swarm_id, fallback_name) = {
         let agent_guard = agent.lock().await;
         let working_dir = agent_guard.working_dir().map(PathBuf::from);
@@ -242,7 +242,7 @@ async fn ensure_client_swarm_member(
                     working_dir: working_dir.clone(),
                     swarm_id: derived_swarm_id.clone(),
                     swarm_enabled,
-                    status: "spawned".to_string(),
+                    status: "ready".to_string(),
                     detail: None,
                     friendly_name: member_name.clone(),
                     role: "agent".to_string(),
@@ -275,9 +275,10 @@ async fn ensure_client_swarm_member(
                 },
             )
             .await;
-            broadcast_swarm_status(swarm_id_ref, swarm_members, swarms_by_id).await;
         }
     }
+
+    inserted
 }
 
 #[allow(clippy::too_many_arguments)]

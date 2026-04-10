@@ -450,23 +450,35 @@ pub(super) async fn update_member_status(
     event_counter: Option<&Arc<std::sync::atomic::AtomicU64>>,
     swarm_event_tx: Option<&broadcast::Sender<SwarmEvent>>,
 ) {
-    let (swarm_id, agent_name, status_changed, old_status) = {
+    let (swarm_id, agent_name, member_changed, status_changed, old_status) = {
         let mut members = swarm_members.write().await;
         if let Some(member) = members.get_mut(session_id) {
             let previous_status = member.status.clone();
-            let changed = member.status != status;
-            if changed {
+            let status_changed = member.status != status;
+            let detail_changed = member.detail != detail;
+            let member_changed = status_changed || detail_changed;
+            if status_changed {
                 member.last_status_change = Instant::now();
             }
             let name = member.friendly_name.clone();
             member.status = status.to_string();
             member.detail = detail;
-            (member.swarm_id.clone(), name, changed, previous_status)
+            (
+                member.swarm_id.clone(),
+                name,
+                member_changed,
+                status_changed,
+                previous_status,
+            )
         } else {
-            (None, None, false, String::new())
+            (None, None, false, false, String::new())
         }
     };
     if let Some(ref id) = swarm_id {
+        if !member_changed {
+            return;
+        }
+
         if status_changed {
             if let (Some(history), Some(counter), Some(tx)) =
                 (event_history, event_counter, swarm_event_tx)
@@ -684,6 +696,7 @@ fn parse_swarm_tasks(text: &str) -> Vec<SwarmTaskSpec> {
 mod tests {
     use super::{
         parse_swarm_tasks, remove_session_from_swarm, summarize_plan_items, truncate_detail,
+        update_member_status,
     };
     use crate::plan::PlanItem;
     use crate::protocol::{NotificationType, ServerEvent};
@@ -867,5 +880,54 @@ mod tests {
                 } if message == "You are now the coordinator for this swarm."
             )
         }));
+    }
+
+    #[tokio::test]
+    async fn update_member_status_skips_noop_broadcasts() {
+        let swarm_members = Arc::new(RwLock::new(HashMap::new()));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".to_string(),
+            HashSet::from(["worker".to_string()]),
+        )])));
+
+        let (worker, mut worker_rx) = swarm_member("worker", "agent", false);
+        swarm_members
+            .write()
+            .await
+            .insert("worker".to_string(), worker);
+
+        update_member_status(
+            "worker",
+            "ready",
+            None,
+            &swarm_members,
+            &swarms_by_id,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert!(worker_rx.try_recv().is_err());
+
+        update_member_status(
+            "worker",
+            "busy",
+            Some("working".to_string()),
+            &swarm_members,
+            &swarms_by_id,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            worker_rx.try_recv(),
+            Ok(ServerEvent::SwarmStatus { members }) if members.len() == 1
+                && members[0].session_id == "worker"
+                && members[0].status == "busy"
+                && members[0].detail.as_deref() == Some("working")
+        ));
     }
 }
