@@ -232,6 +232,10 @@ pub(crate) fn render_system_message(
         }
     }
 
+    if let Some(lines) = render_scheduled_session_message(msg, width) {
+        return lines;
+    }
+
     let centered = markdown::center_code_blocks();
     let wrap_width = centered_wrap_width(width.saturating_sub(4), centered, 96);
     let mut lines = markdown::render_markdown_with_width(&msg.content, Some(wrap_width));
@@ -260,6 +264,322 @@ pub(crate) fn render_system_message(
         }
     }
     lines
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedScheduledSessionMessage {
+    task: String,
+    working_dir: Option<String>,
+    relevant_files: Option<String>,
+    branch: Option<String>,
+    background: Option<String>,
+    success_criteria: Option<String>,
+    scheduled_by_session: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedScheduledToolMessage {
+    task: String,
+    when: String,
+    id: Option<String>,
+    working_dir: Option<String>,
+    relevant_files: Option<String>,
+    target: Option<String>,
+}
+
+fn parse_prefixed_value(line: &str, prefix: &str) -> Option<String> {
+    line.trim()
+        .strip_prefix(prefix)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn push_card_section(
+    content: &mut Vec<Line<'static>>,
+    label: &str,
+    value: Option<&str>,
+    inner_width: usize,
+    label_style: Style,
+    body_style: Style,
+) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+
+    if !content.is_empty() {
+        content.push(Line::from(""));
+    }
+    content.push(Line::from(Span::styled(label.to_string(), label_style)));
+    for chunk in split_by_display_width(value, inner_width) {
+        content.push(Line::from(Span::styled(chunk, body_style)));
+    }
+}
+
+fn parse_scheduled_session_message(content: &str) -> Option<ParsedScheduledSessionMessage> {
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = normalized.lines().map(str::trim);
+    if lines.next()? != "[Scheduled task]" {
+        return None;
+    }
+    let due_line = lines.next()?.trim();
+    if !due_line.starts_with("A scheduled task for this session is now due.") {
+        return None;
+    }
+
+    let mut parsed = ParsedScheduledSessionMessage {
+        task: String::new(),
+        working_dir: None,
+        relevant_files: None,
+        branch: None,
+        background: None,
+        success_criteria: None,
+        scheduled_by_session: None,
+    };
+
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(value) = parse_prefixed_value(line, "Task: ") {
+            parsed.task = value;
+        } else if let Some(value) = parse_prefixed_value(line, "Working directory: ") {
+            parsed.working_dir = Some(value);
+        } else if let Some(value) = parse_prefixed_value(line, "Relevant files: ") {
+            parsed.relevant_files = Some(value);
+        } else if let Some(value) = parse_prefixed_value(line, "Branch: ") {
+            parsed.branch = Some(value);
+        } else if let Some(value) = parse_prefixed_value(line, "Background: ") {
+            parsed.background = Some(value);
+        } else if let Some(value) = parse_prefixed_value(line, "Success criteria: ") {
+            parsed.success_criteria = Some(value);
+        } else if let Some(value) = parse_prefixed_value(line, "Scheduled by session: ") {
+            parsed.scheduled_by_session = Some(value);
+        }
+    }
+
+    if parsed.task.is_empty() {
+        return None;
+    }
+
+    Some(parsed)
+}
+
+fn render_scheduled_session_message(
+    msg: &DisplayMessage,
+    width: u16,
+) -> Option<Vec<Line<'static>>> {
+    let parsed = parse_scheduled_session_message(&msg.content)?;
+    let centered = markdown::center_code_blocks();
+    let max_box_width = if centered {
+        (width.saturating_sub(4) as usize).min(96)
+    } else {
+        (width.saturating_sub(2) as usize).min(88)
+    }
+    .max(20);
+    let inner_width = max_box_width.saturating_sub(4).max(1);
+
+    let border_style = Style::default().fg(rgb(120, 180, 255));
+    let status_style = Style::default().fg(rgb(186, 220, 255)).bold();
+    let label_style = Style::default().fg(dim_color());
+    let body_style = Style::default().fg(rgb(225, 232, 245));
+    let meta_style = Style::default().fg(rgb(170, 200, 255));
+
+    let mut box_content = vec![Line::from(Span::styled(
+        "This scheduled task is now active in this session.",
+        status_style,
+    ))];
+    push_card_section(
+        &mut box_content,
+        "Task",
+        Some(&parsed.task),
+        inner_width,
+        label_style,
+        body_style,
+    );
+    push_card_section(
+        &mut box_content,
+        "Working directory",
+        parsed.working_dir.as_deref(),
+        inner_width,
+        label_style,
+        body_style,
+    );
+    push_card_section(
+        &mut box_content,
+        "Relevant files",
+        parsed.relevant_files.as_deref(),
+        inner_width,
+        label_style,
+        body_style,
+    );
+    push_card_section(
+        &mut box_content,
+        "Branch",
+        parsed.branch.as_deref(),
+        inner_width,
+        label_style,
+        body_style,
+    );
+    push_card_section(
+        &mut box_content,
+        "Background",
+        parsed.background.as_deref(),
+        inner_width,
+        label_style,
+        body_style,
+    );
+    push_card_section(
+        &mut box_content,
+        "Success criteria",
+        parsed.success_criteria.as_deref(),
+        inner_width,
+        label_style,
+        body_style,
+    );
+    push_card_section(
+        &mut box_content,
+        "Created by",
+        parsed.scheduled_by_session.as_deref(),
+        inner_width,
+        label_style,
+        meta_style,
+    );
+
+    let mut lines = render_rounded_box(
+        "⏰ scheduled task due",
+        box_content,
+        max_box_width,
+        border_style,
+    );
+    if centered {
+        left_pad_lines_for_centered_mode(&mut lines, width);
+    }
+    Some(lines)
+}
+
+fn parse_scheduled_tool_message(msg: &DisplayMessage) -> Option<ParsedScheduledToolMessage> {
+    let task = msg
+        .title
+        .as_deref()?
+        .strip_prefix("scheduled: ")?
+        .trim()
+        .to_string();
+    if task.is_empty() {
+        return None;
+    }
+
+    let normalized = msg.content.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = normalized.lines().map(str::trim);
+    let first_line = lines.next()?.trim();
+
+    let (when, id) = if let Some(rest) = first_line.strip_prefix("Scheduled task '") {
+        let (_task_in_line, when_part) = rest.split_once("' for ")?;
+        if let Some((when, id_part)) = when_part.rsplit_once(" (id: ") {
+            (
+                when.trim().to_string(),
+                id_part.strip_suffix(')').map(str::trim).map(str::to_string),
+            )
+        } else {
+            (when_part.trim().to_string(), None)
+        }
+    } else if let Some(rest) = first_line.strip_prefix("Scheduled ambient task ") {
+        let (id, when) = rest.split_once(" for ")?;
+        (when.trim().to_string(), Some(id.trim().to_string()))
+    } else {
+        return None;
+    };
+
+    let mut working_dir = None;
+    let mut relevant_files = None;
+    let mut target = None;
+    for line in lines {
+        if let Some(value) = parse_prefixed_value(line, "Working directory: ") {
+            working_dir = Some(value);
+        } else if let Some(value) = parse_prefixed_value(line, "Relevant files: ") {
+            relevant_files = Some(value);
+        } else if let Some(value) = parse_prefixed_value(line, "Target: ") {
+            target = Some(value);
+        }
+    }
+
+    Some(ParsedScheduledToolMessage {
+        task,
+        when,
+        id,
+        working_dir,
+        relevant_files,
+        target,
+    })
+}
+
+fn render_scheduled_tool_message(msg: &DisplayMessage, width: u16) -> Option<Vec<Line<'static>>> {
+    let parsed = parse_scheduled_tool_message(msg)?;
+    let centered = markdown::center_code_blocks();
+    let max_box_width = if centered {
+        (width.saturating_sub(4) as usize).min(96)
+    } else {
+        (width.saturating_sub(2) as usize).min(88)
+    }
+    .max(20);
+    let inner_width = max_box_width.saturating_sub(4).max(1);
+
+    let border_style = Style::default().fg(rgb(140, 180, 255));
+    let status_style = Style::default().fg(rgb(186, 220, 255)).bold();
+    let label_style = Style::default().fg(dim_color());
+    let body_style = Style::default().fg(rgb(225, 232, 245));
+    let meta_style = Style::default().fg(rgb(170, 200, 255));
+
+    let mut box_content = vec![Line::from(Span::styled(
+        format!("Will run {}.", parsed.when),
+        status_style,
+    ))];
+    push_card_section(
+        &mut box_content,
+        "Task",
+        Some(&parsed.task),
+        inner_width,
+        label_style,
+        body_style,
+    );
+    push_card_section(
+        &mut box_content,
+        "Target",
+        parsed.target.as_deref(),
+        inner_width,
+        label_style,
+        body_style,
+    );
+    push_card_section(
+        &mut box_content,
+        "Working directory",
+        parsed.working_dir.as_deref(),
+        inner_width,
+        label_style,
+        body_style,
+    );
+    push_card_section(
+        &mut box_content,
+        "Relevant files",
+        parsed.relevant_files.as_deref(),
+        inner_width,
+        label_style,
+        body_style,
+    );
+    push_card_section(
+        &mut box_content,
+        "Task id",
+        parsed.id.as_deref(),
+        inner_width,
+        label_style,
+        meta_style,
+    );
+
+    let mut lines = render_rounded_box("⏰ scheduled", box_content, max_box_width, border_style);
+    if centered {
+        left_pad_lines_for_centered_mode(&mut lines, width);
+    }
+    Some(lines)
 }
 
 fn render_reload_system_message(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
@@ -593,6 +913,10 @@ pub(crate) fn render_tool_message(
     width: u16,
     diff_mode: crate::config::DiffDisplayMode,
 ) -> Vec<Line<'static>> {
+    if let Some(lines) = render_scheduled_tool_message(msg, width) {
+        return lines;
+    }
+
     let mut lines: Vec<Line<'static>> = Vec::new();
     let Some(ref tc) = msg.tool_data else {
         return lines;
@@ -1058,6 +1382,62 @@ mod tests {
         assert!(!plain.contains("Preview"));
         assert!(!plain.contains("Full output"));
         assert!(!plain.contains("bg action=\"output\" task_id=\"bg123\""));
+    }
+
+    #[test]
+    fn render_system_message_uses_scheduled_task_card() {
+        let msg = DisplayMessage::system(
+            "[Scheduled task]\nA scheduled task for this session is now due.\n\nTask: Follow up on the scheduler test\nWorking directory: /home/jeremy/jcode\nRelevant files: src/tui/ui_messages.rs\nBranch: master\n\nBackground: Verify the scheduled task card styling\nSuccess criteria: The due task renders clearly\nScheduled by session: session_test",
+        );
+
+        let lines = render_system_message(&msg, 100, crate::config::DiffDisplayMode::Off);
+        let plain = lines
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(plain.contains("⏰ scheduled task due"));
+        assert!(plain.contains("This scheduled task is now active in this session."));
+        assert!(plain.contains("Follow up on the scheduler test"));
+        assert!(plain.contains("Verify the scheduled task card styling"));
+        assert!(!plain.contains("[Scheduled task]"));
+        assert!(!plain.contains("A scheduled task for this session is now due."));
+    }
+
+    #[test]
+    fn render_tool_message_uses_scheduled_card() {
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: "Scheduled task 'Follow up on the scheduler test' for in 1m (id: sched_abc123)\nWorking directory: /home/jeremy/jcode\nRelevant files: src/tui/ui_messages.rs\nTarget: session session_test".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: Some("scheduled: Follow up on the scheduler test".to_string()),
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_schedule_card".to_string(),
+                name: "schedule".to_string(),
+                input: serde_json::json!({
+                    "task": "Follow up on the scheduler test",
+                    "wake_in_minutes": 1,
+                    "target": "session"
+                }),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 100, crate::config::DiffDisplayMode::Off);
+        let plain = lines
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(plain.contains("⏰ scheduled"));
+        assert!(plain.contains("Will run in 1m."));
+        assert!(plain.contains("Follow up on the scheduler test"));
+        assert!(plain.contains("session session_test"));
+        assert!(plain.contains("sched_abc123"));
+        assert!(!plain.contains("✓ schedule"));
     }
 
     #[test]
