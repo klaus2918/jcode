@@ -314,44 +314,46 @@ fn extract_text_from_value(value: &serde_json::Value) -> String {
 }
 
 fn extract_block_text_from_value(value: &serde_json::Value) -> String {
-    fn visit(value: &serde_json::Value, out: &mut Vec<String>) {
+    fn extract(value: &serde_json::Value, separator: &str) -> Option<String> {
         match value {
             serde_json::Value::String(text) => {
-                if !text.trim().is_empty() {
-                    out.push(text.trim().to_string());
-                }
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
             }
             serde_json::Value::Array(items) => {
-                for item in items {
-                    visit(item, out);
-                }
+                let parts: Vec<String> =
+                    items.iter().filter_map(|item| extract(item, " ")).collect();
+                (!parts.is_empty()).then(|| parts.join("\n\n"))
             }
             serde_json::Value::Object(map) => {
                 if let Some(text) = map.get("text").and_then(|v| v.as_str()) {
-                    if !text.trim().is_empty() {
-                        out.push(text.trim().to_string());
-                    }
-                    return;
+                    let trimmed = text.trim();
+                    return (!trimmed.is_empty()).then(|| trimmed.to_string());
                 }
-                if let Some(text) = map.get("title").and_then(|v| v.as_str()) {
-                    if !text.trim().is_empty() {
-                        out.push(text.trim().to_string());
+
+                let mut parts = Vec::new();
+                if let Some(title) = map.get("title").and_then(|v| v.as_str()) {
+                    let trimmed = title.trim();
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed.to_string());
                     }
                 }
                 for (key, nested) in map {
                     if key == "type" || key == "title" {
                         continue;
                     }
-                    visit(nested, out);
+                    if let Some(text) = extract(nested, " ") {
+                        parts.push(text);
+                    }
                 }
+
+                (!parts.is_empty()).then(|| parts.join(separator))
             }
-            _ => {}
+            _ => None,
         }
     }
 
-    let mut out = Vec::new();
-    visit(value, &mut out);
-    out.join(" ")
+    extract(value, " ").unwrap_or_default()
 }
 
 fn truncate_title_text(text: &str, max_chars: usize) -> String {
@@ -2025,5 +2027,33 @@ mod tests {
         assert_eq!(session.user_message_count, 0);
         assert_eq!(session.assistant_message_count, 0);
         assert_eq!(session.working_dir.as_deref(), Some("/tmp/codex-demo"));
+    }
+
+    #[test]
+    fn load_codex_preview_preserves_blank_line_between_tool_transcript_and_followup_prose() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let transcript_path = temp.path().join("codex-preview.jsonl");
+        std::fs::write(
+            &transcript_path,
+            concat!(
+                "{\"timestamp\":\"2026-04-10T19:05:54.536Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019d-preview-test\",\"timestamp\":\"2026-04-10T19:05:54.536Z\"}}\n",
+                "{\"timestamp\":\"2026-04-10T19:05:55.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[",
+                "{\"type\":\"output_text\",\"text\":\"I’m cleaning up the last leftover warning from the reverted experiment, then I’ll commit the second pass as the debounced large-swarm snapshot optimization.\\n  ✓ batch 3 calls · 174 tok\\n    ✓ apply_patch src/server/swarm.rs (30 lines) · 10 tok\\n    ✓ bash $ cargo fmt --all · 27 tok\\n    ✓ bash $ git add … status broadcasts\"},",
+                "{\"type\":\"output_text\",\"text\":\"I landed the second pass as commit 158f6ac, and I’m not stopping there.\"}",
+                "]}}\n"
+            ),
+        )
+        .expect("write codex transcript");
+
+        let preview = load_codex_preview_from_path(&transcript_path).expect("preview");
+        assert_eq!(preview.len(), 1);
+        assert_eq!(preview[0].role, "assistant");
+        assert!(
+            preview[0].content.contains(
+                "✓ bash $ git add … status broadcasts\n\nI landed the second pass as commit 158f6ac"
+            ),
+            "preview content should preserve a blank line between tool transcript and followup prose: {:?}",
+            preview[0].content
+        );
     }
 }
