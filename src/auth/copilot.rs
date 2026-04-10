@@ -4,6 +4,26 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{LazyLock, RwLock};
+
+static GITHUB_TOKEN_CACHE: LazyLock<RwLock<Option<String>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+fn cached_github_token() -> Option<String> {
+    GITHUB_TOKEN_CACHE.read().ok().and_then(|value| value.clone())
+}
+
+fn cache_github_token(token: &str) {
+    if let Ok(mut cache) = GITHUB_TOKEN_CACHE.write() {
+        *cache = Some(token.to_string());
+    }
+}
+
+pub fn invalidate_github_token_cache() {
+    if let Ok(mut cache) = GITHUB_TOKEN_CACHE.write() {
+        *cache = None;
+    }
+}
 
 /// VSCode's OAuth client ID for GitHub Copilot device flow.
 /// This is the well-known client ID used by VS Code, OpenCode, and other tools.
@@ -124,11 +144,17 @@ impl CopilotApiToken {
 /// 7. trusted OpenCode/pi auth.json OAuth entries
 /// 8. gh auth token fallback
 pub fn load_github_token() -> Result<String> {
+    if let Some(token) = cached_github_token() {
+        return Ok(token);
+    }
+
     for env_key in ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] {
         if let Ok(token) = std::env::var(env_key)
             && !token.trim().is_empty()
         {
-            return Ok(token.trim().to_string());
+            let token = token.trim().to_string();
+            cache_github_token(&token);
+            return Ok(token);
         }
     }
 
@@ -138,6 +164,7 @@ pub fn load_github_token() -> Result<String> {
         &config_path,
     ) && let Ok(token) = load_token_from_config_json(&config_path)
     {
+        cache_github_token(&token);
         return Ok(token);
     }
 
@@ -147,6 +174,7 @@ pub fn load_github_token() -> Result<String> {
         &hosts_path,
     ) && let Ok(token) = load_token_from_json(&hosts_path)
     {
+        cache_github_token(&token);
         return Ok(token);
     }
 
@@ -156,14 +184,17 @@ pub fn load_github_token() -> Result<String> {
         &apps_path,
     ) && let Ok(token) = load_token_from_json(&apps_path)
     {
+        cache_github_token(&token);
         return Ok(token);
     }
 
     if let Some(token) = crate::auth::external::load_copilot_oauth_token() {
+        cache_github_token(&token);
         return Ok(token);
     }
 
     if let Some(token) = load_token_from_gh_cli() {
+        cache_github_token(&token);
         return Ok(token);
     }
 
@@ -190,6 +221,7 @@ pub fn has_copilot_credentials_fast() -> bool {
         if let Ok(token) = std::env::var(env_key)
             && !token.trim().is_empty()
         {
+            cache_github_token(token.trim());
             return true;
         }
     }
@@ -200,8 +232,9 @@ pub fn has_copilot_credentials_fast() -> bool {
             COPILOT_CONFIG_JSON_SOURCE_ID,
             &config_path,
         )
-        && load_token_from_config_json(&config_path).is_ok()
+        && let Ok(token) = load_token_from_config_json(&config_path)
     {
+        cache_github_token(&token);
         return true;
     }
 
@@ -211,8 +244,9 @@ pub fn has_copilot_credentials_fast() -> bool {
             COPILOT_HOSTS_AUTH_SOURCE_ID,
             &hosts_path,
         )
-        && load_token_from_json(&hosts_path).is_ok()
+        && let Ok(token) = load_token_from_json(&hosts_path)
     {
+        cache_github_token(&token);
         return true;
     }
 
@@ -222,8 +256,9 @@ pub fn has_copilot_credentials_fast() -> bool {
             COPILOT_APPS_AUTH_SOURCE_ID,
             &apps_path,
         )
-        && load_token_from_json(&apps_path).is_ok()
+        && let Ok(token) = load_token_from_json(&apps_path)
     {
+        cache_github_token(&token);
         return true;
     }
 
@@ -239,6 +274,9 @@ pub fn has_copilot_credentials_fast() -> bool {
             &path,
         ) && source_has_copilot_oauth(source)
         {
+            if let Some(token) = crate::auth::external::load_copilot_oauth_token() {
+                cache_github_token(&token);
+            }
             return true;
         }
     }

@@ -33,6 +33,20 @@ const AUTH_STATUS_CACHE_TTL_SECS: u64 = 30;
 static COMMAND_EXISTS_CACHE: std::sync::LazyLock<Mutex<HashMap<String, bool>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+pub fn browser_suppressed(cli_no_browser: bool) -> bool {
+    cli_no_browser || env_truthy("NO_BROWSER") || env_truthy("JCODE_NO_BROWSER")
+}
+
+fn env_truthy(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| {
+            let trimmed = value.trim();
+            !trimmed.is_empty() && trimmed != "0" && !trimmed.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
 /// Authentication status for all supported providers
 #[derive(Debug, Clone, Default)]
 pub struct AuthStatus {
@@ -600,6 +614,7 @@ impl AuthStatus {
         if let Ok(mut cache) = AUTH_STATUS_CACHE.write() {
             *cache = None;
         }
+        crate::auth::copilot::invalidate_github_token_cache();
     }
 
     fn check_uncached() -> Self {
