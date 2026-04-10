@@ -2082,8 +2082,13 @@ fn retarget_svg_for_png(svg: &str, target_width: f64, target_height: f64) -> Str
     let (resolved_width, resolved_height) = parse_svg_viewbox_size(root_tag)
         .or_else(|| parse_svg_explicit_size(root_tag))
         .map(|(width, height)| {
-            let output_width = target_width.max(1.0) as f32;
-            let output_height = (output_width * (height / width)).max(1.0);
+            let target_width = target_width.max(1.0) as f32;
+            let target_height = target_height.max(1.0) as f32;
+            let width_scale = target_width / width.max(1.0);
+            let height_scale = target_height / height.max(1.0);
+            let scale = width_scale.min(height_scale).max(0.0001);
+            let output_width = (width * scale).max(1.0);
+            let output_height = (height * scale).max(1.0);
             (output_width, output_height)
         })
         .unwrap_or_else(|| (target_width.max(1.0) as f32, target_height.max(1.0) as f32));
@@ -4845,6 +4850,22 @@ mod tests {
             "expected h≈200 (aspect from viewBox), got {}",
             h
         );
+    }
+
+    #[test]
+    fn test_retarget_svg_for_png_respects_target_height_cap() {
+        // viewBox is tall (1:4 ratio), request 800x600. We should scale down to
+        // fit the target height instead of preserving width and blowing past it.
+        let svg = r#"<svg width="100" height="400" viewBox="0 0 100 400"></svg>"#;
+        let rewritten = retarget_svg_for_png(svg, 800.0, 600.0);
+        let w = extract_xml_attribute(&rewritten, "width")
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.0);
+        let h = extract_xml_attribute(&rewritten, "height")
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.0);
+        assert!((w - 150.0).abs() < 1.0, "expected w≈150, got {}", w);
+        assert!((h - 600.0).abs() < 1.0, "expected h≈600, got {}", h);
     }
 
     #[test]
