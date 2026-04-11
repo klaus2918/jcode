@@ -378,6 +378,7 @@ fn header_session_color() -> Color {
 
 // Spinner frames for animated status
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const STATIC_ACTIVITY_INDICATOR: &str = "•";
 
 pub(super) fn spinner_frame_index(elapsed: f32, fps: f32) -> usize {
     ((elapsed * fps) as usize) % SPINNER_FRAMES.len()
@@ -385,6 +386,22 @@ pub(super) fn spinner_frame_index(elapsed: f32, fps: f32) -> usize {
 
 pub(super) fn spinner_frame(elapsed: f32, fps: f32) -> &'static str {
     SPINNER_FRAMES[spinner_frame_index(elapsed, fps)]
+}
+
+pub(super) fn activity_indicator_frame_index(elapsed: f32, fps: f32) -> usize {
+    if crate::perf::tui_policy().enable_decorative_animations {
+        spinner_frame_index(elapsed, fps)
+    } else {
+        0
+    }
+}
+
+pub(super) fn activity_indicator(elapsed: f32, fps: f32) -> &'static str {
+    if crate::perf::tui_policy().enable_decorative_animations {
+        spinner_frame(elapsed, fps)
+    } else {
+        STATIC_ACTIVITY_INDICATOR
+    }
 }
 
 // Keep the picker spacious on tall terminals without crowding the chat pane.
@@ -880,6 +897,10 @@ fn prompt_entry_shimmer_color(base: Color, pos: f32, t: f32) -> Color {
 
 /// Generate an animated color that pulses between two colors
 fn animated_tool_color(elapsed: f32) -> Color {
+    if !crate::perf::tui_policy().enable_decorative_animations {
+        return tool_color();
+    }
+
     // Cycle period of ~1.5 seconds
     let t = (elapsed * 2.0).sin() * 0.5 + 0.5; // 0.0 to 1.0
 
@@ -2555,11 +2576,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         chat_area.width.saturating_sub(chat_left_inset),
         chat_area.height,
     );
-    let show_donut = crate::config::config().display.idle_animation
-        && app.display_messages().is_empty()
-        && !app.is_processing()
-        && app.streaming_text().is_empty()
-        && app.queued_messages().is_empty();
+    let show_donut = super::idle_donut_active(app);
     let donut_height: u16 = if show_donut { 14 } else { 0 };
     let notification_height: u16 = if app.has_notification() { 1 } else { 0 };
     let fixed_height = 1

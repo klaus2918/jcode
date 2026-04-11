@@ -1,6 +1,15 @@
 use super::*;
 
 impl App {
+    pub(super) fn ensure_provider_messages_hydrated(&mut self) {
+        if self.is_remote || !self.messages.is_empty() || self.session.messages.is_empty() {
+            return;
+        }
+
+        let provider_messages = self.session.messages_for_provider_uncached();
+        self.replace_provider_messages(provider_messages);
+    }
+
     pub(super) fn format_compaction_strategy_label(trigger: &str) -> &'static str {
         match trigger {
             "manual" => "manual",
@@ -153,6 +162,7 @@ impl App {
     }
 
     pub(super) fn add_provider_message(&mut self, message: Message) {
+        self.ensure_provider_messages_hydrated();
         self.messages.push(message);
         if self.is_remote || !self.provider.uses_jcode_compaction() {
             return;
@@ -261,6 +271,8 @@ impl App {
     }
 
     pub(super) fn messages_for_provider(&mut self) -> (Vec<Message>, Option<CompactionEvent>) {
+        self.ensure_provider_messages_hydrated();
+
         if self.is_remote {
             return (self.messages.clone(), None);
         }
@@ -299,17 +311,19 @@ impl App {
         result
     }
 
-    pub(super) fn poll_compaction_completion(&mut self) {
+    pub(super) fn poll_compaction_completion(&mut self) -> bool {
         if self.is_remote || !self.provider.uses_jcode_compaction() {
-            return;
+            return false;
         }
         let compaction = self.registry.compaction();
         if let Ok(mut manager) = compaction.try_write() {
             if let Some(event) = manager.poll_compaction_event_with(&self.messages) {
                 self.sync_session_compaction_state_from_manager(&manager);
                 self.handle_compaction_event(event);
+                return true;
             }
         };
+        false
     }
 
     pub(super) fn handle_compaction_event(&mut self, event: CompactionEvent) {

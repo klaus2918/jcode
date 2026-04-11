@@ -763,6 +763,7 @@ pub struct PickerOption {
 pub(crate) const REDRAW_IDLE: Duration = Duration::from_millis(250);
 pub(crate) const REDRAW_DEEP_IDLE: Duration = Duration::from_millis(1000);
 pub(crate) const REDRAW_REMOTE_STARTUP: Duration = Duration::from_millis(1000);
+pub(crate) const REDRAW_PASSIVE_LIVENESS: Duration = Duration::from_millis(1000);
 const REDRAW_DEEP_IDLE_AFTER: Duration = Duration::from_secs(30);
 pub(crate) const STARTUP_ANIMATION_WINDOW: Duration = Duration::from_millis(3000);
 
@@ -777,7 +778,8 @@ fn startup_animation_active_with_policy(
     }
 
     let cfg = &crate::config::config().display;
-    cfg.startup_animation
+    policy.enable_decorative_animations
+        && cfg.startup_animation
         && policy.tier.startup_animation_enabled()
         && policy.animation_fps >= STARTUP_ANIMATION_MIN_FPS
         && state.animation_elapsed() < STARTUP_ANIMATION_WINDOW.as_secs_f32()
@@ -804,7 +806,8 @@ fn idle_donut_active_with_policy(
         return false;
     }
 
-    crate::config::config().display.idle_animation
+    policy.enable_decorative_animations
+        && crate::config::config().display.idle_animation
         && policy.tier.idle_animation_enabled()
         && state.display_messages().is_empty()
         && !state.is_processing()
@@ -835,6 +838,15 @@ pub(crate) fn redraw_interval_with_policy(
             crate::perf::PerformanceTier::Minimal => fast_interval,
             _ => animation_interval,
         };
+    }
+
+    if !policy.enable_decorative_animations
+        && !state.has_pending_mouse_scroll_animation()
+        && state.status_notice().is_none()
+        && !state.has_notification()
+        && (state.is_processing() || state.rate_limit_remaining().is_some())
+    {
+        return REDRAW_PASSIVE_LIVENESS;
     }
 
     if state.is_processing()
@@ -874,6 +886,32 @@ pub(crate) fn redraw_interval_with_policy(
 pub(crate) fn redraw_interval(state: &dyn TuiState) -> Duration {
     let policy = crate::perf::tui_policy();
     redraw_interval_with_policy(state, &policy)
+}
+
+pub(crate) fn periodic_redraw_required(state: &dyn TuiState) -> bool {
+    let policy = crate::perf::tui_policy();
+
+    if startup_animation_active_with_policy(state, &policy)
+        || idle_donut_active_with_policy(state, &policy)
+    {
+        return true;
+    }
+
+    if state.is_processing()
+        || !state.streaming_text().is_empty()
+        || state.status_notice().is_some()
+        || state.has_pending_mouse_scroll_animation()
+        || state.has_notification()
+        || state.rate_limit_remaining().is_some()
+        || state.remote_startup_phase_active()
+    {
+        return true;
+    }
+
+    state
+        .cache_ttl_status()
+        .map(|c| !c.is_cold && c.remaining_secs <= 60)
+        .unwrap_or(false)
 }
 
 /// Returns true when cache behavior is unexpected for a multi-turn conversation.

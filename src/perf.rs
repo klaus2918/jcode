@@ -81,9 +81,11 @@ pub struct TuiPerfPolicy {
     pub tier: PerformanceTier,
     pub redraw_fps: u32,
     pub animation_fps: u32,
+    pub enable_decorative_animations: bool,
     pub enable_focus_change: bool,
     pub enable_mouse_capture: bool,
     pub enable_keyboard_enhancement: bool,
+    pub simplified_model_picker: bool,
     pub linked_side_panel_refresh_interval: std::time::Duration,
 }
 
@@ -104,6 +106,13 @@ impl SystemProfile {
 
     pub fn is_windows_terminal(&self) -> bool {
         self.terminal == "windows-terminal"
+    }
+
+    pub fn is_windows_terminal_family(&self) -> bool {
+        matches!(
+            self.terminal.as_str(),
+            "windows-terminal" | "cmd" | "conhost"
+        )
     }
 
     pub fn is_wsl_windows_terminal(&self) -> bool {
@@ -178,22 +187,27 @@ pub fn tui_policy_for(
 ) -> TuiPerfPolicy {
     let mut redraw_fps = display.redraw_fps.clamp(1, 120);
     let mut animation_fps = display.animation_fps.clamp(1, 120);
+    let mut enable_decorative_animations = !matches!(profile.tier, PerformanceTier::Minimal);
     let mut enable_focus_change = true;
     let enable_mouse_capture = display.mouse_capture;
     let mut enable_keyboard_enhancement = true;
+    let mut simplified_model_picker = false;
     let mut linked_side_panel_refresh_interval = std::time::Duration::from_millis(250);
+
+    if profile.is_wsl || profile.is_windows_terminal_family() {
+        enable_decorative_animations = false;
+    }
 
     if profile.is_wsl {
         redraw_fps = redraw_fps.min(30);
-        animation_fps = animation_fps.min(24);
         linked_side_panel_refresh_interval = std::time::Duration::from_millis(500);
     }
 
     if profile.is_wsl_windows_terminal() {
         redraw_fps = redraw_fps.min(20);
-        animation_fps = animation_fps.min(12);
         enable_focus_change = false;
         enable_keyboard_enhancement = false;
+        simplified_model_picker = true;
         linked_side_panel_refresh_interval = std::time::Duration::from_millis(1000);
     }
 
@@ -201,25 +215,33 @@ pub fn tui_policy_for(
         PerformanceTier::Full => {}
         PerformanceTier::Reduced => {
             redraw_fps = redraw_fps.min(30);
-            animation_fps = animation_fps.min(24);
+            if enable_decorative_animations {
+                animation_fps = animation_fps.min(24);
+            }
             linked_side_panel_refresh_interval =
                 linked_side_panel_refresh_interval.max(std::time::Duration::from_millis(500));
         }
         PerformanceTier::Minimal => {
             redraw_fps = redraw_fps.min(12);
-            animation_fps = animation_fps.min(12);
+            enable_decorative_animations = false;
             linked_side_panel_refresh_interval =
                 linked_side_panel_refresh_interval.max(std::time::Duration::from_millis(1000));
         }
+    }
+
+    if !enable_decorative_animations {
+        animation_fps = 1;
     }
 
     TuiPerfPolicy {
         tier: profile.tier,
         redraw_fps,
         animation_fps,
+        enable_decorative_animations,
         enable_focus_change,
         enable_mouse_capture,
         enable_keyboard_enhancement,
+        simplified_model_picker,
         linked_side_panel_refresh_interval,
     }
 }
@@ -682,9 +704,11 @@ mod tests {
         let policy = tui_policy_for(&profile, &display);
         assert_eq!(policy.tier, PerformanceTier::Reduced);
         assert_eq!(policy.redraw_fps, 20);
-        assert_eq!(policy.animation_fps, 12);
+        assert_eq!(policy.animation_fps, 1);
+        assert!(!policy.enable_decorative_animations);
         assert!(!policy.enable_focus_change);
         assert!(!policy.enable_keyboard_enhancement);
+        assert!(policy.simplified_model_picker);
         assert!(policy.enable_mouse_capture);
         assert_eq!(
             policy.linked_side_panel_refresh_interval,
@@ -703,8 +727,10 @@ mod tests {
         assert_eq!(policy.tier, PerformanceTier::Full);
         assert_eq!(policy.redraw_fps, 48);
         assert_eq!(policy.animation_fps, 50);
+        assert!(policy.enable_decorative_animations);
         assert!(policy.enable_focus_change);
         assert!(policy.enable_keyboard_enhancement);
+        assert!(!policy.simplified_model_picker);
         assert!(policy.enable_mouse_capture);
         assert_eq!(
             policy.linked_side_panel_refresh_interval,
@@ -721,14 +747,37 @@ mod tests {
         display.animation_fps = 60;
         let policy = tui_policy_for(&profile, &display);
         assert_eq!(policy.redraw_fps, 30);
-        assert_eq!(policy.animation_fps, 24);
+        assert_eq!(policy.animation_fps, 1);
+        assert!(!policy.enable_decorative_animations);
         assert!(policy.enable_focus_change);
         assert!(policy.enable_keyboard_enhancement);
+        assert!(!policy.simplified_model_picker);
         assert!(!policy.enable_mouse_capture);
         assert_eq!(
             policy.linked_side_panel_refresh_interval,
             std::time::Duration::from_millis(500)
         );
+    }
+
+    #[test]
+    fn test_tui_policy_disables_decorative_animation_on_windows_terminal_family() {
+        let profile = SystemProfile {
+            load_avg_1m: Some(0.2),
+            cpu_count: Some(8),
+            available_memory_mb: Some(8192),
+            total_memory_mb: Some(16384),
+            is_ssh: false,
+            is_wsl: false,
+            terminal: "windows-terminal".to_string(),
+            tier: PerformanceTier::Full,
+        };
+        let mut display = crate::config::DisplayConfig::default();
+        display.redraw_fps = 60;
+        display.animation_fps = 60;
+        let policy = tui_policy_for(&profile, &display);
+        assert_eq!(policy.redraw_fps, 60);
+        assert_eq!(policy.animation_fps, 1);
+        assert!(!policy.enable_decorative_animations);
     }
 
     #[test]

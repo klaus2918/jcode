@@ -181,13 +181,13 @@ impl App {
         }
     }
 
-    pub(super) fn maybe_finish_background_client_reload(&mut self) {
+    pub(super) fn maybe_finish_background_client_reload(&mut self) -> bool {
         if self.is_processing {
-            return;
+            return false;
         }
 
         let Some((session_id, action)) = self.pending_background_client_reload.take() else {
-            return;
+            return false;
         };
 
         self.set_client_maintenance_message(
@@ -201,6 +201,7 @@ impl App {
         self.save_input_for_reload(&session_id);
         self.reload_requested = Some(session_id);
         self.should_quit = true;
+        true
     }
 
     pub(super) fn handle_session_update_status(&mut self, status: crate::bus::SessionUpdateStatus) {
@@ -309,9 +310,30 @@ impl App {
         }
     }
 
-    pub(super) fn note_client_focus(&self) {
-        if let Some(session_id) = self.active_client_session_id() {
-            let _ = crate::dictation::remember_last_focused_session(session_id);
+    pub(super) fn note_client_focus(&mut self, force: bool) {
+        let Some(session_id) = self.active_client_session_id() else {
+            return;
+        };
+        let session_id = session_id.to_string();
+
+        if !force
+            && self.last_client_focus_session_id.as_deref() == Some(session_id.as_str())
+            && self
+                .last_client_focus_recorded_at
+                .is_some_and(|last| last.elapsed() < Self::CLIENT_FOCUS_RECORD_DEBOUNCE)
+        {
+            return;
+        }
+
+        if crate::dictation::remember_last_focused_session(&session_id).is_ok() {
+            self.last_client_focus_recorded_at = Some(Instant::now());
+            self.last_client_focus_session_id = Some(session_id);
+        }
+    }
+
+    pub(super) fn note_client_interaction(&mut self) {
+        if !crate::perf::tui_policy().enable_focus_change {
+            self.note_client_focus(false);
         }
     }
 
@@ -1900,6 +1922,11 @@ impl App {
     }
 
     pub(super) fn save_input_for_reload(&self, session_id: &str) {
+        let resume_prompt = self.rate_limit_pending_message.as_ref().filter(|pending| {
+            !pending.auto_retry
+                && !pending.is_system
+                && (!pending.content.trim().is_empty() || !pending.images.is_empty())
+        });
         if self.input.is_empty()
             && self.pending_images.is_empty()
             && self.queued_messages.is_empty()
@@ -1908,21 +1935,28 @@ impl App {
             && self.pending_soft_interrupts.is_empty()
             && self.pending_soft_interrupt_requests.is_empty()
             && self.rate_limit_pending_message.is_none()
+            && resume_prompt.is_none()
             && !self.observe_mode_enabled
         {
             return;
         }
         if let Ok(jcode_dir) = crate::storage::jcode_dir() {
             let path = jcode_dir.join(format!("client-input-{}", session_id));
-            let rate_limit_reset_in_ms = self.rate_limit_reset.and_then(|reset| {
-                let now = Instant::now();
-                if reset <= now {
-                    Some(0)
-                } else {
-                    Some((reset - now).as_millis().min(u64::MAX as u128) as u64)
-                }
-            });
-            let rate_limit_pending_message =
+            let rate_limit_reset_in_ms = if resume_prompt.is_some() {
+                None
+            } else {
+                self.rate_limit_reset.and_then(|reset| {
+                    let now = Instant::now();
+                    if reset <= now {
+                        Some(0)
+                    } else {
+                        Some((reset - now).as_millis().min(u64::MAX as u128) as u64)
+                    }
+                })
+            };
+            let rate_limit_pending_message = if resume_prompt.is_some() {
+                None
+            } else {
                 self.rate_limit_pending_message.as_ref().map(|pending| {
                     serde_json::json!({
                         "content": pending.content,
@@ -1932,20 +1966,25 @@ impl App {
                         "auto_retry": pending.auto_retry,
                         "retry_attempts": pending.retry_attempts,
                     })
-                });
+                })
+            };
+            let resume_input = resume_prompt.map(|pending| pending.content.as_str());
+            let resume_images = resume_prompt.map(|pending| pending.images.as_slice());
+            let rate_limit_reset_in_ms =
+                rate_limit_reset_in_ms.or_else(|| resume_prompt.map(|_| 0));
             let pending_soft_interrupt_resend = self
                 .pending_soft_interrupt_requests
                 .iter()
                 .map(|(_, content)| content.clone())
                 .collect::<Vec<_>>();
             let data = serde_json::json!({
-                "cursor": self.cursor_pos,
-                "input": self.input,
-                "pending_images": self.pending_images.iter().map(|(media_type, data)| serde_json::json!({
+                "cursor": resume_input.map(|input| input.len()).unwrap_or(self.cursor_pos),
+                "input": resume_input.unwrap_or(self.input.as_str()),
+                "pending_images": resume_images.unwrap_or(self.pending_images.as_slice()).iter().map(|(media_type, data)| serde_json::json!({
                     "media_type": media_type,
                     "data": data,
                 })).collect::<Vec<_>>(),
-                "submit_on_restore": false,
+                "submit_on_restore": resume_prompt.is_some(),
                 "queued_messages": self.queued_messages,
                 "hidden_queued_system_messages": self.hidden_queued_system_messages,
                 "interleave_message": self.interleave_message,
@@ -2305,7 +2344,7 @@ impl App {
         self.prewarm_focused_side_panel();
     }
 
-    pub(super) fn refresh_side_panel_linked_content_if_due(&mut self) {
+    pub(super) fn refresh_side_panel_linked_content_if_due(&mut self) -> bool {
         let refresh_interval = crate::perf::tui_policy().linked_side_panel_refresh_interval;
 
         let should_refresh = self
@@ -2316,7 +2355,7 @@ impl App {
 
         if !should_refresh {
             self.last_side_panel_refresh = None;
-            return;
+            return false;
         }
 
         let now = Instant::now();
@@ -2324,14 +2363,17 @@ impl App {
             .last_side_panel_refresh
             .is_some_and(|last| now.duration_since(last) < refresh_interval)
         {
-            return;
+            return false;
         }
 
         self.last_side_panel_refresh = Some(now);
         if crate::side_panel::refresh_linked_page_content(&mut self.side_panel, None) {
             self.sync_diagram_fit_context();
             self.prewarm_focused_side_panel();
+            return true;
         }
+
+        false
     }
 
     pub(super) fn toggle_typing_scroll_lock(&mut self) {

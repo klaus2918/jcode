@@ -667,6 +667,87 @@ impl App {
         }
     }
 
+    fn simplified_model_routes_for_picker(
+        &self,
+        current_model: &str,
+    ) -> Vec<crate::provider::ModelRoute> {
+        let auth = crate::auth::AuthStatus::check_fast();
+        let mut routes = Vec::new();
+
+        for model in self.provider.available_models_display() {
+            let (provider, api_method, available, detail) = if model.contains('/') {
+                (
+                    "auto".to_string(),
+                    "openrouter".to_string(),
+                    auth.openrouter != crate::auth::AuthState::NotConfigured,
+                    "simplified catalog".to_string(),
+                )
+            } else {
+                match crate::provider::provider_for_model(&model) {
+                    Some("claude") => (
+                        "Anthropic".to_string(),
+                        "claude-oauth".to_string(),
+                        auth.anthropic.has_oauth || auth.anthropic.has_api_key,
+                        String::new(),
+                    ),
+                    Some("openai") => (
+                        "OpenAI".to_string(),
+                        "openai-oauth".to_string(),
+                        auth.openai != crate::auth::AuthState::NotConfigured,
+                        String::new(),
+                    ),
+                    Some("gemini") => (
+                        "Gemini".to_string(),
+                        "code-assist-oauth".to_string(),
+                        auth.gemini != crate::auth::AuthState::NotConfigured,
+                        String::new(),
+                    ),
+                    Some("cursor") => (
+                        "Cursor".to_string(),
+                        "cursor".to_string(),
+                        auth.cursor != crate::auth::AuthState::NotConfigured,
+                        String::new(),
+                    ),
+                    Some("openrouter") => (
+                        "auto".to_string(),
+                        "openrouter".to_string(),
+                        auth.openrouter != crate::auth::AuthState::NotConfigured,
+                        "simplified catalog".to_string(),
+                    ),
+                    Some(other) => (other.to_string(), other.to_string(), true, String::new()),
+                    None => (
+                        self.provider.name().to_string(),
+                        "current".to_string(),
+                        true,
+                        String::new(),
+                    ),
+                }
+            };
+
+            routes.push(crate::provider::ModelRoute {
+                model,
+                provider,
+                api_method,
+                available,
+                detail,
+                cheapness: None,
+            });
+        }
+
+        if routes.is_empty() && !current_model.is_empty() && current_model != "unknown" {
+            routes.push(crate::provider::ModelRoute {
+                model: current_model.to_string(),
+                provider: self.provider.name().to_string(),
+                api_method: "current".to_string(),
+                available: true,
+                detail: "simplified catalog".to_string(),
+                cheapness: None,
+            });
+        }
+
+        routes
+    }
+
     pub(super) fn open_model_picker(&mut self) {
         use std::collections::BTreeMap;
 
@@ -698,6 +779,8 @@ impl App {
             } else {
                 self.build_remote_model_routes_fallback()
             }
+        } else if crate::perf::tui_policy().simplified_model_picker {
+            self.simplified_model_routes_for_picker(&current_model)
         } else {
             self.provider.model_routes()
         };

@@ -153,7 +153,7 @@ pub(super) fn active_batch_progress_hash(app: &dyn TuiState) -> u64 {
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     if progress.completed < progress.total {
-        super::spinner_frame_index(app.animation_elapsed(), 12.5).hash(&mut hasher);
+        super::activity_indicator_frame_index(app.animation_elapsed(), 12.5).hash(&mut hasher);
     }
     progress.total.hash(&mut hasher);
     progress.completed.hash(&mut hasher);
@@ -209,7 +209,7 @@ fn prepare_active_batch_progress(
 
     let centered = app.centered_mode();
     let accent = rgb(255, 193, 94);
-    let spinner = super::spinner_frame(app.animation_elapsed(), 12.5);
+    let spinner = super::activity_indicator(app.animation_elapsed(), 12.5);
     let block_width = if centered {
         super::centered_content_block_width(width, 96)
     } else {

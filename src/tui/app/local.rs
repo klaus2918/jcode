@@ -40,23 +40,27 @@ pub(super) async fn process_turn_with_input(
     finish_turn(app);
 }
 
-pub(super) fn handle_tick(app: &mut App) {
+pub(super) fn handle_tick(app: &mut App) -> bool {
+    let mut needs_redraw = crate::tui::periodic_redraw_required(app);
     app.progress_mouse_scroll_animation();
     if app.submit_input_on_startup && !app.is_processing {
         app.submit_input_on_startup = false;
         app.submit_input();
+        needs_redraw = true;
     }
     if let Some(chunk) = app.stream_buffer.flush() {
         app.streaming_text.push_str(&chunk);
+        needs_redraw = true;
     }
-    app.refresh_side_panel_linked_content_if_due();
-    app.poll_compaction_completion();
-    app.maybe_progress_provider_failover_countdown();
+    needs_redraw |= app.refresh_side_panel_linked_content_if_due();
+    needs_redraw |= app.poll_compaction_completion();
+    needs_redraw |= app.maybe_progress_provider_failover_countdown();
     app.check_debug_command();
-    app.check_stable_version();
-    app.maybe_finish_background_client_reload();
+    needs_redraw |= app.check_stable_version();
+    needs_redraw |= app.maybe_finish_background_client_reload();
     if app.pending_migration.is_some() && !app.is_processing {
         app.execute_migration();
+        needs_redraw = true;
     }
     if let Some(reset_time) = app.rate_limit_reset {
         if std::time::Instant::now() >= reset_time {
@@ -69,65 +73,78 @@ pub(super) fn handle_tick(app: &mut App) {
             };
             app.push_display_message(DisplayMessage::system(msg));
             app.pending_turn = true;
+            needs_redraw = true;
         }
     }
+
+    needs_redraw
 }
 
 pub(super) fn handle_terminal_event(
     app: &mut App,
     terminal: &mut DefaultTerminal,
     event: Option<std::result::Result<Event, std::io::Error>>,
-) -> Result<()> {
-    apply_terminal_event(app, terminal, event)?;
+) -> Result<bool> {
+    let mut needs_redraw = apply_terminal_event(app, terminal, event)?;
     while crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
         if let Ok(event) = crossterm::event::read() {
-            apply_terminal_event(app, terminal, Some(Ok(event)))?;
+            needs_redraw |= apply_terminal_event(app, terminal, Some(Ok(event)))?;
         }
     }
-    // The main run loop already draws once at the top of the next iteration.
-    // Avoid drawing again here, otherwise normal key input pays for two full
-    // renders back-to-back (event handler + loop-top draw).
-    Ok(())
+    Ok(needs_redraw)
 }
 
-pub(super) fn handle_bus_event(app: &mut App, bus_event: std::result::Result<BusEvent, RecvError>) {
+pub(super) fn handle_bus_event(
+    app: &mut App,
+    bus_event: std::result::Result<BusEvent, RecvError>,
+) -> bool {
     match bus_event {
         Ok(BusEvent::BackgroundTaskCompleted(task)) => {
             handle_background_task_completed(app, task);
+            true
         }
         Ok(BusEvent::InputShellCompleted(shell)) => {
             handle_input_shell_completed(app, shell);
+            true
         }
         Ok(BusEvent::UsageReport(results)) => {
             app.handle_usage_report(results);
+            true
         }
         Ok(BusEvent::LoginCompleted(login)) => {
             app.handle_login_completed(login);
+            true
         }
         Ok(BusEvent::UpdateStatus(status)) => {
             app.handle_update_status(status);
+            true
         }
         Ok(BusEvent::SessionUpdateStatus(status)) => {
             app.handle_session_update_status(status);
+            true
         }
         Ok(BusEvent::DictationCompleted { text, mode }) => {
             app.handle_local_dictation_completed(text, mode);
+            true
         }
         Ok(BusEvent::DictationFailed { message }) => {
             app.handle_dictation_failure(message);
+            true
         }
-        Ok(BusEvent::CompactionFinished) => {
-            app.poll_compaction_completion();
-        }
+        Ok(BusEvent::CompactionFinished) => app.poll_compaction_completion(),
         Ok(BusEvent::SidePanelUpdated(update)) => {
             if update.session_id == app.session.id {
                 app.set_side_panel_snapshot(update.snapshot);
+                true
+            } else {
+                false
             }
         }
         Ok(BusEvent::ManualToolCompleted(result)) => {
             handle_manual_tool_completed(app, result);
+            true
         }
-        _ => {}
+        _ => false,
     }
 }
 
@@ -185,11 +202,11 @@ fn apply_terminal_event(
 ) -> Result<bool> {
     match event {
         Some(Ok(Event::FocusGained)) => {
-            app.note_client_focus();
+            app.note_client_focus(true);
             Ok(false)
         }
         Some(Ok(Event::Key(key))) => {
-            app.note_client_focus();
+            app.note_client_interaction();
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                 app.handle_key_press_event(key)?;
@@ -197,12 +214,12 @@ fn apply_terminal_event(
             Ok(true)
         }
         Some(Ok(Event::Paste(text))) => {
-            app.note_client_focus();
+            app.note_client_interaction();
             app.handle_paste(text);
             Ok(true)
         }
         Some(Ok(Event::Mouse(mouse))) => {
-            app.note_client_focus();
+            app.note_client_interaction();
             app.handle_mouse_event(mouse);
             Ok(true)
         }

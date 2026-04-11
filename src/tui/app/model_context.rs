@@ -50,12 +50,12 @@ impl App {
         self.set_status_notice(notice);
     }
 
-    pub(super) fn maybe_progress_provider_failover_countdown(&mut self) {
+    pub(super) fn maybe_progress_provider_failover_countdown(&mut self) -> bool {
         let Some(pending) = self.pending_provider_failover.clone() else {
-            return;
+            return false;
         };
         if self.is_processing {
-            return;
+            return false;
         }
         let now = Instant::now();
         if now < pending.deadline {
@@ -64,7 +64,7 @@ impl App {
                 "Provider auto-switch → {} in {}s (Esc to cancel)",
                 pending.prompt.to_label, remaining
             ));
-            return;
+            return true;
         }
 
         self.pending_provider_failover = None;
@@ -83,6 +83,7 @@ impl App {
                     pending.prompt.to_label
                 ));
                 self.pending_turn = true;
+                return true;
             }
             Err(error) => {
                 self.push_display_message(DisplayMessage::error(format!(
@@ -90,6 +91,7 @@ impl App {
                     pending.prompt.to_label, error
                 )));
                 self.set_status_notice("Provider switch failed");
+                return true;
             }
         }
     }

@@ -80,9 +80,11 @@ struct TuiPolicySummary {
     tier: String,
     redraw_fps: u32,
     animation_fps: u32,
+    enable_decorative_animations: bool,
     enable_focus_change: bool,
     enable_mouse_capture: bool,
     enable_keyboard_enhancement: bool,
+    simplified_model_picker: bool,
     linked_side_panel_refresh_ms: u64,
 }
 
@@ -92,9 +94,11 @@ fn summarize_policy(source: &str, policy: TuiPerfPolicy) -> TuiPolicySummary {
         tier: policy.tier.label().to_string(),
         redraw_fps: policy.redraw_fps,
         animation_fps: policy.animation_fps,
+        enable_decorative_animations: policy.enable_decorative_animations,
         enable_focus_change: policy.enable_focus_change,
         enable_mouse_capture: policy.enable_mouse_capture,
         enable_keyboard_enhancement: policy.enable_keyboard_enhancement,
+        simplified_model_picker: policy.simplified_model_picker,
         linked_side_panel_refresh_ms: policy.linked_side_panel_refresh_interval.as_millis() as u64,
     }
 }
@@ -1512,12 +1516,20 @@ fn main() -> Result<()> {
     println!("tui_policy_redraw_fps: {}", actual_policy.redraw_fps);
     println!("tui_policy_animation_fps: {}", actual_policy.animation_fps);
     println!(
+        "tui_policy_decorative_animations: {}",
+        actual_policy.enable_decorative_animations
+    );
+    println!(
         "tui_policy_focus_change: {}",
         actual_policy.enable_focus_change
     );
     println!(
         "tui_policy_keyboard_enhancement: {}",
         actual_policy.enable_keyboard_enhancement
+    );
+    println!(
+        "tui_policy_simplified_model_picker: {}",
+        actual_policy.simplified_model_picker
     );
     println!(
         "tui_policy_linked_refresh_ms: {}",
@@ -1535,12 +1547,20 @@ fn main() -> Result<()> {
             synthetic_policy.animation_fps
         );
         println!(
+            "synthetic_tui_policy_decorative_animations: {}",
+            synthetic_policy.enable_decorative_animations
+        );
+        println!(
             "synthetic_tui_policy_focus_change: {}",
             synthetic_policy.enable_focus_change
         );
         println!(
             "synthetic_tui_policy_keyboard_enhancement: {}",
             synthetic_policy.enable_keyboard_enhancement
+        );
+        println!(
+            "synthetic_tui_policy_simplified_model_picker: {}",
+            synthetic_policy.simplified_model_picker
         );
         println!(
             "synthetic_tui_policy_linked_refresh_ms: {}",

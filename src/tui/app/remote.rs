@@ -1,7 +1,7 @@
 use super::{
-    App, DisplayMessage, ProcessingStatus, SendAction, ctrl_bracket_fallback_to_esc, input,
-    parse_rate_limit_error, remote_notifications::present_swarm_notification,
-    spawn_in_new_terminal,
+    App, DisplayMessage, ProcessingStatus, RemoteResumeActivity, SendAction,
+    ctrl_bracket_fallback_to_esc, input, parse_rate_limit_error,
+    remote_notifications::present_swarm_notification, spawn_in_new_terminal,
 };
 use crate::bus::BusEvent;
 use crate::message::ToolCall;
@@ -134,13 +134,15 @@ fn reload_marker_active() -> bool {
     crate::server::reload_marker_active(RELOAD_MARKER_MAX_AGE)
 }
 
-pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
+pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) -> bool {
+    let mut needs_redraw = crate::tui::periodic_redraw_required(app);
     app.progress_mouse_scroll_animation();
     if let Some(chunk) = app.stream_buffer.flush() {
         app.streaming_text.push_str(&chunk);
+        needs_redraw = true;
     }
 
-    app.refresh_side_panel_linked_content_if_due();
+    needs_redraw |= app.refresh_side_panel_linked_content_if_due();
 
     let _ = check_debug_command(app, remote).await;
 
@@ -158,7 +160,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
                     } else {
                         format!("Back → {}", label)
                     });
-                    return;
+                    return true;
                 }
                 Err(err) => {
                     app.clear_in_flight_catchup_resume();
@@ -166,6 +168,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
                         "Failed to switch Catch Up session: {}",
                         err
                     )));
+                    needs_redraw = true;
                 }
             }
         }
@@ -177,13 +180,14 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
                         .map(|name| name.to_string())
                         .unwrap_or(target_session);
                     app.set_status_notice(format!("Workspace → {}", label));
-                    return;
+                    return true;
                 }
                 Err(err) => {
                     app.push_display_message(DisplayMessage::error(format!(
                         "Failed to switch workspace session: {}",
                         err
                     )));
+                    needs_redraw = true;
                 }
             }
         }
@@ -225,14 +229,14 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
                         pending.retry_attempts,
                     )
                     .await;
-                    return;
+                    return true;
                 }
             }
         }
     }
 
     if app.pending_queued_dispatch {
-        return;
+        return needs_redraw;
     }
 
     if !app.is_processing && !app.queued_messages.is_empty() {
@@ -258,6 +262,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
         {
             crate::logging::error("Failed to send queued continuation message");
         }
+        needs_redraw = true;
     }
 
     if !app.is_processing && !app.hidden_queued_system_messages.is_empty() {
@@ -282,9 +287,11 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) {
         {
             crate::logging::error("Failed to send hidden continuation reminder");
         }
+        needs_redraw = true;
     }
 
     detect_and_cancel_stall(app, remote).await;
+    needs_redraw
 }
 
 pub(super) async fn handle_terminal_event(
@@ -292,13 +299,14 @@ pub(super) async fn handle_terminal_event(
     _terminal: &mut DefaultTerminal,
     remote: &mut RemoteConnection,
     event: Option<std::result::Result<Event, std::io::Error>>,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut needs_redraw = false;
     match event {
         Some(Ok(Event::FocusGained)) => {
-            app.note_client_focus();
+            app.note_client_focus(true);
         }
         Some(Ok(Event::Key(key))) => {
-            app.note_client_focus();
+            app.note_client_interaction();
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                 handle_remote_key_event(app, key, remote).await?;
@@ -364,22 +372,24 @@ pub(super) async fn handle_terminal_event(
                     }
                 }
             }
+            needs_redraw = true;
         }
         Some(Ok(Event::Paste(text))) => {
-            app.note_client_focus();
+            app.note_client_interaction();
             app.handle_paste(text);
+            needs_redraw = true;
         }
         Some(Ok(Event::Mouse(mouse))) => {
-            app.note_client_focus();
+            app.note_client_interaction();
             handle_mouse_event(app, mouse);
+            needs_redraw = true;
         }
-        Some(Ok(Event::Resize(_, _))) => {}
+        Some(Ok(Event::Resize(_, _))) => {
+            needs_redraw = app.should_redraw_after_resize();
+        }
         _ => {}
     }
-    // The active remote loop redraws at the top of the next iteration, so an
-    // immediate draw here would duplicate the same full-frame render for every
-    // keypress.
-    Ok(())
+    Ok(needs_redraw)
 }
 
 #[cfg(test)]
@@ -603,10 +613,10 @@ fn handle_terminal_event_while_disconnected(
 
     match event {
         Some(Ok(Event::FocusGained)) => {
-            app.note_client_focus();
+            app.note_client_focus(true);
         }
         Some(Ok(Event::Key(key))) => {
-            app.note_client_focus();
+            app.note_client_interaction();
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                 handle_disconnected_key_event(app, key)?;
@@ -614,12 +624,12 @@ fn handle_terminal_event_while_disconnected(
             needs_redraw = true;
         }
         Some(Ok(Event::Paste(text))) => {
-            app.note_client_focus();
+            app.note_client_interaction();
             app.handle_paste(text);
             needs_redraw = true;
         }
         Some(Ok(Event::Mouse(mouse))) => {
-            app.note_client_focus();
+            app.note_client_interaction();
             handle_mouse_event(app, mouse);
             needs_redraw = true;
         }
@@ -638,16 +648,15 @@ fn handle_terminal_event_while_disconnected(
 
 pub(super) async fn handle_remote_event<B: Backend>(
     app: &mut App,
-    terminal: &mut Terminal<B>,
+    _terminal: &mut Terminal<B>,
     remote: &mut RemoteConnection,
     state: &mut RemoteRunState,
     event: RemoteRead,
-) -> Result<RemoteEventOutcome> {
+) -> Result<(RemoteEventOutcome, bool)> {
     match event {
         RemoteRead::Disconnected(reason) => {
             handle_disconnect(app, state, Some(reason));
-            terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
-            Ok(RemoteEventOutcome::Reconnect)
+            Ok((RemoteEventOutcome::Reconnect, true))
         }
         RemoteRead::Event(ServerEvent::Reloading { new_socket }) => {
             let _ = new_socket;
@@ -656,36 +665,32 @@ pub(super) async fn handle_remote_event<B: Backend>(
             state.last_disconnect_reason = Some("server reload in progress".to_string());
             let needs_redraw =
                 handle_server_event(app, ServerEvent::Reloading { new_socket: None }, remote);
-            if needs_redraw {
-                terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
-            }
             process_remote_followups(app, remote).await;
-            Ok(RemoteEventOutcome::Continue)
+            Ok((RemoteEventOutcome::Continue, needs_redraw))
         }
         RemoteRead::Event(ServerEvent::ClientDebugRequest { id, command }) => {
             let output = handle_debug_command(app, &command, remote).await;
             let _ = remote.send_client_debug_response(id, output).await;
             process_remote_followups(app, remote).await;
-            Ok(RemoteEventOutcome::Continue)
+            Ok((RemoteEventOutcome::Continue, false))
         }
         RemoteRead::Event(ServerEvent::Transcript { text, mode }) => {
+            let mut needs_redraw = false;
             if let Err(error) = apply_remote_transcript_event(app, remote, text, mode).await {
                 app.push_display_message(DisplayMessage::error(format!(
                     "Failed to apply transcript: {}",
                     error
                 )));
                 app.set_status_notice("Transcript failed");
+                needs_redraw = true;
             }
             process_remote_followups(app, remote).await;
-            Ok(RemoteEventOutcome::Continue)
+            Ok((RemoteEventOutcome::Continue, needs_redraw))
         }
         RemoteRead::Event(server_event) => {
             let needs_redraw = handle_server_event(app, server_event, remote);
-            if needs_redraw {
-                terminal.draw(|frame| crate::tui::ui::draw(frame, app))?;
-            }
             process_remote_followups(app, remote).await;
-            Ok(RemoteEventOutcome::Continue)
+            Ok((RemoteEventOutcome::Continue, needs_redraw))
         }
     }
 }
@@ -715,6 +720,7 @@ pub(super) fn handle_disconnect(
     }
     app.current_message_id = None;
     app.last_stream_activity = None;
+    app.remote_resume_activity = None;
     if let Some(chunk) = app.stream_buffer.flush() {
         app.streaming_text.push_str(&chunk);
     }
@@ -760,6 +766,24 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
 
     if !remote.has_loaded_history() {
         return;
+    }
+
+    let synthetic_startup_dispatch = app.is_processing
+        && app.current_message_id.is_none()
+        && app.remote_resume_activity.is_none()
+        && (app.submit_input_on_startup
+            || !app.queued_messages.is_empty()
+            || !app.hidden_queued_system_messages.is_empty());
+
+    if synthetic_startup_dispatch {
+        crate::logging::info(
+            "Dispatching restored startup/queued followup without active remote message id",
+        );
+        app.is_processing = false;
+        app.status = ProcessingStatus::Idle;
+        app.processing_started = None;
+        app.replay_processing_started_ms = None;
+        app.replay_elapsed_override = None;
     }
 
     if app.submit_input_on_startup && !app.is_processing {
@@ -913,6 +937,25 @@ async fn detect_and_cancel_stall(app: &mut App, remote: &mut RemoteConnection) {
                     .unwrap_or(false)
             });
         if stalled {
+            if let Some(snapshot) = app.remote_resume_activity.clone() {
+                let elapsed = app
+                    .last_stream_activity
+                    .map(|t| t.elapsed())
+                    .or(app.processing_started.map(|t| t.elapsed()));
+                crate::logging::warn(&format!(
+                    "Protocol stall guard: resumed session {} is still marked processing by history snapshot (tool={:?}, snapshot_age={:?}) but no corroborating live events arrived after {:?}; deferring client-side cancel",
+                    snapshot.session_id,
+                    snapshot.current_tool_name,
+                    snapshot.observed_at.elapsed(),
+                    elapsed
+                ));
+                app.last_stream_activity = Some(Instant::now());
+                app.status = match snapshot.current_tool_name {
+                    Some(tool_name) => ProcessingStatus::RunningTool(tool_name),
+                    None => ProcessingStatus::Thinking(Instant::now()),
+                };
+                return;
+            }
             crate::logging::warn(&format!(
                 "Stream stall detected: no server events for {:?}, cancelling",
                 app.last_stream_activity
@@ -1071,6 +1114,7 @@ pub(super) async fn begin_remote_send(
     app.status_detail = None;
     app.processing_started = Some(Instant::now());
     app.last_stream_activity = Some(Instant::now());
+    app.remote_resume_activity = None;
     app.reset_streaming_tps();
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;
@@ -1094,6 +1138,19 @@ fn restore_prepared_remote_input(app: &mut App, prepared: input::PreparedInput) 
     app.input = prepared.raw_input;
     app.cursor_pos = app.input.len();
     app.pending_images = prepared.images;
+}
+
+fn history_matches_pending_startup_prompt(app: &App) -> bool {
+    if !app.submit_input_on_startup || !app.pending_images.is_empty() || app.input.trim().is_empty()
+    {
+        return false;
+    }
+
+    app.display_messages()
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .is_some_and(|message| message.content == app.input)
 }
 
 async fn submit_prepared_remote_input(
@@ -1174,6 +1231,7 @@ fn begin_remote_split_launch(app: &mut App, label: &str) {
     app.pending_split_started_at = Some(started_at);
     app.processing_started = Some(started_at);
     app.last_stream_activity = Some(started_at);
+    app.remote_resume_activity = None;
     app.reset_streaming_tps();
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;
@@ -1311,6 +1369,7 @@ async fn submit_remote_input_shell(
     app.status_detail = None;
     app.processing_started = Some(Instant::now());
     app.last_stream_activity = Some(Instant::now());
+    app.remote_resume_activity = None;
     app.reset_streaming_tps();
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;
@@ -1384,8 +1443,30 @@ pub(super) fn handle_server_event(
     event: ServerEvent,
     remote: &mut impl RemoteEventState,
 ) -> bool {
+    let eager_stream_redraw = !crate::perf::tui_policy().enable_decorative_animations;
     if app.is_processing {
         app.last_stream_activity = Some(Instant::now());
+    }
+
+    if matches!(
+        &event,
+        ServerEvent::TextDelta { .. }
+            | ServerEvent::TextReplace { .. }
+            | ServerEvent::ToolStart { .. }
+            | ServerEvent::ToolInput { .. }
+            | ServerEvent::ToolExec { .. }
+            | ServerEvent::ToolDone { .. }
+            | ServerEvent::BatchProgress { .. }
+            | ServerEvent::TokenUsage { .. }
+            | ServerEvent::ConnectionType { .. }
+            | ServerEvent::ConnectionPhase { .. }
+            | ServerEvent::StatusDetail { .. }
+            | ServerEvent::UpstreamProvider { .. }
+            | ServerEvent::Interrupted
+            | ServerEvent::Done { .. }
+            | ServerEvent::Error { .. }
+    ) {
+        app.remote_resume_activity = None;
     }
 
     let call_output_tokens_seen = remote.call_output_tokens_seen();
@@ -1397,30 +1478,35 @@ pub(super) fn handle_server_event(
                     app.streaming_text.push_str(&chunk);
                 }
                 app.insert_thought_line(thought_line);
-                return false;
+                return eager_stream_redraw;
             }
+            let mut needs_redraw = false;
             if matches!(
                 app.status,
                 ProcessingStatus::Sending | ProcessingStatus::Connecting(_)
             ) {
                 app.status = ProcessingStatus::Streaming;
+                needs_redraw = true;
             } else if matches!(app.status, ProcessingStatus::Thinking(_)) {
                 app.status = ProcessingStatus::Streaming;
+                needs_redraw = true;
             } else if app.is_processing && matches!(app.status, ProcessingStatus::Idle) {
                 app.status = ProcessingStatus::Streaming;
+                needs_redraw = true;
             }
             app.resume_streaming_tps();
             if let Some(chunk) = app.stream_buffer.push(&text) {
                 app.streaming_text.push_str(&chunk);
+                needs_redraw = true;
             }
             app.last_stream_activity = Some(Instant::now());
-            false
+            eager_stream_redraw && needs_redraw
         }
         ServerEvent::TextReplace { text } => {
             app.stream_buffer.flush();
             app.streaming_text = text;
             app.resume_streaming_tps();
-            false
+            true
         }
         ServerEvent::ToolStart { id, name } => {
             app.pause_streaming_tps(false);
@@ -1436,7 +1522,7 @@ pub(super) fn handle_server_event(
                 input: serde_json::Value::Null,
                 intent: None,
             });
-            false
+            eager_stream_redraw
         }
         ServerEvent::ToolInput { delta } => {
             remote.handle_tool_input(&delta);
@@ -1456,7 +1542,8 @@ pub(super) fn handle_server_event(
             }
             remote.handle_tool_exec(&id, &name);
             app.observe_tool_call(&tool_call);
-            app.side_panel.focused_page_id.as_deref() == Some(super::observe::OBSERVE_PAGE_ID)
+            eager_stream_redraw
+                || app.side_panel.focused_page_id.as_deref() == Some(super::observe::OBSERVE_PAGE_ID)
         }
         ServerEvent::ToolDone {
             id,
@@ -1524,7 +1611,7 @@ pub(super) fn handle_server_event(
             if cache_creation_input.is_some() {
                 app.streaming_cache_creation_tokens = cache_creation_input;
             }
-            false
+            eager_stream_redraw && matches!(app.status, ProcessingStatus::Streaming)
         }
         ServerEvent::ConnectionType { connection } => {
             app.connection_type = Some(connection);
@@ -1553,11 +1640,11 @@ pub(super) fn handle_server_event(
             } else {
                 ProcessingStatus::Connecting(cp)
             };
-            false
+            eager_stream_redraw
         }
         ServerEvent::StatusDetail { detail } => {
             app.status_detail = Some(detail);
-            false
+            eager_stream_redraw
         }
         ServerEvent::UpstreamProvider { provider } => {
             app.upstream_provider = Some(provider);
@@ -1654,49 +1741,10 @@ pub(super) fn handle_server_event(
                         id, app.current_message_id
                     ));
                 } else {
-                    crate::logging::warn(&format!(
-                        "Done id={} doesn't match current_message_id={:?} but is_processing=true, forcing idle",
+                    crate::logging::info(&format!(
+                        "Ignoring unrelated Done id={} while processing current_message_id={:?}; preserving active/queued turn",
                         id, app.current_message_id
                     ));
-                    if let Some(chunk) = app.stream_buffer.flush() {
-                        app.streaming_text.push_str(&chunk);
-                    }
-                    if !app.streaming_text.is_empty() {
-                        let duration = app.processing_started.map(|s| s.elapsed().as_secs_f32());
-                        let content = app.take_streaming_text();
-                        app.push_display_message(DisplayMessage {
-                            role: "assistant".to_string(),
-                            content,
-                            tool_calls: vec![],
-                            duration_secs: duration,
-                            title: None,
-                            tool_data: None,
-                        });
-                        app.push_turn_footer(duration);
-                    }
-                    crate::tui::mermaid::clear_streaming_preview_diagram();
-                    let should_autoreview = app.autoreview_after_current_turn;
-                    app.autoreview_after_current_turn = false;
-                    let should_autojudge = app.autojudge_after_current_turn;
-                    app.autojudge_after_current_turn = false;
-                    app.is_processing = false;
-                    app.status = ProcessingStatus::Idle;
-                    app.processing_started = None;
-                    app.replay_processing_started_ms = None;
-                    app.replay_elapsed_override = None;
-                    app.streaming_tool_calls.clear();
-                    app.current_message_id = None;
-                    app.thought_line_inserted = false;
-                    app.thinking_prefix_emitted = false;
-                    app.thinking_buffer.clear();
-                    remote.clear_pending();
-                    remote.reset_call_output_tokens_seen();
-                    if should_autoreview {
-                        super::commands::queue_autoreview_remote(app);
-                    }
-                    if should_autojudge {
-                        super::commands::queue_autojudge_remote(app);
-                    }
                 }
             }
             false
@@ -1764,7 +1812,7 @@ pub(super) fn handle_server_event(
             remote.set_session_id(session_id.clone());
             app.remote_session_id = Some(session_id.clone());
             crate::set_current_session(&session_id);
-            app.note_client_focus();
+            app.note_client_focus(true);
             app.update_terminal_title();
             false
         }
@@ -1829,6 +1877,7 @@ pub(super) fn handle_server_event(
             reasoning_effort,
             service_tier,
             compaction_mode,
+            activity,
             side_panel,
             ..
         } => {
@@ -1839,7 +1888,7 @@ pub(super) fn handle_server_event(
             remote.set_session_id(session_id.clone());
             app.remote_session_id = Some(session_id.clone());
             crate::set_current_session(&session_id);
-            app.note_client_focus();
+            app.note_client_focus(true);
             let session_changed = prev_session_id.as_deref() != Some(session_id.as_str());
 
             if session_changed {
@@ -1862,6 +1911,7 @@ pub(super) fn handle_server_event(
                 app.replay_elapsed_override = None;
                 app.reset_streaming_tps();
                 app.last_stream_activity = None;
+                app.remote_resume_activity = None;
                 app.is_processing = false;
                 app.status = ProcessingStatus::Idle;
                 app.follow_chat_bottom();
@@ -1941,6 +1991,29 @@ pub(super) fn handle_server_event(
 
             let should_apply_history_payload = session_changed || !remote.has_loaded_history();
             if should_apply_history_payload {
+                if let Some(activity) = activity.filter(|activity| activity.is_processing) {
+                    let current_tool_name = activity.current_tool_name.clone();
+                    app.is_processing = true;
+                    if app.processing_started.is_none() {
+                        app.processing_started = Some(Instant::now());
+                    }
+                    if app.last_stream_activity.is_none() {
+                        app.last_stream_activity = Some(Instant::now());
+                    }
+                    app.remote_resume_activity = Some(RemoteResumeActivity {
+                        session_id: session_id.clone(),
+                        observed_at: Instant::now(),
+                        current_tool_name: current_tool_name.clone(),
+                    });
+                    app.status = match current_tool_name {
+                        Some(tool_name) => ProcessingStatus::RunningTool(tool_name),
+                        None => ProcessingStatus::Thinking(Instant::now()),
+                    };
+                } else {
+                    app.remote_resume_activity = None;
+                }
+            }
+            if should_apply_history_payload {
                 crate::logging::info(&format!(
                     "[TIMING] remote bootstrap: history after {}ms (session={}, resumed={}, messages={}, mcp_servers={}, model={})",
                     app.app_started.elapsed().as_millis(),
@@ -1968,6 +2041,17 @@ pub(super) fn handle_server_event(
                         })
                         .collect();
                     app.replace_display_messages(restored_messages);
+                }
+
+                if history_matches_pending_startup_prompt(app) {
+                    crate::logging::info(
+                        "Reload-restored startup prompt already present in server history; skipping client resubmit",
+                    );
+                    app.submit_input_on_startup = false;
+                    app.input.clear();
+                    app.cursor_pos = 0;
+                    app.pending_images.clear();
+                    app.set_status_notice("Reload complete — prompt preserved");
                 }
             } else {
                 crate::logging::info(

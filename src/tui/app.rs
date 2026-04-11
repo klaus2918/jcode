@@ -104,6 +104,13 @@ pub(super) struct PendingCatchupResume {
     pub show_brief: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct RemoteResumeActivity {
+    pub session_id: String,
+    pub observed_at: Instant,
+    pub current_tool_name: Option<String>,
+}
+
 const MEMORY_INJECTION_SUPPRESSION_SECS: u64 = 90;
 
 /// Current processing status
@@ -385,6 +392,8 @@ pub struct App {
     context_info: crate::prompt::ContextInfo,
     // Track last streaming activity for "stale" detection
     last_stream_activity: Option<Instant>,
+    // Server-reported processing snapshot captured from resume/history before live events arrive.
+    remote_resume_activity: Option<RemoteResumeActivity>,
     // Accurate TPS tracking: only counts actual token streaming time, not tool execution
     /// Set when first TextDelta arrives in a streaming response
     streaming_tps_start: Option<Instant>,
@@ -594,6 +603,9 @@ pub struct App {
     observe_page_markdown: String,
     observe_page_updated_at_ms: u64,
     last_side_panel_refresh: Option<Instant>,
+    // Most recently persisted focus target for dictation routing.
+    last_client_focus_recorded_at: Option<Instant>,
+    last_client_focus_session_id: Option<String>,
     // Most recently focused side panel page, used to restore visibility when toggled off.
     last_side_panel_focus_id: Option<String>,
     // Pin read images to side pane
@@ -753,6 +765,7 @@ impl App {
     const AUTO_RETRY_BASE_DELAY_SECS: u64 = 2;
     const AUTO_RETRY_MAX_ATTEMPTS: u8 = 3;
     const INPUT_UNDO_LIMIT: usize = 128;
+    const CLIENT_FOCUS_RECORD_DEBOUNCE: Duration = Duration::from_secs(2);
 }
 
 #[cfg(test)]

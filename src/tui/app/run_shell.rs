@@ -7,6 +7,7 @@ impl App {
         let mut event_stream = EventStream::new();
         let mut redraw_period = crate::tui::redraw_interval(&self);
         let mut redraw_interval = interval(redraw_period);
+        let mut needs_redraw = true;
         let mut handterm_native_scroll =
             super::handterm_native_scroll::HandtermNativeScrollClient::connect_from_env();
         // Subscribe to bus for background task completion notifications
@@ -19,10 +20,12 @@ impl App {
                 redraw_interval = interval(redraw_period);
             }
 
-            // Draw UI
-            terminal.draw(|frame| crate::tui::ui::draw(frame, &self))?;
-            if let Some(native) = handterm_native_scroll.as_mut() {
-                native.sync_from_app(&self);
+            if needs_redraw {
+                terminal.draw(|frame| crate::tui::ui::draw(frame, &self))?;
+                if let Some(native) = handterm_native_scroll.as_mut() {
+                    native.sync_from_app(&self);
+                }
+                needs_redraw = false;
             }
 
             if self.should_quit {
@@ -35,19 +38,21 @@ impl App {
                 // Process turn while still handling input
                 self.process_turn_with_input(&mut terminal, &mut event_stream)
                     .await;
+                needs_redraw = true;
             } else if self.pending_queued_dispatch {
                 self.pending_queued_dispatch = false;
                 self.process_queued_messages(&mut terminal, &mut event_stream)
                     .await;
                 local::finish_turn(&mut self);
+                needs_redraw = true;
             } else {
                 // Wait for input or redraw tick
                 tokio::select! {
                     _ = redraw_interval.tick() => {
-                        local::handle_tick(&mut self);
+                        needs_redraw |= local::handle_tick(&mut self);
                     }
                     event = event_stream.next() => {
-                        local::handle_terminal_event(&mut self, &mut terminal, event)?;
+                        needs_redraw |= local::handle_terminal_event(&mut self, &mut terminal, event)?;
                     }
                     command = async {
                         match handterm_native_scroll.as_mut() {
@@ -57,11 +62,12 @@ impl App {
                     } => {
                         if let Some(command) = command {
                             self.apply_handterm_native_scroll(command);
+                            needs_redraw = true;
                         }
                     }
                     // Handle background task completion notifications
                     bus_event = bus_receiver.recv() => {
-                        local::handle_bus_event(&mut self, bus_event);
+                        needs_redraw |= local::handle_bus_event(&mut self, bus_event);
                     }
                 }
             }
@@ -84,6 +90,7 @@ impl App {
         let mut event_stream = EventStream::new();
         let mut redraw_period = crate::tui::redraw_interval(&self);
         let mut redraw_interval = interval(redraw_period);
+        let mut needs_redraw = true;
         let mut handterm_native_scroll =
             super::handterm_native_scroll::HandtermNativeScrollClient::connect_from_env();
         let mut remote_state = remote::RemoteRunState::default();
@@ -96,7 +103,10 @@ impl App {
                     self.set_remote_startup_phase(super::RemoteStartupPhase::Connecting);
                 }
             }
-            terminal.draw(|frame| crate::tui::ui::draw(frame, &self))?;
+            if needs_redraw {
+                terminal.draw(|frame| crate::tui::ui::draw(frame, &self))?;
+                needs_redraw = false;
+            }
 
             let session_to_resume = self.reconnect_target_session_id();
 
@@ -137,9 +147,12 @@ impl App {
                     redraw_interval = interval(redraw_period);
                 }
 
-                terminal.draw(|frame| crate::tui::ui::draw(frame, &self))?;
-                if let Some(native) = handterm_native_scroll.as_mut() {
-                    native.sync_from_app(&self);
+                if needs_redraw {
+                    terminal.draw(|frame| crate::tui::ui::draw(frame, &self))?;
+                    if let Some(native) = handterm_native_scroll.as_mut() {
+                        native.sync_from_app(&self);
+                    }
+                    needs_redraw = false;
                 }
 
                 if self.should_quit {
@@ -149,29 +162,31 @@ impl App {
                 if self.pending_queued_dispatch {
                     self.pending_queued_dispatch = false;
                     remote::process_remote_followups(&mut self, &mut remote_conn).await;
+                    needs_redraw = true;
                     continue;
                 }
 
                 tokio::select! {
                     _ = redraw_interval.tick() => {
-                        remote::handle_tick(&mut self, &mut remote_conn).await;
+                        needs_redraw |= remote::handle_tick(&mut self, &mut remote_conn).await;
                     }
                     event = remote_conn.next_event() => {
-                        match remote::handle_remote_event(
+                        let (outcome, event_redraw) = remote::handle_remote_event(
                             &mut self,
                             &mut terminal,
                             &mut remote_conn,
                             &mut remote_state,
                             event,
                         )
-                        .await?
-                        {
+                        .await?;
+                        needs_redraw |= event_redraw;
+                        match outcome {
                             remote::RemoteEventOutcome::Continue => {}
                             remote::RemoteEventOutcome::Reconnect => continue 'outer,
                         }
                     }
                     event = event_stream.next() => {
-                        remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, event).await?;
+                        needs_redraw |= remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, event).await?;
                     }
                     command = async {
                         match handterm_native_scroll.as_mut() {
@@ -181,10 +196,12 @@ impl App {
                     } => {
                         if let Some(command) = command {
                             self.apply_handterm_native_scroll(command);
+                            needs_redraw = true;
                         }
                     }
                     bus_event = bus_receiver_remote.recv() => {
                         remote::handle_bus_event(&mut self, &mut remote_conn, bus_event).await;
+                        needs_redraw = true;
                     }
                 }
             }

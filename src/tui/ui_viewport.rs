@@ -326,8 +326,10 @@ pub(super) fn draw_messages(
     set_visible_copy_targets(visible_copy_targets);
 
     let now_ms = app.now_millis();
+    let policy = crate::perf::tui_policy();
     let prompt_anim_enabled = crate::config::config().display.prompt_entry_animation
-        && crate::perf::profile().tier.prompt_entry_animation_enabled();
+        && policy.enable_decorative_animations
+        && policy.tier.prompt_entry_animation_enabled();
     if prompt_anim_enabled {
         update_prompt_entry_animation(wrapped_user_prompt_starts, scroll, visible_end, now_ms);
     } else {

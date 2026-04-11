@@ -2973,7 +2973,7 @@ fn test_mouse_scroll_animation_preserves_side_pane_scroll_sensitivity() {
 
     assert_eq!(app.diff_pane_scroll, 6, "first frame should move one line");
 
-    crate::tui::app::local::handle_tick(&mut app);
+    let _ = crate::tui::app::local::handle_tick(&mut app);
     assert_eq!(app.diff_pane_scroll, 7);
 
     crate::tui::app::local::handle_tick(&mut app);
@@ -4770,6 +4770,76 @@ fn test_new_for_remote_restores_spawn_startup_hints_and_dispatch_state() {
         );
         assert!(startup_banner.content.contains("user-visible mirror"));
         assert!(startup_banner.content.contains("session_parent_123"));
+    });
+}
+
+#[test]
+fn test_remote_startup_done_event_does_not_cancel_pending_judge_launch() {
+    with_temp_jcode_home(|| {
+        let session_id = "session_judge_startup_done_guard";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("judge child".to_string()),
+        );
+        session.save().expect("save judge child session");
+
+        super::App::save_startup_message_for_session(
+            session_id,
+            super::commands::build_judge_startup_message("session_parent_guard"),
+        );
+
+        let mut app = App::new_for_remote(Some(session_id.to_string()));
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        assert!(app.pending_queued_dispatch);
+        assert!(app.is_processing());
+        assert_eq!(app.current_message_id, None);
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+
+        app.handle_server_event(crate::protocol::ServerEvent::Done { id: 1 }, &mut remote);
+
+        assert!(app.pending_queued_dispatch);
+        assert!(app.is_processing());
+        assert!(matches!(crate::tui::TuiState::status(&app), ProcessingStatus::Sending));
+        assert_eq!(app.current_message_id, None);
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+    });
+}
+
+#[test]
+fn test_remote_startup_judge_hidden_prompt_dispatches_once_history_is_loaded() {
+    with_temp_jcode_home(|| {
+        let session_id = "session_judge_startup_dispatch";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("judge child".to_string()),
+        );
+        session.save().expect("save judge child session");
+
+        super::App::save_startup_message_for_session(
+            session_id,
+            super::commands::build_judge_startup_message("session_parent_dispatch"),
+        );
+
+        let mut app = App::new_for_remote(Some(session_id.to_string()));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        remote.mark_history_loaded();
+
+        assert!(app.pending_queued_dispatch);
+        assert!(app.is_processing());
+        assert_eq!(app.current_message_id, None);
+
+        app.pending_queued_dispatch = false;
+        rt.block_on(super::remote::process_remote_followups(&mut app, &mut remote));
+
+        assert!(app.hidden_queued_system_messages.is_empty());
+        assert!(app.is_processing());
+        assert!(matches!(crate::tui::TuiState::status(&app), ProcessingStatus::Sending));
+        assert!(app.current_message_id.is_some());
     });
 }
 
@@ -6617,6 +6687,37 @@ fn test_save_and_restore_reload_state_preserves_interleave_and_pending_retry() {
 }
 
 #[test]
+fn test_save_and_restore_reload_state_promotes_inflight_prompt_to_startup_submission() {
+    let mut app = create_test_app();
+    let session_id = format!("test-reload-inflight-prompt-{}", std::process::id());
+
+    app.rate_limit_pending_message = Some(PendingRemoteMessage {
+        content: "finish the refactor".to_string(),
+        images: vec![("image/png".to_string(), "abc123".to_string())],
+        is_system: false,
+        system_reminder: None,
+        auto_retry: false,
+        retry_attempts: 0,
+        retry_at: None,
+    });
+    app.rate_limit_reset = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+    app.save_input_for_reload(&session_id);
+
+    let restored = App::restore_input_for_reload(&session_id).expect("reload state should exist");
+    assert_eq!(restored.input, "finish the refactor");
+    assert_eq!(restored.cursor, "finish the refactor".len());
+    assert!(
+        restored.submit_on_restore,
+        "in-flight prompt should resume automatically"
+    );
+    assert_eq!(restored.pending_images.len(), 1);
+    assert!(
+        restored.rate_limit_pending_message.is_none(),
+        "promoted startup submission should not linger as a passive pending retry"
+    );
+}
+
+#[test]
 fn test_save_and_restore_reload_state_preserves_observe_mode() {
     let mut app = create_test_app();
     let session_id = format!("test-reload-observe-{}", std::process::id());
@@ -6793,6 +6894,7 @@ fn test_initial_history_bootstrap_preserves_restored_interleave_state() {
                 reasoning_effort: None,
                 service_tier: None,
                 compaction_mode: crate::config::CompactionMode::Reactive,
+                activity: None,
                 side_panel: crate::side_panel::SidePanelSnapshot::default(),
             },
             &mut remote,
@@ -6810,6 +6912,90 @@ fn test_initial_history_bootstrap_preserves_restored_interleave_state() {
         assert!(
             restored.pending_soft_interrupts.is_empty(),
             "restored pending interrupts should remain represented by interleave + queue state"
+        );
+    });
+}
+
+#[test]
+fn test_initial_history_bootstrap_skips_resubmit_when_prompt_already_in_history() {
+    with_temp_jcode_home(|| {
+        let session_id = "session_reload_prompt_already_in_history";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("reload prompt already in history".to_string()),
+        );
+        session.save().expect("save session for reload restore");
+
+        let mut app = create_test_app();
+        app.rate_limit_pending_message = Some(PendingRemoteMessage {
+            content: "continue implementing the fix".to_string(),
+            images: vec![],
+            is_system: false,
+            system_reminder: None,
+            auto_retry: false,
+            retry_attempts: 0,
+            retry_at: None,
+        });
+        app.save_input_for_reload(session_id);
+
+        let mut restored = App::new_for_remote(Some(session_id.to_string()));
+        assert!(restored.submit_input_on_startup);
+        assert_eq!(restored.input, "continue implementing the fix");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        restored.handle_server_event(
+            crate::protocol::ServerEvent::History {
+                id: 1,
+                session_id: session_id.to_string(),
+                messages: vec![crate::protocol::HistoryMessage {
+                    role: "user".to_string(),
+                    content: "continue implementing the fix".to_string(),
+                    tool_calls: None,
+                    tool_data: None,
+                }],
+                images: vec![],
+                provider_name: Some("claude".to_string()),
+                provider_model: Some("claude-sonnet-4-20250514".to_string()),
+                subagent_model: None,
+                autoreview_enabled: None,
+                autojudge_enabled: None,
+                available_models: vec![],
+                available_model_routes: vec![],
+                mcp_servers: vec![],
+                skills: vec![],
+                total_tokens: None,
+                all_sessions: vec![],
+                client_count: None,
+                is_canary: None,
+                server_version: None,
+                server_name: None,
+                server_icon: None,
+                server_has_update: None,
+                was_interrupted: Some(true),
+                connection_type: Some("websocket".to_string()),
+                status_detail: None,
+                upstream_provider: None,
+                reasoning_effort: None,
+                service_tier: None,
+                compaction_mode: crate::config::CompactionMode::Reactive,
+                activity: None,
+                side_panel: crate::side_panel::SidePanelSnapshot::default(),
+            },
+            &mut remote,
+        );
+
+        assert!(!restored.submit_input_on_startup);
+        assert!(restored.input.is_empty());
+        assert!(
+            restored
+                .display_messages()
+                .iter()
+                .any(|message| message.content == "Reload complete — continuing."),
+            "server interruption recovery should continue using the restored server-side prompt"
         );
     });
 }
@@ -7006,6 +7192,7 @@ fn test_handle_server_event_history_clears_connection_type_on_session_change_whe
             reasoning_effort: None,
             service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,
@@ -7055,6 +7242,7 @@ fn test_handle_server_event_history_preserves_connection_type_for_same_session_w
             reasoning_effort: None,
             service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,
@@ -7511,7 +7699,7 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
     app.input = "/observe on".to_string();
     app.submit_input();
 
-    let outcome = rt
+    let (outcome, needs_redraw) = rt
         .block_on(super::remote::handle_remote_event(
             &mut app,
             &mut terminal,
@@ -7523,12 +7711,15 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
             }),
         ))
         .expect("tool start should succeed");
+    if needs_redraw {
+        terminal.draw(|frame| crate::tui::ui::draw(frame, &app)).unwrap();
+    }
     assert!(matches!(
         outcome,
         super::remote::RemoteEventOutcome::Continue
     ));
 
-    let outcome = rt
+    let (outcome, needs_redraw) = rt
         .block_on(super::remote::handle_remote_event(
             &mut app,
             &mut terminal,
@@ -7539,12 +7730,15 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
             }),
         ))
         .expect("tool input should succeed");
+    if needs_redraw {
+        terminal.draw(|frame| crate::tui::ui::draw(frame, &app)).unwrap();
+    }
     assert!(matches!(
         outcome,
         super::remote::RemoteEventOutcome::Continue
     ));
 
-    let outcome = rt
+    let (outcome, needs_redraw) = rt
         .block_on(super::remote::handle_remote_event(
             &mut app,
             &mut terminal,
@@ -7556,6 +7750,10 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
             }),
         ))
         .expect("tool exec should succeed");
+    assert!(needs_redraw, "observe tool exec should request redraw");
+    if needs_redraw {
+        terminal.draw(|frame| crate::tui::ui::draw(frame, &app)).unwrap();
+    }
     assert!(matches!(
         outcome,
         super::remote::RemoteEventOutcome::Continue
@@ -7583,7 +7781,7 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
     app.input = "/observe on".to_string();
     app.submit_input();
 
-    rt.block_on(super::remote::handle_remote_event(
+    let (_, needs_redraw) = rt.block_on(super::remote::handle_remote_event(
         &mut app,
         &mut terminal,
         &mut remote,
@@ -7594,7 +7792,10 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
         }),
     ))
     .expect("tool start should succeed");
-    rt.block_on(super::remote::handle_remote_event(
+    if needs_redraw {
+        terminal.draw(|frame| crate::tui::ui::draw(frame, &app)).unwrap();
+    }
+    let (_, needs_redraw) = rt.block_on(super::remote::handle_remote_event(
         &mut app,
         &mut terminal,
         &mut remote,
@@ -7604,7 +7805,10 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
         }),
     ))
     .expect("tool input should succeed");
-    rt.block_on(super::remote::handle_remote_event(
+    if needs_redraw {
+        terminal.draw(|frame| crate::tui::ui::draw(frame, &app)).unwrap();
+    }
+    let (_, needs_redraw) = rt.block_on(super::remote::handle_remote_event(
         &mut app,
         &mut terminal,
         &mut remote,
@@ -7615,8 +7819,11 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
         }),
     ))
     .expect("tool exec should succeed");
+    if needs_redraw {
+        terminal.draw(|frame| crate::tui::ui::draw(frame, &app)).unwrap();
+    }
 
-    let outcome = rt
+    let (outcome, needs_redraw) = rt
         .block_on(super::remote::handle_remote_event(
             &mut app,
             &mut terminal,
@@ -7630,6 +7837,10 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
             }),
         ))
         .expect("tool done should succeed");
+    assert!(needs_redraw, "observe tool done should request redraw");
+    if needs_redraw {
+        terminal.draw(|frame| crate::tui::ui::draw(frame, &app)).unwrap();
+    }
     assert!(matches!(
         outcome,
         super::remote::RemoteEventOutcome::Continue
@@ -8300,6 +8511,7 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
             reasoning_effort: None,
             service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,
@@ -8366,6 +8578,7 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
             reasoning_effort: None,
             service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,
@@ -8531,6 +8744,7 @@ fn test_handle_server_event_history_restores_side_panel_snapshot() {
             reasoning_effort: None,
             service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
             side_panel: side_panel.clone(),
         },
         &mut remote,
@@ -8544,6 +8758,59 @@ fn test_handle_server_event_history_restores_side_panel_snapshot() {
             .map(|page| page.title.as_str()),
         Some("Plan")
     );
+}
+
+#[test]
+fn test_handle_server_event_history_restores_active_resume_processing_state() {
+    let _guard = crate::storage::lock_test_env();
+    let mut app = App::new_for_remote(Some("ses_resume_active".to_string()));
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::History {
+            id: 1,
+            session_id: "ses_resume_active".to_string(),
+            messages: vec![],
+            images: vec![],
+            provider_name: Some("openai".to_string()),
+            provider_model: Some("gpt-5.4".to_string()),
+            subagent_model: None,
+            autoreview_enabled: None,
+            autojudge_enabled: None,
+            available_models: vec![],
+            available_model_routes: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            total_tokens: None,
+            all_sessions: vec![],
+            client_count: None,
+            is_canary: None,
+            server_version: None,
+            server_name: None,
+            server_icon: None,
+            server_has_update: None,
+            was_interrupted: None,
+            connection_type: Some("websocket".to_string()),
+            status_detail: None,
+            upstream_provider: None,
+            reasoning_effort: None,
+            service_tier: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: Some(crate::protocol::SessionActivitySnapshot {
+                is_processing: true,
+                current_tool_name: Some("batch".to_string()),
+            }),
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
+        },
+        &mut remote,
+    );
+
+    assert!(app.is_processing());
+    assert!(app.processing_started.is_some());
+    assert!(app.time_since_activity().is_some());
+    assert!(matches!(app.status, ProcessingStatus::RunningTool(ref name) if name == "batch"));
 }
 
 #[test]
@@ -8725,6 +8992,7 @@ fn test_metadata_only_history_preserves_fast_restored_startup_state() {
             reasoning_effort: None,
             service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,
@@ -8798,6 +9066,7 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
             reasoning_effort: None,
             service_tier: None,
             compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
         },
         &mut remote,

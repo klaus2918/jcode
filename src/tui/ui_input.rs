@@ -382,8 +382,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
     };
 
     let line = if let Some(build_progress) = crate::build::read_build_progress() {
-        let spinner_idx = (elapsed * 12.5) as usize % super::SPINNER_FRAMES.len();
-        let spinner = super::SPINNER_FRAMES[spinner_idx];
+        let spinner = super::activity_indicator(elapsed, 12.5);
         Line::from(vec![
             Span::styled(spinner, Style::default().fg(rgb(255, 193, 7))),
             Span::styled(
@@ -393,8 +392,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         ])
     } else if let Some(remaining) = app.rate_limit_remaining() {
         let secs = remaining.as_secs();
-        let spinner_idx = (elapsed * 4.0) as usize % super::SPINNER_FRAMES.len();
-        let spinner = super::SPINNER_FRAMES[spinner_idx];
+        let spinner = super::activity_indicator(elapsed, 4.0);
         let time_str = if secs >= 3600 {
             let hours = secs / 3600;
             let mins = (secs % 3600) / 60;
@@ -417,8 +415,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             ),
         ])
     } else if app.is_processing() {
-        let spinner_idx = (elapsed * 12.5) as usize % super::SPINNER_FRAMES.len();
-        let spinner = super::SPINNER_FRAMES[spinner_idx];
+        let spinner = super::activity_indicator(elapsed, 12.5);
 
         match app.status() {
             ProcessingStatus::Idle => Line::from(""),
@@ -532,20 +529,26 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             }
             ProcessingStatus::RunningTool(ref name) => {
                 let half_width = 3;
-                let progress = ((elapsed * 2.0) % 1.0) as f32;
-                let filled_pos = ((progress * half_width as f32) as usize) % half_width;
-                let left_bar: String = (0..half_width)
-                    .map(|i| if i == filled_pos { '●' } else { '·' })
-                    .collect();
-                let right_bar: String = (0..half_width)
-                    .map(|i| {
-                        if i == (half_width - 1 - filled_pos) {
-                            '●'
-                        } else {
-                            '·'
-                        }
-                    })
-                    .collect();
+                let (left_bar, right_bar) =
+                    if crate::perf::tui_policy().enable_decorative_animations {
+                        let progress = elapsed * 2.0 % 1.0;
+                        let filled_pos = ((progress * half_width as f32) as usize) % half_width;
+                        let left_bar: String = (0..half_width)
+                            .map(|i| if i == filled_pos { '●' } else { '·' })
+                            .collect();
+                        let right_bar: String = (0..half_width)
+                            .map(|i| {
+                                if i == (half_width - 1 - filled_pos) {
+                                    '●'
+                                } else {
+                                    '·'
+                                }
+                            })
+                            .collect();
+                        (left_bar, right_bar)
+                    } else {
+                        ("···".to_string(), "···".to_string())
+                    };
 
                 let anim_color = animated_tool_color(elapsed);
                 let batch_prog = app.batch_progress();
