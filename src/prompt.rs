@@ -692,6 +692,7 @@ mod tests {
         assert!(prompt.contains("selfdev build"));
         assert!(prompt.contains("cancel-build"));
         assert!(prompt.contains("selfdev reload"));
+        assert!(prompt.contains("fallback when `selfdev build` is not appropriate"));
         assert!(
             prompt.contains("scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode")
         );
