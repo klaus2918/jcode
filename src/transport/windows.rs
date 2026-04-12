@@ -1,6 +1,7 @@
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
@@ -12,8 +13,19 @@ use tokio::sync::Mutex;
 /// e.g. `/run/user/1000/jcode.sock` -> `\\.\pipe\jcode`
 /// e.g. `/run/user/1000/jcode/myserver.sock` -> `\\.\pipe\jcode-myserver`
 fn path_to_pipe_name(path: &Path) -> String {
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("jcode");
-    format!(r"\\.\pipe\{}", stem)
+    let stem: String = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("jcode")
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+        .take(32)
+        .collect();
+    let stem = if stem.is_empty() { "jcode" } else { &stem };
+    let normalized = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    let digest = Sha256::digest(normalized.as_bytes());
+    let hash = hex::encode(digest);
+    format!(r"\\.\pipe\{}-{}", stem, &hash[..16])
 }
 
 /// Listener wraps a Windows named pipe server, providing an accept loop

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::net::TcpListener;
+use std::time::Duration;
 
 /// Claude Code OAuth configuration
 pub mod claude {
@@ -80,6 +81,91 @@ pub fn generate_state_public() -> String {
     generate_state()
 }
 
+const CALLBACK_READ_TIMEOUT_SECS: u64 = 5;
+
+fn bad_request_response(message: &str) -> String {
+    let body = format!(
+        "<html><body><h1>Authentication not completed</h1><p>{}</p><p>You can close this tab and return to jcode.</p></body></html>",
+        message
+    );
+    format!(
+        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
+fn is_socket_read_timeout(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    )
+}
+
+fn read_http_request_line_blocking<R: BufRead>(reader: &mut R) -> Result<Option<String>> {
+    let mut request_line = String::new();
+    match reader.read_line(&mut request_line) {
+        Ok(0) => Ok(None),
+        Ok(_) => Ok(Some(request_line)),
+        Err(err) if is_socket_read_timeout(&err) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn drain_http_headers_blocking<R: BufRead>(reader: &mut R) -> Result<bool> {
+    let mut header_line = String::new();
+    loop {
+        header_line.clear();
+        match reader.read_line(&mut header_line) {
+            Ok(0) => return Ok(false),
+            Ok(_) if header_line.trim().is_empty() => return Ok(true),
+            Ok(_) => {}
+            Err(err) if is_socket_read_timeout(&err) => return Ok(false),
+            Err(err) => return Err(err.into()),
+        }
+    }
+}
+
+async fn read_http_request_line_async<R>(reader: &mut tokio::io::BufReader<R>) -> Result<Option<String>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut request_line = String::new();
+    match tokio::time::timeout(
+        Duration::from_secs(CALLBACK_READ_TIMEOUT_SECS),
+        tokio::io::AsyncBufReadExt::read_line(reader, &mut request_line),
+    )
+    .await
+    {
+        Ok(Ok(0)) => Ok(None),
+        Ok(Ok(_)) => Ok(Some(request_line)),
+        Ok(Err(err)) => Err(err.into()),
+        Err(_) => Ok(None),
+    }
+}
+
+async fn drain_http_headers_async<R>(reader: &mut tokio::io::BufReader<R>) -> Result<bool>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut header_line = String::new();
+    loop {
+        header_line.clear();
+        match tokio::time::timeout(
+            Duration::from_secs(CALLBACK_READ_TIMEOUT_SECS),
+            tokio::io::AsyncBufReadExt::read_line(reader, &mut header_line),
+        )
+        .await
+        {
+            Ok(Ok(0)) => return Ok(false),
+            Ok(Ok(_)) if header_line.trim().is_empty() => return Ok(true),
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => return Ok(false),
+        }
+    }
+}
+
 /// Start local server and wait for OAuth callback
 pub fn wait_for_callback(port: u16, expected_state: &str) -> Result<String> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port))?;
@@ -87,30 +173,14 @@ pub fn wait_for_callback(port: u16, expected_state: &str) -> Result<String> {
 
     loop {
         let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(CALLBACK_READ_TIMEOUT_SECS)))?;
         let mut reader = BufReader::new(&stream);
-        let mut request_line = String::new();
-        reader.read_line(&mut request_line)?;
-
-        let mut header_line = String::new();
-        loop {
-            header_line.clear();
-            reader.read_line(&mut header_line)?;
-            if header_line.trim().is_empty() {
-                break;
-            }
-        }
-
-        let bad_request_response = |message: &str| {
-            let body = format!(
-                "<html><body><h1>Authentication not completed</h1><p>{}</p><p>You can close this tab and return to jcode.</p></body></html>",
-                message
-            );
-            format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            )
+        let Some(request_line) = read_http_request_line_blocking(&mut reader)? else {
+            continue;
         };
+        if !drain_http_headers_blocking(&mut reader)? {
+            continue;
+        }
 
         let parts: Vec<&str> = request_line.split_whitespace().collect();
         if parts.len() < 2 {
@@ -207,35 +277,18 @@ pub async fn wait_for_callback_async_on_listener(
 ) -> Result<String> {
     let expected_state = expected_state.to_string();
 
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncWriteExt, BufReader};
 
     loop {
         let (stream, _) = listener.accept().await?;
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
-        let mut request_line = String::new();
-        reader.read_line(&mut request_line).await?;
-
-        let mut header_line = String::new();
-        loop {
-            header_line.clear();
-            reader.read_line(&mut header_line).await?;
-            if header_line.trim().is_empty() {
-                break;
-            }
-        }
-
-        let bad_request_response = |message: &str| {
-            let body = format!(
-                "<html><body><h1>Authentication not completed</h1><p>{}</p><p>You can close this tab and return to jcode.</p></body></html>",
-                message
-            );
-            format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            )
+        let Some(request_line) = read_http_request_line_async(&mut reader).await? else {
+            continue;
         };
+        if !drain_http_headers_async(&mut reader).await? {
+            continue;
+        }
 
         let parts: Vec<&str> = request_line.split_whitespace().collect();
         if parts.len() < 2 {

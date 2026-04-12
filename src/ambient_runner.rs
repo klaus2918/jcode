@@ -130,7 +130,7 @@ impl AmbientRunnerHandle {
             logging::info(&format!(
                 "{} message injected into active ambient cycle: {}",
                 source,
-                if text.len() > 60 { &text[..60] } else { text }
+                crate::util::truncate_str(text, 60)
             ));
             return true;
         }

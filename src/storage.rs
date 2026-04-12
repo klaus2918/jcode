@@ -26,7 +26,44 @@ pub fn runtime_dir() -> PathBuf {
             return PathBuf::from(dir);
         }
     }
-    std::env::temp_dir()
+
+    let dir = fallback_runtime_dir();
+    ensure_private_runtime_dir(&dir);
+    dir
+}
+
+fn fallback_runtime_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("jcode-{}", runtime_user_discriminator()))
+}
+
+#[cfg(unix)]
+fn runtime_user_discriminator() -> String {
+    unsafe { libc::geteuid() }.to_string()
+}
+
+#[cfg(not(unix))]
+fn runtime_user_discriminator() -> String {
+    let raw = std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "user".to_string());
+    let sanitized: String = raw
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+        .take(64)
+        .collect();
+    if sanitized.is_empty() {
+        "user".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn ensure_private_runtime_dir(path: &Path) {
+    let _ = std::fs::create_dir_all(path);
+    #[cfg(unix)]
+    {
+        let _ = crate::platform::set_directory_permissions_owner_only(path);
+    }
 }
 
 pub fn jcode_dir() -> Result<PathBuf> {

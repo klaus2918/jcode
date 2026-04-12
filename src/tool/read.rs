@@ -217,7 +217,12 @@ impl Tool for ReadTool {
                 }
                 let line_num = i + 1;
                 if line.len() > MAX_LINE_LEN {
-                    let _ = write!(output, "{:>5}\t{}...\n", line_num, &line[..MAX_LINE_LEN]);
+                    let _ = write!(
+                        output,
+                        "{:>5}\t{}...\n",
+                        line_num,
+                        crate::util::truncate_str(line, MAX_LINE_LEN)
+                    );
                 } else {
                     let _ = write!(output, "{:>5}\t{}\n", line_num, line);
                 }

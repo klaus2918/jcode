@@ -923,7 +923,7 @@ impl Agent {
                         let display = if content.len() > 2000 {
                             format!(
                                 "{}... (truncated, {} chars total)",
-                                &content[..2000],
+                                crate::util::truncate_str(content, 2000),
                                 content.len()
                             )
                         } else {

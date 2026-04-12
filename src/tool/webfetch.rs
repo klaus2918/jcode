@@ -1,6 +1,7 @@
 use super::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -105,18 +106,27 @@ impl Tool for WebFetchTool {
             .unwrap_or("")
             .to_string();
 
-        let body = response.text().await?;
+        let mut body_bytes = Vec::new();
+        let mut truncated = false;
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            let remaining = MAX_SIZE.saturating_sub(body_bytes.len());
+            if chunk.len() > remaining {
+                body_bytes.extend_from_slice(&chunk[..remaining]);
+                truncated = true;
+                break;
+            }
+            body_bytes.extend_from_slice(&chunk);
+        }
 
-        // Truncate if too large
-        let body = if body.len() > MAX_SIZE {
-            format!(
-                "{}...\n\n(truncated, showing first {} bytes)",
-                &body[..MAX_SIZE],
+        let mut body = String::from_utf8_lossy(&body_bytes).into_owned();
+        if truncated {
+            body.push_str(&format!(
+                "...\n\n(truncated, showing first {} bytes)",
                 MAX_SIZE
-            )
-        } else {
-            body
-        };
+            ));
+        }
 
         // Format output
         let output = match format {

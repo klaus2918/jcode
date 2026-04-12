@@ -189,7 +189,7 @@ impl Agent {
             .take(10)
             .map(|s| {
                 if s.len() > 100 {
-                    format!("{}...", &s[..100])
+                    format!("{}...", crate::util::truncate_str(s, 100))
                 } else {
                     s.clone()
                 }
@@ -280,7 +280,7 @@ impl Agent {
                     .take(10)
                     .map(|m| {
                         let preview = if m.content.len() > 100 {
-                            format!("{}...", &m.content[..100])
+                            format!("{}...", crate::util::truncate_str(&m.content, 100))
                         } else {
                             m.content.clone()
                         };

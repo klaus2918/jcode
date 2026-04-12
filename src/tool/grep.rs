@@ -189,7 +189,7 @@ fn grep_blocking(base: &Path, pattern: &str, include: Option<&str>) -> Result<Ve
                             .to_string();
 
                         let truncated = if line.len() > MAX_LINE_LEN {
-                            format!("{}...", &line[..MAX_LINE_LEN])
+                            format!("{}...", crate::util::truncate_str(line, MAX_LINE_LEN))
                         } else {
                             line.to_string()
                         };
