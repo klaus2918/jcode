@@ -398,11 +398,23 @@ async fn ensure_firefox_ready() -> Result<Option<String>> {
     if crate::browser::is_setup_complete() {
         return Ok(None);
     }
-    let log = crate::browser::ensure_browser_setup().await?;
-    if !crate::browser::is_setup_complete() {
-        anyhow::bail!(log);
+
+    let status = crate::browser::ensure_browser_ready_noninteractive().await?;
+    if status.ready {
+        return Ok(None);
     }
-    Ok(Some(log))
+
+    let mut message = String::from(
+        "Browser automation is not ready yet. Run the browser tool with action='setup' or use `jcode browser setup` to finish installing the Firefox bridge.\n",
+    );
+    if !status.binary_installed {
+        message.push_str("Browser bridge binary is not installed yet.\n");
+    } else {
+        message.push_str("Browser bridge binaries are installed, but the live Firefox bridge is not responding.\n");
+    }
+    message
+        .push_str("Normal browser tool calls will not reopen the installer automatically anymore.");
+    anyhow::bail!(message)
 }
 
 async fn execute_firefox_action(

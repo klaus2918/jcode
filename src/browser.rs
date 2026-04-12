@@ -565,6 +565,15 @@ pub async fn inspect_browser_status() -> Result<BrowserStatus> {
     })
 }
 
+pub async fn ensure_browser_ready_noninteractive() -> Result<BrowserStatus> {
+    let mut status = inspect_browser_status().await?;
+    if status.ready && !status.setup_complete {
+        mark_setup_complete().ok();
+        status.setup_complete = is_setup_complete();
+    }
+    Ok(status)
+}
+
 async fn wait_for_ping(timeout_secs: u64) -> Result<bool> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
@@ -690,6 +699,18 @@ mod tests {
         if !browser_binary_path().exists() {
             assert!(!status.binary_installed);
             assert!(!status.ready);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ensure_browser_ready_noninteractive_without_binary() {
+        let status = ensure_browser_ready_noninteractive().await.unwrap();
+        assert_eq!(status.backend, "firefox_agent_bridge");
+        assert_eq!(status.browser, "firefox");
+        if !browser_binary_path().exists() {
+            assert!(!status.binary_installed);
+            assert!(!status.ready);
+            assert!(!status.setup_complete);
         }
     }
 }
