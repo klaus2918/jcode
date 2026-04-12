@@ -6,8 +6,7 @@ use std::process::Command;
 /// Default system prompt for jcode (embedded at compile time)
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("prompt/system.txt");
 const SELFDEV_HINT_PROMPT: &str = include_str!("prompt/selfdev_hint.txt");
-const SELFDEV_STATIC_PROMPT: &str = include_str!("prompt/selfdev_static.txt");
-const SELFDEV_DYNAMIC_PROMPT: &str = include_str!("prompt/selfdev_dynamic.txt");
+const SELFDEV_MODE_PROMPT: &str = include_str!("prompt/selfdev_mode.txt");
 
 /// Split system prompt for efficient caching
 /// Static content is cached, dynamic content is not
@@ -371,17 +370,12 @@ fn build_selfdev_hint_prompt() -> String {
 
 /// Build self-dev tools prompt section (static version without dynamic socket path)
 fn build_selfdev_prompt_static() -> String {
-    SELFDEV_STATIC_PROMPT.to_string()
+    SELFDEV_MODE_PROMPT.replace("__DEBUG_SOCKET_BLOCK__\n\n", "")
 }
 
 /// Build self-dev tools prompt section
 fn build_selfdev_prompt() -> String {
-    let debug_socket_path = crate::server::debug_socket_path();
-
-    SELFDEV_DYNAMIC_PROMPT.replace(
-        "__DEBUG_SOCKET_PATH__",
-        &debug_socket_path.display().to_string(),
-    )
+    SELFDEV_MODE_PROMPT.to_string()
 }
 
 /// Build environment context (date, cwd, git status)
@@ -680,30 +674,38 @@ mod tests {
     fn test_non_selfdev_prompt_includes_lightweight_selfdev_hint() {
         let prompt = build_system_prompt(None, &[]);
         assert!(prompt.contains("Self-Development Access"));
-        assert!(prompt.contains("`selfdev` tool"));
-        assert!(prompt.contains("action `enter`"));
+        assert!(prompt.contains("`selfdev`"));
+        assert!(prompt.contains("selfdev enter"));
         assert!(!prompt.contains("You are running in self-dev mode"));
     }
 
     #[test]
     fn test_selfdev_prompt_uses_full_selfdev_instructions() {
         let prompt = build_system_prompt_with_selfdev(None, &[], true);
-        assert!(prompt.contains("You are running in self-dev mode"));
+        assert!(prompt.contains("You are working on the jcode codebase itself."));
         assert!(!prompt.contains("Self-Development Access"));
     }
 
     #[test]
     fn test_selfdev_prompt_prefers_publish_flow_for_active_builds() {
         let prompt = build_system_prompt_with_selfdev(None, &[], true);
-        assert!(prompt.contains("jcode self-dev --build"));
         assert!(prompt.contains("selfdev build"));
         assert!(prompt.contains("cancel-build"));
         assert!(prompt.contains("selfdev reload"));
-        assert!(prompt.contains("By default, prefer the normal build-and-activate flow"));
         assert!(
             prompt.contains("scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode")
         );
-        assert!(prompt.contains("JCODE_REMOTE_HOST"));
+        assert!(prompt.contains("remote build host is configured"));
+        assert!(prompt.contains("Do not wait for user input"));
+    }
+
+    #[test]
+    fn test_selfdev_prompt_template_placeholders_are_resolved() {
+        let static_prompt = build_selfdev_prompt_static();
+        let dynamic_prompt = build_selfdev_prompt();
+        assert!(!static_prompt.contains("__DEBUG_SOCKET_BLOCK__"));
+        assert!(!dynamic_prompt.contains("__DEBUG_SOCKET_BLOCK__"));
+        assert_eq!(static_prompt, dynamic_prompt);
     }
 
     #[test]
