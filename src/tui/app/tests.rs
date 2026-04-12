@@ -7351,6 +7351,62 @@ fn test_handle_server_event_history_preserves_connection_type_for_same_session_w
 }
 
 #[test]
+fn test_handle_server_event_history_session_change_clears_pending_interleaves() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.remote_session_id = Some("session_old".to_string());
+    app.queued_messages.push("queued later".to_string());
+    app.interleave_message = Some("unsent interleave".to_string());
+    app.pending_soft_interrupts = vec!["acked interleave".to_string()];
+    app.pending_soft_interrupt_requests = vec![(12, "acked interleave".to_string())];
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::History {
+            id: 1,
+            session_id: "session_new".to_string(),
+            messages: vec![],
+            images: vec![],
+            provider_name: Some("claude".to_string()),
+            provider_model: Some("claude-sonnet-4-20250514".to_string()),
+            subagent_model: None,
+            autoreview_enabled: None,
+            autojudge_enabled: None,
+            available_models: vec![],
+            available_model_routes: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            total_tokens: None,
+            all_sessions: vec![],
+            client_count: None,
+            is_canary: None,
+            server_version: None,
+            server_name: None,
+            server_icon: None,
+            server_has_update: None,
+            was_interrupted: None,
+            connection_type: None,
+            status_detail: None,
+            upstream_provider: None,
+            reasoning_effort: None,
+            service_tier: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
+        },
+        &mut remote,
+    );
+
+    assert_eq!(app.remote_session_id.as_deref(), Some("session_new"));
+    assert!(app.queued_messages().is_empty());
+    assert!(app.interleave_message.is_none());
+    assert!(app.pending_soft_interrupts.is_empty());
+    assert!(app.pending_soft_interrupt_requests.is_empty());
+}
+
+#[test]
 fn test_handle_post_connect_marker_without_reload_context_does_not_queue_selfdev_continuation() {
     let _guard = crate::storage::lock_test_env();
     let temp_home = tempfile::TempDir::new().expect("create temp home");
@@ -7651,8 +7707,12 @@ fn test_handle_server_event_interrupted_clears_stream_state_and_sets_idle() {
     assert!(app.streaming_text.is_empty());
     assert!(app.streaming_tool_calls.is_empty());
     assert!(app.interleave_message.is_none());
-    assert!(app.pending_soft_interrupts.is_empty());
-    assert!(app.pending_soft_interrupt_requests.is_empty());
+    assert_eq!(app.queued_messages(), &["queued interrupt"]);
+    assert_eq!(app.pending_soft_interrupts, vec!["pending soft interrupt"]);
+    assert_eq!(
+        app.pending_soft_interrupt_requests,
+        vec![(77, "pending soft interrupt".to_string())]
+    );
 
     let last = app
         .display_messages()
@@ -7691,6 +7751,61 @@ fn test_remote_interrupted_defers_queued_followup_dispatch_by_one_cycle() {
     assert!(app.is_processing);
     assert!(matches!(app.status, ProcessingStatus::Sending));
     assert!(app.current_message_id.is_some());
+}
+
+#[test]
+fn test_remote_interrupted_recovers_pending_interleaves_in_order() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    app.is_processing = true;
+    app.status = ProcessingStatus::Streaming;
+    app.current_message_id = Some(42);
+    app.interleave_message = Some("unsent interleave".to_string());
+    app.pending_soft_interrupts = vec!["acked interleave".to_string()];
+    app.pending_soft_interrupt_requests = vec![(55, "acked interleave".to_string())];
+    app.queued_messages.push("queued later".to_string());
+
+    app.handle_server_event(crate::protocol::ServerEvent::Interrupted, &mut remote);
+
+    assert!(app.pending_queued_dispatch);
+    assert_eq!(
+        app.queued_messages(),
+        &["unsent interleave", "queued later"]
+    );
+    assert_eq!(app.pending_soft_interrupts, vec!["acked interleave"]);
+
+    rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
+    assert!(app.pending_soft_interrupts.is_empty());
+    assert!(app.pending_soft_interrupt_requests.is_empty());
+    assert_eq!(
+        app.queued_messages(),
+        &["acked interleave", "unsent interleave", "queued later"]
+    );
+    assert!(!app.is_processing);
+
+    app.pending_queued_dispatch = false;
+    rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
+
+    assert!(app.pending_soft_interrupts.is_empty());
+    assert!(app.pending_soft_interrupt_requests.is_empty());
+    assert!(app.queued_messages().is_empty());
+    assert!(app.is_processing);
+    assert!(matches!(app.status, ProcessingStatus::Sending));
+
+    let user_messages: Vec<&str> = app
+        .display_messages()
+        .iter()
+        .filter(|msg| msg.role == "user")
+        .map(|msg| msg.content.as_str())
+        .collect();
+    assert_eq!(
+        user_messages,
+        vec!["acked interleave", "unsent interleave", "queued later"]
+    );
 }
 
 #[test]
@@ -8305,6 +8420,57 @@ fn test_handle_remote_disconnect_flushes_streaming_text_and_sets_reconnect_state
         !last.content.contains('\n'),
         "reconnect status should stay on one line: {}",
         last.content
+    );
+}
+
+#[test]
+fn test_handle_remote_disconnect_preserves_pending_interleaves_for_reconnect() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.is_processing = true;
+    app.status = ProcessingStatus::Streaming;
+    app.current_message_id = Some(7);
+    app.interleave_message = Some("unsent interleave".to_string());
+    app.pending_soft_interrupts = vec!["acked interleave".to_string()];
+    app.pending_soft_interrupt_requests = vec![(44, "acked interleave".to_string())];
+    app.queued_messages.push("queued later".to_string());
+
+    let mut state = remote::RemoteRunState::default();
+    remote::handle_disconnect(&mut app, &mut state, None);
+
+    assert!(!app.is_processing);
+    assert!(app.interleave_message.is_none());
+    assert_eq!(
+        app.queued_messages(),
+        &["unsent interleave", "queued later"]
+    );
+    assert_eq!(app.pending_soft_interrupts, vec!["acked interleave"]);
+    assert_eq!(
+        app.pending_soft_interrupt_requests,
+        vec![(44, "acked interleave".to_string())]
+    );
+
+    remote.mark_history_loaded();
+    rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
+
+    assert!(app.pending_soft_interrupts.is_empty());
+    assert!(app.pending_soft_interrupt_requests.is_empty());
+    assert!(app.queued_messages().is_empty());
+    assert!(app.is_processing);
+    assert!(matches!(app.status, ProcessingStatus::Sending));
+
+    let user_messages: Vec<&str> = app
+        .display_messages()
+        .iter()
+        .filter(|msg| msg.role == "user")
+        .map(|msg| msg.content.as_str())
+        .collect();
+    assert_eq!(
+        user_messages,
+        vec!["acked interleave", "unsent interleave", "queued later"]
     );
 }
 
@@ -9292,11 +9458,12 @@ fn test_remote_error_with_retry_after_keeps_pending_for_auto_retry() {
 }
 
 #[test]
-fn test_remote_error_without_retry_clears_pending() {
+fn test_remote_error_without_retry_recovers_pending_followups() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
 
     app.rate_limit_pending_message = Some(PendingRemoteMessage {
         content: "retry me".to_string(),
@@ -9307,6 +9474,13 @@ fn test_remote_error_without_retry_clears_pending() {
         retry_attempts: 0,
         retry_at: None,
     });
+    app.is_processing = true;
+    app.status = ProcessingStatus::Streaming;
+    app.current_message_id = Some(10);
+    app.interleave_message = Some("unsent interleave".to_string());
+    app.pending_soft_interrupts = vec!["acked interleave".to_string()];
+    app.pending_soft_interrupt_requests = vec![(88, "acked interleave".to_string())];
+    app.queued_messages.push("queued later".to_string());
 
     app.handle_server_event(
         crate::protocol::ServerEvent::Error {
@@ -9318,12 +9492,36 @@ fn test_remote_error_without_retry_clears_pending() {
     );
 
     assert!(app.rate_limit_pending_message.is_none());
+    assert!(app.interleave_message.is_none());
+    assert_eq!(
+        app.queued_messages(),
+        &["unsent interleave", "queued later"]
+    );
+    assert_eq!(app.pending_soft_interrupts, vec!["acked interleave"]);
+    assert_eq!(
+        app.pending_soft_interrupt_requests,
+        vec![(88, "acked interleave".to_string())]
+    );
+
+    rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
+
+    assert!(app.pending_soft_interrupts.is_empty());
+    assert!(app.pending_soft_interrupt_requests.is_empty());
+    assert!(app.queued_messages().is_empty());
+    assert!(app.is_processing);
+    assert!(matches!(app.status, ProcessingStatus::Sending));
+
     let last = app
         .display_messages()
         .last()
         .expect("missing error message");
-    assert_eq!(last.role, "error");
-    assert_eq!(last.content, "provider failed hard");
+    assert_eq!(last.role, "user");
+    assert_eq!(last.content, "queued later");
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|m| m.role == "error" && m.content == "provider failed hard")
+    );
 }
 
 #[test]
@@ -11759,6 +11957,95 @@ fn test_mouse_click_in_input_moves_cursor_to_clicked_position() {
 }
 
 #[test]
+fn test_mouse_click_in_main_chat_switches_focus_from_side_panel() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app.diff_pane_focus = true;
+    app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: String::new(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "hello".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+
+    let backend = ratatui::backend::TestBackend::new(80, 16);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    render_and_snap(&app, &mut terminal);
+
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+    let messages_area = layout.messages_area;
+
+    let handled = app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: messages_area.x + messages_area.width / 2,
+        row: messages_area.y + messages_area.height / 2,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    assert!(!handled, "clicks should request an immediate redraw");
+    assert!(
+        !app.diff_pane_focus,
+        "clicking chat should restore chat focus"
+    );
+    assert_eq!(app.status_notice(), Some("Focus: chat".to_string()));
+}
+
+#[test]
+fn test_mouse_click_in_input_switches_focus_from_side_panel() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app.diff_pane_focus = true;
+    app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: String::new(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "hello".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+    app.input = "hello world".to_string();
+    app.cursor_pos = app.input.len();
+    app.set_centered(false);
+    app.session.short_name = Some("test".to_string());
+
+    let backend = ratatui::backend::TestBackend::new(60, 16);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    render_and_snap(&app, &mut terminal);
+
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+    let input_area = layout.input_area.expect("input area");
+    let next_prompt = crate::tui::ui::input_ui::next_input_prompt_number(&app);
+    let prompt_len = crate::tui::ui::input_ui::input_prompt_len(&app, next_prompt) as u16;
+
+    let handled = app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: input_area.x + prompt_len + 2,
+        row: input_area.y,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    assert!(!handled, "clicks should request an immediate redraw");
+    assert_eq!(app.cursor_pos, 2);
+    assert!(
+        !app.diff_pane_focus,
+        "clicking input should restore chat focus"
+    );
+    assert_eq!(app.status_notice(), Some("Focus: chat".to_string()));
+}
+
+#[test]
 fn test_mouse_click_in_wrapped_input_moves_cursor_to_second_visual_line() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
@@ -11956,95 +12243,6 @@ fn test_disconnected_key_handler_runs_debug_command_locally() {
     assert_eq!(last.role, "system");
     assert_eq!(last.content, "Visual debugging disabled.");
 }
-#[test]
-fn test_mouse_click_in_main_chat_switches_focus_from_side_panel() {
-    let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
-    app.diff_mode = crate::config::DiffDisplayMode::Inline;
-    app.diff_pane_focus = true;
-    app.side_panel = crate::side_panel::SidePanelSnapshot {
-        focused_page_id: Some("plan".to_string()),
-        pages: vec![crate::side_panel::SidePanelPage {
-            id: "plan".to_string(),
-            title: "Plan".to_string(),
-            file_path: String::new(),
-            format: crate::side_panel::SidePanelPageFormat::Markdown,
-            source: crate::side_panel::SidePanelPageSource::Managed,
-            content: "hello".to_string(),
-            updated_at_ms: 1,
-        }],
-    };
-
-    let backend = ratatui::backend::TestBackend::new(80, 16);
-    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
-    render_and_snap(&app, &mut terminal);
-
-    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
-    let messages_area = layout.messages_area;
-
-    let handled = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: messages_area.x + messages_area.width / 2,
-        row: messages_area.y + messages_area.height / 2,
-        modifiers: KeyModifiers::empty(),
-    });
-
-    assert!(!handled, "clicks should request an immediate redraw");
-    assert!(
-        !app.diff_pane_focus,
-        "clicking chat should restore chat focus"
-    );
-    assert_eq!(app.status_notice(), Some("Focus: chat".to_string()));
-}
-
-#[test]
-fn test_mouse_click_in_input_switches_focus_from_side_panel() {
-    let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
-    app.diff_mode = crate::config::DiffDisplayMode::Inline;
-    app.diff_pane_focus = true;
-    app.side_panel = crate::side_panel::SidePanelSnapshot {
-        focused_page_id: Some("plan".to_string()),
-        pages: vec![crate::side_panel::SidePanelPage {
-            id: "plan".to_string(),
-            title: "Plan".to_string(),
-            file_path: String::new(),
-            format: crate::side_panel::SidePanelPageFormat::Markdown,
-            source: crate::side_panel::SidePanelPageSource::Managed,
-            content: "hello".to_string(),
-            updated_at_ms: 1,
-        }],
-    };
-    app.input = "hello world".to_string();
-    app.cursor_pos = app.input.len();
-    app.set_centered(false);
-    app.session.short_name = Some("test".to_string());
-
-    let backend = ratatui::backend::TestBackend::new(60, 16);
-    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
-    render_and_snap(&app, &mut terminal);
-
-    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
-    let input_area = layout.input_area.expect("input area");
-    let next_prompt = crate::tui::ui::input_ui::next_input_prompt_number(&app);
-    let prompt_len = crate::tui::ui::input_ui::input_prompt_len(&app, next_prompt) as u16;
-
-    let handled = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: input_area.x + prompt_len + 2,
-        row: input_area.y,
-        modifiers: KeyModifiers::empty(),
-    });
-
-    assert!(!handled, "clicks should request an immediate redraw");
-    assert_eq!(app.cursor_pos, 2);
-    assert!(
-        !app.diff_pane_focus,
-        "clicking input should restore chat focus"
-    );
-    assert_eq!(app.status_notice(), Some("Focus: chat".to_string()));
-}
-
 
 #[test]
 fn test_disconnected_key_handler_does_not_queue_server_commands() {

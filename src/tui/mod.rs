@@ -332,10 +332,10 @@ pub trait TuiState {
             if scheduled_notification_text(info.ambient_info.as_ref()).is_some() {
                 return true;
             }
-            if let Some(cache_info) = self.cache_ttl_status() {
-                if cache_info.is_cold || cache_info.remaining_secs <= 60 {
-                    return true;
-                }
+            if let Some(cache_info) = self.cache_ttl_status()
+                && (cache_info.is_cold || cache_info.remaining_secs <= 60)
+            {
+                return true;
             }
         }
         false
@@ -932,16 +932,14 @@ pub(crate) fn subscribe_metadata() -> (Option<String>, Option<bool>) {
     let working_dir_str = working_dir.as_ref().map(|p| p.display().to_string());
 
     let mut selfdev = crate::cli::selfdev::client_selfdev_requested();
-    if !selfdev {
-        if let Some(ref dir) = working_dir {
-            let mut current = Some(dir.as_path());
-            while let Some(path) = current {
-                if crate::build::is_jcode_repo(path) {
-                    selfdev = true;
-                    break;
-                }
-                current = path.parent();
+    if !selfdev && let Some(ref dir) = working_dir {
+        let mut current = Some(dir.as_path());
+        while let Some(path) = current {
+            if crate::build::is_jcode_repo(path) {
+                selfdev = true;
+                break;
             }
+            current = path.parent();
         }
     }
 

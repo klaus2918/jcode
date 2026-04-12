@@ -71,6 +71,22 @@ impl App {
     }
 }
 
+fn recover_local_interleave_to_queue(app: &mut App, reason: &str) -> bool {
+    let Some(interleave) = app.interleave_message.take() else {
+        return false;
+    };
+    if interleave.trim().is_empty() {
+        return false;
+    }
+
+    crate::logging::info(&format!(
+        "Recovering unsent interleave into queued follow-ups after {}",
+        reason
+    ));
+    app.queued_messages.insert(0, interleave);
+    true
+}
+
 async fn recover_stranded_soft_interrupts(app: &mut App, remote: &mut RemoteConnection) -> bool {
     if app.is_processing || app.pending_soft_interrupts.is_empty() {
         return false;
@@ -751,6 +767,7 @@ pub(super) fn handle_disconnect(
     if !scheduled_retry {
         app.clear_pending_remote_retry();
     }
+    let recovered_local = recover_local_interleave_to_queue(app, "disconnect");
     app.current_message_id = None;
     app.last_stream_activity = None;
     app.remote_resume_activity = None;
@@ -774,6 +791,12 @@ pub(super) fn handle_disconnect(
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;
     app.thinking_buffer.clear();
+    if recovered_local || !app.pending_soft_interrupts.is_empty() {
+        crate::logging::info(&format!(
+            "Preserving {} pending soft interrupt(s) across disconnect",
+            app.pending_soft_interrupts.len()
+        ));
+    }
     app.reset_streaming_tps();
     app.is_processing = false;
     app.status = ProcessingStatus::Idle;
@@ -793,11 +816,13 @@ pub(super) fn handle_disconnect(
 }
 
 pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) {
-    if app.pending_queued_dispatch {
+    if !remote.has_loaded_history() {
         return;
     }
 
-    if !remote.has_loaded_history() {
+    let _ = recover_stranded_soft_interrupts(app, remote).await;
+
+    if app.pending_queued_dispatch {
         return;
     }
 
@@ -818,8 +843,6 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         app.replay_processing_started_ms = None;
         app.replay_elapsed_override = None;
     }
-
-    let _ = recover_stranded_soft_interrupts(app, remote).await;
 
     if app.submit_input_on_startup && !app.is_processing {
         app.submit_input_on_startup = false;
@@ -1698,8 +1721,7 @@ pub(super) fn handle_server_event(
             if !keep_pending_retry {
                 app.clear_pending_remote_retry();
             }
-            app.interleave_message = None;
-            app.clear_pending_soft_interrupt_tracking();
+            let recovered_local = recover_local_interleave_to_queue(app, "interrupt");
             if let Some(chunk) = app.stream_buffer.flush() {
                 app.streaming_text.push_str(&chunk);
             }
@@ -1721,6 +1743,12 @@ pub(super) fn handle_server_event(
             app.thought_line_inserted = false;
             app.thinking_prefix_emitted = false;
             app.thinking_buffer.clear();
+            if recovered_local || !app.pending_soft_interrupts.is_empty() {
+                crate::logging::info(&format!(
+                    "Preserving {} pending soft interrupt(s) across interrupt",
+                    app.pending_soft_interrupts.len()
+                ));
+            }
             app.schedule_queued_dispatch_after_interrupt();
             app.push_display_message(DisplayMessage::system("Interrupted"));
             app.is_processing = false;
@@ -1830,12 +1858,17 @@ pub(super) fn handle_server_event(
             });
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
-            app.interleave_message = None;
-            app.clear_pending_soft_interrupt_tracking();
+            let recovered_local = recover_local_interleave_to_queue(app, "request error");
             crate::tui::mermaid::clear_streaming_preview_diagram();
             app.thought_line_inserted = false;
             app.thinking_prefix_emitted = false;
             app.thinking_buffer.clear();
+            if recovered_local || !app.pending_soft_interrupts.is_empty() {
+                crate::logging::info(&format!(
+                    "Preserving {} pending soft interrupt(s) across remote error",
+                    app.pending_soft_interrupts.len()
+                ));
+            }
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
             if !is_failover_prompt && !app.schedule_pending_remote_retry("⚠ Remote request failed.")
