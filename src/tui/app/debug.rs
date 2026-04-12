@@ -537,6 +537,23 @@ impl App {
             .try_read()
             .map(|manager| manager.debug_memory_profile())
             .ok();
+        let (provider_view_source, materialized_provider_messages) =
+            if self.is_remote || !self.messages.is_empty() {
+                ("resident_ui", self.messages.clone())
+            } else {
+                (
+                    "session_materialized",
+                    self.session.messages_for_provider_uncached(),
+                )
+            };
+        let transcript_memory = crate::tui::transcript_memory_profile(
+            &self.session,
+            &self.messages,
+            &materialized_provider_messages,
+            provider_view_source,
+            &self.display_messages,
+            &self.side_panel,
+        );
 
         let provider_messages_json_bytes: usize = self
             .messages
@@ -608,6 +625,7 @@ impl App {
                     "large_content_bytes": display_message_memory.large_content_bytes,
                     "max_content_bytes": display_message_memory.max_content_bytes,
                 },
+                "transcript_memory": transcript_memory,
                 "input": {
                     "text_bytes": self.input.len(),
                     "cursor_pos": self.cursor_pos,

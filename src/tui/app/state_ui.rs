@@ -225,7 +225,7 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
     }
 }
 
-fn compact_display_message_tool_data(message: &mut DisplayMessage) {
+pub(crate) fn compact_display_message_tool_data(message: &mut DisplayMessage) {
     let Some(tool) = message.tool_data.as_mut() else {
         return;
     };
@@ -234,6 +234,12 @@ fn compact_display_message_tool_data(message: &mut DisplayMessage) {
         tool.intent = Some(summary);
     }
     tool.input = compact_tool_input_for_display(tool.name.as_str(), &tool.input);
+}
+
+pub(crate) fn compact_display_messages_for_storage(messages: &mut [DisplayMessage]) {
+    for message in messages {
+        compact_display_message_tool_data(message);
+    }
 }
 use crate::tui::{TuiState, backend, core, is_unexpected_cache_miss, ui};
 
@@ -595,9 +601,7 @@ impl App {
     }
 
     pub(super) fn replace_display_messages(&mut self, mut messages: Vec<DisplayMessage>) {
-        for message in &mut messages {
-            compact_display_message_tool_data(message);
-        }
+        compact_display_messages_for_storage(&mut messages);
         self.display_messages = messages;
         self.bump_display_messages_version();
     }

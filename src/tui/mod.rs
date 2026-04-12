@@ -11,6 +11,7 @@ mod keybind;
 mod layout_utils;
 pub mod login_picker;
 pub mod markdown;
+mod memory_profile;
 pub mod mermaid;
 pub mod permissions;
 mod remote_diff;
@@ -953,6 +954,40 @@ pub fn render_frame(frame: &mut Frame<'_>, state: &dyn TuiState) {
 }
 
 pub use ui::SidePanelDebugStats;
+
+pub fn display_messages_from_session(session: &crate::session::Session) -> Vec<DisplayMessage> {
+    let mut messages: Vec<DisplayMessage> = crate::session::render_messages(session)
+        .into_iter()
+        .map(|item| DisplayMessage {
+            role: item.role,
+            content: item.content,
+            tool_calls: item.tool_calls,
+            duration_secs: None,
+            title: None,
+            tool_data: item.tool_data,
+        })
+        .collect();
+    app::compact_display_messages_for_storage(&mut messages);
+    messages
+}
+
+pub fn transcript_memory_profile(
+    session: &crate::session::Session,
+    resident_provider_messages: &[crate::message::Message],
+    materialized_provider_messages: &[crate::message::Message],
+    provider_view_source: &str,
+    display_messages: &[DisplayMessage],
+    side_panel: &crate::side_panel::SidePanelSnapshot,
+) -> serde_json::Value {
+    memory_profile::build_transcript_memory_profile(
+        session,
+        resident_provider_messages,
+        materialized_provider_messages,
+        provider_view_source,
+        display_messages,
+        side_panel,
+    )
+}
 
 pub fn side_panel_debug_stats() -> SidePanelDebugStats {
     ui::side_panel_debug_stats()
