@@ -4703,6 +4703,81 @@ mod tests {
     }
 
     #[test]
+    fn test_tool_summary_browser_open_shows_url() {
+        let tool = ToolCall {
+            id: "browser-open".to_string(),
+            name: "browser".to_string(),
+            input: serde_json::json!({
+                "action": "open",
+                "url": "https://example.com/docs/reference/browser-tool"
+            }),
+            intent: None,
+        };
+
+        let summary = tools_ui::get_tool_summary_with_budget(&tool, 50, Some(200));
+        assert_eq!(
+            summary,
+            "open https://example.com/docs/reference/browser-tool"
+        );
+    }
+
+    #[test]
+    fn test_tool_summary_browser_type_hides_typed_text() {
+        let tool = ToolCall {
+            id: "browser-type".to_string(),
+            name: "browser".to_string(),
+            input: serde_json::json!({
+                "action": "type",
+                "selector": "#password",
+                "text": "super-secret-value"
+            }),
+            intent: None,
+        };
+
+        let summary = tools_ui::get_tool_summary_with_budget(&tool, 50, Some(200));
+        assert_eq!(summary, "type #password (18 chars)");
+        assert!(
+            !summary.contains("super-secret-value"),
+            "summary={summary:?}"
+        );
+    }
+
+    #[test]
+    fn test_tool_summary_browser_type_without_selector_still_hides_text() {
+        let tool = ToolCall {
+            id: "browser-type-no-selector".to_string(),
+            name: "browser".to_string(),
+            input: serde_json::json!({
+                "action": "type",
+                "text": "secret-token-123"
+            }),
+            intent: None,
+        };
+
+        let summary = tools_ui::get_tool_summary_with_budget(&tool, 50, Some(200));
+        assert_eq!(summary, "type (16 chars)");
+        assert!(!summary.contains("secret-token-123"), "summary={summary:?}");
+    }
+
+    #[test]
+    fn test_tool_summary_browser_eval_truncates_script() {
+        let tool = ToolCall {
+            id: "browser-eval".to_string(),
+            name: "browser".to_string(),
+            input: serde_json::json!({
+                "action": "eval",
+                "script": "return window.__APP_STATE__?.reallyLongNestedValue?.items?.map(item => item.name).join(', ')"
+            }),
+            intent: None,
+        };
+
+        let summary = tools_ui::get_tool_summary_with_budget(&tool, 50, Some(34));
+        assert!(summary.starts_with("eval "), "summary={summary:?}");
+        assert!(summary.contains('…'), "summary={summary:?}");
+        assert!(unicode_width::UnicodeWidthStr::width(summary.as_str()) <= 34);
+    }
+
+    #[test]
     fn test_render_tool_message_batch_rows_do_not_soft_wrap_on_narrow_width() {
         let msg = DisplayMessage {
             role: "tool".to_string(),

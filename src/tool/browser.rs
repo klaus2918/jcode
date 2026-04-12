@@ -9,6 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct BrowserTool;
 
+static FIREFOX_PROVIDER: FirefoxBridgeProvider = FirefoxBridgeProvider;
+
 impl BrowserTool {
     pub fn new() -> Self {
         Self
@@ -89,6 +91,68 @@ struct ScrollTo {
     x: Option<f64>,
     #[serde(default)]
     y: Option<f64>,
+}
+
+#[async_trait]
+trait BrowserProvider: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn supported_browsers(&self) -> &'static [&'static str];
+
+    async fn status(&self, ctx: &ToolContext) -> Result<ToolOutput>;
+    async fn setup(&self) -> Result<ToolOutput>;
+    async fn ensure_ready(&self) -> Result<Option<String>>;
+    async fn execute(
+        &self,
+        action: &str,
+        input: &BrowserInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput>;
+}
+
+struct FirefoxBridgeProvider;
+
+#[async_trait]
+impl BrowserProvider for FirefoxBridgeProvider {
+    fn id(&self) -> &'static str {
+        "firefox_agent_bridge"
+    }
+
+    fn supported_browsers(&self) -> &'static [&'static str] {
+        &["auto", "firefox"]
+    }
+
+    async fn status(&self, ctx: &ToolContext) -> Result<ToolOutput> {
+        Ok(attach_browser_metadata(
+            firefox_status(self, ctx).await?,
+            self.id(),
+            "firefox",
+        ))
+    }
+
+    async fn setup(&self) -> Result<ToolOutput> {
+        Ok(attach_browser_metadata(
+            firefox_setup(self).await?,
+            self.id(),
+            "firefox",
+        ))
+    }
+
+    async fn ensure_ready(&self) -> Result<Option<String>> {
+        ensure_firefox_ready().await
+    }
+
+    async fn execute(
+        &self,
+        action: &str,
+        input: &BrowserInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput> {
+        Ok(attach_browser_metadata(
+            execute_firefox_action(self, action, input, ctx).await?,
+            self.id(),
+            "firefox",
+        ))
+    }
 }
 
 #[async_trait]
@@ -206,24 +270,16 @@ impl Tool for BrowserTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: BrowserInput = serde_json::from_value(input)?;
-        ensure_supported_browser(params.browser.as_deref())?;
+        let provider = resolve_provider(params.browser.as_deref())?;
 
         match params.action.as_str() {
-            "status" => browser_status(&ctx).await,
-            "setup" => browser_setup().await,
+            "status" => provider.status(&ctx).await,
+            "setup" => provider.setup().await,
             other => {
-                let setup_message = ensure_ready().await?;
-                let output = execute_browser_action(other, &params, &ctx).await?;
+                let setup_message = provider.ensure_ready().await?;
+                let output = provider.execute(other, &params, &ctx).await?;
                 Ok(match setup_message {
-                    Some(message) if !message.is_empty() => {
-                        ToolOutput::new(format!("{}\n\n{}", message, output.output))
-                            .with_title(output.title.unwrap_or_else(|| "browser".to_string()))
-                            .with_metadata(
-                                output
-                                    .metadata
-                                    .unwrap_or_else(|| json!({"setup_ran": true})),
-                            )
-                    }
+                    Some(message) if !message.is_empty() => prepend_setup_message(output, &message),
                     _ => output,
                 })
             }
@@ -231,21 +287,64 @@ impl Tool for BrowserTool {
     }
 }
 
-fn ensure_supported_browser(browser: Option<&str>) -> Result<()> {
-    match browser.unwrap_or("auto") {
-        "auto" | "firefox" => Ok(()),
-        other => anyhow::bail!(
-            "Browser backend '{}' is not wired into the built-in browser tool yet. Use auto/firefox for now.",
-            other
-        ),
+fn prepend_setup_message(mut output: ToolOutput, message: &str) -> ToolOutput {
+    output.output = format!("{}\n\n{}", message, output.output);
+    if output.title.is_none() {
+        output.title = Some("browser".to_string());
     }
+
+    let mut metadata = match output.metadata.take() {
+        Some(Value::Object(map)) => map,
+        Some(other) => {
+            let mut map = Map::new();
+            map.insert("result".into(), other);
+            map
+        }
+        None => Map::new(),
+    };
+    metadata.insert("setup_ran".into(), json!(true));
+    output.metadata = Some(Value::Object(metadata));
+    output
 }
 
-async fn browser_status(ctx: &ToolContext) -> Result<ToolOutput> {
+fn attach_browser_metadata(
+    mut output: ToolOutput,
+    backend: &'static str,
+    browser: &'static str,
+) -> ToolOutput {
+    let mut metadata = match output.metadata.take() {
+        Some(Value::Object(map)) => map,
+        Some(other) => {
+            let mut map = Map::new();
+            map.insert("result".into(), other);
+            map
+        }
+        None => Map::new(),
+    };
+    metadata.insert("backend".into(), json!(backend));
+    metadata.insert("browser".into(), json!(browser));
+    output.metadata = Some(Value::Object(metadata));
+    output
+}
+
+fn resolve_provider(browser: Option<&str>) -> Result<&'static dyn BrowserProvider> {
+    let browser = browser.unwrap_or("auto");
+    if FIREFOX_PROVIDER.supported_browsers().contains(&browser) {
+        return Ok(&FIREFOX_PROVIDER);
+    }
+
+    anyhow::bail!(
+        "Browser backend '{}' is not wired into the built-in browser tool yet. Use auto/firefox for now.",
+        browser
+    )
+}
+
+async fn firefox_status(provider: &FirefoxBridgeProvider, ctx: &ToolContext) -> Result<ToolOutput> {
     let setup_complete = crate::browser::is_setup_complete();
     let mut metadata = json!({
         "setup_complete": setup_complete,
-        "backend": if setup_complete { "firefox_agent_bridge" } else { "unconfigured" },
+        "backend": if setup_complete { provider.id() } else { "unconfigured" },
+        "browser": "firefox",
     });
 
     if !setup_complete {
@@ -256,7 +355,7 @@ async fn browser_status(ctx: &ToolContext) -> Result<ToolOutput> {
         .with_metadata(metadata));
     }
 
-    let ping = run_bridge_command("ping", json!({}), ctx).await;
+    let ping = firefox_run_bridge_command("ping", json!({}), ctx).await;
     match ping {
         Ok(result) => {
             metadata["ready"] = json!(true);
@@ -280,7 +379,7 @@ async fn browser_status(ctx: &ToolContext) -> Result<ToolOutput> {
     }
 }
 
-async fn browser_setup() -> Result<ToolOutput> {
+async fn firefox_setup(provider: &FirefoxBridgeProvider) -> Result<ToolOutput> {
     let log = crate::browser::ensure_browser_setup().await?;
     let setup_complete = crate::browser::is_setup_complete();
     let title = if setup_complete {
@@ -290,11 +389,12 @@ async fn browser_setup() -> Result<ToolOutput> {
     };
     Ok(ToolOutput::new(log).with_title(title).with_metadata(json!({
         "setup_complete": setup_complete,
-        "backend": "firefox_agent_bridge"
+        "backend": provider.id(),
+        "browser": "firefox"
     })))
 }
 
-async fn ensure_ready() -> Result<Option<String>> {
+async fn ensure_firefox_ready() -> Result<Option<String>> {
     if crate::browser::is_setup_complete() {
         return Ok(None);
     }
@@ -305,7 +405,8 @@ async fn ensure_ready() -> Result<Option<String>> {
     Ok(Some(log))
 }
 
-async fn execute_browser_action(
+async fn execute_firefox_action(
+    _provider: &FirefoxBridgeProvider,
     action: &str,
     input: &BrowserInput,
     ctx: &ToolContext,
@@ -316,7 +417,7 @@ async fn execute_browser_action(
         return screenshot_via_bridge(&bridge_params, title, ctx).await;
     }
 
-    let result = run_bridge_command(&bridge_action, bridge_params, ctx).await?;
+    let result = firefox_run_bridge_command(&bridge_action, bridge_params, ctx).await?;
     Ok(render_browser_output(action, title, result))
 }
 
@@ -579,7 +680,11 @@ fn build_press_script(key: Option<&str>, selector: Option<&str>) -> Result<Strin
     ))
 }
 
-async fn run_bridge_command(action: &str, params: Value, ctx: &ToolContext) -> Result<Value> {
+async fn firefox_run_bridge_command(
+    action: &str,
+    params: Value,
+    ctx: &ToolContext,
+) -> Result<Value> {
     let bin = crate::browser::browser_binary_path();
     if !bin.exists() {
         anyhow::bail!(
@@ -641,7 +746,7 @@ async fn screenshot_via_bridge(
         );
     }
 
-    let result = run_bridge_command("screenshot", screenshot_params, ctx).await?;
+    let result = firefox_run_bridge_command("screenshot", screenshot_params, ctx).await?;
     let saved = result
         .get("saved")
         .and_then(|v| v.as_str())
@@ -936,5 +1041,38 @@ mod tests {
         assert!(props.contains_key("position"));
         assert!(props.contains_key("behavior"));
         assert!(props.contains_key("scroll_to"));
+    }
+
+    #[test]
+    fn resolve_provider_accepts_auto_and_firefox() {
+        assert!(resolve_provider(Some("auto")).is_ok());
+        assert!(resolve_provider(Some("firefox")).is_ok());
+    }
+
+    #[test]
+    fn resolve_provider_rejects_unsupported_browser() {
+        let err = resolve_provider(Some("chrome")).expect_err("chrome should not resolve yet");
+        assert!(
+            err.to_string()
+                .contains("not wired into the built-in browser tool")
+        );
+    }
+
+    #[test]
+    fn prepend_setup_message_preserves_images_and_metadata() {
+        let output = ToolOutput::new("done")
+            .with_title("browser screenshot")
+            .with_metadata(json!({"backend": "firefox_agent_bridge"}))
+            .with_labeled_image("image/png", "abc", "shot");
+
+        let output = prepend_setup_message(output, "setup log");
+        assert!(output.output.starts_with("setup log\n\ndone"));
+        assert_eq!(output.images.len(), 1);
+        assert_eq!(output.title.as_deref(), Some("browser screenshot"));
+        assert_eq!(output.metadata.as_ref().unwrap()["setup_ran"], true);
+        assert_eq!(
+            output.metadata.as_ref().unwrap()["backend"],
+            "firefox_agent_bridge"
+        );
     }
 }
