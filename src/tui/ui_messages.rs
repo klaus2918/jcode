@@ -1136,6 +1136,7 @@ pub(crate) fn render_tool_message(
     }
 
     if diff_mode.is_inline() && is_edit_tool {
+        let full_inline = diff_mode.is_full_inline();
         let file_path_for_ext = tc
             .input
             .get("file_path")
@@ -1176,14 +1177,14 @@ pub(crate) fn render_tool_message(
             .filter(|line| line.kind == DiffLineKind::Del)
             .count();
 
-        let (display_lines, truncated): (Vec<&ParsedDiffLine>, bool) =
-            if total_changes <= MAX_DIFF_LINES {
-                (change_lines.iter().collect(), false)
+        let (display_lines, truncated, half_point): (Vec<&ParsedDiffLine>, bool, usize) =
+            if full_inline || total_changes <= MAX_DIFF_LINES {
+                (change_lines.iter().collect(), false, usize::MAX)
             } else {
                 let half = MAX_DIFF_LINES / 2;
                 let mut result: Vec<&ParsedDiffLine> = change_lines.iter().take(half).collect();
                 result.extend(change_lines.iter().skip(total_changes - half));
-                (result, true)
+                (result, true, half)
             };
 
         let pad_str = "";
@@ -1197,11 +1198,6 @@ pub(crate) fn render_tool_message(
         );
 
         let mut shown_truncation = false;
-        let half_point = if truncated {
-            MAX_DIFF_LINES / 2
-        } else {
-            usize::MAX
-        };
 
         for (i, line) in display_lines.iter().enumerate() {
             if truncated && !shown_truncation && i >= half_point {
@@ -1235,7 +1231,7 @@ pub(crate) fn render_tool_message(
             if !line.content.is_empty() {
                 let content = &line.content;
                 let content_vis_width = unicode_width::UnicodeWidthStr::width(content.as_str());
-                if max_content_width > 1 && content_vis_width > max_content_width {
+                if !full_inline && max_content_width > 1 && content_vis_width > max_content_width {
                     let mut end = 0;
                     let mut vis_w = 0;
                     let limit = max_content_width.saturating_sub(1);
@@ -1831,6 +1827,91 @@ mod tests {
         assert!(plain.contains("┌─ diff"), "plain={plain}");
         assert!(plain.contains("old line"), "plain={plain}");
         assert!(plain.contains("new line"), "plain={plain}");
+    }
+
+    #[test]
+    fn render_tool_message_inline_mode_truncates_large_diffs() {
+        let old = (1..=7)
+            .map(|i| format!("old line {i}\n"))
+            .collect::<String>();
+        let new = (1..=7)
+            .map(|i| format!("new line {i} suffix_{i}_abcdefghijklmnopqrstuvwxyz0123456789\n"))
+            .collect::<String>();
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: "Edited demo.txt".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: Some("demo.txt".to_string()),
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_edit_inline_truncated".to_string(),
+                name: "edit".to_string(),
+                input: serde_json::json!({
+                    "file_path": "demo.txt",
+                    "old_string": old,
+                    "new_string": new,
+                }),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 40, crate::config::DiffDisplayMode::Inline);
+        let plain = lines
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(plain.contains("... 2 more changes ..."), "plain={plain}");
+        assert!(plain.contains("old line 3"), "plain={plain}");
+        assert!(!plain.contains("old line 7"), "plain={plain}");
+        assert!(
+            !plain.contains("new line 1 suffix_1_abcdefghijklmnopqrstuvwxyz0123456789"),
+            "plain={plain}"
+        );
+        assert!(plain.contains("suffix_2_abcdefghijklm…"), "plain={plain}");
+    }
+
+    #[test]
+    fn render_tool_message_full_inline_mode_shows_full_diff() {
+        let old = (1..=7)
+            .map(|i| format!("old line {i}\n"))
+            .collect::<String>();
+        let new = (1..=7)
+            .map(|i| format!("new line {i} suffix_{i}_abcdefghijklmnopqrstuvwxyz0123456789\n"))
+            .collect::<String>();
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: "Edited demo.txt".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: Some("demo.txt".to_string()),
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_edit_inline_full".to_string(),
+                name: "edit".to_string(),
+                input: serde_json::json!({
+                    "file_path": "demo.txt",
+                    "old_string": old,
+                    "new_string": new,
+                }),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 40, crate::config::DiffDisplayMode::FullInline);
+        let plain = lines
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!plain.contains("more changes"), "plain={plain}");
+        assert!(plain.contains("old line 4"), "plain={plain}");
+        assert!(
+            plain.contains("new line 4 suffix_4_abcdefghijklmnopqrstuvwxyz0123456789"),
+            "plain={plain}"
+        );
+        assert!(!plain.contains('…'), "plain={plain}");
     }
 
     #[test]

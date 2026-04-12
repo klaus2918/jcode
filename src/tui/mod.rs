@@ -174,7 +174,7 @@ pub trait TuiState {
     fn is_canary(&self) -> bool;
     /// Whether running in replay mode
     fn is_replay(&self) -> bool;
-    /// Diff display mode (off/inline/pinned)
+    /// Diff display mode (off/inline/full-inline/pinned/file)
     fn diff_mode(&self) -> crate::config::DiffDisplayMode;
     /// Current session ID (if available)
     fn current_session_id(&self) -> Option<String>;

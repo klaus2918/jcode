@@ -287,6 +287,17 @@ pub enum DiffDisplayMode {
     /// Show diffs inline in the chat (default)
     #[default]
     Inline,
+    /// Show the full inline diff in the chat without preview truncation
+    #[serde(
+        rename = "full-inline",
+        alias = "full_inline",
+        alias = "fullinline",
+        alias = "inline-full",
+        alias = "inline_full",
+        alias = "inlinefull",
+        alias = "full"
+    )]
+    FullInline,
     /// Show diffs in a dedicated pinned pane
     Pinned,
     /// Show full file with diff highlights in side panel, synced to scroll position
@@ -300,7 +311,11 @@ impl DiffDisplayMode {
     }
 
     pub fn is_inline(&self) -> bool {
-        matches!(self, DiffDisplayMode::Inline)
+        matches!(self, DiffDisplayMode::Inline | DiffDisplayMode::FullInline)
+    }
+
+    pub fn is_full_inline(&self) -> bool {
+        matches!(self, DiffDisplayMode::FullInline)
     }
 
     pub fn is_pinned(&self) -> bool {
@@ -318,7 +333,8 @@ impl DiffDisplayMode {
     pub fn cycle(self) -> Self {
         match self {
             DiffDisplayMode::Off => DiffDisplayMode::Inline,
-            DiffDisplayMode::Inline => DiffDisplayMode::Pinned,
+            DiffDisplayMode::Inline => DiffDisplayMode::FullInline,
+            DiffDisplayMode::FullInline => DiffDisplayMode::Pinned,
             DiffDisplayMode::Pinned => DiffDisplayMode::File,
             DiffDisplayMode::File => DiffDisplayMode::Off,
         }
@@ -328,6 +344,7 @@ impl DiffDisplayMode {
         match self {
             DiffDisplayMode::Off => "OFF",
             DiffDisplayMode::Inline => "Inline",
+            DiffDisplayMode::FullInline => "Inline Full",
             DiffDisplayMode::Pinned => "Pinned",
             DiffDisplayMode::File => "File",
         }
@@ -398,7 +415,7 @@ impl Default for NativeScrollbarConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
-    /// How to display file diffs (off/inline/pinned, default: inline)
+    /// How to display file diffs (off/inline/full-inline/pinned/file, default: inline)
     pub diff_mode: DiffDisplayMode,
     /// Legacy: "show_diffs = true/false" maps to diff_mode inline/off
     #[serde(default)]
@@ -844,6 +861,10 @@ impl Config {
             match v.to_lowercase().as_str() {
                 "off" | "none" | "0" | "false" => self.display.diff_mode = DiffDisplayMode::Off,
                 "inline" | "on" | "1" | "true" => self.display.diff_mode = DiffDisplayMode::Inline,
+                "full-inline" | "full_inline" | "fullinline" | "inline-full" | "inline_full"
+                | "inlinefull" | "full" => {
+                    self.display.diff_mode = DiffDisplayMode::FullInline;
+                }
                 "pinned" | "pin" => self.display.diff_mode = DiffDisplayMode::Pinned,
                 "file" => self.display.diff_mode = DiffDisplayMode::File,
                 _ => {}
@@ -1506,7 +1527,7 @@ key = "off"
 timeout_secs = 90
 
 [display]
-# Diff display mode: "off", "inline" (default), or "pinned" (dedicated pane)
+# Diff display mode: "off", "inline" (default), "full-inline", "pinned" (dedicated pane), or "file"
 diff_mode = "inline"
 
 # Center all content by default (default: true)
@@ -1998,7 +2019,7 @@ fn parse_env_list(raw: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AmbientConfig, Config, DisplayConfig};
+    use super::{AmbientConfig, Config, DiffDisplayMode, DisplayConfig};
     use std::path::PathBuf;
 
     #[test]
@@ -2069,6 +2090,24 @@ mod tests {
             crate::env::set_var("JCODE_SIDE_PANEL_NATIVE_SCROLLBAR", prev);
         } else {
             crate::env::remove_var("JCODE_SIDE_PANEL_NATIVE_SCROLLBAR");
+        }
+    }
+
+    #[test]
+    fn test_env_override_diff_mode_full_inline() {
+        let _guard = crate::storage::lock_test_env();
+        let prev = std::env::var_os("JCODE_DIFF_MODE");
+        crate::env::set_var("JCODE_DIFF_MODE", "full-inline");
+
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+
+        assert_eq!(cfg.display.diff_mode, DiffDisplayMode::FullInline);
+
+        if let Some(prev) = prev {
+            crate::env::set_var("JCODE_DIFF_MODE", prev);
+        } else {
+            crate::env::remove_var("JCODE_DIFF_MODE");
         }
     }
 
