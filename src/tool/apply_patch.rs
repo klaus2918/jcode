@@ -1,10 +1,14 @@
 use super::{Tool, ToolContext, ToolOutput};
+use crate::bus::{Bus, BusEvent, FileOp, FileTouch};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use similar::{ChangeTag, TextDiff};
 use std::path::Path;
+
+const FILE_TOUCH_PREVIEW_MAX_LINES: usize = 6;
+const FILE_TOUCH_PREVIEW_MAX_BYTES: usize = 240;
 
 pub struct ApplyPatchTool;
 
@@ -50,7 +54,7 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply a patch in the Codex apply_patch format (*** Begin Patch). Supports add, update, and delete operations."
+        "Apply a Codex patch."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -60,7 +64,7 @@ impl Tool for ApplyPatchTool {
             "properties": {
                 "patch_text": {
                     "type": "string",
-                    "description": "Patch text in apply_patch format"
+                    "description": "Patch text."
                 }
             }
         })
@@ -71,6 +75,7 @@ impl Tool for ApplyPatchTool {
         let hunks = parse_apply_patch(&params.patch_text)?;
 
         let mut results = Vec::new();
+        let mut touched_paths = Vec::new();
 
         for hunk in &hunks {
             match hunk {
@@ -81,6 +86,8 @@ impl Tool for ApplyPatchTool {
                     }
                     tokio::fs::write(&resolved, contents).await?;
                     let diff = generate_diff_summary("", contents);
+                    publish_file_touch(&ctx, &resolved, path, "created", &diff);
+                    touched_paths.push(path.clone());
                     if diff.is_empty() {
                         results.push(format!("✓ {}: created", path));
                     } else {
@@ -94,6 +101,8 @@ impl Tool for ApplyPatchTool {
                         .unwrap_or_default();
                     if tokio::fs::remove_file(&resolved).await.is_ok() {
                         let diff = generate_diff_summary(&old_contents, "");
+                        publish_file_touch(&ctx, &resolved, path, "deleted", &diff);
+                        touched_paths.push(path.clone());
                         if diff.is_empty() {
                             results.push(format!("✓ {}: deleted", path));
                         } else {
@@ -119,6 +128,10 @@ impl Tool for ApplyPatchTool {
                                 }
                                 tokio::fs::write(&dest_resolved, &new_contents).await?;
                                 let _ = tokio::fs::remove_file(&resolved).await;
+                                publish_file_touch(&ctx, &resolved, path, "modified", &diff);
+                                publish_file_touch(&ctx, &dest_resolved, dest, "modified", &diff);
+                                touched_paths.push(path.clone());
+                                touched_paths.push(dest.clone());
                                 if diff.is_empty() {
                                     results.push(format!(
                                         "✓ {}: modified ({} hunks), moved to {}",
@@ -137,6 +150,8 @@ impl Tool for ApplyPatchTool {
                                 }
                             } else {
                                 tokio::fs::write(&resolved, &new_contents).await?;
+                                publish_file_touch(&ctx, &resolved, path, "modified", &diff);
+                                touched_paths.push(path.clone());
                                 if diff.is_empty() {
                                     results.push(format!(
                                         "✓ {}: modified ({} hunks)",
@@ -164,9 +179,60 @@ impl Tool for ApplyPatchTool {
         if results.is_empty() {
             Ok(ToolOutput::new("No changes applied"))
         } else {
-            Ok(ToolOutput::new(results.join("\n")))
+            let output = ToolOutput::new(results.join("\n"));
+            if touched_paths.len() == 1 {
+                Ok(output.with_title(touched_paths[0].clone()))
+            } else {
+                Ok(output.with_title(format!("{} files", touched_paths.len())))
+            }
         }
     }
+}
+
+fn publish_file_touch(
+    ctx: &ToolContext,
+    resolved: &Path,
+    display_path: &str,
+    verb: &str,
+    diff: &str,
+) {
+    let detail = build_file_touch_preview(diff);
+    Bus::global().publish(BusEvent::FileTouch(FileTouch {
+        session_id: ctx.session_id.clone(),
+        path: resolved.to_path_buf(),
+        op: FileOp::Edit,
+        summary: Some(format!("{} via apply_patch", verb)),
+        detail,
+    }));
+    let _ = display_path;
+}
+
+fn build_file_touch_preview(diff: &str) -> Option<String> {
+    let trimmed = diff.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut lines = trimmed.lines();
+    let mut preview = lines
+        .by_ref()
+        .take(FILE_TOUCH_PREVIEW_MAX_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut truncated = lines.next().is_some();
+
+    if preview.len() > FILE_TOUCH_PREVIEW_MAX_BYTES {
+        preview = crate::util::truncate_str(&preview, FILE_TOUCH_PREVIEW_MAX_BYTES)
+            .trim_end()
+            .to_string();
+        truncated = true;
+    }
+
+    if truncated {
+        preview.push_str("\n…");
+    }
+
+    Some(preview)
 }
 
 async fn apply_update_chunks(path: &Path, chunks: &[UpdateFileChunk]) -> Result<(String, String)> {
