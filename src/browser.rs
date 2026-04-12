@@ -10,6 +10,15 @@ const NATIVE_HOST_NAME: &str = "firefox_agent_bridge";
 const EXTENSION_ID_LISTED: &str = "browser-agent-bridge@1jehuang.github.io";
 const EXTENSION_ID_LOCAL: &str = "firefox-agent-bridge@local";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserStatus {
+    pub backend: &'static str,
+    pub browser: &'static str,
+    pub setup_complete: bool,
+    pub binary_installed: bool,
+    pub ready: bool,
+}
+
 fn jcode_dir() -> PathBuf {
     storage::jcode_dir().unwrap_or_else(|_| {
         dirs::home_dir()
@@ -538,6 +547,24 @@ async fn check_browser_ping() -> Result<bool> {
     }
 }
 
+pub async fn inspect_browser_status() -> Result<BrowserStatus> {
+    let binary_installed = browser_binary_path().exists();
+    let setup_complete = is_setup_complete();
+    let ready = if binary_installed {
+        check_browser_ping().await.unwrap_or(false)
+    } else {
+        false
+    };
+
+    Ok(BrowserStatus {
+        backend: "firefox_agent_bridge",
+        browser: "firefox",
+        setup_complete,
+        binary_installed,
+        ready,
+    })
+}
+
 async fn wait_for_ping(timeout_secs: u64) -> Result<bool> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
@@ -587,8 +614,9 @@ async fn install_extension() -> Result<String> {
 }
 
 pub async fn run_setup_command() -> Result<()> {
-    println!("Firefox Agent Bridge Setup");
-    println!("==========================\n");
+    println!("Browser Automation Setup");
+    println!("========================\n");
+    println!("Backend: Firefox Agent Bridge\n");
 
     let log = ensure_browser_setup().await?;
     print!("{}", log);
@@ -652,5 +680,16 @@ mod tests {
         let name = get_platform_asset_name();
         assert!(name.starts_with("browser-"));
         assert!(!name.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_inspect_browser_status_without_binary() {
+        let status = inspect_browser_status().await.unwrap();
+        assert_eq!(status.backend, "firefox_agent_bridge");
+        assert_eq!(status.browser, "firefox");
+        if !browser_binary_path().exists() {
+            assert!(!status.binary_installed);
+            assert!(!status.ready);
+        }
     }
 }
