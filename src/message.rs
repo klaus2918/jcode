@@ -739,6 +739,17 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
+    /// Serialized size of the full tool definition payload sent to providers.
+    pub fn prompt_chars(&self) -> usize {
+        serde_json::json!({
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.input_schema,
+        })
+        .to_string()
+        .len()
+    }
+
     /// Approximate prompt-token cost of this tool's top-level description.
     ///
     /// This uses jcode's standard chars/4 heuristic, matching other token
@@ -757,6 +768,14 @@ impl ToolDefinition {
             })
             .to_string(),
         )
+    }
+
+    pub fn aggregate_prompt_chars(defs: &[ToolDefinition]) -> usize {
+        defs.iter().map(Self::prompt_chars).sum()
+    }
+
+    pub fn aggregate_prompt_token_estimate(defs: &[ToolDefinition]) -> usize {
+        defs.iter().map(Self::prompt_token_estimate).sum()
     }
 }
 

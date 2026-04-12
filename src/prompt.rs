@@ -16,6 +16,27 @@ pub struct SplitSystemPrompt {
     pub dynamic_part: String,
 }
 
+impl SplitSystemPrompt {
+    pub fn chars(&self) -> usize {
+        match (self.static_part.is_empty(), self.dynamic_part.is_empty()) {
+            (true, true) => 0,
+            (false, true) => self.static_part.len(),
+            (true, false) => self.dynamic_part.len(),
+            (false, false) => self.static_part.len() + 2 + self.dynamic_part.len(),
+        }
+    }
+
+    pub fn estimated_tokens(&self) -> usize {
+        crate::util::estimate_tokens(&if self.static_part.is_empty() {
+            self.dynamic_part.clone()
+        } else if self.dynamic_part.is_empty() {
+            self.static_part.clone()
+        } else {
+            format!("{}\n\n{}", self.static_part, self.dynamic_part)
+        })
+    }
+}
+
 /// Skill info for system prompt
 pub struct SkillInfo {
     pub name: String,
@@ -77,6 +98,26 @@ impl ContextInfo {
     /// Rough estimate of tokens (chars / 4 is a common approximation)
     pub fn estimated_tokens(&self) -> usize {
         self.total_chars / 4
+    }
+
+    pub fn prompt_prefix_chars(&self) -> usize {
+        self.system_prompt_chars
+            + self.env_context_chars
+            + self.project_agents_md_chars
+            + self.global_agents_md_chars
+            + self.skills_chars
+            + self.selfdev_chars
+            + self.memory_chars
+            + self.prompt_overlay_chars
+            + self.tool_defs_chars
+    }
+
+    pub fn prompt_prefix_tokens(&self) -> usize {
+        self.prompt_prefix_chars() / 4
+    }
+
+    pub fn tool_definition_tokens(&self) -> usize {
+        self.tool_defs_chars / 4
     }
 
     /// Get breakdown as (label, chars, icon) tuples for display
@@ -753,5 +794,12 @@ mod tests {
             prompt.contains("scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode")
         );
         assert!(prompt.contains("JCODE_REMOTE_HOST"));
+    }
+
+    #[test]
+    fn split_prompt_estimated_tokens_is_positive_when_populated() {
+        let (split, _info) = build_system_prompt_split(None, &[], false, None, None);
+        assert!(split.chars() > 0);
+        assert!(split.estimated_tokens() > 0);
     }
 }

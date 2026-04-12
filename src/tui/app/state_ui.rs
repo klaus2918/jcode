@@ -23,28 +23,46 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
         "read" => obj(vec![
             (
                 "file_path",
-                input.get("file_path").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("file_path")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
             (
                 "start_line",
-                input.get("start_line").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("start_line")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
             (
                 "end_line",
-                input.get("end_line").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("end_line")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
             (
                 "offset",
-                input.get("offset").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("offset")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
             (
                 "limit",
-                input.get("limit").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("limit")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
         ]),
         "write" | "edit" | "multiedit" => obj(vec![(
             "file_path",
-            input.get("file_path").cloned().unwrap_or(serde_json::Value::Null),
+            input
+                .get("file_path")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
         )]),
         "patch" | "apply_patch" => {
             let file_path = input.get("file_path").cloned().or_else(|| {
@@ -52,50 +70,81 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
                     .get("patch_text")
                     .and_then(|v| v.as_str())
                     .and_then(|patch_text| match name {
-                        "apply_patch" => crate::tui::ui::tools_ui::extract_apply_patch_primary_file(patch_text),
-                        "patch" => crate::tui::ui::tools_ui::extract_unified_patch_primary_file(patch_text),
+                        "apply_patch" => {
+                            crate::tui::ui::tools_ui::extract_apply_patch_primary_file(patch_text)
+                        }
+                        "patch" => {
+                            crate::tui::ui::tools_ui::extract_unified_patch_primary_file(patch_text)
+                        }
                         _ => None,
                     })
                     .map(serde_json::Value::String)
             });
-            obj(vec![("file_path", file_path.unwrap_or(serde_json::Value::Null))])
+            obj(vec![(
+                "file_path",
+                file_path.unwrap_or(serde_json::Value::Null),
+            )])
         }
         "glob" => obj(vec![(
             "pattern",
-            input.get("pattern").cloned().unwrap_or(serde_json::Value::Null),
+            input
+                .get("pattern")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
         )]),
         "grep" => obj(vec![
             (
                 "pattern",
-                input.get("pattern").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("pattern")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
             (
                 "path",
-                input.get("path").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("path")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
         ]),
         "agentgrep" => obj(vec![
             (
                 "mode",
-                input.get("mode").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("mode")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
             (
                 "query",
-                input.get("query").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("query")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
             (
                 "terms",
-                input.get("terms").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("terms")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
         ]),
         "memory" => obj(vec![
             (
                 "action",
-                input.get("action").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("action")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
             (
                 "category",
-                input.get("category").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("category")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
             (
                 "tag",
@@ -103,7 +152,10 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
             ),
             (
                 "query",
-                input.get("query").cloned().unwrap_or(serde_json::Value::Null),
+                input
+                    .get("query")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ),
             (
                 "content",
@@ -140,9 +192,15 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
                             let summary = crate::tui::ui::tools_ui::get_tool_summary(&sub_tool);
                             let compacted = compact_tool_input_for_display(raw_name, &params);
                             let mut entry = serde_json::Map::new();
-                            entry.insert("tool".to_string(), serde_json::Value::String(raw_name.to_string()));
+                            entry.insert(
+                                "tool".to_string(),
+                                serde_json::Value::String(raw_name.to_string()),
+                            );
                             if !summary.is_empty() {
-                                entry.insert("intent".to_string(), serde_json::Value::String(summary));
+                                entry.insert(
+                                    "intent".to_string(),
+                                    serde_json::Value::String(summary),
+                                );
                             }
                             if let Some(compacted_obj) = compacted.as_object() {
                                 for (key, value) in compacted_obj {
@@ -3066,6 +3124,13 @@ pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
             "- total chars: {} (~{} tokens)\n",
             context.total_chars,
             context.estimated_tokens()
+        ));
+        context_report.push_str(&format!(
+            "- prompt prefix before any user text: {} chars (~{} tokens)\n- tool definitions only: {} chars (~{} tokens)\n",
+            context.prompt_prefix_chars(),
+            context.prompt_prefix_tokens(),
+            context.tool_defs_chars,
+            context.tool_definition_tokens(),
         ));
         context_report.push_str(&format!(
             "- system prompt: {} chars\n- env context: {} chars\n- project AGENTS.md: {} ({})\n- global ~/.AGENTS.md: {} ({})\n- prompt overlays: {} chars\n- skills section: {} chars\n- self-dev section: {} chars\n- memory section: {} chars\n- tool definitions: {} chars across {} tools\n- user messages: {} chars across {} messages\n- assistant messages: {} chars across {} messages\n- tool calls: {} chars across {} calls\n- tool results: {} chars across {} results\n",

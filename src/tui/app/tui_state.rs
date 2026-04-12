@@ -683,11 +683,18 @@ impl crate::tui::TuiState for App {
             }
         }
 
-        // Estimate tool definitions size
-        // jcode has ~25 built-in tools, each ~500 chars in definition
-        // This is a rough estimate since we can't easily call async from here
-        let tool_defs_count = 25;
-        let tool_defs_chars = tool_defs_count * 500;
+        // Use the last exact tool-definition measurement if available.
+        // Fall back to the older rough estimate only before the first tool fetch.
+        let tool_defs_count = if info.tool_defs_count > 0 {
+            info.tool_defs_count
+        } else {
+            25
+        };
+        let tool_defs_chars = if info.tool_defs_chars > 0 {
+            info.tool_defs_chars
+        } else {
+            tool_defs_count * 500
+        };
 
         info.user_messages_chars = user_chars;
         info.user_messages_count = user_count;

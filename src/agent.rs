@@ -1615,6 +1615,7 @@ impl Agent {
                 self.build_memory_prompt_nonblocking_shared(std::sync::Arc::clone(&messages), None);
             // Use split prompt for better caching - static content cached, dynamic not
             let split_prompt = self.build_system_prompt_split(None);
+            self.log_prompt_prefix_accounting(&split_prompt, &tools);
 
             // Check for client-side cache violations before memory injection.
             // Memory is an ephemeral suffix that changes each turn; tracking it would cause
@@ -2393,6 +2394,7 @@ impl Agent {
             );
             // Use split prompt for better caching - static content cached, dynamic not
             let split_prompt = self.build_system_prompt_split(None);
+            self.log_prompt_prefix_accounting(&split_prompt, &tools);
 
             // Check for client-side cache violations before memory injection.
             // Memory is an ephemeral suffix that changes each turn; tracking it would cause
@@ -3165,6 +3167,7 @@ impl Agent {
             );
             // Use split prompt for better caching - static content cached, dynamic not
             let split_prompt = self.build_system_prompt_split(None);
+            self.log_prompt_prefix_accounting(&split_prompt, &tools);
 
             // Check for client-side cache violations before memory injection.
             // Memory is an ephemeral suffix that changes each turn; tracking it would cause

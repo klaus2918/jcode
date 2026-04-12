@@ -1,4 +1,5 @@
 use super::*;
+use crate::message::ToolDefinition;
 
 impl App {
     fn append_current_turn_system_reminder(&self, split: &mut crate::prompt::SplitSystemPrompt) {
@@ -50,6 +51,8 @@ impl App {
             // Use split prompt for better caching - static content cached, dynamic not
             let split_prompt =
                 self.build_system_prompt_split(memory_pending.as_ref().map(|p| p.prompt.as_str()));
+            self.context_info.tool_defs_count = tools.len();
+            self.context_info.tool_defs_chars = ToolDefinition::aggregate_prompt_chars(&tools);
             if let Some(pending) = &memory_pending {
                 let age_ms = pending.computed_at.elapsed().as_millis() as u64;
                 self.show_injected_memory_context(
@@ -297,10 +300,9 @@ impl App {
                         openai_encrypted_content,
                     } => {
                         if let Some(encrypted_content) = openai_encrypted_content {
-                            openai_native_compaction
-                                .get_or_insert_with(|| {
-                                    (encrypted_content, self.local_transcript_message_count())
-                                });
+                            openai_native_compaction.get_or_insert_with(|| {
+                                (encrypted_content, self.local_transcript_message_count())
+                            });
                         }
                         // Flush any pending buffered text first
                         if let Some(chunk) = self.stream_buffer.flush() {
@@ -614,6 +616,8 @@ impl App {
             // Use split prompt for better caching - static content cached, dynamic not
             let split_prompt =
                 self.build_system_prompt_split(memory_pending.as_ref().map(|p| p.prompt.as_str()));
+            self.context_info.tool_defs_count = tools.len();
+            self.context_info.tool_defs_chars = ToolDefinition::aggregate_prompt_chars(&tools);
             if let Some(pending) = &memory_pending {
                 let age_ms = pending.computed_at.elapsed().as_millis() as u64;
                 self.show_injected_memory_context(

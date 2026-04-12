@@ -1,8 +1,22 @@
 use super::Agent;
 use crate::logging;
-use crate::message::Message;
+use crate::message::{Message, ToolDefinition};
 
 impl Agent {
+    pub(super) fn log_prompt_prefix_accounting(
+        &self,
+        split: &crate::prompt::SplitSystemPrompt,
+        tools: &[ToolDefinition],
+    ) {
+        let system_tokens = split.estimated_tokens();
+        let tool_tokens = ToolDefinition::aggregate_prompt_token_estimate(tools);
+        let prefix_tokens = system_tokens + tool_tokens;
+        logging::info(&format!(
+            "Prompt prefix estimate: total={} tokens (system={} tools={})",
+            prefix_tokens, system_tokens, tool_tokens
+        ));
+    }
+
     pub(super) fn build_memory_prompt_nonblocking_shared(
         &self,
         messages: std::sync::Arc<[Message]>,
