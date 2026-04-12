@@ -98,7 +98,7 @@ impl Tool for BrowserTool {
     }
 
     fn description(&self) -> &str {
-        "Control a browser."
+        "Control the browser."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -113,7 +113,7 @@ impl Tool for BrowserTool {
                     "fill_form", "select", "wait", "screenshot", "eval", "scroll", "upload",
                     "press", "provider_command"
                 ],
-                "description": "Browser action to perform. Use snapshot/get_content to inspect pages. If an interaction fails, use eval to inspect or recover from custom DOM behavior."
+                "description": "Action."
             }),
         );
         properties.insert(
@@ -121,100 +121,24 @@ impl Tool for BrowserTool {
             json!({
                 "type": "string",
                 "enum": ["auto", "firefox", "chrome", "safari", "edge"],
-                "description": "Preferred browser family. Currently the built-in backend supports Firefox Agent Bridge. Use auto or firefox for now."
-            }),
-        );
-        properties.insert(
-            "provider_action".into(),
-            json!({
-                "type": "string",
-                "description": "Advanced escape hatch for provider-specific commands when action='provider_command'."
-            }),
-        );
-        properties.insert(
-            "params".into(),
-            json!({
-                "type": "object",
-                "description": "Optional raw provider params when action='provider_command'."
+                "description": "Browser."
             }),
         );
         for (name, schema) in [
-            (
-                "url",
-                json!({"type": "string", "description": "URL for open/new_tab."}),
-            ),
-            (
-                "tab_id",
-                json!({"type": "integer", "description": "Specific browser tab id for tab-targeted actions."}),
-            ),
-            (
-                "frame_id",
-                json!({"type": "integer", "description": "Specific frame id for frame-targeted actions."}),
-            ),
-            (
-                "all_frames",
-                json!({"type": "boolean", "description": "If true, let the bridge try matching across all frames."}),
-            ),
-            (
-                "selector",
-                json!({"type": "string", "description": "CSS selector target for actions like click, type, get_content, scroll, wait, upload, and select."}),
-            ),
-            (
-                "text",
-                json!({"type": "string", "description": "Text target or typed text, depending on action."}),
-            ),
-            (
-                "contains",
-                json!({"type": "string", "description": "Substring to wait for when action='wait'."}),
-            ),
-            (
-                "script",
-                json!({"type": "string", "description": "JavaScript to execute when action='eval'."}),
-            ),
-            (
-                "key",
-                json!({"type": "string", "description": "Keyboard key for action='press', e.g. Enter, Escape, Tab, Control+A."}),
-            ),
-            (
-                "x",
-                json!({"type": "number", "description": "X coordinate or scroll delta depending on action."}),
-            ),
-            (
-                "y",
-                json!({"type": "number", "description": "Y coordinate or scroll delta depending on action."}),
-            ),
-            (
-                "wait",
-                json!({"type": "boolean", "description": "Whether open/new_tab should wait for page load. Defaults to true."}),
-            ),
-            (
-                "new_tab",
-                json!({"type": "boolean", "description": "Open URL in a new tab for action='open'."}),
-            ),
-            (
-                "focus",
-                json!({"type": "boolean", "description": "Whether select_tab should focus the browser tab."}),
-            ),
-            (
-                "clear",
-                json!({"type": "boolean", "description": "Whether type should clear existing content before entering text."}),
-            ),
-            (
-                "submit",
-                json!({"type": "boolean", "description": "Whether type/select should submit after setting the value."}),
-            ),
-            (
-                "page_world",
-                json!({"type": "boolean", "description": "For eval, run in the page world to bypass extension wrapper limitations when needed."}),
-            ),
-            (
-                "timeout_ms",
-                json!({"type": "integer", "description": "Timeout in milliseconds for open/wait operations."}),
-            ),
-            (
-                "path",
-                json!({"type": "string", "description": "Local file path for upload."}),
-            ),
+            ("url", json!({"type": "string"})),
+            ("tab_id", json!({"type": "integer"})),
+            ("frame_id", json!({"type": "integer"})),
+            ("selector", json!({"type": "string"})),
+            ("text", json!({"type": "string"})),
+            ("contains", json!({"type": "string"})),
+            ("script", json!({"type": "string"})),
+            ("key", json!({"type": "string"})),
+            ("x", json!({"type": "number"})),
+            ("y", json!({"type": "number"})),
+            ("wait", json!({"type": "boolean"})),
+            ("new_tab", json!({"type": "boolean"})),
+            ("timeout_ms", json!({"type": "integer"})),
+            ("path", json!({"type": "string"})),
         ] {
             properties.insert(name.into(), schema);
         }
@@ -223,30 +147,13 @@ impl Tool for BrowserTool {
             json!({
                 "type": "string",
                 "enum": ["annotated", "text", "textFast", "html", "title"],
-                "description": "Content format for get_content. snapshot always uses annotated."
-            }),
-        );
-        properties.insert(
-            "position".into(),
-            json!({
-                "type": "string",
-                "enum": ["top", "bottom", "left", "right"],
-                "description": "Named scroll position for action='scroll'."
-            }),
-        );
-        properties.insert(
-            "behavior".into(),
-            json!({
-                "type": "string",
-                "enum": ["auto", "smooth"],
-                "description": "Scroll behavior for action='scroll'."
+                "description": "Format."
             }),
         );
         properties.insert(
             "fields".into(),
             json!({
                 "type": "array",
-                "description": "Fields for fill_form. Each field needs a selector and value or checked state.",
                 "items": {
                     "type": "object",
                     "required": ["selector"],
@@ -258,18 +165,6 @@ impl Tool for BrowserTool {
                 }
             }),
         );
-        properties.insert(
-            "scroll_to".into(),
-            json!({
-                "type": "object",
-                "description": "Absolute scroll target for action='scroll'.",
-                "properties": {
-                    "x": { "type": "number" },
-                    "y": { "type": "number" }
-                }
-            }),
-        );
-
         Value::Object(Map::from_iter([
             ("type".into(), json!("object")),
             ("required".into(), json!(["action"])),
@@ -972,5 +867,42 @@ mod tests {
         assert_eq!(action, "getInteractables");
         assert_eq!(params["tabId"], 9);
         assert_eq!(params["selector"], "main");
+    }
+
+    #[test]
+    fn schema_only_advertises_common_browser_fields() {
+        let schema = BrowserTool::new().parameters_schema();
+        let props = schema["properties"]
+            .as_object()
+            .expect("browser schema should have properties");
+
+        assert!(props.contains_key("action"));
+        assert!(props.contains_key("browser"));
+        assert!(props.contains_key("url"));
+        assert!(props.contains_key("tab_id"));
+        assert!(props.contains_key("frame_id"));
+        assert!(props.contains_key("selector"));
+        assert!(props.contains_key("text"));
+        assert!(props.contains_key("contains"));
+        assert!(props.contains_key("script"));
+        assert!(props.contains_key("key"));
+        assert!(props.contains_key("x"));
+        assert!(props.contains_key("y"));
+        assert!(props.contains_key("format"));
+        assert!(props.contains_key("wait"));
+        assert!(props.contains_key("new_tab"));
+        assert!(props.contains_key("timeout_ms"));
+        assert!(props.contains_key("path"));
+        assert!(props.contains_key("fields"));
+        assert!(!props.contains_key("provider_action"));
+        assert!(!props.contains_key("params"));
+        assert!(!props.contains_key("all_frames"));
+        assert!(!props.contains_key("focus"));
+        assert!(!props.contains_key("clear"));
+        assert!(!props.contains_key("submit"));
+        assert!(!props.contains_key("page_world"));
+        assert!(!props.contains_key("position"));
+        assert!(!props.contains_key("behavior"));
+        assert!(!props.contains_key("scroll_to"));
     }
 }

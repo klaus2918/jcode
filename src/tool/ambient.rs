@@ -141,9 +141,7 @@ impl Tool for EndAmbientCycleTool {
     }
 
     fn description(&self) -> &str {
-        "End the current ambient cycle. MUST be called at the end of every ambient cycle. \
-         Provide a summary of work done, counts of memories modified and compactions, \
-         and optionally schedule the next wake."
+        "End the current ambient cycle."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -285,8 +283,7 @@ impl Tool for ScheduleAmbientTool {
     }
 
     fn description(&self) -> &str {
-        "Schedule a future ambient task. Provide either wake_in_minutes or wake_at (ISO timestamp), \
-         a context string describing what to do, and a priority level."
+        "Schedule an ambient task."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -526,11 +523,7 @@ impl Tool for RequestPermissionTool {
     }
 
     fn description(&self) -> &str {
-        "Request user permission for a Tier 2 action (e.g., code changes, PRs, pushes). \
-         Only ambient sessions may call this tool. \
-         The request is queued for user review. If wait=true, the tool blocks until a \
-         decision is made (with timeout). Include rich context so reviewers can make \
-         an informed decision."
+        "Request user permission."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -720,10 +713,7 @@ impl Tool for ScheduleTool {
     }
 
     fn description(&self) -> &str {
-        "Schedule work to happen later. By default this wakes the ambient agent. You can also \
-         target the current session so the scheduled task is delivered back into this conversation: if \
-         the session is still live, the scheduled task is injected there; if it is no longer live, jcode \
-         restores that saved session headlessly and resumes it with the scheduled task."
+        "Schedule a task."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -733,38 +723,24 @@ impl Tool for ScheduleTool {
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "Clear description of what the ambient agent should do. Be specific enough that it can act without further input."
+                    "description": "Task."
                 },
-                "wake_in_minutes": {
-                    "type": "integer",
-                    "description": "Minutes from now to execute the task. Use this or wake_at."
-                },
-                "wake_at": {
-                    "type": "string",
-                    "description": "ISO 8601 timestamp for when to execute (e.g. '2025-03-15T09:00:00Z'). Use this or wake_in_minutes."
-                },
+                "wake_in_minutes": { "type": "integer" },
+                "wake_at": { "type": "string" },
                 "priority": {
                     "type": "string",
-                    "enum": ["low", "normal", "high"],
-                    "description": "Task priority (default: normal). High priority tasks are executed first."
+                    "enum": ["low", "normal", "high"]
                 },
                 "relevant_files": {
                     "type": "array",
-                    "items": { "type": "string" },
-                    "description": "File paths relevant to this task. Helps the ambient agent know where to look."
+                    "items": { "type": "string" }
                 },
-                "background": {
-                    "type": "string",
-                    "description": "Background context the ambient agent needs. Include relevant decisions, constraints, or information from the current session."
-                },
-                "success_criteria": {
-                    "type": "string",
-                    "description": "How to know the task is done. What should the ambient agent verify?"
-                },
+                "background": { "type": "string" },
+                "success_criteria": { "type": "string" },
                 "target": {
                     "type": "string",
                     "enum": ["ambient", "session"],
-                    "description": "Where to deliver the scheduled task. 'ambient' wakes the ambient agent (default). 'session' delivers it back into the current session, resuming that saved session headlessly if needed."
+                    "description": "Target."
                 }
             }
         })
@@ -919,9 +895,7 @@ impl Tool for SendChannelMessageTool {
     }
 
     fn description(&self) -> &str {
-        "Send a message to the user via configured messaging channels (Telegram, Discord, etc.). \
-         Use this to give status updates on what you're doing during ambient cycles. \
-         Keep messages concise and informative. If no channel is specified, sends to all enabled channels."
+        "Send a user message."
     }
 
     fn parameters_schema(&self) -> Value {

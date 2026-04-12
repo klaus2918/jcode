@@ -729,9 +729,7 @@ impl Tool for SelfDevTool {
     }
 
     fn description(&self) -> &str {
-        "Self-development tool for working on jcode itself. Actions: 'enter' (spawn a new self-dev session), \
-         'build' (queue a background self-dev build with a reason/comment), 'cancel-build' (cancel a queued/running self-dev build request), \
-         'status' (show build versions), and in self-dev mode also 'reload', 'socket-info', and 'socket-help'."
+        "Manage self-dev builds and reloads."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -749,43 +747,13 @@ impl Tool for SelfDevTool {
                         "socket-info",
                         "socket-help"
                     ],
-                    "description": "Action to perform: 'enter' spawns a new self-dev session, \
-                                   'build' queues a coordinated background build with a reason/comment, \
-                                   'cancel-build' cancels a queued/running self-dev build request, \
-                                   'reload' restarts with built binary, \
-                                   'status' shows build versions and crash history, \
-                                   'socket-info' returns debug socket paths and connection info, \
-                                   'socket-help' shows available debug socket commands"
+                    "description": "Action."
                 },
-                "prompt": {
-                    "type": "string",
-                    "description": "Optional prompt to send into the spawned self-dev session after it opens"
-                },
-                "context": {
-                    "type": "string",
-                    "description": "Optional context for reload - describe what you're working on. \
-                                   This will be included in the continuation message after restart."
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Why this self-dev build is needed. Required for action='build' so other queued agents can see the reason."
-                },
-                "notify": {
-                    "type": "boolean",
-                    "description": "For action='build': notify the requesting agent when the queued background build completes (default: true)."
-                },
-                "wake": {
-                    "type": "boolean",
-                    "description": "For action='build': wake the requesting agent when the queued background build completes. Defaults to true."
-                },
-                "request_id": {
-                    "type": "string",
-                    "description": "For action='cancel-build': build request id to cancel."
-                },
-                "task_id": {
-                    "type": "string",
-                    "description": "For action='cancel-build': background task id to cancel if request id is not known."
-                }
+                "prompt": { "type": "string" },
+                "context": { "type": "string" },
+                "reason": { "type": "string" },
+                "request_id": { "type": "string" },
+                "task_id": { "type": "string" }
             },
             "required": ["action"]
         })
@@ -2206,6 +2174,23 @@ mod tests {
 
         let _guard = EnvVarGuard::set("JCODE_SELFDEV_RELOAD_TIMEOUT_SECS", "0");
         assert_eq!(SelfDevTool::reload_timeout_secs(), 15);
+    }
+
+    #[test]
+    fn schema_only_advertises_core_selfdev_fields() {
+        let schema = SelfDevTool::new().parameters_schema();
+        let props = schema["properties"]
+            .as_object()
+            .expect("selfdev schema should have properties");
+
+        assert!(props.contains_key("action"));
+        assert!(props.contains_key("prompt"));
+        assert!(props.contains_key("context"));
+        assert!(props.contains_key("reason"));
+        assert!(props.contains_key("request_id"));
+        assert!(props.contains_key("task_id"));
+        assert!(!props.contains_key("notify"));
+        assert!(!props.contains_key("wake"));
     }
 
     #[tokio::test]
