@@ -117,25 +117,26 @@ async fn resolve_transcript_target_session(
         }
     }
 
-    let active_debug_id = client_debug_state
-        .read()
-        .await
-        .active_id
-        .clone()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No transcript target found. Tried focused jcode window, last-focused live jcode session, and active TUI client."
-            )
-        })?;
+    let active_debug_id = client_debug_state.read().await.active_id.clone();
 
     connections
         .values()
-        .filter(|info| info.debug_client_id.as_deref() == Some(active_debug_id.as_str()))
-        .max_by_key(|info| info.last_seen)
+        .filter(|info| info.debug_client_id.is_some())
+        .max_by(|left, right| {
+            left.last_seen
+                .cmp(&right.last_seen)
+                .then_with(|| {
+                    let left_is_active =
+                        active_debug_id.as_deref() == left.debug_client_id.as_deref();
+                    let right_is_active =
+                        active_debug_id.as_deref() == right.debug_client_id.as_deref();
+                    left_is_active.cmp(&right_is_active)
+                })
+        })
         .map(|info| info.session_id.clone())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "Transcript target could not be resolved from focused window, last-focused session, or active TUI client"
+                "Transcript target could not be resolved from focused window, last-focused session, or any live TUI client"
             )
         })
 }
@@ -683,7 +684,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_transcript_target_session_falls_back_to_active_debug_when_last_focused_not_connected()
+    async fn resolve_transcript_target_session_falls_back_to_most_recent_live_tui_when_last_focused_not_connected()
      {
         let _guard = crate::storage::lock_test_env();
         let jcode_dir = crate::storage::jcode_dir().expect("jcode dir");
@@ -693,20 +694,38 @@ mod tests {
         crate::dictation::remember_last_focused_session("session_stale")
             .expect("remember last focused session");
 
-        let client_connections = Arc::new(RwLock::new(HashMap::from([(
-            "conn-1".to_string(),
-            ClientConnectionInfo {
-                client_id: "conn-1".to_string(),
-                session_id: "session_debug".to_string(),
-                client_instance_id: None,
-                debug_client_id: Some("debug-1".to_string()),
-                connected_at: Instant::now(),
-                last_seen: Instant::now(),
-                is_processing: false,
-                current_tool_name: None,
-                disconnect_tx: mpsc::unbounded_channel().0,
-            },
-        )])));
+        let now = Instant::now();
+
+        let client_connections = Arc::new(RwLock::new(HashMap::from([
+            (
+                "conn-1".to_string(),
+                ClientConnectionInfo {
+                    client_id: "conn-1".to_string(),
+                    session_id: "session_stale_debug".to_string(),
+                    client_instance_id: None,
+                    debug_client_id: Some("debug-1".to_string()),
+                    connected_at: now,
+                    last_seen: now - std::time::Duration::from_secs(60),
+                    is_processing: false,
+                    current_tool_name: None,
+                    disconnect_tx: mpsc::unbounded_channel().0,
+                },
+            ),
+            (
+                "conn-2".to_string(),
+                ClientConnectionInfo {
+                    client_id: "conn-2".to_string(),
+                    session_id: "session_recent".to_string(),
+                    client_instance_id: None,
+                    debug_client_id: Some("debug-2".to_string()),
+                    connected_at: now,
+                    last_seen: now,
+                    is_processing: false,
+                    current_tool_name: None,
+                    disconnect_tx: mpsc::unbounded_channel().0,
+                },
+            ),
+        ])));
         let client_debug_state = Arc::new(RwLock::new(ClientDebugState {
             active_id: Some("debug-1".to_string()),
             clients: HashMap::new(),
@@ -715,9 +734,9 @@ mod tests {
         let resolved =
             resolve_transcript_target_session(None, &client_connections, &client_debug_state)
                 .await
-                .expect("resolve active debug fallback");
+                .expect("resolve recent live tui fallback");
 
-        assert_eq!(resolved, "session_debug");
+        assert_eq!(resolved, "session_recent");
     }
 }
 
