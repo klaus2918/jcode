@@ -669,7 +669,7 @@ fn apply_common_targeting(params: &mut Map<String, Value>, input: &BrowserInput)
 
 fn build_press_script(key: Option<&str>, selector: Option<&str>) -> Result<String> {
     let key = key.ok_or_else(|| anyhow::anyhow!("key is required for press"))?;
-    let selector_literal = selector.map(|s| serde_json::to_string(s)).transpose()?;
+    let selector_literal = selector.map(serde_json::to_string).transpose()?;
     let selector_expr = selector_literal
         .map(|s| format!("document.querySelector({})", s))
         .unwrap_or_else(|| "null".to_string());

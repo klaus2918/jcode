@@ -963,8 +963,8 @@ mod tests {
         let result = find_cursor_vscdb();
         // On this machine Cursor isn't installed, so it should fail
         // (if Cursor IS installed, this test still passes - it finds the file)
-        if result.is_err() {
-            assert!(result.unwrap_err().to_string().contains("not found"));
+        if let Err(err) = result {
+            assert!(err.to_string().contains("not found"));
         }
     }
 }

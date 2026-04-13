@@ -299,10 +299,10 @@ impl EventPlayer {
         let start = self.start_time?;
         let elapsed = now_ms().saturating_sub(start);
 
-        if let Some(next) = self.events.front() {
-            if next.offset_ms <= elapsed {
-                return self.events.pop_front().map(|e| e.event);
-            }
+        if let Some(next) = self.events.front()
+            && next.offset_ms <= elapsed
+        {
+            return self.events.pop_front().map(|e| e.event);
         }
         None
     }

@@ -351,8 +351,10 @@ pub(super) fn draw_messages(
         Vec::new()
     };
     if visible_lines.len() < visible_height {
-        visible_lines
-            .extend(std::iter::repeat(Line::from("")).take(visible_height - visible_lines.len()));
+        visible_lines.extend(std::iter::repeat_n(
+            Line::from(""),
+            visible_height - visible_lines.len(),
+        ));
     }
 
     clear_area(frame, area);
@@ -532,7 +534,7 @@ pub(super) fn draw_messages(
                 if marker_visible {
                     let screen_y = (abs_idx - scroll) as u16;
                     let available_height = content_area.height.saturating_sub(screen_y);
-                    let render_height = (total_height as u16).min(available_height);
+                    let render_height = total_height.min(available_height);
 
                     if render_height > 0 {
                         let image_area = Rect {
@@ -620,78 +622,74 @@ pub(super) fn draw_messages(
         let last_offscreen_prompt_idx =
             lower_bound(wrapped_user_prompt_starts, scroll).checked_sub(1);
 
-        if let Some(prompt_order) = last_offscreen_prompt_idx {
-            if let Some(prompt_text) = user_prompt_texts.get(prompt_order) {
-                let prompt_text = prompt_text.trim();
-                if !prompt_text.is_empty() {
-                    let prompt_num = prompt_order + 1;
-                    let num_str = format!("{}", prompt_num);
-                    let prefix_len = num_str.len() + 2;
-                    let content_width =
-                        render_area.width.saturating_sub(prefix_len as u16 + 2) as usize;
-                    let dim_style = Style::default().dim();
-                    let align = if app.centered_mode() {
-                        ratatui::layout::Alignment::Center
-                    } else {
-                        ratatui::layout::Alignment::Left
-                    };
+        if let Some(prompt_order) = last_offscreen_prompt_idx
+            && let Some(prompt_text) = user_prompt_texts.get(prompt_order)
+        {
+            let prompt_text = prompt_text.trim();
+            if !prompt_text.is_empty() {
+                let prompt_num = prompt_order + 1;
+                let num_str = format!("{}", prompt_num);
+                let prefix_len = num_str.len() + 2;
+                let content_width =
+                    render_area.width.saturating_sub(prefix_len as u16 + 2) as usize;
+                let dim_style = Style::default().dim();
+                let align = if app.centered_mode() {
+                    ratatui::layout::Alignment::Center
+                } else {
+                    ratatui::layout::Alignment::Left
+                };
 
-                    let text_flat = prompt_text.replace('\n', " ");
-                    let text_chars: Vec<char> = text_flat.chars().collect();
-                    let is_long = text_chars.len() > content_width;
+                let text_flat = prompt_text.replace('\n', " ");
+                let text_chars: Vec<char> = text_flat.chars().collect();
+                let is_long = text_chars.len() > content_width;
 
-                    let preview_lines: Vec<Line<'static>> = if !is_long {
-                        vec![
-                            Line::from(vec![
-                                Span::styled(
-                                    num_str.clone(),
-                                    dim_style.fg(dim_color()).bg(user_bg()),
-                                ),
-                                Span::styled("› ", dim_style.fg(user_color()).bg(user_bg())),
-                                Span::styled(text_flat, dim_style.fg(user_text()).bg(user_bg())),
-                            ])
-                            .alignment(align),
-                        ]
-                    } else {
-                        let half = content_width.max(4);
-                        let head: String =
-                            text_chars[..half.min(text_chars.len())].iter().collect();
-                        let tail_start = text_chars.len().saturating_sub(half);
-                        let tail: String = text_chars[tail_start..].iter().collect();
-
-                        let first = Line::from(vec![
+                let preview_lines: Vec<Line<'static>> = if !is_long {
+                    vec![
+                        Line::from(vec![
                             Span::styled(num_str.clone(), dim_style.fg(dim_color()).bg(user_bg())),
                             Span::styled("› ", dim_style.fg(user_color()).bg(user_bg())),
-                            Span::styled(
-                                format!("{} ...", head.trim_end()),
-                                dim_style.fg(user_text()).bg(user_bg()),
-                            ),
+                            Span::styled(text_flat, dim_style.fg(user_text()).bg(user_bg())),
                         ])
-                        .alignment(align);
+                        .alignment(align),
+                    ]
+                } else {
+                    let half = content_width.max(4);
+                    let head: String = text_chars[..half.min(text_chars.len())].iter().collect();
+                    let tail_start = text_chars.len().saturating_sub(half);
+                    let tail: String = text_chars[tail_start..].iter().collect();
 
-                        let padding: String = " ".repeat(prefix_len);
-                        let second = Line::from(vec![
-                            Span::styled(padding, dim_style.bg(user_bg())),
-                            Span::styled(
-                                format!("... {}", tail.trim_start()),
-                                dim_style.fg(user_text()).bg(user_bg()),
-                            ),
-                        ])
-                        .alignment(align);
+                    let first = Line::from(vec![
+                        Span::styled(num_str.clone(), dim_style.fg(dim_color()).bg(user_bg())),
+                        Span::styled("› ", dim_style.fg(user_color()).bg(user_bg())),
+                        Span::styled(
+                            format!("{} ...", head.trim_end()),
+                            dim_style.fg(user_text()).bg(user_bg()),
+                        ),
+                    ])
+                    .alignment(align);
 
-                        vec![first, second]
-                    };
+                    let padding: String = " ".repeat(prefix_len);
+                    let second = Line::from(vec![
+                        Span::styled(padding, dim_style.bg(user_bg())),
+                        Span::styled(
+                            format!("... {}", tail.trim_start()),
+                            dim_style.fg(user_text()).bg(user_bg()),
+                        ),
+                    ])
+                    .alignment(align);
 
-                    let line_count = preview_lines.len() as u16;
-                    let preview_area = Rect {
-                        x: content_area.x,
-                        y: render_area.y,
-                        width: content_area.width.saturating_sub(1),
-                        height: line_count,
-                    };
-                    clear_area(frame, preview_area);
-                    frame.render_widget(Paragraph::new(preview_lines), preview_area);
-                }
+                    vec![first, second]
+                };
+
+                let line_count = preview_lines.len() as u16;
+                let preview_area = Rect {
+                    x: content_area.x,
+                    y: render_area.y,
+                    width: content_area.width.saturating_sub(1),
+                    height: line_count,
+                };
+                clear_area(frame, preview_area);
+                frame.render_widget(Paragraph::new(preview_lines), preview_area);
             }
         }
     }

@@ -52,6 +52,9 @@ use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+
 async fn refresh_runtime_handles(
     agent: &Arc<Mutex<Agent>>,
 ) -> (SoftInterruptQueue, InterruptSignal, InterruptSignal) {
@@ -63,9 +66,13 @@ async fn refresh_runtime_handles(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "client lifecycle wiring spans sessions, swarm state, file state, channels, debug, and runtime coordination"
+)]
 pub(super) async fn handle_client(
     stream: Stream,
-    sessions: Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: SessionAgents,
     _global_event_tx: broadcast::Sender<ServerEvent>,
     provider_template: Arc<dyn Provider>,
     _global_is_processing: Arc<RwLock<bool>>,
@@ -79,10 +86,8 @@ pub(super) async fn handle_client(
     swarm_coordinators: Arc<RwLock<HashMap<String, String>>>,
     file_touches: Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
     files_touched_by_session: Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
-    channel_subscriptions: Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: ChannelSubscriptions,
+    channel_subscriptions_by_session: ChannelSubscriptions,
     client_debug_state: Arc<RwLock<ClientDebugState>>,
     client_debug_response_tx: broadcast::Sender<(u64, String)>,
     event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
@@ -347,19 +352,18 @@ pub(super) async fn handle_client(
             }
             // Handle client debug commands from debug socket
             debug_cmd = debug_cmd_rx.recv() => {
-                if let Some((request_id, command)) = debug_cmd {
-                    if client_event_tx
+                if let Some((request_id, command)) = debug_cmd
+                    && client_event_tx
                         .send(ServerEvent::ClientDebugRequest {
                             id: request_id,
                             command,
                         })
                         .is_err()
-                    {
-                        let _ = client_debug_response_tx.send((
-                            request_id,
-                            "No TUI client connected".to_string(),
-                        ));
-                    }
+                {
+                    let _ = client_debug_response_tx.send((
+                        request_id,
+                        "No TUI client connected".to_string(),
+                    ));
                 }
                 continue;
             }

@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, broadcast, watch};
 
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+
 const RELOAD_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn prepare_server_exec(cmd: &mut std::process::Command, socket_path: &std::path::Path) {
@@ -147,7 +149,7 @@ pub(super) async fn await_reload_signal(
 }
 
 pub(super) async fn graceful_shutdown_sessions(
-    _sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    _sessions: &SessionAgents,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -163,7 +165,7 @@ pub(super) async fn graceful_shutdown_sessions(
 }
 
 async fn graceful_shutdown_sessions_with_timeout(
-    _sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    _sessions: &SessionAgents,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,

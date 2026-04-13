@@ -99,11 +99,8 @@ impl App {
     fn preferred_copy_pane(&self) -> crate::tui::CopySelectionPane {
         self.current_copy_selection_pane()
             .or_else(|| {
-                if self.diff_pane_focus {
-                    Some(crate::tui::CopySelectionPane::SidePane)
-                } else {
-                    None
-                }
+                self.diff_pane_focus
+                    .then_some(crate::tui::CopySelectionPane::SidePane)
             })
             .unwrap_or(crate::tui::CopySelectionPane::Chat)
     }

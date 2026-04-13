@@ -283,10 +283,10 @@ pub fn should_auto_update() -> bool {
         return false;
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if is_inside_git_repo(&exe) {
-            return false;
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && is_inside_git_repo(&exe)
+    {
+        return false;
     }
 
     true
@@ -411,7 +411,7 @@ fn latest_main_sha_blocking() -> Result<String> {
         .to_string())
 }
 
-fn platform_asset<'a>(release: &'a GitHubRelease) -> Result<&'a GitHubAsset> {
+fn platform_asset(release: &GitHubRelease) -> Result<&GitHubAsset> {
     let asset_name = get_asset_name();
     release
         .assets
@@ -884,11 +884,7 @@ pub fn download_and_install_blocking(release: &GitHubRelease) -> Result<PathBuf>
         .find(|a| a.name.starts_with(asset_name))
         .ok_or_else(|| anyhow::anyhow!("No asset found for platform: {}", asset_name))?;
 
-    let download_url = if asset.name.ends_with(".tar.gz") {
-        asset.browser_download_url.clone()
-    } else {
-        asset.browser_download_url.clone()
-    };
+    let download_url = asset.browser_download_url.clone();
 
     let temp_dir = std::env::temp_dir();
     let temp_path = temp_dir.join(format!("jcode-update-{}", std::process::id()));

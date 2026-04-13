@@ -1,5 +1,7 @@
 use super::*;
 
+type LastInjectedMemorySetBySession = HashMap<String, (HashSet<String>, Instant)>;
+
 /// Pending memory prompt from background check - ready to inject on next turn.
 /// Keyed by session ID so each session gets its own pending memory.
 static PENDING_MEMORY: Mutex<Option<HashMap<String, PendingMemory>>> = Mutex::new(None);
@@ -11,8 +13,7 @@ static LAST_INJECTED_PROMPT_SIGNATURE: Mutex<Option<HashMap<String, (String, Ins
 
 /// Recently injected memory ID sets per session.
 /// Used to suppress near-duplicate re-injection even when formatting differs.
-static LAST_INJECTED_MEMORY_SET: Mutex<Option<HashMap<String, (HashSet<String>, Instant)>>> =
-    Mutex::new(None);
+static LAST_INJECTED_MEMORY_SET: Mutex<Option<LastInjectedMemorySetBySession>> = Mutex::new(None);
 
 /// Memory IDs that have already been injected into the conversation.
 /// Used to prevent the same memory from being re-injected on subsequent turns.
@@ -91,16 +92,12 @@ pub fn take_pending_memory(session_id: &str) -> Option<PendingMemory> {
             let sig = prompt_signature(&pending.prompt);
             if let Ok(mut last_guard) = LAST_INJECTED_PROMPT_SIGNATURE.lock() {
                 let sig_map = last_guard.get_or_insert_with(HashMap::new);
-                if let Some((last_sig, last_at)) = sig_map.get(session_id) {
-                    if *last_sig == sig
-                        && last_at.elapsed().as_secs() < MEMORY_REPEAT_SUPPRESSION_SECS
-                    {
-                        crate::memory_log::log_pending_discarded(
-                            session_id,
-                            "duplicate suppressed",
-                        );
-                        return None;
-                    }
+                if let Some((last_sig, last_at)) = sig_map.get(session_id)
+                    && *last_sig == sig
+                    && last_at.elapsed().as_secs() < MEMORY_REPEAT_SUPPRESSION_SECS
+                {
+                    crate::memory_log::log_pending_discarded(session_id, "duplicate suppressed");
+                    return None;
                 }
                 sig_map.insert(session_id.to_string(), (sig, Instant::now()));
             }
@@ -240,12 +237,11 @@ pub fn sync_injected_memories(session_id: &str, ids: &[String]) {
 
 /// Check if a memory ID has already been injected for a session.
 pub fn is_memory_injected(session_id: &str, id: &str) -> bool {
-    if let Ok(guard) = INJECTED_MEMORY_IDS.lock() {
-        if let Some(outer) = guard.as_ref() {
-            if let Some(set) = outer.get(session_id) {
-                return set.contains(id);
-            }
-        }
+    if let Ok(guard) = INJECTED_MEMORY_IDS.lock()
+        && let Some(outer) = guard.as_ref()
+        && let Some(set) = outer.get(session_id)
+    {
+        return set.contains(id);
     }
     false
 }
@@ -253,39 +249,37 @@ pub fn is_memory_injected(session_id: &str, id: &str) -> bool {
 /// Check if a memory ID has already been injected in ANY session.
 /// Used by the singleton memory agent which doesn't track per-session state.
 pub fn is_memory_injected_any(id: &str) -> bool {
-    if let Ok(guard) = INJECTED_MEMORY_IDS.lock() {
-        if let Some(outer) = guard.as_ref() {
-            return outer.values().any(|set| set.contains(id));
-        }
+    if let Ok(guard) = INJECTED_MEMORY_IDS.lock()
+        && let Some(outer) = guard.as_ref()
+    {
+        return outer.values().any(|set| set.contains(id));
     }
     false
 }
 
 /// Clear injected memory tracking for a session (call on session reset or topic change).
 pub fn clear_injected_memories(session_id: &str) {
-    if let Ok(mut guard) = LAST_INJECTED_PROMPT_SIGNATURE.lock() {
-        if let Some(map) = guard.as_mut() {
-            map.remove(session_id);
-        }
+    if let Ok(mut guard) = LAST_INJECTED_PROMPT_SIGNATURE.lock()
+        && let Some(map) = guard.as_mut()
+    {
+        map.remove(session_id);
     }
-    if let Ok(mut guard) = LAST_INJECTED_MEMORY_SET.lock() {
-        if let Some(map) = guard.as_mut() {
-            map.remove(session_id);
-        }
+    if let Ok(mut guard) = LAST_INJECTED_MEMORY_SET.lock()
+        && let Some(map) = guard.as_mut()
+    {
+        map.remove(session_id);
     }
 
-    if let Ok(mut guard) = INJECTED_MEMORY_IDS.lock() {
-        if let Some(outer) = guard.as_mut() {
-            if let Some(set) = outer.remove(session_id) {
-                if !set.is_empty() {
-                    crate::logging::info(&format!(
-                        "[{}] Clearing {} tracked injected memory IDs",
-                        session_id,
-                        set.len()
-                    ));
-                }
-            }
-        }
+    if let Ok(mut guard) = INJECTED_MEMORY_IDS.lock()
+        && let Some(outer) = guard.as_mut()
+        && let Some(set) = outer.remove(session_id)
+        && !set.is_empty()
+    {
+        crate::logging::info(&format!(
+            "[{}] Clearing {} tracked injected memory IDs",
+            session_id,
+            set.len()
+        ));
     }
 }
 
@@ -315,20 +309,20 @@ pub fn clear_all_injected_memories() {
 
 /// Clear any pending memory result for a session.
 pub fn clear_pending_memory(session_id: &str) {
-    if let Ok(mut guard) = PENDING_MEMORY.lock() {
-        if let Some(map) = guard.as_mut() {
-            map.remove(session_id);
-        }
+    if let Ok(mut guard) = PENDING_MEMORY.lock()
+        && let Some(map) = guard.as_mut()
+    {
+        map.remove(session_id);
     }
-    if let Ok(mut guard) = LAST_INJECTED_PROMPT_SIGNATURE.lock() {
-        if let Some(map) = guard.as_mut() {
-            map.remove(session_id);
-        }
+    if let Ok(mut guard) = LAST_INJECTED_PROMPT_SIGNATURE.lock()
+        && let Some(map) = guard.as_mut()
+    {
+        map.remove(session_id);
     }
-    if let Ok(mut guard) = LAST_INJECTED_MEMORY_SET.lock() {
-        if let Some(map) = guard.as_mut() {
-            map.remove(session_id);
-        }
+    if let Ok(mut guard) = LAST_INJECTED_MEMORY_SET.lock()
+        && let Some(map) = guard.as_mut()
+    {
+        map.remove(session_id);
     }
     clear_injected_memories(session_id);
 }
@@ -368,17 +362,16 @@ pub fn has_any_pending_memory() -> bool {
 pub(super) fn begin_memory_check(session_id: &str) -> bool {
     if let Ok(mut guard) = MEMORY_CHECK_IN_PROGRESS.lock() {
         let set = guard.get_or_insert_with(HashSet::new);
-        set.insert(session_id.to_string())
-    } else {
-        false
+        return set.insert(session_id.to_string());
     }
+    false
 }
 
 pub(super) fn finish_memory_check(session_id: &str) {
-    if let Ok(mut guard) = MEMORY_CHECK_IN_PROGRESS.lock() {
-        if let Some(set) = guard.as_mut() {
-            set.remove(session_id);
-        }
+    if let Ok(mut guard) = MEMORY_CHECK_IN_PROGRESS.lock()
+        && let Some(set) = guard.as_mut()
+    {
+        set.remove(session_id);
     }
 }
 

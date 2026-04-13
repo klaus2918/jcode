@@ -82,6 +82,10 @@ impl McpManager {
 
     /// Connect to all configured servers.
     /// Shared servers go to the pool, non-shared are spawned per-session.
+    #[expect(
+        clippy::collapsible_if,
+        reason = "MCP connect flow keeps shared-pool and owned-server paths explicit"
+    )]
     pub async fn connect_all(&self) -> Result<(usize, Vec<(String, String)>)> {
         let mut total_successes = 0;
         let mut total_failures = Vec::new();
@@ -158,6 +162,10 @@ impl McpManager {
     }
 
     /// Connect to a specific server
+    #[expect(
+        clippy::collapsible_if,
+        reason = "MCP connect flow keeps shared-pool and owned-server paths explicit"
+    )]
     pub async fn connect(&self, name: &str, config: &McpServerConfig) -> Result<()> {
         if config.shared {
             if let Some(pool) = &self.pool {

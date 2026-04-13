@@ -1816,7 +1816,7 @@ impl App {
                     .working_dir
                     .as_deref()
                     .map(|dir| crate::memory::MemoryManager::new().with_project_dir(dir))
-                    .unwrap_or_else(crate::memory::MemoryManager::new);
+                    .unwrap_or_default();
                 let mut stored_count = 0;
 
                 for memory in extracted {

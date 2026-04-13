@@ -262,9 +262,7 @@ fn load_claude_code_entries(path: &Path) -> Result<Vec<ClaudeCodeEntry>> {
     Ok(entries)
 }
 
-fn ordered_claude_code_message_entries<'a>(
-    entries: &'a [ClaudeCodeEntry],
-) -> Vec<&'a ClaudeCodeEntry> {
+fn ordered_claude_code_message_entries(entries: &[ClaudeCodeEntry]) -> Vec<&ClaudeCodeEntry> {
     let message_entries: Vec<&ClaudeCodeEntry> = entries
         .iter()
         .filter(|e| {
@@ -362,7 +360,7 @@ fn claude_code_session_info_from_file(
         .or_else(|| {
             ordered_entries.iter().find_map(|entry| {
                 (entry.entry_type == "user")
-                    .then(|| entry.message.as_ref())
+                    .then_some(entry.message.as_ref())
                     .flatten()
                     .and_then(|message| claude_text_from_content(&message.content))
             })
@@ -989,10 +987,10 @@ fn extract_text_from_json_value(value: &serde_json::Value) -> String {
                     }
                     return;
                 }
-                if let Some(text) = map.get("title").and_then(|v| v.as_str()) {
-                    if !text.trim().is_empty() {
-                        out.push(text.trim().to_string());
-                    }
+                if let Some(text) = map.get("title").and_then(|v| v.as_str())
+                    && !text.trim().is_empty()
+                {
+                    out.push(text.trim().to_string());
                 }
                 for (key, nested) in map {
                     if key == "type" || key == "title" {
@@ -1096,7 +1094,7 @@ pub fn import_codex_session_from_path(
     path: &Path,
     session_id_hint: Option<&str>,
 ) -> Result<Session> {
-    let file = File::open(&path)?;
+    let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
     let Some(first_line) = lines.next() else {
@@ -1330,7 +1328,7 @@ pub fn import_opencode_session_from_path(
     session_path: &Path,
     session_id_hint: Option<&str>,
 ) -> Result<Session> {
-    let value: serde_json::Value = serde_json::from_reader(File::open(&session_path)?)?;
+    let value: serde_json::Value = serde_json::from_reader(File::open(session_path)?)?;
     let session_id = value
         .get("id")
         .and_then(|v| v.as_str())
@@ -1363,7 +1361,7 @@ pub fn import_opencode_session_from_path(
         .and_then(|v| v.as_str())
         .map(truncate_title);
 
-    let messages_root = crate::storage::user_home_path(&format!(
+    let messages_root = crate::storage::user_home_path(format!(
         ".local/share/opencode/storage/message/{}",
         session_id
     ))?;
@@ -1448,8 +1446,8 @@ pub fn print_sessions_table(sessions: &[ClaudeCodeSessionInfo]) {
 
     println!("Claude Code Sessions:\n");
     println!(
-        "{:<36}  {:>5}  {:<20}  {}",
-        "Session ID", "Msgs", "Modified", "First Prompt"
+        "{:<36}  {:>5}  {:<20}  First Prompt",
+        "Session ID", "Msgs", "Modified"
     );
     println!("{}", "-".repeat(100));
 

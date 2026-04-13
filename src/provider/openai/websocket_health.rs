@@ -82,18 +82,20 @@ pub(super) async fn websocket_cooldown_remaining(
 
     {
         let guard = websocket_cooldowns.read().await;
-        if let Some(until) = guard.get(&key) {
-            if *until > now {
-                return Some(*until - now);
-            }
+        if let Some(until) = guard.get(&key)
+            && *until > now
+        {
+            return Some(*until - now);
         }
     }
 
     let mut guard = websocket_cooldowns.write().await;
-    if let Some(until) = guard.get(&key) {
-        if *until > now {
-            return Some(*until - now);
-        }
+    if let Some(until) = guard.get(&key)
+        && *until > now
+    {
+        return Some(*until - now);
+    }
+    if guard.get(&key).is_some() {
         guard.remove(&key);
     }
     None

@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::clone_on_copy))]
+
 use super::*;
 use crate::bus::{
     BackgroundTaskCompleted, BackgroundTaskStatus, BusEvent, ClientMaintenanceAction,
@@ -10230,7 +10232,7 @@ fn buffer_to_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -
         lines.push(line.trim_end().to_string());
     }
     // Trim trailing empty lines
-    while lines.last().map_or(false, |l| l.is_empty()) {
+    while lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
     lines.join("\n")

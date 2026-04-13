@@ -365,10 +365,10 @@ pub fn list_relevant_goals(working_dir: Option<&Path>) -> Result<Vec<Goal>> {
 }
 
 pub fn resume_goal(session_id: &str, working_dir: Option<&Path>) -> Result<Option<Goal>> {
-    if let Some(goal) = load_attached_goal(session_id, working_dir)? {
-        if goal.status.is_resumable() {
-            return Ok(Some(goal));
-        }
+    if let Some(goal) = load_attached_goal(session_id, working_dir)?
+        && goal.status.is_resumable()
+    {
+        return Ok(Some(goal));
     }
 
     let mut goals = list_relevant_goals(working_dir)?;
@@ -524,10 +524,10 @@ pub fn header_badge(
     working_dir: Option<&Path>,
     snapshot: &crate::side_panel::SidePanelSnapshot,
 ) -> Option<String> {
-    if let Some(page) = snapshot.focused_page() {
-        if page.id.starts_with("goal.") {
-            return Some(format!("🎯 {}*", truncate_title(&page.title, 28)));
-        }
+    if let Some(page) = snapshot.focused_page()
+        && page.id.starts_with("goal.")
+    {
+        return Some(format!("🎯 {}*", truncate_title(&page.title, 28)));
     }
 
     let goals = list_relevant_goals(working_dir).ok()?;

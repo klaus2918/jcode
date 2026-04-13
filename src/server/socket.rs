@@ -249,13 +249,12 @@ pub async fn spawn_server_notify(cmd: &mut std::process::Command) -> Result<std:
 pub async fn wait_for_server_ready(path: &std::path::Path, timeout: Duration) -> Result<()> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if crate::transport::is_socket_path(path) {
-            if let Ok(mut client) = Client::connect_with_path(path.to_path_buf()).await {
-                match tokio::time::timeout(Duration::from_millis(250), client.ping()).await {
-                    Ok(Ok(true)) => return Ok(()),
-                    Ok(Ok(false)) | Ok(Err(_)) | Err(_) => {}
-                }
-            }
+        if crate::transport::is_socket_path(path)
+            && let Ok(mut client) = Client::connect_with_path(path.to_path_buf()).await
+            && let Ok(Ok(true)) =
+                tokio::time::timeout(Duration::from_millis(250), client.ping()).await
+        {
+            return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

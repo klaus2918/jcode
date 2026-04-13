@@ -418,11 +418,11 @@ impl BenchState {
             bench_file_paths,
             linked_refresh_path: matches!(mode, BenchMode::SidePanel)
                 .then(|| match side_panel_source {
-                    SidePanelSource::LinkedFile => Some(PathBuf::from(
+                    SidePanelSource::LinkedFile => Some(
                         std::env::temp_dir()
                             .join("jcode_tui_bench")
                             .join("side_panel_linked.md"),
-                    )),
+                    ),
                     SidePanelSource::Managed => None,
                 })
                 .flatten(),

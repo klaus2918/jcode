@@ -9,6 +9,7 @@ use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, Instant};
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HistoryPayloadMode {
@@ -43,7 +44,7 @@ pub(super) async fn handle_get_state(
     id: u64,
     client_session_id: &str,
     client_is_processing: bool,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     writer: &Arc<Mutex<WriteHalf>>,
 ) -> Result<()> {
     let session_count = {
@@ -63,13 +64,17 @@ pub(super) async fn handle_get_state(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "history fetch needs session state, client activity, provider handle, and server identity metadata"
+)]
 pub(super) async fn handle_get_history(
     id: u64,
     client_session_id: &str,
     client_is_processing: bool,
     agent: &Arc<Mutex<Agent>>,
     provider: &Arc<dyn Provider>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     client_count: &Arc<RwLock<usize>>,
     writer: &Arc<Mutex<WriteHalf>>,
@@ -109,11 +114,15 @@ pub(super) async fn handle_get_history(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "history payload assembly includes agent state, sessions, counts, writer, activity, payload mode, and server identity"
+)]
 pub(super) async fn send_history(
     id: u64,
     session_id: &str,
     agent: &Arc<Mutex<Agent>>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     client_count: &Arc<RwLock<usize>>,
     writer: &Arc<Mutex<WriteHalf>>,
     server_name: &str,
@@ -248,10 +257,10 @@ pub(super) async fn send_history(
 
     let mut mcp_map: BTreeMap<String, usize> = BTreeMap::new();
     for name in &tool_names {
-        if let Some(rest) = name.strip_prefix("mcp__") {
-            if let Some((server, _tool)) = rest.split_once("__") {
-                *mcp_map.entry(server.to_string()).or_default() += 1;
-            }
+        if let Some(rest) = name.strip_prefix("mcp__")
+            && let Some((server, _tool)) = rest.split_once("__")
+        {
+            *mcp_map.entry(server.to_string()).or_default() += 1;
         }
     }
     let mcp_servers: Vec<String> = mcp_map

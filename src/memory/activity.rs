@@ -99,6 +99,10 @@ pub fn pipeline_start() {
 }
 
 /// Update pipeline step status
+#[expect(
+    clippy::collapsible_if,
+    reason = "Memory activity updates keep optional state transitions explicit"
+)]
 pub fn pipeline_update(f: impl FnOnce(&mut crate::tui::info_widget::PipelineState)) {
     if let Ok(mut guard) = MEMORY_ACTIVITY.lock() {
         if let Some(activity) = guard.as_mut() {
@@ -111,6 +115,10 @@ pub fn pipeline_update(f: impl FnOnce(&mut crate::tui::info_widget::PipelineStat
 
 /// Check for staleness and auto-reset if needed.
 /// Returns true if state was reset due to staleness.
+#[expect(
+    clippy::collapsible_if,
+    reason = "Memory activity timeout checks keep nested optional state explicit"
+)]
 pub fn check_staleness() -> bool {
     if let Ok(mut guard) = MEMORY_ACTIVITY.lock() {
         if let Some(activity) = guard.as_mut() {

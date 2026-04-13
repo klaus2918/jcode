@@ -106,10 +106,10 @@ pub(super) fn parse_batch_sub_outputs(content: &str) -> Vec<BatchSubResult> {
         current_pos = next_pos;
         let trimmed = line.trim_end_matches(['\n', '\r']);
 
-        if is_batch_section_header(trimmed) {
-            if let Some(start) = current_content_start.replace(current_pos) {
-                results.push(finalize_batch_section(&content[start..line_start]));
-            }
+        if is_batch_section_header(trimmed)
+            && let Some(start) = current_content_start.replace(current_pos)
+        {
+            results.push(finalize_batch_section(&content[start..line_start]));
         }
     }
 

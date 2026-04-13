@@ -18,7 +18,7 @@ use crate::tui::mermaid;
 use crate::tui::ui::{CopyTargetKind, RawCopyTarget};
 
 // Syntax highlighting resources (loaded once)
-static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(|| SyntaxSet::load_defaults_newlines());
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
 // Syntax highlighting cache - keyed by (code content hash, language)
@@ -93,10 +93,10 @@ pub fn get_diagram_mode_override() -> Option<DiagramDisplayMode> {
 }
 
 fn effective_diagram_mode() -> DiagramDisplayMode {
-    if let Ok(mode) = DIAGRAM_MODE_OVERRIDE.lock() {
-        if let Some(override_mode) = *mode {
-            return override_mode;
-        }
+    if let Ok(mode) = DIAGRAM_MODE_OVERRIDE.lock()
+        && let Some(override_mode) = *mode
+    {
+        return override_mode;
     }
     config().display.diagram_mode
 }
@@ -218,10 +218,10 @@ fn rendered_task_marker_width(text: &str) -> Option<(usize, &str)> {
 fn rendered_list_marker_width(text: &str) -> Option<usize> {
     if let Some(rest) = text.strip_prefix("• ") {
         let mut width = UnicodeWidthStr::width("• ");
-        if let Some((task_width, task_rest)) = rendered_task_marker_width(rest) {
-            if !task_rest.is_empty() {
-                width += task_width;
-            }
+        if let Some((task_width, task_rest)) = rendered_task_marker_width(rest)
+            && !task_rest.is_empty()
+        {
+            width += task_width;
         }
         return (!rest.is_empty()).then_some(width);
     }
@@ -234,10 +234,10 @@ fn rendered_list_marker_width(text: &str) -> Option<usize> {
     let suffix = text.get(digit_count..)?;
     let rest = suffix.strip_prefix(". ")?;
     let mut width = digit_count + UnicodeWidthStr::width(". ");
-    if let Some((task_width, task_rest)) = rendered_task_marker_width(rest) {
-        if !task_rest.is_empty() {
-            width += task_width;
-        }
+    if let Some((task_width, task_rest)) = rendered_task_marker_width(rest)
+        && !task_rest.is_empty()
+    {
+        width += task_width;
     }
     (!rest.is_empty()).then_some(width)
 }
@@ -824,12 +824,11 @@ fn exit_centered_structured_block(state: &mut CenteredStructuredBlockState, curr
         return;
     }
     state.depth = state.depth.saturating_sub(1);
-    if state.depth == 0 {
-        if let Some(start) = state.start_line.take() {
-            if current_line > start {
-                state.ranges.push(start..current_line);
-            }
-        }
+    if state.depth == 0
+        && let Some(start) = state.start_line.take()
+        && current_line > start
+    {
+        state.ranges.push(start..current_line);
     }
 }
 
@@ -849,10 +848,10 @@ fn finalize_centered_structured_blocks(
 ) {
     if state.depth > 0 {
         state.depth = 0;
-        if let Some(start) = state.start_line.take() {
-            if current_line > start {
-                state.ranges.push(start..current_line);
-            }
+        if let Some(start) = state.start_line.take()
+            && current_line > start
+        {
+            state.ranges.push(start..current_line);
         }
     }
 }
@@ -1598,14 +1597,15 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                         in_footnote_definition,
                     ),
                 );
-                if let Some(state) = list_stack.pop() {
-                    if center_code_blocks() && state.ordered {
-                        align_ordered_list_markers(
-                            &mut lines,
-                            &state.item_line_starts,
-                            state.max_marker_digits,
-                        );
-                    }
+                if let Some(state) = list_stack.pop()
+                    && center_code_blocks()
+                    && state.ordered
+                {
+                    align_ordered_list_markers(
+                        &mut lines,
+                        &state.item_line_starts,
+                        state.max_marker_digits,
+                    );
                 }
                 exit_centered_structured_block(&mut centered_blocks, lines.len());
                 if blockquote_depth == 0
@@ -1621,13 +1621,13 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 link_targets.push(dest_url.to_string());
             }
             Event::End(TagEnd::Link) => {
-                if let Some(url) = link_targets.pop() {
-                    if !url.is_empty() {
-                        current_spans.push(Span::styled(
-                            format!(" ({})", url),
-                            Style::default().fg(md_dim_color()),
-                        ));
-                    }
+                if let Some(url) = link_targets.pop()
+                    && !url.is_empty()
+                {
+                    current_spans.push(Span::styled(
+                        format!(" ({})", url),
+                        Style::default().fg(md_dim_color()),
+                    ));
                 }
             }
 
@@ -1843,18 +1843,17 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     };
                     match result {
                         Some(result) => {
-                            if streaming_mode {
-                                if let mermaid::RenderResult::Image {
+                            if streaming_mode
+                                && let mermaid::RenderResult::Image {
                                     hash,
                                     width,
                                     height,
                                     ..
                                 } = &result
-                                {
-                                    mermaid::set_streaming_preview_diagram(
-                                        *hash, *width, *height, None,
-                                    );
-                                }
+                            {
+                                mermaid::set_streaming_preview_diagram(
+                                    *hash, *width, *height, None,
+                                );
                             }
                             match result {
                                 mermaid::RenderResult::Image { .. } if side_only => {
@@ -2389,10 +2388,10 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
 
     normalize_block_separators(&mut lines);
 
-    if center_code_blocks() {
-        if let Some(width) = max_width {
-            center_structured_block_ranges(&mut lines, width, &centered_blocks.ranges);
-        }
+    if center_code_blocks()
+        && let Some(width) = max_width
+    {
+        center_structured_block_ranges(&mut lines, width, &centered_blocks.ranges);
     }
 
     if let Ok(mut state) = MARKDOWN_DEBUG.lock() {
@@ -2588,13 +2587,13 @@ fn highlight_code_cached(code: &str, lang: Option<&str>) -> Vec<Line<'static>> {
     let hash = hash_code(code, lang);
 
     // Check cache first
-    if let Ok(cache) = HIGHLIGHT_CACHE.lock() {
-        if let Some(lines) = cache.get(hash) {
-            if let Ok(mut state) = MARKDOWN_DEBUG.lock() {
-                state.stats.highlight_cache_hits += 1;
-            }
-            return lines;
+    if let Ok(cache) = HIGHLIGHT_CACHE.lock()
+        && let Some(lines) = cache.get(hash)
+    {
+        if let Ok(mut state) = MARKDOWN_DEBUG.lock() {
+            state.stats.highlight_cache_hits += 1;
         }
+        return lines;
     }
 
     // Cache miss - do the highlighting
@@ -2698,16 +2697,16 @@ pub fn highlight_file_lines(
 
     for (i, line) in lines.iter().enumerate() {
         let line_num = i + 1; // 1-indexed
-        if let Ok(ranges) = highlighter.highlight_line(line, &SYNTAX_SET) {
-            if line_numbers.contains(&line_num) {
-                let spans: Vec<Span<'static>> = ranges
-                    .into_iter()
-                    .map(|(style, text)| {
-                        Span::styled(text.to_string(), syntect_to_ratatui_style(style))
-                    })
-                    .collect();
-                results.push((line_num, spans));
-            }
+        if let Ok(ranges) = highlighter.highlight_line(line, &SYNTAX_SET)
+            && line_numbers.contains(&line_num)
+        {
+            let spans: Vec<Span<'static>> = ranges
+                .into_iter()
+                .map(|(style, text)| {
+                    Span::styled(text.to_string(), syntect_to_ratatui_style(style))
+                })
+                .collect();
+            results.push((line_num, spans));
         }
     }
 
@@ -2892,14 +2891,15 @@ pub fn render_markdown_lazy(
                         in_footnote_definition,
                     ),
                 );
-                if let Some(state) = list_stack.pop() {
-                    if center_code_blocks() && state.ordered {
-                        align_ordered_list_markers(
-                            &mut lines,
-                            &state.item_line_starts,
-                            state.max_marker_digits,
-                        );
-                    }
+                if let Some(state) = list_stack.pop()
+                    && center_code_blocks()
+                    && state.ordered
+                {
+                    align_ordered_list_markers(
+                        &mut lines,
+                        &state.item_line_starts,
+                        state.max_marker_digits,
+                    );
                 }
                 exit_centered_structured_block(&mut centered_blocks, lines.len());
                 if blockquote_depth == 0
@@ -2915,13 +2915,13 @@ pub fn render_markdown_lazy(
                 link_targets.push(dest_url.to_string());
             }
             Event::End(TagEnd::Link) => {
-                if let Some(url) = link_targets.pop() {
-                    if !url.is_empty() {
-                        current_spans.push(Span::styled(
-                            format!(" ({})", url),
-                            Style::default().fg(md_dim_color()),
-                        ));
-                    }
+                if let Some(url) = link_targets.pop()
+                    && !url.is_empty()
+                {
+                    current_spans.push(Span::styled(
+                        format!(" ({})", url),
+                        Style::default().fg(md_dim_color()),
+                    ));
                 }
             }
 
@@ -3591,10 +3591,10 @@ pub fn render_markdown_lazy(
 
     normalize_block_separators(&mut lines);
 
-    if center_code_blocks() {
-        if let Some(width) = max_width {
-            center_structured_block_ranges(&mut lines, width, &centered_blocks.ranges);
-        }
+    if center_code_blocks()
+        && let Some(width) = max_width
+    {
+        center_structured_block_ranges(&mut lines, width, &centered_blocks.ranges);
     }
 
     lines
@@ -3901,11 +3901,11 @@ fn tokenize_balanced_wrap(line: &Line<'static>) -> Option<Vec<WrapToken>> {
 }
 
 fn push_piece_char(pieces: &mut Vec<StyledPiece>, ch: char, style: Style) {
-    if let Some(last) = pieces.last_mut() {
-        if last.style == style {
-            last.text.push(ch);
-            return;
-        }
+    if let Some(last) = pieces.last_mut()
+        && last.style == style
+    {
+        last.text.push(ch);
+        return;
     }
     pieces.push(StyledPiece {
         text: ch.to_string(),
@@ -4007,9 +4007,8 @@ pub fn progress_bar(progress: f32, width: usize) -> String {
     let filled = (progress * width as f32) as usize;
     let empty = width.saturating_sub(filled);
 
-    let bar: String = std::iter::repeat('█')
-        .take(filled)
-        .chain(std::iter::repeat('░').take(empty))
+    let bar: String = std::iter::repeat_n('█', filled)
+        .chain(std::iter::repeat_n('░', empty))
         .collect();
 
     bar

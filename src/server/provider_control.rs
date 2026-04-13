@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use crate::agent::Agent;
 use crate::protocol::ServerEvent;
 use crate::provider::Provider;

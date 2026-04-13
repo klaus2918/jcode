@@ -1,4 +1,40 @@
 #![allow(dead_code)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::bind_instead_of_map,
+        clippy::clone_on_copy,
+        clippy::collapsible_if,
+        clippy::if_same_then_else,
+        clippy::implicit_saturating_sub,
+        clippy::items_after_test_module,
+        clippy::large_enum_variant,
+        clippy::let_and_return,
+        clippy::manual_abs_diff,
+        clippy::manual_div_ceil,
+        clippy::manual_find,
+        clippy::manual_is_multiple_of,
+        clippy::manual_pattern_char_comparison,
+        clippy::manual_repeat_n,
+        clippy::manual_strip,
+        clippy::map_entry,
+        clippy::missing_const_for_thread_local,
+        clippy::needless_borrow,
+        clippy::needless_borrows_for_generic_args,
+        clippy::needless_lifetimes,
+        clippy::needless_range_loop,
+        clippy::needless_return,
+        clippy::question_mark,
+        clippy::redundant_closure,
+        clippy::too_many_arguments,
+        clippy::type_complexity,
+        clippy::unnecessary_cast,
+        clippy::unnecessary_lazy_evaluations,
+        clippy::unnecessary_map_or,
+        clippy::unwrap_or_default,
+        clippy::while_let_loop
+    )
+)]
 
 use super::info_widget;
 use super::markdown;
@@ -566,12 +602,10 @@ fn is_running_stable_release() -> bool {
             if let (Ok(stable_canon), Ok(current_canon)) = (
                 std::fs::canonicalize(&stable_path),
                 std::fs::canonicalize(&current_exe),
-            ) {
-                if stable_canon == current_canon
-                    && !current_exe.to_string_lossy().contains("target/release")
-                {
-                    return true;
-                }
+            ) && stable_canon == current_canon
+                && !current_exe.to_string_lossy().contains("target/release")
+            {
+                return true;
             }
         }
 
@@ -725,15 +759,15 @@ fn render_context_bar(
         ("tool_io", "⚡", tool_io_c),
         ("other", "📦", other_c),
     ] {
-        if let Some((tokens, items)) = grouped.get(cat) {
-            if *tokens > 0 {
-                let lbl = if items.len() == 1 {
-                    items[0].clone()
-                } else {
-                    format!("{} ({})", cat, items.len())
-                };
-                final_segs.push((icon.to_string(), lbl, *tokens, color));
-            }
+        if let Some((tokens, items)) = grouped.get(cat)
+            && *tokens > 0
+        {
+            let lbl = if items.len() == 1 {
+                items[0].clone()
+            } else {
+                format!("{} ({})", cat, items.len())
+            };
+            final_segs.push((icon.to_string(), lbl, *tokens, color));
         }
     }
 
@@ -778,13 +812,13 @@ fn render_context_bar(
             rem -= w;
         }
     }
-    if rem > 0 && !final_segs.is_empty() {
-        if let Some(last_seg) = final_segs.last() {
-            bar.push(Span::styled(
-                "█".repeat(rem),
-                Style::default().fg(last_seg.3),
-            ));
-        }
+    if rem > 0
+        && let Some(last_seg) = final_segs.last()
+    {
+        bar.push(Span::styled(
+            "█".repeat(rem),
+            Style::default().fg(last_seg.3),
+        ));
     }
     if empty_w > 0 {
         bar.push(Span::styled(
@@ -802,7 +836,7 @@ fn render_context_bar(
         .map(|(_, l, _, _)| l.chars().count())
         .max()
         .unwrap_or(8);
-    let label_w = max_label_len.max(10).min(18);
+    let label_w = max_label_len.clamp(10, 18);
     let line_w = max_width;
 
     for (icon, label, tokens, color) in &final_segs {
@@ -1014,7 +1048,7 @@ fn calculate_input_lines(input: &str, line_width: usize) -> usize {
             total_lines += 1;
         } else {
             let display_width: usize = line.chars().map(|c| c.width().unwrap_or(0)).sum();
-            total_lines += (display_width + line_width - 1) / line_width;
+            total_lines += display_width.div_ceil(line_width);
         }
     }
     total_lines.max(1)
@@ -1051,20 +1085,19 @@ fn format_status_for_debug(app: &dyn TuiState) -> String {
             format!("Streaming (↑{} ↓{})", input, output)
         }
         ProcessingStatus::RunningTool(ref name) => {
-            if name == "batch" {
-                if let Some(progress) = app.batch_progress() {
-                    let completed = progress.completed;
-                    let total = progress.total;
-                    let mut status = format!("Running batch: {}/{} done", completed, total);
-                    if let Some(running) = summarize_batch_running_tools_compact(&progress.running)
-                    {
-                        status.push_str(&format!(", running: {}", running));
-                    }
-                    if let Some(last) = progress.last_completed.filter(|_| completed < total) {
-                        status.push_str(&format!(", last done: {}", last));
-                    }
-                    return status;
+            if name == "batch"
+                && let Some(progress) = app.batch_progress()
+            {
+                let completed = progress.completed;
+                let total = progress.total;
+                let mut status = format!("Running batch: {}/{} done", completed, total);
+                if let Some(running) = summarize_batch_running_tools_compact(&progress.running) {
+                    status.push_str(&format!(", running: {}", running));
                 }
+                if let Some(last) = progress.last_completed.filter(|_| completed < total) {
+                    status.push_str(&format!(", last done: {}", last));
+                }
+                return status;
             }
             format!("Running tool: {}", name)
         }
@@ -1219,13 +1252,13 @@ fn set_visible_copy_targets(targets: Vec<VisibleCopyTarget>) {
 pub(crate) fn visible_copy_target_for_key(key: char) -> Option<VisibleCopyTarget> {
     #[cfg(test)]
     {
-        return TEST_VISIBLE_COPY_TARGETS.with(|state| {
+        TEST_VISIBLE_COPY_TARGETS.with(|state| {
             state
                 .borrow()
                 .iter()
                 .find(|target| target.key.eq_ignore_ascii_case(&key))
                 .cloned()
-        });
+        })
     }
     #[cfg(not(test))]
     {
@@ -1233,10 +1266,10 @@ pub(crate) fn visible_copy_target_for_key(key: char) -> Option<VisibleCopyTarget
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        return state
+        state
             .iter()
             .find(|target| target.key.eq_ignore_ascii_case(&key))
-            .cloned();
+            .cloned()
     }
 }
 
@@ -1265,7 +1298,7 @@ fn prompt_viewport_state() -> &'static Mutex<PromptViewportState> {
 fn active_prompt_entry_animation(now_ms: u64) -> Option<PromptViewportAnimation> {
     #[cfg(test)]
     {
-        return TEST_PROMPT_VIEWPORT_STATE.with(|state| {
+        TEST_PROMPT_VIEWPORT_STATE.with(|state| {
             let mut state = state.borrow_mut();
             if let Some(anim) = state.active {
                 if now_ms.saturating_sub(anim.start_ms) <= PROMPT_ENTRY_ANIMATION_MS {
@@ -1274,7 +1307,7 @@ fn active_prompt_entry_animation(now_ms: u64) -> Option<PromptViewportAnimation>
                 state.active = None;
             }
             None
-        });
+        })
     }
     #[cfg(not(test))]
     {
@@ -1688,13 +1721,13 @@ fn copy_snapshot_slot_mut(
 fn copy_snapshot_for_pane(pane: crate::tui::CopySelectionPane) -> Option<CopyViewportSnapshot> {
     #[cfg(test)]
     {
-        return TEST_COPY_VIEWPORT.with(|snapshots| {
+        TEST_COPY_VIEWPORT.with(|snapshots| {
             let snapshots = snapshots.borrow().clone();
             match pane {
                 crate::tui::CopySelectionPane::Chat => snapshots.chat,
                 crate::tui::CopySelectionPane::SidePane => snapshots.side,
             }
-        });
+        })
     }
     #[cfg(not(test))]
     {
@@ -1720,6 +1753,10 @@ pub(crate) fn clear_copy_viewport_snapshot() {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Viewport snapshot helpers carry explicit render state to avoid hidden globals in call sites"
+)]
 fn record_copy_pane_snapshot(
     pane: crate::tui::CopySelectionPane,
     wrapped_plain_lines: Arc<Vec<String>>,
@@ -1764,6 +1801,10 @@ fn record_copy_pane_snapshot(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Viewport snapshot helpers carry explicit render state to avoid hidden globals in call sites"
+)]
 pub(crate) fn record_side_pane_snapshot_precomputed(
     wrapped_plain_lines: Arc<Vec<String>>,
     wrapped_copy_offsets: Arc<Vec<usize>>,
@@ -1787,6 +1828,10 @@ pub(crate) fn record_side_pane_snapshot_precomputed(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Viewport snapshot helpers carry explicit render state to avoid hidden globals in call sites"
+)]
 pub(crate) fn record_copy_viewport_snapshot(
     wrapped_plain_lines: Arc<Vec<String>>,
     wrapped_copy_offsets: Arc<Vec<usize>>,
@@ -1923,7 +1968,7 @@ pub(crate) fn copy_point_from_screen(
 ) -> Option<crate::tui::CopySelectionPoint> {
     #[cfg(test)]
     {
-        return TEST_COPY_VIEWPORT.with(|snapshots| {
+        TEST_COPY_VIEWPORT.with(|snapshots| {
             let snapshots = snapshots.borrow().clone();
             snapshots
                 .chat
@@ -1935,7 +1980,7 @@ pub(crate) fn copy_point_from_screen(
                         .as_ref()
                         .and_then(|snapshot| copy_point_from_snapshot(snapshot, column, row))
                 })
-        });
+        })
     }
     #[cfg(not(test))]
     {
@@ -2176,18 +2221,13 @@ fn raw_selection_point(
 fn trim_url_candidate(candidate: &str) -> &str {
     let mut trimmed = candidate;
     loop {
-        let next = if trimmed.ends_with(['.', ',', ';', ':', '!', '?']) {
-            &trimmed[..trimmed.len() - 1]
-        } else if trimmed.ends_with(')')
-            && trimmed.matches(')').count() > trimmed.matches('(').count()
-        {
-            &trimmed[..trimmed.len() - 1]
-        } else if trimmed.ends_with(']')
-            && trimmed.matches(']').count() > trimmed.matches('[').count()
-        {
-            &trimmed[..trimmed.len() - 1]
-        } else if trimmed.ends_with('}')
-            && trimmed.matches('}').count() > trimmed.matches('{').count()
+        let next = if trimmed.ends_with(['.', ',', ';', ':', '!', '?'])
+            || (trimmed.ends_with(')')
+                && trimmed.matches(')').count() > trimmed.matches('(').count())
+            || (trimmed.ends_with(']')
+                && trimmed.matches(']').count() > trimmed.matches('[').count())
+            || (trimmed.ends_with('}')
+                && trimmed.matches('}').count() > trimmed.matches('{').count())
         {
             &trimmed[..trimmed.len() - 1]
         } else {
@@ -2217,10 +2257,11 @@ fn link_target_from_snapshot(
 
         let start_col = line_display_width(&raw_text[..mat.start()]);
         let end_col = start_col + line_display_width(trimmed);
-        if raw_point.column >= start_col && raw_point.column < end_col {
-            if url::Url::parse(trimmed).is_ok() {
-                return Some(trimmed.to_string());
-            }
+        if raw_point.column >= start_col
+            && raw_point.column < end_col
+            && url::Url::parse(trimmed).is_ok()
+        {
+            return Some(trimmed.to_string());
         }
     }
 
@@ -2278,7 +2319,7 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
         Err(payload) => {
             let panic_count = DRAW_PANIC_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             let msg = panic_payload_to_string(&payload);
-            if panic_count <= 3 || panic_count % 50 == 0 {
+            if panic_count <= 3 || panic_count.is_multiple_of(50) {
                 crate::logging::error(&format!(
                     "Recovered TUI draw panic #{}: {}",
                     panic_count, msg
@@ -2854,13 +2895,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                         placement.kind, placement.rect
                     ));
                 }
-                if let Some(diagram_area) = diagram_area {
-                    if rects_overlap(placement.rect, diagram_area) {
-                        capture.anomaly(format!(
-                            "Info widget {:?} overlaps diagram area",
-                            placement.kind
-                        ));
-                    }
+                if let Some(diagram_area) = diagram_area
+                    && rects_overlap(placement.rect, diagram_area)
+                {
+                    capture.anomaly(format!(
+                        "Info widget {:?} overlaps diagram area",
+                        placement.kind
+                    ));
                 }
             }
             for i in 0..placements.len() {

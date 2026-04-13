@@ -660,17 +660,16 @@ fn gunzip(bytes: &[u8]) -> Result<Vec<u8>> {
 fn decode_protobuf_events(payload: &[u8], router: &mut ThinkRouter) -> Result<Vec<StreamEvent>> {
     let mut events = Vec::new();
     for field in parse_fields(payload)? {
-        if field.number == 2 {
-            if let FieldValue::Bytes(inner) = field.value {
-                if let Ok(inner_fields) = parse_fields(&inner) {
-                    for inner_field in inner_fields {
-                        if inner_field.number == 1 {
-                            if let FieldValue::Bytes(text) = inner_field.value {
-                                let text = String::from_utf8_lossy(&text);
-                                events.extend(router.push_chunk(&text));
-                            }
-                        }
-                    }
+        if field.number == 2
+            && let FieldValue::Bytes(inner) = field.value
+            && let Ok(inner_fields) = parse_fields(&inner)
+        {
+            for inner_field in inner_fields {
+                if inner_field.number == 1
+                    && let FieldValue::Bytes(text) = inner_field.value
+                {
+                    let text = String::from_utf8_lossy(&text);
+                    events.extend(router.push_chunk(&text));
                 }
             }
         }
@@ -831,15 +830,13 @@ impl ThinkRouter {
             break;
         }
 
-        if chunk.is_none() {
-            if !self.carry.is_empty() {
-                if self.in_think {
-                    events.push(StreamEvent::ThinkingDelta(std::mem::take(&mut self.carry)));
-                    events.push(StreamEvent::ThinkingEnd);
-                    self.in_think = false;
-                } else {
-                    events.push(StreamEvent::TextDelta(std::mem::take(&mut self.carry)));
-                }
+        if chunk.is_none() && !self.carry.is_empty() {
+            if self.in_think {
+                events.push(StreamEvent::ThinkingDelta(std::mem::take(&mut self.carry)));
+                events.push(StreamEvent::ThinkingEnd);
+                self.in_think = false;
+            } else {
+                events.push(StreamEvent::TextDelta(std::mem::take(&mut self.carry)));
             }
         }
 

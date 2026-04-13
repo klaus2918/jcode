@@ -86,6 +86,10 @@ pub fn set_provider_info(provider: &str, model: &str) {
 }
 
 /// Clear the logging context for the current thread
+#[expect(
+    clippy::collapsible_if,
+    reason = "Logger lock + optional logger branching is intentionally straightforward"
+)]
 pub fn clear_context() {
     if let Some(task_id) = current_task_id() {
         if let Some(store) = TASK_LOG_CONTEXTS.get() {
@@ -211,6 +215,10 @@ pub fn init() {
 }
 
 /// Log an info message
+#[expect(
+    clippy::collapsible_if,
+    reason = "Logger lock + optional logger branching is intentionally straightforward"
+)]
 pub fn info(message: &str) {
     if let Ok(mut guard) = LOGGER.lock() {
         if let Some(logger) = guard.as_mut() {
@@ -220,6 +228,10 @@ pub fn info(message: &str) {
 }
 
 /// Log an error message
+#[expect(
+    clippy::collapsible_if,
+    reason = "Logger lock + optional logger branching is intentionally straightforward"
+)]
 pub fn error(message: &str) {
     if let Ok(mut guard) = LOGGER.lock() {
         if let Some(logger) = guard.as_mut() {
@@ -229,6 +241,10 @@ pub fn error(message: &str) {
 }
 
 /// Log a warning message
+#[expect(
+    clippy::collapsible_if,
+    reason = "Logger lock + optional logger branching is intentionally straightforward"
+)]
 pub fn warn(message: &str) {
     if let Ok(mut guard) = LOGGER.lock() {
         if let Some(logger) = guard.as_mut() {
@@ -238,6 +254,10 @@ pub fn warn(message: &str) {
 }
 
 /// Log a debug message (only if JCODE_TRACE is set)
+#[expect(
+    clippy::collapsible_if,
+    reason = "Debug logging keeps env gating and logger access explicit"
+)]
 pub fn debug(message: &str) {
     if std::env::var("JCODE_TRACE").is_ok() {
         if let Ok(mut guard) = LOGGER.lock() {
@@ -249,6 +269,10 @@ pub fn debug(message: &str) {
 }
 
 /// Log a tool call
+#[expect(
+    clippy::collapsible_if,
+    reason = "Logger lock + optional logger branching is intentionally straightforward"
+)]
 pub fn tool_call(name: &str, input: &str, output: &str) {
     let msg = format!(
         "TOOL[{}] input={} output={}",
@@ -264,6 +288,10 @@ pub fn tool_call(name: &str, input: &str, output: &str) {
 }
 
 /// Log a crash/panic for auto-debug
+#[expect(
+    clippy::collapsible_if,
+    reason = "Logger lock + optional logger branching is intentionally straightforward"
+)]
 pub fn crash(error: &str, context: &str) {
     let msg = format!("CRASH: {} | Context: {}", error, context);
     if let Ok(mut guard) = LOGGER.lock() {
@@ -290,17 +318,17 @@ pub fn log_path() -> Option<PathBuf> {
 
 /// Clean up old logs (keep last 7 days)
 pub fn cleanup_old_logs() {
-    if let Some(log_dir) = log_dir() {
-        if let Ok(entries) = fs::read_dir(&log_dir) {
-            let cutoff = Local::now() - chrono::Duration::days(7);
-            for entry in entries.flatten() {
-                if let Ok(metadata) = entry.metadata() {
-                    if let Ok(modified) = metadata.modified() {
-                        let modified: chrono::DateTime<Local> = modified.into();
-                        if modified < cutoff {
-                            let _ = fs::remove_file(entry.path());
-                        }
-                    }
+    if let Some(log_dir) = log_dir()
+        && let Ok(entries) = fs::read_dir(&log_dir)
+    {
+        let cutoff = Local::now() - chrono::Duration::days(7);
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata()
+                && let Ok(modified) = metadata.modified()
+            {
+                let modified: chrono::DateTime<Local> = modified.into();
+                if modified < cutoff {
+                    let _ = fs::remove_file(entry.path());
                 }
             }
         }

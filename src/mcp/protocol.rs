@@ -213,6 +213,10 @@ impl McpConfig {
 
     /// Import MCP servers from Claude Code and Codex CLI on first run.
     /// Only runs if ~/.jcode/mcp.json doesn't exist yet.
+    #[expect(
+        clippy::collapsible_if,
+        reason = "Import logic keeps source-specific MCP config handling explicit"
+    )]
     fn import_from_external() {
         let jcode_mcp = match crate::storage::jcode_dir() {
             Ok(dir) => dir.join("mcp.json"),
@@ -323,6 +327,10 @@ impl McpConfig {
     }
 
     /// Load from default locations (merges jcode global + local, local overrides)
+    #[expect(
+        clippy::collapsible_if,
+        reason = "Import logic keeps source-specific MCP config merge order explicit"
+    )]
     pub fn load() -> Self {
         // First-run import from Claude Code / Codex CLI
         Self::import_from_external();

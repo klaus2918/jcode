@@ -1200,15 +1200,14 @@ impl MultiProvider {
                         if decision.should_mark_provider_unavailable() {
                             record_provider_unavailable_for_account(key, &summary);
                         }
-                        if candidate == active {
-                            if let Some(stream) = self
+                        if candidate == active
+                            && let Some(stream) = self
                                 .try_same_provider_account_failover(
                                     candidate, messages, tools, mode, &summary, &mut notes,
                                 )
                                 .await?
-                            {
-                                return Ok(stream);
-                            }
+                        {
+                            return Ok(stream);
                         }
                         if candidate == active {
                             failover_reason = Some(summary);
@@ -1550,7 +1549,7 @@ impl MultiProvider {
                     clear_all_provider_unavailability_for_account();
                     clear_all_model_unavailability_for_account();
                     if let Some(anthropic) = self.anthropic_provider() {
-                        let _ = tokio::task::block_in_place(|| {
+                        tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current()
                                 .block_on(anthropic.invalidate_credentials())
                         });
@@ -1563,7 +1562,7 @@ impl MultiProvider {
                     clear_all_provider_unavailability_for_account();
                     clear_all_model_unavailability_for_account();
                     if let Some(openai) = self.openai_provider() {
-                        let _ = tokio::task::block_in_place(|| {
+                        tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current()
                                 .block_on(openai.invalidate_credentials())
                         });
@@ -1713,22 +1712,22 @@ impl Provider for MultiProvider {
 
         // Handle explicit "copilot:" prefix from model picker
         if let Some(copilot_model) = model.strip_prefix("copilot:") {
-            if let Some(forced) = self.forced_provider {
-                if forced != ActiveProvider::Copilot {
-                    let copilot_guard = self.copilot_api.read().unwrap();
-                    if copilot_guard.is_none() {
-                        anyhow::bail!(
-                            "Model '{}' requires GitHub Copilot but Copilot credentials are not configured. Run `jcode login --provider copilot` first.",
-                            copilot_model
-                        );
-                    }
-                    drop(copilot_guard);
-                    crate::logging::info(&format!(
-                        "Switching from {} to GitHub Copilot for model '{}'",
-                        Self::provider_label(forced),
-                        copilot_model,
-                    ));
+            if let Some(forced) = self.forced_provider
+                && forced != ActiveProvider::Copilot
+            {
+                let copilot_guard = self.copilot_api.read().unwrap();
+                if copilot_guard.is_none() {
+                    anyhow::bail!(
+                        "Model '{}' requires GitHub Copilot but Copilot credentials are not configured. Run `jcode login --provider copilot` first.",
+                        copilot_model
+                    );
                 }
+                drop(copilot_guard);
+                crate::logging::info(&format!(
+                    "Switching from {} to GitHub Copilot for model '{}'",
+                    Self::provider_label(forced),
+                    copilot_model,
+                ));
             }
             let copilot_guard = self.copilot_api.read().unwrap();
             if copilot_guard.is_some() {
@@ -1756,22 +1755,22 @@ impl Provider for MultiProvider {
 
         // Handle explicit "cursor:" prefix from model picker/default config
         if let Some(cursor_model) = model.strip_prefix("cursor:") {
-            if let Some(forced) = self.forced_provider {
-                if forced != ActiveProvider::Cursor {
-                    let cursor_guard = self.cursor.read().unwrap();
-                    if cursor_guard.is_none() {
-                        anyhow::bail!(
-                            "Model '{}' requires Cursor but Cursor credentials are not configured. Run `jcode login --provider cursor` first.",
-                            cursor_model
-                        );
-                    }
-                    drop(cursor_guard);
-                    crate::logging::info(&format!(
-                        "Switching from {} to Cursor for model '{}'",
-                        Self::provider_label(forced),
-                        cursor_model,
-                    ));
+            if let Some(forced) = self.forced_provider
+                && forced != ActiveProvider::Cursor
+            {
+                let cursor_guard = self.cursor.read().unwrap();
+                if cursor_guard.is_none() {
+                    anyhow::bail!(
+                        "Model '{}' requires Cursor but Cursor credentials are not configured. Run `jcode login --provider cursor` first.",
+                        cursor_model
+                    );
                 }
+                drop(cursor_guard);
+                crate::logging::info(&format!(
+                    "Switching from {} to Cursor for model '{}'",
+                    Self::provider_label(forced),
+                    cursor_model,
+                ));
             }
             let cursor_guard = self.cursor.read().unwrap();
             if cursor_guard.is_some() {
@@ -1804,41 +1803,41 @@ impl Provider for MultiProvider {
 
         // Detect which provider this model belongs to
         let target_provider = provider_for_model(model);
-        if let Some(forced) = self.forced_provider {
-            if let Some(target) = target_provider {
-                let target_active = match target {
-                    "claude" => ActiveProvider::Claude,
-                    "openai" => ActiveProvider::OpenAI,
-                    "gemini" => ActiveProvider::Gemini,
-                    "cursor" => ActiveProvider::Cursor,
-                    "openrouter" => ActiveProvider::OpenRouter,
-                    _ => forced,
+        if let Some(forced) = self.forced_provider
+            && let Some(target) = target_provider
+        {
+            let target_active = match target {
+                "claude" => ActiveProvider::Claude,
+                "openai" => ActiveProvider::OpenAI,
+                "gemini" => ActiveProvider::Gemini,
+                "cursor" => ActiveProvider::Cursor,
+                "openrouter" => ActiveProvider::OpenRouter,
+                _ => forced,
+            };
+            if target_active != forced {
+                let has_target_creds = match target_active {
+                    ActiveProvider::Claude => self.has_claude_runtime(),
+                    ActiveProvider::OpenAI => self.openai_provider().is_some(),
+                    ActiveProvider::Gemini => self.gemini_provider().is_some(),
+                    ActiveProvider::Cursor => self.cursor.read().unwrap().is_some(),
+                    ActiveProvider::OpenRouter => self.openrouter.read().unwrap().is_some(),
+                    ActiveProvider::Copilot => self.copilot_api.read().unwrap().is_some(),
                 };
-                if target_active != forced {
-                    let has_target_creds = match target_active {
-                        ActiveProvider::Claude => self.has_claude_runtime(),
-                        ActiveProvider::OpenAI => self.openai_provider().is_some(),
-                        ActiveProvider::Gemini => self.gemini_provider().is_some(),
-                        ActiveProvider::Cursor => self.cursor.read().unwrap().is_some(),
-                        ActiveProvider::OpenRouter => self.openrouter.read().unwrap().is_some(),
-                        ActiveProvider::Copilot => self.copilot_api.read().unwrap().is_some(),
-                    };
-                    if !has_target_creds {
-                        anyhow::bail!(
-                            "Model '{}' belongs to {} but {} credentials are not configured. Run `jcode login --provider {}` first.",
-                            model,
-                            Self::provider_label(target_active),
-                            Self::provider_label(target_active),
-                            Self::provider_key(target_active),
-                        );
-                    }
-                    crate::logging::info(&format!(
-                        "Switching from {} to {} for model '{}'",
-                        Self::provider_label(forced),
-                        Self::provider_label(target_active),
+                if !has_target_creds {
+                    anyhow::bail!(
+                        "Model '{}' belongs to {} but {} credentials are not configured. Run `jcode login --provider {}` first.",
                         model,
-                    ));
+                        Self::provider_label(target_active),
+                        Self::provider_label(target_active),
+                        Self::provider_key(target_active),
+                    );
                 }
+                crate::logging::info(&format!(
+                    "Switching from {} to {} for model '{}'",
+                    Self::provider_label(forced),
+                    Self::provider_label(target_active),
+                    model,
+                ));
             }
         }
 
@@ -2060,28 +2059,28 @@ impl Provider for MultiProvider {
     }
 
     fn available_providers_for_model(&self, model: &str) -> Vec<String> {
-        if model.contains('/') {
-            if let Some(openrouter) = self.openrouter.read().unwrap().clone() {
-                return openrouter.available_providers_for_model(model);
-            }
+        if model.contains('/')
+            && let Some(openrouter) = self.openrouter.read().unwrap().clone()
+        {
+            return openrouter.available_providers_for_model(model);
         }
         Vec::new()
     }
 
     fn provider_details_for_model(&self, model: &str) -> Vec<(String, String)> {
-        if model.contains('/') {
-            if let Some(openrouter) = self.openrouter.read().unwrap().clone() {
-                return openrouter.provider_details_for_model(model);
-            }
+        if model.contains('/')
+            && let Some(openrouter) = self.openrouter.read().unwrap().clone()
+        {
+            return openrouter.provider_details_for_model(model);
         }
         Vec::new()
     }
 
     fn preferred_provider(&self) -> Option<String> {
-        if let Some(openrouter) = self.openrouter.read().unwrap().clone() {
-            if matches!(*self.active.read().unwrap(), ActiveProvider::OpenRouter) {
-                return openrouter.preferred_provider();
-            }
+        if let Some(openrouter) = self.openrouter.read().unwrap().clone()
+            && matches!(*self.active.read().unwrap(), ActiveProvider::OpenRouter)
+        {
+            return openrouter.preferred_provider();
         }
         None
     }

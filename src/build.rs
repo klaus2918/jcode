@@ -1217,9 +1217,11 @@ mod tests {
 
     #[test]
     fn test_binary_choice_for_canary_session() {
-        let mut manifest = BuildManifest::default();
-        manifest.canary = Some("abc123".to_string());
-        manifest.canary_session = Some("session_test".to_string());
+        let manifest = BuildManifest {
+            canary: Some("abc123".to_string()),
+            canary_session: Some("session_test".to_string()),
+            ..Default::default()
+        };
 
         // Canary session should get canary binary
         match manifest.binary_for_session("session_test") {

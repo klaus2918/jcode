@@ -9,17 +9,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
-#[allow(clippy::too_many_arguments)]
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "swarm read debug commands inspect sessions, swarm state, shared context, plans, channels, and file touches together"
+)]
 pub(super) async fn maybe_handle_swarm_read_command(
     cmd: &str,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     shared_context: &Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions: &ChannelSubscriptions,
     server_identity: &ServerIdentity,
 ) -> Result<Option<String>> {
     if cmd == "swarm" || cmd == "swarm_status" || cmd == "swarm:members" {

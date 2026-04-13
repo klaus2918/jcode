@@ -159,13 +159,13 @@ pub fn allocator_info() -> AllocatorInfo {
     {
         let stats = jemalloc_stats();
         let profiling = jemalloc_profiling_info();
-        return AllocatorInfo {
+        AllocatorInfo {
             name: "jemalloc",
             stats_available: stats.is_some(),
             stats,
             tuning: jemalloc_tuning_info(),
             profiling,
-        };
+        }
     }
 
     #[cfg(not(feature = "jemalloc"))]

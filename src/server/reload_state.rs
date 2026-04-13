@@ -124,7 +124,7 @@ pub fn reload_process_alive(pid: u32) -> bool {
             return true;
         }
         let err = std::io::Error::last_os_error();
-        return matches!(err.raw_os_error(), Some(libc::EPERM));
+        matches!(err.raw_os_error(), Some(libc::EPERM))
     }
 
     #[cfg(not(unix))]
@@ -321,14 +321,14 @@ fn wait_for_reload_handoff_event_blocking(
             return;
         }
 
-        let mask = (libc::IN_CREATE
+        let mask = libc::IN_CREATE
             | libc::IN_MOVED_TO
             | libc::IN_ATTRIB
             | libc::IN_MODIFY
             | libc::IN_CLOSE_WRITE
             | libc::IN_DELETE
             | libc::IN_MOVE_SELF
-            | libc::IN_DELETE_SELF) as u32;
+            | libc::IN_DELETE_SELF;
 
         let mut has_watch = false;
         for path in watch_paths {
@@ -450,22 +450,23 @@ pub fn reload_state_summary(max_age: Duration) -> String {
     }
 }
 
-/// Global reload signal channel. The selfdev tool and debug commands fire this;
-/// the server awaits it instead of polling the filesystem.
-static RELOAD_SIGNAL: std::sync::OnceLock<(
+type ReloadSignalChannel = (
     tokio::sync::watch::Sender<Option<ReloadSignal>>,
     tokio::sync::watch::Receiver<Option<ReloadSignal>>,
-)> = std::sync::OnceLock::new();
+);
 
-static RELOAD_ACK: std::sync::OnceLock<(
+type ReloadAckChannel = (
     tokio::sync::watch::Sender<Option<ReloadAck>>,
     tokio::sync::watch::Receiver<Option<ReloadAck>>,
-)> = std::sync::OnceLock::new();
+);
 
-pub(super) fn reload_signal() -> &'static (
-    tokio::sync::watch::Sender<Option<ReloadSignal>>,
-    tokio::sync::watch::Receiver<Option<ReloadSignal>>,
-) {
+/// Global reload signal channel. The selfdev tool and debug commands fire this;
+/// the server awaits it instead of polling the filesystem.
+static RELOAD_SIGNAL: std::sync::OnceLock<ReloadSignalChannel> = std::sync::OnceLock::new();
+
+static RELOAD_ACK: std::sync::OnceLock<ReloadAckChannel> = std::sync::OnceLock::new();
+
+pub(super) fn reload_signal() -> &'static ReloadSignalChannel {
     RELOAD_SIGNAL.get_or_init(|| tokio::sync::watch::channel(None))
 }
 
@@ -475,10 +476,7 @@ pub(crate) fn subscribe_reload_signal_for_tests()
     reload_signal().1.clone()
 }
 
-pub(super) fn reload_ack() -> &'static (
-    tokio::sync::watch::Sender<Option<ReloadAck>>,
-    tokio::sync::watch::Receiver<Option<ReloadAck>>,
-) {
+pub(super) fn reload_ack() -> &'static ReloadAckChannel {
     RELOAD_ACK.get_or_init(|| tokio::sync::watch::channel(None))
 }
 
@@ -531,15 +529,15 @@ pub async fn wait_for_reload_ack(
         timeout.as_millis()
     ));
 
-    if let Some(ack) = rx.borrow_and_update().clone() {
-        if ack.request_id == request_id {
-            crate::logging::info(&format!(
-                "wait_for_reload_ack: immediate ack request={} after {}ms",
-                request_id,
-                started.elapsed().as_millis()
-            ));
-            return Ok(ack);
-        }
+    if let Some(ack) = rx.borrow_and_update().clone()
+        && ack.request_id == request_id
+    {
+        crate::logging::info(&format!(
+            "wait_for_reload_ack: immediate ack request={} after {}ms",
+            request_id,
+            started.elapsed().as_millis()
+        ));
+        return Ok(ack);
     }
 
     let request_id = request_id.to_string();
@@ -548,15 +546,15 @@ pub async fn wait_for_reload_ack(
             rx.changed()
                 .await
                 .map_err(|_| anyhow::anyhow!("reload acknowledgement channel closed"))?;
-            if let Some(ack) = rx.borrow_and_update().clone() {
-                if ack.request_id == request_id {
-                    crate::logging::info(&format!(
-                        "wait_for_reload_ack: received ack request={} after {}ms",
-                        request_id,
-                        started.elapsed().as_millis()
-                    ));
-                    return Ok(ack);
-                }
+            if let Some(ack) = rx.borrow_and_update().clone()
+                && ack.request_id == request_id
+            {
+                crate::logging::info(&format!(
+                    "wait_for_reload_ack: received ack request={} after {}ms",
+                    request_id,
+                    started.elapsed().as_millis()
+                ));
+                return Ok(ack);
             }
         }
     })

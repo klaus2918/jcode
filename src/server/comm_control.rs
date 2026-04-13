@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use super::await_members_state::{
     PersistedAwaitMembersState, ensure_pending_state, load_state, persist_final_response,
     request_key,
@@ -14,6 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 
 async fn awaited_member_statuses(
     req_session_id: &str,
@@ -195,14 +199,17 @@ async fn spawn_or_resume_await_members(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "role assignment coordinates sessions, swarm membership, coordinators, and event history"
+)]
 pub(super) async fn handle_comm_assign_role(
     id: u64,
     req_session_id: String,
     target_session: String,
     role: String,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
@@ -293,10 +300,10 @@ pub(super) async fn handle_comm_assign_role(
             coordinators.insert(swarm_id.clone(), target_session.clone());
         }
         let mut members = swarm_members.write().await;
-        if let Some(member) = members.get_mut(&req_session_id) {
-            if member.session_id != target_session {
-                member.role = "agent".to_string();
-            }
+        if let Some(member) = members.get_mut(&req_session_id)
+            && member.session_id != target_session
+        {
+            member.role = "agent".to_string();
         }
     }
 
@@ -317,7 +324,10 @@ pub(super) async fn handle_comm_assign_role(
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "task assignment coordinates sessions, interrupts, connections, swarm plan state, and event history"
+)]
 pub(super) async fn handle_comm_assign_task(
     id: u64,
     req_session_id: String,
@@ -325,7 +335,7 @@ pub(super) async fn handle_comm_assign_task(
     task_id: String,
     message: Option<String>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     soft_interrupt_queues: &super::SessionInterruptQueues,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
@@ -449,136 +459,131 @@ pub(super) async fn handle_comm_assign_task(
             .values()
             .any(|connection| connection.session_id == target_session)
     };
-    if !target_has_client {
-        if let Some(agent_arc) = target_agent {
-            let target_session_for_run = target_session.clone();
-            let swarm_members_for_run = Arc::clone(swarm_members);
-            let swarms_for_run = Arc::clone(swarms_by_id);
-            let swarm_plans_for_run = Arc::clone(swarm_plans);
-            let swarm_id_for_run = swarm_id.clone();
-            let task_id_for_run = task_id.clone();
-            let event_history_for_run = Arc::clone(event_history);
-            let event_counter_for_run = Arc::clone(event_counter);
-            let swarm_event_tx_for_run = swarm_event_tx.clone();
-            let assignment_text = if let Some(extra) = message.clone() {
-                format!(
-                    "{}\n\nAdditional coordinator instructions:\n{}",
-                    content, extra
-                )
-            } else {
-                content.clone()
-            };
-            tokio::spawn(async move {
+    if !target_has_client && let Some(agent_arc) = target_agent {
+        let target_session_for_run = target_session.clone();
+        let swarm_members_for_run = Arc::clone(swarm_members);
+        let swarms_for_run = Arc::clone(swarms_by_id);
+        let swarm_plans_for_run = Arc::clone(swarm_plans);
+        let swarm_id_for_run = swarm_id.clone();
+        let task_id_for_run = task_id.clone();
+        let event_history_for_run = Arc::clone(event_history);
+        let event_counter_for_run = Arc::clone(event_counter);
+        let swarm_event_tx_for_run = swarm_event_tx.clone();
+        let assignment_text = if let Some(extra) = message.clone() {
+            format!(
+                "{}\n\nAdditional coordinator instructions:\n{}",
+                content, extra
+            )
+        } else {
+            content.clone()
+        };
+        tokio::spawn(async move {
+            {
+                let mut plans = swarm_plans_for_run.write().await;
+                if let Some(plan) = plans.get_mut(&swarm_id_for_run)
+                    && let Some(item) = plan
+                        .items
+                        .iter_mut()
+                        .find(|item| item.id == task_id_for_run)
                 {
-                    let mut plans = swarm_plans_for_run.write().await;
-                    if let Some(plan) = plans.get_mut(&swarm_id_for_run) {
-                        if let Some(item) = plan
-                            .items
-                            .iter_mut()
-                            .find(|item| item.id == task_id_for_run)
+                    item.status = "running".to_string();
+                    plan.version += 1;
+                }
+            }
+            broadcast_swarm_plan(
+                &swarm_id_for_run,
+                Some("task_running".to_string()),
+                &swarm_plans_for_run,
+                &swarm_members_for_run,
+                &swarms_for_run,
+            )
+            .await;
+            update_member_status(
+                &target_session_for_run,
+                "running",
+                Some(truncate_detail(&assignment_text, 120)),
+                &swarm_members_for_run,
+                &swarms_for_run,
+                Some(&event_history_for_run),
+                Some(&event_counter_for_run),
+                Some(&swarm_event_tx_for_run),
+            )
+            .await;
+
+            let result = {
+                let mut agent = agent_arc.lock().await;
+                agent.run_once_capture(&assignment_text).await
+            };
+
+            match result {
+                Ok(_) => {
+                    {
+                        let mut plans = swarm_plans_for_run.write().await;
+                        if let Some(plan) = plans.get_mut(&swarm_id_for_run)
+                            && let Some(item) = plan
+                                .items
+                                .iter_mut()
+                                .find(|item| item.id == task_id_for_run)
                         {
-                            item.status = "running".to_string();
+                            item.status = "done".to_string();
                             plan.version += 1;
                         }
                     }
+                    broadcast_swarm_plan(
+                        &swarm_id_for_run,
+                        Some("task_completed".to_string()),
+                        &swarm_plans_for_run,
+                        &swarm_members_for_run,
+                        &swarms_for_run,
+                    )
+                    .await;
+                    update_member_status(
+                        &target_session_for_run,
+                        "completed",
+                        None,
+                        &swarm_members_for_run,
+                        &swarms_for_run,
+                        Some(&event_history_for_run),
+                        Some(&event_counter_for_run),
+                        Some(&swarm_event_tx_for_run),
+                    )
+                    .await;
                 }
-                broadcast_swarm_plan(
-                    &swarm_id_for_run,
-                    Some("task_running".to_string()),
-                    &swarm_plans_for_run,
-                    &swarm_members_for_run,
-                    &swarms_for_run,
-                )
-                .await;
-                update_member_status(
-                    &target_session_for_run,
-                    "running",
-                    Some(truncate_detail(&assignment_text, 120)),
-                    &swarm_members_for_run,
-                    &swarms_for_run,
-                    Some(&event_history_for_run),
-                    Some(&event_counter_for_run),
-                    Some(&swarm_event_tx_for_run),
-                )
-                .await;
-
-                let result = {
-                    let mut agent = agent_arc.lock().await;
-                    agent.run_once_capture(&assignment_text).await
-                };
-
-                match result {
-                    Ok(_) => {
+                Err(error) => {
+                    {
+                        let mut plans = swarm_plans_for_run.write().await;
+                        if let Some(plan) = plans.get_mut(&swarm_id_for_run)
+                            && let Some(item) = plan
+                                .items
+                                .iter_mut()
+                                .find(|item| item.id == task_id_for_run)
                         {
-                            let mut plans = swarm_plans_for_run.write().await;
-                            if let Some(plan) = plans.get_mut(&swarm_id_for_run) {
-                                if let Some(item) = plan
-                                    .items
-                                    .iter_mut()
-                                    .find(|item| item.id == task_id_for_run)
-                                {
-                                    item.status = "done".to_string();
-                                    plan.version += 1;
-                                }
-                            }
+                            item.status = "failed".to_string();
+                            plan.version += 1;
                         }
-                        broadcast_swarm_plan(
-                            &swarm_id_for_run,
-                            Some("task_completed".to_string()),
-                            &swarm_plans_for_run,
-                            &swarm_members_for_run,
-                            &swarms_for_run,
-                        )
-                        .await;
-                        update_member_status(
-                            &target_session_for_run,
-                            "completed",
-                            None,
-                            &swarm_members_for_run,
-                            &swarms_for_run,
-                            Some(&event_history_for_run),
-                            Some(&event_counter_for_run),
-                            Some(&swarm_event_tx_for_run),
-                        )
-                        .await;
                     }
-                    Err(error) => {
-                        {
-                            let mut plans = swarm_plans_for_run.write().await;
-                            if let Some(plan) = plans.get_mut(&swarm_id_for_run) {
-                                if let Some(item) = plan
-                                    .items
-                                    .iter_mut()
-                                    .find(|item| item.id == task_id_for_run)
-                                {
-                                    item.status = "failed".to_string();
-                                    plan.version += 1;
-                                }
-                            }
-                        }
-                        broadcast_swarm_plan(
-                            &swarm_id_for_run,
-                            Some("task_failed".to_string()),
-                            &swarm_plans_for_run,
-                            &swarm_members_for_run,
-                            &swarms_for_run,
-                        )
-                        .await;
-                        update_member_status(
-                            &target_session_for_run,
-                            "failed",
-                            Some(truncate_detail(&error.to_string(), 120)),
-                            &swarm_members_for_run,
-                            &swarms_for_run,
-                            Some(&event_history_for_run),
-                            Some(&event_counter_for_run),
-                            Some(&swarm_event_tx_for_run),
-                        )
-                        .await;
-                    }
+                    broadcast_swarm_plan(
+                        &swarm_id_for_run,
+                        Some("task_failed".to_string()),
+                        &swarm_plans_for_run,
+                        &swarm_members_for_run,
+                        &swarms_for_run,
+                    )
+                    .await;
+                    update_member_status(
+                        &target_session_for_run,
+                        "failed",
+                        Some(truncate_detail(&error.to_string(), 120)),
+                        &swarm_members_for_run,
+                        &swarms_for_run,
+                        Some(&event_history_for_run),
+                        Some(&event_counter_for_run),
+                        Some(&swarm_event_tx_for_run),
+                    )
+                    .await;
                 }
-            });
-        }
+            }
+        });
     }
 
     let plan_msg = format!(

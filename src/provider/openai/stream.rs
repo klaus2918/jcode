@@ -248,30 +248,29 @@ pub(super) fn parse_openai_response_event(
                 if matches!(
                     item.get("type").and_then(|v| v.as_str()),
                     Some("function_call") | Some("custom_tool_call")
-                ) {
-                    if let Some(item_id) = streaming_tool_item_id(item) {
-                        let state = streaming_tool_calls.entry(item_id).or_default();
-                        state.call_id = item
-                            .get("call_id")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                            .or_else(|| state.call_id.clone());
-                        state.name = item
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                            .or_else(|| state.name.clone());
-                        if let Some(arguments) = item
-                            .get("arguments")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| item.get("input").and_then(|v| v.as_str()))
-                        {
-                            state.arguments = arguments.to_string();
-                        } else if let Some(input) = item.get("input") {
-                            if input.is_object() || input.is_array() {
-                                state.arguments = input.to_string();
-                            }
-                        }
+                ) && let Some(item_id) = streaming_tool_item_id(item)
+                {
+                    let state = streaming_tool_calls.entry(item_id).or_default();
+                    state.call_id = item
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| state.call_id.clone());
+                    state.name = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| state.name.clone());
+                    if let Some(arguments) = item
+                        .get("arguments")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| item.get("input").and_then(|v| v.as_str()))
+                    {
+                        state.arguments = arguments.to_string();
+                    } else if let Some(input) = item.get("input")
+                        && (input.is_object() || input.is_array())
+                    {
+                        state.arguments = input.to_string();
                     }
                 }
             }
@@ -313,16 +312,15 @@ pub(super) fn parse_openai_response_event(
         }
         "response.output_item.done" => {
             if let Some(item) = event.item {
-                if let Some(item_id) = streaming_tool_item_id(&item) {
-                    if completed_tool_items.contains(&item_id)
-                        && matches!(
-                            item.get("type").and_then(|v| v.as_str()),
-                            Some("function_call") | Some("custom_tool_call")
-                        )
-                    {
-                        completed_tool_items.remove(&item_id);
-                        return None;
-                    }
+                if let Some(item_id) = streaming_tool_item_id(&item)
+                    && completed_tool_items.contains(&item_id)
+                    && matches!(
+                        item.get("type").and_then(|v| v.as_str()),
+                        Some("function_call") | Some("custom_tool_call")
+                    )
+                {
+                    completed_tool_items.remove(&item_id);
+                    return None;
                 }
                 if let Some(event) = handle_openai_output_item(item, saw_text_delta, pending) {
                     return Some(event);
@@ -335,10 +333,10 @@ pub(super) fn parse_openai_response_event(
                 .as_ref()
                 .and_then(extract_stop_reason_from_response)
                 .or_else(|| Some("incomplete".to_string()));
-            if let Some(response) = event.response {
-                if let Some(usage_event) = extract_usage_from_response(&response) {
-                    pending.push_back(usage_event);
-                }
+            if let Some(response) = event.response
+                && let Some(usage_event) = extract_usage_from_response(&response)
+            {
+                pending.push_back(usage_event);
             }
             pending.push_back(StreamEvent::MessageEnd { stop_reason });
             return pending.pop_front();
@@ -348,10 +346,10 @@ pub(super) fn parse_openai_response_event(
                 .response
                 .as_ref()
                 .and_then(extract_stop_reason_from_response);
-            if let Some(response) = event.response {
-                if let Some(usage_event) = extract_usage_from_response(&response) {
-                    pending.push_back(usage_event);
-                }
+            if let Some(response) = event.response
+                && let Some(usage_event) = extract_usage_from_response(&response)
+            {
+                pending.push_back(usage_event);
             }
             pending.push_back(StreamEvent::MessageEnd { stop_reason });
             return pending.pop_front();
@@ -472,10 +470,10 @@ pub(super) fn handle_openai_output_item(
             if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
                 for entry in content {
                     let entry_type = entry.get("type").and_then(|v| v.as_str());
-                    if matches!(entry_type, Some("output_text") | Some("text")) {
-                        if let Some(t) = entry.get("text").and_then(|v| v.as_str()) {
-                            text.push_str(t);
-                        }
+                    if matches!(entry_type, Some("output_text") | Some("text"))
+                        && let Some(t) = entry.get("text").and_then(|v| v.as_str())
+                    {
+                        text.push_str(t);
                     }
                 }
             }
@@ -485,13 +483,13 @@ pub(super) fn handle_openai_output_item(
             if let Some(summary_arr) = item.get("summary").and_then(|v| v.as_array()) {
                 let mut summary_text = String::new();
                 for summary_item in summary_arr {
-                    if summary_item.get("type").and_then(|v| v.as_str()) == Some("summary_text") {
-                        if let Some(text) = summary_item.get("text").and_then(|v| v.as_str()) {
-                            if !summary_text.is_empty() {
-                                summary_text.push('\n');
-                            }
-                            summary_text.push_str(text);
+                    if summary_item.get("type").and_then(|v| v.as_str()) == Some("summary_text")
+                        && let Some(text) = summary_item.get("text").and_then(|v| v.as_str())
+                    {
+                        if !summary_text.is_empty() {
+                            summary_text.push('\n');
                         }
+                        summary_text.push_str(text);
                     }
                 }
                 if !summary_text.is_empty() {

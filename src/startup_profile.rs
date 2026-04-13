@@ -24,10 +24,10 @@ pub fn init() {
 }
 
 pub fn mark(name: &str) {
-    if let Ok(mut guard) = PROFILE.lock() {
-        if let Some(ref mut profile) = *guard {
-            profile.marks.push((name.to_string(), Instant::now()));
-        }
+    if let Ok(mut guard) = PROFILE.lock()
+        && let Some(ref mut profile) = *guard
+    {
+        profile.marks.push((name.to_string(), Instant::now()));
     }
 }
 

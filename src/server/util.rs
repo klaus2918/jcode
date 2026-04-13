@@ -20,10 +20,10 @@ pub(crate) fn debug_control_allowed() -> bool {
         return true;
     }
     // Check for file-based toggle (allows enabling without restart)
-    if let Ok(jcode_dir) = crate::storage::jcode_dir() {
-        if jcode_dir.join("debug_control").exists() {
-            return true;
-        }
+    if let Ok(jcode_dir) = crate::storage::jcode_dir()
+        && jcode_dir.join("debug_control").exists()
+    {
+        return true;
     }
     false
 }
@@ -78,12 +78,11 @@ pub(crate) fn git_common_dir_for(path: &Path) -> Option<PathBuf> {
             };
             let gitdir = canonicalize_or(gitdir);
             // Worktree gitdir looks like: <repo>/.git/worktrees/<name>
-            if let Some(parent) = gitdir.parent() {
-                if parent.file_name().and_then(|s| s.to_str()) == Some("worktrees") {
-                    if let Some(common) = parent.parent() {
-                        return Some(canonicalize_or(common.to_path_buf()));
-                    }
-                }
+            if let Some(parent) = gitdir.parent()
+                && parent.file_name().and_then(|s| s.to_str()) == Some("worktrees")
+                && let Some(common) = parent.parent()
+            {
+                return Some(canonicalize_or(common.to_path_buf()));
             }
             return Some(gitdir);
         }

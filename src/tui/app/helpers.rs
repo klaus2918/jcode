@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use crate::todo::TodoItem;
 use crate::tui::info_widget::{AmbientWidgetData, GitInfo, MemoryInfo};
 use crate::tui::session_picker::ResumeTarget;
@@ -118,10 +120,10 @@ pub(super) fn parse_rate_limit_error(error: &str) -> Option<Duration> {
             if let Ok(secs) = word
                 .trim_matches(|c: char| !c.is_ascii_digit())
                 .parse::<u64>()
+                && secs > 0
+                && secs < 86400
             {
-                if secs > 0 && secs < 86400 {
-                    return Some(Duration::from_secs(secs));
-                }
+                return Some(Duration::from_secs(secs));
             }
         }
     }
@@ -130,10 +132,10 @@ pub(super) fn parse_rate_limit_error(error: &str) -> Option<Duration> {
         let after = &error_lower[idx..];
         for word in after.split_whitespace() {
             let word = word.trim_matches(|c: char| c == '·' || c == ' ');
-            if word.ends_with("am") || word.ends_with("pm") {
-                if let Some(duration) = parse_clock_time_to_duration(word) {
-                    return Some(duration);
-                }
+            if (word.ends_with("am") || word.ends_with("pm"))
+                && let Some(duration) = parse_clock_time_to_duration(word)
+            {
+                return Some(duration);
             }
         }
     }
@@ -144,10 +146,10 @@ pub(super) fn parse_rate_limit_error(error: &str) -> Option<Duration> {
             if let Ok(secs) = word
                 .trim_matches(|c: char| !c.is_ascii_digit())
                 .parse::<u64>()
+                && secs > 0
+                && secs < 86400
             {
-                if secs > 0 && secs < 86400 {
-                    return Some(Duration::from_secs(secs));
-                }
+                return Some(Duration::from_secs(secs));
             }
         }
     }
@@ -247,11 +249,11 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
         .spawn()
     {
         use std::io::Write;
-        if let Some(stdin) = child.stdin.as_mut() {
-            if stdin.write_all(text.as_bytes()).is_ok() {
-                drop(child.stdin.take());
-                return child.wait().map(|s| s.success()).unwrap_or(false);
-            }
+        if let Some(stdin) = child.stdin.as_mut()
+            && stdin.write_all(text.as_bytes()).is_ok()
+        {
+            drop(child.stdin.take());
+            return child.wait().map(|s| s.success()).unwrap_or(false);
         }
     }
     arboard::Clipboard::new()
@@ -987,63 +989,59 @@ pub(super) fn clipboard_image() -> Option<(String, String)> {
     use base64::Engine;
 
     // Try wl-paste first (native Wayland - better image format support)
-    if std::env::var("WAYLAND_DISPLAY").is_ok() {
-        if let Ok(output) = std::process::Command::new("wl-paste")
+    if std::env::var("WAYLAND_DISPLAY").is_ok()
+        && let Ok(output) = std::process::Command::new("wl-paste")
             .arg("--list-types")
             .output()
+    {
+        let types = String::from_utf8_lossy(&output.stdout);
+        crate::logging::info(&format!(
+            "clipboard_image: wl-paste types: {:?}",
+            types.trim()
+        ));
+        let (mime, wl_type) = if types.lines().any(|t| t.trim() == "image/png") {
+            ("image/png", "image/png")
+        } else if types.lines().any(|t| t.trim() == "image/jpeg") {
+            ("image/jpeg", "image/jpeg")
+        } else if types.lines().any(|t| t.trim() == "image/webp") {
+            ("image/webp", "image/webp")
+        } else if types.lines().any(|t| t.trim() == "image/gif") {
+            ("image/gif", "image/gif")
+        } else {
+            ("", "")
+        };
+
+        if !mime.is_empty()
+            && let Ok(img_output) = std::process::Command::new("wl-paste")
+                .args(["--type", wl_type, "--no-newline"])
+                .output()
+            && img_output.status.success()
+            && !img_output.stdout.is_empty()
         {
-            let types = String::from_utf8_lossy(&output.stdout);
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&img_output.stdout);
+            return Some((mime.to_string(), b64));
+        }
+
+        // Fallback: check text/html for <img> tags (Discord copies HTML with image URLs)
+        if types.lines().any(|t| t.trim() == "text/html")
+            && let Ok(html_output) = std::process::Command::new("wl-paste")
+                .args(["--type", "text/html"])
+                .output()
+            && html_output.status.success()
+            && !html_output.stdout.is_empty()
+        {
+            let html = String::from_utf8_lossy(&html_output.stdout);
             crate::logging::info(&format!(
-                "clipboard_image: wl-paste types: {:?}",
-                types.trim()
+                "clipboard_image: checking HTML for img tags ({} bytes)",
+                html.len()
             ));
-            let (mime, wl_type) = if types.lines().any(|t| t.trim() == "image/png") {
-                ("image/png", "image/png")
-            } else if types.lines().any(|t| t.trim() == "image/jpeg") {
-                ("image/jpeg", "image/jpeg")
-            } else if types.lines().any(|t| t.trim() == "image/webp") {
-                ("image/webp", "image/webp")
-            } else if types.lines().any(|t| t.trim() == "image/gif") {
-                ("image/gif", "image/gif")
-            } else {
-                ("", "")
-            };
-
-            if !mime.is_empty() {
-                if let Ok(img_output) = std::process::Command::new("wl-paste")
-                    .args(["--type", wl_type, "--no-newline"])
-                    .output()
-                {
-                    if img_output.status.success() && !img_output.stdout.is_empty() {
-                        let b64 =
-                            base64::engine::general_purpose::STANDARD.encode(&img_output.stdout);
-                        return Some((mime.to_string(), b64));
-                    }
-                }
-            }
-
-            // Fallback: check text/html for <img> tags (Discord copies HTML with image URLs)
-            if types.lines().any(|t| t.trim() == "text/html") {
-                if let Ok(html_output) = std::process::Command::new("wl-paste")
-                    .args(["--type", "text/html"])
-                    .output()
-                {
-                    if html_output.status.success() && !html_output.stdout.is_empty() {
-                        let html = String::from_utf8_lossy(&html_output.stdout);
-                        crate::logging::info(&format!(
-                            "clipboard_image: checking HTML for img tags ({} bytes)",
-                            html.len()
-                        ));
-                        if let Some(url) = extract_image_url(&html) {
-                            crate::logging::info(&format!(
-                                "clipboard_image: found image URL in HTML: {}",
-                                &url[..url.len().min(80)]
-                            ));
-                            if let Some(result) = download_image_url(&url) {
-                                return Some(result);
-                            }
-                        }
-                    }
+            if let Some(url) = extract_image_url(&html) {
+                crate::logging::info(&format!(
+                    "clipboard_image: found image URL in HTML: {}",
+                    &url[..url.len().min(80)]
+                ));
+                if let Some(result) = download_image_url(&url) {
+                    return Some(result);
                 }
             }
         }
@@ -1088,14 +1086,12 @@ pub(super) fn clipboard_image() -> Option<(String, String)> {
     }
 
     // Fallback: arboard (works on X11/XWayland and macOS via NSPasteboard)
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        if let Ok(img) = clipboard.get_image() {
-            // img.bytes is RGBA pixel data - encode as PNG
-            if let Some(png_data) = encode_rgba_as_png(img.width, img.height, &img.bytes) {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&png_data);
-                return Some(("image/png".to_string(), b64));
-            }
-        }
+    if let Ok(mut clipboard) = arboard::Clipboard::new()
+        && let Ok(img) = clipboard.get_image()
+        && let Some(png_data) = encode_rgba_as_png(img.width, img.height, &img.bytes)
+    {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png_data);
+        return Some(("image/png".to_string(), b64));
     }
 
     None
@@ -1195,12 +1191,11 @@ pub(super) fn gather_git_info() -> Option<GitInfo> {
 
     const TTL: Duration = Duration::from_secs(5);
 
-    if let Ok(guard) = CACHE.lock() {
-        if let Some((ts, ref cached)) = *guard {
-            if ts.elapsed() < TTL {
-                return cached.clone();
-            }
-        }
+    if let Ok(guard) = CACHE.lock()
+        && let Some((ts, ref cached)) = *guard
+        && ts.elapsed() < TTL
+    {
+        return cached.clone();
     }
 
     let result = gather_git_info_inner();
@@ -1217,20 +1212,20 @@ pub(super) fn gather_todos_for_session(session_id: Option<&str>) -> Vec<TodoItem
     use std::sync::{LazyLock, Mutex};
     use std::time::Instant;
 
-    static CACHE: LazyLock<Mutex<HashMap<String, (Instant, Vec<TodoItem>)>>> =
-        LazyLock::new(|| Mutex::new(HashMap::new()));
+    type TodosCache = HashMap<String, (Instant, Vec<TodoItem>)>;
+
+    static CACHE: LazyLock<Mutex<TodosCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
     const TTL: Duration = Duration::from_secs(1);
 
     let Some(session_id) = session_id else {
         return Vec::new();
     };
 
-    if let Ok(cache) = CACHE.lock() {
-        if let Some((ts, todos)) = cache.get(session_id) {
-            if ts.elapsed() < TTL {
-                return todos.clone();
-            }
-        }
+    if let Ok(cache) = CACHE.lock()
+        && let Some((ts, todos)) = cache.get(session_id)
+        && ts.elapsed() < TTL
+    {
+        return todos.clone();
     }
 
     let todos = crate::todo::load_todos(session_id).unwrap_or_default();
@@ -1265,24 +1260,23 @@ pub(super) fn gather_memory_info(memory_enabled: bool) -> Option<MemoryInfo> {
         None
     };
 
-    if let Ok(guard) = CACHE.lock() {
-        if let Some((ts, ref cached)) = *guard {
-            if ts.elapsed() < TTL {
-                return match cached.clone() {
-                    Some(mut info) => {
-                        info.activity = activity.clone();
-                        info.sidecar_model = sidecar_model.clone();
-                        Some(info)
-                    }
-                    None => activity.clone().map(|activity| MemoryInfo {
-                        sidecar_available: crate::memory::memory_sidecar_enabled(),
-                        sidecar_model: sidecar_model.clone(),
-                        activity: Some(activity),
-                        ..Default::default()
-                    }),
-                };
+    if let Ok(guard) = CACHE.lock()
+        && let Some((ts, ref cached)) = *guard
+        && ts.elapsed() < TTL
+    {
+        return match cached.clone() {
+            Some(mut info) => {
+                info.activity = activity.clone();
+                info.sidecar_model = sidecar_model.clone();
+                Some(info)
             }
-        }
+            None => activity.clone().map(|activity| MemoryInfo {
+                sidecar_available: crate::memory::memory_sidecar_enabled(),
+                sidecar_model: sidecar_model.clone(),
+                activity: Some(activity),
+                ..Default::default()
+            }),
+        };
     }
 
     use crate::memory::MemoryManager;
@@ -1347,12 +1341,12 @@ pub(super) fn gather_ambient_info(ambient_enabled: bool) -> Option<AmbientWidget
     use std::time::Instant;
     const TTL: Duration = Duration::from_secs(2);
 
-    if let Ok(guard) = AMBIENT_INFO_CACHE.lock() {
-        if let Some((ts, cached_enabled, ref cached)) = *guard {
-            if cached_enabled == ambient_enabled && ts.elapsed() < TTL {
-                return cached.clone();
-            }
-        }
+    if let Ok(guard) = AMBIENT_INFO_CACHE.lock()
+        && let Some((ts, cached_enabled, ref cached)) = *guard
+        && cached_enabled == ambient_enabled
+        && ts.elapsed() < TTL
+    {
+        return cached.clone();
     }
 
     let state = crate::ambient::AmbientState::load().unwrap_or_default();
@@ -1495,31 +1489,31 @@ fn gather_git_info_inner() -> Option<GitInfo> {
     let mut untracked = 0;
     let mut dirty_files = Vec::new();
 
-    if let Ok(output) = Command::new("git").args(["status", "--porcelain"]).output() {
-        if output.status.success() {
-            let status = String::from_utf8_lossy(&output.stdout);
-            for line in status.lines() {
-                if line.len() < 3 {
-                    continue;
-                }
-                let index_status = line.as_bytes()[0];
-                let worktree_status = line.as_bytes()[1];
-                let file_path = line[3..].to_string();
+    if let Ok(output) = Command::new("git").args(["status", "--porcelain"]).output()
+        && output.status.success()
+    {
+        let status = String::from_utf8_lossy(&output.stdout);
+        for line in status.lines() {
+            if line.len() < 3 {
+                continue;
+            }
+            let index_status = line.as_bytes()[0];
+            let worktree_status = line.as_bytes()[1];
+            let file_path = line[3..].to_string();
 
-                if index_status == b'?' {
-                    untracked += 1;
-                } else {
-                    if index_status != b' ' && index_status != b'?' {
-                        staged += 1;
-                    }
-                    if worktree_status != b' ' && worktree_status != b'?' {
-                        modified += 1;
-                    }
+            if index_status == b'?' {
+                untracked += 1;
+            } else {
+                if index_status != b' ' && index_status != b'?' {
+                    staged += 1;
                 }
+                if worktree_status != b' ' && worktree_status != b'?' {
+                    modified += 1;
+                }
+            }
 
-                if dirty_files.len() < 10 {
-                    dirty_files.push(file_path);
-                }
+            if dirty_files.len() < 10 {
+                dirty_files.push(file_path);
             }
         }
     }

@@ -27,12 +27,11 @@ impl App {
     }
 
     pub(super) fn begin_in_flight_catchup_resume(&mut self, request: PendingCatchupResume) {
-        if request.show_brief {
-            if let Some(source) = request.source_session_id.as_ref() {
-                if self.catchup_return_stack.last() != Some(source) {
-                    self.catchup_return_stack.push(source.clone());
-                }
-            }
+        if request.show_brief
+            && let Some(source) = request.source_session_id.as_ref()
+            && self.catchup_return_stack.last() != Some(source)
+        {
+            self.catchup_return_stack.push(source.clone());
         }
         self.in_flight_catchup_resume = Some(request);
     }

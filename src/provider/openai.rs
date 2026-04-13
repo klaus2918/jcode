@@ -62,6 +62,10 @@ static WEBSOCKET_COOLDOWNS: LazyLock<Arc<RwLock<HashMap<String, Instant>>>> =
 static WEBSOCKET_FAILURE_STREAKS: LazyLock<Arc<RwLock<HashMap<String, u32>>>> =
     LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
+#[expect(
+    clippy::upper_case_acronyms,
+    reason = "transport names mirror user-facing configuration values like https and websocket"
+)]
 #[derive(Clone, Copy)]
 enum OpenAITransportMode {
     Auto,
@@ -109,6 +113,10 @@ impl From<anyhow::Error> for OpenAIStreamFailure {
     }
 }
 
+#[expect(
+    clippy::upper_case_acronyms,
+    reason = "transport names mirror user-facing configuration values like https and websocket"
+)]
 #[derive(Clone, Copy)]
 enum OpenAITransport {
     WebSocket,
@@ -635,9 +643,7 @@ impl OpenAIProvider {
     }
 
     fn load_service_tier(raw: Option<&str>) -> Option<String> {
-        let Some(raw) = raw else {
-            return None;
-        };
+        let raw = raw?;
         match Self::normalize_service_tier(raw) {
             Ok(value) => value,
             Err(err) => {
@@ -686,6 +692,10 @@ impl OpenAIProvider {
         format!("{}/compact", Self::responses_url(credentials))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "request construction threads explicit per-request OpenAI settings without hidden state"
+    )]
     fn build_response_request(
         model_id: &str,
         instructions: String,
@@ -711,10 +721,8 @@ impl OpenAIProvider {
             "include": ["reasoning.encrypted_content"],
         });
 
-        if !is_chatgpt_mode {
-            if let Some(max_output_tokens) = max_output_tokens {
-                request["max_output_tokens"] = serde_json::json!(max_output_tokens);
-            }
+        if !is_chatgpt_mode && let Some(max_output_tokens) = max_output_tokens {
+            request["max_output_tokens"] = serde_json::json!(max_output_tokens);
         }
 
         if let Some(effort) = reasoning_effort {
@@ -758,22 +766,22 @@ impl OpenAIProvider {
                         current, detail
                     ));
                 }
-                if let Some(fallback) = crate::provider::get_best_available_openai_model() {
-                    if fallback != current {
-                        crate::logging::info(&format!(
-                            "Model '{}' not available for account; falling back to '{}'",
-                            current, fallback
-                        ));
-                        {
-                            let mut w = self.model.write().await;
-                            *w = fallback.clone();
-                        }
-                        self.clear_persistent_ws(
-                            "automatic OpenAI model fallback changed the response chain",
-                        )
-                        .await;
-                        return fallback;
+                if let Some(fallback) = crate::provider::get_best_available_openai_model()
+                    && fallback != current
+                {
+                    crate::logging::info(&format!(
+                        "Model '{}' not available for account; falling back to '{}'",
+                        current, fallback
+                    ));
+                    {
+                        let mut w = self.model.write().await;
+                        *w = fallback.clone();
                     }
+                    self.clear_persistent_ws(
+                        "automatic OpenAI model fallback changed the response chain",
+                    )
+                    .await;
+                    return fallback;
                 }
             }
             crate::provider::AccountModelAvailabilityState::Unknown => {
@@ -1565,14 +1573,14 @@ async fn stream_response(
 
         let body = response.text().await.unwrap_or_default();
 
-        if let Some(reason) = classify_unavailable_model_error(status, &body) {
-            if let Some(model_name) = request.get("model").and_then(|m| m.as_str()) {
-                crate::provider::record_model_unavailable_for_account(model_name, &reason);
-                crate::logging::warn(&format!(
-                    "Recorded OpenAI model '{}' as unavailable: {}",
-                    model_name, reason
-                ));
-            }
+        if let Some(reason) = classify_unavailable_model_error(status, &body)
+            && let Some(model_name) = request.get("model").and_then(|m| m.as_str())
+        {
+            crate::provider::record_model_unavailable_for_account(model_name, &reason);
+            crate::logging::warn(&format!(
+                "Recorded OpenAI model '{}' as unavailable: {}",
+                model_name, reason
+            ));
         }
 
         // Check if we need to refresh token
@@ -2179,31 +2187,28 @@ async fn try_persistent_ws_continuation(
                 };
 
                 // Extract response_id from response.created event
-                if new_response_id.is_none() {
-                    if let Ok(val) = serde_json::from_str::<Value>(&text) {
-                        if val.get("type").and_then(|t| t.as_str()) == Some("response.created") {
-                            if let Some(id) = val
-                                .get("response")
-                                .and_then(|r| r.get("id"))
-                                .and_then(|id| id.as_str())
-                            {
-                                new_response_id = Some(id.to_string());
-                                crate::logging::info(&format!(
-                                    "Persistent WS got new response_id after {}ms: {} ({})",
-                                    stream_started.elapsed().as_millis(),
-                                    id,
-                                    incremental_stats.log_fields(),
-                                ));
-                                let usage_snapshot = crate::usage::get_openai_usage_sync();
-                                if usage_snapshot.exhausted() {
-                                    crate::logging::warn(&format!(
-                                        "OpenAI limit diag: persistent WS reuse accepted request while local usage indicates exhausted usage=({}) state=({})",
-                                        usage_snapshot.diagnostic_fields(),
-                                        state.diag_snapshot().log_fields()
-                                    ));
-                                }
-                            }
-                        }
+                if new_response_id.is_none()
+                    && let Ok(val) = serde_json::from_str::<Value>(&text)
+                    && val.get("type").and_then(|t| t.as_str()) == Some("response.created")
+                    && let Some(id) = val
+                        .get("response")
+                        .and_then(|r| r.get("id"))
+                        .and_then(|id| id.as_str())
+                {
+                    new_response_id = Some(id.to_string());
+                    crate::logging::info(&format!(
+                        "Persistent WS got new response_id after {}ms: {} ({})",
+                        stream_started.elapsed().as_millis(),
+                        id,
+                        incremental_stats.log_fields(),
+                    ));
+                    let usage_snapshot = crate::usage::get_openai_usage_sync();
+                    if usage_snapshot.exhausted() {
+                        crate::logging::warn(&format!(
+                            "OpenAI limit diag: persistent WS reuse accepted request while local usage indicates exhausted usage=({}) state=({})",
+                            usage_snapshot.diagnostic_fields(),
+                            state.diag_snapshot().log_fields()
+                        ));
                     }
                 }
 
@@ -2220,13 +2225,10 @@ async fn try_persistent_ws_continuation(
                     if matches!(event, StreamEvent::MessageEnd { .. }) {
                         saw_response_completed = true;
                     }
-                    if let StreamEvent::Error { ref message, .. } = event {
-                        if is_retryable_error(&message.to_lowercase()) {
-                            return PersistentWsResult::Failed(format!(
-                                "stream error: {}",
-                                message
-                            ));
-                        }
+                    if let StreamEvent::Error { ref message, .. } = event
+                        && is_retryable_error(&message.to_lowercase())
+                    {
+                        return PersistentWsResult::Failed(format!("stream error: {}", message));
                     }
                     if tx.send(Ok(event)).await.is_err() {
                         break; // Receiver dropped
@@ -2524,30 +2526,26 @@ async fn stream_response_websocket_persistent(
                     }
 
                     // Extract response_id from response.created event
-                    if response_id.is_none() {
-                        if let Ok(val) = serde_json::from_str::<Value>(&text) {
-                            if val.get("type").and_then(|t| t.as_str()) == Some("response.created")
-                            {
-                                if let Some(id) = val
-                                    .get("response")
-                                    .and_then(|r| r.get("id"))
-                                    .and_then(|id| id.as_str())
-                                {
-                                    response_id = Some(id.to_string());
-                                    crate::logging::info(&format!(
-                                        "Fresh WS got response_id after {}ms: {} (will save for continuation; {})",
-                                        ws_started_at.elapsed().as_millis(),
-                                        id,
-                                        request_input_stats.log_fields(),
-                                    ));
-                                    if usage_snapshot.exhausted() {
-                                        crate::logging::warn(&format!(
-                                            "OpenAI limit diag: fresh WS request accepted while local usage indicates exhausted usage=({})",
-                                            usage_snapshot.diagnostic_fields()
-                                        ));
-                                    }
-                                }
-                            }
+                    if response_id.is_none()
+                        && let Ok(val) = serde_json::from_str::<Value>(&text)
+                        && val.get("type").and_then(|t| t.as_str()) == Some("response.created")
+                        && let Some(id) = val
+                            .get("response")
+                            .and_then(|r| r.get("id"))
+                            .and_then(|id| id.as_str())
+                    {
+                        response_id = Some(id.to_string());
+                        crate::logging::info(&format!(
+                            "Fresh WS got response_id after {}ms: {} (will save for continuation; {})",
+                            ws_started_at.elapsed().as_millis(),
+                            id,
+                            request_input_stats.log_fields(),
+                        ));
+                        if usage_snapshot.exhausted() {
+                            crate::logging::warn(&format!(
+                                "OpenAI limit diag: fresh WS request accepted while local usage indicates exhausted usage=({})",
+                                usage_snapshot.diagnostic_fields()
+                            ));
                         }
                     }
 
@@ -2753,14 +2751,13 @@ fn extract_error_with_retry(
         Some(e) => e,
         None => {
             // Last resort: check if response itself has a status_message or message
-            if let Some(resp) = response.as_ref() {
-                if let Some(msg) = resp
+            if let Some(resp) = response.as_ref()
+                && let Some(msg) = resp
                     .get("status_message")
                     .or_else(|| resp.get("message"))
                     .and_then(|v| v.as_str())
-                {
-                    return (msg.to_string(), None);
-                }
+            {
+                return (msg.to_string(), None);
             }
             return (
                 "OpenAI response stream error (no error details)".to_string(),
@@ -3264,10 +3261,9 @@ mod tests {
         for item in &items {
             if item.get("type").and_then(|v| v.as_str()) == Some("function_call_output")
                 && item.get("call_id").and_then(|v| v.as_str()) == Some("call_1")
+                && let Some(output) = item.get("output").and_then(|v| v.as_str())
             {
-                if let Some(output) = item.get("output").and_then(|v| v.as_str()) {
-                    outputs.push(output.to_string());
-                }
+                outputs.push(output.to_string());
             }
         }
 
@@ -3806,10 +3802,11 @@ mod tests {
 
     #[test]
     fn test_websocket_completion_timeout_is_long_enough_for_reasoning() {
+        let timeout = std::hint::black_box(WEBSOCKET_COMPLETION_TIMEOUT_SECS);
         assert!(
-            WEBSOCKET_COMPLETION_TIMEOUT_SECS >= 120,
+            timeout >= 120,
             "completion timeout regressed to {}s; reasoning models may need several minutes",
-            WEBSOCKET_COMPLETION_TIMEOUT_SECS
+            timeout
         );
     }
 
@@ -4620,16 +4617,15 @@ mod tests {
             );
             if item.get("type").and_then(|v| v.as_str()) == Some("message")
                 && item.get("role").and_then(|v| v.as_str()) == Some("user")
+                && let Some(content) = item.get("content").and_then(|v| v.as_array())
             {
-                if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
-                    for part in content {
-                        if part.get("type").and_then(|v| v.as_str()) == Some("input_text") {
-                            let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                            if text.contains("[Recovered orphaned tool output: call_orphan]")
-                                && text.contains("orphan result")
-                            {
-                                saw_rewritten_message = true;
-                            }
+                for part in content {
+                    if part.get("type").and_then(|v| v.as_str()) == Some("input_text") {
+                        let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        if text.contains("[Recovered orphaned tool output: call_orphan]")
+                            && text.contains("orphan result")
+                        {
+                            saw_rewritten_message = true;
                         }
                     }
                 }

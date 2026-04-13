@@ -108,10 +108,10 @@ fn normalize_batch_input(mut input: Value) -> Value {
         for call in calls.iter_mut() {
             if let Some(obj) = call.as_object_mut() {
                 // Normalize "name" -> "tool" if the model used the wrong key
-                if !obj.contains_key("tool") {
-                    if let Some(name_val) = obj.remove("name") {
-                        obj.insert("tool".to_string(), name_val);
-                    }
+                if !obj.contains_key("tool")
+                    && let Some(name_val) = obj.remove("name")
+                {
+                    obj.insert("tool".to_string(), name_val);
                 }
 
                 if !obj.contains_key("parameters") {
@@ -223,9 +223,11 @@ impl Tool for BatchTool {
 
         let mut stream: futures::stream::FuturesUnordered<_> = subcalls
             .iter()
-            .cloned()
             .map(|(i, tool_name, parameters)| {
                 let registry = self.registry.clone();
+                let i = *i;
+                let tool_name = tool_name.clone();
+                let parameters = parameters.clone();
                 let sub_ctx = ctx.for_subcall(format!("batch-{}-{}", i + 1, tool_name.clone()));
                 async move {
                     let result = registry.execute(&tool_name, parameters, sub_ctx).await;

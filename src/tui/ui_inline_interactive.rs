@@ -159,8 +159,8 @@ fn picker_render_width(picker: &crate::tui::InlineInteractiveState, max_width: u
                 max_state_len.max(display_width(account_inline_interactive_state_label(entry)));
         }
 
-        let state_width = (max_state_len + 1).max(7).min(10);
-        let min_title_width = max_title_len.min(10).max(8);
+        let state_width = (max_state_len + 1).clamp(7, 10);
+        let min_title_width = max_title_len.clamp(8, 10);
         let title_cap = if show_provider_badge { 42 } else { 34 };
         let budget = max_width.saturating_sub(marker_width + state_width);
         let title_width = max_title_len
@@ -191,7 +191,7 @@ fn picker_render_width(picker: &crate::tui::InlineInteractiveState, max_width: u
     let mut provider_width = (max_provider_len + 1).min(if is_preview { 16 } else { 20 });
     let mut via_width = (max_via_len + 1).min(12);
     let model_cap = if is_preview { 42 } else { 56 };
-    let min_model_width = max_model_len.min(8).max(6);
+    let min_model_width = max_model_len.clamp(6, 8);
 
     let budget = max_width.saturating_sub(marker_width);
     if provider_width + via_width + min_model_width > budget {
@@ -333,8 +333,8 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
 
     let provider_cap = if is_preview { 16 } else { 20 };
     let provider_width = (max_provider_len + 1).max(8).min(provider_cap);
-    let via_width = (max_via_len + 1).max(4).min(12);
-    let account_state_width = (max_account_state_len + 1).max(7).min(10);
+    let via_width = (max_via_len + 1).clamp(4, 12);
+    let account_state_width = (max_account_state_len + 1).clamp(7, 10);
     let account_title_width = width.saturating_sub(marker_width + account_state_width);
     let model_width = width.saturating_sub(marker_width + provider_width + via_width);
 
@@ -559,19 +559,18 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
 
             spans.extend(title_spans);
             spans.push(Span::styled(state_display, state_style));
-            if let Some(route) = route {
-                if let Some(detail_text) = route_detail_display_text(&route.detail, unavailable)
-                    && detail_width > 0
-                {
-                    spans.push(Span::styled(
-                        format!("  {}", truncate_display(detail_text.as_str(), detail_width)),
-                        if unavailable {
-                            Style::default().fg(rgb(180, 120, 120)).italic()
-                        } else {
-                            Style::default().fg(dim_color())
-                        },
-                    ));
-                }
+            if let Some(route) = route
+                && let Some(detail_text) = route_detail_display_text(&route.detail, unavailable)
+                && detail_width > 0
+            {
+                spans.push(Span::styled(
+                    format!("  {}", truncate_display(detail_text.as_str(), detail_width)),
+                    if unavailable {
+                        Style::default().fg(rgb(180, 120, 120)).italic()
+                    } else {
+                        Style::default().fg(dim_color())
+                    },
+                ));
             }
 
             lines.push(Line::from(spans));
@@ -667,19 +666,18 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
             spans.push(Span::styled(via_display, via_style));
         }
 
-        if let Some(route) = route {
-            if let Some(detail_text) = route_detail_display_text(&route.detail, unavailable)
-                && detail_width > 0
-            {
-                spans.push(Span::styled(
-                    format!("  {}", truncate_display(detail_text.as_str(), detail_width)),
-                    if unavailable {
-                        Style::default().fg(rgb(180, 120, 120)).italic()
-                    } else {
-                        Style::default().fg(dim_color())
-                    },
-                ));
-            }
+        if let Some(route) = route
+            && let Some(detail_text) = route_detail_display_text(&route.detail, unavailable)
+            && detail_width > 0
+        {
+            spans.push(Span::styled(
+                format!("  {}", truncate_display(detail_text.as_str(), detail_width)),
+                if unavailable {
+                    Style::default().fg(rgb(180, 120, 120)).italic()
+                } else {
+                    Style::default().fg(dim_color())
+                },
+            ));
         }
 
         lines.push(Line::from(spans));

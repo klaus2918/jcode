@@ -840,10 +840,10 @@ fn prepare_body_incremental(
                 let tool_start_line = new_lines.len();
                 let cached =
                     get_cached_message_lines(msg, width, app.diff_mode(), render_tool_message);
-                if is_error_copy_content(&msg.content) {
-                    if let Some(target) = error_copy_target(&msg.content, cached.len()) {
-                        new_copy_targets.push(offset_copy_target(target, tool_start_line));
-                    }
+                if is_error_copy_content(&msg.content)
+                    && let Some(target) = error_copy_target(&msg.content, cached.len())
+                {
+                    new_copy_targets.push(offset_copy_target(target, tool_start_line));
                 }
                 for line in cached {
                     new_lines.push(align_if_unset(line, align));
@@ -1154,7 +1154,7 @@ fn prepare_streaming_cached(
     let display_width = width.saturating_sub(4) as usize;
 
     let content_width = if centered {
-        display_width.min(96).max(1)
+        display_width.clamp(1, 96)
     } else {
         display_width
     };
@@ -1317,10 +1317,10 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
                 let tool_start_line = lines.len();
                 let cached =
                     get_cached_message_lines(msg, width, app.diff_mode(), render_tool_message);
-                if is_error_copy_content(&msg.content) {
-                    if let Some(target) = error_copy_target(&msg.content, cached.len()) {
-                        copy_targets.push(offset_copy_target(target, tool_start_line));
-                    }
+                if is_error_copy_content(&msg.content)
+                    && let Some(target) = error_copy_target(&msg.content, cached.len())
+                {
+                    copy_targets.push(offset_copy_target(target, tool_start_line));
                 }
                 for line in cached {
                     lines.push(align_if_unset(line, align));
@@ -1517,7 +1517,7 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
             line_copy_offsets.push(0);
         }
         let content_width = if centered {
-            display_width.min(96).max(1)
+            display_width.clamp(1, 96)
         } else {
             display_width
         };
@@ -1669,6 +1669,10 @@ fn wrap_lines(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Wrapped-line preparation carries explicit render state to avoid hidden coupling"
+)]
 fn wrap_lines_with_map(
     lines: Vec<Line<'static>>,
     seeded_raw_plain_lines: &[String],

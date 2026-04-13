@@ -91,14 +91,14 @@ impl Tool for WebFetchTool {
         }
 
         // Check content length
-        if let Some(len) = response.content_length() {
-            if len as usize > MAX_SIZE {
-                return Err(anyhow::anyhow!(
-                    "Response too large: {} bytes (max {} bytes)",
-                    len,
-                    MAX_SIZE
-                ));
-            }
+        if let Some(len) = response.content_length()
+            && len as usize > MAX_SIZE
+        {
+            return Err(anyhow::anyhow!(
+                "Response too large: {} bytes (max {} bytes)",
+                len,
+                MAX_SIZE
+            ));
         }
 
         let content_type = response
@@ -134,7 +134,14 @@ impl Tool for WebFetchTool {
         let output = match format {
             "html" => body,
             "text" => html_to_text(&body),
-            "markdown" | _ => {
+            "markdown" => {
+                if content_type.contains("text/html") {
+                    html_to_markdown(&body)
+                } else {
+                    body
+                }
+            }
+            _ => {
                 if content_type.contains("text/html") {
                     html_to_markdown(&body)
                 } else {

@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
 use super::socket::{
     daemon_lock_path, server_start_matches_existing_server, sibling_socket_path,
     try_acquire_daemon_lock,

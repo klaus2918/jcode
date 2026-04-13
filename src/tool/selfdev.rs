@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
 //! Self-development tool - manage canary builds when working on jcode itself
 
 use crate::background::{self, TaskResult};
@@ -714,6 +716,7 @@ impl ReloadContext {
     }
 }
 
+#[derive(Default)]
 pub struct SelfDevTool;
 
 impl SelfDevTool {
@@ -965,10 +968,10 @@ impl SelfDevTool {
                     anyhow::anyhow!("Queued build request {} disappeared", request_id)
                 })?;
 
-            if my_index == 0 {
-                if let Some(lock) = Self::try_acquire_build_lock(worktree_scope)? {
-                    return Ok(lock);
-                }
+            if my_index == 0
+                && let Some(lock) = Self::try_acquire_build_lock(worktree_scope)?
+            {
+                return Ok(lock);
             }
 
             let note = if my_index == 0 {
@@ -2058,10 +2061,10 @@ mod tests {
     async fn wait_for_task_completion(task_id: &str) -> background::TaskStatusFile {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            if let Some(status) = background::global().status(task_id).await {
-                if status.status != BackgroundTaskStatus::Running {
-                    return status;
-                }
+            if let Some(status) = background::global().status(task_id).await
+                && status.status != BackgroundTaskStatus::Running
+            {
+                return status;
             }
             assert!(
                 std::time::Instant::now() < deadline,

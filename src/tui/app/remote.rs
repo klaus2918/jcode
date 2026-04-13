@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use super::{
     App, DisplayMessage, ProcessingStatus, RemoteResumeActivity, SendAction,
     ctrl_bracket_fallback_to_esc, input, parse_rate_limit_error,
@@ -242,45 +244,45 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         }
     }
 
-    if let Some(reset_time) = app.rate_limit_reset {
-        if Instant::now() >= reset_time {
-            app.rate_limit_reset = None;
-            if !app.is_processing {
-                if let Some(pending) = app.rate_limit_pending_message.clone() {
-                    let status = if pending.auto_retry {
-                        format!(
-                            "✓ Retrying continuation...{}",
-                            if pending.is_system {
-                                " (system message)"
-                            } else {
-                                ""
-                            }
-                        )
+    if let Some(reset_time) = app.rate_limit_reset
+        && Instant::now() >= reset_time
+    {
+        app.rate_limit_reset = None;
+        if !app.is_processing
+            && let Some(pending) = app.rate_limit_pending_message.clone()
+        {
+            let status = if pending.auto_retry {
+                format!(
+                    "✓ Retrying continuation...{}",
+                    if pending.is_system {
+                        " (system message)"
                     } else {
-                        format!(
-                            "✓ Rate limit reset. Retrying...{}",
-                            if pending.is_system {
-                                " (system message)"
-                            } else {
-                                ""
-                            }
-                        )
-                    };
-                    app.push_display_message(DisplayMessage::system(status));
-                    let _ = begin_remote_send(
-                        app,
-                        remote,
-                        pending.content,
-                        pending.images,
-                        pending.is_system,
-                        pending.system_reminder,
-                        pending.auto_retry,
-                        pending.retry_attempts,
-                    )
-                    .await;
-                    return true;
-                }
-            }
+                        ""
+                    }
+                )
+            } else {
+                format!(
+                    "✓ Rate limit reset. Retrying...{}",
+                    if pending.is_system {
+                        " (system message)"
+                    } else {
+                        ""
+                    }
+                )
+            };
+            app.push_display_message(DisplayMessage::system(status));
+            let _ = begin_remote_send(
+                app,
+                remote,
+                pending.content,
+                pending.images,
+                pending.is_system,
+                pending.system_reminder,
+                pending.auto_retry,
+                pending.retry_attempts,
+            )
+            .await;
+            return true;
         }
     }
 
@@ -912,19 +914,19 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
     }
 
     if app.is_processing {
-        if let Some(interleave_msg) = app.interleave_message.take() {
-            if !interleave_msg.trim().is_empty() {
-                let msg_clone = interleave_msg.clone();
-                match remote.soft_interrupt(interleave_msg, false).await {
-                    Err(e) => {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "Failed to queue soft interrupt: {}",
-                            e
-                        )));
-                    }
-                    Ok(request_id) => {
-                        app.track_pending_soft_interrupt(request_id, msg_clone);
-                    }
+        if let Some(interleave_msg) = app.interleave_message.take()
+            && !interleave_msg.trim().is_empty()
+        {
+            let msg_clone = interleave_msg.clone();
+            match remote.soft_interrupt(interleave_msg, false).await {
+                Err(e) => {
+                    app.push_display_message(DisplayMessage::error(format!(
+                        "Failed to queue soft interrupt: {}",
+                        e
+                    )));
+                }
+                Ok(request_id) => {
+                    app.track_pending_soft_interrupt(request_id, msg_clone);
                 }
             }
         }
@@ -1149,6 +1151,10 @@ async fn parse_and_inject_key(
     Ok(format!("injected {:?} with {:?}", key_code, modifiers))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "remote send needs explicit message payload, reminders, retry metadata, and image attachments"
+)]
 pub(super) async fn begin_remote_send(
     app: &mut App,
     remote: &mut RemoteConnection,
@@ -1541,14 +1547,11 @@ pub(super) fn handle_server_event(
             let mut needs_redraw = false;
             if matches!(
                 app.status,
-                ProcessingStatus::Sending | ProcessingStatus::Connecting(_)
-            ) {
-                app.status = ProcessingStatus::Streaming;
-                needs_redraw = true;
-            } else if matches!(app.status, ProcessingStatus::Thinking(_)) {
-                app.status = ProcessingStatus::Streaming;
-                needs_redraw = true;
-            } else if app.is_processing && matches!(app.status, ProcessingStatus::Idle) {
+                ProcessingStatus::Sending
+                    | ProcessingStatus::Connecting(_)
+                    | ProcessingStatus::Thinking(_)
+            ) || (app.is_processing && matches!(app.status, ProcessingStatus::Idle))
+            {
                 app.status = ProcessingStatus::Streaming;
                 needs_redraw = true;
             }
@@ -1902,12 +1905,12 @@ pub(super) fn handle_server_event(
                 format!("[{}] {}", step, message)
             };
 
-            if let Some(out) = output {
-                if !out.is_empty() {
-                    content.push_str("\n```\n");
-                    content.push_str(&out);
-                    content.push_str("\n```");
-                }
+            if let Some(out) = output
+                && !out.is_empty()
+            {
+                content.push_str("\n```\n");
+                content.push_str(&out);
+                content.push_str("\n```");
             }
 
             app.append_reload_message(&content);
@@ -2907,10 +2910,10 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
-    if let Some(ref picker) = app.inline_interactive_state {
-        if !picker.preview {
-            return app.handle_inline_interactive_key(code, modifiers);
-        }
+    if let Some(ref picker) = app.inline_interactive_state
+        && !picker.preview
+    {
+        return app.handle_inline_interactive_key(code, modifiers);
     }
 
     if app.handle_inline_interactive_preview_key(&code, modifiers)? {
@@ -3962,7 +3965,7 @@ async fn handle_remote_key_internal(
                         .await?;
                     app.set_memory_feature_enabled(new_state);
                     let label = if new_state { "ON" } else { "OFF" };
-                    app.set_status_notice(&format!("Memory: {}", label));
+                    app.set_status_notice(format!("Memory: {}", label));
                     app.push_display_message(DisplayMessage::system(format!(
                         "Memory feature {} for this session.",
                         if new_state { "enabled" } else { "disabled" }
@@ -4084,13 +4087,13 @@ async fn handle_remote_key_internal(
                         )));
                         return Ok(());
                     }
-                    if app.memory_enabled {
-                        if let Err(err) = remote.trigger_memory_extraction().await {
-                            crate::logging::info(&format!(
-                                "Failed to trigger memory extraction for saved remote session: {}",
-                                err
-                            ));
-                        }
+                    if app.memory_enabled
+                        && let Err(err) = remote.trigger_memory_extraction().await
+                    {
+                        crate::logging::info(&format!(
+                            "Failed to trigger memory extraction for saved remote session: {}",
+                            err
+                        ));
                     }
                     let name = app.session.display_name().to_string();
                     let msg = if let Some(ref lbl) = app.session.save_label {
@@ -4221,7 +4224,7 @@ async fn handle_remote_key_internal(
                             PremiumMode::Zero => "zero premium requests",
                             PremiumMode::Normal => "normal",
                         };
-                        app.set_status_notice(&format!("Premium: {}", label));
+                        app.set_status_notice(format!("Premium: {}", label));
                         app.push_display_message(DisplayMessage::system(format!(
                             "Premium mode: **{}**. Toggle off with `/z`. (saved to config)",
                             label,

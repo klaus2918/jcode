@@ -114,6 +114,10 @@ pub struct LoginPicker {
     summary: LoginPickerSummary,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "execute action carries the selected provider descriptor directly for simple overlay handling"
+)]
 pub enum OverlayAction {
     Continue,
     Close,

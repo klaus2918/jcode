@@ -27,10 +27,10 @@ impl App {
 
         let mut queued_messages = restored.queued_messages;
         let mut recovered_followups = Vec::new();
-        if let Some(interleave_message) = restored.interleave_message {
-            if !interleave_message.trim().is_empty() {
-                recovered_followups.push(interleave_message);
-            }
+        if let Some(interleave_message) = restored.interleave_message
+            && !interleave_message.trim().is_empty()
+        {
+            recovered_followups.push(interleave_message);
         }
         let recovered_interrupts = restored
             .pending_soft_interrupt_resend
@@ -987,7 +987,7 @@ impl App {
             if successes > 0 {
                 let msg = format!("MCP: Connected to {} server(s)", successes);
                 crate::logging::info(&msg);
-                self.set_status_notice(&format!("mcp: {} connected", successes));
+                self.set_status_notice(format!("mcp: {} connected", successes));
             }
 
             if !failures.is_empty() {
@@ -1371,7 +1371,7 @@ pub(super) fn handle_dev_command(app: &mut App, trimmed: &str) -> bool {
                 PremiumMode::Zero => "zero premium requests",
                 PremiumMode::Normal => "normal",
             };
-            app.set_status_notice(&format!("Premium: {}", label));
+            app.set_status_notice(format!("Premium: {}", label));
             app.push_display_message(DisplayMessage::system(format!(
                 "Premium mode: **{}**. Toggle off with `/z`. (saved to config)",
                 label,

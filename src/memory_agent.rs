@@ -331,9 +331,7 @@ impl MemoryAgent {
 
     /// Get or create per-session state
     fn session_state(&mut self, session_id: &str) -> &mut SessionState {
-        self.sessions
-            .entry(session_id.to_string())
-            .or_insert_with(SessionState::default)
+        self.sessions.entry(session_id.to_string()).or_default()
     }
 
     fn manager_for_session(&self, session_id: &str) -> MemoryManager {
@@ -370,7 +368,7 @@ impl MemoryAgent {
 
                     {
                         let ss = self.session_state(&session_id);
-                        if ss.turn_count % TURN_RESET_INTERVAL == 0 {
+                        if ss.turn_count.is_multiple_of(TURN_RESET_INTERVAL) {
                             crate::logging::info(&format!(
                                 "[{}] Memory agent periodic reset at turn {} (clearing {} surfaced memories)",
                                 session_id,
@@ -811,47 +809,45 @@ impl MemoryAgent {
                         let similar =
                             memory_manager.find_similar(&mem.content, DUPLICATE_THRESHOLD, 1);
 
-                        if let Ok(matches) = similar {
-                            if let Some((existing, _sim)) = matches.first() {
-                                // Duplicate found - reinforce existing memory instead
-                                let existing_id = existing.id.clone();
-                                let mut did_reinforce = false;
+                        if let Ok(matches) = similar
+                            && let Some((existing, _sim)) = matches.first()
+                        {
+                            let existing_id = existing.id.clone();
+                            let mut did_reinforce = false;
 
-                                if let Ok(mut graph) = memory_manager.load_project_graph() {
-                                    if graph.get_memory(&existing_id).is_some() {
-                                        let strength = {
-                                            let entry = graph.get_memory_mut(&existing_id).unwrap();
-                                            entry.reinforce("incremental", 0);
-                                            entry.strength
-                                        };
-                                        if memory_manager.save_project_graph(&graph).is_ok() {
-                                            did_reinforce = true;
-                                            crate::logging::info(&format!(
-                                                "Reinforced existing memory {} (strength={})",
-                                                existing_id, strength
-                                            ));
-                                        }
-                                    }
+                            if let Ok(mut graph) = memory_manager.load_project_graph()
+                                && graph.get_memory(&existing_id).is_some()
+                            {
+                                let strength = {
+                                    let entry = graph.get_memory_mut(&existing_id).unwrap();
+                                    entry.reinforce("incremental", 0);
+                                    entry.strength
+                                };
+                                if memory_manager.save_project_graph(&graph).is_ok() {
+                                    did_reinforce = true;
+                                    crate::logging::info(&format!(
+                                        "Reinforced existing memory {} (strength={})",
+                                        existing_id, strength
+                                    ));
                                 }
-
-                                if !did_reinforce {
-                                    if let Ok(mut graph) = memory_manager.load_global_graph() {
-                                        if graph.get_memory(&existing_id).is_some() {
-                                            graph
-                                                .get_memory_mut(&existing_id)
-                                                .unwrap()
-                                                .reinforce("incremental", 0);
-                                            let _ = memory_manager.save_global_graph(&graph);
-                                            did_reinforce = true;
-                                        }
-                                    }
-                                }
-
-                                if did_reinforce {
-                                    reinforced_count += 1;
-                                }
-                                continue;
                             }
+
+                            if !did_reinforce
+                                && let Ok(mut graph) = memory_manager.load_global_graph()
+                                && graph.get_memory(&existing_id).is_some()
+                            {
+                                graph
+                                    .get_memory_mut(&existing_id)
+                                    .unwrap()
+                                    .reinforce("incremental", 0);
+                                let _ = memory_manager.save_global_graph(&graph);
+                                did_reinforce = true;
+                            }
+
+                            if did_reinforce {
+                                reinforced_count += 1;
+                            }
+                            continue;
                         }
 
                         // No duplicate - check for contradiction in same category
@@ -898,19 +894,19 @@ impl MemoryAgent {
                                 stored_ids.push(new_id.clone());
 
                                 // If contradiction found, supersede the old memory and add Contradicts edge
-                                if let Some(old_id) = contradiction_found {
-                                    if let Ok(mut graph) = memory_manager.load_project_graph() {
-                                        graph.mark_contradiction(&new_id, &old_id);
-                                        if let Some(old_entry) = graph.get_memory_mut(&old_id) {
-                                            old_entry.supersede(&new_id);
-                                        }
-                                        if memory_manager.save_project_graph(&graph).is_ok() {
-                                            superseded_count += 1;
-                                            crate::logging::info(&format!(
-                                                "Superseded memory {} with {} (Contradicts edge added)",
-                                                old_id, new_id
-                                            ));
-                                        }
+                                if let Some(old_id) = contradiction_found
+                                    && let Ok(mut graph) = memory_manager.load_project_graph()
+                                {
+                                    graph.mark_contradiction(&new_id, &old_id);
+                                    if let Some(old_entry) = graph.get_memory_mut(&old_id) {
+                                        old_entry.supersede(&new_id);
+                                    }
+                                    if memory_manager.save_project_graph(&graph).is_ok() {
+                                        superseded_count += 1;
+                                        crate::logging::info(&format!(
+                                            "Superseded memory {} with {} (Contradicts edge added)",
+                                            old_id, new_id
+                                        ));
                                     }
                                 }
                             }
@@ -921,22 +917,22 @@ impl MemoryAgent {
                     }
 
                     // Create DerivedFrom edges between co-extracted memories
-                    if stored_ids.len() >= 2 {
-                        if let Ok(mut graph) = memory_manager.load_project_graph() {
-                            let mut linked = false;
-                            for i in 0..stored_ids.len() {
-                                for j in (i + 1)..stored_ids.len() {
-                                    graph.add_edge(
-                                        &stored_ids[i],
-                                        &stored_ids[j],
-                                        crate::memory_graph::EdgeKind::DerivedFrom,
-                                    );
-                                    linked = true;
-                                }
+                    if stored_ids.len() >= 2
+                        && let Ok(mut graph) = memory_manager.load_project_graph()
+                    {
+                        let mut linked = false;
+                        for i in 0..stored_ids.len() {
+                            for j in (i + 1)..stored_ids.len() {
+                                graph.add_edge(
+                                    &stored_ids[i],
+                                    &stored_ids[j],
+                                    crate::memory_graph::EdgeKind::DerivedFrom,
+                                );
+                                linked = true;
                             }
-                            if linked {
-                                let _ = memory_manager.save_project_graph(&graph);
-                            }
+                        }
+                        if linked {
+                            let _ = memory_manager.save_project_graph(&graph);
                         }
                     }
 
@@ -1048,7 +1044,7 @@ impl MemoryAgent {
 
             // 5. Periodic cluster refinement
             let tick = MAINTENANCE_TICK.fetch_add(1, Ordering::Relaxed) + 1;
-            if tick % CLUSTER_REFINEMENT_INTERVAL == 0 && ctx.verified_ids.len() >= 2 {
+            if tick.is_multiple_of(CLUSTER_REFINEMENT_INTERVAL) && ctx.verified_ids.len() >= 2 {
                 match refine_clusters(&memory_manager, &ctx.verified_ids).await {
                     Ok(stats) => {
                         if stats.clusters_touched > 0 {
@@ -1079,7 +1075,7 @@ impl MemoryAgent {
 
             // 7. Periodic garbage collection: prune low-confidence memories
             let mut pruned = 0usize;
-            if tick % (CLUSTER_REFINEMENT_INTERVAL * 5) == 0 {
+            if tick.is_multiple_of(CLUSTER_REFINEMENT_INTERVAL * 5) {
                 match prune_low_confidence(&memory_manager) {
                     Ok(count) => pruned = count,
                     Err(e) => {
@@ -1149,24 +1145,23 @@ async fn refine_clusters(
             out.member_links += stats.member_links;
             project_changed = true;
 
-            if let Some(cluster_id) = stats.cluster_id.as_ref() {
-                if project_graph
+            if let Some(cluster_id) = stats.cluster_id.as_ref()
+                && project_graph
                     .clusters
                     .get(cluster_id)
                     .and_then(|c| c.name.as_deref())
                     .map(|n| n.ends_with("co-relevance"))
                     .unwrap_or(false)
+            {
+                let member_contents: Vec<String> = project_ids
+                    .iter()
+                    .filter_map(|id| project_graph.get_memory(id))
+                    .map(|m| m.content[..m.content.len().min(80)].to_string())
+                    .collect();
+                if let Ok(name) = name_cluster_with_sidecar(&member_contents).await
+                    && let Some(cluster) = project_graph.clusters.get_mut(cluster_id)
                 {
-                    let member_contents: Vec<String> = project_ids
-                        .iter()
-                        .filter_map(|id| project_graph.get_memory(id))
-                        .map(|m| m.content[..m.content.len().min(80)].to_string())
-                        .collect();
-                    if let Ok(name) = name_cluster_with_sidecar(&member_contents).await {
-                        if let Some(cluster) = project_graph.clusters.get_mut(cluster_id) {
-                            cluster.name = Some(name);
-                        }
-                    }
+                    cluster.name = Some(name);
                 }
             }
         }

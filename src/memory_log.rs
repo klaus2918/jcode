@@ -54,10 +54,10 @@ fn log_dir() -> Option<PathBuf> {
 
 fn ensure_logger(date: &str) -> bool {
     if let Ok(mut guard) = MEMORY_LOGGER.lock() {
-        if let Some(ref logger) = *guard {
-            if logger.current_date == date {
-                return true;
-            }
+        if let Some(ref logger) = *guard
+            && logger.current_date == date
+        {
+            return true;
         }
         *guard = MemoryLogger::open(date);
         guard.is_some()
@@ -94,10 +94,10 @@ fn write_log(event: &str, detail: Option<serde_json::Value>) {
         detail,
     };
 
-    if let Ok(mut guard) = MEMORY_LOGGER.lock() {
-        if let Some(logger) = guard.as_mut() {
-            logger.write_entry(&entry);
-        }
+    if let Ok(mut guard) = MEMORY_LOGGER.lock()
+        && let Some(logger) = guard.as_mut()
+    {
+        logger.write_entry(&entry);
     }
 }
 

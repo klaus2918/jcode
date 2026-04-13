@@ -15,6 +15,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+
 fn create_visible_spawn_session(
     working_dir: Option<&str>,
     model_override: Option<&str>,
@@ -39,7 +42,7 @@ fn create_visible_spawn_session(
 
 fn spawn_visible_session_window(
     session_id: &str,
-    cwd: &PathBuf,
+    cwd: &std::path::Path,
     selfdev_requested: bool,
 ) -> anyhow::Result<bool> {
     let exe = crate::build::client_update_candidate(selfdev_requested)
@@ -72,7 +75,7 @@ fn prepare_visible_spawn_session<F>(
     launch_visible: F,
 ) -> anyhow::Result<(String, bool)>
 where
-    F: FnOnce(&str, &PathBuf, bool) -> anyhow::Result<bool>,
+    F: FnOnce(&str, &std::path::Path, bool) -> anyhow::Result<bool>,
 {
     let (new_session_id, cwd) =
         create_visible_spawn_session(working_dir, model_override, selfdev_requested)?;
@@ -97,6 +100,10 @@ where
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "visible spawn registration updates swarm state, event history, and UI delivery metadata together"
+)]
 async fn register_visible_spawned_member(
     session_id: &str,
     swarm_id: &str,
@@ -170,17 +177,15 @@ pub(super) async fn handle_comm_spawn(
     working_dir: Option<String>,
     initial_message: Option<String>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     global_session_id: &Arc<RwLock<String>>,
     provider_template: &Arc<dyn Provider>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
-    _channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    _channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    _channel_subscriptions: &ChannelSubscriptions,
+    _channel_subscriptions_by_session: &ChannelSubscriptions,
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -280,11 +285,11 @@ pub(super) async fn handle_comm_spawn(
             let startup_message = initial_message.clone();
             {
                 let mut plans = swarm_plans.write().await;
-                if let Some(plan) = plans.get_mut(&swarm_id) {
-                    if !plan.items.is_empty() || !plan.participants.is_empty() {
-                        plan.participants.insert(req_session_id.clone());
-                        plan.participants.insert(new_session_id.clone());
-                    }
+                if let Some(plan) = plans.get_mut(&swarm_id)
+                    && (!plan.items.is_empty() || !plan.participants.is_empty())
+                {
+                    plan.participants.insert(req_session_id.clone());
+                    plan.participants.insert(new_session_id.clone());
                 }
             }
 
@@ -311,73 +316,73 @@ pub(super) async fn handle_comm_spawn(
                 .await;
             }
 
-            if let Some(initial_msg) = startup_message {
-                if is_headless_fallback {
-                    record_swarm_event_for_session(
-                        &new_session_id,
-                        SwarmEventType::MemberChange {
-                            action: "joined".to_string(),
-                        },
-                        swarm_members,
-                        event_history,
-                        event_counter,
-                        swarm_event_tx,
-                    )
-                    .await;
+            if let Some(initial_msg) = startup_message
+                && is_headless_fallback
+            {
+                record_swarm_event_for_session(
+                    &new_session_id,
+                    SwarmEventType::MemberChange {
+                        action: "joined".to_string(),
+                    },
+                    swarm_members,
+                    event_history,
+                    event_counter,
+                    swarm_event_tx,
+                )
+                .await;
 
-                    let agent_arc = {
-                        let agent_sessions = sessions.read().await;
-                        agent_sessions.get(&new_session_id).cloned()
-                    };
-                    if let Some(agent_arc) = agent_arc {
-                        let sid_clone = new_session_id.clone();
-                        let swarm_members2 = Arc::clone(swarm_members);
-                        let swarms_by_id2 = Arc::clone(swarms_by_id);
-                        let event_history2 = Arc::clone(event_history);
-                        let event_counter2 = Arc::clone(event_counter);
-                        let swarm_event_tx2 = swarm_event_tx.clone();
-                        tokio::spawn(async move {
-                            update_member_status(
-                                &sid_clone,
-                                "running",
-                                Some(truncate_detail(&initial_msg, 120)),
-                                &swarm_members2,
-                                &swarms_by_id2,
-                                Some(&event_history2),
-                                Some(&event_counter2),
-                                Some(&swarm_event_tx2),
-                            )
-                            .await;
-                            let (drain_tx, mut drain_rx) =
-                                tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
-                            tokio::spawn(async move { while drain_rx.recv().await.is_some() {} });
-                            let result = process_message_streaming_mpsc(
-                                Arc::clone(&agent_arc),
-                                &initial_msg,
-                                vec![],
-                                None,
-                                drain_tx,
-                            )
-                            .await;
-                            let (new_status, new_detail) = match result {
-                                Ok(()) => ("ready", None),
-                                Err(ref error) => {
-                                    ("failed", Some(truncate_detail(&error.to_string(), 120)))
-                                }
-                            };
-                            update_member_status(
-                                &sid_clone,
-                                new_status,
-                                new_detail,
-                                &swarm_members2,
-                                &swarms_by_id2,
-                                Some(&event_history2),
-                                Some(&event_counter2),
-                                Some(&swarm_event_tx2),
-                            )
-                            .await;
-                        });
-                    }
+                let agent_arc = {
+                    let agent_sessions = sessions.read().await;
+                    agent_sessions.get(&new_session_id).cloned()
+                };
+                if let Some(agent_arc) = agent_arc {
+                    let sid_clone = new_session_id.clone();
+                    let swarm_members2 = Arc::clone(swarm_members);
+                    let swarms_by_id2 = Arc::clone(swarms_by_id);
+                    let event_history2 = Arc::clone(event_history);
+                    let event_counter2 = Arc::clone(event_counter);
+                    let swarm_event_tx2 = swarm_event_tx.clone();
+                    tokio::spawn(async move {
+                        update_member_status(
+                            &sid_clone,
+                            "running",
+                            Some(truncate_detail(&initial_msg, 120)),
+                            &swarm_members2,
+                            &swarms_by_id2,
+                            Some(&event_history2),
+                            Some(&event_counter2),
+                            Some(&swarm_event_tx2),
+                        )
+                        .await;
+                        let (drain_tx, mut drain_rx) =
+                            tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
+                        tokio::spawn(async move { while drain_rx.recv().await.is_some() {} });
+                        let result = process_message_streaming_mpsc(
+                            Arc::clone(&agent_arc),
+                            &initial_msg,
+                            vec![],
+                            None,
+                            drain_tx,
+                        )
+                        .await;
+                        let (new_status, new_detail) = match result {
+                            Ok(()) => ("ready", None),
+                            Err(ref error) => {
+                                ("failed", Some(truncate_detail(&error.to_string(), 120)))
+                            }
+                        };
+                        update_member_status(
+                            &sid_clone,
+                            new_status,
+                            new_detail,
+                            &swarm_members2,
+                            &swarms_by_id2,
+                            Some(&event_history2),
+                            Some(&event_counter2),
+                            Some(&swarm_event_tx2),
+                        )
+                        .await;
+                    });
                 }
             }
 
@@ -403,15 +408,13 @@ pub(super) async fn handle_comm_stop(
     req_session_id: String,
     target_session: String,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -678,7 +681,6 @@ mod tests {
     use crate::server::SwarmEventType;
     use crate::server::SwarmMember;
     use std::collections::{HashMap, HashSet, VecDeque};
-    use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::time::Instant;
@@ -771,7 +773,7 @@ mod tests {
             None,
             false,
             Some(startup),
-            |session_id, _cwd: &PathBuf, _selfdev| {
+            |session_id, _cwd: &std::path::Path, _selfdev| {
                 let path = crate::storage::jcode_dir()
                     .expect("jcode dir")
                     .join(format!("client-input-{}", session_id));
@@ -810,7 +812,7 @@ mod tests {
             None,
             false,
             Some("Do the thing."),
-            |_session_id, _cwd: &PathBuf, _selfdev| Ok(false),
+            |_session_id, _cwd: &std::path::Path, _selfdev| Ok(false),
         )
         .expect("visible spawn preparation should succeed even when launch is skipped");
 

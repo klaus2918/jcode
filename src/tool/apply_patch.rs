@@ -32,6 +32,10 @@ struct UpdateFileChunk {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "patch variants intentionally mirror unified diff file-level operations for readability"
+)]
 enum PatchHunk {
     AddFile {
         path: String,
@@ -486,11 +490,11 @@ fn parse_apply_patch(input: &str) -> Result<Vec<PatchHunk>> {
             i += 1;
 
             let mut move_to = None;
-            if i < lines.len() {
-                if let Some(target) = lines[i].trim_end().strip_prefix("*** Move to: ") {
-                    move_to = Some(target.trim().to_string());
-                    i += 1;
-                }
+            if i < lines.len()
+                && let Some(target) = lines[i].trim_end().strip_prefix("*** Move to: ")
+            {
+                move_to = Some(target.trim().to_string());
+                i += 1;
             }
 
             let mut chunks = Vec::new();

@@ -346,7 +346,7 @@ async fn open_target(target: &ResolvedTarget) -> Result<String> {
             ResolvedTarget::Local { path, .. } => OsString::from(path.as_os_str()),
             ResolvedTarget::Url(url) => OsString::from(url),
         };
-        return try_unix_openers(vec![vec![arg.clone()], vec![OsString::from("open"), arg]]).await;
+        try_unix_openers(vec![vec![arg.clone()], vec![OsString::from("open"), arg]]).await
     }
 
     #[cfg(windows)]
@@ -387,7 +387,7 @@ async fn reveal_target(path: &Path, kind: LocalTargetKind) -> Result<(String, bo
             vec![OsString::from("open"), OsString::from(to_open.as_os_str())],
         ])
         .await?;
-        return Ok((backend, false));
+        Ok((backend, false))
     }
 
     #[cfg(windows)]
@@ -410,10 +410,7 @@ async fn try_unix_openers(arg_sets: Vec<Vec<OsString>>) -> Result<String> {
     let mut failures: Vec<String> = Vec::new();
 
     for (program, arg_index) in candidates {
-        let args = arg_sets
-            .get(arg_index)
-            .cloned()
-            .unwrap_or_else(|| Vec::new());
+        let args = arg_sets.get(arg_index).cloned().unwrap_or_else(Vec::new);
         let mut cmd = Command::new(program);
         cmd.args(args);
         match spawn_with_grace(cmd, program).await {
@@ -451,14 +448,14 @@ async fn spawn_with_grace(mut cmd: Command, backend: &str) -> Result<()> {
         .with_context(|| format!("Failed to open via {}", backend))?;
 
     tokio::time::sleep(Duration::from_millis(OPEN_GRACE_PERIOD_MS)).await;
-    if let Some(status) = child.try_wait()? {
-        if !status.success() {
-            match status.code() {
-                Some(code) => {
-                    anyhow::bail!("Opener '{}' exited immediately with code {}", backend, code)
-                }
-                None => anyhow::bail!("Opener '{}' exited immediately", backend),
+    if let Some(status) = child.try_wait()?
+        && !status.success()
+    {
+        match status.code() {
+            Some(code) => {
+                anyhow::bail!("Opener '{}' exited immediately with code {}", backend, code)
             }
+            None => anyhow::bail!("Opener '{}' exited immediately", backend),
         }
     }
 

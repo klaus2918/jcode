@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use super::{
     App, ContentBlock, DisplayMessage, Message, ProcessingStatus, Role, SendAction, SkillRegistry,
     commands, ctrl_bracket_fallback_to_esc, is_context_limit_error, remote,
@@ -121,20 +123,20 @@ pub(super) fn paste_image_from_clipboard(app: &mut App) {
         return;
     }
 
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        if let Ok(text) = clipboard.get_text() {
-            if let Some(url) = super::extract_image_url(&text) {
-                app.set_status_notice("Downloading image...");
-                if let Some((media_type, base64_data)) = super::download_image_url(&url) {
-                    attach_image(app, media_type, base64_data);
-                } else {
-                    app.set_status_notice("Failed to download image");
-                }
+    if let Ok(mut clipboard) = arboard::Clipboard::new()
+        && let Ok(text) = clipboard.get_text()
+    {
+        if let Some(url) = super::extract_image_url(&text) {
+            app.set_status_notice("Downloading image...");
+            if let Some((media_type, base64_data)) = super::download_image_url(&url) {
+                attach_image(app, media_type, base64_data);
             } else {
-                handle_paste(app, text);
+                app.set_status_notice("Failed to download image");
             }
-            return;
+        } else {
+            handle_paste(app, text);
         }
+        return;
     }
 
     app.set_status_notice("No image in clipboard");
@@ -312,19 +314,19 @@ pub(super) fn handle_text_input(app: &mut App, text: &str) -> bool {
 
     if app.input.is_empty() && !app.is_processing && app.display_messages.is_empty() {
         let mut chars = text.chars();
-        if let (Some(c), None) = (chars.next(), chars.next()) {
-            if let Some(digit) = c.to_digit(10) {
-                let suggestions = app.suggestion_prompts();
-                let idx = digit as usize;
-                if idx >= 1 && idx <= suggestions.len() {
-                    let (_label, prompt) = &suggestions[idx - 1];
-                    if !prompt.starts_with('/') {
-                        app.remember_input_undo_state();
-                        app.input = prompt.clone();
-                        app.cursor_pos = app.input.len();
-                        app.follow_chat_bottom_for_typing();
-                        return true;
-                    }
+        if let (Some(c), None) = (chars.next(), chars.next())
+            && let Some(digit) = c.to_digit(10)
+        {
+            let suggestions = app.suggestion_prompts();
+            let idx = digit as usize;
+            if idx >= 1 && idx <= suggestions.len() {
+                let (_label, prompt) = &suggestions[idx - 1];
+                if !prompt.starts_with('/') {
+                    app.remember_input_undo_state();
+                    app.input = prompt.clone();
+                    app.cursor_pos = app.input.len();
+                    app.follow_chat_bottom_for_typing();
+                    return true;
                 }
             }
         }
@@ -436,10 +438,10 @@ pub(super) fn retrieve_pending_message_for_edit(app: &mut App) -> bool {
         app.pending_soft_interrupt_requests.clear();
         had_pending = true;
     }
-    if let Some(msg) = app.interleave_message.take() {
-        if !msg.is_empty() {
-            parts.push(msg);
-        }
+    if let Some(msg) = app.interleave_message.take()
+        && !msg.is_empty()
+    {
+        parts.push(msg);
     }
     parts.extend(std::mem::take(&mut app.queued_messages));
 
@@ -447,7 +449,7 @@ pub(super) fn retrieve_pending_message_for_edit(app: &mut App) -> bool {
         app.input = parts.join("\n\n");
         app.cursor_pos = app.input.len();
         let count = parts.len();
-        app.set_status_notice(&format!(
+        app.set_status_notice(format!(
             "Retrieved {} pending message{} for editing",
             count,
             if count == 1 { "" } else { "s" }
@@ -971,16 +973,16 @@ pub(super) fn handle_modal_key(
             return Ok(false);
         }
 
-        let handled = app.handle_copy_selection_key(code, modifiers)
+        let _ = app.handle_copy_selection_key(code, modifiers)
             || handle_navigation_shortcuts(app, code, modifiers);
-        return Ok(handled || true);
+        return Ok(true);
     }
 
-    if let Some(ref picker) = app.inline_interactive_state {
-        if !picker.preview {
-            app.handle_inline_interactive_key(code, modifiers)?;
-            return Ok(true);
-        }
+    if let Some(ref picker) = app.inline_interactive_state
+        && !picker.preview
+    {
+        app.handle_inline_interactive_key(code, modifiers)?;
+        return Ok(true);
     }
 
     if app.handle_inline_interactive_preview_key(&code, modifiers)? {
@@ -1197,7 +1199,7 @@ fn attach_image(app: &mut App, media_type: String, base64_data: String) {
     app.input.insert_str(app.cursor_pos, &placeholder);
     app.cursor_pos += placeholder.len();
     app.sync_model_picker_preview_from_input();
-    app.set_status_notice(&format!("Pasted {} ({} KB)", media_type, size_kb));
+    app.set_status_notice(format!("Pasted {} ({} KB)", media_type, size_kb));
 }
 
 fn paste_placeholder(content: &str) -> String {
@@ -1404,10 +1406,10 @@ impl App {
                 self.record_copy_badge_key_press(c);
             }
             (KeyEventKind::Release, KeyCode::Char(c)) => {
-                if let Some((active, _)) = self.copy_badge_ui.key_active {
-                    if active.eq_ignore_ascii_case(&c) {
-                        self.copy_badge_ui.key_active = None;
-                    }
+                if let Some((active, _)) = self.copy_badge_ui.key_active
+                    && active.eq_ignore_ascii_case(&c)
+                {
+                    self.copy_badge_ui.key_active = None;
                 }
                 if !event.modifiers.contains(KeyModifiers::ALT) {
                     self.copy_badge_ui.alt_active = false;

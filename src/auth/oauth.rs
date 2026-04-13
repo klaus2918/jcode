@@ -1140,7 +1140,7 @@ fn build_claude_exchange_request(
     state: Option<&str>,
 ) -> (String, String, Vec<u8>) {
     let effective_state = state.unwrap_or(verifier);
-    let params = vec![
+    let params = [
         ("grant_type", "authorization_code".to_string()),
         ("client_id", claude::CLIENT_ID.to_string()),
         ("code", code.to_string()),
@@ -1696,8 +1696,8 @@ mod tests {
 
             let mut request_line = String::new();
             reader.read_line(&mut request_line).await.unwrap();
-            let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
-            let method = parts.get(0).unwrap_or(&"").to_string();
+            let parts: Vec<&str> = request_line.split_whitespace().collect();
+            let method = parts.first().unwrap_or(&"").to_string();
             let path = parts.get(1).unwrap_or(&"").to_string();
 
             let mut headers = std::collections::HashMap::new();

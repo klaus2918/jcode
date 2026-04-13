@@ -1,4 +1,3 @@
-use crate::agent::Agent;
 use crate::bus::FileOp;
 use crate::plan::PlanItem;
 use crate::protocol::ServerEvent;
@@ -8,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc};
 
 /// Record of a file access by an agent
 #[derive(Clone, Debug)]
@@ -96,6 +95,12 @@ impl VersionedPlan {
             version: 0,
             participants: HashSet::new(),
         }
+    }
+}
+
+impl Default for VersionedPlan {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -315,7 +320,7 @@ pub(super) async fn queue_soft_interrupt_for_session(
     urgent: bool,
     source: SoftInterruptSource,
     queues: &SessionInterruptQueues,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &super::SessionAgents,
 ) -> bool {
     if let Some(queue) = queues.read().await.get(session_id).cloned() {
         return enqueue_soft_interrupt(&queue, content, urgent, source);

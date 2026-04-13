@@ -365,7 +365,7 @@ mod tests {
             let path = PathBuf::from(".jcode/mcp.json");
             let dir = path
                 .parent()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "missing parent"))?;
+                .ok_or_else(|| std::io::Error::other("missing parent"))?;
             let created_dir = if !dir.exists() {
                 fs::create_dir_all(dir)?;
                 true
@@ -394,10 +394,10 @@ mod tests {
                 }
                 None => {
                     let _ = fs::remove_file(&self.path);
-                    if self.created_dir {
-                        if let Some(dir) = self.path.parent() {
-                            let _ = fs::remove_dir(dir);
-                        }
+                    if self.created_dir
+                        && let Some(dir) = self.path.parent()
+                    {
+                        let _ = fs::remove_dir(dir);
                     }
                 }
             }

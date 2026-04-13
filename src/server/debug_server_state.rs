@@ -10,10 +10,16 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 
-#[allow(clippy::too_many_arguments)]
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "server-state debug command inspects many shared server structures in one snapshot"
+)]
 pub(super) async fn maybe_handle_server_state_command(
     cmd: &str,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     client_debug_state: &Arc<RwLock<ClientDebugState>>,
@@ -25,10 +31,8 @@ pub(super) async fn maybe_handle_server_state_command(
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
     files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     debug_jobs: &Arc<RwLock<HashMap<String, DebugJob>>>,
     event_history: &Arc<RwLock<VecDeque<SwarmEvent>>>,
     shutdown_signals: &Arc<RwLock<HashMap<String, jcode_agent_runtime::InterruptSignal>>>,
@@ -243,9 +247,12 @@ pub(super) async fn maybe_handle_server_state_command(
     Ok(None)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "server memory payload aggregates many live server structures into one debug snapshot"
+)]
 async fn build_server_memory_payload(
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     client_debug_state: &Arc<RwLock<ClientDebugState>>,
@@ -257,10 +264,8 @@ async fn build_server_memory_payload(
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
     files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     debug_jobs: &Arc<RwLock<HashMap<String, DebugJob>>>,
     event_history: &Arc<RwLock<VecDeque<SwarmEvent>>>,
     shutdown_signals: &Arc<RwLock<HashMap<String, jcode_agent_runtime::InterruptSignal>>>,
@@ -474,7 +479,9 @@ async fn build_server_memory_payload(
     let touched_session_count = touched_by_session.len();
     let touched_session_estimate_bytes: usize = touched_by_session
         .iter()
-        .map(|(session_id, paths)| session_id.len() + paths.iter().map(path_len).sum::<usize>())
+        .map(|(session_id, paths)| {
+            session_id.len() + paths.iter().map(|path| path_len(path)).sum::<usize>()
+        })
         .sum();
     drop(touched_by_session);
 
@@ -686,7 +693,11 @@ fn estimate_swarm_member_bytes(member: &SwarmMember) -> usize {
             .map(|value| value.len())
             .unwrap_or(0)
         + member.role.len()
-        + member.working_dir.as_ref().map(path_len).unwrap_or(0)
+        + member
+            .working_dir
+            .as_ref()
+            .map(|path| path_len(path))
+            .unwrap_or(0)
         + member
             .swarm_id
             .as_ref()
@@ -732,6 +743,6 @@ fn estimate_swarm_event_bytes(event: &SwarmEvent) -> usize {
     format!("{:?}", event).len()
 }
 
-fn path_len(path: &PathBuf) -> usize {
+fn path_len(path: &std::path::Path) -> usize {
     path.to_string_lossy().len()
 }

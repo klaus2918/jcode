@@ -38,20 +38,18 @@ impl RemoteDiffTracker {
                 crate::tui::ui::tools_ui::canonical_tool_name(name),
                 "edit" | "write" | "multiedit"
             )
+            && let Ok(input) = serde_json::from_str::<Value>(&self.current_tool_input)
+            && let Some(file_path) = input.get("file_path").and_then(|v| v.as_str())
         {
-            if let Ok(input) = serde_json::from_str::<Value>(&self.current_tool_input) {
-                if let Some(file_path) = input.get("file_path").and_then(|v| v.as_str()) {
-                    let resolved = resolve_diff_path(file_path);
-                    let original = std::fs::read_to_string(&resolved).unwrap_or_default();
-                    self.pending_diffs.insert(
-                        id.to_string(),
-                        PendingFileDiff {
-                            file_path: resolved.to_string_lossy().to_string(),
-                            original_content: original,
-                        },
-                    );
-                }
-            }
+            let resolved = resolve_diff_path(file_path);
+            let original = std::fs::read_to_string(&resolved).unwrap_or_default();
+            self.pending_diffs.insert(
+                id.to_string(),
+                PendingFileDiff {
+                    file_path: resolved.to_string_lossy().to_string(),
+                    original_content: original,
+                },
+            );
         }
 
         self.current_tool_id = None;
@@ -90,9 +88,9 @@ pub(crate) fn show_diffs_enabled() -> bool {
 /// Resolve a file path for client-side diff generation.
 /// Expands `~` to home directory and resolves relative paths against cwd.
 pub(crate) fn resolve_diff_path(raw: &str) -> PathBuf {
-    let expanded = if raw.starts_with("~/") {
+    let expanded = if let Some(stripped) = raw.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            home.join(&raw[2..])
+            home.join(stripped)
         } else {
             PathBuf::from(raw)
         }

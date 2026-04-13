@@ -580,6 +580,10 @@ fn collect_read_exposure(
     push_known_file(context, file);
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "agentgrep exposure collection needs tool payload, content, search root, context, focus set, exposure metadata, and mtime cache"
+)]
 fn collect_agentgrep_exposure(
     tool: &ToolCall,
     content: &str,
@@ -653,6 +657,10 @@ fn collect_agentgrep_exposure(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bash exposure collection needs tool payload, output content, search root, context, focus set, exposure metadata, and mtime cache"
+)]
 fn collect_bash_exposure(
     tool: &ToolCall,
     content: &str,
@@ -932,41 +940,41 @@ fn collect_trace_exposure(
                 }
                 continue;
             }
-            if trimmed == "full region:" || trimmed == "snippet:" {
-                if let Some(region) = pending_region.take() {
-                    let profile = if trimmed == "full region:" {
-                        RegionConfidenceProfile {
-                            body_confidence: 0.9,
-                            current_version_confidence: 0.72,
-                            prune_confidence: 0.82,
-                            source_strength: "full_region",
-                        }
-                    } else {
-                        RegionConfidenceProfile {
-                            body_confidence: 0.48,
-                            current_version_confidence: 0.72,
-                            prune_confidence: 0.52,
-                            source_strength: "snippet",
-                        }
-                    };
-                    let region = tune_known_region(
-                        AgentGrepKnownRegion {
-                            path: region.path,
-                            start_line: region.start_line,
-                            end_line: region.end_line,
-                            body_confidence: profile.body_confidence,
-                            current_version_confidence: profile.current_version_confidence,
-                            prune_confidence: profile.prune_confidence,
-                            source_strength: profile.source_strength,
-                            reasons: vec!["agentgrep_trace_region_body"],
-                        },
-                        exposure,
-                        search_root,
-                        ctx,
-                        file_mtime_cache,
-                    );
-                    push_known_region(context, region);
-                }
+            if (trimmed == "full region:" || trimmed == "snippet:")
+                && let Some(region) = pending_region.take()
+            {
+                let profile = if trimmed == "full region:" {
+                    RegionConfidenceProfile {
+                        body_confidence: 0.9,
+                        current_version_confidence: 0.72,
+                        prune_confidence: 0.82,
+                        source_strength: "full_region",
+                    }
+                } else {
+                    RegionConfidenceProfile {
+                        body_confidence: 0.48,
+                        current_version_confidence: 0.72,
+                        prune_confidence: 0.52,
+                        source_strength: "snippet",
+                    }
+                };
+                let region = tune_known_region(
+                    AgentGrepKnownRegion {
+                        path: region.path,
+                        start_line: region.start_line,
+                        end_line: region.end_line,
+                        body_confidence: profile.body_confidence,
+                        current_version_confidence: profile.current_version_confidence,
+                        prune_confidence: profile.prune_confidence,
+                        source_strength: profile.source_strength,
+                        reasons: vec!["agentgrep_trace_region_body"],
+                    },
+                    exposure,
+                    search_root,
+                    ctx,
+                    file_mtime_cache,
+                );
+                push_known_region(context, region);
             }
         }
     }
@@ -1088,6 +1096,10 @@ fn tune_known_symbol(
     known
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "exposure tuning uses several confidence outputs plus exposure metadata and file freshness cache"
+)]
 fn apply_exposure_tuning(
     structure_confidence: Option<&mut f32>,
     body_confidence: &mut f32,

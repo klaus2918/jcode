@@ -78,10 +78,10 @@ fn get_terminal_font() -> (String, f64) {
                     .trim()
                     .to_string();
             }
-            if line.starts_with("font_size ") {
-                if let Ok(s) = line.strip_prefix("font_size ").unwrap_or("").trim().parse() {
-                    size = s;
-                }
+            if line.starts_with("font_size ")
+                && let Ok(s) = line.strip_prefix("font_size ").unwrap_or("").trim().parse()
+            {
+                size = s;
             }
         }
         if !family.is_empty() {
@@ -98,7 +98,7 @@ fn swarm_export_grid(pane_count: u16) -> (u16, u16) {
         4 => 4,
         _ => 2,
     };
-    let rows = ((pane_count + cols - 1) / cols).max(1);
+    let rows = pane_count.div_ceil(cols).max(1);
     (cols, rows)
 }
 
@@ -110,6 +110,10 @@ fn swarm_export_font_size(base_font_size: f64, pane_count: u16, cols: u16, rows:
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Video export entrypoint mirrors CLI/render configuration knobs"
+)]
 pub async fn export_video(
     session: &crate::session::Session,
     timeline: &[TimelineEvent],
@@ -188,7 +192,7 @@ pub async fn export_swarm_video(
         font_size
     );
 
-    let rows = ((pane_count + cols - 1) / cols).max(1);
+    let rows = pane_count.div_ceil(cols).max(1);
     let pane_width = (width / cols).max(1);
     let pane_height = (height / rows).max(1);
 
@@ -233,6 +237,10 @@ pub async fn export_swarm_video(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SVG pipeline needs explicit frame/render parameters to avoid hidden globals"
+)]
 async fn render_svg_pipeline(
     frames: &[(f64, Buffer)],
     output_path: &Path,
@@ -291,13 +299,15 @@ async fn render_svg_pipeline(
     for chunk_start in (0..unique_frames.len()).step_by(concurrency) {
         let chunk_end = (chunk_start + concurrency).min(unique_frames.len());
         let mut handles = Vec::new();
-        for i in chunk_start..chunk_end {
-            let (_, buf) = unique_frames[i];
+        for (i, (_, buf)) in unique_frames
+            .iter()
+            .enumerate()
+            .take(chunk_end)
+            .skip(chunk_start)
+        {
             let svg = buffer_to_svg(buf, font_family, font_size, cell_w, cell_h);
             let png_path = png_dir.join(format!("unique_{:06}.png", i));
             let rsvg = rsvg.clone();
-            let img_w = img_w;
-            let img_h = img_h;
             handles.push(tokio::spawn(async move {
                 use tokio::io::AsyncWriteExt;
                 let mut child = tokio::process::Command::new(&rsvg)
@@ -324,7 +334,7 @@ async fn render_svg_pipeline(
                 anyhow::bail!("rsvg-convert failed");
             }
             let done = rendered.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if done % 20 == 0 || done == total_unique {
+            if done.is_multiple_of(20) || done == total_unique {
                 eprint!("\r  Rendering SVG... {}/{}", done, total_unique);
             }
         }

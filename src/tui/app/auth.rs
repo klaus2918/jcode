@@ -498,7 +498,7 @@ impl App {
              After logging in, copy the callback URL or authorization code and **paste it here**.{}",
             label, auth_url, qr_section
         )));
-        self.set_status_notice(&format!("Login [{}]: paste code...", label));
+        self.set_status_notice(format!("Login [{}]: paste code...", label));
         self.begin_pending_login(PendingLogin::ClaudeAccount {
             verifier,
             label: label.to_string(),
@@ -538,10 +538,12 @@ impl App {
         };
 
         let mut items = Vec::new();
-        let mut summary = crate::tui::account_picker::AccountPickerSummary::default();
-        summary.provider_count = providers.len();
-        summary.default_provider = cfg.provider.default_provider.clone();
-        summary.default_model = cfg.provider.default_model.clone();
+        let mut summary = crate::tui::account_picker::AccountPickerSummary {
+            provider_count: providers.len(),
+            default_provider: cfg.provider.default_provider.clone(),
+            default_model: cfg.provider.default_model.clone(),
+            ..Default::default()
+        };
 
         let provider_scope = provider_filter.map(|value| value.to_string());
         let claude_accounts = crate::auth::claude::list_accounts().unwrap_or_default();
@@ -1556,7 +1558,7 @@ impl App {
             "Enter a label for the new {} account, then press Enter. Use `/cancel` to abort.",
             display_name
         )));
-        self.set_status_notice(&format!("Account: new {} label...", display_name));
+        self.set_status_notice(format!("Account: new {} label...", display_name));
         self.pending_account_input = Some(PendingAccountInput::NewAccountLabel {
             provider_id: provider_id.to_string(),
             display_name: display_name.to_string(),
@@ -2165,7 +2167,7 @@ impl App {
              Or paste the full callback URL or query string here to finish from another device.{}",
             label, auth_url, browser_line, callback_line, qr_section
         )));
-        self.set_status_notice(&format!("Login [{}]: waiting...", label));
+        self.set_status_notice(format!("Login [{}]: waiting...", label));
         self.begin_pending_login(PendingLogin::OpenAiAccount {
             verifier,
             label: label.to_string(),
@@ -2450,6 +2452,10 @@ impl App {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "API-key login setup passes provider-specific metadata assembled at call sites"
+    )]
     fn start_api_key_login(
         &mut self,
         provider: &str,
@@ -2812,7 +2818,7 @@ impl App {
                 )
                 .await
             } else {
-                crate::auth::antigravity::exchange_callback_code(&trimmed, &verifier, &redirect_uri)
+                crate::auth::antigravity::exchange_callback_code(trimmed, &verifier, &redirect_uri)
                     .await
             }
             .map_err(|e| e.to_string())?;
@@ -2925,7 +2931,7 @@ impl App {
                 label,
                 redirect_uri,
             } => {
-                self.set_status_notice(&format!("Login [{}]: exchanging...", label));
+                self.set_status_notice(format!("Login [{}]: exchanging...", label));
                 let input_owned = input.clone();
                 let label_clone = label.clone();
                 tokio::spawn(async move {
@@ -3001,7 +3007,7 @@ impl App {
                 expected_state,
                 redirect_uri,
             } => {
-                self.set_status_notice(&format!("Login [{}]: exchanging...", label));
+                self.set_status_notice(format!("Login [{}]: exchanging...", label));
                 let input_owned = input.clone();
                 let label_clone = label.clone();
                 tokio::spawn(async move {
@@ -3442,7 +3448,7 @@ impl App {
                 .nth(1)
                 .and_then(|s| s.split("**").next())
             {
-                self.set_status_notice(&format!("Login: enter {} at GitHub", code));
+                self.set_status_notice(format!("Login: enter {} at GitHub", code));
             }
             return;
         }
@@ -3460,11 +3466,11 @@ impl App {
         }
         if login.success {
             self.push_display_message(DisplayMessage::system(login.message));
-            self.set_status_notice(&format!("Login: {} ready", login.provider));
+            self.set_status_notice(format!("Login: {} ready", login.provider));
             self.provider.on_auth_changed();
         } else {
             self.push_display_message(DisplayMessage::error(login.message));
-            self.set_status_notice(&format!("Login: {} failed", login.provider));
+            self.set_status_notice(format!("Login: {} failed", login.provider));
         }
         if self.pending_login.is_some() {
             self.pending_login = None;
@@ -3478,17 +3484,17 @@ impl App {
                 self.set_status_notice("Checking for updates...");
             }
             UpdateStatus::Available { current, latest } => {
-                self.set_status_notice(&format!("Update available: {} → {}", current, latest));
+                self.set_status_notice(format!("Update available: {} → {}", current, latest));
             }
             UpdateStatus::Downloading { version } => {
-                self.set_status_notice(&format!("⬇️  Downloading {}...", version));
+                self.set_status_notice(format!("⬇️  Downloading {}...", version));
             }
             UpdateStatus::Installed { version } => {
-                self.set_status_notice(&format!("✅ Updated to {} — restarting", version));
+                self.set_status_notice(format!("✅ Updated to {} — restarting", version));
             }
             UpdateStatus::UpToDate => {}
             UpdateStatus::Error(e) => {
-                self.set_status_notice(&format!("Update failed: {}", e));
+                self.set_status_notice(format!("Update failed: {}", e));
             }
         }
     }
@@ -4051,7 +4057,7 @@ async fn execute_account_command_remote(
                     "Switched to Anthropic account `{}`.",
                     label
                 )));
-                app.set_status_notice(&format!("Account: switched to {}", label));
+                app.set_status_notice(format!("Account: switched to {}", label));
             }
             "openai" => {
                 if let Err(e) = crate::auth::codex::set_active_account(&label) {
@@ -4069,7 +4075,7 @@ async fn execute_account_command_remote(
                     "Switched to OpenAI account `{}`.",
                     label
                 )));
-                app.set_status_notice(&format!("OpenAI account: switched to {}", label));
+                app.set_status_notice(format!("OpenAI account: switched to {}", label));
             }
             _ => execute_account_command_local(app, AccountCommand::Switch { provider_id, label }),
         },
@@ -4099,7 +4105,7 @@ async fn execute_account_command_remote(
                         "Switched to Anthropic account `{}`.",
                         label
                     )));
-                    app.set_status_notice(&format!("Account: switched to {}", label));
+                    app.set_status_notice(format!("Account: switched to {}", label));
                 }
                 (false, true) => {
                     if let Err(e) = crate::auth::codex::set_active_account(&label) {
@@ -4117,7 +4123,7 @@ async fn execute_account_command_remote(
                         "Switched to OpenAI account `{}`.",
                         label
                     )));
-                    app.set_status_notice(&format!("OpenAI account: switched to {}", label));
+                    app.set_status_notice(format!("OpenAI account: switched to {}", label));
                 }
                 _ => execute_account_command_local(app, AccountCommand::SwitchShorthand { label }),
             }
@@ -4230,7 +4236,7 @@ fn save_default_provider_setting(app: &mut App, provider: Option<&str>) {
     match crate::config::Config::set_default_provider(provider.as_deref()) {
         Ok(()) => {
             let label = provider.as_deref().unwrap_or("auto");
-            app.set_status_notice(&format!("Default provider: {}", label));
+            app.set_status_notice(format!("Default provider: {}", label));
             app.push_display_message(DisplayMessage::system(format!(
                 "Saved default provider: **{}**. This affects future sessions.",
                 label
@@ -4247,7 +4253,7 @@ fn save_default_model_setting(app: &mut App, model: Option<&str>) {
     match crate::config::Config::set_default_model_only(model) {
         Ok(()) => {
             let label = model.unwrap_or("(provider default)");
-            app.set_status_notice(&format!("Default model: {}", label));
+            app.set_status_notice(format!("Default model: {}", label));
             app.push_display_message(DisplayMessage::system(format!(
                 "Saved default model: **{}**. This affects future sessions.",
                 label
@@ -4271,7 +4277,7 @@ fn save_openai_transport_setting_local(app: &mut App, value: Option<&str>) {
     match crate::config::Config::set_openai_transport(Some(value)) {
         Ok(()) => {
             let _ = app.provider.set_transport(value);
-            app.set_status_notice(&format!("Transport: {}", value));
+            app.set_status_notice(format!("Transport: {}", value));
             app.push_display_message(DisplayMessage::system(format!(
                 "Saved OpenAI transport preference: **{}**.",
                 value
@@ -4285,14 +4291,13 @@ fn save_openai_transport_setting_local(app: &mut App, value: Option<&str>) {
 }
 
 fn save_openai_effort_setting_local(app: &mut App, value: Option<&str>) {
-    if let Some(value) = value {
-        if !matches!(value, "none" | "low" | "medium" | "high" | "xhigh") {
-            app.push_display_message(DisplayMessage::error(
-                "OpenAI effort must be one of `none`, `low`, `medium`, `high`, or `xhigh`."
-                    .to_string(),
-            ));
-            return;
-        }
+    if let Some(value) = value
+        && !matches!(value, "none" | "low" | "medium" | "high" | "xhigh")
+    {
+        app.push_display_message(DisplayMessage::error(
+            "OpenAI effort must be one of `none`, `low`, `medium`, `high`, or `xhigh`.".to_string(),
+        ));
+        return;
     }
     match crate::config::Config::set_openai_reasoning_effort(value) {
         Ok(()) => {
@@ -4300,7 +4305,7 @@ fn save_openai_effort_setting_local(app: &mut App, value: Option<&str>) {
                 let _ = app.provider.set_reasoning_effort(value);
             }
             let label = value.unwrap_or("(provider default)");
-            app.set_status_notice(&format!("Effort: {}", label));
+            app.set_status_notice(format!("Effort: {}", label));
             app.push_display_message(DisplayMessage::system(format!(
                 "Saved OpenAI reasoning effort: **{}**.",
                 label
@@ -4321,7 +4326,7 @@ pub(super) fn save_openai_fast_setting_local(app: &mut App, enabled: bool) {
                 .provider
                 .set_service_tier(if enabled { "priority" } else { "off" });
             let label = if enabled { "on" } else { "off" };
-            app.set_status_notice(&format!("Fast mode: {}", label));
+            app.set_status_notice(format!("Fast mode: {}", label));
             app.push_display_message(DisplayMessage::system(format!(
                 "Saved OpenAI fast mode: **{}**.",
                 label
@@ -4361,7 +4366,7 @@ fn save_copilot_premium_setting(app: &mut App, mode: Option<&str>) {
                 PremiumMode::OnePerSession => "one premium per session",
                 PremiumMode::Zero => "zero premium requests",
             };
-            app.set_status_notice(&format!("Premium: {}", label));
+            app.set_status_notice(format!("Premium: {}", label));
             app.push_display_message(DisplayMessage::system(format!(
                 "Saved Copilot premium mode: **{}**.",
                 label
@@ -4406,14 +4411,14 @@ fn save_openai_compat_setting(app: &mut App, setting: OpenAiCompatSetting, value
             ("JCODE_OPENAI_COMPAT_API_BASE", normalized)
         }
         OpenAiCompatSetting::ApiKeyName => {
-            if let Some(value) = value {
-                if !crate::provider_catalog::is_safe_env_key_name(value) {
-                    app.push_display_message(DisplayMessage::error(
-                        "API key variable must be uppercase letters, digits, and underscores only."
-                            .to_string(),
-                    ));
-                    return;
-                }
+            if let Some(value) = value
+                && !crate::provider_catalog::is_safe_env_key_name(value)
+            {
+                app.push_display_message(DisplayMessage::error(
+                    "API key variable must be uppercase letters, digits, and underscores only."
+                        .to_string(),
+                ));
+                return;
             }
             (
                 "JCODE_OPENAI_COMPAT_API_KEY_NAME",
@@ -4421,13 +4426,13 @@ fn save_openai_compat_setting(app: &mut App, setting: OpenAiCompatSetting, value
             )
         }
         OpenAiCompatSetting::EnvFile => {
-            if let Some(value) = value {
-                if !crate::provider_catalog::is_safe_env_file_name(value) {
-                    app.push_display_message(DisplayMessage::error(
-                        "Env file must be a simple file name like `groq.env`.".to_string(),
-                    ));
-                    return;
-                }
+            if let Some(value) = value
+                && !crate::provider_catalog::is_safe_env_file_name(value)
+            {
+                app.push_display_message(DisplayMessage::error(
+                    "Env file must be a simple file name like `groq.env`.".to_string(),
+                ));
+                return;
             }
             (
                 "JCODE_OPENAI_COMPAT_ENV_FILE",
@@ -4455,17 +4460,16 @@ fn save_openai_compat_setting(app: &mut App, setting: OpenAiCompatSetting, value
     let new = crate::provider_catalog::resolve_openai_compatible_profile(
         crate::provider_catalog::OPENAI_COMPAT_PROFILE,
     );
-    if let Some(key) = current_key {
-        if (old.api_key_env != new.api_key_env || old.env_file != new.env_file)
-            && crate::provider_catalog::save_env_value_to_env_file(
-                &new.api_key_env,
-                &new.env_file,
-                Some(&key),
-            )
-            .is_err()
-        {
-            crate::logging::warn("Failed to migrate OpenAI-compatible API key to new source");
-        }
+    if let Some(key) = current_key
+        && (old.api_key_env != new.api_key_env || old.env_file != new.env_file)
+        && crate::provider_catalog::save_env_value_to_env_file(
+            &new.api_key_env,
+            &new.env_file,
+            Some(&key),
+        )
+        .is_err()
+    {
+        crate::logging::warn("Failed to migrate OpenAI-compatible API key to new source");
     }
     crate::auth::AuthStatus::invalidate_cache();
     let label = match setting {
@@ -4477,7 +4481,7 @@ fn save_openai_compat_setting(app: &mut App, setting: OpenAiCompatSetting, value
             new.default_model.as_deref().unwrap_or("(unset)")
         ),
     };
-    app.set_status_notice(&label);
+    app.set_status_notice(label.clone());
     app.push_display_message(DisplayMessage::system(format!(
         "Saved OpenAI-compatible setting: **{}**.",
         label

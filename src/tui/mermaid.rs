@@ -196,8 +196,8 @@ impl ImageStateCache {
     }
 
     fn insert(&mut self, hash: u64, state: ImageState) {
-        if self.entries.contains_key(&hash) {
-            self.entries.insert(hash, state);
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(hash) {
+            entry.insert(state);
             self.touch(hash);
         } else {
             self.entries.insert(hash, state);
@@ -296,8 +296,8 @@ impl KittyViewportCache {
     }
 
     fn insert(&mut self, hash: u64, state: KittyViewportState) {
-        if self.entries.contains_key(&hash) {
-            self.entries.insert(hash, state);
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(hash) {
+            entry.insert(state);
             self.touch(hash);
         } else {
             self.entries.insert(hash, state);
@@ -689,12 +689,12 @@ pub fn debug_memory_profile() -> MermaidMemoryProfile {
         out.image_state_entries = state.entries.len();
         let mut seen_paths: HashSet<PathBuf> = HashSet::new();
         for (_, image_state) in state.iter() {
-            if seen_paths.insert(image_state.source_path.clone()) {
-                if let Some((w, h)) = get_png_dimensions(&image_state.source_path) {
-                    out.image_state_protocol_min_estimate_bytes = out
-                        .image_state_protocol_min_estimate_bytes
-                        .saturating_add(rgba_bytes_estimate(w, h));
-                }
+            if seen_paths.insert(image_state.source_path.clone())
+                && let Some((w, h)) = get_png_dimensions(&image_state.source_path)
+            {
+                out.image_state_protocol_min_estimate_bytes = out
+                    .image_state_protocol_min_estimate_bytes
+                    .saturating_add(rgba_bytes_estimate(w, h));
             }
         }
     }
@@ -1407,17 +1407,17 @@ pub fn debug_test_scroll(content: Option<&str>) -> ScrollTestResult {
             frame_info.rendered = rows_used > 0;
 
             // Check resize mode
-            if let Ok(state) = IMAGE_STATE.lock() {
-                if let Some(img_state) = state.get(&hash) {
-                    let mode = match img_state.resize_mode {
-                        ResizeMode::Fit => "Fit",
-                        ResizeMode::Scale => "Scale",
-                        ResizeMode::Crop => "Crop",
-                        ResizeMode::Viewport => "Viewport",
-                    };
-                    frame_info.resize_mode = Some(mode.to_string());
-                    modes_seen.push(mode.to_string());
-                }
+            if let Ok(state) = IMAGE_STATE.lock()
+                && let Some(img_state) = state.get(&hash)
+            {
+                let mode = match img_state.resize_mode {
+                    ResizeMode::Fit => "Fit",
+                    ResizeMode::Scale => "Scale",
+                    ResizeMode::Crop => "Crop",
+                    ResizeMode::Viewport => "Viewport",
+                };
+                frame_info.resize_mode = Some(mode.to_string());
+                modes_seen.push(mode.to_string());
             }
 
             // Check border was rendered (first column should have │)
@@ -1479,10 +1479,10 @@ fn parse_env_bool(raw: &str) -> Option<bool> {
 }
 
 fn picker_init_mode_from_probe_env(raw: Option<&str>) -> PickerInitMode {
-    if let Some(raw) = raw {
-        if parse_env_bool(raw) == Some(true) {
-            return PickerInitMode::Probe;
-        }
+    if let Some(raw) = raw
+        && parse_env_bool(raw) == Some(true)
+    {
+        return PickerInitMode::Probe;
     }
     PickerInitMode::Fast
 }
@@ -1793,8 +1793,8 @@ impl MermaidCache {
     }
 
     fn insert(&mut self, hash: u64, diagram: CachedDiagram) {
-        if self.entries.contains_key(&hash) {
-            self.entries.insert(hash, diagram);
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(hash) {
+            entry.insert(diagram);
             self.touch(hash);
         } else {
             self.entries.insert(hash, diagram);
@@ -1943,11 +1943,10 @@ fn estimate_diagram_size(content: &str) -> (usize, usize) {
             edges += 1;
         }
         // Count node definitions (rough heuristic)
-        if trimmed.contains('[') && trimmed.contains(']') {
-            nodes += 1;
-        } else if trimmed.contains('{') && trimmed.contains('}') {
-            nodes += 1;
-        } else if trimmed.contains('(') && trimmed.contains(')') {
+        if (trimmed.contains('[') && trimmed.contains(']'))
+            || (trimmed.contains('{') && trimmed.contains('}'))
+            || (trimmed.contains('(') && trimmed.contains(')'))
+        {
             nodes += 1;
         }
     }
@@ -2815,7 +2814,7 @@ pub fn render_image_widget(
             if img_state.last_crop_top != crop_top {
                 img_state
                     .protocol
-                    .resize_encode(&Resize::Crop(Some(crop_opts.clone())), render_area);
+                    .resize_encode(&Resize::Crop(Some(crop_opts)), render_area);
                 img_state.last_crop_top = crop_top;
             }
 
@@ -2837,10 +2836,11 @@ pub fn render_image_widget(
                     })
                     .map(|prev| prev == state_key)
                     .unwrap_or(false);
-                if last_same && same_area {
-                    if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
-                        dbg.stats.skipped_renders += 1;
-                    }
+                if last_same
+                    && same_area
+                    && let Ok(mut dbg) = MERMAID_DEBUG.lock()
+                {
+                    dbg.stats.skipped_renders += 1;
                 }
             }
             if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
@@ -2861,45 +2861,44 @@ pub fn render_image_widget(
     }
 
     // State miss - need to load image from cache
-    if let Some(path) = path {
-        if let Some(Some(picker)) = PICKER.get() {
-            if let Ok(img) = image::open(&path) {
-                if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
-                    dbg.stats.image_state_misses += 1;
-                }
-                let protocol = picker.new_resize_protocol(img);
+    if let Some(path) = path
+        && let Some(Some(picker)) = PICKER.get()
+        && let Ok(img) = image::open(&path)
+    {
+        if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+            dbg.stats.image_state_misses += 1;
+        }
+        let protocol = picker.new_resize_protocol(img);
 
-                let mut state = IMAGE_STATE.lock().unwrap();
-                state.insert(
-                    hash,
-                    ImageState {
-                        protocol,
-                        source_path: path.clone(),
-                        last_area: Some(render_area),
-                        resize_mode: ResizeMode::Crop,
-                        last_crop_top: false,
-                        last_viewport: None,
-                    },
-                );
+        let mut state = IMAGE_STATE.lock().unwrap();
+        state.insert(
+            hash,
+            ImageState {
+                protocol,
+                source_path: path.clone(),
+                last_area: Some(render_area),
+                resize_mode: ResizeMode::Crop,
+                last_crop_top: false,
+                last_viewport: None,
+            },
+        );
 
-                if let Some(img_state) = state.get_mut(hash) {
-                    let crop_opts = CropOptions {
-                        clip_top: crop_top,
-                        clip_left: false,
-                    };
-                    img_state.last_crop_top = crop_top;
-                    if !render_stateful_image_safe(
-                        hash,
-                        render_area,
-                        buf,
-                        &mut img_state.protocol,
-                        Resize::Crop(Some(crop_opts)),
-                    ) {
-                        return 0;
-                    }
-                    return area.height;
-                }
+        if let Some(img_state) = state.get_mut(hash) {
+            let crop_opts = CropOptions {
+                clip_top: crop_top,
+                clip_left: false,
+            };
+            img_state.last_crop_top = crop_top;
+            if !render_stateful_image_safe(
+                hash,
+                render_area,
+                buf,
+                &mut img_state.protocol,
+                Resize::Crop(Some(crop_opts)),
+            ) {
+                return 0;
             }
+            return area.height;
         }
     }
 
@@ -3052,10 +3051,11 @@ fn render_image_widget_fit_inner(
                     })
                     .map(|prev| prev == state_key)
                     .unwrap_or(false);
-                if last_same && same_area {
-                    if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
-                        dbg.stats.skipped_renders += 1;
-                    }
+                if last_same
+                    && same_area
+                    && let Ok(mut dbg) = MERMAID_DEBUG.lock()
+                {
+                    dbg.stats.skipped_renders += 1;
                 }
             }
             if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
@@ -3071,51 +3071,45 @@ fn render_image_widget_fit_inner(
         }
     }
 
-    if let Some(path) = path {
-        if let Some(Some(picker)) = PICKER.get() {
-            if let Ok(img) = image::open(&path) {
-                if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
-                    dbg.stats.image_state_misses += 1;
-                    dbg.stats.fit_protocol_rebuilds += 1;
-                }
-                let target_mode = if scale_up {
-                    ResizeMode::Scale
-                } else {
-                    ResizeMode::Fit
-                };
-                let resize = if scale_up {
-                    Resize::Scale(None)
-                } else {
-                    Resize::Fit(None)
-                };
-                let protocol = picker.new_resize_protocol(img);
+    if let Some(path) = path
+        && let Some(Some(picker)) = PICKER.get()
+        && let Ok(img) = image::open(&path)
+    {
+        if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+            dbg.stats.image_state_misses += 1;
+            dbg.stats.fit_protocol_rebuilds += 1;
+        }
+        let target_mode = if scale_up {
+            ResizeMode::Scale
+        } else {
+            ResizeMode::Fit
+        };
+        let resize = if scale_up {
+            Resize::Scale(None)
+        } else {
+            Resize::Fit(None)
+        };
+        let protocol = picker.new_resize_protocol(img);
 
-                let mut state = IMAGE_STATE.lock().unwrap();
-                state.insert(
-                    hash,
-                    ImageState {
-                        protocol,
-                        source_path: path.clone(),
-                        last_area: Some(render_area),
-                        resize_mode: target_mode,
-                        last_crop_top: false,
-                        last_viewport: None,
-                    },
-                );
+        let mut state = IMAGE_STATE.lock().unwrap();
+        state.insert(
+            hash,
+            ImageState {
+                protocol,
+                source_path: path.clone(),
+                last_area: Some(render_area),
+                resize_mode: target_mode,
+                last_crop_top: false,
+                last_viewport: None,
+            },
+        );
 
-                if let Some(img_state) = state.get_mut(hash) {
-                    if !render_stateful_image_safe(
-                        hash,
-                        render_area,
-                        buf,
-                        &mut img_state.protocol,
-                        resize,
-                    ) {
-                        return 0;
-                    }
-                    return area.height;
-                }
+        if let Some(img_state) = state.get_mut(hash) {
+            if !render_stateful_image_safe(hash, render_area, buf, &mut img_state.protocol, resize)
+            {
+                return 0;
             }
+            return area.height;
         }
     }
 
@@ -3128,10 +3122,10 @@ fn render_image_widget_fit_inner(
 }
 
 fn load_source_image(hash: u64, path: &Path) -> Option<Arc<DynamicImage>> {
-    if let Ok(mut cache) = SOURCE_CACHE.lock() {
-        if let Some(img) = cache.get(hash, path) {
-            return Some(img);
-        }
+    if let Ok(mut cache) = SOURCE_CACHE.lock()
+        && let Some(img) = cache.get(hash, path)
+    {
+        return Some(img);
     }
 
     let img = image::open(path).ok()?;
@@ -3234,10 +3228,11 @@ fn ensure_kitty_viewport_state(
 ) -> Option<(u32, u16, u16)> {
     let zoom_percent = zoom_percent.clamp(50, 200);
     let mut cache = KITTY_VIEWPORT_STATE.lock().ok()?;
-    if let Some(state) = cache.get_mut(hash) {
-        if state.source_path == source_path && state.zoom_percent == zoom_percent {
-            return Some((state.unique_id, state.full_cols, state.full_rows));
-        }
+    if let Some(state) = cache.get_mut(hash)
+        && state.source_path == source_path
+        && state.zoom_percent == zoom_percent
+    {
+        return Some((state.unique_id, state.full_cols, state.full_rows));
     }
 
     let scaled = kitty_scaled_image_for_zoom(source, zoom_percent);
@@ -3298,10 +3293,10 @@ fn render_kitty_virtual_viewport(
     let pending_transmit = state.pending_transmit.take();
     drop(cache);
 
-    if pending_transmit.is_none() {
-        if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
-            dbg.stats.viewport_state_reuse_hits += 1;
-        }
+    if pending_transmit.is_none()
+        && let Ok(mut dbg) = MERMAID_DEBUG.lock()
+    {
+        dbg.stats.viewport_state_reuse_hits += 1;
     }
 
     let [id_extra, id_r, id_g, id_b] = unique_id.to_be_bytes();
@@ -3778,41 +3773,40 @@ pub fn render_image_widget_viewport(
         view_h_px,
     };
 
-    if picker.protocol_type() == ProtocolType::Kitty {
-        if let Some((_, full_cols, full_rows)) = ensure_kitty_viewport_state(
+    if picker.protocol_type() == ProtocolType::Kitty
+        && let Some((_, full_cols, full_rows)) = ensure_kitty_viewport_state(
             hash,
             &source_path,
             source.as_ref(),
             zoom_percent,
             font_size,
-        ) {
-            let scroll_x_cells = (scroll_x.max(0) as u16).min(full_cols.saturating_sub(1));
-            let scroll_y_cells = (scroll_y.max(0) as u16).min(full_rows.saturating_sub(1));
-            if can_use_kitty_virtual_viewport(full_cols, full_rows, scroll_x_cells, scroll_y_cells)
+        )
+    {
+        let scroll_x_cells = (scroll_x.max(0) as u16).min(full_cols.saturating_sub(1));
+        let scroll_y_cells = (scroll_y.max(0) as u16).min(full_rows.saturating_sub(1));
+        if can_use_kitty_virtual_viewport(full_cols, full_rows, scroll_x_cells, scroll_y_cells) {
+            let visible_width = image_area
+                .width
+                .min(full_cols.saturating_sub(scroll_x_cells));
+            let visible_height = image_area
+                .height
+                .min(full_rows.saturating_sub(scroll_y_cells));
+            if let Ok(mut state) = IMAGE_STATE.lock()
+                && let Some(img_state) = state.get_mut(hash)
             {
-                let visible_width = image_area
-                    .width
-                    .min(full_cols.saturating_sub(scroll_x_cells));
-                let visible_height = image_area
-                    .height
-                    .min(full_rows.saturating_sub(scroll_y_cells));
-                if let Ok(mut state) = IMAGE_STATE.lock() {
-                    if let Some(img_state) = state.get_mut(hash) {
-                        img_state.last_area = Some(image_area);
-                        img_state.last_viewport = Some(viewport);
-                    }
-                }
-                if render_kitty_virtual_viewport(
-                    hash,
-                    image_area,
-                    buf,
-                    scroll_x_cells,
-                    scroll_y_cells,
-                    visible_width,
-                    visible_height,
-                ) {
-                    return area.height;
-                }
+                img_state.last_area = Some(image_area);
+                img_state.last_viewport = Some(viewport);
+            }
+            if render_kitty_virtual_viewport(
+                hash,
+                image_area,
+                buf,
+                scroll_x_cells,
+                scroll_y_cells,
+                visible_width,
+                visible_height,
+            ) {
+                return area.height;
             }
         }
     }
@@ -3829,23 +3823,23 @@ pub fn render_image_widget_viewport(
         if needs_reset {
             state.remove(&hash);
         }
-        if let Some(img_state) = state.get_mut(hash) {
-            if img_state.last_viewport == Some(viewport) {
-                if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
-                    dbg.stats.viewport_state_reuse_hits += 1;
-                }
-                if !render_stateful_image_safe(
-                    hash,
-                    image_area,
-                    buf,
-                    &mut img_state.protocol,
-                    Resize::Fit(None),
-                ) {
-                    return 0;
-                }
-                img_state.last_area = Some(image_area);
-                return area.height;
+        if let Some(img_state) = state.get_mut(hash)
+            && img_state.last_viewport == Some(viewport)
+        {
+            if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+                dbg.stats.viewport_state_reuse_hits += 1;
             }
+            if !render_stateful_image_safe(
+                hash,
+                image_area,
+                buf,
+                &mut img_state.protocol,
+                Resize::Fit(None),
+            ) {
+                return 0;
+            }
+            img_state.last_area = Some(image_area);
+            return area.height;
         }
     }
 
@@ -4246,13 +4240,13 @@ pub fn evict_old_cache() {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "png") {
-            if let Ok(meta) = entry.metadata() {
-                let size = meta.len();
-                let modified = meta.modified().unwrap_or(now);
-                files.push((path, size, modified));
-                total_size += size;
-            }
+        if path.extension().is_some_and(|e| e == "png")
+            && let Ok(meta) = entry.metadata()
+        {
+            let size = meta.len();
+            let modified = meta.modified().unwrap_or(now);
+            files.push((path, size, modified));
+            total_size += size;
         }
     }
 
@@ -5029,10 +5023,8 @@ mod tests {
                 })
                 .map(|prev| prev == state_key)
                 .unwrap_or(false);
-            if last_same {
-                if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
-                    dbg.stats.skipped_renders += 1;
-                }
+            if last_same && let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+                dbg.stats.skipped_renders += 1;
             }
         }
 
@@ -5054,10 +5046,8 @@ mod tests {
                 })
                 .map(|prev| prev == state_key)
                 .unwrap_or(false);
-            if last_same {
-                if let Ok(mut dbg) = MERMAID_DEBUG.lock() {
-                    dbg.stats.skipped_renders += 1;
-                }
+            if last_same && let Ok(mut dbg) = MERMAID_DEBUG.lock() {
+                dbg.stats.skipped_renders += 1;
             }
         }
 

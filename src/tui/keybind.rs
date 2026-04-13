@@ -64,10 +64,10 @@ impl ModelSwitchKeys {
         if self.next.matches(code, modifiers) {
             return Some(1);
         }
-        if let Some(prev) = &self.prev {
-            if prev.matches(code, modifiers) {
-                return Some(-1);
-            }
+        if let Some(prev) = &self.prev
+            && prev.matches(code, modifiers)
+        {
+            return Some(-1);
         }
         None
     }

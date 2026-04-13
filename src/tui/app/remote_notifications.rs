@@ -53,30 +53,31 @@ fn compact_broadcast_message_body(message: &str) -> String {
 }
 
 fn compact_plan_message_body(message: &str) -> String {
-    if message.starts_with("Plan updated by ") && message.ends_with(')') {
-        if let Some(summary) = message.rsplit_once(" (").map(|(_, summary)| summary) {
-            return compact_swarm_summary(summary.trim_end_matches(')'));
-        }
+    if message.starts_with("Plan updated by ")
+        && message.ends_with(')')
+        && let Some(summary) = message.rsplit_once(" (").map(|(_, summary)| summary)
+    {
+        return compact_swarm_summary(summary.trim_end_matches(')'));
     }
 
-    if let Some(rest) = strip_message_prefix(message, "Plan updated: task '") {
-        if let Some((task_id, assignee)) = rest.split_once("' assigned to ") {
-            return format!(
-                "Assigned {} → {}",
-                task_id.trim(),
-                compact_swarm_session_label(assignee.trim_end_matches('.').trim())
-            );
-        }
+    if let Some(rest) = strip_message_prefix(message, "Plan updated: task '")
+        && let Some((task_id, assignee)) = rest.split_once("' assigned to ")
+    {
+        return format!(
+            "Assigned {} → {}",
+            task_id.trim(),
+            compact_swarm_session_label(assignee.trim_end_matches('.').trim())
+        );
     }
 
-    if let Some(rest) = strip_message_prefix(message, "Plan approved by coordinator: ") {
-        if let Some((count, proposer)) = rest.split_once(" items added from ") {
-            return format!(
-                "Approved {} items from {}",
-                count.trim(),
-                compact_swarm_session_label(proposer.trim_end_matches('.').trim())
-            );
-        }
+    if let Some(rest) = strip_message_prefix(message, "Plan approved by coordinator: ")
+        && let Some((count, proposer)) = rest.split_once(" items added from ")
+    {
+        return format!(
+            "Approved {} items from {}",
+            count.trim(),
+            compact_swarm_session_label(proposer.trim_end_matches('.').trim())
+        );
     }
 
     if let Some(summary) = message

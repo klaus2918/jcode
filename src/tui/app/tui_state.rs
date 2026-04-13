@@ -102,7 +102,7 @@ impl App {
             .or_else(|| {
                 self.effective_remote_provider_model().and_then(|model| {
                     crate::provider::provider_for_model_with_hint(&model, None)
-                        .or_else(|| configured_provider_hint.as_deref())
+                        .or(configured_provider_hint.as_deref())
                         .map(str::to_string)
                 })
             })
@@ -1182,7 +1182,7 @@ impl crate::tui::TuiState for App {
     fn cache_ttl_status(&self) -> Option<crate::tui::CacheTtlInfo> {
         let last_completed = self.last_api_completed?;
         let provider = self.provider_name();
-        let ttl_secs = crate::tui::cache_ttl_for_provider(&provider)?;
+        let ttl_secs = crate::tui::cache_ttl_for_provider(provider)?;
         let elapsed = last_completed.elapsed().as_secs();
         let remaining = ttl_secs.saturating_sub(elapsed);
         Some(crate::tui::CacheTtlInfo {

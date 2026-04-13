@@ -310,9 +310,7 @@ fn parse_diff_line(raw_line: &str) -> Option<ParsedDiffLine> {
 }
 
 fn trim_diff_content(content: &str) -> String {
-    content
-        .trim_start_matches(|c| c == ' ' || c == '\t')
-        .to_string()
+    content.trim_start_matches([' ', '\t']).to_string()
 }
 
 pub(super) fn tint_span_with_diff_color(span: Span<'static>, diff_color: Color) -> Span<'static> {

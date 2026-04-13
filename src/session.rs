@@ -1829,10 +1829,10 @@ pub fn render_images(session: &Session) -> Vec<RenderedImage> {
                     let Some(label) = parse_attached_image_label(text) else {
                         continue;
                     };
-                    if let Some(last_idx) = last_image_idx {
-                        if let Some(image) = images.get_mut(last_idx) {
-                            image.label = Some(label);
-                        }
+                    if let Some(last_idx) = last_image_idx
+                        && let Some(image) = images.get_mut(last_idx)
+                    {
+                        image.label = Some(label);
                     }
                 }
                 ContentBlock::Reasoning { .. } => {}
@@ -2750,25 +2750,24 @@ pub fn recover_crashed_sessions() -> Result<Vec<String>> {
     for entry in std::fs::read_dir(&sessions_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map(|e| e == "json").unwrap_or(false) {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if let Ok(mut session) = Session::load(stem) {
-                    if session.detect_crash() {
-                        let _ = session.save();
-                    }
-                    sessions.push(session);
-                }
+        if path.extension().map(|e| e == "json").unwrap_or(false)
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            && let Ok(mut session) = Session::load(stem)
+        {
+            if session.detect_crash() {
+                let _ = session.save();
             }
+            sessions.push(session);
         }
     }
 
     // Track existing recovery sessions to avoid duplicates
     let mut recovered_parents: HashSet<String> = HashSet::new();
     for s in &sessions {
-        if s.id.starts_with("session_recovery_") {
-            if let Some(parent) = s.parent_id.as_ref() {
-                recovered_parents.insert(parent.clone());
-            }
+        if s.id.starts_with("session_recovery_")
+            && let Some(parent) = s.parent_id.as_ref()
+        {
+            recovered_parents.insert(parent.clone());
         }
     }
 
@@ -2870,26 +2869,24 @@ pub fn detect_crashed_sessions() -> Result<Option<CrashedSessionsInfo>> {
     for entry in std::fs::read_dir(&sessions_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map(|e| e == "json").unwrap_or(false) {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if let Ok(mut session) = Session::load(stem) {
-                    // Detect if this session crashed (updates status if so)
-                    if session.detect_crash() {
-                        let _ = session.save();
-                    }
-                    sessions.push(session);
-                }
+        if path.extension().map(|e| e == "json").unwrap_or(false)
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            && let Ok(mut session) = Session::load(stem)
+        {
+            if session.detect_crash() {
+                let _ = session.save();
             }
+            sessions.push(session);
         }
     }
 
     // Track existing recovery sessions to avoid showing already-recovered crashes
     let mut recovered_parents: HashSet<String> = HashSet::new();
     for s in &sessions {
-        if s.id.starts_with("session_recovery_") {
-            if let Some(parent) = s.parent_id.as_ref() {
-                recovered_parents.insert(parent.clone());
-            }
+        if s.id.starts_with("session_recovery_")
+            && let Some(parent) = s.parent_id.as_ref()
+        {
+            recovered_parents.insert(parent.clone());
         }
     }
 
@@ -3073,12 +3070,11 @@ fn find_crashed_legacy_scan() -> Vec<(String, String)> {
     };
 
     for entry in entries.flatten() {
-        if let Some(fname) = entry.file_name().to_str() {
-            if let Some(ts) = extract_timestamp_from_filename(fname) {
-                if ts < filename_cutoff_ms {
-                    continue;
-                }
-            }
+        if let Some(fname) = entry.file_name().to_str()
+            && let Some(ts) = extract_timestamp_from_filename(fname)
+            && ts < filename_cutoff_ms
+        {
+            continue;
         }
 
         let path = entry.path();
@@ -3090,10 +3086,10 @@ fn find_crashed_legacy_scan() -> Vec<(String, String)> {
             Ok(m) => m,
             Err(_) => continue,
         };
-        if let Ok(mtime) = meta.modified() {
-            if mtime < cutoff_system {
-                continue;
-            }
+        if let Ok(mtime) = meta.modified()
+            && mtime < cutoff_system
+        {
+            continue;
         }
         if meta.len() == 0 {
             continue;
@@ -3112,10 +3108,10 @@ fn find_crashed_legacy_scan() -> Vec<(String, String)> {
         }
 
         if let Ok(header) = serde_json::from_str::<SessionHeader>(&content) {
-            if header.id.starts_with("session_recovery_") {
-                if let Some(parent) = header.parent_id.as_ref() {
-                    recovered_parents.insert(parent.clone());
-                }
+            if header.id.starts_with("session_recovery_")
+                && let Some(parent) = header.parent_id.as_ref()
+            {
+                recovered_parents.insert(parent.clone());
             }
             if has_crashed {
                 candidates.push(header);
@@ -3252,17 +3248,13 @@ pub fn find_session_by_name_or_id(name_or_id: &str) -> Result<String> {
     for entry in std::fs::read_dir(&sessions_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map(|e| e == "json").unwrap_or(false) {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                // Check if short name matches
-                if let Some(short_name) = extract_session_name(stem) {
-                    if short_name == name_or_id {
-                        if let Ok(session) = Session::load(stem) {
-                            matches.push((stem.to_string(), session.updated_at));
-                        }
-                    }
-                }
-            }
+        if path.extension().map(|e| e == "json").unwrap_or(false)
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            && let Some(short_name) = extract_session_name(stem)
+            && short_name == name_or_id
+            && let Ok(session) = Session::load(stem)
+        {
+            matches.push((stem.to_string(), session.updated_at));
         }
     }
 

@@ -305,7 +305,7 @@ pub fn export_timeline(session: &Session) -> Vec<TimelineEvent> {
     if !events.is_empty() {
         let last_is_done = events
             .last()
-            .map_or(false, |e| matches!(e.kind, TimelineEventKind::Done));
+            .is_some_and(|e| matches!(e.kind, TimelineEventKind::Done));
         if !last_is_done {
             events.push(TimelineEvent {
                 t,
@@ -359,6 +359,10 @@ pub fn export_timeline(session: &Session) -> Vec<TimelineEvent> {
 /// Replay-specific server events that don't exist in the normal protocol.
 /// These are handled specially in `run_replay`.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "replay events mirror protocol events directly for simpler playback serialization and handling"
+)]
 pub enum ReplayEvent {
     /// A normal server event
     Server(ServerEvent),
@@ -401,7 +405,7 @@ pub fn timeline_to_replay_events(timeline: &[TimelineEvent]) -> Vec<(u64, Replay
     for event in timeline {
         let delay = event.t.saturating_sub(prev_t);
         let delay = if out.is_empty() {
-            delay.min(MAX_INITIAL_REPLAY_IDLE_MS)
+            MAX_INITIAL_REPLAY_IDLE_MS
         } else {
             delay
         };
@@ -727,7 +731,7 @@ pub fn compose_swarm_buffers(
 
     let pane_count = pane_frames.len() as u16;
     let cols = cols.clamp(1, pane_count.max(1));
-    let rows = ((pane_count + cols - 1) / cols).max(1);
+    let rows = pane_count.div_ceil(cols).max(1);
     let pane_width = (width / cols).max(1);
     let pane_height = (height / rows).max(1);
 
@@ -844,15 +848,15 @@ pub fn auto_edit_timeline(timeline: &[TimelineEvent], opts: &AutoEditOpts) -> Ve
         // If the assistant sat idle for a long time after a tool completed
         // (for example during a selfdev reload), compress that post-tool gap
         // before the next later event.
-        if let Some(tool_done_t) = last_tool_done_t {
-            if orig_t > tool_done_t {
-                let gap = orig_t.saturating_sub(tool_done_t);
-                if gap > opts.response_delay_max_ms {
-                    time_shift -= (gap - opts.response_delay_max_ms) as i64;
-                    new_t = (orig_t as i64 + time_shift).max(0) as u64;
-                }
-                last_tool_done_t = None;
+        if let Some(tool_done_t) = last_tool_done_t
+            && orig_t > tool_done_t
+        {
+            let gap = orig_t.saturating_sub(tool_done_t);
+            if gap > opts.response_delay_max_ms {
+                time_shift -= (gap - opts.response_delay_max_ms) as i64;
+                new_t = (orig_t as i64 + time_shift).max(0) as u64;
             }
+            last_tool_done_t = None;
         }
 
         match &event.kind {

@@ -115,7 +115,7 @@ impl Tool for GrepTool {
 
 fn grep_blocking(base: &Path, pattern: &str, include: Option<&str>) -> Result<Vec<GrepResult>> {
     let regex = Regex::new(pattern)?;
-    let include_pattern = include.map(|p| glob::Pattern::new(p)).transpose()?;
+    let include_pattern = include.map(glob::Pattern::new).transpose()?;
 
     let hit_count = Arc::new(AtomicUsize::new(0));
     let results = Arc::new(std::sync::Mutex::new(Vec::new()));

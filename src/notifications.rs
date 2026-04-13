@@ -53,6 +53,12 @@ pub struct NotificationDispatcher {
     channels: crate::channel::ChannelRegistry,
 }
 
+impl Default for NotificationDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NotificationDispatcher {
     pub fn new() -> Self {
         let cfg = config().safety.clone();
@@ -170,7 +176,6 @@ impl NotificationDispatcher {
             let url = format!("{}/{}", self.config.ntfy_server, topic);
             let title = title.to_string();
             let body = safe_body.to_string();
-            let priority = priority;
             tokio::spawn(async move {
                 if let Err(e) = send_ntfy(&client, &url, &title, &body, priority).await {
                     logging::error(&format!("ntfy notification failed: {}", e));
@@ -193,41 +198,41 @@ impl NotificationDispatcher {
 
         // Email — uses DETAILED body (sent to your own address, private)
         // If email_html_override is provided, send it directly as HTML.
-        if self.config.email_enabled {
-            if let (Some(to), Some(host), Some(from)) = (
+        if self.config.email_enabled
+            && let (Some(to), Some(host), Some(from)) = (
                 &self.config.email_to,
                 &self.config.email_smtp_host,
                 &self.config.email_from,
-            ) {
-                let to = to.clone();
-                let host = host.clone();
-                let from = from.clone();
-                let port = self.config.email_smtp_port;
-                let password = self.config.email_password.clone();
-                let title = title.to_string();
-                let body = detailed_body.to_string();
-                let cycle_id = cycle_id.map(|s| s.to_string());
-                let html_override = email_html_override.map(|s| s.to_string());
-                tokio::spawn(async move {
-                    if let Err(e) = send_email(SendEmailRequest {
-                        smtp_host: &host,
-                        smtp_port: port,
-                        from: &from,
-                        to: &to,
-                        password: password.as_deref(),
-                        subject: &title,
-                        body: &body,
-                        cycle_id: cycle_id.as_deref(),
-                        html_override: html_override.as_deref(),
-                    })
-                    .await
-                    {
-                        logging::error(&format!("Email notification failed: {}", e));
-                    } else {
-                        logging::info(&format!("Email notification sent to {}: {}", to, title));
-                    }
-                });
-            }
+            )
+        {
+            let to = to.clone();
+            let host = host.clone();
+            let from = from.clone();
+            let port = self.config.email_smtp_port;
+            let password = self.config.email_password.clone();
+            let title = title.to_string();
+            let body = detailed_body.to_string();
+            let cycle_id = cycle_id.map(|s| s.to_string());
+            let html_override = email_html_override.map(|s| s.to_string());
+            tokio::spawn(async move {
+                if let Err(e) = send_email(SendEmailRequest {
+                    smtp_host: &host,
+                    smtp_port: port,
+                    from: &from,
+                    to: &to,
+                    password: password.as_deref(),
+                    subject: &title,
+                    body: &body,
+                    cycle_id: cycle_id.as_deref(),
+                    html_override: html_override.as_deref(),
+                })
+                .await
+                {
+                    logging::error(&format!("Email notification failed: {}", e));
+                } else {
+                    logging::info(&format!("Email notification sent to {}: {}", to, title));
+                }
+            });
         }
 
         // Message channels (Telegram, Discord, etc.) — uses DETAILED body

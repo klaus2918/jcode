@@ -680,10 +680,8 @@ pub async fn fetch_all_provider_usage() -> Vec<ProviderUsage> {
         false
     };
 
-    if all_fresh {
-        if let Ok(map) = cache.lock() {
-            return map.values().map(|(_, r)| r.clone()).collect();
-        }
+    if all_fresh && let Ok(map) = cache.lock() {
+        return map.values().map(|(_, r)| r.clone()).collect();
     }
 
     let mut results = Vec::new();
@@ -1109,17 +1107,17 @@ fn parse_usage_percent_from_obj(obj: &serde_json::Map<String, serde_json::Value>
         .or_else(|| obj.get("max"))
         .and_then(parse_f32_value);
 
-    if let (Some(used), Some(limit)) = (used, limit) {
-        if limit > 0.0 {
-            return Some(((used / limit) * 100.0).clamp(0.0, 100.0));
-        }
+    if let (Some(used), Some(limit)) = (used, limit)
+        && limit > 0.0
+    {
+        return Some(((used / limit) * 100.0).clamp(0.0, 100.0));
     }
 
-    if let (Some(remaining), Some(limit)) = (remaining, limit) {
-        if limit > 0.0 {
-            let used = (limit - remaining).max(0.0);
-            return Some(((used / limit) * 100.0).clamp(0.0, 100.0));
-        }
+    if let (Some(remaining), Some(limit)) = (remaining, limit)
+        && limit > 0.0
+    {
+        let used = (limit - remaining).max(0.0);
+        return Some(((used / limit) * 100.0).clamp(0.0, 100.0));
     }
 
     None
@@ -1418,10 +1416,10 @@ async fn fetch_openai_usage_for_account(
     }
 
     let cache_key = openai_usage_cache_key(&creds.access_token, account_label);
-    if cache_key != initial_cache_key {
-        if let Some(cached) = cached_openai_usage(&cache_key) {
-            return provider_report_from_openai_usage_data(display_name, &cached);
-        }
+    if cache_key != initial_cache_key
+        && let Some(cached) = cached_openai_usage(&cache_key)
+    {
+        return provider_report_from_openai_usage_data(display_name, &cached);
     }
 
     let client = crate::provider::shared_http_client();
@@ -1510,17 +1508,16 @@ async fn fetch_openai_usage_for_account(
         secondary_name: &str,
     ) -> Vec<UsageLimit> {
         let mut out = Vec::new();
-        if let Some(pw) = rl.get("primary_window") {
-            if let Some(limit) = parse_wham_window(pw, primary_name) {
-                out.push(limit);
-            }
+        if let Some(pw) = rl.get("primary_window")
+            && let Some(limit) = parse_wham_window(pw, primary_name)
+        {
+            out.push(limit);
         }
-        if let Some(sw) = rl.get("secondary_window") {
-            if !sw.is_null() {
-                if let Some(limit) = parse_wham_window(sw, secondary_name) {
-                    out.push(limit);
-                }
-            }
+        if let Some(sw) = rl.get("secondary_window")
+            && !sw.is_null()
+            && let Some(limit) = parse_wham_window(sw, secondary_name)
+        {
+            out.push(limit);
         }
         out
     }
@@ -1649,82 +1646,78 @@ async fn fetch_openrouter_usage_report() -> Option<ProviderUsage> {
     let mut limits = Vec::new();
     let mut extra_info = Vec::new();
 
-    if let Ok(resp) = credits_resp {
-        if resp.status().is_success() {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(data) = json.get("data") {
-                    let total_credits = data
-                        .get("total_credits")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
-                    let total_usage = data
-                        .get("total_usage")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
-                    let balance = total_credits - total_usage;
+    if let Ok(resp) = credits_resp
+        && resp.status().is_success()
+        && let Ok(json) = resp.json::<serde_json::Value>().await
+        && let Some(data) = json.get("data")
+    {
+        let total_credits = data
+            .get("total_credits")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let total_usage = data
+            .get("total_usage")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let balance = total_credits - total_usage;
 
-                    if total_credits > 0.0 {
-                        let usage_pct = (total_usage / total_credits * 100.0) as f32;
-                        limits.push(UsageLimit {
-                            name: "Credits".to_string(),
-                            usage_percent: usage_pct,
-                            resets_at: None,
-                        });
-                    }
-
-                    extra_info.push((
-                        "Balance".to_string(),
-                        format!("${:.2} / ${:.2}", balance, total_credits),
-                    ));
-                }
-            }
+        if total_credits > 0.0 {
+            let usage_pct = (total_usage / total_credits * 100.0) as f32;
+            limits.push(UsageLimit {
+                name: "Credits".to_string(),
+                usage_percent: usage_pct,
+                resets_at: None,
+            });
         }
+
+        extra_info.push((
+            "Balance".to_string(),
+            format!("${:.2} / ${:.2}", balance, total_credits),
+        ));
     }
 
-    if let Ok(resp) = key_resp {
-        if resp.status().is_success() {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(data) = json.get("data") {
-                    let usage_daily = data
-                        .get("usage_daily")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
-                    let usage_weekly = data
-                        .get("usage_weekly")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
-                    let usage_monthly = data
-                        .get("usage_monthly")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
+    if let Ok(resp) = key_resp
+        && resp.status().is_success()
+        && let Ok(json) = resp.json::<serde_json::Value>().await
+        && let Some(data) = json.get("data")
+    {
+        let usage_daily = data
+            .get("usage_daily")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let usage_weekly = data
+            .get("usage_weekly")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let usage_monthly = data
+            .get("usage_monthly")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
 
-                    extra_info.push(("Today".to_string(), format!("${:.2}", usage_daily)));
-                    extra_info.push(("This week".to_string(), format!("${:.2}", usage_weekly)));
-                    extra_info.push(("This month".to_string(), format!("${:.2}", usage_monthly)));
+        extra_info.push(("Today".to_string(), format!("${:.2}", usage_daily)));
+        extra_info.push(("This week".to_string(), format!("${:.2}", usage_weekly)));
+        extra_info.push(("This month".to_string(), format!("${:.2}", usage_monthly)));
 
-                    if let Some(limit) = data.get("limit").and_then(|v| v.as_f64()) {
-                        let remaining = data
-                            .get("limit_remaining")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0);
-                        let used = limit - remaining;
-                        let pct = if limit > 0.0 {
-                            (used / limit * 100.0) as f32
-                        } else {
-                            0.0
-                        };
-                        limits.push(UsageLimit {
-                            name: "Key limit".to_string(),
-                            usage_percent: pct,
-                            resets_at: None,
-                        });
-                        extra_info.push((
-                            "Key limit".to_string(),
-                            format!("${:.2} / ${:.2}", remaining, limit),
-                        ));
-                    }
-                }
-            }
+        if let Some(limit) = data.get("limit").and_then(|v| v.as_f64()) {
+            let remaining = data
+                .get("limit_remaining")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let used = limit - remaining;
+            let pct = if limit > 0.0 {
+                (used / limit * 100.0) as f32
+            } else {
+                0.0
+            };
+            limits.push(UsageLimit {
+                name: "Key limit".to_string(),
+                usage_percent: pct,
+                resets_at: None,
+            });
+            extra_info.push((
+                "Key limit".to_string(),
+                format!("${:.2} / ${:.2}", remaining, limit),
+            ));
         }
     }
 
@@ -1766,44 +1759,43 @@ async fn fetch_copilot_usage_report() -> Option<ProviderUsage> {
         .send()
         .await;
 
-    if let Ok(resp) = api_result {
-        if resp.status().is_success() {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                if let Some(sku) = json.get("sku").and_then(|v| v.as_str()) {
-                    extra_info.push(("Plan".to_string(), sku.to_string()));
-                }
+    if let Ok(resp) = api_result
+        && resp.status().is_success()
+        && let Ok(json) = resp.json::<serde_json::Value>().await
+    {
+        if let Some(sku) = json.get("sku").and_then(|v| v.as_str()) {
+            extra_info.push(("Plan".to_string(), sku.to_string()));
+        }
 
-                let reset_date = json
-                    .get("limited_user_reset_date")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+        let reset_date = json
+            .get("limited_user_reset_date")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
-                if let Some(quotas) = json.get("limited_user_quotas").and_then(|v| v.as_object()) {
-                    for (name, value) in quotas {
-                        if let Some(obj) = value.as_object() {
-                            let used = obj.get("used").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let limit = obj.get("limit").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            if limit > 0.0 {
-                                let pct = (used / limit * 100.0) as f32;
-                                limits.push(UsageLimit {
-                                    name: format!("{} (remote)", humanize_key(name)),
-                                    usage_percent: pct,
-                                    resets_at: reset_date.clone(),
-                                });
-                                extra_info.push((
-                                    humanize_key(name),
-                                    format!("{} / {} used", used as u64, limit as u64),
-                                ));
-                            }
-                        }
+        if let Some(quotas) = json.get("limited_user_quotas").and_then(|v| v.as_object()) {
+            for (name, value) in quotas {
+                if let Some(obj) = value.as_object() {
+                    let used = obj.get("used").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let limit = obj.get("limit").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    if limit > 0.0 {
+                        let pct = (used / limit * 100.0) as f32;
+                        limits.push(UsageLimit {
+                            name: format!("{} (remote)", humanize_key(name)),
+                            usage_percent: pct,
+                            resets_at: reset_date.clone(),
+                        });
+                        extra_info.push((
+                            humanize_key(name),
+                            format!("{} / {} used", used as u64, limit as u64),
+                        ));
                     }
                 }
-
-                if let Some(ref rd) = reset_date {
-                    let relative = crate::usage::format_reset_time(rd);
-                    extra_info.push(("Resets in".to_string(), relative));
-                }
             }
+        }
+
+        if let Some(ref rd) = reset_date {
+            let relative = crate::usage::format_reset_time(rd);
+            extra_info.push(("Resets in".to_string(), relative));
         }
     }
 
@@ -2089,13 +2081,13 @@ pub async fn get_openai_usage() -> OpenAIUsageData {
 }
 
 pub fn get_openai_usage_sync() -> OpenAIUsageData {
-    if let Some(usage) = OPENAI_USAGE.get() {
-        if let Ok(data) = usage.try_read() {
-            if data.is_stale() {
-                try_spawn_openai_refresh(usage.clone());
-            }
-            return data.clone();
+    if let Some(usage) = OPENAI_USAGE.get()
+        && let Ok(data) = usage.try_read()
+    {
+        if data.is_stale() {
+            try_spawn_openai_refresh(usage.clone());
         }
+        return data.clone();
     }
 
     if tokio::runtime::Handle::try_current().is_ok() {
@@ -2110,10 +2102,10 @@ pub fn get_openai_usage_sync() -> OpenAIUsageData {
 /// Check if extra usage (1M context, etc.) is enabled for the account.
 /// Returns false if unknown/not yet fetched.
 pub fn has_extra_usage() -> bool {
-    if let Some(usage) = USAGE.get() {
-        if let Ok(data) = usage.try_read() {
-            return data.extra_usage_enabled;
-        }
+    if let Some(usage) = USAGE.get()
+        && let Ok(data) = usage.try_read()
+    {
+        return data.extra_usage_enabled;
     }
     false
 }

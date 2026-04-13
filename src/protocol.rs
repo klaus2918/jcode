@@ -540,6 +540,10 @@ pub enum Request {
 /// Server event sent to client
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "wire protocol prioritizes straightforward serde payloads over boxing every larger event variant"
+)]
 pub enum ServerEvent {
     /// Acknowledgment of request
     #[serde(rename = "ack")]

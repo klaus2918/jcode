@@ -1095,7 +1095,7 @@ mod tests {
             timestamp: Some(ts),
             tool_duration_ms: None,
         };
-        let stamped = Message::with_timestamps(&[original.clone()]);
+        let stamped = Message::with_timestamps(std::slice::from_ref(&original));
         match &stamped[0].content[0] {
             ContentBlock::Text { text, .. } => {
                 assert_eq!(text, "<system-reminder>\ninternal\n</system-reminder>");

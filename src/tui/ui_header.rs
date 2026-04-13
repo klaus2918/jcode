@@ -376,11 +376,10 @@ fn provider_model_display_candidates(provider_name: &str, model: &str) -> Vec<St
     if short_model != nice_model {
         candidates.push(short_model);
     }
-    if trimmed_model != model {
-        candidates.push(trimmed_model.to_string());
-    } else if !candidates
-        .iter()
-        .any(|candidate| candidate == trimmed_model)
+    if trimmed_model != model
+        || !candidates
+            .iter()
+            .any(|candidate| candidate == trimmed_model)
     {
         candidates.push(trimmed_model.to_string());
     }

@@ -20,6 +20,8 @@ use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 use tokio::sync::{Mutex, OnceCell, RwLock, broadcast, mpsc};
 
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+
 #[derive(Clone)]
 pub(super) struct ServerRuntime {
     sessions: Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
@@ -36,9 +38,8 @@ pub(super) struct ServerRuntime {
     swarm_coordinators: Arc<RwLock<HashMap<String, String>>>,
     file_touches: Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
     files_touched_by_session: Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
-    channel_subscriptions: Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session:
-        Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions: ChannelSubscriptions,
+    channel_subscriptions_by_session: ChannelSubscriptions,
     client_debug_state: Arc<RwLock<ClientDebugState>>,
     client_debug_response_tx: broadcast::Sender<(u64, String)>,
     debug_jobs: Arc<RwLock<HashMap<String, DebugJob>>>,
@@ -222,10 +223,8 @@ impl ServerRuntime {
 
         self.decrement_client_count().await;
 
-        if nudge_ambient {
-            if let Some(ref runner) = self.ambient_runner {
-                runner.nudge();
-            }
+        if nudge_ambient && let Some(ref runner) = self.ambient_runner {
+            runner.nudge();
         }
 
         if let Err(e) = result {

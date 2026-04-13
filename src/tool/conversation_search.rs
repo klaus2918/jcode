@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
 //! Conversation search tool - RAG for compacted conversation history
 
 use super::{Tool, ToolContext, ToolOutput};

@@ -404,10 +404,10 @@ impl CopilotApiProvider {
     async fn get_bearer_token(&self) -> Result<String> {
         {
             let guard = self.bearer_token.read().await;
-            if let Some(ref token) = *guard {
-                if !token.is_expired() {
-                    return Ok(token.token.clone());
-                }
+            if let Some(ref token) = *guard
+                && !token.is_expired()
+            {
+                return Ok(token.token.clone());
             }
         }
 
@@ -884,12 +884,12 @@ impl CopilotApiProvider {
                             };
 
                             // Text content
-                            if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                                if !content.is_empty() {
-                                    let _ = tx
-                                        .send(Ok(StreamEvent::TextDelta(content.to_string())))
-                                        .await;
-                                }
+                            if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                                && !content.is_empty()
+                            {
+                                let _ = tx
+                                    .send(Ok(StreamEvent::TextDelta(content.to_string())))
+                                    .await;
                             }
 
                             // Tool calls
@@ -1085,10 +1085,10 @@ impl Provider for CopilotApiProvider {
     }
 
     fn available_models_display(&self) -> Vec<String> {
-        if let Ok(models) = self.fetched_models.read() {
-            if !models.is_empty() {
-                return models.clone();
-            }
+        if let Ok(models) = self.fetched_models.read()
+            && !models.is_empty()
+        {
+            return models.clone();
         }
         Vec::new()
     }

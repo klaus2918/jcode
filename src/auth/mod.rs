@@ -1624,7 +1624,7 @@ mod tests {
 
     #[test]
     fn command_candidates_adds_extension_on_windows() {
-        let _ = crate::env::set_var("PATHEXT", ".EXE;.BAT");
+        crate::env::set_var("PATHEXT", ".EXE;.BAT");
         let candidates = command_candidates("testcmd");
         if cfg!(windows) {
             let normalized: Vec<String> = candidates

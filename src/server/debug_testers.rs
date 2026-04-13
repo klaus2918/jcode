@@ -221,11 +221,11 @@ async fn execute_tester_subcommand(
         if start.elapsed() > timeout {
             return Err(anyhow::anyhow!("Timeout waiting for tester response"));
         }
-        if let Ok(response) = std::fs::read_to_string(debug_resp_path) {
-            if !response.is_empty() {
-                let _ = std::fs::remove_file(debug_resp_path);
-                return Ok(response);
-            }
+        if let Ok(response) = std::fs::read_to_string(debug_resp_path)
+            && !response.is_empty()
+        {
+            let _ = std::fs::remove_file(debug_resp_path);
+            return Ok(response);
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }

@@ -68,24 +68,24 @@ impl SkillRegistry {
         let mut copied = Vec::new();
 
         // Import from Claude Code (~/.claude/skills/)
-        if let Ok(claude_skills) = crate::storage::user_home_path(".claude/skills") {
-            if claude_skills.is_dir() {
-                let count = Self::copy_skills_dir(&claude_skills, &jcode_skills);
-                if count > 0 {
-                    sources.push(format!("{} from Claude Code", count));
-                    copied.extend(Self::list_skill_names(&jcode_skills));
-                }
+        if let Ok(claude_skills) = crate::storage::user_home_path(".claude/skills")
+            && claude_skills.is_dir()
+        {
+            let count = Self::copy_skills_dir(&claude_skills, &jcode_skills);
+            if count > 0 {
+                sources.push(format!("{} from Claude Code", count));
+                copied.extend(Self::list_skill_names(&jcode_skills));
             }
         }
 
         // Import from Codex CLI (~/.codex/skills/)
-        if let Ok(codex_skills) = crate::storage::user_home_path(".codex/skills") {
-            if codex_skills.is_dir() {
-                let count = Self::copy_skills_dir(&codex_skills, &jcode_skills);
-                if count > 0 {
-                    sources.push(format!("{} from Codex CLI", count));
-                    copied.extend(Self::list_skill_names(&jcode_skills));
-                }
+        if let Ok(codex_skills) = crate::storage::user_home_path(".codex/skills")
+            && codex_skills.is_dir()
+        {
+            let count = Self::copy_skills_dir(&codex_skills, &jcode_skills);
+            if count > 0 {
+                sources.push(format!("{} from Codex CLI", count));
+                copied.extend(Self::list_skill_names(&jcode_skills));
             }
         }
 
@@ -154,10 +154,10 @@ impl SkillRegistry {
                 // Resolve symlink and copy the target
                 let target = std::fs::read_link(&src_path)?;
                 // Try to create symlink, fall back to copying the file
-                if crate::platform::symlink_or_copy(&target, &dst_path).is_err() {
-                    if let Ok(resolved) = std::fs::canonicalize(&src_path) {
-                        std::fs::copy(&resolved, &dst_path)?;
-                    }
+                if crate::platform::symlink_or_copy(&target, &dst_path).is_err()
+                    && let Ok(resolved) = std::fs::canonicalize(&src_path)
+                {
+                    std::fs::copy(&resolved, &dst_path)?;
                 }
             } else {
                 std::fs::copy(&src_path, &dst_path)?;
@@ -222,10 +222,10 @@ impl SkillRegistry {
 
             if path.is_dir() {
                 let skill_file = path.join("SKILL.md");
-                if skill_file.exists() {
-                    if let Ok(skill) = Self::parse_skill(&skill_file) {
-                        self.skills.insert(skill.name.clone(), skill);
-                    }
+                if skill_file.exists()
+                    && let Ok(skill) = Self::parse_skill(&skill_file)
+                {
+                    self.skills.insert(skill.name.clone(), skill);
                 }
             }
         }
@@ -353,11 +353,11 @@ impl SkillRegistry {
 
             if path.is_dir() {
                 let skill_file = path.join("SKILL.md");
-                if skill_file.exists() {
-                    if let Ok(skill) = Self::parse_skill(&skill_file) {
-                        self.skills.insert(skill.name.clone(), skill);
-                        count += 1;
-                    }
+                if skill_file.exists()
+                    && let Ok(skill) = Self::parse_skill(&skill_file)
+                {
+                    self.skills.insert(skill.name.clone(), skill);
+                    count += 1;
                 }
             }
         }

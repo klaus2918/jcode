@@ -17,6 +17,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+
 async fn swarm_id_for_session(
     session_id: &str,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
@@ -85,7 +88,7 @@ async fn run_message_in_live_session_if_idle(
     session_id: &str,
     message: &str,
     reminder: Option<String>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
 ) -> bool {
     let agent = {
@@ -157,6 +160,10 @@ fn resolve_comm_delivery_mode(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "comm share coordinates delivery state, sessions, swarm membership, and event fanout"
+)]
 pub(super) async fn handle_comm_share(
     id: u64,
     req_session_id: String,
@@ -377,7 +384,7 @@ pub(super) async fn handle_comm_list_channels(
     req_session_id: String,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions: &ChannelSubscriptions,
 ) {
     let swarm_id = swarm_id_for_session(&req_session_id, swarm_members).await;
 
@@ -416,7 +423,7 @@ pub(super) async fn handle_comm_channel_members(
     channel: String,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions: &ChannelSubscriptions,
 ) {
     let swarm_id = swarm_id_for_session(&req_session_id, swarm_members).await;
 
@@ -461,16 +468,18 @@ pub(super) async fn handle_comm_channel_members(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "channel subscribe updates membership, delivery, and swarm event history together"
+)]
 pub(super) async fn handle_comm_subscribe_channel(
     id: u64,
     req_session_id: String,
     channel: String,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -511,16 +520,18 @@ pub(super) async fn handle_comm_subscribe_channel(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "channel unsubscribe updates membership, delivery, and swarm event history together"
+)]
 pub(super) async fn handle_comm_unsubscribe_channel(
     id: u64,
     req_session_id: String,
     channel: String,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -561,7 +572,10 @@ pub(super) async fn handle_comm_unsubscribe_channel(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "comm message routes DM, channel, and broadcast delivery with session fanout state"
+)]
 pub(super) async fn handle_comm_message(
     id: u64,
     from_session: String,
@@ -571,11 +585,11 @@ pub(super) async fn handle_comm_message(
     delivery: Option<CommDeliveryMode>,
     wake: Option<bool>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     soft_interrupt_queues: &SessionInterruptQueues,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions: &ChannelSubscriptions,
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -610,15 +624,15 @@ pub(super) async fn handle_comm_message(
             None
         };
 
-        if let Some(ref target) = resolved_to_session {
-            if !swarm_session_ids.contains(target) {
-                let _ = client_event_tx.send(ServerEvent::Error {
-                    id,
-                    message: format!("DM failed: session '{}' not in swarm", target),
-                    retry_after_secs: None,
-                });
-                return;
-            }
+        if let Some(ref target) = resolved_to_session
+            && !swarm_session_ids.contains(target)
+        {
+            let _ = client_event_tx.send(ServerEvent::Error {
+                id,
+                message: format!("DM failed: session '{}' not in swarm", target),
+                retry_after_secs: None,
+            });
+            return;
         }
 
         let scope = if resolved_to_session.is_some() {

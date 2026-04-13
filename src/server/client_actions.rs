@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
     ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmMember, VersionedPlan,
@@ -16,6 +18,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::process::Command;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 
 const INPUT_SHELL_MAX_OUTPUT_LEN: usize = 30_000;
 
@@ -77,7 +82,7 @@ fn combine_input_shell_output(stdout: &[u8], stderr: &[u8]) -> (String, bool) {
 async fn run_scheduled_task_in_live_session_if_idle(
     session_id: &str,
     message: &str,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
 ) -> bool {
     let agent = {
@@ -128,11 +133,15 @@ async fn run_scheduled_task_in_live_session_if_idle(
     true
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "notify session needs delivery state, connection state, interrupt queues, and live swarm membership"
+)]
 pub(super) async fn handle_notify_session(
     id: u64,
     session_id: String,
     message: String,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     soft_interrupt_queues: &SessionInterruptQueues,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
@@ -414,6 +423,10 @@ pub(super) fn handle_run_subagent(
     });
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "set feature mutates agent state, persistence, swarm/session metadata, and client notifications together"
+)]
 pub(super) async fn handle_set_feature(
     id: u64,
     feature: FeatureToggle,
@@ -425,10 +438,8 @@ pub(super) async fn handle_set_feature(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {

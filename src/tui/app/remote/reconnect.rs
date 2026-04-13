@@ -24,6 +24,10 @@ pub(in crate::tui::app) struct RemoteRunState {
     pub last_reload_pid: Option<u32>,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "connected outcome carries a live RemoteConnection while the small control variants remain simple"
+)]
 pub(in crate::tui::app) enum ConnectOutcome {
     Connected(RemoteConnection),
     Retry,
@@ -509,9 +513,9 @@ pub(in crate::tui::app) async fn connect_with_retry(
                 }
             }
 
-            let backoff = if state.initial_server_start && state.reconnect_attempts <= 20 {
-                Duration::from_millis(100)
-            } else if state.reconnect_attempts <= 2 {
+            let backoff = if (state.initial_server_start && state.reconnect_attempts <= 20)
+                || state.reconnect_attempts <= 2
+            {
                 Duration::from_millis(100)
             } else {
                 if state.initial_server_start {
@@ -566,23 +570,23 @@ pub(in crate::tui::app) async fn handle_post_connect<B: ratatui::backend::Backen
                 state.reconnect_attempts
             ));
         }
-        if app.reload_info.is_empty() {
-            if let Ok(jcode_dir) = crate::storage::jcode_dir() {
-                let info_path = jcode_dir.join("reload-info");
-                if info_path.exists() {
-                    if let Ok(info) = std::fs::read_to_string(&info_path) {
-                        let _ = std::fs::remove_file(&info_path);
-                        let trimmed = info.trim();
-                        if let Some(hash) = trimmed.strip_prefix("reload:") {
-                            app.reload_info
-                                .push(format!("Reloaded with build {}", hash.trim()));
-                        } else if let Some(hash) = trimmed.strip_prefix("rebuild:") {
-                            app.reload_info
-                                .push(format!("Rebuilt and reloaded ({})", hash.trim()));
-                        } else if !trimmed.is_empty() {
-                            app.reload_info.push(trimmed.to_string());
-                        }
-                    }
+        if app.reload_info.is_empty()
+            && let Ok(jcode_dir) = crate::storage::jcode_dir()
+        {
+            let info_path = jcode_dir.join("reload-info");
+            if info_path.exists()
+                && let Ok(info) = std::fs::read_to_string(&info_path)
+            {
+                let _ = std::fs::remove_file(&info_path);
+                let trimmed = info.trim();
+                if let Some(hash) = trimmed.strip_prefix("reload:") {
+                    app.reload_info
+                        .push(format!("Reloaded with build {}", hash.trim()));
+                } else if let Some(hash) = trimmed.strip_prefix("rebuild:") {
+                    app.reload_info
+                        .push(format!("Rebuilt and reloaded ({})", hash.trim()));
+                } else if !trimmed.is_empty() {
+                    app.reload_info.push(trimmed.to_string());
                 }
             }
         }
@@ -600,20 +604,20 @@ pub(in crate::tui::app) async fn handle_post_connect<B: ratatui::backend::Backen
                 .remote_session_id
                 .clone()
                 .unwrap_or_else(|| crate::id::new_id("ses"));
-            if has_reload_ctx_for_session || !app.reload_info.is_empty() {
-                if let Ok(jcode_dir) = crate::storage::jcode_dir() {
-                    let marker = jcode_dir.join(format!("client-reload-pending-{}", session_id));
-                    let info = if app.reload_info.is_empty() {
-                        "reload".to_string()
-                    } else {
-                        app.reload_info.join("\n")
-                    };
-                    let _ = std::fs::write(&marker, &info);
-                    crate::logging::info(&format!(
-                        "Wrote client-reload-pending marker for {} before re-exec",
-                        session_id
-                    ));
-                }
+            if (has_reload_ctx_for_session || !app.reload_info.is_empty())
+                && let Ok(jcode_dir) = crate::storage::jcode_dir()
+            {
+                let marker = jcode_dir.join(format!("client-reload-pending-{}", session_id));
+                let info = if app.reload_info.is_empty() {
+                    "reload".to_string()
+                } else {
+                    app.reload_info.join("\n")
+                };
+                let _ = std::fs::write(&marker, &info);
+                crate::logging::info(&format!(
+                    "Wrote client-reload-pending marker for {} before re-exec",
+                    session_id
+                ));
             }
             app.save_input_for_reload(&session_id);
             app.reload_requested = Some(session_id);

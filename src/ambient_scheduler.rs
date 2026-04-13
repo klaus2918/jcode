@@ -435,7 +435,7 @@ mod tests {
         // Default 10k per cycle => 10 cycles in 60 min => 6 min per cycle.
         let mins = interval.as_secs() as f64 / 60.0;
         assert!(
-            mins >= 5.0 && mins <= 10.0,
+            (5.0..=10.0).contains(&mins),
             "expected 5-10 min, got {:.1}",
             mins
         );

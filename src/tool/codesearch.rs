@@ -113,20 +113,19 @@ impl Tool for CodeSearchTool {
 
         let response_text = response.text().await?;
         for line in response_text.lines() {
-            if let Some(data) = crate::util::sse_data_line(line) {
-                if let Ok(parsed) = serde_json::from_str::<McpResponse>(data) {
-                    if let Some(result) = parsed.result {
-                        if let Some(first) = result.content.first() {
-                            let mut output = first.text.clone();
-                            if output.len() > MAX_OUTPUT_LEN {
-                                output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
-                                output.push_str("\n... (truncated)");
-                            }
-                            return Ok(ToolOutput::new(output)
-                                .with_title(format!("codesearch: {}", params.query)));
-                        }
-                    }
+            if let Some(data) = crate::util::sse_data_line(line)
+                && let Ok(parsed) = serde_json::from_str::<McpResponse>(data)
+                && let Some(result) = parsed.result
+                && let Some(first) = result.content.first()
+            {
+                let mut output = first.text.clone();
+                if output.len() > MAX_OUTPUT_LEN {
+                    output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
+                    output.push_str("\n... (truncated)");
                 }
+                return Ok(
+                    ToolOutput::new(output).with_title(format!("codesearch: {}", params.query))
+                );
             }
         }
 

@@ -311,7 +311,7 @@ impl App {
             return (base_messages, None);
         }
         let compaction = self.registry.compaction();
-        let result = match compaction.try_write() {
+        match compaction.try_write() {
             Ok(mut manager) => {
                 if self.provider.uses_jcode_compaction() {
                     let action = manager.ensure_context_fits(&base_messages, self.provider.clone());
@@ -338,8 +338,7 @@ impl App {
                 (messages, event)
             }
             Err(_) => (base_messages, None),
-        };
-        result
+        }
     }
 
     pub(super) fn poll_compaction_completion(&mut self) -> bool {
@@ -348,13 +347,13 @@ impl App {
         }
         let provider_messages = self.materialized_provider_messages();
         let compaction = self.registry.compaction();
-        if let Ok(mut manager) = compaction.try_write() {
-            if let Some(event) = manager.poll_compaction_event_with(&provider_messages) {
-                self.sync_session_compaction_state_from_manager(&manager);
-                self.handle_compaction_event(event);
-                return true;
-            }
-        };
+        if let Ok(mut manager) = compaction.try_write()
+            && let Some(event) = manager.poll_compaction_event_with(&provider_messages)
+        {
+            self.sync_session_compaction_state_from_manager(&manager);
+            self.handle_compaction_event(event);
+            return true;
+        }
         false
     }
 
@@ -438,13 +437,10 @@ impl App {
         let now = Instant::now();
         if let Some((last_signature, last_injected_at)) =
             self.last_injected_memory_signature.as_ref()
+            && *last_signature == signature
+            && now.duration_since(*last_injected_at).as_secs() < MEMORY_INJECTION_SUPPRESSION_SECS
         {
-            if *last_signature == signature
-                && now.duration_since(*last_injected_at).as_secs()
-                    < MEMORY_INJECTION_SUPPRESSION_SECS
-            {
-                return false;
-            }
+            return false;
         }
         self.last_injected_memory_signature = Some((signature, now));
         true
@@ -470,21 +466,19 @@ impl App {
     pub(super) fn handle_quit_request(&mut self) -> bool {
         const QUIT_TIMEOUT: Duration = Duration::from_secs(2);
 
-        if let Some(pending_time) = self.quit_pending {
-            if pending_time.elapsed() < QUIT_TIMEOUT {
-                // Second press within timeout - actually quit
-                // Mark session as closed and save
-                self.session.provider_session_id = self.provider_session_id.clone();
-                crate::telemetry::end_session_with_reason(
-                    self.provider.name(),
-                    &self.provider.model(),
-                    crate::telemetry::SessionEndReason::NormalExit,
-                );
-                self.session.mark_closed();
-                let _ = self.session.save();
-                self.should_quit = true;
-                return true;
-            }
+        if let Some(pending_time) = self.quit_pending
+            && pending_time.elapsed() < QUIT_TIMEOUT
+        {
+            self.session.provider_session_id = self.provider_session_id.clone();
+            crate::telemetry::end_session_with_reason(
+                self.provider.name(),
+                &self.provider.model(),
+                crate::telemetry::SessionEndReason::NormalExit,
+            );
+            self.session.mark_closed();
+            let _ = self.session.save();
+            self.should_quit = true;
+            return true;
         }
 
         // First press or timeout expired - show warning
@@ -632,7 +626,8 @@ impl App {
                     self.messages
                         .insert(index + 1 + inserted + offset, inserted_message);
                 }
-                self.session.insert_message(index + 1 + inserted + offset, stored_message);
+                self.session
+                    .insert_message(index + 1 + inserted + offset, stored_message);
                 self.tool_result_ids.insert(id.clone());
                 repaired += 1;
             }

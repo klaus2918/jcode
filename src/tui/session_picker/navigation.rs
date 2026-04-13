@@ -3,32 +3,15 @@ use super::*;
 impl SessionPicker {
     /// Find next selectable item (skip headers)
     fn next_selectable(&self, from: usize) -> Option<usize> {
-        for i in (from + 1)..self.items.len() {
-            if self
-                .item_to_session
-                .get(i)
-                .map(|x| x.is_some())
-                .unwrap_or(false)
-            {
-                return Some(i);
-            }
-        }
-        None
+        ((from + 1)..self.items.len())
+            .find(|&i| self.item_to_session.get(i).is_some_and(|x| x.is_some()))
     }
 
     /// Find previous selectable item (skip headers)
     fn prev_selectable(&self, from: usize) -> Option<usize> {
-        for i in (0..from).rev() {
-            if self
-                .item_to_session
-                .get(i)
-                .map(|x| x.is_some())
-                .unwrap_or(false)
-            {
-                return Some(i);
-            }
-        }
-        None
+        (0..from)
+            .rev()
+            .find(|&i| self.item_to_session.get(i).is_some_and(|x| x.is_some()))
     }
 
     pub fn next(&mut self) {

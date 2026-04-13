@@ -15,6 +15,8 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, broadcast};
 
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+
 const DEFAULT_SWARM_STATUS_DEBOUNCE_MEMBER_THRESHOLD: usize = 16;
 const DEFAULT_SWARM_STATUS_DEBOUNCE_MS: u64 = 30;
 
@@ -261,10 +263,8 @@ pub(super) async fn remove_plan_participant(
 
 pub(super) async fn remove_session_channel_subscriptions(
     session_id: &str,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
 ) {
     let session_subscriptions = {
         let mut reverse = channel_subscriptions_by_session.write().await;
@@ -351,10 +351,8 @@ pub(super) async fn subscribe_session_to_channel(
     session_id: &str,
     swarm_id: &str,
     channel: &str,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
 ) {
     {
         let mut subs = channel_subscriptions.write().await;
@@ -378,10 +376,8 @@ pub(super) async fn unsubscribe_session_from_channel(
     session_id: &str,
     swarm_id: &str,
     channel: &str,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
 ) {
     {
         let mut subs = channel_subscriptions.write().await;
@@ -561,6 +557,10 @@ pub(super) async fn record_swarm_event_for_session(
     .await;
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "member status updates need swarm membership, broadcast state, and optional event history sinks"
+)]
 pub(super) async fn update_member_status(
     session_id: &str,
     status: &str,
@@ -600,24 +600,23 @@ pub(super) async fn update_member_status(
             return;
         }
 
-        if status_changed {
-            if let (Some(history), Some(counter), Some(tx)) =
+        if status_changed
+            && let (Some(history), Some(counter), Some(tx)) =
                 (event_history, event_counter, swarm_event_tx)
-            {
-                record_swarm_event(
-                    history,
-                    counter,
-                    tx,
-                    session_id.to_string(),
-                    agent_name.clone(),
-                    Some(id.clone()),
-                    SwarmEventType::StatusChange {
-                        old_status,
-                        new_status: status.to_string(),
-                    },
-                )
-                .await;
-            }
+        {
+            record_swarm_event(
+                history,
+                counter,
+                tx,
+                session_id.to_string(),
+                agent_name.clone(),
+                Some(id.clone()),
+                SwarmEventType::StatusChange {
+                    old_status,
+                    new_status: status.to_string(),
+                },
+            )
+            .await;
         }
 
         broadcast_swarm_status(id, swarm_members, swarms_by_id).await;
@@ -807,12 +806,11 @@ fn parse_swarm_tasks(text: &str) -> Vec<SwarmTaskSpec> {
         return tasks;
     }
 
-    if let (Some(start), Some(end)) = (text.find('['), text.rfind(']')) {
-        if start < end {
-            if let Ok(tasks) = serde_json::from_str::<Vec<SwarmTaskSpec>>(&text[start..=end]) {
-                return tasks;
-            }
-        }
+    if let (Some(start), Some(end)) = (text.find('['), text.rfind(']'))
+        && start < end
+        && let Ok(tasks) = serde_json::from_str::<Vec<SwarmTaskSpec>>(&text[start..=end])
+    {
+        return tasks;
     }
 
     Vec::new()

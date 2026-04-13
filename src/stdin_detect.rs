@@ -51,23 +51,17 @@ pub mod linux {
         // In strict mode (child processes), skip this fallback since wchan
         // can't distinguish which fd is being read - a process blocking on
         // a stdout/stderr pipe would false-positive if fd 0 is also a pipe.
-        if !strict {
-            if let Ok(wchan) = std::fs::read_to_string(format!("/proc/{}/wchan", pid)) {
-                let wchan = wchan.trim();
-                // Common wchan values when blocked on terminal/pipe read
-                if wchan == "n_tty_read"
-                    || wchan == "wait_woken"
-                    || wchan == "pipe_read"
-                    || wchan == "unix_stream_read_generic"
-                {
-                    // wchan tells us it's reading, but not which fd
-                    // Check if stdin (fd 0) points to a pipe or pty
-                    if stdin_is_pipe_or_pty(pid) {
-                        return StdinState::Reading;
-                    }
-                }
-                return StdinState::NotReading;
+        if !strict && let Ok(wchan) = std::fs::read_to_string(format!("/proc/{}/wchan", pid)) {
+            let wchan = wchan.trim();
+            if (wchan == "n_tty_read"
+                || wchan == "wait_woken"
+                || wchan == "pipe_read"
+                || wchan == "unix_stream_read_generic")
+                && stdin_is_pipe_or_pty(pid)
+            {
+                return StdinState::Reading;
             }
+            return StdinState::NotReading;
         }
 
         if strict {
@@ -102,35 +96,27 @@ pub mod linux {
         // Check child processes
         if let Ok(entries) = std::fs::read_dir("/proc") {
             for entry in entries.flatten() {
-                if let Ok(name) = entry.file_name().into_string() {
-                    if let Ok(child_pid) = name.parse::<u32>() {
-                        // Check if this process's parent is our pid
-                        if let Ok(status) =
-                            std::fs::read_to_string(format!("/proc/{}/status", child_pid))
+                if let Ok(name) = entry.file_name().into_string()
+                    && let Ok(child_pid) = name.parse::<u32>()
+                    && let Ok(status) =
+                        std::fs::read_to_string(format!("/proc/{}/status", child_pid))
+                {
+                    for line in status.lines() {
+                        if let Some(ppid_str) = line.strip_prefix("PPid:\t")
+                            && ppid_str.trim().parse::<u32>().ok() == Some(pid)
                         {
-                            for line in status.lines() {
-                                if let Some(ppid_str) = line.strip_prefix("PPid:\t") {
-                                    if ppid_str.trim().parse::<u32>().ok() == Some(pid) {
-                                        // Verify child's fd 0 points to the same pipe as parent
-                                        if let Some(ref parent_link) = parent_stdin_link {
-                                            let child_link = std::fs::read_link(format!(
-                                                "/proc/{}/fd/0",
-                                                child_pid
-                                            ))
-                                            .ok()
-                                            .map(|p| p.to_string_lossy().to_string());
-                                            if child_link.as_deref() != Some(parent_link) {
-                                                continue;
-                                            }
-                                        }
-                                        // Use strict mode: only trust /proc/PID/syscall,
-                                        // not the wchan fallback which can't tell which fd
-                                        let child_result = check_inner(child_pid, true);
-                                        if child_result == StdinState::Reading {
-                                            return StdinState::Reading;
-                                        }
-                                    }
+                            if let Some(ref parent_link) = parent_stdin_link {
+                                let child_link =
+                                    std::fs::read_link(format!("/proc/{}/fd/0", child_pid))
+                                        .ok()
+                                        .map(|p| p.to_string_lossy().to_string());
+                                if child_link.as_deref() != Some(parent_link) {
+                                    continue;
                                 }
+                            }
+                            let child_result = check_inner(child_pid, true);
+                            if child_result == StdinState::Reading {
+                                return StdinState::Reading;
                             }
                         }
                     }

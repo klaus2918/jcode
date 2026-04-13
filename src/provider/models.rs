@@ -134,10 +134,10 @@ pub fn format_account_model_availability_detail(
     };
 
     let mut meta_parts = vec![availability.source.to_string()];
-    if let Some(observed_at) = availability.observed_at {
-        if let Ok(elapsed) = SystemTime::now().duration_since(observed_at) {
-            meta_parts.push(format!("{} ago", format_elapsed_duration_short(elapsed)));
-        }
+    if let Some(observed_at) = availability.observed_at
+        && let Ok(elapsed) = SystemTime::now().duration_since(observed_at)
+    {
+        meta_parts.push(format!("{} ago", format_elapsed_duration_short(elapsed)));
     }
 
     if meta_parts.is_empty() {
@@ -290,10 +290,10 @@ fn fallback_context_limit_for_model(model: &str, provider_hint: Option<&str>) ->
     let (model, is_1m) = model_id_for_capability_lookup(model, provider);
     let model = model.as_str();
 
-    if !matches!(provider, Some("claude" | "copilot")) {
-        if let Some(limit) = get_cached_context_limit(model) {
-            return Some(limit);
-        }
+    if !matches!(provider, Some("claude" | "copilot"))
+        && let Some(limit) = get_cached_context_limit(model)
+    {
+        return Some(limit);
     }
 
     if matches!(provider, Some("copilot")) {
@@ -1168,12 +1168,11 @@ pub(crate) fn normalize_copilot_model_name(model: &str) -> Option<&'static str> 
         }
     }
     let normalized = model.replace('.', "-");
-    for canonical in ALL_CLAUDE_MODELS.iter().chain(ALL_OPENAI_MODELS.iter()) {
-        if *canonical == normalized {
-            return Some(canonical);
-        }
-    }
-    None
+    ALL_CLAUDE_MODELS
+        .iter()
+        .chain(ALL_OPENAI_MODELS.iter())
+        .find(|canonical| **canonical == normalized)
+        .copied()
 }
 
 /// Detect which provider a model belongs to

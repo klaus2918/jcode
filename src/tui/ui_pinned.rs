@@ -367,16 +367,18 @@ enum FitImageRenderPlan {
 const SIDE_PANEL_INLINE_IMAGE_MIN_ROWS: u16 = 4;
 const SIDE_PANEL_INLINE_IMAGE_MIN_ZOOM_PERCENT: u8 = 70;
 
-fn build_side_pane_snapshot_cache(
-    lines: &[Line<'static>],
-    inner_width: u16,
-) -> (
+type SidePaneSnapshotCache = (
     std::sync::Arc<Vec<String>>,
     std::sync::Arc<Vec<usize>>,
     std::sync::Arc<Vec<String>>,
     std::sync::Arc<Vec<WrappedLineMap>>,
     Vec<u16>,
-) {
+);
+
+fn build_side_pane_snapshot_cache(
+    lines: &[Line<'static>],
+    inner_width: u16,
+) -> SidePaneSnapshotCache {
     let plain_lines: Vec<String> = lines.iter().map(super::line_plain_text).collect();
     let wrapped_line_map: Vec<WrappedLineMap> = plain_lines
         .iter()
@@ -1654,7 +1656,7 @@ fn estimate_side_panel_image_layout(
     let Some((_, width, height)) = mermaid::get_cached_png(hash) else {
         return SidePanelImageLayout {
             rows: clamp_side_panel_image_rows(
-                inner.height.min(12).max(SIDE_PANEL_INLINE_IMAGE_MIN_ROWS),
+                inner.height.clamp(SIDE_PANEL_INLINE_IMAGE_MIN_ROWS, 12),
                 inner.height,
                 lines_before_image,
                 has_following_content,

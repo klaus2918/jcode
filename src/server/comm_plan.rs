@@ -12,7 +12,12 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
-#[allow(clippy::too_many_arguments)]
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "plan proposal updates sessions, swarm coordination, shared context, interrupts, and event history"
+)]
 pub(super) async fn handle_comm_propose_plan(
     id: u64,
     req_session_id: String,
@@ -23,7 +28,7 @@ pub(super) async fn handle_comm_propose_plan(
     shared_context: &Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     soft_interrupt_queues: &SessionInterruptQueues,
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
@@ -243,7 +248,10 @@ pub(super) async fn handle_comm_propose_plan(
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "plan approval updates sessions, swarm coordination, interrupts, and event history"
+)]
 pub(super) async fn handle_comm_approve_plan(
     id: u64,
     req_session_id: String,
@@ -254,7 +262,7 @@ pub(super) async fn handle_comm_approve_plan(
     shared_context: &Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     soft_interrupt_queues: &SessionInterruptQueues,
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
@@ -383,7 +391,10 @@ pub(super) async fn handle_comm_approve_plan(
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "plan rejection updates sessions, swarm coordination, interrupts, and event history"
+)]
 pub(super) async fn handle_comm_reject_plan(
     id: u64,
     req_session_id: String,
@@ -393,7 +404,7 @@ pub(super) async fn handle_comm_reject_plan(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     shared_context: &Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     soft_interrupt_queues: &SessionInterruptQueues,
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,

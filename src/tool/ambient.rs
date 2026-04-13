@@ -107,6 +107,12 @@ fn ensure_ambient_session(ctx: &ToolContext) -> Result<()> {
 
 pub struct EndAmbientCycleTool;
 
+impl Default for EndAmbientCycleTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EndAmbientCycleTool {
     pub fn new() -> Self {
         Self
@@ -259,6 +265,12 @@ impl Tool for EndAmbientCycleTool {
 
 pub struct ScheduleAmbientTool;
 
+impl Default for ScheduleAmbientTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScheduleAmbientTool {
     pub fn new() -> Self {
         Self
@@ -362,6 +374,12 @@ impl Tool for ScheduleAmbientTool {
 // ===========================================================================
 
 pub struct RequestPermissionTool;
+
+impl Default for RequestPermissionTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl RequestPermissionTool {
     pub fn new() -> Self {
@@ -507,10 +525,10 @@ fn build_permission_review_context(
         }
     }
 
-    if let Some(raw) = context {
-        if !raw.is_object() {
-            review.insert("notes".to_string(), raw.clone());
-        }
+    if let Some(raw) = context
+        && !raw.is_object()
+    {
+        review.insert("notes".to_string(), raw.clone());
     }
 
     Value::Object(review)
@@ -680,6 +698,12 @@ impl Tool for RequestPermissionTool {
 // ===========================================================================
 
 pub struct ScheduleTool;
+
+impl Default for ScheduleTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ScheduleTool {
     pub fn new() -> Self {
@@ -881,6 +905,12 @@ fn nudge_schedule_runner() {
 // ---------------------------------------------------------------------------
 
 pub struct SendChannelMessageTool;
+
+impl Default for SendChannelMessageTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl SendChannelMessageTool {
     pub fn new() -> Self {

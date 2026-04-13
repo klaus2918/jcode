@@ -311,17 +311,16 @@ impl AnthropicProvider {
             if matches!(msg.role, Role::Assistant) {
                 let mut synthetic_results: Vec<ApiContentBlock> = Vec::new();
                 for block in &msg.content {
-                    if let ContentBlock::ToolUse { id, .. } = block {
-                        if dangling.contains(id) {
-                            synthetic_results.push(ApiContentBlock::ToolResult {
-                                tool_use_id: crate::message::sanitize_tool_id(id),
-                                content: ToolResultContent::Text(
-                                    "[Session interrupted before tool execution completed]"
-                                        .to_string(),
-                                ),
-                                is_error: true,
-                            });
-                        }
+                    if let ContentBlock::ToolUse { id, .. } = block
+                        && dangling.contains(id)
+                    {
+                        synthetic_results.push(ApiContentBlock::ToolResult {
+                            tool_use_id: crate::message::sanitize_tool_id(id),
+                            content: ToolResultContent::Text(
+                                "[Session interrupted before tool execution completed]".to_string(),
+                            ),
+                            is_error: true,
+                        });
                     }
                 }
                 if !synthetic_results.is_empty() {
@@ -338,12 +337,11 @@ impl AnthropicProvider {
         let pre_merge_count = result.len();
         let mut merged: Vec<ApiMessage> = Vec::new();
         for msg in result {
-            if let Some(last) = merged.last_mut() {
-                if last.role == msg.role {
-                    // Same role - merge content blocks
-                    last.content.extend(msg.content);
-                    continue;
-                }
+            if let Some(last) = merged.last_mut()
+                && last.role == msg.role
+            {
+                last.content.extend(msg.content);
+                continue;
             }
             merged.push(msg);
         }
@@ -746,8 +744,8 @@ async fn run_stream_with_retries(
             let _ = tx
                 .send(Ok(StreamEvent::ConnectionPhase {
                     phase: crate::message::ConnectionPhase::Retrying {
-                        attempt: attempt as u32 + 1,
-                        max: MAX_RETRIES as u32,
+                        attempt: attempt + 1,
+                        max: MAX_RETRIES,
                     },
                 }))
                 .await;
@@ -894,10 +892,9 @@ async fn stream_response(
     if std::env::var("JCODE_ANTHROPIC_DEBUG")
         .map(|v| v == "1")
         .unwrap_or(false)
+        && let Ok(json) = serde_json::to_string_pretty(&request)
     {
-        if let Ok(json) = serde_json::to_string_pretty(&request) {
-            crate::logging::info(&format!("Anthropic request payload:\n{}", json));
-        }
+        crate::logging::info(&format!("Anthropic request payload:\n{}", json));
     }
 
     let _ = tx
@@ -999,10 +996,10 @@ async fn stream_response(
                 is_oauth,
             );
             for stream_event in events {
-                if let StreamEvent::Error { ref message, .. } = stream_event {
-                    if is_retryable_error(&message.to_lowercase()) {
-                        anyhow::bail!("Retryable stream error: {}", message);
-                    }
+                if let StreamEvent::Error { ref message, .. } = stream_event
+                    && is_retryable_error(&message.to_lowercase())
+                {
+                    anyhow::bail!("Retryable stream error: {}", message);
                 }
                 if tx.send(Ok(stream_event)).await.is_err() {
                     return Ok(()); // Receiver dropped
@@ -1123,13 +1120,12 @@ fn process_sse_event(
     match event.event_type.as_str() {
         "message_start" => {
             // Extract usage from message_start (includes cache info)
-            if let Ok(parsed) = serde_json::from_str::<MessageStartEvent>(&event.data) {
-                if let Some(usage) = parsed.message.usage {
-                    *input_tokens = usage.input_tokens.map(|t| t as u64);
-                    *cache_read_input_tokens = usage.cache_read_input_tokens.map(|t| t as u64);
-                    *cache_creation_input_tokens =
-                        usage.cache_creation_input_tokens.map(|t| t as u64);
-                }
+            if let Ok(parsed) = serde_json::from_str::<MessageStartEvent>(&event.data)
+                && let Some(usage) = parsed.message.usage
+            {
+                *input_tokens = usage.input_tokens.map(|t| t as u64);
+                *cache_read_input_tokens = usage.cache_read_input_tokens.map(|t| t as u64);
+                *cache_creation_input_tokens = usage.cache_creation_input_tokens.map(|t| t as u64);
             }
         }
         "content_block_start" => {

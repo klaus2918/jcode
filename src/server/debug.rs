@@ -1,3 +1,8 @@
+#![cfg_attr(
+    test,
+    allow(clippy::await_holding_lock, clippy::items_after_test_module)
+)]
+
 use super::debug_ambient::maybe_handle_ambient_command;
 use super::debug_command_exec::{execute_debug_command, resolve_debug_session};
 use super::debug_events::{
@@ -27,6 +32,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 
 #[derive(Default)]
 pub(super) struct ClientDebugState {
@@ -63,10 +70,10 @@ impl ClientDebugState {
     pub(super) fn active_sender(
         &mut self,
     ) -> Option<(String, mpsc::UnboundedSender<(u64, String)>)> {
-        if let Some(active_id) = self.active_id.clone() {
-            if let Some(tx) = self.clients.get(&active_id) {
-                return Some((active_id, tx.clone()));
-            }
+        if let Some(active_id) = self.active_id.clone()
+            && let Some(tx) = self.clients.get(&active_id)
+        {
+            return Some((active_id, tx.clone()));
         }
         if let Some((id, tx)) = self.clients.iter().next() {
             let id = id.clone();
@@ -105,16 +112,16 @@ async fn resolve_transcript_target_session(
 
     let connections = client_connections.read().await;
 
-    if let Ok(Some(session_id)) = crate::dictation::focused_jcode_session() {
-        if has_connected_tui(&session_id, &connections) {
-            return Ok(session_id);
-        }
+    if let Ok(Some(session_id)) = crate::dictation::focused_jcode_session()
+        && has_connected_tui(&session_id, &connections)
+    {
+        return Ok(session_id);
     }
 
-    if let Ok(Some(session_id)) = crate::dictation::last_focused_session() {
-        if has_connected_tui(&session_id, &connections) {
-            return Ok(session_id);
-        }
+    if let Ok(Some(session_id)) = crate::dictation::last_focused_session()
+        && has_connected_tui(&session_id, &connections)
+    {
+        return Ok(session_id);
     }
 
     let active_debug_id = client_debug_state.read().await.active_id.clone();
@@ -176,6 +183,10 @@ async fn inject_transcript(
     Ok(ServerEvent::Done { id })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "debug client wiring fans out across sessions, swarms, files, channels, jobs, and transport state"
+)]
 pub(super) async fn handle_debug_client(
     stream: Stream,
     sessions: Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
@@ -190,10 +201,8 @@ pub(super) async fn handle_debug_client(
     swarm_coordinators: Arc<RwLock<HashMap<String, String>>>,
     file_touches: Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
     files_touched_by_session: Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
-    channel_subscriptions: Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: ChannelSubscriptions,
+    channel_subscriptions_by_session: ChannelSubscriptions,
     client_debug_state: Arc<RwLock<ClientDebugState>>,
     client_debug_response_tx: broadcast::Sender<(u64, String)>,
     debug_jobs: Arc<RwLock<HashMap<String, DebugJob>>>,
@@ -323,10 +332,10 @@ pub(super) async fn handle_debug_client(
                                 let timeout = tokio::time::Duration::from_secs(30);
                                 match tokio::time::timeout(timeout, async {
                                     loop {
-                                        if let Ok((resp_id, output)) = response_rx.recv().await {
-                                            if resp_id == id {
-                                                return Ok(output);
-                                            }
+                                        if let Ok((resp_id, output)) = response_rx.recv().await
+                                            && resp_id == id
+                                        {
+                                            return Ok(output);
                                         }
                                     }
                                 })

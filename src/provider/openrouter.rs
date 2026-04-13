@@ -102,7 +102,7 @@ fn autodetected_openai_compatible_profile()
     }
 
     let mut matches = openai_compatible_profiles()
-        .into_iter()
+        .iter()
         .filter(|profile| profile.id != OPENAI_COMPAT_PROFILE.id)
         .filter_map(|profile| {
             let resolved = resolve_openai_compatible_profile(*profile);
@@ -334,15 +334,14 @@ impl ProviderAuth {
 fn add_cache_breakpoint(messages: &mut [Message]) -> bool {
     let mut cache_index = None;
     for (idx, msg) in messages.iter().enumerate().rev() {
-        if let Role::User = msg.role {
-            if msg
+        if let Role::User = msg.role
+            && msg
                 .content
                 .iter()
                 .any(|b| matches!(b, ContentBlock::Text { .. }))
-            {
-                cache_index = Some(idx);
-                break;
-            }
+        {
+            cache_index = Some(idx);
+            break;
         }
     }
 
@@ -408,6 +407,8 @@ async fn fetch_models_from_api(
     Ok(models_response.data)
 }
 
+type EndpointsCache = HashMap<String, (u64, Vec<EndpointInfo>)>;
+
 pub struct OpenRouterProvider {
     client: Client,
     model: Arc<RwLock<String>>,
@@ -423,7 +424,7 @@ pub struct OpenRouterProvider {
     /// Pinned provider for this session (cache-aware)
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
     /// In-memory cache of per-model endpoint data
-    endpoints_cache: Arc<RwLock<HashMap<String, (u64, Vec<EndpointInfo>)>>>,
+    endpoints_cache: Arc<RwLock<EndpointsCache>>,
 }
 
 impl OpenRouterProvider {
@@ -535,10 +536,10 @@ impl OpenRouterProvider {
             return false;
         }
 
-        if let Some(last) = state.last_attempt_unix {
-            if now.saturating_sub(last) < MODEL_CATALOG_REFRESH_RETRY_SECS {
-                return false;
-            }
+        if let Some(last) = state.last_attempt_unix
+            && now.saturating_sub(last) < MODEL_CATALOG_REFRESH_RETRY_SECS
+        {
+            return false;
         }
 
         state.in_flight = true;
@@ -608,9 +609,7 @@ impl OpenRouterProvider {
         let mut pin = self.provider_pin.lock().unwrap();
         if let Some(existing) = pin.as_ref() {
             let should_clear = existing.model != model
-                || (clear_explicit
-                    && existing.model == model
-                    && existing.source == PinSource::Explicit);
+                || (clear_explicit && existing.source == PinSource::Explicit);
             if should_clear {
                 *pin = None;
             }
@@ -629,25 +628,25 @@ impl OpenRouterProvider {
         let base = self.provider_routing.read().await.clone();
         let pin = self.provider_pin.lock().unwrap().clone();
 
-        if let Some(pin) = pin {
-            if pin.model == model {
-                let cache_recent = pin
-                    .last_cache_read
-                    .map(|t| t.elapsed().as_secs() <= CACHE_PIN_TTL_SECS)
-                    .unwrap_or(false);
-                let use_pin = match pin.source {
-                    PinSource::Explicit => true,
-                    PinSource::Observed => cache_recent || base.order.is_none(),
-                };
+        if let Some(pin) = pin
+            && pin.model == model
+        {
+            let cache_recent = pin
+                .last_cache_read
+                .map(|t| t.elapsed().as_secs() <= CACHE_PIN_TTL_SECS)
+                .unwrap_or(false);
+            let use_pin = match pin.source {
+                PinSource::Explicit => true,
+                PinSource::Observed => cache_recent || base.order.is_none(),
+            };
 
-                if use_pin {
-                    let mut routing = base.clone();
-                    routing.order = Some(vec![pin.provider.clone()]);
-                    if !pin.allow_fallbacks {
-                        routing.allow_fallbacks = false;
-                    }
-                    return routing;
+            if use_pin {
+                let mut routing = base.clone();
+                routing.order = Some(vec![pin.provider.clone()]);
+                if !pin.allow_fallbacks {
+                    routing.allow_fallbacks = false;
                 }
+                return routing;
             }
         }
 
@@ -662,12 +661,11 @@ impl OpenRouterProvider {
             });
 
             // Fetch endpoints from API if no cache available
-            if endpoints.is_none() {
-                if let Ok(fetched) = self.fetch_endpoints(model).await {
-                    if !fetched.is_empty() {
-                        endpoints = Some(fetched);
-                    }
-                }
+            if endpoints.is_none()
+                && let Ok(fetched) = self.fetch_endpoints(model).await
+                && !fetched.is_empty()
+            {
+                endpoints = Some(fetched);
             }
 
             Self::rank_providers_from_endpoints(&endpoints.unwrap_or_default())
@@ -721,21 +719,19 @@ impl OpenRouterProvider {
         let model = self.model.try_read().ok()?.clone();
 
         // Check pin first
-        if let Ok(pin) = self.provider_pin.lock() {
-            if let Some(ref pin) = *pin {
-                if pin.model == model {
-                    return Some(pin.provider.clone());
-                }
-            }
+        if let Ok(pin) = self.provider_pin.lock()
+            && let Some(ref pin) = *pin
+            && pin.model == model
+        {
+            return Some(pin.provider.clone());
         }
 
         // Check explicit routing
-        if let Ok(routing) = self.provider_routing.try_read() {
-            if let Some(ref order) = routing.order {
-                if let Some(first) = order.first() {
-                    return Some(first.clone());
-                }
-            }
+        if let Ok(routing) = self.provider_routing.try_read()
+            && let Some(ref order) = routing.order
+            && let Some(first) = order.first()
+        {
+            return Some(first.clone());
         }
 
         // Fall back to ranked endpoint data
@@ -772,10 +768,10 @@ impl OpenRouterProvider {
 
         if let Some(endpoints) = load_endpoints_disk_cache(model) {
             providers.extend(endpoints.into_iter().map(|e| e.provider_name));
-        } else if let Ok(cache) = self.endpoints_cache.try_read() {
-            if let Some((_, endpoints)) = cache.get(model) {
-                providers.extend(endpoints.iter().map(|e| e.provider_name.clone()));
-            }
+        } else if let Ok(cache) = self.endpoints_cache.try_read()
+            && let Some((_, endpoints)) = cache.get(model)
+        {
+            providers.extend(endpoints.iter().map(|e| e.provider_name.clone()));
         }
 
         if providers.is_empty() {
@@ -802,13 +798,13 @@ impl OpenRouterProvider {
         }
 
         // Try in-memory endpoints cache
-        if let Ok(cache) = self.endpoints_cache.try_read() {
-            if let Some((_, endpoints)) = cache.get(model) {
-                return endpoints
-                    .iter()
-                    .map(|e| (e.provider_name.clone(), e.detail_string()))
-                    .collect();
-            }
+        if let Ok(cache) = self.endpoints_cache.try_read()
+            && let Some((_, endpoints)) = cache.get(model)
+        {
+            return endpoints
+                .iter()
+                .map(|e| (e.provider_name.clone(), e.detail_string()))
+                .collect();
         }
 
         Vec::new()
@@ -967,10 +963,10 @@ impl OpenRouterProvider {
         // Check in-memory cache
         {
             let cache = self.endpoints_cache.read().await;
-            if let Some((cached_at, endpoints)) = cache.get(model) {
-                if now - cached_at < ENDPOINTS_CACHE_TTL_SECS {
-                    return Ok(endpoints.clone());
-                }
+            if let Some((cached_at, endpoints)) = cache.get(model)
+                && now - cached_at < ENDPOINTS_CACHE_TTL_SECS
+            {
+                return Ok(endpoints.clone());
             }
         }
 
@@ -1040,10 +1036,10 @@ impl OpenRouterProvider {
 
     async fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
         let cache = self.models_cache.read().await;
-        if cache.fetched {
-            if let Some(model) = cache.models.iter().find(|m| m.id == model_id) {
-                return Some(model.pricing.clone());
-            }
+        if cache.fetched
+            && let Some(model) = cache.models.iter().find(|m| m.id == model_id)
+        {
+            return Some(model.pricing.clone());
         }
 
         if let Some(models) = load_disk_cache() {
@@ -1060,10 +1056,10 @@ impl OpenRouterProvider {
             }
         }
 
-        if let Ok(models) = self.fetch_models().await {
-            if let Some(model) = models.iter().find(|m| m.id == model_id) {
-                return Some(model.pricing.clone());
-            }
+        if let Ok(models) = self.fetch_models().await
+            && let Some(model) = models.iter().find(|m| m.id == model_id)
+        {
+            return Some(model.pricing.clone());
         }
 
         None
@@ -1161,10 +1157,8 @@ impl Provider for OpenRouterProvider {
             if parts.len() == 1 {
                 let part = &parts[0];
                 let has_cache = part.get("cache_control").is_some();
-                if !has_cache {
-                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                        return Some(serde_json::json!(text));
-                    }
+                if !has_cache && let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                    return Some(serde_json::json!(text));
                 }
             }
             Some(Value::Array(parts))
@@ -1405,15 +1399,15 @@ impl Provider for OpenRouterProvider {
                 continue;
             }
 
-            if role == "assistant" {
-                if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
-                    for call in tool_calls {
-                        if let Some(id) = call.get("id").and_then(|v| v.as_str()) {
-                            if !outputs_after.contains(id) {
-                                outputs_after.insert(id.to_string());
-                                missing_by_index[idx].push(id.to_string());
-                            }
-                        }
+            if role == "assistant"
+                && let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array())
+            {
+                for call in tool_calls {
+                    if let Some(id) = call.get("id").and_then(|v| v.as_str())
+                        && !outputs_after.contains(id)
+                    {
+                        outputs_after.insert(id.to_string());
+                        missing_by_index[idx].push(id.to_string());
                     }
                 }
             }
@@ -1425,16 +1419,17 @@ impl Provider for OpenRouterProvider {
 
         for (idx, mut msg) in api_messages.into_iter().enumerate() {
             let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
-            if role == "assistant" && allow_reasoning {
-                if msg.get("tool_calls").and_then(|v| v.as_array()).is_some() {
-                    let needs_reasoning = match msg.get("reasoning_content") {
-                        Some(value) => value.as_str().map(|s| s.trim().is_empty()).unwrap_or(true),
-                        None => true,
-                    };
-                    if needs_reasoning {
-                        msg["reasoning_content"] = serde_json::json!(" ");
-                        missing_reasoning += 1;
-                    }
+            if role == "assistant"
+                && allow_reasoning
+                && msg.get("tool_calls").and_then(|v| v.as_array()).is_some()
+            {
+                let needs_reasoning = match msg.get("reasoning_content") {
+                    Some(value) => value.as_str().map(|s| s.trim().is_empty()).unwrap_or(true),
+                    None => true,
+                };
+                if needs_reasoning {
+                    msg["reasoning_content"] = serde_json::json!(" ");
+                    missing_reasoning += 1;
                 }
             }
 
@@ -1470,10 +1465,10 @@ impl Provider for OpenRouterProvider {
         // Final safety pass: ensure every tool_call_id has at least one tool response after it.
         let mut tool_output_positions: HashMap<String, usize> = HashMap::new();
         for (idx, msg) in api_messages.iter().enumerate() {
-            if msg.get("role").and_then(|v| v.as_str()) == Some("tool") {
-                if let Some(id) = msg.get("tool_call_id").and_then(|v| v.as_str()) {
-                    tool_output_positions.entry(id.to_string()).or_insert(idx);
-                }
+            if msg.get("role").and_then(|v| v.as_str()) == Some("tool")
+                && let Some(id) = msg.get("tool_call_id").and_then(|v| v.as_str())
+            {
+                tool_output_positions.entry(id.to_string()).or_insert(idx);
             }
         }
 
@@ -1514,27 +1509,27 @@ impl Provider for OpenRouterProvider {
         // Final pass: ensure tool outputs immediately follow assistant tool calls.
         let mut tool_output_map: HashMap<String, Value> = HashMap::new();
         for msg in &api_messages {
-            if msg.get("role").and_then(|v| v.as_str()) == Some("tool") {
-                if let Some(id) = msg.get("tool_call_id").and_then(|v| v.as_str()) {
-                    let is_missing = msg
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .map(|v| v == missing_output)
-                        .unwrap_or(false);
-                    match tool_output_map.get(id) {
-                        Some(existing) => {
-                            let existing_missing = existing
-                                .get("content")
-                                .and_then(|v| v.as_str())
-                                .map(|v| v == missing_output)
-                                .unwrap_or(false);
-                            if existing_missing && !is_missing {
-                                tool_output_map.insert(id.to_string(), msg.clone());
-                            }
-                        }
-                        None => {
+            if msg.get("role").and_then(|v| v.as_str()) == Some("tool")
+                && let Some(id) = msg.get("tool_call_id").and_then(|v| v.as_str())
+            {
+                let is_missing = msg
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v == missing_output)
+                    .unwrap_or(false);
+                match tool_output_map.get(id) {
+                    Some(existing) => {
+                        let existing_missing = existing
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .map(|v| v == missing_output)
+                            .unwrap_or(false);
+                        if existing_missing && !is_missing {
                             tool_output_map.insert(id.to_string(), msg.clone());
                         }
+                    }
+                    None => {
+                        tool_output_map.insert(id.to_string(), msg.clone());
                     }
                 }
             }
@@ -1576,11 +1571,11 @@ impl Provider for OpenRouterProvider {
             }
 
             if role == "tool" {
-                if let Some(id) = msg.get("tool_call_id").and_then(|v| v.as_str()) {
-                    if used_outputs.contains(id) {
-                        dropped_orphans += 1;
-                        continue;
-                    }
+                if let Some(id) = msg.get("tool_call_id").and_then(|v| v.as_str())
+                    && used_outputs.contains(id)
+                {
+                    dropped_orphans += 1;
+                    continue;
                 }
                 dropped_orphans += 1;
                 continue;
@@ -1770,15 +1765,17 @@ impl Provider for OpenRouterProvider {
             return vec![model];
         }
 
-        if let Ok(cache) = self.models_cache.try_read() {
-            if cache.fetched && !cache.models.is_empty() {
-                if let Some(cache_age) = cache.cached_at.and_then(|cached_at| {
-                    current_unix_secs().map(|now| now.saturating_sub(cached_at))
-                }) {
-                    self.maybe_schedule_model_catalog_refresh(cache_age, "display memory cache");
-                }
-                return cache.models.iter().map(|m| m.id.clone()).collect();
+        if let Ok(cache) = self.models_cache.try_read()
+            && cache.fetched
+            && !cache.models.is_empty()
+        {
+            if let Some(cache_age) = cache
+                .cached_at
+                .and_then(|cached_at| current_unix_secs().map(|now| now.saturating_sub(cached_at)))
+            {
+                self.maybe_schedule_model_catalog_refresh(cache_age, "display memory cache");
             }
+            return cache.models.iter().map(|m| m.id.clone()).collect();
         }
 
         if let Some(cache_entry) = load_disk_cache_entry() {
@@ -1834,12 +1831,11 @@ impl Provider for OpenRouterProvider {
         let model_id = self.model();
         // Try cached model data from OpenRouter API
         let cache = self.models_cache.try_read();
-        if let Ok(cache) = cache {
-            if let Some(model) = cache.models.iter().find(|m| m.id == model_id) {
-                if let Some(ctx) = model.context_length {
-                    return ctx as usize;
-                }
-            }
+        if let Ok(cache) = cache
+            && let Some(model) = cache.models.iter().find(|m| m.id == model_id)
+            && let Some(ctx) = model.context_length
+        {
+            return ctx as usize;
         }
         crate::provider::context_limit_for_model_with_provider(&model_id, Some(self.name()))
             .unwrap_or(crate::provider::DEFAULT_CONTEXT_LIMIT)
@@ -1874,6 +1870,10 @@ impl Provider for OpenRouterProvider {
 // SSE Stream Parser
 // ============================================================================
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "stream helpers thread transport, auth, request, event channel, and pin state explicitly"
+)]
 async fn run_stream_with_retries(
     client: Client,
     api_base: String,
@@ -1944,6 +1944,10 @@ async fn run_stream_with_retries(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "stream helpers thread transport, auth, request, event channel, and pin state explicitly"
+)]
 async fn stream_response(
     client: Client,
     api_base: String,
@@ -2108,10 +2112,11 @@ impl OpenRouterStream {
 
     fn refresh_cache_pin(&mut self, provider: &str) {
         let mut pin = self.provider_pin.lock().unwrap();
-        if let Some(existing) = pin.as_mut() {
-            if existing.model == self.model && existing.provider == provider {
-                existing.last_cache_read = Some(Instant::now());
-            }
+        if let Some(existing) = pin.as_mut()
+            && existing.model == self.model
+            && existing.provider == provider
+        {
+            existing.last_cache_read = Some(Instant::now());
         }
     }
 
@@ -2148,14 +2153,14 @@ impl OpenRouterStream {
 
             // Extract upstream provider info (only emit once)
             // OpenRouter returns "provider" field indicating which provider handled the request
-            if !self.provider_emitted {
-                if let Some(provider) = parsed.get("provider").and_then(|p| p.as_str()) {
-                    self.provider_emitted = true;
-                    self.observe_provider(provider);
-                    self.pending.push_back(StreamEvent::UpstreamProvider {
-                        provider: provider.to_string(),
-                    });
-                }
+            if !self.provider_emitted
+                && let Some(provider) = parsed.get("provider").and_then(|p| p.as_str())
+            {
+                self.provider_emitted = true;
+                self.observe_provider(provider);
+                self.pending.push_back(StreamEvent::UpstreamProvider {
+                    provider: provider.to_string(),
+                });
             }
 
             // Check for error
@@ -2181,20 +2186,18 @@ impl OpenRouterStream {
 
                     if let Some(reasoning_content) =
                         delta.get("reasoning_content").and_then(|c| c.as_str())
+                        && !reasoning_content.is_empty()
                     {
-                        if !reasoning_content.is_empty() {
-                            self.pending.push_back(StreamEvent::ThinkingDelta(
-                                reasoning_content.to_string(),
-                            ));
-                        }
+                        self.pending
+                            .push_back(StreamEvent::ThinkingDelta(reasoning_content.to_string()));
                     }
 
                     // Text content
-                    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                        if !content.is_empty() {
-                            self.pending
-                                .push_back(StreamEvent::TextDelta(content.to_string()));
-                        }
+                    if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                        && !content.is_empty()
+                    {
+                        self.pending
+                            .push_back(StreamEvent::TextDelta(content.to_string()));
                     }
 
                     // Tool calls
@@ -2205,16 +2208,16 @@ impl OpenRouterStream {
                             // Check if this is a new tool call
                             if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
                                 // Emit previous tool call if any
-                                if let Some(prev) = self.current_tool_call.take() {
-                                    if !prev.id.is_empty() {
-                                        self.pending.push_back(StreamEvent::ToolUseStart {
-                                            id: prev.id,
-                                            name: prev.name,
-                                        });
-                                        self.pending
-                                            .push_back(StreamEvent::ToolInputDelta(prev.arguments));
-                                        self.pending.push_back(StreamEvent::ToolUseEnd);
-                                    }
+                                if let Some(prev) = self.current_tool_call.take()
+                                    && !prev.id.is_empty()
+                                {
+                                    self.pending.push_back(StreamEvent::ToolUseStart {
+                                        id: prev.id,
+                                        name: prev.name,
+                                    });
+                                    self.pending
+                                        .push_back(StreamEvent::ToolInputDelta(prev.arguments));
+                                    self.pending.push_back(StreamEvent::ToolUseEnd);
                                 }
 
                                 let name = tc
@@ -2236,10 +2239,9 @@ impl OpenRouterStream {
                                 .get("function")
                                 .and_then(|f| f.get("arguments"))
                                 .and_then(|a| a.as_str())
+                                && let Some(ref mut tc) = self.current_tool_call
                             {
-                                if let Some(ref mut tc) = self.current_tool_call {
-                                    tc.arguments.push_str(args);
-                                }
+                                tc.arguments.push_str(args);
                             }
                         }
                     }
@@ -2249,16 +2251,16 @@ impl OpenRouterStream {
                         choice.get("finish_reason").and_then(|f| f.as_str())
                     {
                         // Emit any pending tool call
-                        if let Some(tc) = self.current_tool_call.take() {
-                            if !tc.id.is_empty() {
-                                self.pending.push_back(StreamEvent::ToolUseStart {
-                                    id: tc.id,
-                                    name: tc.name,
-                                });
-                                self.pending
-                                    .push_back(StreamEvent::ToolInputDelta(tc.arguments));
-                                self.pending.push_back(StreamEvent::ToolUseEnd);
-                            }
+                        if let Some(tc) = self.current_tool_call.take()
+                            && !tc.id.is_empty()
+                        {
+                            self.pending.push_back(StreamEvent::ToolUseStart {
+                                id: tc.id,
+                                name: tc.name,
+                            });
+                            self.pending
+                                .push_back(StreamEvent::ToolInputDelta(tc.arguments));
+                            self.pending.push_back(StreamEvent::ToolUseEnd);
                         }
 
                         // Don't emit MessageEnd here - wait for [DONE]
@@ -2296,10 +2298,10 @@ impl OpenRouterStream {
                     .and_then(|t| t.as_u64());
 
                 // Refresh cache pin when we see cache activity
-                if cache_read_input_tokens.is_some() || cache_creation_input_tokens.is_some() {
-                    if let Some(provider) = parsed.get("provider").and_then(|p| p.as_str()) {
-                        self.refresh_cache_pin(provider);
-                    }
+                if (cache_read_input_tokens.is_some() || cache_creation_input_tokens.is_some())
+                    && let Some(provider) = parsed.get("provider").and_then(|p| p.as_str())
+                {
+                    self.refresh_cache_pin(provider);
                 }
 
                 if input_tokens.is_some()
@@ -2344,16 +2346,16 @@ impl Stream for OpenRouterStream {
                 }
                 Poll::Ready(None) => {
                     // Stream ended - emit any pending tool call
-                    if let Some(tc) = self.current_tool_call.take() {
-                        if !tc.id.is_empty() {
-                            self.pending.push_back(StreamEvent::ToolUseStart {
-                                id: tc.id,
-                                name: tc.name,
-                            });
-                            self.pending
-                                .push_back(StreamEvent::ToolInputDelta(tc.arguments));
-                            self.pending.push_back(StreamEvent::ToolUseEnd);
-                        }
+                    if let Some(tc) = self.current_tool_call.take()
+                        && !tc.id.is_empty()
+                    {
+                        self.pending.push_back(StreamEvent::ToolUseStart {
+                            id: tc.id,
+                            name: tc.name,
+                        });
+                        self.pending
+                            .push_back(StreamEvent::ToolInputDelta(tc.arguments));
+                        self.pending.push_back(StreamEvent::ToolUseEnd);
                     }
                     if let Some(event) = self.pending.pop_front() {
                         return Poll::Ready(Some(Ok(event)));

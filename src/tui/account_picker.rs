@@ -858,17 +858,17 @@ fn action_section(item: &AccountPickerItem) -> ActionSection {
 
 fn account_is_active(item: &AccountPickerItem) -> bool {
     item.subtitle
-        .split(|ch| ch == '·' || ch == '-')
+        .split(['·', '-'])
         .any(|part| part.trim().eq_ignore_ascii_case("active"))
 }
 
 fn extract_account_label(title: &str) -> Option<String> {
     let prefixes = ["Switch account `", "Re-login account `", "Remove account `"];
     for prefix in prefixes {
-        if let Some(rest) = title.strip_prefix(prefix) {
-            if let Some(label) = rest.strip_suffix('`') {
-                return Some(label.to_string());
-            }
+        if let Some(rest) = title.strip_prefix(prefix)
+            && let Some(label) = rest.strip_suffix('`')
+        {
+            return Some(label.to_string());
         }
     }
     None

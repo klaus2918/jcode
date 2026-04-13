@@ -196,11 +196,11 @@ impl Tool for BashTool {
             // Start/attach a browser session for this jcode session.
             // This gives each agent its own browser tab, preventing
             // multi-agent conflicts when using the browser bridge.
-            if !cfg!(windows) && std::env::var("BROWSER_SESSION").is_err() {
-                if let Some(session_name) = crate::browser::ensure_browser_session(&ctx.session_id)
-                {
-                    params.command = format!("BROWSER_SESSION={} {}", session_name, params.command);
-                }
+            if !cfg!(windows)
+                && std::env::var("BROWSER_SESSION").is_err()
+                && let Some(session_name) = crate::browser::ensure_browser_session(&ctx.session_id)
+            {
+                params.command = format!("BROWSER_SESSION={} {}", session_name, params.command);
             }
         }
 
@@ -680,7 +680,7 @@ mod tests {
             .expect("channel closed");
 
         assert!(req.request_id.starts_with("stdin-test-call-"));
-        assert_eq!(req.is_password, false);
+        assert!(!req.is_password);
 
         // Send the response
         req.response_tx.send("test_input_line".to_string()).unwrap();

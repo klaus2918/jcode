@@ -525,61 +525,58 @@ impl PermissionsApp {
         let result = loop {
             terminal.draw(|frame| self.render(frame))?;
 
-            if event::poll(Duration::from_millis(100))? {
-                match event::read()? {
-                    Event::Key(key) => {
-                        if key.kind != KeyEventKind::Press {
-                            continue;
-                        }
+            if event::poll(Duration::from_millis(100))?
+                && let Event::Key(key) = event::read()?
+            {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
 
-                        if self.done {
-                            break Ok(());
-                        }
+                if self.done {
+                    break Ok(());
+                }
 
-                        if let Some(ref mut text) = self.deny_input {
-                            match key.code {
-                                KeyCode::Enter => {
-                                    let reason = if text.is_empty() {
-                                        None
-                                    } else {
-                                        Some(text.clone())
-                                    };
-                                    self.deny_input = None;
-                                    self.deny_selected(reason);
-                                }
-                                KeyCode::Esc => {
-                                    self.deny_input = None;
-                                }
-                                KeyCode::Backspace => {
-                                    text.pop();
-                                }
-                                KeyCode::Char(c) => {
-                                    if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
-                                        break Ok(());
-                                    }
-                                    text.push(c);
-                                }
-                                _ => {}
-                            }
-                            continue;
+                if let Some(ref mut text) = self.deny_input {
+                    match key.code {
+                        KeyCode::Enter => {
+                            let reason = if text.is_empty() {
+                                None
+                            } else {
+                                Some(text.clone())
+                            };
+                            self.deny_input = None;
+                            self.deny_selected(reason);
                         }
-
-                        match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
-                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        KeyCode::Esc => {
+                            self.deny_input = None;
+                        }
+                        KeyCode::Backspace => {
+                            text.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
                                 break Ok(());
                             }
-                            KeyCode::Up | KeyCode::Char('k') => self.previous(),
-                            KeyCode::Down | KeyCode::Char('j') => self.next(),
-                            KeyCode::Char('a') => self.approve_selected(),
-                            KeyCode::Char('d') => {
-                                self.deny_input = Some(String::new());
-                            }
-                            KeyCode::Char('A') => self.approve_all(),
-                            KeyCode::Char('D') => self.deny_all(),
-                            _ => {}
+                            text.push(c);
                         }
+                        _ => {}
                     }
+                    continue;
+                }
+
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        break Ok(());
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => self.previous(),
+                    KeyCode::Down | KeyCode::Char('j') => self.next(),
+                    KeyCode::Char('a') => self.approve_selected(),
+                    KeyCode::Char('d') => {
+                        self.deny_input = Some(String::new());
+                    }
+                    KeyCode::Char('A') => self.approve_all(),
+                    KeyCode::Char('D') => self.deny_all(),
                     _ => {}
                 }
             }
@@ -595,7 +592,7 @@ fn detail_height(total: u16) -> u16 {
     let help = 1;
     let separators = 2;
     let available = total.saturating_sub(min_list + help + separators);
-    available.max(4).min(16)
+    available.clamp(4, 16)
 }
 
 #[derive(Default)]

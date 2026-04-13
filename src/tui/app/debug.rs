@@ -1212,6 +1212,10 @@ impl App {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "scroll-test capture needs terminal, labels, offsets, frame inclusion, and expectation metadata"
+    )]
     fn capture_scroll_test_step(
         &mut self,
         terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
@@ -1295,11 +1299,11 @@ impl App {
                     .get("last_area")
                     .and_then(|v| v.as_str())
                     .and_then(crate::tui::layout_utils::parse_area_spec);
-                if let Some(render_area) = last_area {
-                    if crate::tui::layout_utils::rect_contains(area, render_area) {
-                        diagram_rendered_in_pane = true;
-                        break;
-                    }
+                if let Some(render_area) = last_area
+                    && crate::tui::layout_utils::rect_contains(area, render_area)
+                {
+                    diagram_rendered_in_pane = true;
+                    break;
                 }
             }
         }
@@ -1430,7 +1434,7 @@ impl App {
         let width = cfg.width.unwrap_or(100).max(40);
         let height = cfg.height.unwrap_or(40).max(20);
         let step = cfg.step.unwrap_or(5).max(1);
-        let max_steps = cfg.max_steps.unwrap_or(16).max(4).min(100);
+        let max_steps = cfg.max_steps.unwrap_or(16).clamp(4, 100);
         let padding = cfg.padding.unwrap_or(12).max(4);
         let diagrams = cfg.diagrams.unwrap_or(2).clamp(1, 3);
         let include_frames = cfg.include_frames.unwrap_or(true);
@@ -1706,7 +1710,7 @@ impl App {
         let diagram_modes = cfg.diagram_modes.unwrap_or_else(|| vec![self.diagram_mode]);
         let diagrams = cfg.diagrams.unwrap_or(2).clamp(1, 3);
         let step = cfg.step.unwrap_or(5).max(1);
-        let max_steps = cfg.max_steps.unwrap_or(12).max(4).min(100);
+        let max_steps = cfg.max_steps.unwrap_or(12).clamp(4, 100);
         let padding = cfg.padding.unwrap_or(12).max(4);
         let include_frames = cfg.include_frames.unwrap_or(false);
         let include_paused = cfg.include_paused.unwrap_or(true);
@@ -2177,7 +2181,7 @@ impl App {
             for key_spec in keys_str.split(',') {
                 match self.parse_and_inject_key(key_spec.trim()) {
                     Ok(desc) => {
-                        self.debug_trace.record("key", format!("{}", desc));
+                        self.debug_trace.record("key", desc.to_string());
                         results.push(format!("OK: {}", desc));
                     }
                     Err(e) => results.push(format!("ERR: {}", e)),
@@ -2790,11 +2794,11 @@ impl App {
     fn lookup_json_path(value: &serde_json::Value, parts: &[&str]) -> serde_json::Value {
         let mut current = value;
         for part in parts {
-            if let Ok(index) = part.parse::<usize>() {
-                if let Some(v) = current.get(index) {
-                    current = v;
-                    continue;
-                }
+            if let Ok(index) = part.parse::<usize>()
+                && let Some(v) = current.get(index)
+            {
+                current = v;
+                continue;
             }
             if let Some(v) = current.get(part) {
                 current = v;

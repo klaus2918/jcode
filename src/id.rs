@@ -183,11 +183,10 @@ pub fn new_memorable_server_id() -> (String, String) {
 /// e.g., "server_blazing_1234567890_deadbeefcafebabe" -> Some("blazing")
 #[allow(dead_code)]
 pub fn extract_server_name(server_id: &str) -> Option<&str> {
-    if server_id.starts_with("server_") {
-        let rest = &server_id[7..]; // Skip "server_"
-        if let Some(pos) = rest.find('_') {
-            return Some(&rest[..pos]);
-        }
+    if let Some(rest) = server_id.strip_prefix("server_")
+        && let Some(pos) = rest.find('_')
+    {
+        return Some(&rest[..pos]);
     }
     None
 }
@@ -213,8 +212,7 @@ pub fn new_memorable_session_id() -> (String, String) {
 /// Try to extract the memorable name from a session ID
 /// e.g., "session_fox_1234567890_deadbeefcafebabe" -> Some("fox")
 pub fn extract_session_name(session_id: &str) -> Option<&str> {
-    if session_id.starts_with("session_") {
-        let rest = &session_id[8..]; // Skip "session_"
+    if let Some(rest) = session_id.strip_prefix("session_") {
         // Session names are the first token after the prefix.
         // This supports both old IDs (session_name_ts) and new IDs
         // with an added random suffix (session_name_ts_rand).

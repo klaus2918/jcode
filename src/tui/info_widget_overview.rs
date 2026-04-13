@@ -104,10 +104,10 @@ pub(crate) fn compute_page_layout(
 }
 
 fn compact_context_height(data: &InfoWidgetData) -> u16 {
-    if let Some(info) = &data.context_info {
-        if info.total_chars > 0 {
-            return 1;
-        }
+    if let Some(info) = &data.context_info
+        && info.total_chars > 0
+    {
+        return 1;
     }
     0
 }
@@ -117,10 +117,10 @@ fn compact_todos_height(data: &InfoWidgetData) -> u16 {
 }
 
 fn compact_memory_height(data: &InfoWidgetData) -> u16 {
-    if let Some(info) = &data.memory_info {
-        if info.total_count > 0 || info.activity.is_some() || info.sidecar_model.is_some() {
-            return 1;
-        }
+    if let Some(info) = &data.memory_info
+        && (info.total_count > 0 || info.activity.is_some() || info.sidecar_model.is_some())
+    {
+        return 1;
     }
     0
 }
@@ -147,25 +147,25 @@ fn compact_model_height(data: &InfoWidgetData) -> u16 {
 }
 
 fn compact_background_height(data: &InfoWidgetData) -> u16 {
-    if let Some(info) = &data.background_info {
-        if info.running_count > 0 || info.memory_agent_active {
-            return 1;
-        }
+    if let Some(info) = &data.background_info
+        && (info.running_count > 0 || info.memory_agent_active)
+    {
+        return 1;
     }
     0
 }
 
 fn compact_usage_height(data: &InfoWidgetData) -> u16 {
-    if let Some(info) = &data.usage_info {
-        if info.available {
-            match info.provider {
-                UsageProvider::CostBased | UsageProvider::Copilot => return 2,
-                _ => {
-                    let label = info.provider.label();
-                    let label_line = if label.is_empty() { 0 } else { 1 };
-                    let spark_line = if info.spark.is_some() { 1 } else { 0 };
-                    return 2 + label_line + spark_line;
-                }
+    if let Some(info) = &data.usage_info
+        && info.available
+    {
+        match info.provider {
+            UsageProvider::CostBased | UsageProvider::Copilot => return 2,
+            _ => {
+                let label = info.provider.label();
+                let label_line = if label.is_empty() { 0 } else { 1 };
+                let spark_line = if info.spark.is_some() { 1 } else { 0 };
+                return 2 + label_line + spark_line;
             }
         }
     }
@@ -173,10 +173,10 @@ fn compact_usage_height(data: &InfoWidgetData) -> u16 {
 }
 
 fn compact_git_height(data: &InfoWidgetData) -> u16 {
-    if let Some(info) = &data.git_info {
-        if info.is_interesting() {
-            return 1;
-        }
+    if let Some(info) = &data.git_info
+        && info.is_interesting()
+    {
+        return 1;
     }
     0
 }
@@ -206,26 +206,25 @@ fn expanded_todos_height(data: &InfoWidgetData) -> u16 {
 }
 
 fn expanded_memory_height(data: &InfoWidgetData) -> u16 {
-    if let Some(info) = &data.memory_info {
-        if info.total_count > 0 || info.activity.is_some() || info.sidecar_model.is_some() {
-            let mut height = 1u16;
-            if info.activity.is_some() {
-                height += 1 + 4;
-            }
-            if info.sidecar_model.is_some() {
-                height += 1;
-            }
-            if let Some(activity) = &info.activity {
-                if activity
-                    .recent_events
-                    .iter()
-                    .any(|event| is_traceworthy_memory_event(event))
-                {
-                    height += 1;
-                }
-            }
-            return height;
+    if let Some(info) = &data.memory_info
+        && (info.total_count > 0 || info.activity.is_some() || info.sidecar_model.is_some())
+    {
+        let mut height = 1u16;
+        if info.activity.is_some() {
+            height += 1 + 4;
         }
+        if info.sidecar_model.is_some() {
+            height += 1;
+        }
+        if let Some(activity) = &info.activity
+            && activity
+                .recent_events
+                .iter()
+                .any(is_traceworthy_memory_event)
+        {
+            height += 1;
+        }
+        return height;
     }
     0
 }

@@ -204,6 +204,10 @@ pub enum RemoteDisconnectReason {
 }
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "remote reads carry full server events directly to keep transport handling simple"
+)]
 pub enum RemoteRead {
     Event(ServerEvent),
     Disconnected(RemoteDisconnectReason),

@@ -12,8 +12,14 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "headless session creation wires provider, global session, swarm state, interrupts, and MCP pool together"
+)]
 pub(super) async fn create_headless_session(
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     global_session_id: &Arc<RwLock<String>>,
     provider_template: &Arc<dyn Provider>,
     command: &str,
@@ -57,19 +63,19 @@ pub(super) async fn create_headless_session(
     new_agent.set_memory_enabled(memory_enabled);
     let client_session_id = new_agent.session_id().to_string();
 
-    if let Some(model) = model_override {
-        if let Err(e) = new_agent.set_model(&model) {
-            crate::logging::warn(&format!(
-                "Failed to set headless session model override '{}': {}",
-                model, e
-            ));
-        }
+    if let Some(model) = model_override
+        && let Err(e) = new_agent.set_model(&model)
+    {
+        crate::logging::warn(&format!(
+            "Failed to set headless session model override '{}': {}",
+            model, e
+        ));
     }
 
-    if let Some(ref dir) = working_dir {
-        if let Some(path) = dir.to_str() {
-            new_agent.set_working_dir(path);
-        }
+    if let Some(ref dir) = working_dir
+        && let Some(path) = dir.to_str()
+    {
+        new_agent.set_working_dir(path);
     }
 
     new_agent.set_debug(true);

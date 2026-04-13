@@ -199,9 +199,10 @@ pub fn build_system_prompt_full(
     working_dir: Option<&Path>,
 ) -> (String, ContextInfo) {
     let mut parts = vec![DEFAULT_SYSTEM_PROMPT.to_string()];
-    let mut info = ContextInfo::default();
-
-    info.system_prompt_chars = DEFAULT_SYSTEM_PROMPT.len();
+    let mut info = ContextInfo {
+        system_prompt_chars: DEFAULT_SYSTEM_PROMPT.len(),
+        ..Default::default()
+    };
 
     // Add environment context
     if let Some(env_context) = build_env_context() {
@@ -281,9 +282,10 @@ pub fn build_system_prompt_split(
 ) -> (SplitSystemPrompt, ContextInfo) {
     let mut static_parts = vec![DEFAULT_SYSTEM_PROMPT.to_string()];
     let mut dynamic_parts = Vec::new();
-    let mut info = ContextInfo::default();
-
-    info.system_prompt_chars = DEFAULT_SYSTEM_PROMPT.len();
+    let mut info = ContextInfo {
+        system_prompt_chars: DEFAULT_SYSTEM_PROMPT.len(),
+        ..Default::default()
+    };
 
     // === STATIC CONTENT (cacheable) ===
 
@@ -421,28 +423,27 @@ fn get_git_info() -> Option<String> {
     if let Ok(output) = Command::new("git")
         .args(["branch", "--show-current"])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !branch.is_empty() {
-                info.push(format!("  Branch: {}", branch));
-            }
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            info.push(format!("  Branch: {}", branch));
         }
     }
 
     // Short status (modified files count)
-    if let Ok(output) = Command::new("git").args(["status", "--porcelain"]).output() {
-        if output.status.success() {
-            let status = String::from_utf8_lossy(&output.stdout);
-            let modified: Vec<&str> = status.lines().take(5).collect();
-            if !modified.is_empty() {
-                info.push(format!("  Modified: {} files", status.lines().count()));
-                for file in modified {
-                    info.push(format!("    {}", file));
-                }
-                if status.lines().count() > 5 {
-                    info.push("    ...".to_string());
-                }
+    if let Ok(output) = Command::new("git").args(["status", "--porcelain"]).output()
+        && output.status.success()
+    {
+        let status = String::from_utf8_lossy(&output.stdout);
+        let modified: Vec<&str> = status.lines().take(5).collect();
+        if !modified.is_empty() {
+            info.push(format!("  Modified: {} files", status.lines().count()));
+            for file in modified {
+                info.push(format!("    {}", file));
+            }
+            if status.lines().count() > 5 {
+                info.push("    ...".to_string());
             }
         }
     }
@@ -484,14 +485,13 @@ pub fn load_agents_md_files_from_dir(working_dir: Option<&Path>) -> (Option<Stri
     }
 
     // Home directory files
-    if let Ok(global_agents_md) = crate::storage::user_home_path("AGENTS.md") {
-        if let Some((content, size)) =
+    if let Ok(global_agents_md) = crate::storage::user_home_path("AGENTS.md")
+        && let Some((content, size)) =
             load_file(&global_agents_md, "Global Instructions (~/.AGENTS.md)")
-        {
-            info.has_global_agents_md = true;
-            info.global_agents_md_chars = size;
-            contents.push(content);
-        }
+    {
+        info.has_global_agents_md = true;
+        info.global_agents_md_chars = size;
+        contents.push(content);
     }
 
     if contents.is_empty() {
@@ -528,14 +528,13 @@ fn load_prompt_overlay_files_from_dir(working_dir: Option<&Path>) -> (Option<Str
     }
 
     if let Ok(global_overlay) = crate::storage::jcode_dir().map(|dir| dir.join("prompt-overlay.md"))
-    {
-        if let Some((content, size)) = load_file(
+        && let Some((content, size)) = load_file(
             &global_overlay,
             "Global Prompt Overlay (~/.jcode/prompt-overlay.md)",
-        ) {
-            total_chars += size;
-            contents.push(content);
-        }
+        )
+    {
+        total_chars += size;
+        contents.push(content);
     }
 
     if contents.is_empty() {

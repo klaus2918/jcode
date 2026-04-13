@@ -200,8 +200,6 @@ fn search_sessions_blocking(
 
         for chunk in files.chunks(chunk_size) {
             let wd_lower = &wd_lower;
-            let wd_filter = wd_filter;
-
             handles.push(s.spawn(move || {
                 let mut results: Vec<SearchResult> = Vec::new();
                 let mut deserialized = 0usize;
@@ -220,10 +218,10 @@ fn search_sessions_blocking(
                         continue;
                     }
 
-                    if let Some(wd) = wd_lower {
-                        if !contains_case_insensitive_bytes(&raw, wd.as_bytes()) {
-                            continue;
-                        }
+                    if let Some(wd) = wd_lower
+                        && !contains_case_insensitive_bytes(&raw, wd.as_bytes())
+                    {
+                        continue;
                     }
 
                     deserialized += 1;

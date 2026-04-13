@@ -1,4 +1,5 @@
-//! InfoWidget - Floating information panels that appear in empty screen space
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 //!
 //! Supports multiple widget types with priority ordering and side preferences.
 //! In centered mode, widgets can appear on both left and right margins.
@@ -464,6 +465,12 @@ impl PipelineState {
             || matches!(self.verify, StepStatus::Running)
             || matches!(self.inject, StepStatus::Running)
             || matches!(self.maintain, StepStatus::Running)
+    }
+}
+
+impl Default for PipelineState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1062,24 +1069,23 @@ pub(crate) fn calculate_widget_height(
             if data.session_count.is_some() || data.session_name.is_some() {
                 h += 1; // Session/name line
             }
-            if let Some(info) = &data.usage_info {
-                if info.available {
-                    match info.provider {
-                        UsageProvider::CostBased | UsageProvider::Copilot => {
-                            h += 1; // Cost/tokens line
-                            if info.cache_read_tokens.is_some() || info.cache_write_tokens.is_some()
-                            {
-                                h += 1; // Cache line
-                            }
-                            if info.output_tps.is_some() {
-                                h += 1; // TPS line
-                            }
+            if let Some(info) = &data.usage_info
+                && info.available
+            {
+                match info.provider {
+                    UsageProvider::CostBased | UsageProvider::Copilot => {
+                        h += 1; // Cost/tokens line
+                        if info.cache_read_tokens.is_some() || info.cache_write_tokens.is_some() {
+                            h += 1; // Cache line
                         }
-                        _ => {
-                            h += 2; // Base subscription bars
-                            if info.spark.is_some() {
-                                h += 1; // Optional Spark bar
-                            }
+                        if info.output_tps.is_some() {
+                            h += 1; // TPS line
+                        }
+                    }
+                    _ => {
+                        h += 2; // Base subscription bars
+                        if info.spark.is_some() {
+                            h += 1; // Optional Spark bar
                         }
                     }
                 }
@@ -1611,10 +1617,10 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
 
     lines.push(render_memory_header_line(info, activity, max_width));
 
-    if lines.len() < inner.height as usize {
-        if let Some(count_line) = render_memory_count_line(info, max_width) {
-            lines.push(count_line);
-        }
+    if lines.len() < inner.height as usize
+        && let Some(count_line) = render_memory_count_line(info, max_width)
+    {
+        lines.push(count_line);
     }
 
     if let Some(activity) = activity {
@@ -1622,10 +1628,10 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
             lines.push(render_memory_status_line(activity, max_width));
         }
 
-        if lines.len() < inner.height as usize {
-            if let Some(model_line) = render_memory_model_line(info, max_width) {
-                lines.push(model_line);
-            }
+        if lines.len() < inner.height as usize
+            && let Some(model_line) = render_memory_model_line(info, max_width)
+        {
+            lines.push(model_line);
         }
 
         if memory_should_render_pipeline(activity) {
@@ -1637,15 +1643,15 @@ fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>
             }
         }
 
-        if lines.len() < inner.height as usize {
-            if let Some(trace_line) = render_memory_last_trace_line(activity, max_width) {
-                lines.push(trace_line);
-            }
+        if lines.len() < inner.height as usize
+            && let Some(trace_line) = render_memory_last_trace_line(activity, max_width)
+        {
+            lines.push(trace_line);
         }
-    } else if lines.len() < inner.height as usize {
-        if let Some(model_line) = render_memory_model_line(info, max_width) {
-            lines.push(model_line);
-        }
+    } else if lines.len() < inner.height as usize
+        && let Some(model_line) = render_memory_model_line(info, max_width)
+    {
+        lines.push(model_line);
     }
 
     lines.truncate(inner.height as usize);
@@ -2261,16 +2267,16 @@ fn render_swarm_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
     lines.push(Line::from(stats_parts));
 
     // Active subagent status (only when we don't have member status lines)
-    if info.members.is_empty() {
-        if let Some(status) = &info.subagent_status {
-            lines.push(Line::from(vec![
-                Span::styled("▶ ", Style::default().fg(rgb(255, 200, 100))),
-                Span::styled(
-                    truncate_smart(status, inner.width.saturating_sub(4) as usize),
-                    Style::default().fg(rgb(200, 200, 210)),
-                ),
-            ]));
-        }
+    if info.members.is_empty()
+        && let Some(status) = &info.subagent_status
+    {
+        lines.push(Line::from(vec![
+            Span::styled("▶ ", Style::default().fg(rgb(255, 200, 100))),
+            Span::styled(
+                truncate_smart(status, inner.width.saturating_sub(4) as usize),
+                Style::default().fg(rgb(200, 200, 210)),
+            ),
+        ]));
     }
 
     // Session names or member status lines (limit based on height)
@@ -2460,7 +2466,7 @@ fn render_ambient_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static
     // Budget bar
     if let Some(budget) = info.budget_percent {
         let pct = (budget * 100.0).round().clamp(0.0, 100.0) as u8;
-        let bar_width = inner.width.saturating_sub(12).min(10).max(4) as usize;
+        let bar_width = inner.width.saturating_sub(12).clamp(4, 10) as usize;
         let filled = ((budget * bar_width as f32).round() as usize).min(bar_width);
         let empty = bar_width.saturating_sub(filled);
 
@@ -2656,10 +2662,10 @@ fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
             ));
         }
 
-        if let Some(name) = data.session_name.as_deref() {
-            if !name.trim().is_empty() {
-                parts.push(name.to_string());
-            }
+        if let Some(name) = data.session_name.as_deref()
+            && !name.trim().is_empty()
+        {
+            parts.push(name.to_string());
         }
 
         if !parts.is_empty() {
@@ -2684,17 +2690,17 @@ fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
                 Style::default().fg(rgb(140, 180, 255)),
             ),
         ];
-        if let Some(upstream) = data.upstream_provider.as_deref().map(str::trim) {
-            if !upstream.is_empty() {
-                provider_spans.push(Span::styled(
-                    " -> ",
-                    Style::default().fg(rgb(100, 100, 110)),
-                ));
-                provider_spans.push(Span::styled(
-                    upstream.to_string(),
-                    Style::default().fg(rgb(220, 190, 120)),
-                ));
-            }
+        if let Some(upstream) = data.upstream_provider.as_deref().map(str::trim)
+            && !upstream.is_empty()
+        {
+            provider_spans.push(Span::styled(
+                " -> ",
+                Style::default().fg(rgb(100, 100, 110)),
+            ));
+            provider_spans.push(Span::styled(
+                upstream.to_string(),
+                Style::default().fg(rgb(220, 190, 120)),
+            ));
         }
         lines.push(Line::from(provider_spans));
     }
@@ -2743,16 +2749,17 @@ fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>>
         }
     }
 
-    if let Some(tps) = data.tokens_per_second {
-        if tps.is_finite() && tps > 0.1 {
-            lines.push(Line::from(vec![
-                Span::styled("⏱ ", Style::default().fg(rgb(140, 180, 255))),
-                Span::styled(
-                    format!("{:.1} t/s", tps),
-                    Style::default().fg(rgb(140, 140, 150)),
-                ),
-            ]));
-        }
+    if let Some(tps) = data.tokens_per_second
+        && tps.is_finite()
+        && tps > 0.1
+    {
+        lines.push(Line::from(vec![
+            Span::styled("⏱ ", Style::default().fg(rgb(140, 180, 255))),
+            Span::styled(
+                format!("{:.1} t/s", tps),
+                Style::default().fg(rgb(140, 140, 150)),
+            ),
+        ]));
     }
 
     lines
@@ -2802,10 +2809,10 @@ fn render_sections(
         lines.extend(render_model_info(data, inner));
     }
 
-    if let Some(info) = &data.context_info {
-        if info.total_chars > 0 {
-            lines.extend(render_context_compact(data, inner));
-        }
+    if let Some(info) = &data.context_info
+        && info.total_chars > 0
+    {
+        lines.extend(render_context_compact(data, inner));
     }
 
     if !data.todos.is_empty() {
@@ -2817,35 +2824,35 @@ fn render_sections(
     }
 
     // Memory info
-    if let Some(info) = &data.memory_info {
-        if info.total_count > 0 || info.activity.is_some() {
-            if matches!(focus, Some(InfoPageKind::MemoryExpanded)) {
-                lines.extend(render_memory_expanded(info, inner));
-            } else {
-                lines.extend(render_memory_compact(info, inner.width));
-            }
+    if let Some(info) = &data.memory_info
+        && (info.total_count > 0 || info.activity.is_some())
+    {
+        if matches!(focus, Some(InfoPageKind::MemoryExpanded)) {
+            lines.extend(render_memory_expanded(info, inner));
+        } else {
+            lines.extend(render_memory_compact(info, inner.width));
         }
     }
 
     // Background tasks info
-    if let Some(info) = &data.background_info {
-        if info.running_count > 0 || info.memory_agent_active {
-            lines.extend(render_background_compact(info));
-        }
+    if let Some(info) = &data.background_info
+        && (info.running_count > 0 || info.memory_agent_active)
+    {
+        lines.extend(render_background_compact(info));
     }
 
     // Usage info (subscription limits)
-    if let Some(info) = &data.usage_info {
-        if info.available {
-            lines.extend(render_usage_compact(info, inner.width));
-        }
+    if let Some(info) = &data.usage_info
+        && info.available
+    {
+        lines.extend(render_usage_compact(info, inner.width));
     }
 
     // Git info
-    if let Some(info) = &data.git_info {
-        if info.is_interesting() {
-            lines.extend(render_git_compact(info, inner.width));
-        }
+    if let Some(info) = &data.git_info
+        && info.is_interesting()
+    {
+        lines.extend(render_git_compact(info, inner.width));
     }
 
     lines
@@ -4276,9 +4283,7 @@ fn render_labeled_bar(
     width: u16,
 ) -> Line<'static> {
     // Color based on remaining percentage
-    let color = if left_pct == 0 {
-        rgb(255, 100, 100) // Red - depleted
-    } else if left_pct < 20 {
+    let color = if left_pct <= 20 {
         rgb(255, 100, 100) // Red - critical
     } else if left_pct <= 50 {
         rgb(255, 200, 100) // Yellow - getting low
@@ -4293,8 +4298,7 @@ fn render_labeled_bar(
     let suffix_width = 10;
     let bar_width = width
         .saturating_sub(label_width + 1 + suffix_width)
-        .min(12)
-        .max(4) as usize;
+        .clamp(4, 12) as usize;
 
     // Build the bar
     let filled = ((used_pct as f32 / 100.0) * bar_width as f32).round() as usize;
@@ -4434,10 +4438,10 @@ fn render_model_info(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
             ));
         }
 
-        if let Some(name) = data.session_name.as_deref() {
-            if !name.trim().is_empty() {
-                parts.push(name.to_string());
-            }
+        if let Some(name) = data.session_name.as_deref()
+            && !name.trim().is_empty()
+        {
+            parts.push(name.to_string());
         }
 
         if !parts.is_empty() {
@@ -4541,9 +4545,7 @@ fn render_usage_bar(used_tokens: usize, limit_tokens: usize, width: u16) -> Line
         .round()
         .clamp(0.0, 100.0) as u8;
     let left_pct = 100u8.saturating_sub(used_pct);
-    let used_color = if left_pct == 0 {
-        rgb(255, 100, 100)
-    } else if left_pct < 20 {
+    let used_color = if left_pct <= 20 {
         rgb(255, 100, 100)
     } else if left_pct <= 50 {
         rgb(255, 200, 100)

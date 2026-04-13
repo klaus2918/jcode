@@ -28,8 +28,10 @@ impl MessageCacheState {
 
     fn insert(&mut self, key: MessageCacheKey, lines: Vec<Line<'static>>) {
         let arc = Arc::new(lines);
-        if self.entries.contains_key(&key) {
-            self.entries.insert(key, arc);
+        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            self.entries.entry(key.clone())
+        {
+            entry.insert(arc);
             return;
         }
 
@@ -732,7 +734,7 @@ fn render_connection_system_message(msg: &DisplayMessage, width: u16) -> Vec<Lin
         }
     }
 
-    let mut lines = render_rounded_box(&title, box_content, max_box_width, border_style);
+    let mut lines = render_rounded_box(title, box_content, max_box_width, border_style);
     if centered {
         left_pad_lines_for_centered_mode(&mut lines, width);
     }
@@ -972,19 +974,18 @@ pub(crate) fn render_tool_message(
         let mut entries: Vec<(String, String)> = Vec::new();
         for line in msg.content.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("- [") {
-                if let Some(rest) = trimmed.strip_prefix("- [") {
-                    if let Some(bracket_end) = rest.find(']') {
-                        let cat = rest[..bracket_end].to_string();
-                        let content = rest[bracket_end + 1..].trim();
-                        let content = if let Some(tag_start) = content.rfind(" [") {
-                            content[..tag_start].trim()
-                        } else {
-                            content
-                        };
-                        entries.push((cat, content.to_string()));
-                    }
-                }
+            if trimmed.starts_with("- [")
+                && let Some(rest) = trimmed.strip_prefix("- [")
+                && let Some(bracket_end) = rest.find(']')
+            {
+                let cat = rest[..bracket_end].to_string();
+                let content = rest[bracket_end + 1..].trim();
+                let content = if let Some(tag_start) = content.rfind(" [") {
+                    content[..tag_start].trim()
+                } else {
+                    content
+                };
+                entries.push((cat, content.to_string()));
             }
         }
 
@@ -1093,45 +1094,45 @@ pub(crate) fn render_tool_message(
         row_width,
     ));
 
-    if tc.name == "batch" {
-        if let Some(calls) = tc.input.get("tool_calls").and_then(|v| v.as_array()) {
-            let sub_results = tools_ui::parse_batch_sub_outputs(&msg.content);
+    if tc.name == "batch"
+        && let Some(calls) = tc.input.get("tool_calls").and_then(|v| v.as_array())
+    {
+        let sub_results = tools_ui::parse_batch_sub_outputs(&msg.content);
 
-            for (i, call) in calls.iter().enumerate() {
-                let raw_name = call
-                    .get("tool")
-                    .or_else(|| call.get("name"))
+        for (i, call) in calls.iter().enumerate() {
+            let raw_name = call
+                .get("tool")
+                .or_else(|| call.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let params = tools_ui::batch_subcall_params(call);
+
+            let sub_tc = ToolCall {
+                id: String::new(),
+                name: tools_ui::resolve_display_tool_name(raw_name).to_string(),
+                input: params,
+                intent: call
+                    .get("intent")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let params = tools_ui::batch_subcall_params(call);
+                    .map(|s| s.to_string()),
+            };
 
-                let sub_tc = ToolCall {
-                    id: String::new(),
-                    name: tools_ui::resolve_display_tool_name(raw_name).to_string(),
-                    input: params,
-                    intent: call
-                        .get("intent")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                };
+            let sub_result = sub_results.get(i);
+            let sub_errored = sub_result.map(|result| result.errored).unwrap_or(false);
+            let (sub_icon, sub_icon_color) = if sub_errored {
+                ("✗", rgb(220, 100, 100))
+            } else {
+                ("✓", rgb(100, 180, 100))
+            };
 
-                let sub_result = sub_results.get(i);
-                let sub_errored = sub_result.map(|result| result.errored).unwrap_or(false);
-                let (sub_icon, sub_icon_color) = if sub_errored {
-                    ("✗", rgb(220, 100, 100))
-                } else {
-                    ("✓", rgb(100, 180, 100))
-                };
-
-                lines.push(tools_ui::render_batch_subcall_line(
-                    &sub_tc,
-                    sub_icon,
-                    sub_icon_color,
-                    50,
-                    Some(row_width),
-                    sub_result.map(|result| result.content.as_str()),
-                ));
-            }
+            lines.push(tools_ui::render_batch_subcall_line(
+                &sub_tc,
+                sub_icon,
+                sub_icon_color,
+                50,
+                Some(row_width),
+                sub_result.map(|result| result.content.as_str()),
+            ));
         }
     }
 

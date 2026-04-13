@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
 //! Background ambient mode runner.
 //!
 //! Spawned by the server when ambient mode is enabled. Manages the lifecycle of

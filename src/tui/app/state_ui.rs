@@ -858,17 +858,15 @@ impl App {
             return Some(0);
         }
         // First char of the command (after /) must match
-        if let Some(first_char) = n.chars().next() {
-            if !h.starts_with(&n[..first_char.len_utf8()]) {
-                return None;
-            }
+        if let Some(first_char) = n.chars().next()
+            && !h.starts_with(&n[..first_char.len_utf8()])
+        {
+            return None;
         }
         let mut score = 0usize;
         let mut pos = 0usize;
         for ch in n.chars() {
-            let Some(idx) = h[pos..].find(ch) else {
-                return None;
-            };
+            let idx = h[pos..].find(ch)?;
             score += idx;
             pos += idx + ch.len_utf8();
         }
@@ -1158,12 +1156,11 @@ impl App {
             if let Some(model_spec) = input
                 .strip_prefix("/model ")
                 .or_else(|| input.strip_prefix("/models "))
+                && let Some((model, _provider_prefix)) = model_spec.rsplit_once('@')
             {
-                if let Some((model, _provider_prefix)) = model_spec.rsplit_once('@') {
-                    let suggestions = self.model_provider_suggestion_candidates(model);
-                    if !suggestions.is_empty() {
-                        return self.rank_suggestions(input, suggestions);
-                    }
+                let suggestions = self.model_provider_suggestion_candidates(model);
+                if !suggestions.is_empty() {
+                    return self.rank_suggestions(input, suggestions);
                 }
             }
 
@@ -1718,7 +1715,7 @@ impl App {
 
         // Check if we're continuing a tab cycle from a previous base
         if let Some((ref base, idx)) = self.tab_completion_state.clone() {
-            let base_suggestions = self.get_suggestions_for(&base);
+            let base_suggestions = self.get_suggestions_for(base);
 
             // If current input is in base suggestions AND there are multiple options, continue cycling
             if base_suggestions.len() > 1
@@ -2205,12 +2202,12 @@ impl App {
             let rate_limit_reset_in_ms = if resume_prompt.is_some() {
                 None
             } else {
-                self.rate_limit_reset.and_then(|reset| {
+                self.rate_limit_reset.map(|reset| {
                     let now = Instant::now();
                     if reset <= now {
-                        Some(0)
+                        0
                     } else {
-                        Some((reset - now).as_millis().min(u64::MAX as u128) as u64)
+                        (reset - now).as_millis().min(u64::MAX as u128) as u64
                     }
                 })
             };
@@ -2795,20 +2792,14 @@ impl App {
             });
 
             // Accept new connections
-            loop {
-                match listener.accept().await {
-                    Ok((stream, _)) => {
-                        let (_, writer) = stream.into_split();
-                        let mut writer = writer;
+            while let Ok((stream, _)) = listener.accept().await {
+                let (_, writer) = stream.into_split();
+                let mut writer = writer;
 
-                        // Send initial snapshot
-                        let snapshot_json =
-                            serde_json::to_string(&initial_snapshot).unwrap_or_default() + "\n";
-                        if writer.write_all(snapshot_json.as_bytes()).await.is_ok() {
-                            clients.lock().await.push(writer);
-                        }
-                    }
-                    Err(_) => break,
+                let snapshot_json =
+                    serde_json::to_string(&initial_snapshot).unwrap_or_default() + "\n";
+                if writer.write_all(snapshot_json.as_bytes()).await.is_ok() {
+                    clients.lock().await.push(writer);
                 }
             }
 

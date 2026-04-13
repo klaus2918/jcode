@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use crate::message::{
     ContentBlock, Message as ChatMessage, Role, TOOL_OUTPUT_MISSING_TEXT, ToolDefinition,
 };
@@ -509,10 +511,10 @@ pub(crate) fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
 
     let mut output_ids: HashSet<String> = HashSet::new();
     for item in &items {
-        if item.get("type").and_then(|v| v.as_str()) == Some("function_call_output") {
-            if let Some(call_id) = item.get("call_id").and_then(|v| v.as_str()) {
-                output_ids.insert(call_id.to_string());
-            }
+        if item.get("type").and_then(|v| v.as_str()) == Some("function_call_output")
+            && let Some(call_id) = item.get("call_id").and_then(|v| v.as_str())
+        {
+            output_ids.insert(call_id.to_string());
         }
     }
 
@@ -530,18 +532,17 @@ pub(crate) fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
 
         normalized.push(item);
 
-        if is_call {
-            if let Some(call_id) = call_id {
-                if !output_ids.contains(&call_id) {
-                    extra_injected += 1;
-                    output_ids.insert(call_id.clone());
-                    normalized.push(serde_json::json!({
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": missing_output.clone()
-                    }));
-                }
-            }
+        if is_call
+            && let Some(call_id) = call_id
+            && !output_ids.contains(&call_id)
+        {
+            extra_injected += 1;
+            output_ids.insert(call_id.clone());
+            normalized.push(serde_json::json!({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": missing_output.clone()
+            }));
         }
     }
 
@@ -554,27 +555,27 @@ pub(crate) fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
 
     let mut output_map: HashMap<String, Value> = HashMap::new();
     for item in &normalized {
-        if item.get("type").and_then(|v| v.as_str()) == Some("function_call_output") {
-            if let Some(call_id) = item.get("call_id").and_then(|v| v.as_str()) {
-                let is_missing = item
-                    .get("output")
-                    .and_then(|v| v.as_str())
-                    .map(|v| v == missing_output)
-                    .unwrap_or(false);
-                match output_map.get(call_id) {
-                    Some(existing) => {
-                        let existing_missing = existing
-                            .get("output")
-                            .and_then(|v| v.as_str())
-                            .map(|v| v == missing_output)
-                            .unwrap_or(false);
-                        if existing_missing && !is_missing {
-                            output_map.insert(call_id.to_string(), item.clone());
-                        }
-                    }
-                    None => {
+        if item.get("type").and_then(|v| v.as_str()) == Some("function_call_output")
+            && let Some(call_id) = item.get("call_id").and_then(|v| v.as_str())
+        {
+            let is_missing = item
+                .get("output")
+                .and_then(|v| v.as_str())
+                .map(|v| v == missing_output)
+                .unwrap_or(false);
+            match output_map.get(call_id) {
+                Some(existing) => {
+                    let existing_missing = existing
+                        .get("output")
+                        .and_then(|v| v.as_str())
+                        .map(|v| v == missing_output)
+                        .unwrap_or(false);
+                    if existing_missing && !is_missing {
                         output_map.insert(call_id.to_string(), item.clone());
                     }
+                }
+                None => {
+                    output_map.insert(call_id.to_string(), item.clone());
                 }
             }
         }
@@ -614,11 +615,11 @@ pub(crate) fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
         }
 
         if kind == "function_call_output" {
-            if let Some(call_id) = item.get("call_id").and_then(|v| v.as_str()) {
-                if used_outputs.contains(call_id) {
-                    dropped_duplicate_outputs += 1;
-                    continue;
-                }
+            if let Some(call_id) = item.get("call_id").and_then(|v| v.as_str())
+                && used_outputs.contains(call_id)
+            {
+                dropped_duplicate_outputs += 1;
+                continue;
             }
             if let Some(message_item) = orphan_tool_output_to_user_message(&item, &missing_output) {
                 ordered.push(message_item);

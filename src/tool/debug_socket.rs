@@ -66,13 +66,12 @@ impl Tool for DebugSocketTool {
         let timeout_secs = params.timeout_secs.unwrap_or(30);
 
         // Build title based on command namespace
-        let title = if params.command.starts_with("client:") {
-            format!("debug_socket {}", params.command)
-        } else if params.command.starts_with("tester:") {
-            format!("debug_socket {}", params.command)
-        } else {
-            format!("debug_socket server:{}", params.command)
-        };
+        let title =
+            if params.command.starts_with("client:") || params.command.starts_with("tester:") {
+                format!("debug_socket {}", params.command)
+            } else {
+                format!("debug_socket server:{}", params.command)
+            };
 
         let result = execute_debug_command(&params.command, params.session_id, timeout_secs).await;
 

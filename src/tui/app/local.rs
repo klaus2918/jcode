@@ -62,19 +62,19 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
         app.execute_migration();
         needs_redraw = true;
     }
-    if let Some(reset_time) = app.rate_limit_reset {
-        if std::time::Instant::now() >= reset_time {
-            app.rate_limit_reset = None;
-            let queued_count = app.queued_messages.len();
-            let msg = if queued_count > 0 {
-                format!("✓ Rate limit reset. Retrying... (+{} queued)", queued_count)
-            } else {
-                "✓ Rate limit reset. Retrying...".to_string()
-            };
-            app.push_display_message(DisplayMessage::system(msg));
-            app.pending_turn = true;
-            needs_redraw = true;
-        }
+    if let Some(reset_time) = app.rate_limit_reset
+        && std::time::Instant::now() >= reset_time
+    {
+        app.rate_limit_reset = None;
+        let queued_count = app.queued_messages.len();
+        let msg = if queued_count > 0 {
+            format!("✓ Rate limit reset. Retrying... (+{} queued)", queued_count)
+        } else {
+            "✓ Rate limit reset. Retrying...".to_string()
+        };
+        app.push_display_message(DisplayMessage::system(msg));
+        app.pending_turn = true;
+        needs_redraw = true;
     }
 
     needs_redraw

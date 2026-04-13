@@ -2020,7 +2020,7 @@ fn parse_env_list(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{AmbientConfig, Config, DiffDisplayMode, DisplayConfig};
-    use std::path::PathBuf;
+    use std::path::Path;
 
     #[test]
     fn test_ambient_visible_defaults_to_true() {
@@ -2170,7 +2170,7 @@ mod tests {
         fn external_auth_source_allowed_for_path_config(
             &self,
             source_id: &str,
-            path: &PathBuf,
+            path: &Path,
         ) -> bool {
             let Ok(entry) = Self::trusted_external_auth_path_entry(source_id, path) else {
                 return false;

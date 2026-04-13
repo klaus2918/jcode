@@ -41,10 +41,10 @@ impl ImageProtocol {
         }
 
         // Check TERM for kitty or ghostty
-        if let Ok(term) = std::env::var("TERM") {
-            if term.contains("kitty") || term.contains("ghostty") {
-                return Self::Kitty;
-            }
+        if let Ok(term) = std::env::var("TERM")
+            && (term.contains("kitty") || term.contains("ghostty"))
+        {
+            return Self::Kitty;
         }
 
         // Check TERM_PROGRAM for Ghostty
@@ -62,10 +62,10 @@ impl ImageProtocol {
         }
 
         // Check LC_TERMINAL for iTerm2
-        if let Ok(lc_terminal) = std::env::var("LC_TERMINAL") {
-            if lc_terminal == "iTerm2" {
-                return Self::ITerm2;
-            }
+        if let Ok(lc_terminal) = std::env::var("LC_TERMINAL")
+            && lc_terminal == "iTerm2"
+        {
+            return Self::ITerm2;
         }
 
         // Check for Sixel-capable terminals
@@ -98,10 +98,10 @@ impl ImageProtocol {
         }
 
         // Check TERM_PROGRAM for other Sixel terminals
-        if let Ok(prog) = std::env::var("TERM_PROGRAM") {
-            if prog == "mintty" || prog == "contour" {
-                return true;
-            }
+        if let Ok(prog) = std::env::var("TERM_PROGRAM")
+            && (prog == "mintty" || prog == "contour")
+        {
+            return true;
         }
 
         false
@@ -139,8 +139,8 @@ impl ImageDisplayParams {
         // Use about 2/3 of terminal width, capped at 100 columns
         // Use about 1/2 of terminal height, capped at 30 rows
         Self {
-            max_cols: (cols * 2 / 3).min(100).max(40),
-            max_rows: (rows / 2).min(30).max(10),
+            max_cols: (cols * 2 / 3).clamp(40, 100),
+            max_rows: (rows / 2).clamp(10, 30),
         }
     }
 }

@@ -570,12 +570,12 @@ fn format_message_context_with(
 
     let mut has_content = false;
     for block in &message.content {
-        if let Some(text) = format_block(block) {
-            if !text.is_empty() {
-                has_content = true;
-                chunk.push_str(&text);
-                chunk.push('\n');
-            }
+        if let Some(text) = format_block(block)
+            && !text.is_empty()
+        {
+            has_content = true;
+            chunk.push_str(&text);
+            chunk.push('\n');
         }
     }
 
@@ -637,10 +637,7 @@ pub fn format_context_for_extraction(messages: &[crate::message::Message]) -> St
     chunks.join("\n").trim().to_string()
 }
 
-fn selected_entries_for_prompt<'a>(
-    entries: &'a [MemoryEntry],
-    limit: usize,
-) -> Vec<&'a MemoryEntry> {
+fn selected_entries_for_prompt(entries: &[MemoryEntry], limit: usize) -> Vec<&MemoryEntry> {
     let mut selected = Vec::new();
     let mut seen_content = HashSet::new();
 
@@ -1260,25 +1257,22 @@ impl MemoryManager {
         if let Some(ref emb) = entry.embedding {
             if let Some(existing_id) =
                 Self::find_duplicate_in_graph(&graph, emb, Self::STORAGE_DEDUP_THRESHOLD)
+                && let Some(existing) = graph.get_memory_mut(&existing_id)
             {
-                if let Some(existing) = graph.get_memory_mut(&existing_id) {
-                    existing.reinforce(entry.source.as_deref().unwrap_or("dedup"), 0);
-                    self.save_project_graph(&graph)?;
-                    return Ok(existing_id);
-                }
+                existing.reinforce(entry.source.as_deref().unwrap_or("dedup"), 0);
+                self.save_project_graph(&graph)?;
+                return Ok(existing_id);
             }
 
             // Cross-store dedup: also check global graph
-            if let Ok(mut global_graph) = self.load_global_graph() {
-                if let Some(existing_id) =
+            if let Ok(mut global_graph) = self.load_global_graph()
+                && let Some(existing_id) =
                     Self::find_duplicate_in_graph(&global_graph, emb, Self::STORAGE_DEDUP_THRESHOLD)
-                {
-                    if let Some(existing) = global_graph.get_memory_mut(&existing_id) {
-                        existing.reinforce(entry.source.as_deref().unwrap_or("cross-dedup"), 0);
-                        self.save_global_graph(&global_graph)?;
-                        return Ok(existing_id);
-                    }
-                }
+                && let Some(existing) = global_graph.get_memory_mut(&existing_id)
+            {
+                existing.reinforce(entry.source.as_deref().unwrap_or("cross-dedup"), 0);
+                self.save_global_graph(&global_graph)?;
+                return Ok(existing_id);
             }
         }
 
@@ -1296,27 +1290,25 @@ impl MemoryManager {
         if let Some(ref emb) = entry.embedding {
             if let Some(existing_id) =
                 Self::find_duplicate_in_graph(&graph, emb, Self::STORAGE_DEDUP_THRESHOLD)
+                && let Some(existing) = graph.get_memory_mut(&existing_id)
             {
-                if let Some(existing) = graph.get_memory_mut(&existing_id) {
-                    existing.reinforce(entry.source.as_deref().unwrap_or("dedup"), 0);
-                    self.save_global_graph(&graph)?;
-                    return Ok(existing_id);
-                }
+                existing.reinforce(entry.source.as_deref().unwrap_or("dedup"), 0);
+                self.save_global_graph(&graph)?;
+                return Ok(existing_id);
             }
 
             // Cross-store dedup: also check project graph
-            if let Ok(mut project_graph) = self.load_project_graph() {
-                if let Some(existing_id) = Self::find_duplicate_in_graph(
+            if let Ok(mut project_graph) = self.load_project_graph()
+                && let Some(existing_id) = Self::find_duplicate_in_graph(
                     &project_graph,
                     emb,
                     Self::STORAGE_DEDUP_THRESHOLD,
-                ) {
-                    if let Some(existing) = project_graph.get_memory_mut(&existing_id) {
-                        existing.reinforce(entry.source.as_deref().unwrap_or("cross-dedup"), 0);
-                        self.save_project_graph(&project_graph)?;
-                        return Ok(existing_id);
-                    }
-                }
+                )
+                && let Some(existing) = project_graph.get_memory_mut(&existing_id)
+            {
+                existing.reinforce(entry.source.as_deref().unwrap_or("cross-dedup"), 0);
+                self.save_project_graph(&project_graph)?;
+                return Ok(existing_id);
             }
         }
 
@@ -1479,40 +1471,40 @@ impl MemoryManager {
         scope: MemoryScope,
     ) -> Result<Vec<MemoryEntry>> {
         let mut entries: Vec<MemoryEntry> = Vec::new();
-        if scope.includes_project() {
-            if let Ok(project) = self.load_project_graph() {
-                entries.extend(
-                    project
-                        .active_memories()
-                        .filter(|m| m.embedding.is_some())
-                        .cloned(),
-                );
-            }
+        if scope.includes_project()
+            && let Ok(project) = self.load_project_graph()
+        {
+            entries.extend(
+                project
+                    .active_memories()
+                    .filter(|m| m.embedding.is_some())
+                    .cloned(),
+            );
         }
-        if scope.includes_global() {
-            if let Ok(global) = self.load_global_graph() {
-                entries.extend(
-                    global
-                        .active_memories()
-                        .filter(|m| m.embedding.is_some())
-                        .cloned(),
-                );
-            }
+        if scope.includes_global()
+            && let Ok(global) = self.load_global_graph()
+        {
+            entries.extend(
+                global
+                    .active_memories()
+                    .filter(|m| m.embedding.is_some())
+                    .cloned(),
+            );
         }
         Ok(entries)
     }
 
     fn collect_memories_scoped(&self, scope: MemoryScope) -> Result<Vec<MemoryEntry>> {
         let mut entries = Vec::new();
-        if scope.includes_project() {
-            if let Ok(project) = self.load_project_graph() {
-                entries.extend(project.all_memories().cloned());
-            }
+        if scope.includes_project()
+            && let Ok(project) = self.load_project_graph()
+        {
+            entries.extend(project.all_memories().cloned());
         }
-        if scope.includes_global() {
-            if let Ok(global) = self.load_global_graph() {
-                entries.extend(global.all_memories().cloned());
-            }
+        if scope.includes_global()
+            && let Ok(global) = self.load_global_graph()
+        {
+            entries.extend(global.all_memories().cloned());
         }
         Ok(entries)
     }
@@ -2053,11 +2045,13 @@ impl MemoryManager {
         });
     }
 
-    /// Get relevant memories using embedding search + sidecar verification
+    /// Get relevant memories using embedding search + sidecar verification.
+    ///
     /// 1. Embed the context (fast, local, ~30ms)
     /// 2. Find similar memories by embedding (instant)
     /// 3. Only call sidecar for embedding hits (1-5 calls instead of 30)
-    /// Returns (formatted_prompt, memory_ids) on success
+    ///
+    /// Returns `(formatted_prompt, memory_ids, display_prompt)` on success.
     pub async fn get_relevant_parallel(
         &self,
         session_id: &str,
@@ -2374,31 +2368,31 @@ impl MemoryManager {
             return Ok(MemoryGraph::new());
         };
 
-        if !self.test_mode {
-            if let Some(mut graph) = cached_graph(&path) {
-                if Self::normalize_graph_search_text(&mut graph) {
-                    cache_graph(path.clone(), &graph);
-                }
-                return Ok(graph);
+        if !self.test_mode
+            && let Some(mut graph) = cached_graph(&path)
+        {
+            if Self::normalize_graph_search_text(&mut graph) {
+                cache_graph(path.clone(), &graph);
             }
+            return Ok(graph);
         }
 
         if path.exists() {
             // Try loading as MemoryGraph first
-            if let Ok(graph) = storage::read_json::<MemoryGraph>(&path) {
-                if graph.graph_version == GRAPH_VERSION {
-                    let mut graph = graph;
-                    let normalized = Self::normalize_graph_search_text(&mut graph);
-                    if self.import_legacy_notes_into_graph(&mut graph)? {
-                        self.save_project_graph(&graph)?;
-                    } else if normalized {
-                        storage::write_json(&path, &graph)?;
-                    }
-                    if !self.test_mode {
-                        cache_graph(path, &graph);
-                    }
-                    return Ok(graph);
+            if let Ok(graph) = storage::read_json::<MemoryGraph>(&path)
+                && graph.graph_version == GRAPH_VERSION
+            {
+                let mut graph = graph;
+                let normalized = Self::normalize_graph_search_text(&mut graph);
+                if self.import_legacy_notes_into_graph(&mut graph)? {
+                    self.save_project_graph(&graph)?;
+                } else if normalized {
+                    storage::write_json(&path, &graph)?;
                 }
+                if !self.test_mode {
+                    cache_graph(path, &graph);
+                }
+                return Ok(graph);
             }
 
             // Fall back to legacy MemoryStore and migrate
@@ -2436,28 +2430,28 @@ impl MemoryManager {
     /// Load global memories as a MemoryGraph with automatic migration
     pub fn load_global_graph(&self) -> Result<MemoryGraph> {
         let path = self.global_memory_path()?;
-        if !self.test_mode {
-            if let Some(mut graph) = cached_graph(&path) {
-                if Self::normalize_graph_search_text(&mut graph) {
-                    cache_graph(path.clone(), &graph);
-                }
-                return Ok(graph);
+        if !self.test_mode
+            && let Some(mut graph) = cached_graph(&path)
+        {
+            if Self::normalize_graph_search_text(&mut graph) {
+                cache_graph(path.clone(), &graph);
             }
+            return Ok(graph);
         }
 
         if path.exists() {
             // Try loading as MemoryGraph first
-            if let Ok(graph) = storage::read_json::<MemoryGraph>(&path) {
-                if graph.graph_version == GRAPH_VERSION {
-                    let mut graph = graph;
-                    if Self::normalize_graph_search_text(&mut graph) {
-                        storage::write_json(&path, &graph)?;
-                    }
-                    if !self.test_mode {
-                        cache_graph(path, &graph);
-                    }
-                    return Ok(graph);
+            if let Ok(graph) = storage::read_json::<MemoryGraph>(&path)
+                && graph.graph_version == GRAPH_VERSION
+            {
+                let mut graph = graph;
+                if Self::normalize_graph_search_text(&mut graph) {
+                    storage::write_json(&path, &graph)?;
                 }
+                if !self.test_mode {
+                    cache_graph(path, &graph);
+                }
+                return Ok(graph);
             }
 
             // Fall back to legacy MemoryStore and migrate

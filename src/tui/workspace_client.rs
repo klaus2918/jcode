@@ -217,11 +217,12 @@ fn import_initial_row(
         all_sessions.to_vec()
     };
 
-    if let Some(current) = current_session_id {
-        if !state.map.is_empty() && state.map.locate_session(current).is_some() {
-            let _ = state.map.focus_session_by_id(current);
-            return;
-        }
+    if let Some(current) = current_session_id
+        && !state.map.is_empty()
+        && state.map.locate_session(current).is_some()
+    {
+        let _ = state.map.focus_session_by_id(current);
+        return;
     }
 
     let focused_index = current_session_id

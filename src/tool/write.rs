@@ -57,10 +57,10 @@ impl Tool for WriteTool {
         let path = ctx.resolve_path(Path::new(&params.file_path));
 
         // Create parent directories if needed
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            tokio::fs::create_dir_all(parent).await?;
         }
 
         // Check if file existed before and read old content for diff

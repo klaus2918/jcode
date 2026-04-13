@@ -341,7 +341,7 @@ fn draw_swarm_replay_frame(frame: &mut Frame<'_>, panes: &mut [SwarmReplayPane],
 
     let pane_count = panes.len() as u16;
     let cols = if pane_count <= 2 { pane_count } else { 2 };
-    let rows = ((pane_count + cols - 1) / cols).max(1);
+    let rows = pane_count.div_ceil(cols).max(1);
     let pane_width = (area.width / cols).max(1);
     let pane_height = (area.height / rows).max(1);
 

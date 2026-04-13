@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use anyhow::Result;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -129,10 +131,10 @@ pub fn harden_user_config_permissions() {
         }
     }
 
-    if let Ok(jcode_home) = jcode_dir() {
-        if jcode_home.exists() {
-            let _ = crate::platform::set_directory_permissions_owner_only(&jcode_home);
-        }
+    if let Ok(jcode_home) = jcode_dir()
+        && jcode_home.exists()
+    {
+        let _ = crate::platform::set_directory_permissions_owner_only(&jcode_home);
     }
 }
 
@@ -440,12 +442,11 @@ fn write_bytes_inner(path: &Path, bytes: &[u8], durable: bool) -> Result<()> {
         std::fs::rename(&tmp_path, path)?;
 
         #[cfg(unix)]
-        if durable {
-            if let Some(parent) = path.parent() {
-                if let Ok(dir) = std::fs::File::open(parent) {
-                    let _ = dir.sync_all();
-                }
-            }
+        if durable
+            && let Some(parent) = path.parent()
+            && let Ok(dir) = std::fs::File::open(parent)
+        {
+            let _ = dir.sync_all();
         }
 
         Ok(())

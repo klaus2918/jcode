@@ -136,10 +136,11 @@ fn build_search_index_from_summary(
 
 fn session_sort_key(stem: &str) -> u64 {
     for part in stem.split('_') {
-        if part.len() == 13 && part.as_bytes().iter().all(|b| b.is_ascii_digit()) {
-            if let Ok(ts) = part.parse::<u64>() {
-                return ts;
-            }
+        if part.len() == 13
+            && part.as_bytes().iter().all(|b| b.is_ascii_digit())
+            && let Ok(ts) = part.parse::<u64>()
+        {
+            return ts;
         }
     }
 
@@ -290,15 +291,15 @@ fn extract_text_from_value(value: &serde_json::Value) -> String {
                 }
             }
             serde_json::Value::Object(map) => {
-                if let Some(text) = map.get("text").and_then(|v| v.as_str()) {
-                    if !text.trim().is_empty() {
-                        out.push(text.trim().to_string());
-                    }
+                if let Some(text) = map.get("text").and_then(|v| v.as_str())
+                    && !text.trim().is_empty()
+                {
+                    out.push(text.trim().to_string());
                 }
-                if let Some(text) = map.get("title").and_then(|v| v.as_str()) {
-                    if !text.trim().is_empty() {
-                        out.push(text.trim().to_string());
-                    }
+                if let Some(text) = map.get("title").and_then(|v| v.as_str())
+                    && !text.trim().is_empty()
+                {
+                    out.push(text.trim().to_string());
                 }
                 for value in map.values() {
                     visit(value, out);
@@ -678,15 +679,13 @@ pub fn load_sessions() -> Result<Vec<SessionInfo>> {
     let sessions_dir = storage::jcode_dir()?.join("sessions");
     let scan_limit = session_scan_limit();
 
-    if let Ok(cache) = session_list_cache().lock() {
-        if let Some(entry) = cache.as_ref() {
-            if entry.sessions_dir == sessions_dir
-                && entry.scan_limit == scan_limit
-                && entry.loaded_at.elapsed() <= SESSION_LIST_CACHE_TTL
-            {
-                return Ok(entry.sessions.clone());
-            }
-        }
+    if let Ok(cache) = session_list_cache().lock()
+        && let Some(entry) = cache.as_ref()
+        && entry.sessions_dir == sessions_dir
+        && entry.scan_limit == scan_limit
+        && entry.loaded_at.elapsed() <= SESSION_LIST_CACHE_TTL
+    {
+        return Ok(entry.sessions.clone());
     }
 
     let mut sessions: Vec<SessionInfo> = Vec::new();
@@ -1491,7 +1490,7 @@ fn load_opencode_session_info(path: &Path) -> Result<Option<SessionInfo>> {
             )
         });
 
-    let messages_root = crate::storage::user_home_path(&format!(
+    let messages_root = crate::storage::user_home_path(format!(
         ".local/share/opencode/storage/message/{}",
         session_id
     ))?;

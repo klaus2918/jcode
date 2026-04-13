@@ -146,6 +146,12 @@ impl ClaudeProvider {
     }
 }
 
+impl Default for ClaudeProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone)]
 struct ClaudeCliConfig {
     cli_path: String,
@@ -431,19 +437,18 @@ impl ClaudeEventTranslator {
             }
             SseEvent::MessageDelta { delta, usage } => {
                 self.last_stop_reason = delta.stop_reason.clone();
-                if let Some(usage) = usage {
-                    if usage.input_tokens.is_some()
+                if let Some(usage) = usage
+                    && (usage.input_tokens.is_some()
                         || usage.output_tokens.is_some()
                         || usage.cache_creation_input_tokens.is_some()
-                        || usage.cache_read_input_tokens.is_some()
-                    {
-                        return vec![StreamEvent::TokenUsage {
-                            input_tokens: usage.input_tokens,
-                            output_tokens: usage.output_tokens,
-                            cache_read_input_tokens: usage.cache_read_input_tokens,
-                            cache_creation_input_tokens: usage.cache_creation_input_tokens,
-                        }];
-                    }
+                        || usage.cache_read_input_tokens.is_some())
+                {
+                    return vec![StreamEvent::TokenUsage {
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
+                        cache_read_input_tokens: usage.cache_read_input_tokens,
+                        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                    }];
                 }
                 Vec::new()
             }
@@ -584,19 +589,18 @@ impl CliOutputParser {
                 session_id,
             } => {
                 let mut events = Vec::new();
-                if let Some(usage) = usage {
-                    if usage.input_tokens.is_some()
+                if let Some(usage) = usage
+                    && (usage.input_tokens.is_some()
                         || usage.output_tokens.is_some()
                         || usage.cache_creation_input_tokens.is_some()
-                        || usage.cache_read_input_tokens.is_some()
-                    {
-                        events.push(StreamEvent::TokenUsage {
-                            input_tokens: usage.input_tokens,
-                            output_tokens: usage.output_tokens,
-                            cache_read_input_tokens: usage.cache_read_input_tokens,
-                            cache_creation_input_tokens: usage.cache_creation_input_tokens,
-                        });
-                    }
+                        || usage.cache_read_input_tokens.is_some())
+                {
+                    events.push(StreamEvent::TokenUsage {
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
+                        cache_read_input_tokens: usage.cache_read_input_tokens,
+                        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                    });
                 }
                 if let Some(sid) = session_id {
                     events.push(StreamEvent::SessionId(sid));
@@ -846,6 +850,10 @@ impl Provider for ClaudeProvider {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Claude CLI launch threads model, tools, system prompt, cwd, resume state, and stream channel explicitly"
+)]
 async fn run_claude_cli(
     config: ClaudeCliConfig,
     model: String,

@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
 use anyhow::Result;
 
 use crate::{build, logging, session, startup_profile};

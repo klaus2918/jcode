@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
 use super::runtime::ServerRuntime;
 use super::socket::wait_for_existing_server;
 use super::{Client, Server, is_server_ready};

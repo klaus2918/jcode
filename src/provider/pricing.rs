@@ -211,7 +211,6 @@ pub(crate) fn openai_oauth_pricing(model: &str) -> RouteCheapnessEstimate {
 pub(crate) fn copilot_pricing(model: &str) -> RouteCheapnessEstimate {
     let mode = std::env::var("JCODE_COPILOT_PREMIUM").ok();
     let is_zero = matches!(mode.as_deref(), Some("0"));
-    let is_one = matches!(mode.as_deref(), Some("1"));
     let likely_premium_model = model.contains("opus") || model.contains("gpt-5.4");
     let monthly_price = if likely_premium_model {
         usd_to_micros(39.0)
@@ -221,8 +220,6 @@ pub(crate) fn copilot_pricing(model: &str) -> RouteCheapnessEstimate {
     let included_requests = if likely_premium_model { 1_500 } else { 300 };
     let estimated_reference = if is_zero {
         Some(0)
-    } else if is_one {
-        Some(monthly_price / included_requests)
     } else {
         Some(monthly_price / included_requests)
     };
@@ -277,18 +274,18 @@ pub(crate) fn openrouter_route_pricing(
 ) -> Option<RouteCheapnessEstimate> {
     let cache = openrouter::load_endpoints_disk_cache_public(model);
     if let Some((endpoints, _)) = cache.as_ref() {
-        if provider == "auto" {
-            if let Some(best) = endpoints.first() {
-                return openrouter_pricing_from_model_pricing(
-                    &best.pricing,
-                    RouteCostSource::OpenRouterEndpoint,
-                    RouteCostConfidence::High,
-                    Some(format!(
-                        "OpenRouter auto route currently prefers {}",
-                        best.provider_name
-                    )),
-                );
-            }
+        if provider == "auto"
+            && let Some(best) = endpoints.first()
+        {
+            return openrouter_pricing_from_model_pricing(
+                &best.pricing,
+                RouteCostSource::OpenRouterEndpoint,
+                RouteCostConfidence::High,
+                Some(format!(
+                    "OpenRouter auto route currently prefers {}",
+                    best.provider_name
+                )),
+            );
         }
         if let Some(endpoint) = endpoints.iter().find(|ep| ep.provider_name == provider) {
             return openrouter_pricing_from_model_pricing(

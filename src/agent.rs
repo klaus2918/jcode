@@ -1,4 +1,5 @@
 #![allow(unused_assignments)]
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
 
 mod compaction_support;
 mod interrupts;

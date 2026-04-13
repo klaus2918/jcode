@@ -422,11 +422,11 @@ fn build_file_diff_cache_entry(
     }
 }
 
-fn find_visible_edit_tool<'a>(
-    edit_ranges: &'a [EditToolRange],
+fn find_visible_edit_tool(
+    edit_ranges: &[EditToolRange],
     scroll: usize,
     visible_height: usize,
-) -> Option<&'a EditToolRange> {
+) -> Option<&EditToolRange> {
     if edit_ranges.is_empty() {
         return None;
     }
@@ -444,18 +444,10 @@ fn find_visible_edit_tool<'a>(
     for range in &edit_ranges[candidate_start..candidate_end] {
         let overlap_start = range.start_line.max(visible_start);
         let overlap_end = range.end_line.min(visible_end);
-        let overlap = if overlap_end > overlap_start {
-            overlap_end - overlap_start
-        } else {
-            0
-        };
+        let overlap = overlap_end.saturating_sub(overlap_start);
 
         let range_mid = (range.start_line + range.end_line) / 2;
-        let distance = if range_mid > visible_mid {
-            range_mid - visible_mid
-        } else {
-            visible_mid - range_mid
-        };
+        let distance = range_mid.abs_diff(visible_mid);
 
         if overlap > best_overlap || (overlap == best_overlap && distance < best_distance) {
             best = Some(range);

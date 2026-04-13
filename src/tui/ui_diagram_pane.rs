@@ -202,6 +202,10 @@ pub(crate) fn diagram_view_uses_fit_mode(
     !focused || (scroll_x == 0 && scroll_y == 0 && zoom_percent == 100)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pinned diagram rendering needs layout, focus, scroll, zoom, pane placement, and animation state"
+)]
 pub(crate) fn draw_pinned_diagram(
     frame: &mut Frame,
     diagram: &info_widget::DiagramInfo,

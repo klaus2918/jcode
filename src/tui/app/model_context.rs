@@ -83,7 +83,7 @@ impl App {
                     pending.prompt.to_label
                 ));
                 self.pending_turn = true;
-                return true;
+                true
             }
             Err(error) => {
                 self.push_display_message(DisplayMessage::error(format!(
@@ -91,7 +91,7 @@ impl App {
                     pending.prompt.to_label, error
                 )));
                 self.set_status_notice("Provider switch failed");
-                return true;
+                true
             }
         }
     }
@@ -398,7 +398,7 @@ impl App {
 
         let observed_tokens = self
             .current_stream_context_tokens()
-            .unwrap_or(self.context_limit as u64);
+            .unwrap_or(self.context_limit);
         manager.update_observed_input_tokens(observed_tokens);
 
         match manager.force_compact_with(&provider_messages, self.provider.clone()) {
@@ -488,7 +488,8 @@ impl App {
                             self.push_display_message(DisplayMessage::system(
                                 "✓ Context compacted. Retrying...".to_string(),
                             ));
-                            let retry_result = self.run_turn_interactive(terminal, event_stream).await;
+                            let retry_result =
+                                self.run_turn_interactive(terminal, event_stream).await;
                             self.messages.clear();
                             return match retry_result {
                                 Ok(()) => {
@@ -524,7 +525,8 @@ impl App {
                                 self.push_display_message(DisplayMessage::system(
                                     format!("⚡ Emergency truncation: shortened {} large tool result(s). Retrying...", truncated),
                                 ));
-                                let retry_result = self.run_turn_interactive(terminal, event_stream).await;
+                                let retry_result =
+                                    self.run_turn_interactive(terminal, event_stream).await;
                                 self.messages.clear();
                                 return match retry_result {
                                     Ok(()) => {
@@ -565,7 +567,8 @@ impl App {
                                 self.push_display_message(DisplayMessage::system(
                                     "✓ Context compacted (emergency). Retrying...".to_string(),
                                 ));
-                                let retry_result = self.run_turn_interactive(terminal, event_stream).await;
+                                let retry_result =
+                                    self.run_turn_interactive(terminal, event_stream).await;
                                 self.messages.clear();
                                 return match retry_result {
                                     Ok(()) => {
@@ -802,7 +805,8 @@ impl App {
                             }
                         }
                     } else {
-                        match manager.force_compact_with(&provider_messages, self.provider.clone()) {
+                        match manager.force_compact_with(&provider_messages, self.provider.clone())
+                        {
                             Ok(()) => {
                                 actions.push("Started background context compaction.".to_string())
                             }

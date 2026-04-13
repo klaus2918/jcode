@@ -389,10 +389,10 @@ fn strip_transcript_prefixes(line: &str) -> &str {
         return line;
     };
     let rest = rest.trim_start();
-    if let Some(rest) = rest.strip_prefix('[') {
-        if let Some((_, rest)) = rest.split_once(']') {
-            return rest.trim_start();
-        }
+    if let Some(rest) = rest.strip_prefix('[')
+        && let Some((_, rest)) = rest.split_once(']')
+    {
+        return rest.trim_start();
     }
     line
 }
@@ -423,7 +423,7 @@ fn strip_ansi(text: &str) -> String {
             match chars.peek().copied() {
                 Some('[') => {
                     chars.next();
-                    while let Some(next) = chars.next() {
+                    for next in chars.by_ref() {
                         if ('@'..='~').contains(&next) {
                             break;
                         }
@@ -432,7 +432,7 @@ fn strip_ansi(text: &str) -> String {
                 Some(']') => {
                     chars.next();
                     let mut prev = '\0';
-                    while let Some(next) = chars.next() {
+                    for next in chars.by_ref() {
                         if next == '\u{7}' || (prev == '\u{1b}' && next == '\\') {
                             break;
                         }

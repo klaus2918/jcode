@@ -10,6 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, broadcast};
 
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+
 fn parse_create_session_command(cmd: &str) -> Option<(Option<String>, bool)> {
     if cmd == "create_session" {
         return Some((None, false));
@@ -46,10 +48,13 @@ fn parse_create_session_command(cmd: &str) -> Option<(Option<String>, bool)> {
     None
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "session admin debug commands need sessions, swarm state, provider template, queues, and event history"
+)]
 pub(super) async fn maybe_handle_session_admin_command(
     cmd: &str,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     session_id: &Arc<RwLock<String>>,
     provider: &Arc<dyn Provider>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,

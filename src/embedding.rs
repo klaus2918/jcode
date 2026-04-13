@@ -156,18 +156,18 @@ pub fn embed(text: &str) -> Result<EmbeddingVec> {
     let text_hash = hash_text(text);
 
     // Check cache first
-    if let Ok(mut cache) = embedder_cache().lock() {
-        if let Some((emb, _)) = cache.embedding_lru.get(&text_hash) {
-            let result = emb.clone();
-            cache.cache_hits = cache.cache_hits.saturating_add(1);
-            cache.last_used_at = Some(Instant::now());
-            let counter = cache.lru_counter;
-            cache.lru_counter = counter.wrapping_add(1);
-            if let Some(entry) = cache.embedding_lru.get_mut(&text_hash) {
-                entry.1 = counter;
-            }
-            return Ok(result);
+    if let Ok(mut cache) = embedder_cache().lock()
+        && let Some((emb, _)) = cache.embedding_lru.get(&text_hash)
+    {
+        let result = emb.clone();
+        cache.cache_hits = cache.cache_hits.saturating_add(1);
+        cache.last_used_at = Some(Instant::now());
+        let counter = cache.lru_counter;
+        cache.lru_counter = counter.wrapping_add(1);
+        if let Some(entry) = cache.embedding_lru.get_mut(&text_hash) {
+            entry.1 = counter;
         }
+        return Ok(result);
     }
 
     let embedder = get_embedder()?;
@@ -267,14 +267,14 @@ pub fn maybe_unload_if_idle(idle_for: Duration) -> bool {
 /// Force unload the global embedder and clear its embedding cache.
 pub fn unload_now() -> bool {
     let mut unloaded = false;
-    if let Ok(mut cache) = embedder_cache().lock() {
-        if cache.embedder.is_some() {
-            cache.embedder = None;
-            cache.loaded_at = None;
-            cache.unload_count = cache.unload_count.saturating_add(1);
-            cache.embedding_lru.clear();
-            unloaded = true;
-        }
+    if let Ok(mut cache) = embedder_cache().lock()
+        && cache.embedder.is_some()
+    {
+        cache.embedder = None;
+        cache.loaded_at = None;
+        cache.unload_count = cache.unload_count.saturating_add(1);
+        cache.embedding_lru.clear();
+        unloaded = true;
     }
 
     if unloaded {

@@ -430,11 +430,11 @@ impl App {
             self.cursor_pos = saved_cursor;
         }
 
-        if let Some(ref mut picker) = self.inline_interactive_state {
-            if picker.preview {
-                picker.filter = request.filter().to_string();
-                Self::apply_inline_interactive_filter(picker);
-            }
+        if let Some(ref mut picker) = self.inline_interactive_state
+            && picker.preview
+        {
+            picker.filter = request.filter().to_string();
+            Self::apply_inline_interactive_filter(picker);
         }
     }
 
@@ -1063,7 +1063,7 @@ impl App {
                 && auth.anthropic.has_oauth
             {
                 let (available, detail) =
-                    crate::provider::anthropic_oauth_route_availability(&model);
+                    crate::provider::anthropic_oauth_route_availability(model);
                 routes.push(crate::provider::ModelRoute {
                     model: model.clone(),
                     provider: "Anthropic".to_string(),
@@ -1160,7 +1160,7 @@ impl App {
         let is_preview = self
             .inline_interactive_state
             .as_ref()
-            .map_or(false, |p| p.preview);
+            .is_some_and(|p| p.preview);
         if !is_preview {
             return Ok(false);
         }
@@ -1387,12 +1387,11 @@ impl App {
             let mut cwd = default_cwd.clone();
             if let Some(picker_cell) = self.session_picker_overlay.as_ref() {
                 let picker = picker_cell.borrow();
-                if let Some(session) = picker.session_for_target(target) {
-                    if let Some(dir) = session.working_dir.as_deref() {
-                        if std::path::Path::new(dir).is_dir() {
-                            cwd = std::path::PathBuf::from(dir);
-                        }
-                    }
+                if let Some(session) = picker.session_for_target(target)
+                    && let Some(dir) = session.working_dir.as_deref()
+                    && std::path::Path::new(dir).is_dir()
+                {
+                    cwd = std::path::PathBuf::from(dir);
                 }
             }
 
@@ -1500,12 +1499,11 @@ impl App {
 
         for session_id in &recovered {
             let mut session_cwd = cwd.clone();
-            if let Ok(session) = crate::session::Session::load(session_id) {
-                if let Some(dir) = session.working_dir.as_deref() {
-                    if std::path::Path::new(dir).is_dir() {
-                        session_cwd = std::path::PathBuf::from(dir);
-                    }
-                }
+            if let Ok(session) = crate::session::Session::load(session_id)
+                && let Some(dir) = session.working_dir.as_deref()
+                && std::path::Path::new(dir).is_dir()
+            {
+                session_cwd = std::path::PathBuf::from(dir);
             }
 
             match spawn_in_new_terminal(&exe, session_id, &session_cwd, socket.as_deref()) {
@@ -1588,12 +1586,12 @@ impl App {
     ) -> Result<()> {
         match code {
             KeyCode::Esc => {
-                if let Some(ref mut picker) = self.inline_interactive_state {
-                    if !picker.filter.is_empty() {
-                        picker.filter.clear();
-                        Self::apply_inline_interactive_filter(picker);
-                        return Ok(());
-                    }
+                if let Some(ref mut picker) = self.inline_interactive_state
+                    && !picker.filter.is_empty()
+                {
+                    picker.filter.clear();
+                    Self::apply_inline_interactive_filter(picker);
+                    return Ok(());
                 }
                 self.inline_interactive_state = None;
             }
@@ -1654,12 +1652,11 @@ impl App {
                     if picker.uses_compact_navigation() {
                         return Ok(());
                     }
-                    if picker.column < picker.max_navigable_column() {
-                        if let Some(&idx) = picker.filtered.get(picker.selected) {
-                            if picker.entries[idx].options.len() > 1 || picker.column > 0 {
-                                picker.column += 1;
-                            }
-                        }
+                    if picker.column < picker.max_navigable_column()
+                        && let Some(&idx) = picker.filtered.get(picker.selected)
+                        && (picker.entries[idx].options.len() > 1 || picker.column > 0)
+                    {
+                        picker.column += 1;
                     }
                 }
             }
@@ -1680,12 +1677,11 @@ impl App {
                     }
                     if picker.column == 0 && !picker.filter.is_empty() {
                         Self::tab_complete_inline_interactive_filter(picker);
-                    } else if picker.column < picker.max_navigable_column() {
-                        if let Some(&idx) = picker.filtered.get(picker.selected) {
-                            if picker.entries[idx].options.len() > 1 || picker.column > 0 {
-                                picker.column += 1;
-                            }
-                        }
+                    } else if picker.column < picker.max_navigable_column()
+                        && let Some(&idx) = picker.filtered.get(picker.selected)
+                        && (picker.entries[idx].options.len() > 1 || picker.column > 0)
+                    {
+                        picker.column += 1;
                     }
                 }
             }
@@ -1717,8 +1713,6 @@ impl App {
                             } else {
                                 format!("anthropic/{}@{}", bare_name, r.provider)
                             }
-                        } else if r.api_method == "openrouter" {
-                            bare_name.clone()
                         } else {
                             bare_name.clone()
                         };
@@ -1933,18 +1927,18 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                if let Some(ref mut picker) = self.inline_interactive_state {
-                    if picker.filter.pop().is_some() {
-                        Self::apply_inline_interactive_filter(picker);
-                    }
+                if let Some(ref mut picker) = self.inline_interactive_state
+                    && picker.filter.pop().is_some()
+                {
+                    Self::apply_inline_interactive_filter(picker);
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(ref mut picker) = self.inline_interactive_state {
-                    if !c.is_whitespace() {
-                        picker.filter.push(c);
-                        Self::apply_inline_interactive_filter(picker);
-                    }
+                if let Some(ref mut picker) = self.inline_interactive_state
+                    && !c.is_whitespace()
+                {
+                    picker.filter.push(c);
+                    Self::apply_inline_interactive_filter(picker);
                 }
             }
             _ => {}
@@ -1998,10 +1992,10 @@ impl App {
         for (ti, &tc) in txt.iter().enumerate() {
             if pi < pat.len() && tc == pat[pi] {
                 score += 1;
-                if let Some(last) = last_match {
-                    if last + 1 == ti {
-                        score += 3;
-                    }
+                if let Some(last) = last_match
+                    && last + 1 == ti
+                {
+                    score += 3;
                 }
                 if ti == 0
                     || matches!(

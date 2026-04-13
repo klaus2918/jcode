@@ -347,7 +347,7 @@ fn compute_tier(
         score += 1;
     }
 
-    match terminal.as_ref() {
+    match terminal {
         "windows-terminal" | "cmd" | "conhost" => score += 1,
         _ => {}
     }
@@ -463,7 +463,7 @@ fn detect_memory() -> (Option<u64>, Option<u64>) {
 
 #[cfg(target_os = "linux")]
 fn parse_meminfo_kb(s: &str) -> Option<u64> {
-    s.trim().split_whitespace().next()?.parse().ok()
+    s.split_whitespace().next()?.parse().ok()
 }
 
 #[cfg(windows)]

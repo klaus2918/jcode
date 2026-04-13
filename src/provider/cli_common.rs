@@ -125,10 +125,10 @@ pub async fn run_cli_text_command(
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                if let Some(hint) = provider_login_hint(provider_name) {
-                    anyhow::bail!("Failed to spawn {} CLI: {}. {}", provider_name, e, hint);
-                }
+            if e.kind() == std::io::ErrorKind::NotFound
+                && let Some(hint) = provider_login_hint(provider_name)
+            {
+                anyhow::bail!("Failed to spawn {} CLI: {}. {}", provider_name, e, hint);
             }
             return Err(e).with_context(|| format!("Failed to spawn {} CLI", provider_name));
         }

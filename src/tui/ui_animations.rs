@@ -161,8 +161,8 @@ fn render_black_hole(elapsed: f32, width: usize, height: usize) -> Vec<String> {
         let halo_r = horizon_r * 1.85;
         let shimmer = elapsed * 2.4;
 
-        for y in 0..height {
-            for x in 0..width {
+        for (y, row) in output.iter_mut().enumerate().take(height) {
+            for (x, cell) in row.iter_mut().enumerate().take(width) {
                 let dx = x as f32 - cx;
                 let dy = (y as f32 - cy) / aspect;
                 let r = (dx * dx + dy * dy).sqrt();
@@ -206,7 +206,7 @@ fn render_black_hole(elapsed: f32, width: usize, height: usize) -> Vec<String> {
 
                 brightness = brightness.clamp(0.0, 1.0);
                 let idx = (brightness * (LUMINANCE.len() - 1) as f32) as usize;
-                output[y][x] = LUMINANCE[idx.min(LUMINANCE.len() - 1)];
+                *cell = LUMINANCE[idx.min(LUMINANCE.len() - 1)];
             }
         }
     })
@@ -254,7 +254,7 @@ fn render_globe(elapsed: f32, width: usize, height: usize) -> Vec<String> {
                                 as usize;
                             output[yp as usize][xp as usize] = LUMINANCE[li];
                         } else {
-                            let li = (lum * 3.0).max(0.0).min(2.0) as usize;
+                            let li = (lum * 3.0).clamp(0.0, 2.0) as usize;
                             output[yp as usize][xp as usize] = b".,:"[li];
                         }
                     }
@@ -318,16 +318,15 @@ fn draw_line_3d(
         let x = x0 + (x1 - x0) * t;
         let y = y0 + (y1 - y0) * t;
         let z = z0 + (z1 - z0) * t;
-        if let Some((xp, yp, depth)) = project_3d(x, y, z, width, height, cam_dist) {
-            if xp >= 0
-                && (xp as usize) < width
-                && yp >= 0
-                && (yp as usize) < height
-                && depth > zbuffer[yp as usize][xp as usize]
-            {
-                zbuffer[yp as usize][xp as usize] = depth;
-                output[yp as usize][xp as usize] = ch;
-            }
+        if let Some((xp, yp, depth)) = project_3d(x, y, z, width, height, cam_dist)
+            && xp >= 0
+            && (xp as usize) < width
+            && yp >= 0
+            && (yp as usize) < height
+            && depth > zbuffer[yp as usize][xp as usize]
+        {
+            zbuffer[yp as usize][xp as usize] = depth;
+            output[yp as usize][xp as usize] = ch;
         }
     }
 }
@@ -374,10 +373,13 @@ fn render_cube(elapsed: f32, width: usize, height: usize) -> Vec<String> {
             );
         }
         for &(x, y, z) in &rotated {
-            if let Some((xp, yp, _)) = project_3d(x, y, z, width, height, cam_dist) {
-                if xp >= 0 && (xp as usize) < width && yp >= 0 && (yp as usize) < height {
-                    output[yp as usize][xp as usize] = b'@';
-                }
+            if let Some((xp, yp, _)) = project_3d(x, y, z, width, height, cam_dist)
+                && xp >= 0
+                && (xp as usize) < width
+                && yp >= 0
+                && (yp as usize) < height
+            {
+                output[yp as usize][xp as usize] = b'@';
             }
         }
     })
@@ -396,22 +398,21 @@ fn render_mobius(elapsed: f32, width: usize, height: usize) -> Vec<String> {
                 let y = (1.0 + v * half_u.cos()) * u.sin();
                 let z = v * half_u.sin();
                 let (rx, ry, rz) = rotate_xyz(x, y, z, elapsed * 0.3, rot, 0.0);
-                if let Some((xp, yp, depth)) = project_3d(rx, ry, rz, width, height, cam_dist) {
-                    if xp >= 0
-                        && (xp as usize) < width
-                        && yp >= 0
-                        && (yp as usize) < height
-                        && depth > zbuffer[yp as usize][xp as usize]
-                    {
-                        zbuffer[yp as usize][xp as usize] = depth;
-                        let nx = half_u.cos() * u.cos();
-                        let ny = half_u.cos() * u.sin();
-                        let nz = half_u.sin();
-                        let (rnx, rny, _) = rotate_xyz(nx, ny, nz, elapsed * 0.3, rot, 0.0);
-                        let lum = (rnx * 0.5 + rny * 0.5 + 0.5).clamp(0.0, 1.0);
-                        let li = (lum * (LUMINANCE.len() - 1) as f32) as usize;
-                        output[yp as usize][xp as usize] = LUMINANCE[li.min(LUMINANCE.len() - 1)];
-                    }
+                if let Some((xp, yp, depth)) = project_3d(rx, ry, rz, width, height, cam_dist)
+                    && xp >= 0
+                    && (xp as usize) < width
+                    && yp >= 0
+                    && (yp as usize) < height
+                    && depth > zbuffer[yp as usize][xp as usize]
+                {
+                    zbuffer[yp as usize][xp as usize] = depth;
+                    let nx = half_u.cos() * u.cos();
+                    let ny = half_u.cos() * u.sin();
+                    let nz = half_u.sin();
+                    let (rnx, rny, _) = rotate_xyz(nx, ny, nz, elapsed * 0.3, rot, 0.0);
+                    let lum = (rnx * 0.5 + rny * 0.5 + 0.5).clamp(0.0, 1.0);
+                    let li = (lum * (LUMINANCE.len() - 1) as f32) as usize;
+                    output[yp as usize][xp as usize] = LUMINANCE[li.min(LUMINANCE.len() - 1)];
                 }
                 v += 0.04;
             }
@@ -461,10 +462,13 @@ fn render_octahedron(elapsed: f32, width: usize, height: usize) -> Vec<String> {
             );
         }
         for &(x, y, z) in &rotated {
-            if let Some((xp, yp, _)) = project_3d(x, y, z, width, height, cam_dist) {
-                if xp >= 0 && (xp as usize) < width && yp >= 0 && (yp as usize) < height {
-                    output[yp as usize][xp as usize] = b'@';
-                }
+            if let Some((xp, yp, _)) = project_3d(x, y, z, width, height, cam_dist)
+                && xp >= 0
+                && (xp as usize) < width
+                && yp >= 0
+                && (yp as usize) < height
+            {
+                output[yp as usize][xp as usize] = b'@';
             }
         }
     })
@@ -552,22 +556,18 @@ fn render_rabbit(elapsed: f32, width: usize, height: usize) -> Vec<String> {
                     let (rpx, rpy, rpz) = rotate_xyz(px, py, pz, ax, ay, az);
                     let (rnx, rny, rnz) = rotate_xyz(nx / nm, ny / nm, nz / nm, ax, ay, az);
                     let lum = rnx * 0.3 + rny * 0.5 + rnz * 0.7;
-                    if lum > -0.2 {
-                        if let Some((xp, yp, depth)) =
+                    if lum > -0.2
+                        && let Some((xp, yp, depth)) =
                             project_3d(rpx, rpy, rpz, width, height, cam_dist)
-                        {
-                            if xp >= 0
-                                && (xp as usize) < width
-                                && yp >= 0
-                                && (yp as usize) < height
-                                && depth > zbuffer[yp as usize][xp as usize]
-                            {
-                                zbuffer[yp as usize][xp as usize] = depth;
-                                let li = (lum.max(0.0) * (LUMINANCE.len() - 1) as f32) as usize;
-                                output[yp as usize][xp as usize] =
-                                    LUMINANCE[li.min(LUMINANCE.len() - 1)];
-                            }
-                        }
+                        && xp >= 0
+                        && (xp as usize) < width
+                        && yp >= 0
+                        && (yp as usize) < height
+                        && depth > zbuffer[yp as usize][xp as usize]
+                    {
+                        zbuffer[yp as usize][xp as usize] = depth;
+                        let li = (lum.max(0.0) * (LUMINANCE.len() - 1) as f32) as usize;
+                        output[yp as usize][xp as usize] = LUMINANCE[li.min(LUMINANCE.len() - 1)];
                     }
                     phi += step;
                 }
@@ -595,16 +595,14 @@ fn render_rabbit(elapsed: f32, width: usize, height: usize) -> Vec<String> {
                     let (rpx, rpy, rpz) = rotate_xyz(px, py, pz, ax, ay, az);
                     if let Some((xp, yp, depth)) =
                         project_3d(rpx, rpy, rpz, width, height, cam_dist)
+                        && xp >= 0
+                        && (xp as usize) < width
+                        && yp >= 0
+                        && (yp as usize) < height
+                        && depth > zbuffer[yp as usize][xp as usize]
                     {
-                        if xp >= 0
-                            && (xp as usize) < width
-                            && yp >= 0
-                            && (yp as usize) < height
-                            && depth > zbuffer[yp as usize][xp as usize]
-                        {
-                            zbuffer[yp as usize][xp as usize] = depth;
-                            output[yp as usize][xp as usize] = b'@';
-                        }
+                        zbuffer[yp as usize][xp as usize] = depth;
+                        output[yp as usize][xp as usize] = b'@';
                     }
                     phi += step;
                 }

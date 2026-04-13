@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use super::{Tool, ToolContext, ToolOutput};
 use crate::bus::{Bus, BusEvent, FileOp, FileTouch};
 use crate::tui::image::{ImageDisplayParams, ImageProtocol, display_image};
@@ -204,14 +206,14 @@ impl Tool for ReadTool {
                 }
                 let line_num = i + 1;
                 if line.len() > MAX_LINE_LEN {
-                    let _ = write!(
+                    let _ = writeln!(
                         output,
-                        "{:>5}\t{}...\n",
+                        "{:>5}\t{}...",
                         line_num,
                         crate::util::truncate_str(line, MAX_LINE_LEN)
                     );
                 } else {
-                    let _ = write!(output, "{:>5}\t{}\n", line_num, line);
+                    let _ = writeln!(output, "{:>5}\t{}", line_num, line);
                 }
             }
         }
@@ -604,11 +606,11 @@ fn is_binary_file(path: &Path) -> bool {
     use std::io::Read;
     if let Ok(mut file) = std::fs::File::open(path) {
         let mut buf = [0u8; 8192];
-        if let Ok(n) = file.read(&mut buf) {
-            if n > 0 {
-                let null_count = buf[..n].iter().filter(|&&b| b == 0).count();
-                return null_count > n / 10; // More than 10% null bytes = binary
-            }
+        if let Ok(n) = file.read(&mut buf)
+            && n > 0
+        {
+            let null_count = buf[..n].iter().filter(|&&b| b == 0).count();
+            return null_count > n / 10;
         }
     }
 

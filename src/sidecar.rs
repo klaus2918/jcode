@@ -74,8 +74,6 @@ impl Sidecar {
                     ));
                     if auth::codex::load_credentials().is_ok() {
                         (SidecarBackend::OpenAI, SIDECAR_OPENAI_MODEL.to_string())
-                    } else if auth::claude::load_credentials().is_ok() {
-                        (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string())
                     } else {
                         (SidecarBackend::Claude, SIDECAR_CLAUDE_MODEL.to_string())
                     }
@@ -208,6 +206,10 @@ impl Sidecar {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "OpenAI sidecar call needs endpoint, auth, account, mode, prompts, model, and reasoning effort"
+    )]
     async fn complete_openai_with_model(
         &self,
         url: &str,
@@ -470,10 +472,10 @@ impl Default for Sidecar {
 #[allow(dead_code)]
 pub const SIDECAR_FAST_MODEL: &str = SIDECAR_OPENAI_MODEL;
 
-fn resolve_openai_request_model<'a>(
-    preferred_model: &'a str,
+fn resolve_openai_request_model(
+    preferred_model: &str,
     is_chatgpt_mode: bool,
-) -> (&'a str, Option<&'static str>) {
+) -> (&str, Option<&'static str>) {
     if !is_chatgpt_mode || preferred_model != SIDECAR_OPENAI_MODEL {
         return (preferred_model, None);
     }
@@ -650,15 +652,15 @@ fn extract_openai_response_text(result: &serde_json::Value) -> Result<String> {
     if let Some(output) = result.get("output").and_then(|v| v.as_array()) {
         for item in output {
             let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            if item_type == "message" {
-                if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
-                    for block in content {
-                        let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                        if block_type == "output_text" || block_type == "text" {
-                            if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
-                                text.push_str(t);
-                            }
-                        }
+            if item_type == "message"
+                && let Some(content) = item.get("content").and_then(|v| v.as_array())
+            {
+                for block in content {
+                    let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if (block_type == "output_text" || block_type == "text")
+                        && let Some(t) = block.get("text").and_then(|v| v.as_str())
+                    {
+                        text.push_str(t);
                     }
                 }
             }

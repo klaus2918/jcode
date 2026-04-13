@@ -1390,9 +1390,11 @@ mod tests {
 
     #[test]
     fn test_build_ambient_system_prompt_with_data() {
-        let mut state = AmbientState::default();
-        state.last_run = Some(Utc::now() - Duration::minutes(15));
-        state.total_cycles = 7;
+        let state = AmbientState {
+            last_run: Some(Utc::now() - Duration::minutes(15)),
+            total_cycles: 7,
+            ..Default::default()
+        };
 
         let queue = vec![ScheduledItem {
             id: "sched_001".into(),

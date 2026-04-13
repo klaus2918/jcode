@@ -59,9 +59,11 @@ pub(super) fn input_hint_line_height(app: &dyn TuiState) -> u16 {
         && matches!(mode, ComposerMode::SlashCommand | ComposerMode::Chat)
         && (matches!(mode, ComposerMode::SlashCommand) || !app.is_processing());
 
-    if has_suggestions || shell_mode_hint(mode).is_some() || app.next_prompt_new_session_armed() {
-        1
-    } else if app.is_processing() && !app.input().is_empty() {
+    if has_suggestions
+        || shell_mode_hint(mode).is_some()
+        || app.next_prompt_new_session_armed()
+        || (app.is_processing() && !app.input().is_empty())
+    {
         1
     } else {
         0
@@ -147,10 +149,10 @@ pub(super) fn pending_queue_preview(app: &dyn TuiState) -> Vec<String> {
                 previews.push(format!("↻ {}", msg.chars().take(100).collect::<String>()));
             }
         }
-        if let Some(msg) = app.interleave_message() {
-            if !msg.is_empty() {
-                previews.push(format!("⚡ {}", msg.chars().take(100).collect::<String>()));
-            }
+        if let Some(msg) = app.interleave_message()
+            && !msg.is_empty()
+        {
+            previews.push(format!("⚡ {}", msg.chars().take(100).collect::<String>()));
         }
     }
     for msg in app.queued_messages() {
@@ -167,10 +169,10 @@ pub(super) fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, sta
                 items.push((QueuedMsgType::Pending, msg.as_str()));
             }
         }
-        if let Some(msg) = app.interleave_message() {
-            if !msg.is_empty() {
-                items.push((QueuedMsgType::Interleave, msg));
-            }
+        if let Some(msg) = app.interleave_message()
+            && !msg.is_empty()
+        {
+            items.push((QueuedMsgType::Interleave, msg));
         }
     }
     for msg in app.queued_messages() {
@@ -1212,11 +1214,7 @@ pub(super) fn draw_input(
             .map(|l| l.width())
             .unwrap_or(prompt_len);
         let center_offset = (area.width as usize).saturating_sub(actual_line_width) / 2;
-        let cursor_offset = if cursor_line == 0 {
-            prompt_len + cursor_col
-        } else {
-            prompt_len + cursor_col
-        };
+        let cursor_offset = prompt_len + cursor_col;
         area.x + center_offset as u16 + cursor_offset as u16
     } else {
         area.x + prompt_len as u16 + cursor_col as u16

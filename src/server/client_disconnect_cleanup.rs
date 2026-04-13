@@ -13,6 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, broadcast};
 
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+
 const RELOAD_DISCONNECT_MARKER_MAX_AGE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,9 +48,12 @@ async fn session_has_live_successor(
         .any(|info| info.session_id == session_id)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "disconnect cleanup updates sessions, swarms, files, channels, debug state, and shutdown signals together"
+)]
 pub(super) async fn cleanup_client_connection(
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     client_session_id: &str,
     client_is_processing: bool,
     processing_task: &mut Option<tokio::task::JoinHandle<()>>,
@@ -58,10 +64,8 @@ pub(super) async fn cleanup_client_connection(
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
     files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     client_debug_state: &Arc<RwLock<ClientDebugState>>,
     client_debug_id: &str,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,

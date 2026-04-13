@@ -215,18 +215,18 @@ pub(super) async fn maybe_handle_swarm_write_command(
             };
             let members = swarm_members.read().await;
             for sid in &swarm_session_ids {
-                if sid != acting_session {
-                    if let Some(member) = members.get(sid) {
-                        let _ = member.event_tx.send(ServerEvent::Notification {
-                            from_session: acting_session.to_string(),
-                            from_name: friendly_name.clone(),
-                            notification_type: NotificationType::SharedContext {
-                                key: key.clone(),
-                                value: value.clone(),
-                            },
-                            message: format!("Shared context: {} = {}", key, value),
-                        });
-                    }
+                if sid != acting_session
+                    && let Some(member) = members.get(sid)
+                {
+                    let _ = member.event_tx.send(ServerEvent::Notification {
+                        from_session: acting_session.to_string(),
+                        from_name: friendly_name.clone(),
+                        notification_type: NotificationType::SharedContext {
+                            key: key.clone(),
+                            value: value.clone(),
+                        },
+                        message: format!("Shared context: {} = {}", key, value),
+                    });
                 }
             }
 

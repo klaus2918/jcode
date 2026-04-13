@@ -1008,7 +1008,7 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
         eprintln!("  - GNOME: Settings > Keyboard > Custom Shortcuts");
         eprintln!("  - KDE: System Settings > Shortcuts > Custom Shortcuts");
         eprintln!("  - macOS: Shortcuts.app or System Settings > Keyboard > Shortcuts");
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(windows)]

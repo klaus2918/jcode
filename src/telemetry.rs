@@ -516,6 +516,10 @@ impl TurnTelemetry {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "workflow flags are derived from collected per-turn and per-session counters"
+)]
 fn workflow_flags_from_counts(
     had_user_prompt: bool,
     file_write_calls: u32,
@@ -629,10 +633,10 @@ pub fn is_enabled() -> bool {
     if std::env::var("JCODE_NO_TELEMETRY").is_ok() || std::env::var("DO_NOT_TRACK").is_ok() {
         return false;
     }
-    if let Ok(dir) = storage::jcode_dir() {
-        if dir.join("no_telemetry").exists() {
-            return false;
-        }
+    if let Ok(dir) = storage::jcode_dir()
+        && dir.join("no_telemetry").exists()
+    {
+        return false;
     }
     true
 }
@@ -1355,10 +1359,10 @@ fn mark_tool_feature_usage(state: &mut SessionTelemetry, name: &str, input: &Val
         }
         if let Some(server) = mcp_server_name(name, input) {
             state.unique_mcp_servers.insert(server);
-            if let Some(turn) = state.current_turn.as_mut() {
-                if let Some(server) = mcp_server_name(name, input) {
-                    turn.unique_mcp_servers.insert(server);
-                }
+            if let Some(turn) = state.current_turn.as_mut()
+                && let Some(server) = mcp_server_name(name, input)
+            {
+                turn.unique_mcp_servers.insert(server);
             }
         }
     }
@@ -1388,10 +1392,10 @@ fn mark_tool_success_side_effects(state: &mut SessionTelemetry, name: &str, inpu
     if state.first_tool_success_ms.is_none() {
         state.first_tool_success_ms = Some(now_ms_since(state.started_at));
     }
-    if let Some(turn) = state.current_turn.as_mut() {
-        if turn.first_tool_success_ms.is_none() {
-            turn.first_tool_success_ms = Some(now_ms_since(turn.started_at));
-        }
+    if let Some(turn) = state.current_turn.as_mut()
+        && turn.first_tool_success_ms.is_none()
+    {
+        turn.first_tool_success_ms = Some(now_ms_since(turn.started_at));
     }
 
     if matches!(
@@ -1404,12 +1408,10 @@ fn mark_tool_success_side_effects(state: &mut SessionTelemetry, name: &str, inpu
     if matches!(
         name,
         "write" | "edit" | "multiedit" | "patch" | "apply_patch"
-    ) {
-        if let Some(turn) = state.current_turn.as_mut() {
-            if turn.first_file_edit_ms.is_none() {
-                turn.first_file_edit_ms = Some(now_ms_since(turn.started_at));
-            }
-        }
+    ) && let Some(turn) = state.current_turn.as_mut()
+        && turn.first_file_edit_ms.is_none()
+    {
+        turn.first_file_edit_ms = Some(now_ms_since(turn.started_at));
     }
 
     if name == "memory" {
@@ -1421,13 +1423,13 @@ fn mark_tool_success_side_effects(state: &mut SessionTelemetry, name: &str, inpu
 }
 
 pub fn record_command_family(command: &str) {
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            mark_command_family_usage(state, command);
-            if let Some(turn) = state.current_turn.as_mut() {
-                update_turn_activity_timestamp(turn, Instant::now());
-            }
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        mark_command_family_usage(state, command);
+        if let Some(turn) = state.current_turn.as_mut() {
+            update_turn_activity_timestamp(turn, Instant::now());
         }
     }
     maybe_emit_session_start();
@@ -1538,7 +1540,7 @@ fn sanitize_telemetry_label(value: &str) -> String {
         if ch == '\u{1b}' {
             if matches!(chars.peek(), Some('[')) {
                 let _ = chars.next();
-                while let Some(next) = chars.next() {
+                for next in chars.by_ref() {
                     if ('@'..='~').contains(&next) {
                         break;
                     }
@@ -1821,10 +1823,10 @@ pub fn record_install_if_first_run() {
         is_ci: ci,
         ran_from_cargo: from_cargo,
     };
-    if let Ok(payload) = serde_json::to_value(&event) {
-        if send_payload(payload, DeliveryMode::Blocking(BLOCKING_INSTALL_TIMEOUT)) {
-            mark_install_recorded(&id);
-        }
+    if let Ok(payload) = serde_json::to_value(&event)
+        && send_payload(payload, DeliveryMode::Blocking(BLOCKING_INSTALL_TIMEOUT))
+    {
+        mark_install_recorded(&id);
     }
     if first_run {
         emit_onboarding_step_once("first_run", None, None);
@@ -2020,52 +2022,52 @@ fn begin_session_with_mode(provider: &str, model: &str, resumed_session: bool) {
 
 pub fn record_turn() {
     let id = get_or_create_id();
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            let now = Instant::now();
-            let previous_last_activity = state
-                .current_turn
-                .as_ref()
-                .map(|turn| turn.last_activity_at);
-            if let Some(ref id) = id {
-                finalize_current_turn(id, state, now, "next_user_prompt", DeliveryMode::Background);
-            }
-            state.turns += 1;
-            state.had_user_prompt = true;
-            let idle_before_turn_ms = previous_last_activity.and_then(|last| {
-                now.checked_duration_since(last)
-                    .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-            });
-            state.current_turn = Some(TurnTelemetry::new(
-                state.turns,
-                now,
-                now_ms_since(state.started_at),
-                idle_before_turn_ms,
-            ));
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        let now = Instant::now();
+        let previous_last_activity = state
+            .current_turn
+            .as_ref()
+            .map(|turn| turn.last_activity_at);
+        if let Some(ref id) = id {
+            finalize_current_turn(id, state, now, "next_user_prompt", DeliveryMode::Background);
         }
+        state.turns += 1;
+        state.had_user_prompt = true;
+        let idle_before_turn_ms = previous_last_activity.and_then(|last| {
+            now.checked_duration_since(last)
+                .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        });
+        state.current_turn = Some(TurnTelemetry::new(
+            state.turns,
+            now,
+            now_ms_since(state.started_at),
+            idle_before_turn_ms,
+        ));
     }
     emit_onboarding_step_once("first_prompt_sent", None, None);
     maybe_emit_session_start();
 }
 
 pub fn record_assistant_response() {
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            let now = Instant::now();
-            if state.first_assistant_response_ms.is_none() {
-                state.first_assistant_response_ms = Some(now_ms_since(state.started_at));
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        let now = Instant::now();
+        if state.first_assistant_response_ms.is_none() {
+            state.first_assistant_response_ms = Some(now_ms_since(state.started_at));
+        }
+        state.had_assistant_response = true;
+        state.assistant_responses += 1;
+        if let Some(turn) = state.current_turn.as_mut() {
+            if turn.first_assistant_response_ms.is_none() {
+                turn.first_assistant_response_ms = Some(now_ms_since(turn.started_at));
             }
-            state.had_assistant_response = true;
-            state.assistant_responses += 1;
-            if let Some(turn) = state.current_turn.as_mut() {
-                if turn.first_assistant_response_ms.is_none() {
-                    turn.first_assistant_response_ms = Some(now_ms_since(turn.started_at));
-                }
-                turn.assistant_responses += 1;
-                update_turn_activity_timestamp(turn, now);
-            }
+            turn.assistant_responses += 1;
+            update_turn_activity_timestamp(turn, now);
         }
     }
     emit_onboarding_step_once("first_assistant_response", None, None);
@@ -2073,89 +2075,89 @@ pub fn record_assistant_response() {
 }
 
 pub fn record_memory_injected(_count: usize, _age_ms: u64) {
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            state.feature_memory_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_memory_used = true;
-                update_turn_activity_timestamp(turn, Instant::now());
-            }
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        state.feature_memory_used = true;
+        if let Some(turn) = state.current_turn.as_mut() {
+            turn.feature_memory_used = true;
+            update_turn_activity_timestamp(turn, Instant::now());
         }
     }
     maybe_emit_session_start();
 }
 
 pub fn record_tool_call() {
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            let now = Instant::now();
-            state.tool_calls += 1;
-            if state.first_tool_call_ms.is_none() {
-                state.first_tool_call_ms = Some(now_ms_since(state.started_at));
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        let now = Instant::now();
+        state.tool_calls += 1;
+        if state.first_tool_call_ms.is_none() {
+            state.first_tool_call_ms = Some(now_ms_since(state.started_at));
+        }
+        if let Some(turn) = state.current_turn.as_mut() {
+            turn.tool_calls += 1;
+            if turn.first_tool_call_ms.is_none() {
+                turn.first_tool_call_ms = Some(now_ms_since(turn.started_at));
             }
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.tool_calls += 1;
-                if turn.first_tool_call_ms.is_none() {
-                    turn.first_tool_call_ms = Some(now_ms_since(turn.started_at));
-                }
-                update_turn_activity_timestamp(turn, now);
-            }
+            update_turn_activity_timestamp(turn, now);
         }
     }
     maybe_emit_session_start();
 }
 
 pub fn record_tool_failure() {
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            state.tool_failures += 1;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.tool_failures += 1;
-                update_turn_activity_timestamp(turn, Instant::now());
-            }
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        state.tool_failures += 1;
+        if let Some(turn) = state.current_turn.as_mut() {
+            turn.tool_failures += 1;
+            update_turn_activity_timestamp(turn, Instant::now());
         }
     }
     maybe_emit_session_start();
 }
 
 pub fn record_connection_type(connection: &str) {
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            let normalized = sanitize_telemetry_label(connection).to_ascii_lowercase();
-            if normalized.contains("websocket/persistent-reuse") {
-                state.transport_persistent_ws_reuse += 1;
-            } else if normalized.contains("websocket/persistent-fresh")
-                || normalized.contains("websocket/persistent")
-            {
-                state.transport_persistent_ws_fresh += 1;
-            } else if normalized.contains("native http2") {
-                state.transport_native_http2 += 1;
-            } else if normalized.contains("cli subprocess") {
-                state.transport_cli_subprocess += 1;
-            } else if normalized.starts_with("https") {
-                state.transport_https += 1;
-            } else {
-                state.transport_other += 1;
-            }
-            if let Some(turn) = state.current_turn.as_mut() {
-                update_turn_activity_timestamp(turn, Instant::now());
-            }
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        let normalized = sanitize_telemetry_label(connection).to_ascii_lowercase();
+        if normalized.contains("websocket/persistent-reuse") {
+            state.transport_persistent_ws_reuse += 1;
+        } else if normalized.contains("websocket/persistent-fresh")
+            || normalized.contains("websocket/persistent")
+        {
+            state.transport_persistent_ws_fresh += 1;
+        } else if normalized.contains("native http2") {
+            state.transport_native_http2 += 1;
+        } else if normalized.contains("cli subprocess") {
+            state.transport_cli_subprocess += 1;
+        } else if normalized.starts_with("https") {
+            state.transport_https += 1;
+        } else {
+            state.transport_other += 1;
+        }
+        if let Some(turn) = state.current_turn.as_mut() {
+            update_turn_activity_timestamp(turn, Instant::now());
         }
     }
     maybe_emit_session_start();
 }
 
 pub fn record_error(category: ErrorCategory) {
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            if let Some(turn) = state.current_turn.as_mut() {
-                update_turn_activity_timestamp(turn, Instant::now());
-            }
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        if let Some(turn) = state.current_turn.as_mut() {
+            update_turn_activity_timestamp(turn, Instant::now());
         }
     }
     match category {
@@ -2179,12 +2181,12 @@ pub fn record_error(category: ErrorCategory) {
 }
 
 pub fn record_provider_switch() {
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            if let Some(turn) = state.current_turn.as_mut() {
-                update_turn_activity_timestamp(turn, Instant::now());
-            }
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        if let Some(turn) = state.current_turn.as_mut() {
+            update_turn_activity_timestamp(turn, Instant::now());
         }
     }
     PROVIDER_SWITCHES.fetch_add(1, Ordering::Relaxed);
@@ -2192,12 +2194,12 @@ pub fn record_provider_switch() {
 }
 
 pub fn record_model_switch() {
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            if let Some(turn) = state.current_turn.as_mut() {
-                update_turn_activity_timestamp(turn, Instant::now());
-            }
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        if let Some(turn) = state.current_turn.as_mut() {
+            update_turn_activity_timestamp(turn, Instant::now());
         }
     }
     MODEL_SWITCHES.fetch_add(1, Ordering::Relaxed);
@@ -2205,31 +2207,31 @@ pub fn record_model_switch() {
 }
 
 pub fn record_tool_execution(name: &str, input: &Value, succeeded: bool, latency_ms: u64) {
-    if let Ok(mut guard) = SESSION_STATE.lock() {
-        if let Some(ref mut state) = *guard {
-            observe_session_concurrency(state);
-            let now = Instant::now();
-            state.executed_tool_calls += 1;
-            state.tool_latency_total_ms = state.tool_latency_total_ms.saturating_add(latency_ms);
-            state.tool_latency_max_ms = state.tool_latency_max_ms.max(latency_ms);
+    if let Ok(mut guard) = SESSION_STATE.lock()
+        && let Some(ref mut state) = *guard
+    {
+        observe_session_concurrency(state);
+        let now = Instant::now();
+        state.executed_tool_calls += 1;
+        state.tool_latency_total_ms = state.tool_latency_total_ms.saturating_add(latency_ms);
+        state.tool_latency_max_ms = state.tool_latency_max_ms.max(latency_ms);
+        if let Some(turn) = state.current_turn.as_mut() {
+            turn.executed_tool_calls += 1;
+            turn.tool_latency_total_ms = turn.tool_latency_total_ms.saturating_add(latency_ms);
+            turn.tool_latency_max_ms = turn.tool_latency_max_ms.max(latency_ms);
+            update_turn_activity_timestamp(turn, now);
+        }
+        mark_tool_feature_usage(state, name, input);
+        if succeeded {
+            state.executed_tool_successes += 1;
             if let Some(turn) = state.current_turn.as_mut() {
-                turn.executed_tool_calls += 1;
-                turn.tool_latency_total_ms = turn.tool_latency_total_ms.saturating_add(latency_ms);
-                turn.tool_latency_max_ms = turn.tool_latency_max_ms.max(latency_ms);
-                update_turn_activity_timestamp(turn, now);
+                turn.executed_tool_successes += 1;
             }
-            mark_tool_feature_usage(state, name, input);
-            if succeeded {
-                state.executed_tool_successes += 1;
-                if let Some(turn) = state.current_turn.as_mut() {
-                    turn.executed_tool_successes += 1;
-                }
-                mark_tool_success_side_effects(state, name, input);
-            } else {
-                state.executed_tool_failures += 1;
-                if let Some(turn) = state.current_turn.as_mut() {
-                    turn.executed_tool_failures += 1;
-                }
+            mark_tool_success_side_effects(state, name, input);
+        } else {
+            state.executed_tool_failures += 1;
+            if let Some(turn) = state.current_turn.as_mut() {
+                turn.executed_tool_failures += 1;
             }
         }
     }

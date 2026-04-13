@@ -548,10 +548,10 @@ impl Provider for GeminiProvider {
                 }
                 if let Some(content) = candidate.content {
                     for part in content.parts {
-                        if let Some(text) = part.text {
-                            if !text.is_empty() {
-                                let _ = tx.send(Ok(StreamEvent::TextDelta(text))).await;
-                            }
+                        if let Some(text) = part.text
+                            && !text.is_empty()
+                        {
+                            let _ = tx.send(Ok(StreamEvent::TextDelta(text))).await;
                         }
                         if let Some(function_call) = part.function_call {
                             let raw_call_id = function_call
@@ -787,10 +787,10 @@ fn build_contents(messages: &[Message]) -> Vec<GeminiContent> {
 fn tool_name_from_tool_result(tool_use_id: &str, messages: &[Message]) -> String {
     for message in messages.iter().rev() {
         for block in &message.content {
-            if let crate::message::ContentBlock::ToolUse { id, name, .. } = block {
-                if id == tool_use_id {
-                    return name.clone();
-                }
+            if let crate::message::ContentBlock::ToolUse { id, name, .. } = block
+                && id == tool_use_id
+            {
+                return name.clone();
             }
         }
     }

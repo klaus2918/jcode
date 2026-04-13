@@ -330,10 +330,10 @@ impl MemoryGraph {
                     reverse.retain(|src| src != id);
                 }
                 // Decrement tag count if HasTag
-                if matches!(edge.kind, EdgeKind::HasTag) {
-                    if let Some(tag) = self.tags.get_mut(&edge.target) {
-                        tag.count = tag.count.saturating_sub(1);
-                    }
+                if matches!(edge.kind, EdgeKind::HasTag)
+                    && let Some(tag) = self.tags.get_mut(&edge.target)
+                {
+                    tag.count = tag.count.saturating_sub(1);
                 }
             }
         }
@@ -377,13 +377,12 @@ impl MemoryGraph {
         let tag_id = format!("tag:{}", tag_name);
 
         // Check if edge already exists
-        if let Some(edges) = self.edges.get(memory_id) {
-            if edges
+        if let Some(edges) = self.edges.get(memory_id)
+            && edges
                 .iter()
                 .any(|e| e.target == tag_id && matches!(e.kind, EdgeKind::HasTag))
-            {
-                return; // Already tagged
-            }
+        {
+            return;
         }
 
         // Add edge
@@ -395,11 +394,11 @@ impl MemoryGraph {
         }
 
         // Update memory's tags list
-        if let Some(memory) = self.memories.get_mut(memory_id) {
-            if !memory.tags.contains(&tag_name.to_string()) {
-                memory.tags.push(tag_name.to_string());
-                memory.refresh_search_text();
-            }
+        if let Some(memory) = self.memories.get_mut(memory_id)
+            && !memory.tags.contains(&tag_name.to_string())
+        {
+            memory.tags.push(tag_name.to_string());
+            memory.refresh_search_text();
         }
     }
 
@@ -470,10 +469,10 @@ impl MemoryGraph {
     /// Add an edge between two nodes
     pub fn add_edge(&mut self, from: &str, to: &str, kind: EdgeKind) {
         // Check if edge already exists
-        if let Some(edges) = self.edges.get(from) {
-            if edges.iter().any(|e| e.target == to && e.kind == kind) {
-                return; // Already exists
-            }
+        if let Some(edges) = self.edges.get(from)
+            && edges.iter().any(|e| e.target == to && e.kind == kind)
+        {
+            return;
         }
 
         self.add_edge_internal(from, to, kind);
@@ -615,7 +614,7 @@ impl MemoryGraph {
         }
 
         // Keep only the top-scoring results
-        top_k_scored(results.into_iter(), max_results)
+        top_k_scored(results, max_results)
     }
 
     // ==================== Migration ====================
@@ -831,7 +830,7 @@ mod tests {
         let id_c = graph.add_memory(make_test_memory("Memory C").with_tags(vec!["async".into()]));
 
         // Start from A with score 1.0
-        let results = graph.cascade_retrieve(&[id_a.clone()], &[1.0], 2, 10);
+        let results = graph.cascade_retrieve(std::slice::from_ref(&id_a), &[1.0], 2, 10);
 
         // Should find A (seed), B (via rust tag), C (via async tag)
         assert!(results.iter().any(|(id, _)| id == &id_a));
@@ -865,7 +864,7 @@ mod tests {
         graph.link_memories(&id_a, &id_c, 0.8);
         graph.link_memories(&id_a, &id_d, 0.7);
 
-        let results = graph.cascade_retrieve(&[id_a.clone()], &[1.0], 1, 3);
+        let results = graph.cascade_retrieve(std::slice::from_ref(&id_a), &[1.0], 1, 3);
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].0, id_a);
@@ -888,12 +887,12 @@ mod tests {
         let _id_d = graph.add_memory(make_test_memory("D").with_tags(vec!["t3".into()]));
 
         // Depth 1: should find A, B (via t1)
-        let results_d1 = graph.cascade_retrieve(&[id_a.clone()], &[1.0], 1, 10);
+        let results_d1 = graph.cascade_retrieve(std::slice::from_ref(&id_a), &[1.0], 1, 10);
         assert!(results_d1.iter().any(|(id, _)| id == &id_a));
         assert!(results_d1.iter().any(|(id, _)| id == &id_b));
 
         // Depth 2: should find A, B, C (via t1->t2)
-        let results_d2 = graph.cascade_retrieve(&[id_a.clone()], &[1.0], 2, 10);
+        let results_d2 = graph.cascade_retrieve(std::slice::from_ref(&id_a), &[1.0], 2, 10);
         assert!(results_d2.iter().any(|(id, _)| id == &id_c));
     }
 
@@ -909,7 +908,7 @@ mod tests {
         graph.link_memories(&id_a, &id_b, 0.8);
         graph.link_memories(&id_b, &id_c, 0.7);
 
-        let results = graph.cascade_retrieve(&[id_a.clone()], &[1.0], 2, 10);
+        let results = graph.cascade_retrieve(std::slice::from_ref(&id_a), &[1.0], 2, 10);
 
         // Should find all three
         assert!(results.iter().any(|(id, _)| id == &id_a));

@@ -113,10 +113,10 @@ pub(super) async fn maybe_handle_event_subscription_command<W: AsyncWrite + Unpi
                     SwarmEventType::StatusChange { .. } => "status_change",
                     SwarmEventType::MemberChange { .. } => "member_change",
                 };
-                if let Some(ref filter) = type_filter {
-                    if !filter.iter().any(|f| f == event_type) {
-                        continue;
-                    }
+                if let Some(ref filter) = type_filter
+                    && !filter.iter().any(|f| f == event_type)
+                {
+                    continue;
                 }
                 let timestamp_unix = event
                     .absolute_time

@@ -170,10 +170,10 @@ pub fn refresh_linked_page_content(
         if page.source != SidePanelPageSource::LinkedFile {
             continue;
         }
-        if let Some(target_page_id) = target_page_id {
-            if page.id != target_page_id {
-                continue;
-            }
+        if let Some(target_page_id) = target_page_id
+            && page.id != target_page_id
+        {
+            continue;
         }
 
         let next_revision = linked_file_revision(Path::new(&page.file_path));

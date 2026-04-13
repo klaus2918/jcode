@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
 use super::client_state::{
     HistoryPayloadMode, send_history, session_activity_snapshot, spawn_model_prefetch_update,
 };
@@ -22,6 +24,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 
 fn session_was_interrupted_by_reload(agent: &Agent) -> bool {
     let messages = agent.messages();
@@ -77,7 +82,7 @@ pub(super) async fn handle_clear_session(
     agent: &Arc<Mutex<Agent>>,
     provider: &Arc<dyn Provider>,
     registry: &Registry,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
@@ -85,10 +90,8 @@ pub(super) async fn handle_clear_session(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
     files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
@@ -266,27 +269,25 @@ async fn ensure_client_swarm_member(
         }
     }
 
-    if inserted {
-        if let Some(ref swarm_id_ref) = derived_swarm_id {
-            let mut swarms = swarms_by_id.write().await;
-            swarms
-                .entry(swarm_id_ref.to_string())
-                .or_insert_with(HashSet::new)
-                .insert(client_session_id.to_string());
-            drop(swarms);
-            super::record_swarm_event(
-                event_history,
-                event_counter,
-                swarm_event_tx,
-                client_session_id.to_string(),
-                member_name,
-                Some(swarm_id_ref.to_string()),
-                crate::server::SwarmEventType::MemberChange {
-                    action: "joined".to_string(),
-                },
-            )
-            .await;
-        }
+    if inserted && let Some(ref swarm_id_ref) = derived_swarm_id {
+        let mut swarms = swarms_by_id.write().await;
+        swarms
+            .entry(swarm_id_ref.to_string())
+            .or_insert_with(HashSet::new)
+            .insert(client_session_id.to_string());
+        drop(swarms);
+        super::record_swarm_event(
+            event_history,
+            event_counter,
+            swarm_event_tx,
+            client_session_id.to_string(),
+            member_name,
+            Some(swarm_id_ref.to_string()),
+            crate::server::SwarmEventType::MemberChange {
+                action: "joined".to_string(),
+            },
+        )
+        .await;
     }
 
     inserted
@@ -307,10 +308,8 @@ pub(super) async fn handle_subscribe(
     swarm_enabled: bool,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
@@ -437,10 +436,10 @@ pub(super) async fn handle_subscribe(
             }
             broadcast_swarm_status(&old_id, swarm_members, swarms_by_id).await;
         }
-        if let Some(new_id) = updated_swarm_id {
-            if old_swarm_id.as_ref() != Some(&new_id) {
-                broadcast_swarm_status(&new_id, swarm_members, swarms_by_id).await;
-            }
+        if let Some(new_id) = updated_swarm_id
+            && old_swarm_id.as_ref() != Some(&new_id)
+        {
+            broadcast_swarm_status(&new_id, swarm_members, swarms_by_id).await;
         }
     }
 
@@ -560,7 +559,7 @@ async fn cleanup_detached_source_session_if_unused(
     old_session_id: &str,
     client_connection_id: &str,
     source_agent: &Arc<Mutex<Agent>>,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
@@ -568,10 +567,8 @@ async fn cleanup_detached_source_session_if_unused(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
     files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
 ) {
@@ -649,7 +646,7 @@ pub(super) async fn handle_resume_session(
     agent: &Arc<Mutex<Agent>>,
     provider: &Arc<dyn Provider>,
     registry: &Registry,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
@@ -658,10 +655,8 @@ pub(super) async fn handle_resume_session(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
     files_touched_by_session: &Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
-    channel_subscriptions: &Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
-    channel_subscriptions_by_session: &Arc<
-        RwLock<HashMap<String, HashMap<String, HashSet<String>>>>,
-    >,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     client_count: &Arc<RwLock<usize>>,

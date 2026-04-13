@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
 use super::ServerIdentity;
 use super::debug_jobs::{DebugJob, maybe_start_async_debug_job};
 use crate::agent::Agent;
@@ -10,8 +12,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 
+type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+
 pub(super) async fn resolve_debug_session(
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     session_id: &Arc<RwLock<String>>,
     requested: Option<String>,
 ) -> Result<(String, Arc<Mutex<Agent>>)> {

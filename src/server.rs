@@ -60,10 +60,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OnceCell, RwLock, broadcast};
 
+pub(super) type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+pub(super) type ChannelSubscriptions =
+    Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+
 async fn run_background_task_message_in_live_session_if_idle(
     session_id: &str,
     message: &str,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
 ) -> bool {
     let agent = {
@@ -125,7 +129,7 @@ async fn run_background_task_message_in_live_session_if_idle(
 
 async fn dispatch_background_task_completion(
     task: &crate::bus::BackgroundTaskCompleted,
-    sessions: &Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>,
+    sessions: &SessionAgents,
     soft_interrupt_queues: &SessionInterruptQueues,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
 ) {
@@ -282,10 +286,9 @@ pub struct Server {
     /// Background debug jobs (async debug commands)
     debug_jobs: Arc<RwLock<HashMap<String, DebugJob>>>,
     /// Channel subscriptions (swarm_id -> channel -> session_ids)
-    channel_subscriptions: Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions: ChannelSubscriptions,
     /// Reverse index for channel subscriptions: session_id -> swarm_id -> channels
-    channel_subscriptions_by_session:
-        Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>,
+    channel_subscriptions_by_session: ChannelSubscriptions,
     /// Event history for real-time event subscription (ring buffer)
     event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     /// Counter for event IDs
@@ -628,6 +631,10 @@ impl Server {
     }
 
     /// Monitor the global Bus for FileTouch events and detect conflicts
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "bus monitor needs file state, swarm state, sessions, queues, and event history sinks"
+    )]
     async fn monitor_bus(
         file_touches: Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
         files_touched_by_session: Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,

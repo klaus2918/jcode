@@ -478,7 +478,7 @@ First read only the conversation history you actually need:\n\
 2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
 3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request, constraints, preferences, or acceptance criteria.\n\
 \n\
-{}\
+{}{}\
 Then determine whether a judgment pass is needed. It is needed if the recent work likely changed code, docs, tests, tooling behavior, repo state, or made claims about what was completed. If the recent turn was purely conversational or administrative, no judgment is needed.\n\
 \n\
 If no judgment is needed:\n\
@@ -501,11 +501,8 @@ If judgment is needed:\n\
 \n\
 Do not ask the user anything unless absolutely necessary. Keep your own session concise. Address the DM to the parent agent, not to the user.",
         parent_session_id,
-        format!(
-            "{}{}",
-            judge_session_visible_context_notice(),
-            review_session_read_only_guardrails()
-        ),
+        judge_session_visible_context_notice(),
+        review_session_read_only_guardrails(),
         parent_session_id,
         parent_session_id
     )
@@ -2504,7 +2501,7 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         let new_state = !app.memory_enabled;
         app.set_memory_feature_enabled(new_state);
         let label = if new_state { "ON" } else { "OFF" };
-        app.set_status_notice(&format!("Memory: {}", label));
+        app.set_status_notice(format!("Memory: {}", label));
         app.push_display_message(DisplayMessage::system(format!(
             "Memory feature {} for this session.",
             if new_state { "enabled" } else { "disabled" }
@@ -3272,18 +3269,18 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     if trimmed == "/config edit" {
         use crate::config::Config;
         if let Some(path) = Config::path() {
-            if !path.exists() {
-                if let Err(e) = Config::create_default_config_file() {
-                    app.push_display_message(DisplayMessage {
-                        role: "system".to_string(),
-                        content: format!("Failed to create config file: {}", e),
-                        tool_calls: vec![],
-                        duration_secs: None,
-                        title: None,
-                        tool_data: None,
-                    });
-                    return true;
-                }
+            if !path.exists()
+                && let Err(e) = Config::create_default_config_file()
+            {
+                app.push_display_message(DisplayMessage {
+                    role: "system".to_string(),
+                    content: format!("Failed to create config file: {}", e),
+                    tool_calls: vec![],
+                    duration_secs: None,
+                    title: None,
+                    tool_data: None,
+                });
+                return true;
             }
 
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());

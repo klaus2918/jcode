@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
 //! Server registry for multi-server architecture
 //!
 //! Tracks running servers in `~/.jcode/servers.json` for discovery by clients.
@@ -151,13 +153,12 @@ impl ServerRegistry {
             }
         }
         for name in &remaining {
-            if let Some(info) = self.servers.get(name) {
-                if let Some((newest_name, _)) = socket_to_newest.get(&info.socket) {
-                    if newest_name != name {
-                        removed.push(name.clone());
-                        self.servers.remove(name);
-                    }
-                }
+            if let Some(info) = self.servers.get(name)
+                && let Some((newest_name, _)) = socket_to_newest.get(&info.socket)
+                && newest_name != name
+            {
+                removed.push(name.clone());
+                self.servers.remove(name);
             }
         }
 
@@ -170,10 +171,10 @@ impl ServerRegistry {
 
     /// Add a session to a server
     pub fn add_session(&mut self, server_name: &str, session_name: &str) {
-        if let Some(info) = self.servers.get_mut(server_name) {
-            if !info.sessions.contains(&session_name.to_string()) {
-                info.sessions.push(session_name.to_string());
-            }
+        if let Some(info) = self.servers.get_mut(server_name)
+            && !info.sessions.contains(&session_name.to_string())
+        {
+            info.sessions.push(session_name.to_string());
         }
     }
 

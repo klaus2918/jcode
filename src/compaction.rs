@@ -1540,22 +1540,22 @@ impl CompactionManager {
 
         for msg in active.iter_mut() {
             for block in msg.content.iter_mut() {
-                if let ContentBlock::ToolResult { content, .. } = block {
-                    if content.len() > EMERGENCY_TOOL_RESULT_MAX_CHARS {
-                        let original_len = content.len();
-                        let keep_head = EMERGENCY_TOOL_RESULT_MAX_CHARS / 2;
-                        let keep_tail = EMERGENCY_TOOL_RESULT_MAX_CHARS / 4;
-                        let head = &content[..keep_head];
-                        let tail_start = original_len.saturating_sub(keep_tail);
-                        let tail = &content[tail_start..];
-                        *content = format!(
-                            "{}\n\n... [{} chars truncated for context recovery] ...\n\n{}",
-                            head,
-                            original_len - keep_head - keep_tail,
-                            tail,
-                        );
-                        truncated += 1;
-                    }
+                if let ContentBlock::ToolResult { content, .. } = block
+                    && content.len() > EMERGENCY_TOOL_RESULT_MAX_CHARS
+                {
+                    let original_len = content.len();
+                    let keep_head = EMERGENCY_TOOL_RESULT_MAX_CHARS / 2;
+                    let keep_tail = EMERGENCY_TOOL_RESULT_MAX_CHARS / 4;
+                    let head = &content[..keep_head];
+                    let tail_start = original_len.saturating_sub(keep_tail);
+                    let tail = &content[tail_start..];
+                    *content = format!(
+                        "{}\n\n... [{} chars truncated for context recovery] ...\n\n{}",
+                        head,
+                        original_len - keep_head - keep_tail,
+                        tail,
+                    );
+                    truncated += 1;
                 }
             }
         }
@@ -1820,7 +1820,7 @@ mod tests {
         let messages = vec![make_text_message(Role::User, &"x".repeat(100))];
         let estimate = manager.token_estimate_with(&messages);
         // With DEFAULT_TOKEN_BUDGET and 18k overhead: 25 + 18000 = 18025
-        assert!(estimate >= 18_000 && estimate < 19_000);
+        assert!((18_000..19_000).contains(&estimate));
     }
 
     #[test]

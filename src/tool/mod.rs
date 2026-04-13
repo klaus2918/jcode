@@ -688,10 +688,10 @@ impl Registry {
                 let mut server_counts: std::collections::BTreeMap<String, usize> =
                     std::collections::BTreeMap::new();
                 for (name, tool) in &tools {
-                    if let Some(rest) = name.strip_prefix("mcp__") {
-                        if let Some((server, _)) = rest.split_once("__") {
-                            *server_counts.entry(server.to_string()).or_default() += 1;
-                        }
+                    if let Some(rest) = name.strip_prefix("mcp__")
+                        && let Some((server, _)) = rest.split_once("__")
+                    {
+                        *server_counts.entry(server.to_string()).or_default() += 1;
                     }
                     registry.register(name.clone(), tool.clone()).await;
                 }
