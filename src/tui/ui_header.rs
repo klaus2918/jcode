@@ -334,6 +334,7 @@ fn semver_core() -> String {
         .to_string()
 }
 
+#[cfg(test)]
 fn semver_minor() -> String {
     let core = semver_core();
     let parts: Vec<&str> = core.split('.').collect();
@@ -344,6 +345,7 @@ fn semver_minor() -> String {
     }
 }
 
+#[cfg(test)]
 fn version_display_candidates() -> Vec<String> {
     let full = format!("jcode {}", semver());
     let core = format!("jcode {}", semver_core());
