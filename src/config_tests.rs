@@ -1,4 +1,3 @@
-
 use super::{AmbientConfig, Config, DiffDisplayMode, DisplayConfig};
 use std::path::Path;
 

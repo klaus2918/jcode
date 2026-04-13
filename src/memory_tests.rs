@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::message::{ContentBlock, Message, Role};
 use serde_json::json;

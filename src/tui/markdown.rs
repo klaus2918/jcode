@@ -3,7 +3,6 @@
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::prelude::*;
 use serde::Serialize;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex};
@@ -13,11 +12,25 @@ use syntect::highlighting::{Style as SynStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::{DiagramDisplayMode, MarkdownSpacingMode, config};
+use crate::config::{DiagramDisplayMode, MarkdownSpacingMode};
 use crate::tui::mermaid;
 use crate::tui::ui::{CopyTargetKind, RawCopyTarget};
+#[path = "markdown_context.rs"]
+mod context;
 #[path = "markdown_wrap.rs"]
 mod wrap;
+
+#[cfg(test)]
+pub(crate) use context::with_markdown_spacing_mode_override;
+pub use context::{
+    center_code_blocks, get_diagram_mode_override, set_center_code_blocks,
+    set_diagram_mode_override, with_deferred_mermaid_render_context,
+};
+use context::{
+    deferred_mermaid_render_context_enabled, effective_diagram_mode,
+    effective_markdown_spacing_mode, streaming_render_context_enabled,
+    with_streaming_render_context,
+};
 
 // Syntax highlighting resources (loaded once)
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
@@ -65,118 +78,6 @@ struct MarkdownDebugState {
 
 static MARKDOWN_DEBUG: LazyLock<Mutex<MarkdownDebugState>> =
     LazyLock::new(|| Mutex::new(MarkdownDebugState::default()));
-
-static DIAGRAM_MODE_OVERRIDE: LazyLock<Mutex<Option<DiagramDisplayMode>>> =
-    LazyLock::new(|| Mutex::new(None));
-
-thread_local! {
-    /// Whether markdown rendering is running in streaming mode.
-    /// In this mode mermaid diagrams update an ephemeral side-panel preview
-    /// instead of being persisted in ACTIVE_DIAGRAMS history.
-    static STREAMING_RENDER_CONTEXT: Cell<bool> = const { Cell::new(false) };
-    /// Whether code blocks should be horizontally centered within available width.
-    /// Set to true in centered mode, false in left-aligned mode.
-    static CENTER_CODE_BLOCKS: Cell<bool> = const { Cell::new(true) };
-    /// Optional test/debug override for markdown spacing mode.
-    static MARKDOWN_SPACING_MODE_OVERRIDE: Cell<Option<MarkdownSpacingMode>> = const { Cell::new(None) };
-    /// Whether Mermaid cache misses should be rendered in the background and
-    /// replaced on a later redraw instead of blocking the current frame.
-    static DEFER_MERMAID_RENDER_CONTEXT: Cell<bool> = const { Cell::new(false) };
-}
-
-pub fn set_diagram_mode_override(mode: Option<DiagramDisplayMode>) {
-    if let Ok(mut override_mode) = DIAGRAM_MODE_OVERRIDE.lock() {
-        *override_mode = mode;
-    }
-}
-
-pub fn get_diagram_mode_override() -> Option<DiagramDisplayMode> {
-    DIAGRAM_MODE_OVERRIDE.lock().ok().and_then(|mode| *mode)
-}
-
-fn effective_diagram_mode() -> DiagramDisplayMode {
-    if let Ok(mode) = DIAGRAM_MODE_OVERRIDE.lock()
-        && let Some(override_mode) = *mode
-    {
-        return override_mode;
-    }
-    config().display.diagram_mode
-}
-
-fn effective_markdown_spacing_mode() -> MarkdownSpacingMode {
-    MARKDOWN_SPACING_MODE_OVERRIDE
-        .with(|mode| mode.get().unwrap_or(config().display.markdown_spacing))
-}
-
-fn with_markdown_spacing_mode_override<T>(
-    mode: Option<MarkdownSpacingMode>,
-    f: impl FnOnce() -> T,
-) -> T {
-    MARKDOWN_SPACING_MODE_OVERRIDE.with(|ctx| {
-        let prev = ctx.replace(mode);
-        struct ResetGuard<'a> {
-            cell: &'a Cell<Option<MarkdownSpacingMode>>,
-            prev: Option<MarkdownSpacingMode>,
-        }
-        impl Drop for ResetGuard<'_> {
-            fn drop(&mut self) {
-                self.cell.set(self.prev);
-            }
-        }
-        let _guard = ResetGuard { cell: ctx, prev };
-        f()
-    })
-}
-
-fn with_streaming_render_context<T>(f: impl FnOnce() -> T) -> T {
-    STREAMING_RENDER_CONTEXT.with(|ctx| {
-        let prev = ctx.replace(true);
-        struct ResetGuard<'a> {
-            cell: &'a Cell<bool>,
-            prev: bool,
-        }
-        impl Drop for ResetGuard<'_> {
-            fn drop(&mut self) {
-                self.cell.set(self.prev);
-            }
-        }
-        let _guard = ResetGuard { cell: ctx, prev };
-        f()
-    })
-}
-
-fn streaming_render_context_enabled() -> bool {
-    STREAMING_RENDER_CONTEXT.with(|ctx| ctx.get())
-}
-
-pub fn with_deferred_mermaid_render_context<T>(f: impl FnOnce() -> T) -> T {
-    DEFER_MERMAID_RENDER_CONTEXT.with(|ctx| {
-        let prev = ctx.replace(true);
-        struct ResetGuard<'a> {
-            cell: &'a Cell<bool>,
-            prev: bool,
-        }
-        impl Drop for ResetGuard<'_> {
-            fn drop(&mut self) {
-                self.cell.set(self.prev);
-            }
-        }
-        let _guard = ResetGuard { cell: ctx, prev };
-        f()
-    })
-}
-
-fn deferred_mermaid_render_context_enabled() -> bool {
-    DEFER_MERMAID_RENDER_CONTEXT.with(|ctx| ctx.get())
-}
-
-pub fn set_center_code_blocks(centered: bool) {
-    CENTER_CODE_BLOCKS.with(|ctx| ctx.set(centered));
-}
-
-pub fn center_code_blocks() -> bool {
-    CENTER_CODE_BLOCKS.with(|ctx| ctx.get())
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MarkdownBlockKind {

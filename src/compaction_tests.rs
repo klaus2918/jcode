@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::provider::{EventStream, Provider};
 use std::sync::Arc;
