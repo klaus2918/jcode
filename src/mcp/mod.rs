@@ -4,9 +4,6 @@
 //! Supports shared server pools so multiple sessions reuse the same
 //! MCP server processes instead of spawning duplicates.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
 mod client;
 mod manager;
 pub mod pool;

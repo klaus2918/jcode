@@ -1,7 +1,5 @@
 //! MCP management tool - connect, disconnect, list, reload MCP servers
 
-#![allow(dead_code)]
-
 use crate::mcp::{McpConfig, McpManager, McpServerConfig};
 use crate::tool::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;

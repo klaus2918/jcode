@@ -1,7 +1,5 @@
 //! MCP Client - handles communication with a single MCP server
 
-#![allow(dead_code)]
-
 use super::protocol::*;
 use anyhow::{Context, Result};
 use serde_json::Value;

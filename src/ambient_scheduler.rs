@@ -2,8 +2,6 @@
 //!
 //! Tracks per-call token usage (user vs ambient), maintains a rolling usage log,
 //! and computes adaptive intervals for ambient cycles based on rate limit headroom.
-#![allow(dead_code)]
-
 use crate::storage;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};

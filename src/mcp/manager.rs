@@ -4,8 +4,6 @@
 //! are managed by the pool and reused across sessions. Servers marked `shared: false`
 //! (e.g., Playwright with browser state) are spawned per-session.
 
-#![allow(dead_code)]
-
 use super::client::{McpClient, McpHandle};
 use super::pool::SharedMcpPool;
 use super::protocol::{McpConfig, McpServerConfig, McpToolDef, ToolCallResult};

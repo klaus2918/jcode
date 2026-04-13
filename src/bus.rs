@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::message::ToolCall;
 use crate::side_panel::SidePanelSnapshot;
 use crate::todo::TodoItem;
