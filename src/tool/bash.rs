@@ -162,35 +162,11 @@ impl Tool for BashTool {
             return self.execute_background(params, ctx).await;
         }
 
-        // Auto-detect and setup browser bridge if needed
+        // Auto-detect browser bridge commands and rewrite them to the installed
+        // binary when available, but do not run setup automatically. Browser
+        // setup should stay an explicit status/setup flow rather than a default
+        // side effect of trying to use the browser.
         if crate::browser::is_browser_command(&params.command) {
-            if !crate::browser::is_setup_complete() {
-                let setup_log = crate::browser::ensure_browser_setup()
-                    .await
-                    .unwrap_or_else(|e| format!("Browser setup failed: {}\n", e));
-
-                if !crate::browser::is_setup_complete() {
-                    return Ok(ToolOutput::new(setup_log)
-                        .with_title("Browser bridge setup (incomplete)".to_string()));
-                }
-
-                // Rewrite command to use the installed binary path
-                let rewritten = crate::browser::rewrite_command_with_full_path(&params.command);
-                let mut output = setup_log;
-                output.push_str(&format!("\nRetrying: {}\n\n", rewritten));
-                params.command = rewritten;
-
-                // Execute the rewritten command and append output
-                let result = self.execute_foreground(&params, &ctx).await?;
-                output.push_str(&result.output);
-                return Ok(ToolOutput::new(output).with_title(
-                    params
-                        .description
-                        .clone()
-                        .unwrap_or_else(|| "browser".to_string()),
-                ));
-            }
-
             params.command = crate::browser::rewrite_command_with_full_path(&params.command);
 
             // Start/attach a browser session for this jcode session.

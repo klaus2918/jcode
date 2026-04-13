@@ -176,9 +176,21 @@ pub async fn ensure_browser_setup() -> Result<String> {
 
     std::fs::create_dir_all(browser_dir())?;
 
+    let initial_status = ensure_browser_ready_noninteractive().await?;
+    if initial_status.ready {
+        log.push_str("Browser bridge is already set up and responding.\n");
+        log.push_str("No setup action was needed.\n");
+        return Ok(log);
+    }
+
+    if initial_status.binary_installed {
+        log.push_str("Browser bridge is installed but not fully ready. Attempting repair steps...\n");
+    } else {
+        log.push_str("Browser bridge is not installed yet. Starting setup...\n");
+    }
+
     // Step 1: Check/download browser CLI binary
     if !browser_binary_path().exists() {
-        log.push_str("Browser bridge not found. Setting up...\n");
         log.push_str("[1/3] Downloading browser CLI... ");
         match download_browser_binary().await {
             Ok(()) => log.push_str("done\n"),
@@ -260,7 +272,16 @@ pub async fn ensure_browser_setup() -> Result<String> {
         }
     }
 
-    log.push_str("\nSetup complete. Browser bridge is ready.\n");
+    let final_status = ensure_browser_ready_noninteractive().await?;
+    if final_status.ready {
+        log.push_str("\nSetup complete. Browser bridge is ready.\n");
+    } else if final_status.binary_installed {
+        log.push_str("\nSetup is not complete yet. Browser bridge binaries are installed, but the Firefox extension/bridge is not responding.\n");
+        log.push_str("Use `jcode browser status` to re-check readiness after any manual Firefox step.\n");
+    } else {
+        log.push_str("\nSetup is not complete yet. Browser bridge binary is still missing.\n");
+    }
+
     Ok(log)
 }
 

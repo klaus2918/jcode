@@ -17,6 +17,10 @@ impl BrowserTool {
     }
 }
 
+fn browser_tool_description_text() -> &'static str {
+    "Control the browser. Use action='status' to check whether the browser bridge is ready. Use action='setup' only for first-time install or repair when status shows the bridge is not already ready. Do not run setup before every browser task."
+}
+
 #[derive(Debug, Deserialize)]
 struct BrowserInput {
     action: String,
@@ -162,7 +166,7 @@ impl Tool for BrowserTool {
     }
 
     fn description(&self) -> &str {
-        "Control the browser."
+        browser_tool_description_text()
     }
 
     fn parameters_schema(&self) -> Value {
@@ -177,7 +181,7 @@ impl Tool for BrowserTool {
                     "fill_form", "select", "wait", "screenshot", "eval", "scroll", "upload",
                     "press", "provider_command"
                 ],
-                "description": "Action."
+                "description": "Action. Use 'status' to check readiness first. Use 'setup' only for first-time install or repair, not before every browser task."
             }),
         );
         properties.insert(
@@ -339,56 +343,56 @@ fn resolve_provider(browser: Option<&str>) -> Result<&'static dyn BrowserProvide
     )
 }
 
-async fn firefox_status(provider: &FirefoxBridgeProvider, ctx: &ToolContext) -> Result<ToolOutput> {
-    let setup_complete = crate::browser::is_setup_complete();
+async fn firefox_status(provider: &FirefoxBridgeProvider, _ctx: &ToolContext) -> Result<ToolOutput> {
+    let status = crate::browser::ensure_browser_ready_noninteractive().await?;
     let mut metadata = json!({
-        "setup_complete": setup_complete,
-        "backend": if setup_complete { provider.id() } else { "unconfigured" },
+        "setup_complete": status.setup_complete,
+        "binary_installed": status.binary_installed,
+        "ready": status.ready,
+        "backend": if status.binary_installed || status.setup_complete || status.ready {
+            provider.id()
+        } else {
+            "unconfigured"
+        },
         "browser": "firefox",
     });
 
-    if !setup_complete {
+    if status.ready {
         return Ok(ToolOutput::new(
-            "Browser bridge is not set up. Run the browser tool with action='setup' or use `jcode browser setup`.",
+            "Browser bridge is installed and responding.",
         )
         .with_title("browser status")
         .with_metadata(metadata));
     }
 
-    let ping = firefox_run_bridge_command("ping", json!({}), ctx).await;
-    match ping {
-        Ok(result) => {
-            metadata["ready"] = json!(true);
-            metadata["ping"] = result;
-            Ok(
-                ToolOutput::new("Browser bridge is installed and responding.")
-                    .with_title("browser status")
-                    .with_metadata(metadata),
-            )
-        }
-        Err(err) => {
-            metadata["ready"] = json!(false);
-            metadata["error"] = json!(err.to_string());
-            Ok(ToolOutput::new(format!(
-                "Browser bridge binaries are installed, but the live bridge is not responding: {}",
-                err
-            ))
-            .with_title("browser status")
-            .with_metadata(metadata))
-        }
+    if status.binary_installed {
+        return Ok(ToolOutput::new(
+            "Browser bridge binaries are installed, but the live bridge is not responding. Use action='setup' only if you want to repair the existing install. You do not need to run setup before every browser task.",
+        )
+        .with_title("browser status")
+        .with_metadata(metadata));
     }
+
+    metadata["backend"] = json!("unconfigured");
+    Ok(ToolOutput::new(
+        "Browser bridge is not installed yet. Use action='setup' only for first-time install or repair. You do not need to run setup before every browser task.",
+    )
+    .with_title("browser status")
+    .with_metadata(metadata))
 }
 
 async fn firefox_setup(provider: &FirefoxBridgeProvider) -> Result<ToolOutput> {
     let log = crate::browser::ensure_browser_setup().await?;
-    let setup_complete = crate::browser::is_setup_complete();
-    let title = if setup_complete {
+    let status = crate::browser::ensure_browser_ready_noninteractive().await?;
+    let title = if status.ready {
         "browser setup"
     } else {
         "browser setup (incomplete)"
     };
     Ok(ToolOutput::new(log).with_title(title).with_metadata(json!({
-        "setup_complete": setup_complete,
+        "setup_complete": status.setup_complete,
+        "binary_installed": status.binary_installed,
+        "ready": status.ready,
         "backend": provider.id(),
         "browser": "firefox"
     })))
@@ -405,7 +409,7 @@ async fn ensure_firefox_ready() -> Result<Option<String>> {
     }
 
     let mut message = String::from(
-        "Browser automation is not ready yet. Run the browser tool with action='setup' or use `jcode browser setup` to finish installing the Firefox bridge.\n",
+        "Browser automation is not ready yet. Use the browser tool with action='status' to confirm current state. Only run action='setup' or `jcode browser setup` for first-time install or repair when the bridge is not already ready.\n",
     );
     if !status.binary_installed {
         message.push_str("Browser bridge binary is not installed yet.\n");
@@ -700,7 +704,7 @@ async fn firefox_run_bridge_command(
     let bin = crate::browser::browser_binary_path();
     if !bin.exists() {
         anyhow::bail!(
-            "Browser bridge binary is not installed yet. Run the browser tool with action='setup'."
+            "Browser bridge binary is not installed yet. Use action='status' to confirm readiness, then run action='setup' only for first-time install or repair."
         );
     }
 
@@ -1088,5 +1092,14 @@ mod tests {
             output.metadata.as_ref().unwrap()["backend"],
             "firefox_agent_bridge"
         );
+    }
+
+    #[test]
+    fn description_tells_models_to_check_status_before_setup() {
+        let tool = BrowserTool::new();
+        let description = tool.description();
+        assert!(description.contains("action='status'"));
+        assert!(description.contains("action='setup' only"));
+        assert!(description.contains("Do not run setup before every browser task"));
     }
 }
