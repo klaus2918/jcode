@@ -90,6 +90,10 @@ pub struct UsageData {
     pub last_error: Option<String>,
 }
 
+fn reset_timestamp_passed(timestamp: Option<&str>) -> bool {
+    usage_reset_passed([timestamp])
+}
+
 impl UsageData {
     /// Check if data is stale and should be refreshed
     pub fn is_stale(&self) -> bool {
@@ -113,6 +117,24 @@ impl UsageData {
             }
             None => true,
         }
+    }
+
+    /// Returns a display-safe snapshot that avoids showing pre-reset usage after a window rolled over.
+    pub fn display_snapshot(&self) -> Self {
+        let mut snapshot = self.clone();
+
+        if reset_timestamp_passed(self.five_hour_resets_at.as_deref()) {
+            snapshot.five_hour = 0.0;
+            snapshot.five_hour_resets_at = None;
+        }
+
+        if reset_timestamp_passed(self.seven_day_resets_at.as_deref()) {
+            snapshot.seven_day = 0.0;
+            snapshot.seven_day_opus = None;
+            snapshot.seven_day_resets_at = None;
+        }
+
+        snapshot
     }
 
     /// Check if the last error was a rate limit (429)
@@ -205,6 +227,42 @@ impl OpenAIUsageData {
         } else {
             "fresh"
         }
+    }
+
+    /// Returns a display-safe snapshot that avoids showing pre-reset exhaustion after a window rolled over.
+    pub fn display_snapshot(&self) -> Self {
+        let mut snapshot = self.clone();
+        let mut cleared_any_window = false;
+
+        if let Some(window) = snapshot.five_hour.as_mut()
+            && reset_timestamp_passed(window.resets_at.as_deref())
+        {
+            window.usage_ratio = 0.0;
+            window.resets_at = None;
+            cleared_any_window = true;
+        }
+
+        if let Some(window) = snapshot.seven_day.as_mut()
+            && reset_timestamp_passed(window.resets_at.as_deref())
+        {
+            window.usage_ratio = 0.0;
+            window.resets_at = None;
+            cleared_any_window = true;
+        }
+
+        if let Some(window) = snapshot.spark.as_mut()
+            && reset_timestamp_passed(window.resets_at.as_deref())
+        {
+            window.usage_ratio = 0.0;
+            window.resets_at = None;
+            cleared_any_window = true;
+        }
+
+        if cleared_any_window {
+            snapshot.hard_limit_reached = false;
+        }
+
+        snapshot
     }
 
     pub fn exhausted(&self) -> bool {
@@ -652,6 +710,22 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
     Ok(usage)
 }
 
+fn provider_usage_cache_is_fresh(now: Instant, fetched_at: Instant, report: &ProviderUsage) -> bool {
+    let ttl = if report
+        .error
+        .as_ref()
+        .map(|e| e.contains("429") || e.contains("rate limit") || e.contains("Rate limited"))
+        .unwrap_or(false)
+    {
+        RATE_LIMIT_BACKOFF
+    } else {
+        PROVIDER_USAGE_CACHE_TTL
+    };
+
+    now.duration_since(fetched_at) < ttl
+        && !usage_reset_passed(report.limits.iter().map(|limit| limit.resets_at.as_deref()))
+}
+
 /// Fetch usage from all connected providers with OAuth credentials.
 /// Returns a list of ProviderUsage, one per provider that has credentials.
 /// Results are cached for 2 minutes to avoid hitting rate limits.
@@ -661,21 +735,9 @@ pub async fn fetch_all_provider_usage() -> Vec<ProviderUsage> {
     let now = Instant::now();
     let all_fresh = if let Ok(map) = cache.lock() {
         !map.is_empty()
-            && map.values().all(|(fetched_at, report)| {
-                let ttl = if report
-                    .error
-                    .as_ref()
-                    .map(|e| {
-                        e.contains("429") || e.contains("rate limit") || e.contains("Rate limited")
-                    })
-                    .unwrap_or(false)
-                {
-                    RATE_LIMIT_BACKOFF
-                } else {
-                    PROVIDER_USAGE_CACHE_TTL
-                };
-                now.duration_since(*fetched_at) < ttl
-            })
+            && map
+                .values()
+                .all(|(fetched_at, report)| provider_usage_cache_is_fresh(now, *fetched_at, report))
     } else {
         false
     };
@@ -1489,7 +1551,10 @@ async fn fetch_openai_usage_for_account(
 
     fn parse_wham_window(window: &serde_json::Value, name: &str) -> Option<UsageLimit> {
         let obj = window.as_object()?;
-        let used_percent = obj.get("used_percent").and_then(parse_f32_value)?;
+        let used_percent = obj
+            .get("used_percent")
+            .and_then(parse_f32_value)
+            .map(normalize_percent)?;
         let resets_at = obj.get("reset_at").and_then(parse_f32_value).map(|ts| {
             chrono::DateTime::from_timestamp(ts as i64, 0)
                 .map(|dt| dt.to_rfc3339())
@@ -1910,6 +1975,9 @@ pub fn format_reset_time(timestamp: &str) -> String {
         if duration.num_seconds() <= 0 {
             return "now".to_string();
         }
+        if duration.num_seconds() < 60 {
+            return "1m".to_string();
+        }
         let hours = duration.num_hours();
         let minutes = duration.num_minutes() % 60;
         if hours > 0 {
@@ -2013,7 +2081,7 @@ pub async fn get() -> UsageData {
         try_spawn_refresh(usage.clone());
     }
 
-    current_data
+    current_data.display_snapshot()
 }
 
 // ─── OpenAI usage tracker (Codex/ChatGPT OAuth) ───────────────────────────────
@@ -2077,7 +2145,7 @@ pub async fn get_openai_usage() -> OpenAIUsageData {
         try_spawn_openai_refresh(usage.clone());
     }
 
-    current_data
+    current_data.display_snapshot()
 }
 
 pub fn get_openai_usage_sync() -> OpenAIUsageData {
@@ -2087,7 +2155,7 @@ pub fn get_openai_usage_sync() -> OpenAIUsageData {
         if data.is_stale() {
             try_spawn_openai_refresh(usage.clone());
         }
-        return data.clone();
+        return data.display_snapshot();
     }
 
     if tokio::runtime::Handle::try_current().is_ok() {
@@ -2300,7 +2368,7 @@ pub fn get_sync() -> UsageData {
             if data.is_stale() {
                 try_spawn_refresh(usage.clone());
             }
-            return data.clone();
+            return data.display_snapshot();
         }
     }
 
@@ -2396,6 +2464,83 @@ mod tests {
     }
 
     #[test]
+    fn test_usage_data_display_snapshot_clears_passed_reset_window() {
+        let data = UsageData {
+            five_hour: 0.73,
+            five_hour_resets_at: Some("2020-01-01T00:00:00Z".to_string()),
+            seven_day: 0.41,
+            seven_day_resets_at: Some("3020-01-01T00:00:00Z".to_string()),
+            fetched_at: Some(Instant::now()),
+            ..Default::default()
+        };
+
+        let snapshot = data.display_snapshot();
+        assert_eq!(snapshot.five_hour, 0.0);
+        assert!(snapshot.five_hour_resets_at.is_none());
+        assert_eq!(snapshot.seven_day, 0.41);
+        assert_eq!(
+            snapshot.seven_day_resets_at.as_deref(),
+            Some("3020-01-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn test_openai_usage_data_display_snapshot_clears_passed_reset_window() {
+        let data = OpenAIUsageData {
+            five_hour: Some(OpenAIUsageWindow {
+                name: "5-hour".to_string(),
+                usage_ratio: 0.88,
+                resets_at: Some("2020-01-01T00:00:00Z".to_string()),
+            }),
+            seven_day: Some(OpenAIUsageWindow {
+                name: "7-day".to_string(),
+                usage_ratio: 0.31,
+                resets_at: Some("3020-01-01T00:00:00Z".to_string()),
+            }),
+            hard_limit_reached: true,
+            fetched_at: Some(Instant::now()),
+            ..Default::default()
+        };
+
+        let snapshot = data.display_snapshot();
+        assert_eq!(
+            snapshot.five_hour.as_ref().map(|w| w.usage_ratio),
+            Some(0.0)
+        );
+        assert_eq!(
+            snapshot
+                .five_hour
+                .as_ref()
+                .and_then(|w| w.resets_at.as_deref()),
+            None
+        );
+        assert_eq!(
+            snapshot.seven_day.as_ref().map(|w| w.usage_ratio),
+            Some(0.31)
+        );
+        assert!(!snapshot.hard_limit_reached);
+    }
+
+    #[test]
+    fn test_provider_usage_cache_is_not_fresh_after_reset_boundary() {
+        let report = ProviderUsage {
+            provider_name: "OpenAI".to_string(),
+            limits: vec![UsageLimit {
+                name: "5-hour window".to_string(),
+                usage_percent: 100.0,
+                resets_at: Some("2020-01-01T00:00:00Z".to_string()),
+            }],
+            ..Default::default()
+        };
+
+        assert!(!provider_usage_cache_is_fresh(
+            Instant::now(),
+            Instant::now(),
+            &report,
+        ));
+    }
+
+    #[test]
     fn test_mask_email_censors_local_part() {
         assert_eq!(mask_email("jeremyh1@uw.edu"), "j***1@uw.edu");
         assert_eq!(mask_email("ab@example.com"), "a*@example.com");
@@ -2419,6 +2564,12 @@ mod tests {
     #[test]
     fn test_format_reset_time_past() {
         assert_eq!(format_reset_time("2020-01-01T00:00:00Z"), "now");
+    }
+
+    #[test]
+    fn test_format_reset_time_under_one_minute_rounds_up() {
+        let timestamp = (chrono::Utc::now() + chrono::TimeDelta::seconds(30)).to_rfc3339();
+        assert_eq!(format_reset_time(&timestamp), "1m");
     }
 
     #[test]

@@ -217,7 +217,7 @@ impl App {
                     cache_read_tokens: None,
                     cache_write_tokens: None,
                     output_tps,
-                    available: true,
+                    available: usage.last_error.is_none(),
                 })
             }
             WidgetProviderKind::OpenAI => {
