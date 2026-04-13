@@ -300,7 +300,6 @@ use status_support::{
 use theme_support::{
     accent_color, activity_indicator, activity_indicator_frame_index, ai_color, ai_text,
     animated_tool_color, asap_color, blend_color, color_to_floats, dim_color, file_link_color,
-    header_animation_color, header_chrome_color, header_fade_color, header_fade_t,
     header_icon_color, header_name_color, header_session_color, pending_color,
     prompt_entry_bg_color, prompt_entry_color, prompt_entry_shimmer_color, queued_color,
     rainbow_prompt_color, system_message_color, tool_color, user_bg, user_color, user_text,

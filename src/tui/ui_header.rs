@@ -1,8 +1,7 @@
 use super::box_utils::render_rounded_box;
 use super::changelog::get_unseen_changelog_entries;
 use super::{
-    TuiState, binary_age, dim_color, header_animation_color, header_chrome_color,
-    header_fade_color, header_fade_t, header_icon_color, header_name_color, header_session_color,
+    TuiState, binary_age, dim_color, header_name_color, header_session_color,
     is_running_stable_release, semver, shorten_model_name,
 };
 use crate::auth::{AuthState, AuthStatus};
@@ -58,71 +57,6 @@ fn format_gpt_name(short: &str) -> String {
     }
 
     format!("GPT-{}", rest)
-}
-
-fn pill_badge(label: &str, color: Color) -> Vec<Span<'static>> {
-    vec![
-        Span::styled("  ", Style::default()),
-        Span::styled("⟨ ", Style::default().fg(color)),
-        Span::styled(label.to_string(), Style::default().fg(color)),
-        Span::styled(" ⟩", Style::default().fg(color)),
-    ]
-}
-
-fn multi_status_badge(items: &[(&str, Color)]) -> Vec<Span<'static>> {
-    let mut spans = vec![
-        Span::styled(" ", Style::default()),
-        Span::styled("⟨", Style::default().fg(dim_color())),
-    ];
-
-    for (i, (label, color)) in items.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled("·", Style::default().fg(dim_color())));
-        }
-        spans.push(Span::styled(label.to_string(), Style::default().fg(*color)));
-    }
-
-    spans.push(Span::styled("⟩", Style::default().fg(dim_color())));
-    spans
-}
-
-fn header_spans(icon: &str, session: &str, model: &str, elapsed: f32) -> Vec<Span<'static>> {
-    let segments = [
-        (format!("{} ", icon), header_icon_color(), 0.00),
-        ("JCode ".to_string(), header_name_color(), 0.06),
-        (
-            format!("{} ", capitalize(session)),
-            header_session_color(),
-            0.12,
-        ),
-        ("· ".to_string(), dim_color(), 0.18),
-        (model.to_string(), header_animation_color(elapsed), 0.12),
-    ];
-
-    let total_chars: usize = segments
-        .iter()
-        .map(|(text, _, _)| text.chars().count())
-        .sum();
-    let total = total_chars.max(1);
-    let mut spans = Vec::with_capacity(total_chars);
-    let mut idx = 0usize;
-
-    for (text, target, offset) in segments {
-        let fade = header_fade_t(elapsed, offset);
-        let base = header_fade_color(target, elapsed, offset);
-        for ch in text.chars() {
-            let pos = if total > 1 {
-                idx as f32 / (total - 1) as f32
-            } else {
-                0.0
-            };
-            let color = header_chrome_color(base, pos, elapsed, fade);
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-            idx += 1;
-        }
-    }
-
-    spans
 }
 
 pub(super) fn build_auth_status_line(auth: &AuthStatus, max_width: usize) -> Line<'static> {
@@ -890,20 +824,6 @@ pub(crate) fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'st
 
     lines.push(Line::from(""));
     lines
-}
-
-fn multi_status_badge_no_leading_space(items: &[(&str, Color)]) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::styled("⟨", Style::default().fg(dim_color()))];
-
-    for (i, (label, color)) in items.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled("·", Style::default().fg(dim_color())));
-        }
-        spans.push(Span::styled(label.to_string(), Style::default().fg(*color)));
-    }
-
-    spans.push(Span::styled("⟩", Style::default().fg(dim_color())));
-    spans
 }
 
 #[cfg(test)]

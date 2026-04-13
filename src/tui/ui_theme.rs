@@ -79,74 +79,10 @@ pub(super) fn activity_indicator(elapsed: f32, fps: f32) -> &'static str {
     }
 }
 
-// Keep the picker spacious on tall terminals without crowding the chat pane.
-const MODEL_PICKER_MAX_HEIGHT: u16 = 16;
-const MODEL_PICKER_MIN_MESSAGES_HEIGHT: u16 = 3;
-
-/// Duration of the startup fade-in animation in seconds
-const HEADER_ANIM_DURATION: f32 = 1.5;
-
-/// Speed of the continuous chroma wave (lower = slower)
-const CHROMA_SPEED: f32 = 0.15;
-
 /// Convert HSL to RGB (h in 0-360, s and l in 0-1)
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let h_prime = h / 60.0;
-    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
-    let m = l - c / 2.0;
-
-    let (r1, g1, b1) = match h_prime as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-
-    (
-        ((r1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-        ((g1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-        ((b1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-    )
-}
-
 /// Chroma color based on position and time - creates flowing rainbow wave
-fn chroma_color(pos: f32, elapsed: f32, saturation: f32, lightness: f32) -> Color {
-    // Hue shifts over time and varies by position
-    // pos: 0.0-1.0 position in the text
-    // Creates a wave that flows across the text
-    let hue = ((pos * 60.0) + (elapsed * CHROMA_SPEED * 360.0)) % 360.0;
-    let (r, g, b) = hsl_to_rgb(hue, saturation, lightness);
-    rgb(r, g, b)
-}
-
 /// Calculate chroma color with fade-in from dim during startup
-fn header_chroma_color(pos: f32, elapsed: f32) -> Color {
-    let fade = ((elapsed / HEADER_ANIM_DURATION).clamp(0.0, 1.0)).powf(0.5);
-
-    // During fade-in, transition from dim gray to full chroma
-    let saturation = 0.75 * fade;
-    let lightness = 0.3 + 0.35 * fade; // Start darker (0.3), end bright (0.65)
-
-    chroma_color(pos, elapsed, saturation, lightness)
-}
-
 /// Calculate smooth animated color for the header (single color, no position)
-pub(super) fn header_animation_color(elapsed: f32) -> Color {
-    header_chroma_color(0.5, elapsed)
-}
-
-pub(super) fn header_fade_t(elapsed: f32, offset: f32) -> f32 {
-    let t = ((elapsed - offset) / HEADER_ANIM_DURATION).clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
-}
-
-pub(super) fn header_fade_color(target: Color, elapsed: f32, offset: f32) -> Color {
-    blend_color(dim_color(), target, header_fade_t(elapsed, offset))
-}
-
 pub(super) fn color_to_floats(c: Color, fallback: (f32, f32, f32)) -> (f32, f32, f32) {
     match c {
         Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
@@ -169,31 +105,6 @@ pub(super) fn blend_color(from: Color, to: Color, t: f32) -> Color {
         g.clamp(0.0, 255.0) as u8,
         b.clamp(0.0, 255.0) as u8,
     )
-}
-
-/// Chrome-style sweep highlight across header text.
-pub(super) fn header_chrome_color(base: Color, pos: f32, elapsed: f32, intensity: f32) -> Color {
-    let highlight_c: Color = rgb(235, 245, 255);
-    let shadow_c: Color = rgb(70, 80, 95);
-    const SPEED: f32 = 0.12;
-    const WIDTH: f32 = 0.22;
-
-    let center = (elapsed * SPEED) % 1.0;
-    let mut dist = (pos - center).abs();
-    dist = dist.min(1.0 - dist);
-    let shine = (1.0 - (dist / WIDTH).clamp(0.0, 1.0)).powf(2.4);
-
-    let micro = ((pos * 12.0 + elapsed * 2.6).sin() * 0.5 + 0.5) * 0.12;
-    let shimmer = (shine * 0.9 + micro).clamp(0.0, 1.0) * intensity;
-
-    let shadow_center = (center + 0.5) % 1.0;
-    let mut shadow_dist = (pos - shadow_center).abs();
-    shadow_dist = shadow_dist.min(1.0 - shadow_dist);
-    let shadow_t =
-        (1.0 - (shadow_dist / (WIDTH * 1.2)).clamp(0.0, 1.0)).powf(2.0) * 0.16 * intensity;
-
-    let darkened = blend_color(base, shadow_c, shadow_t);
-    blend_color(darkened, highlight_c, shimmer)
 }
 
 pub(super) fn rainbow_prompt_color(distance: usize) -> Color {
