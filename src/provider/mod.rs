@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod antigravity;
+mod account_failover;
 pub mod claude;
 pub mod cli_common;
 pub mod copilot;
@@ -16,6 +17,12 @@ mod selection;
 
 use crate::auth;
 use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
+use account_failover::{
+    account_switch_guidance, account_usage_probe, active_account_label_for_provider,
+    maybe_annotate_limit_summary, same_provider_account_candidates,
+    same_provider_account_failover_enabled, set_account_override_for_provider,
+    usage_exhausted_reason,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 #[cfg(test)]
@@ -758,46 +765,9 @@ impl MultiProvider {
     fn provider_precheck_unavailable_reason(&self, provider: ActiveProvider) -> Option<String> {
         match provider {
             ActiveProvider::Claude if self.is_claude_usage_exhausted() => {
-                Some(Self::usage_exhausted_reason(provider))
+                Some(usage_exhausted_reason(provider))
             }
             _ => None,
-        }
-    }
-
-    fn multi_account_provider_kind(
-        provider: ActiveProvider,
-    ) -> Option<crate::usage::MultiAccountProviderKind> {
-        match provider {
-            ActiveProvider::Claude => Some(crate::usage::MultiAccountProviderKind::Anthropic),
-            ActiveProvider::OpenAI => Some(crate::usage::MultiAccountProviderKind::OpenAI),
-            _ => None,
-        }
-    }
-
-    fn account_usage_probe(provider: ActiveProvider) -> Option<crate::usage::AccountUsageProbe> {
-        let kind = Self::multi_account_provider_kind(provider)?;
-        crate::usage::account_usage_probe_sync(kind)
-    }
-
-    fn same_provider_account_failover_enabled() -> bool {
-        crate::config::Config::load()
-            .provider
-            .same_provider_account_failover
-    }
-
-    fn active_account_label_for_provider(provider: ActiveProvider) -> Option<String> {
-        match provider {
-            ActiveProvider::Claude => crate::auth::claude::active_account_label(),
-            ActiveProvider::OpenAI => crate::auth::codex::active_account_label(),
-            _ => None,
-        }
-    }
-
-    fn set_account_override_for_provider(provider: ActiveProvider, label: Option<String>) {
-        match provider {
-            ActiveProvider::Claude => crate::auth::claude::set_active_account_override(label),
-            ActiveProvider::OpenAI => crate::auth::codex::set_active_account_override(label),
-            _ => {}
         }
     }
 
@@ -820,63 +790,6 @@ impl MultiProvider {
         }
     }
 
-    fn same_provider_account_candidates(provider: ActiveProvider) -> Vec<String> {
-        let current_label = Self::active_account_label_for_provider(provider);
-        let mut labels = Vec::new();
-
-        let mut push_unique = |label: String| {
-            if current_label.as_deref() == Some(label.as_str()) {
-                return;
-            }
-            if !labels.iter().any(|existing| existing == &label) {
-                labels.push(label);
-            }
-        };
-
-        if let Some(probe) = Self::account_usage_probe(provider) {
-            let mut preferred = probe
-                .accounts
-                .iter()
-                .filter(|account| account.label != probe.current_label)
-                .filter(|account| !account.exhausted && account.error.is_none())
-                .collect::<Vec<_>>();
-            preferred.sort_by(|a, b| {
-                let a_score = a
-                    .five_hour_ratio
-                    .unwrap_or(0.0)
-                    .max(a.seven_day_ratio.unwrap_or(0.0));
-                let b_score = b
-                    .five_hour_ratio
-                    .unwrap_or(0.0)
-                    .max(b.seven_day_ratio.unwrap_or(0.0));
-                a_score.total_cmp(&b_score)
-            });
-            for account in preferred {
-                push_unique(account.label.clone());
-            }
-
-            for account in probe.accounts {
-                push_unique(account.label);
-            }
-        }
-
-        match provider {
-            ActiveProvider::Claude => {
-                for account in crate::auth::claude::list_accounts().unwrap_or_default() {
-                    push_unique(account.label);
-                }
-            }
-            ActiveProvider::OpenAI => {
-                for account in crate::auth::codex::list_accounts().unwrap_or_default() {
-                    push_unique(account.label);
-                }
-            }
-            _ => {}
-        }
-
-        labels
-    }
-
     async fn try_same_provider_account_failover(
         &self,
         provider: ActiveProvider,
@@ -886,16 +799,16 @@ impl MultiProvider {
         initial_reason: &str,
         notes: &mut Vec<String>,
     ) -> Result<Option<EventStream>> {
-        if !Self::same_provider_account_failover_enabled() {
+        if !same_provider_account_failover_enabled() {
             return Ok(None);
         }
 
-        let original_label = Self::active_account_label_for_provider(provider);
+        let original_label = active_account_label_for_provider(provider);
         let Some(original_label) = original_label else {
             return Ok(None);
         };
 
-        let alternatives = Self::same_provider_account_candidates(provider);
+        let alternatives = same_provider_account_candidates(provider);
         if alternatives.is_empty() {
             return Ok(None);
         }
@@ -911,7 +824,7 @@ impl MultiProvider {
                 alternative_label
             ));
 
-            Self::set_account_override_for_provider(provider, Some(alternative_label.clone()));
+            set_account_override_for_provider(provider, Some(alternative_label.clone()));
             clear_provider_unavailable_for_account(provider_key);
             if provider == ActiveProvider::OpenAI {
                 clear_all_model_unavailability_for_account();
@@ -950,7 +863,7 @@ impl MultiProvider {
                 }
                 Err(err) => {
                     let summary =
-                        Self::maybe_annotate_limit_summary(provider, Self::summarize_error(&err));
+                        maybe_annotate_limit_summary(provider, Self::summarize_error(&err));
                     let decision = Self::classify_failover_error(&err);
                     crate::logging::info(&format!(
                         "Same-provider account {} failed{}: {} (failover={} decision={})",
@@ -971,7 +884,7 @@ impl MultiProvider {
             }
         }
 
-        Self::set_account_override_for_provider(provider, Some(original_label));
+        set_account_override_for_provider(provider, Some(original_label));
         self.invalidate_provider_credentials_for_account_switch(provider)
             .await;
         if provider == ActiveProvider::OpenAI {
@@ -988,66 +901,16 @@ impl MultiProvider {
         Ok(None)
     }
 
-    fn account_switch_guidance(provider: ActiveProvider) -> Option<String> {
-        let probe = Self::account_usage_probe(provider)?;
-        probe.switch_guidance().or_else(|| {
-            (probe.current_exhausted() && probe.all_accounts_exhausted()).then(|| {
-                format!(
-                    "All {} accounts appear exhausted. Use `/usage` to inspect reset times.",
-                    probe.provider.display_name()
-                )
-            })
-        })
-    }
-
-    fn usage_exhausted_reason(provider: ActiveProvider) -> String {
-        let mut reason = "OAuth usage exhausted".to_string();
-        if let Some(guidance) = Self::account_switch_guidance(provider) {
-            reason.push_str(". ");
-            reason.push_str(&guidance);
-        }
-        reason
-    }
-
-    fn error_looks_like_usage_limit(summary: &str) -> bool {
-        let lower = summary.to_ascii_lowercase();
-        [
-            "quota",
-            "insufficient_quota",
-            "rate limit",
-            "rate_limit",
-            "rate_limit_exceeded",
-            "too many requests",
-            "billing",
-            "credit",
-            "payment required",
-            "usage exhausted",
-            "limit reached",
-            "429",
-            "402",
-        ]
-        .iter()
-        .any(|needle| lower.contains(needle))
-    }
-
-    fn maybe_annotate_limit_summary(provider: ActiveProvider, summary: String) -> String {
-        if !Self::error_looks_like_usage_limit(&summary) {
-            return summary;
-        }
-        let Some(guidance) = Self::account_switch_guidance(provider) else {
-            return summary;
-        };
-        if summary.contains(&guidance) {
-            return summary;
-        }
-        format!("{}. {}", summary, guidance)
-    }
-
     fn additional_no_provider_guidance(&self) -> Vec<String> {
         [ActiveProvider::Claude, ActiveProvider::OpenAI]
             .into_iter()
-            .filter_map(Self::account_switch_guidance)
+            .filter_map(account_switch_guidance)
             .collect()
+    }
+
+    #[cfg(test)]
+    fn same_provider_account_candidates(provider: ActiveProvider) -> Vec<String> {
+        account_failover::same_provider_account_candidates(provider)
     }
 
     fn no_provider_available_error(&self, notes: &[String]) -> anyhow::Error {
@@ -1185,7 +1048,7 @@ impl MultiProvider {
                 }
                 Err(err) => {
                     let summary =
-                        Self::maybe_annotate_limit_summary(candidate, Self::summarize_error(&err));
+                        maybe_annotate_limit_summary(candidate, Self::summarize_error(&err));
                     let decision = Self::classify_failover_error(&err);
                     crate::logging::info(&format!(
                         "Provider {} failed{}: {} (failover={} decision={})",
@@ -1524,9 +1387,9 @@ impl MultiProvider {
             return;
         }
 
-        let Some(probe) = Self::account_usage_probe(provider) else {
-            return;
-        };
+            let Some(probe) = account_usage_probe(provider) else {
+                return;
+            };
         if !probe.has_multiple_accounts() || !probe.current_exhausted() {
             return;
         }
