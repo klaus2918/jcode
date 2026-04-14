@@ -126,6 +126,13 @@ pub fn ensure_browser_session(session_id: &str) -> Option<String> {
                     let _ = child.stdout.take();
                     return Some(session_name);
                 }
+                if let Ok(Some(status)) = child.try_wait() {
+                    eprintln!(
+                        "[browser] session '{}' exited before startup with status {}",
+                        session_name, status
+                    );
+                    return None;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             eprintln!(
@@ -908,5 +915,48 @@ mod tests {
             assert!(!status.ready);
             assert!(!status.setup_complete);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_browser_session_fails_fast_when_session_process_exits_immediately() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+
+        let _guard = crate::storage::lock_test_env();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = tempfile::TempDir::new().expect("create temp dir");
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        let result = (|| {
+            let browser_dir = temp.path().join("browser");
+            std::fs::create_dir_all(&browser_dir).expect("create browser dir");
+            let bin = browser_dir.join("browser");
+            std::fs::write(&bin, "#!/bin/sh\nexit 2\n").expect("write fake browser binary");
+            let mut perms = std::fs::metadata(&bin)
+                .expect("stat fake browser binary")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).expect("chmod fake browser binary");
+
+            let start = Instant::now();
+            let session = ensure_browser_session("fast-fail-session");
+            let elapsed = start.elapsed();
+
+            assert!(session.is_none());
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "expected immediate failure, got {:?}",
+                elapsed
+            );
+        })();
+
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+
+        result
     }
 }
