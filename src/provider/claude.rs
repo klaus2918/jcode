@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::{EventStream, Provider};
 use crate::auth::{claude as claude_auth, oauth};
 use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
@@ -216,18 +214,18 @@ enum CliOutput {
     },
     StreamEvent {
         event: Value,
-        #[serde(default)]
-        session_id: Option<String>,
+        #[serde(default, rename = "session_id")]
+        _session_id: Option<String>,
     },
     Assistant {
         message: CliMessage,
-        #[serde(default)]
-        session_id: Option<String>,
+        #[serde(default, rename = "session_id")]
+        _session_id: Option<String>,
     },
     User {
         message: CliMessage,
-        #[serde(default)]
-        session_id: Option<String>,
+        #[serde(default, rename = "session_id")]
+        _session_id: Option<String>,
     },
     Result {
         #[serde(default)]
@@ -323,9 +321,15 @@ enum DeltaInfo {
     #[serde(rename = "input_json_delta")]
     InputJsonDelta { partial_json: String },
     #[serde(rename = "thinking_delta")]
-    ThinkingDelta { thinking: String },
+    ThinkingDelta {
+        #[serde(rename = "thinking")]
+        _thinking: String,
+    },
     #[serde(rename = "signature_delta")]
-    SignatureDelta { signature: String },
+    SignatureDelta {
+        #[serde(rename = "signature")]
+        _signature: String,
+    },
     #[serde(other)]
     Other,
 }
@@ -352,10 +356,10 @@ struct ErrorInfo {
     message: String,
     #[serde(default)]
     retry_after_secs: Option<u64>,
-    #[serde(default)]
-    status_code: Option<u16>,
-    #[serde(default)]
-    error_type: Option<String>,
+    #[serde(default, rename = "status_code")]
+    _status_code: Option<u16>,
+    #[serde(default, rename = "error_type")]
+    _error_type: Option<String>,
 }
 
 struct ClaudeEventTranslator {
