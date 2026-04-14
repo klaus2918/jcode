@@ -1729,17 +1729,6 @@ fn move_tool_to_background(
     let _ = client_event_tx.send(ServerEvent::Ack { id });
 }
 
-/// Process a message and stream events (broadcast channel - deprecated)
-#[allow(dead_code)]
-pub(super) async fn process_message_streaming(
-    agent: Arc<Mutex<Agent>>,
-    content: &str,
-    event_tx: broadcast::Sender<ServerEvent>,
-) -> Result<()> {
-    let mut agent = agent.lock().await;
-    agent.run_once_streaming(content, event_tx).await
-}
-
 /// Process a message and stream events (mpsc channel - per-client)
 pub(super) async fn process_message_streaming_mpsc(
     agent: Arc<Mutex<Agent>>,

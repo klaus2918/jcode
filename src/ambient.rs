@@ -331,7 +331,6 @@ impl ScheduledQueue {
 
     /// Pop items whose `scheduled_for` is in the past, sorted by priority
     /// (highest first) then by time (earliest first).
-    #[allow(dead_code)]
     pub fn pop_ready(&mut self) -> Vec<ScheduledItem> {
         let now = Utc::now();
         let (ready, remaining): (Vec<_>, Vec<_>) =
@@ -394,7 +393,6 @@ impl ScheduledQueue {
         self.items.len()
     }
 
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -545,7 +543,6 @@ impl AmbientManager {
         Ok(id)
     }
 
-    #[allow(dead_code)]
     pub fn state(&self) -> &AmbientState {
         &self.state
     }

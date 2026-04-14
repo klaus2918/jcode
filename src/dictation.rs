@@ -141,10 +141,9 @@ pub fn focused_jcode_session() -> Result<Option<String>> {
 #[derive(Debug, Deserialize)]
 struct NiriFocusedWindow {
     pid: u32,
-    #[allow(dead_code)]
     title: Option<String>,
-    #[allow(dead_code)]
-    app_id: Option<String>,
+    #[serde(rename = "app_id")]
+    _app_id: Option<String>,
 }
 
 fn focused_window_niri() -> Result<Option<NiriFocusedWindow>> {

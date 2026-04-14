@@ -109,13 +109,6 @@ impl Sidecar {
         }
     }
 
-    /// Set custom max tokens
-    #[allow(dead_code)]
-    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
-        self.max_tokens = max_tokens;
-        self
-    }
-
     /// Simple completion - send a prompt, get a response.
     /// Routes to the correct API based on the detected backend.
     pub async fn complete(&self, system: &str, user_message: &str) -> Result<String> {
@@ -468,8 +461,8 @@ impl Default for Sidecar {
     }
 }
 
-/// The public model constant for backward compatibility
-#[allow(dead_code)]
+/// The public model constant for backward compatibility in tests.
+#[cfg(test)]
 pub const SIDECAR_FAST_MODEL: &str = SIDECAR_OPENAI_MODEL;
 
 fn resolve_openai_request_model(
@@ -697,8 +690,6 @@ struct ClaudeMessage<'a> {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum ClaudeApiSystem<'a> {
-    #[allow(dead_code)]
-    Text(&'a str),
     Blocks(Vec<ClaudeApiSystemBlock<'a>>),
 }
 
@@ -731,8 +722,8 @@ fn build_claude_system_param(system: &str) -> Option<ClaudeApiSystem<'_>> {
 #[derive(Deserialize)]
 struct ClaudeMessagesResponse {
     content: Vec<ClaudeContentBlock>,
-    #[allow(dead_code)]
-    usage: Option<ClaudeUsage>,
+    #[serde(rename = "usage")]
+    _usage: Option<ClaudeUsage>,
 }
 
 #[derive(Deserialize)]
@@ -745,10 +736,11 @@ enum ClaudeContentBlock {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct ClaudeUsage {
-    input_tokens: u32,
-    output_tokens: u32,
+    #[serde(rename = "input_tokens")]
+    _input_tokens: u32,
+    #[serde(rename = "output_tokens")]
+    _output_tokens: u32,
 }
 
 #[cfg(test)]

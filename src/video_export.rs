@@ -493,14 +493,13 @@ fn indexed_color_to_hex(idx: u8) -> String {
 }
 
 /// A mermaid image region found in the buffer
-#[allow(dead_code)]
 struct MermaidRegion {
     /// Row where the marker is
     start_row: u16,
     /// Number of rows the image occupies (marker + empty rows)
     height: u16,
     /// The mermaid content hash
-    hash: u64,
+    _hash: u64,
     /// Path to the cached PNG
     png_path: PathBuf,
     /// Image pixel width
@@ -596,7 +595,7 @@ fn find_mermaid_regions(buf: &Buffer) -> Vec<MermaidRegion> {
                 regions.push(MermaidRegion {
                     start_row: y,
                     height: region_height,
-                    hash,
+                    _hash: hash,
                     png_path,
                     img_width: img_w,
                     img_height: img_h,

@@ -73,8 +73,8 @@ struct GoogleTokenResponse {
 
 #[derive(Debug, Deserialize)]
 struct GoogleUserInfo {
-    #[allow(dead_code)]
-    id: Option<String>,
+    #[serde(rename = "id")]
+    _id: Option<String>,
     email: Option<String>,
 }
 

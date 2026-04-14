@@ -272,19 +272,26 @@ enum SdkContentBlock {
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
-#[allow(dead_code)]
 enum SseEvent {
     #[serde(rename = "message_start")]
     MessageStart { message: Value },
     #[serde(rename = "content_block_start")]
     ContentBlockStart {
-        index: usize,
+        #[serde(rename = "index")]
+        _index: usize,
         content_block: ContentBlockInfo,
     },
     #[serde(rename = "content_block_delta")]
-    ContentBlockDelta { index: usize, delta: DeltaInfo },
+    ContentBlockDelta {
+        #[serde(rename = "index")]
+        _index: usize,
+        delta: DeltaInfo,
+    },
     #[serde(rename = "content_block_stop")]
-    ContentBlockStop { index: usize },
+    ContentBlockStop {
+        #[serde(rename = "index")]
+        _index: usize,
+    },
     #[serde(rename = "message_delta")]
     MessageDelta {
         delta: MessageDeltaInfo,
@@ -301,14 +308,19 @@ enum SseEvent {
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
-#[allow(dead_code)]
 enum ContentBlockInfo {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        #[serde(rename = "text")]
+        _text: String,
+    },
     #[serde(rename = "tool_use")]
     ToolUse { id: String, name: String },
     #[serde(rename = "thinking")]
-    Thinking { thinking: String },
+    Thinking {
+        #[serde(rename = "thinking")]
+        _thinking: String,
+    },
     #[serde(other)]
     Other,
 }

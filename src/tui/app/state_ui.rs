@@ -832,18 +832,6 @@ impl App {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn set_queue_mode_for_test(&mut self, enabled: bool) {
-        self.queue_mode = enabled;
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn set_diff_mode_for_test(&mut self, mode: crate::config::DiffDisplayMode) {
-        self.diff_mode = mode;
-    }
-
-    #[cfg(test)]
     pub(crate) fn set_input_for_test(&mut self, input: impl Into<String>) {
         self.input = input.into();
         self.cursor_pos = self.input.len();

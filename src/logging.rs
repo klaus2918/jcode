@@ -28,20 +28,6 @@ thread_local! {
     static LOG_CONTEXT: RefCell<LogContext> = RefCell::new(LogContext::default());
 }
 
-/// Set the logging context for the current thread
-#[allow(dead_code)]
-pub fn set_context(ctx: LogContext) {
-    if with_task_context_mut(|task_ctx| {
-        *task_ctx = ctx.clone();
-    }) {
-        return;
-    }
-
-    LOG_CONTEXT.with(|c| {
-        *c.borrow_mut() = ctx;
-    });
-}
-
 /// Update just the session in the current context
 pub fn set_session(session: &str) {
     if with_task_context_mut(|ctx| {
@@ -81,26 +67,6 @@ pub fn set_provider_info(provider: &str, model: &str) {
         let mut ctx = c.borrow_mut();
         ctx.provider = Some(provider.to_string());
         ctx.model = Some(model.to_string());
-    });
-}
-
-/// Clear the logging context for the current thread
-#[allow(dead_code)]
-#[expect(
-    clippy::collapsible_if,
-    reason = "Logger lock + optional logger branching is intentionally straightforward"
-)]
-pub fn clear_context() {
-    if let Some(task_id) = current_task_id() {
-        if let Some(store) = TASK_LOG_CONTEXTS.get() {
-            if let Ok(mut contexts) = store.lock() {
-                contexts.remove(&task_id);
-            }
-        }
-    }
-
-    LOG_CONTEXT.with(|c| {
-        *c.borrow_mut() = LogContext::default();
     });
 }
 

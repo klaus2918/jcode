@@ -69,7 +69,7 @@ impl NotificationDispatcher {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn from_config(config: SafetyConfig) -> Self {
         Self {
             client: crate::provider::shared_http_client(),

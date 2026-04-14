@@ -2229,8 +2229,8 @@ struct SessionHeader {
     id: String,
     #[serde(default)]
     parent_id: Option<String>,
-    #[allow(dead_code)]
-    created_at: DateTime<Utc>,
+    #[serde(rename = "created_at")]
+    _created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     #[serde(default)]
     short_name: Option<String>,

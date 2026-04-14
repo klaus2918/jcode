@@ -250,11 +250,9 @@ async fn handle_error(resp: &reqwest::Response) -> Result<()> {
 use base64::Engine;
 
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub enum MessageFormat {
     Full,
     Metadata,
-    Minimal,
 }
 
 impl MessageFormat {
@@ -262,7 +260,6 @@ impl MessageFormat {
         match self {
             MessageFormat::Full => "full",
             MessageFormat::Metadata => "metadata",
-            MessageFormat::Minimal => "minimal",
         }
     }
 }
@@ -318,19 +315,8 @@ impl Message {
         self.header("From")
     }
 
-    #[allow(dead_code)]
-    pub fn to(&self) -> Option<&str> {
-        self.header("To")
-    }
-
     pub fn date(&self) -> Option<&str> {
         self.header("Date")
-    }
-
-    #[allow(dead_code)]
-    pub fn message_id(&self) -> Option<&str> {
-        self.header("Message-ID")
-            .or_else(|| self.header("Message-Id"))
     }
 
     pub fn body_text(&self) -> Option<String> {

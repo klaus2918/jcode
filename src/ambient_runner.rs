@@ -79,34 +79,14 @@ impl AmbientRunnerHandle {
         self.inner.wake_notify.notify_one();
     }
 
-    /// Update the count of active user sessions (for pause-on-active logic).
-    #[allow(dead_code)]
-    pub async fn set_active_user_sessions(&self, count: usize) {
-        *self.inner.active_user_sessions.write().await = count;
+    /// Check if the runner loop is active.
+    pub async fn is_running(&self) -> bool {
+        *self.inner.running.read().await
     }
 
     /// Get current ambient state snapshot.
-    #[allow(dead_code)]
     pub async fn state(&self) -> AmbientState {
         self.inner.state.read().await.clone()
-    }
-
-    /// Get queue count.
-    #[allow(dead_code)]
-    pub async fn queue_count(&self) -> usize {
-        *self.inner.queue_count.read().await
-    }
-
-    /// Get next queue preview.
-    #[allow(dead_code)]
-    pub async fn next_queue_preview(&self) -> Option<String> {
-        self.inner.next_queue_preview.read().await.clone()
-    }
-
-    /// Check if the runner loop is active.
-    #[allow(dead_code)]
-    pub async fn is_running(&self) -> bool {
-        *self.inner.running.read().await
     }
 
     /// Get a reference to the safety system (for debug socket permission commands).
@@ -191,8 +171,8 @@ impl AmbientRunnerHandle {
 
     /// Get status JSON for debug socket.
     pub async fn status_json(&self) -> String {
-        let state = self.inner.state.read().await;
-        let running = *self.inner.running.read().await;
+        let state = self.state().await;
+        let running = self.is_running().await;
         let active_sessions = *self.inner.active_user_sessions.read().await;
 
         let (

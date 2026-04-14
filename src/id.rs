@@ -181,7 +181,7 @@ pub fn new_memorable_server_id() -> (String, String) {
 
 /// Try to extract the memorable name from a server ID
 /// e.g., "server_blazing_1234567890_deadbeefcafebabe" -> Some("blazing")
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn extract_server_name(server_id: &str) -> Option<&str> {
     if let Some(rest) = server_id.strip_prefix("server_")
         && let Some(pos) = rest.find('_')

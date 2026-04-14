@@ -2730,7 +2730,7 @@ fn queue_message_for_reconnect(app: &mut App) {
     ));
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn handle_disconnected_key(
     app: &mut App,
     code: KeyCode,

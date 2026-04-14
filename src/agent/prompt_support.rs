@@ -121,27 +121,4 @@ impl Agent {
         self.build_memory_prompt_nonblocking_shared(messages.to_vec().into(), _memory_event_tx)
     }
 
-    /// Legacy blocking memory prompt - kept for fallback
-    #[allow(dead_code)]
-    pub(super) async fn build_memory_prompt(&self, messages: &[Message]) -> Option<String> {
-        let manager = self
-            .session
-            .working_dir
-            .as_deref()
-            .map(|dir| {
-                crate::memory::MemoryManager::new()
-                    .with_project_dir(dir)
-                    .with_skills(self.active_skill.is_none())
-            })
-            .unwrap_or_else(|| {
-                crate::memory::MemoryManager::new().with_skills(self.active_skill.is_none())
-            });
-        match manager.relevant_prompt_for_messages(messages).await {
-            Ok(prompt) => prompt,
-            Err(error) => {
-                logging::info(&format!("Memory relevance skipped: {}", error));
-                None
-            }
-        }
-    }
 }

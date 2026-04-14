@@ -1513,8 +1513,8 @@ struct MessageStartMessage {
 
 #[derive(Deserialize)]
 struct ContentBlockStartEvent {
-    #[allow(dead_code)]
-    index: u32,
+    #[serde(rename = "index")]
+    _index: u32,
     content_block: ApiContentBlockStart,
 }
 
@@ -1532,8 +1532,8 @@ enum ApiContentBlockStart {
 
 #[derive(Deserialize)]
 struct ContentBlockDeltaEvent {
-    #[allow(dead_code)]
-    index: u32,
+    #[serde(rename = "index")]
+    _index: u32,
     delta: ApiDelta,
 }
 

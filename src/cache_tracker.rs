@@ -36,11 +36,9 @@ pub struct CacheViolation {
     /// Number of messages at time of violation
     pub message_count: usize,
     /// Expected prefix hash
-    #[allow(dead_code)]
-    pub expected_hash: String,
+    pub _expected_hash: String,
     /// Actual prefix hash
-    #[allow(dead_code)]
-    pub actual_hash: String,
+    pub _actual_hash: String,
     /// Human-readable reason
     pub reason: String,
 }
@@ -126,8 +124,8 @@ impl CacheTracker {
             let violation = CacheViolation {
                 turn: self.turn_count,
                 message_count: current_count,
-                expected_hash: Self::hash_label(*previous_hash),
-                actual_hash: Self::hash_label(current_hash),
+                _expected_hash: Self::hash_label(*previous_hash),
+                _actual_hash: Self::hash_label(current_hash),
                 reason: format!(
                     "Messages removed: had {} messages, now have {}",
                     previous_count, current_count
@@ -153,8 +151,8 @@ impl CacheTracker {
             let violation = CacheViolation {
                 turn: self.turn_count,
                 message_count: current_count,
-                expected_hash: Self::hash_label(*previous_hash),
-                actual_hash: Self::hash_label(prefix_hash),
+                _expected_hash: Self::hash_label(*previous_hash),
+                _actual_hash: Self::hash_label(prefix_hash),
                 reason: format!(
                     "Prefix modified: first {} messages changed (hash {} -> {})",
                     previous_count,
@@ -185,12 +183,6 @@ impl CacheTracker {
         }
         self.last_violation = None;
         None
-    }
-
-    /// Get the last violation if any
-    #[allow(dead_code)]
-    pub fn last_violation(&self) -> Option<&CacheViolation> {
-        self.last_violation.as_ref()
     }
 
     /// Get the current turn count

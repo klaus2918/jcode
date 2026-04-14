@@ -305,11 +305,6 @@ pub enum DiffDisplayMode {
 }
 
 impl DiffDisplayMode {
-    #[allow(dead_code)]
-    pub fn is_off(&self) -> bool {
-        matches!(self, DiffDisplayMode::Off)
-    }
-
     pub fn is_inline(&self) -> bool {
         matches!(self, DiffDisplayMode::Inline | DiffDisplayMode::FullInline)
     }
