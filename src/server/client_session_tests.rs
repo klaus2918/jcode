@@ -1,4 +1,3 @@
-
 use super::{
     handle_clear_session, handle_reload, handle_resume_session, mark_remote_reload_started,
     rename_shutdown_signal, restored_session_was_interrupted, session_was_interrupted_by_reload,
