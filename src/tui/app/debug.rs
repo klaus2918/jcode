@@ -502,7 +502,7 @@ impl ScrollTestState {
         app.diff_pane_focus = self.diff_pane_focus;
         app.diff_pane_auto_scroll = self.diff_pane_auto_scroll;
         app.is_processing = self.is_processing;
-        app.streaming_text = self.streaming_text;
+        app.replace_streaming_text(self.streaming_text);
         app.queued_messages = self.queued_messages;
         app.interleave_message = self.interleave_message;
         app.pending_soft_interrupts = self.pending_soft_interrupts;

@@ -1235,7 +1235,7 @@ impl App {
                 input_tokens / 1000,
                 self.context_limit / 1000
             );
-            self.streaming_text.push_str(&warning);
+            self.append_streaming_text(&warning);
             self.context_warning_shown = true;
         } else if self.context_warning_shown && usage_percent >= 80.0 {
             // Reset to show 80% warning
@@ -1244,7 +1244,7 @@ impl App {
                     "\n⚠️  Context usage: {:.0}% - compaction imminent\n\n",
                     usage_percent
                 );
-                self.streaming_text.push_str(&warning);
+                self.append_streaming_text(&warning);
             }
         }
     }

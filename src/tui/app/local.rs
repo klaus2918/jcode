@@ -49,7 +49,7 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
         needs_redraw = true;
     }
     if let Some(chunk) = app.stream_buffer.flush() {
-        app.streaming_text.push_str(&chunk);
+        app.append_streaming_text(&chunk);
         needs_redraw = true;
     }
     needs_redraw |= app.refresh_side_panel_linked_content_if_due();

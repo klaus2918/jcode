@@ -1497,10 +1497,22 @@ impl App {
         }
         prefix.push('\n');
         if self.streaming_text.is_empty() {
-            self.streaming_text = prefix;
+            self.replace_streaming_text(prefix);
         } else {
-            self.streaming_text = format!("{}{}", prefix, self.streaming_text);
+            self.replace_streaming_text(format!("{}{}", prefix, self.streaming_text));
         }
+    }
+
+    pub(super) fn append_streaming_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.streaming_text.push_str(text);
+        self.refresh_split_view_if_needed();
+    }
+
+    pub(super) fn replace_streaming_text(&mut self, text: String) {
+        self.streaming_text = text;
         self.refresh_split_view_if_needed();
     }
 
@@ -1521,8 +1533,7 @@ impl App {
 
     pub(super) fn commit_pending_streaming_assistant_message(&mut self) -> bool {
         if let Some(chunk) = self.stream_buffer.flush() {
-            self.streaming_text.push_str(&chunk);
-            self.refresh_split_view_if_needed();
+            self.append_streaming_text(&chunk);
         }
 
         if self.streaming_text.is_empty() {

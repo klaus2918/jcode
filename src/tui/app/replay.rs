@@ -46,7 +46,7 @@ pub(super) async fn run_replay(
         tokio::select! {
             _ = redraw_interval.tick() => {
                 if let Some(chunk) = app.stream_buffer.flush() {
-                    app.streaming_text.push_str(&chunk);
+                    app.append_streaming_text(&chunk);
                 }
             }
             event = event_stream.next() => {
@@ -458,7 +458,7 @@ pub(super) fn apply_replay_event(
         ReplayEvent::Server(server_event) => {
             if let crate::protocol::ServerEvent::TextDelta { text } = server_event {
                 if !text.is_empty() {
-                    app.streaming_text.push_str(text);
+                    app.append_streaming_text(text);
                     if matches!(app.status, ProcessingStatus::Thinking(_)) {
                         app.status = ProcessingStatus::Streaming;
                     }

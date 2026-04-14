@@ -194,7 +194,7 @@ impl App {
                     // Redraw periodically
                     _ = redraw_interval.tick() => {
                         if let Some(chunk) = self.stream_buffer.flush() {
-                            self.streaming_text.push_str(&chunk);
+                            self.append_streaming_text(&chunk);
                         }
                         // Poll for background compaction completion during streaming
                         self.poll_compaction_completion();
@@ -251,7 +251,7 @@ impl App {
                                             }
                                             // Flush buffer and show partial response
                                             if let Some(chunk) = self.stream_buffer.flush() {
-                                                self.streaming_text.push_str(&chunk);
+                                                self.append_streaming_text(&chunk);
                                             }
                                             if !self.streaming_text.is_empty() {
                                                 let content = self.take_streaming_text();
@@ -381,7 +381,7 @@ impl App {
                                         text_content.push_str(&text);
                                         self.resume_streaming_tps();
                                         if let Some(chunk) = self.stream_buffer.push(&text) {
-                                            self.streaming_text.push_str(&chunk);
+                                            self.append_streaming_text(&chunk);
                                             self.broadcast_debug(crate::tui::backend::DebugEvent::TextDelta {
                                                 text: chunk.clone()
                                             });
@@ -546,7 +546,7 @@ impl App {
                                         self.thinking_buffer.push_str(&thinking_text);
                                         // Display reasoning/thinking content from OpenAI
                                         if let Some(chunk) = self.stream_buffer.flush() {
-                                            self.streaming_text.push_str(&chunk);
+                                            self.append_streaming_text(&chunk);
                                         }
                                         // Only show thinking content if enabled in config
                                         if config().display.show_thinking {
@@ -557,7 +557,7 @@ impl App {
                                                 self.thinking_buffer.clear();
                                             } else if self.thinking_prefix_emitted {
                                                 // After prefix is emitted, append subsequent chunks directly
-                                                self.streaming_text.push_str(&thinking_text);
+                                                self.append_streaming_text(&thinking_text);
                                             }
                                         }
                                         if store_reasoning_content {
@@ -572,7 +572,7 @@ impl App {
                                     StreamEvent::ThinkingDone { duration_secs } => {
                                         // Flush any pending buffered text first
                                         if let Some(chunk) = self.stream_buffer.flush() {
-                                            self.streaming_text.push_str(&chunk);
+                                            self.append_streaming_text(&chunk);
                                         }
                                         let thinking_msg = format!("*Thought for {:.1}s*", duration_secs);
                                         self.insert_thought_line(thinking_msg);
@@ -592,7 +592,7 @@ impl App {
                                         }
                                         // Flush any pending buffered text first
                                         if let Some(chunk) = self.stream_buffer.flush() {
-                                            self.streaming_text.push_str(&chunk);
+                                            self.append_streaming_text(&chunk);
                                         }
                                         let tokens_str = pre_tokens
                                             .map(|t| format!(" (was {} tokens)", t))
@@ -601,7 +601,7 @@ impl App {
                                             "📦 **Compaction complete** — context summarized ({}){}\n\n",
                                             trigger, tokens_str
                                         );
-                                        self.streaming_text.push_str(&compact_msg);
+                                        self.append_streaming_text(&compact_msg);
                                         self.context_warning_shown = false;
                                     }
                                     StreamEvent::UpstreamProvider { provider } => {
@@ -732,7 +732,7 @@ impl App {
 
             // Flush any remaining buffered text
             if let Some(chunk) = self.stream_buffer.flush() {
-                self.streaming_text.push_str(&chunk);
+                self.append_streaming_text(&chunk);
             }
 
             if tool_calls.is_empty() {
@@ -891,7 +891,7 @@ impl App {
                                             // to the session before tool execution started.
                                             // Just preserve the visual streaming content.
                                             if let Some(chunk) = self.stream_buffer.flush() {
-                                                self.streaming_text.push_str(&chunk);
+                                                self.append_streaming_text(&chunk);
                                             }
                                             if !self.streaming_text.is_empty() {
                                                 let content = self.take_streaming_text();
