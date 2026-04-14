@@ -351,7 +351,7 @@ fn sample_cube(
     let rot_z = elapsed * 0.35 + (elapsed * 0.55).cos() * 0.12;
     let cam_dist = 6.8f32;
     let aspect = 0.5f32;
-    let scale_base = (sw as f32).min(sh as f32 / aspect) * 0.24;
+    let scale_base = (sw as f32).min(sh as f32 / aspect) * 0.14;
     let s = 1.45f32;
 
     let faces = [
@@ -523,7 +523,7 @@ fn sample_gyroscope(
     let rot_z = elapsed * 0.28 + (elapsed * 0.5).cos() * 0.18;
     let cam_dist = 8.5f32;
     let aspect = 0.5;
-    let scale_base = (sw as f32).min(sh as f32 / aspect) * 0.26;
+    let scale_base = (sw as f32).min(sh as f32 / aspect) * 0.20;
 
     let rings = [(0u8, 2.0f32, 0.17f32), (1, 1.45, 0.15), (2, 0.95, 0.13)];
 
@@ -1002,6 +1002,27 @@ mod tests {
         }
     }
 
+    fn assert_idle_sampler_stays_off_border_on_small_viewports(name: &str, sampler: IdleSampler) {
+        let sizes = [(90usize, 36usize), (108, 42), (120, 48)];
+
+        for &(sw, sh) in &sizes {
+            for &elapsed in &[0.0f32, 0.8, 1.6, 2.4] {
+                let mut hit = vec![false; sw * sh];
+                let mut lum_map = vec![0.0; sw * sh];
+                let mut z_buf = vec![0.0; sw * sh];
+                sampler(elapsed, sw, sh, &mut hit, &mut lum_map, &mut z_buf);
+
+                let (min_x, max_x, min_y, max_y) =
+                    hit_bounds(&hit, sw, sh).unwrap_or_else(|| panic!("{name} should draw pixels"));
+
+                assert!(
+                    min_x > 0 && max_x + 1 < sw && min_y > 0 && max_y + 1 < sh,
+                    "{name} at t={elapsed} touches border on small viewport {sw}x{sh}: bounds=({min_x}..={max_x}, {min_y}..={max_y})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn idle_variants_exclude_retired_variants() {
         assert!(!IDLE_VARIANTS.contains(&"knot"));
@@ -1051,5 +1072,11 @@ mod tests {
         assert_idle_sampler_avoids_heavy_border_clipping("three_rings", sample_gyroscope);
         assert_idle_sampler_avoids_heavy_border_clipping("orbit_rings", sample_orbit_rings);
         assert_idle_sampler_avoids_heavy_border_clipping("cube", sample_cube);
+    }
+
+    #[test]
+    fn cube_and_three_rings_fit_small_viewports_without_touching_border() {
+        assert_idle_sampler_stays_off_border_on_small_viewports("three_rings", sample_gyroscope);
+        assert_idle_sampler_stays_off_border_on_small_viewports("cube", sample_cube);
     }
 }
