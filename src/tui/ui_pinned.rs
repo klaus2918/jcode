@@ -365,11 +365,11 @@ fn build_side_pane_snapshot_cache(
     )
 }
 static PINNED_CACHE: OnceLock<Mutex<PinnedCacheState>> = OnceLock::new();
-#[allow(dead_code)]
+#[cfg(not(test))]
 static SIDE_PANEL_MARKDOWN_CACHE: OnceLock<Mutex<SidePanelMarkdownCacheState>> = OnceLock::new();
-#[allow(dead_code)]
+#[cfg(not(test))]
 static SIDE_PANEL_RENDER_CACHE: OnceLock<Mutex<SidePanelRenderCacheState>> = OnceLock::new();
-#[allow(dead_code)]
+#[cfg(not(test))]
 static SIDE_PANEL_DEBUG: OnceLock<Mutex<SidePanelDebugState>> = OnceLock::new();
 
 #[cfg(test)]
@@ -386,17 +386,17 @@ fn pinned_cache() -> &'static Mutex<PinnedCacheState> {
     PINNED_CACHE.get_or_init(|| Mutex::new(PinnedCacheState::default()))
 }
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 fn side_panel_markdown_cache() -> &'static Mutex<SidePanelMarkdownCacheState> {
     SIDE_PANEL_MARKDOWN_CACHE.get_or_init(|| Mutex::new(SidePanelMarkdownCacheState::default()))
 }
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 fn side_panel_render_cache() -> &'static Mutex<SidePanelRenderCacheState> {
     SIDE_PANEL_RENDER_CACHE.get_or_init(|| Mutex::new(SidePanelRenderCacheState::default()))
 }
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 fn side_panel_debug() -> &'static Mutex<SidePanelDebugState> {
     SIDE_PANEL_DEBUG.get_or_init(|| Mutex::new(SidePanelDebugState::default()))
 }
@@ -1509,281 +1509,3 @@ fn is_rendered_table_line(line: &Line<'_>) -> bool {
 #[path = "ui_pinned_tests.rs"]
 mod tests;
 
-#[allow(dead_code)]
-fn draw_pinned_content(
-    frame: &mut Frame,
-    area: Rect,
-    entries: &[PinnedContentEntry],
-    scroll: usize,
-    line_wrap: bool,
-    focused: bool,
-) {
-    use ratatui::widgets::{Paragraph, Wrap};
-
-    if area.width < 10 || area.height < 3 {
-        return;
-    }
-
-    let total_diffs = entries
-        .iter()
-        .filter(|e| matches!(e, PinnedContentEntry::Diff { .. }))
-        .count();
-    let total_images = entries
-        .iter()
-        .filter(|e| matches!(e, PinnedContentEntry::Image { .. }))
-        .count();
-    let total_additions: usize = entries
-        .iter()
-        .map(|e| match e {
-            PinnedContentEntry::Diff { additions, .. } => *additions,
-            _ => 0,
-        })
-        .sum();
-    let total_deletions: usize = entries
-        .iter()
-        .map(|e| match e {
-            PinnedContentEntry::Diff { deletions, .. } => *deletions,
-            _ => 0,
-        })
-        .sum();
-
-    let mut title_parts = vec![Span::styled(" pinned ", Style::default().fg(tool_color()))];
-    if total_diffs > 0 {
-        title_parts.push(Span::styled(
-            format!("+{}", total_additions),
-            Style::default().fg(diff_add_color()),
-        ));
-        title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
-        title_parts.push(Span::styled(
-            format!("-{}", total_deletions),
-            Style::default().fg(diff_del_color()),
-        ));
-        title_parts.push(Span::styled(
-            format!(" {}f", total_diffs),
-            Style::default().fg(dim_color()),
-        ));
-    }
-    if total_images > 0 {
-        if total_diffs > 0 {
-            title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
-        }
-        title_parts.push(Span::styled(
-            format!("📷{}", total_images),
-            Style::default().fg(dim_color()),
-        ));
-    }
-    title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
-
-    let border_style = super::right_rail_border_style(focused, tool_color());
-    let Some(inner) =
-        super::draw_right_rail_chrome(frame, area, Line::from(title_parts), border_style)
-    else {
-        return;
-    };
-
-    let mut text_lines: Vec<Line<'static>> = Vec::new();
-    let mut last_image_group: Option<ImageGroup> = None;
-
-    struct ImagePlacement {
-        after_text_line: usize,
-        hash: u64,
-        rows: u16,
-    }
-    let mut image_placements: Vec<ImagePlacement> = Vec::new();
-
-    let has_protocol = mermaid::protocol_type().is_some();
-
-    for (i, entry) in entries.iter().enumerate() {
-        if i > 0 {
-            text_lines.push(Line::from(""));
-        }
-
-        match entry {
-            PinnedContentEntry::Diff {
-                file_path,
-                lines: diff_lines,
-                additions,
-                deletions,
-            } => {
-                let short_path = file_path
-                    .rsplit('/')
-                    .take(2)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>()
-                    .join("/");
-
-                let file_ext = std::path::Path::new(file_path)
-                    .extension()
-                    .and_then(|e| e.to_str());
-
-                text_lines.push(Line::from(vec![
-                    Span::styled("── ", Style::default().fg(dim_color())),
-                    Span::styled(
-                        short_path,
-                        Style::default()
-                            .fg(rgb(180, 200, 255))
-                            .add_modifier(ratatui::style::Modifier::BOLD),
-                    ),
-                    Span::styled(" (", Style::default().fg(dim_color())),
-                    Span::styled(
-                        format!("+{}", additions),
-                        Style::default().fg(diff_add_color()),
-                    ),
-                    Span::styled(" ", Style::default().fg(dim_color())),
-                    Span::styled(
-                        format!("-{}", deletions),
-                        Style::default().fg(diff_del_color()),
-                    ),
-                    Span::styled(")", Style::default().fg(dim_color())),
-                ]));
-
-                for line in diff_lines {
-                    let base_color = if line.kind == DiffLineKind::Add {
-                        diff_add_color()
-                    } else {
-                        diff_del_color()
-                    };
-
-                    let mut spans: Vec<Span<'static>> = vec![Span::styled(
-                        line.prefix.clone(),
-                        Style::default().fg(base_color),
-                    )];
-
-                    if !line.content.is_empty() {
-                        let highlighted = markdown::highlight_line(line.content.as_str(), file_ext);
-                        for span in highlighted {
-                            let tinted = tint_span_with_diff_color(span, base_color);
-                            spans.push(tinted);
-                        }
-                    }
-
-                    text_lines.push(Line::from(spans));
-                }
-            }
-            PinnedContentEntry::Image {
-                label,
-                media_type,
-                source,
-                hash,
-                width: img_w,
-                height: img_h,
-            } => {
-                let group = image_group_for(source);
-                if last_image_group != Some(group) {
-                    let (group_label, group_color) = image_group_heading(group);
-                    text_lines.push(Line::from(vec![
-                        Span::styled("   ", Style::default().fg(dim_color())),
-                        Span::styled(
-                            group_label.to_uppercase(),
-                            Style::default()
-                                .fg(group_color)
-                                .add_modifier(ratatui::style::Modifier::BOLD),
-                        ),
-                    ]));
-                    last_image_group = Some(group);
-                }
-
-                let short_label = compact_image_label(label);
-                let source_badge = image_source_badge(source);
-
-                text_lines.push(Line::from(vec![
-                    Span::styled("── 📷 ", Style::default().fg(dim_color())),
-                    Span::styled(
-                        short_label,
-                        Style::default()
-                            .fg(rgb(180, 200, 255))
-                            .add_modifier(ratatui::style::Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(" {}×{}", img_w, img_h),
-                        Style::default().fg(dim_color()),
-                    ),
-                    Span::styled(
-                        format!(" [{}]", source_badge),
-                        Style::default().fg(match group {
-                            ImageGroup::Inputs => rgb(138, 180, 248),
-                            ImageGroup::Tools => accent_color(),
-                            ImageGroup::Other => dim_color(),
-                        }),
-                    ),
-                ]));
-                text_lines.push(Line::from(vec![
-                    Span::styled("   ", Style::default().fg(dim_color())),
-                    Span::styled(media_type.clone(), Style::default().fg(dim_color())),
-                    Span::styled(" • exact model artifact", Style::default().fg(dim_color())),
-                ]));
-
-                if has_protocol {
-                    let img_rows =
-                        estimate_inline_image_rows(*img_w, *img_h, inner.width, inner.height);
-                    image_placements.push(ImagePlacement {
-                        after_text_line: text_lines.len(),
-                        hash: *hash,
-                        rows: img_rows,
-                    });
-                    for _ in 0..img_rows {
-                        text_lines.push(Line::from(""));
-                    }
-                }
-            }
-        }
-    }
-
-    if text_lines.is_empty() {
-        text_lines.push(Line::from(Span::styled(
-            "No content yet",
-            Style::default().fg(dim_color()),
-        )));
-    }
-
-    let total_lines = text_lines.len();
-    super::set_pinned_pane_total_lines(total_lines);
-
-    let max_scroll = total_lines.saturating_sub(inner.height as usize);
-    let clamped_scroll = scroll.min(max_scroll);
-    super::set_last_diff_pane_effective_scroll(clamped_scroll);
-
-    let visible_lines: Vec<Line<'static>> = text_lines.into_iter().skip(clamped_scroll).collect();
-
-    let paragraph = if line_wrap {
-        Paragraph::new(visible_lines).wrap(Wrap { trim: false })
-    } else {
-        Paragraph::new(visible_lines)
-    };
-    frame.render_widget(paragraph, inner);
-
-    if has_protocol {
-        for placement in &image_placements {
-            let image_start = placement.after_text_line;
-            let image_end = image_start.saturating_add(placement.rows as usize);
-            let viewport_start = clamped_scroll;
-            let viewport_end = clamped_scroll.saturating_add(inner.height as usize);
-            if image_end <= viewport_start || image_start >= viewport_end {
-                continue;
-            }
-
-            let visible_start = image_start.max(viewport_start);
-            let visible_end = image_end.min(viewport_end);
-            let y_in_inner = visible_start.saturating_sub(viewport_start) as u16;
-            let avail_rows = visible_end.saturating_sub(visible_start) as u16;
-            if avail_rows < 2 {
-                continue;
-            }
-            let img_area = Rect {
-                x: inner.x,
-                y: inner.y + y_in_inner,
-                width: inner.width,
-                height: avail_rows,
-            };
-            mermaid::render_image_widget_fit(
-                placement.hash,
-                img_area,
-                frame.buffer_mut(),
-                false,
-                false,
-            );
-        }
-    }
-}

@@ -1297,17 +1297,10 @@ fn render_overview_widget(frame: &mut Frame, inner: Rect, data: &InfoWidgetData)
     frame.render_widget(Paragraph::new(lines), inner);
 }
 #[cfg(test)]
-#[allow(dead_code)]
-const MEMORY_TEXT_SUBGRAPH_MAX_NODES: usize = 8;
-#[cfg(test)]
-#[allow(dead_code)]
-const MEMORY_TEXT_SUBGRAPH_MAX_EDGES: usize = 10;
-#[cfg(test)]
 #[derive(Debug, Clone)]
 struct MemorySubgraph {
     nodes: Vec<GraphNode>,
-    #[allow(dead_code)]
-    edges: Vec<GraphEdge>,
+    _edges: Vec<GraphEdge>,
 }
 #[cfg(test)]
 fn select_contextual_subgraph(
@@ -1423,7 +1416,7 @@ fn select_contextual_subgraph(
 
     Some(MemorySubgraph {
         nodes: sub_nodes,
-        edges: sub_edges,
+        _edges: sub_edges,
     })
 }
 

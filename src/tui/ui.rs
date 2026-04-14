@@ -141,19 +141,19 @@ use viewport::compute_visible_margins;
 use viewport::draw_messages;
 /// Last known max scroll value from the renderer. Updated each frame.
 /// Scroll handlers use this to clamp scroll_offset and prevent overshoot.
-#[allow(dead_code)]
+#[cfg(not(test))]
 static LAST_MAX_SCROLL: AtomicUsize = AtomicUsize::new(0);
 /// Number of recovered panics while rendering the frame.
 static DRAW_PANIC_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Total line count in the pinned diff/content pane (set during render).
-#[allow(dead_code)]
+#[cfg(not(test))]
 static PINNED_PANE_TOTAL_LINES: AtomicUsize = AtomicUsize::new(0);
 /// Effective scroll position of the side pane after render-time clamping.
-#[allow(dead_code)]
+#[cfg(not(test))]
 static LAST_DIFF_PANE_EFFECTIVE_SCROLL: AtomicUsize = AtomicUsize::new(0);
 /// Wrapped line indices where each user prompt starts (updated each render frame).
 /// Used by prompt-jump keybindings (Ctrl+5..9, Ctrl+[/]) for accurate positioning.
-#[allow(dead_code)]
+#[cfg(not(test))]
 static LAST_USER_PROMPT_POSITIONS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 
 #[cfg(test)]
@@ -431,10 +431,10 @@ pub(crate) struct VisibleCopyTarget {
 
 const COPY_BADGE_KEYS: [char; 12] = ['s', 'd', 'f', 'g', 'w', 'e', 'r', 't', 'x', 'c', 'v', 'b'];
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 static VISIBLE_COPY_TARGETS: OnceLock<Mutex<Vec<VisibleCopyTarget>>> = OnceLock::new();
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 fn visible_copy_targets_state() -> &'static Mutex<Vec<VisibleCopyTarget>> {
     VISIBLE_COPY_TARGETS.get_or_init(|| Mutex::new(Vec::new()))
 }
@@ -497,10 +497,10 @@ struct PromptViewportState {
 
 const PROMPT_ENTRY_ANIMATION_MS: u64 = 450;
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 static PROMPT_VIEWPORT_STATE: OnceLock<Mutex<PromptViewportState>> = OnceLock::new();
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 fn prompt_viewport_state() -> &'static Mutex<PromptViewportState> {
     PROMPT_VIEWPORT_STATE.get_or_init(|| Mutex::new(PromptViewportState::default()))
 }
@@ -817,10 +817,10 @@ pub struct LayoutSnapshot {
     pub input_area: Option<Rect>,
 }
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 static LAST_LAYOUT: OnceLock<Mutex<Option<LayoutSnapshot>>> = OnceLock::new();
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 fn last_layout_state() -> &'static Mutex<Option<LayoutSnapshot>> {
     LAST_LAYOUT.get_or_init(|| Mutex::new(None))
 }
@@ -906,11 +906,11 @@ struct CopyViewportSnapshots {
     side: Option<CopyViewportSnapshot>,
 }
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 static LAST_COPY_VIEWPORT: OnceLock<Mutex<CopyViewportSnapshots>> = OnceLock::new();
 static URL_REGEX: OnceLock<Regex> = OnceLock::new();
 
-#[allow(dead_code)]
+#[cfg(not(test))]
 fn copy_viewport_state() -> &'static Mutex<CopyViewportSnapshots> {
     LAST_COPY_VIEWPORT.get_or_init(|| Mutex::new(CopyViewportSnapshots::default()))
 }
@@ -1212,7 +1212,7 @@ pub(crate) fn copy_point_from_screen(
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn copy_viewport_point_from_screen(
     column: u16,
     row: u16,
@@ -1221,7 +1221,7 @@ pub(crate) fn copy_viewport_point_from_screen(
     (point.pane == crate::tui::CopySelectionPane::Chat).then_some(point)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn side_pane_point_from_screen(
     column: u16,
     row: u16,
@@ -1237,33 +1237,12 @@ fn copy_pane_line_text(pane: crate::tui::CopySelectionPane, abs_line: usize) -> 
         .cloned()
 }
 
-#[allow(dead_code)]
-fn copy_pane_line_copy_start(
-    pane: crate::tui::CopySelectionPane,
-    abs_line: usize,
-) -> Option<usize> {
-    copy_snapshot_for_pane(pane)?
-        .wrapped_copy_offsets
-        .get(abs_line)
-        .copied()
-}
-
 pub(crate) fn copy_viewport_line_text(abs_line: usize) -> Option<String> {
     copy_pane_line_text(crate::tui::CopySelectionPane::Chat, abs_line)
 }
 
 pub(crate) fn side_pane_line_text(abs_line: usize) -> Option<String> {
     copy_pane_line_text(crate::tui::CopySelectionPane::SidePane, abs_line)
-}
-
-#[allow(dead_code)]
-pub(crate) fn copy_viewport_line_copy_start(abs_line: usize) -> Option<usize> {
-    copy_pane_line_copy_start(crate::tui::CopySelectionPane::Chat, abs_line)
-}
-
-#[allow(dead_code)]
-pub(crate) fn side_pane_line_copy_start(abs_line: usize) -> Option<usize> {
-    copy_pane_line_copy_start(crate::tui::CopySelectionPane::SidePane, abs_line)
 }
 
 fn copy_pane_line_count(pane: crate::tui::CopySelectionPane) -> Option<usize> {
@@ -1283,7 +1262,7 @@ pub(crate) fn copy_viewport_visible_range() -> Option<(usize, usize)> {
     Some((snapshot.scroll, snapshot.visible_end))
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn side_pane_visible_range() -> Option<(usize, usize)> {
     let snapshot = copy_snapshot_for_pane(crate::tui::CopySelectionPane::SidePane)?;
     Some((snapshot.scroll, snapshot.visible_end))
@@ -1303,11 +1282,6 @@ pub(crate) fn copy_pane_first_visible_point(
         abs_line: snapshot.scroll,
         column: 0,
     })
-}
-
-#[allow(dead_code)]
-pub(crate) fn copy_viewport_first_visible_point() -> Option<crate::tui::CopySelectionPoint> {
-    copy_pane_first_visible_point(crate::tui::CopySelectionPane::Chat)
 }
 
 pub(crate) fn copy_selection_text(range: crate::tui::CopySelectionRange) -> Option<String> {
@@ -2178,7 +2152,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn inline_ui_gap_height(app: &dyn TuiState) -> u16 {
     if app.inline_ui_state().is_some() {
         1
@@ -2187,7 +2161,7 @@ fn inline_ui_gap_height(app: &dyn TuiState) -> u16 {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn extract_line_text(line: &Line) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
@@ -2442,8 +2416,3 @@ pub(crate) fn render_native_scrollbar(
 #[cfg(test)]
 #[path = "ui_tests/mod.rs"]
 mod tests;
-
-#[allow(dead_code)]
-pub(crate) fn format_inline_interactive_elapsed(secs: f32) -> String {
-    inline_interactive_ui::format_elapsed(secs)
-}
