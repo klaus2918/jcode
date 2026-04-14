@@ -18,7 +18,7 @@ fn cleanup_background_task_files(task_id: &str) {
     let _ = std::fs::remove_file(task_dir.join(format!("{}.output", task_id)));
 }
 
-fn cleanup_reload_context_file(session_id: &str) {
+pub(super) fn cleanup_reload_context_file(session_id: &str) {
     if let Ok(path) = crate::tool::selfdev::ReloadContext::path_for_session(session_id) {
         let _ = std::fs::remove_file(path);
     }

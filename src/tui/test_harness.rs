@@ -2,8 +2,6 @@
 //!
 //! Comprehensive testing infrastructure for autonomous TUI testing.
 //! Provides deterministic clock, event replay, log bundles, and headless rendering.
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::{self, File};
@@ -11,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // ============================================================================
 // Deterministic Clock
@@ -27,15 +25,12 @@ static TEST_CLOCK_ENABLED: AtomicBool = AtomicBool::new(false);
 pub struct TestClock {
     /// Current simulated time in milliseconds since epoch
     current_ms: AtomicU64,
-    /// Base instant for relative timing
-    base_instant: Instant,
 }
 
 impl TestClock {
     pub fn new() -> Self {
         Self {
             current_ms: AtomicU64::new(0),
-            base_instant: Instant::now(),
         }
     }
 
