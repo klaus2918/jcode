@@ -3,60 +3,6 @@ use crate::tui::mermaid;
 use std::collections::VecDeque;
 use std::hash::Hasher as _;
 
-/// Format tokens compactly (1.2M, 45K, 123)
-#[allow(dead_code)]
-pub(super) fn format_tokens_compact(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.0}K", tokens as f64 / 1_000.0)
-    } else {
-        format!("{}", tokens)
-    }
-}
-
-#[allow(dead_code)]
-pub(super) fn format_usage_line(tokens_str: String, cache_status: Option<String>) -> String {
-    let mut parts = Vec::new();
-    if !tokens_str.is_empty() {
-        parts.push(tokens_str);
-    }
-    if let Some(cache) = cache_status {
-        parts.push(cache);
-    }
-    if parts.is_empty() {
-        String::new()
-    } else {
-        parts.join(" • ")
-    }
-}
-
-#[allow(dead_code)]
-pub(super) fn format_cache_status(
-    cache_read_tokens: Option<u64>,
-    cache_creation_tokens: Option<u64>,
-) -> Option<String> {
-    match (cache_read_tokens, cache_creation_tokens) {
-        (Some(read), _) if read > 0 => {
-            let k = read / 1000;
-            if k > 0 {
-                Some(format!("⚡{}k cached", k))
-            } else {
-                Some(format!("⚡{} cached", read))
-            }
-        }
-        (_, Some(created)) if created > 0 => {
-            let k = created / 1000;
-            if k > 0 {
-                Some(format!("💾{}k stored", k))
-            } else {
-                Some(format!("💾{} stored", created))
-            }
-        }
-        _ => None,
-    }
-}
-
 pub(super) fn lru_touch<K: PartialEq>(order: &mut VecDeque<K>, key: &K) {
     if let Some(pos) = order.iter().position(|existing| existing == key) {
         order.remove(pos);

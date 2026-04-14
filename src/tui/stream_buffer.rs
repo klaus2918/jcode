@@ -46,12 +46,6 @@ impl StreamBuffer {
         None
     }
 
-    /// Check if buffer should be flushed due to timeout
-    #[allow(dead_code)]
-    pub fn should_flush(&self) -> bool {
-        !self.buffer.is_empty() && self.last_flush.elapsed() > self.timeout
-    }
-
     /// Force flush the entire buffer (call on timeout or message end)
     pub fn flush(&mut self) -> Option<String> {
         if self.buffer.is_empty() {
@@ -63,7 +57,7 @@ impl StreamBuffer {
     }
 
     /// Check if buffer is empty
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
