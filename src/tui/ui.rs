@@ -142,7 +142,6 @@ use pinned_ui::{
 use transitions::extract_line_text;
 #[cfg(test)]
 use transitions::inline_ui_gap_height;
-use transitions::morph_lines_to_header;
 #[cfg(test)]
 use viewport::compute_visible_margins;
 use viewport::draw_messages;
@@ -758,7 +757,6 @@ struct FullPrepCacheKey {
     streaming_text_len: usize,
     streaming_text_hash: u64,
     batch_progress_hash: u64,
-    startup_active: bool,
 }
 
 #[derive(Clone)]

@@ -1,267 +1,11 @@
-use super::dim_color;
-use crate::tui::{STARTUP_ANIMATION_WINDOW, TuiState, color_support::rgb};
+use crate::tui::{TuiState, color_support::rgb};
 use ratatui::{prelude::*, widgets::Paragraph};
 use std::cell::RefCell;
 use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
-const STARTUP_ASCII_STATUS_FPS: f32 = 12.0;
-const STARTUP_ASCII_STATUS_SPINNER: &[&str] = &["|", "/", "-", "\\"];
-const LUMINANCE: &[u8] = b".,-~:;=!*#$@";
-
-const STARTUP_VARIANTS: &[&str] = &["donut", "globe", "cube", "octahedron", "lorenz", "rabbit"];
-
 const IDLE_VARIANTS: &[&str] = &["donut", "three_rings", "orbit_rings", "cube"];
-
-struct RenderBuffers {
-    output: Vec<Vec<u8>>,
-    zbuffer: Vec<Vec<f32>>,
-    width: usize,
-    height: usize,
-}
-
-impl RenderBuffers {
-    fn new() -> Self {
-        Self {
-            output: Vec::new(),
-            zbuffer: Vec::new(),
-            width: 0,
-            height: 0,
-        }
-    }
-
-    fn resize_and_clear(&mut self, width: usize, height: usize) {
-        if self.width != width || self.height != height {
-            self.output.resize_with(height, Vec::new);
-            self.output.truncate(height);
-            self.zbuffer.resize_with(height, Vec::new);
-            self.zbuffer.truncate(height);
-            for row in &mut self.output {
-                row.resize(width, b' ');
-            }
-            for row in &mut self.zbuffer {
-                row.resize(width, 0.0);
-            }
-            self.width = width;
-            self.height = height;
-        }
-        for row in &mut self.output {
-            row.fill(b' ');
-        }
-        for row in &mut self.zbuffer {
-            row.fill(0.0);
-        }
-    }
-}
-
-thread_local! {
-    static RENDER_BUF: RefCell<RenderBuffers> = RefCell::new(RenderBuffers::new());
-}
-
-fn with_render_buffers<F>(width: usize, height: usize, f: F) -> Vec<String>
-where
-    F: FnOnce(&mut Vec<Vec<u8>>, &mut Vec<Vec<f32>>),
-{
-    RENDER_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        buf.resize_and_clear(width, height);
-        let buf = &mut *buf;
-        f(&mut buf.output, &mut buf.zbuffer);
-        buf.output
-            .iter()
-            .map(|row| String::from_utf8_lossy(row).into_owned())
-            .collect()
-    })
-}
-
-fn render_donut(elapsed: f32, width: usize, height: usize) -> Vec<String> {
-    let a = elapsed * 1.5;
-    let b = elapsed * 0.8;
-    let cos_a = a.cos();
-    let sin_a = a.sin();
-    let cos_b = b.cos();
-    let sin_b = b.sin();
-
-    with_render_buffers(width, height, |output, zbuffer| {
-        let mut theta: f32 = 0.0;
-        while theta < std::f32::consts::TAU {
-            let cos_theta = theta.cos();
-            let sin_theta = theta.sin();
-
-            let mut phi: f32 = 0.0;
-            while phi < std::f32::consts::TAU {
-                let cos_phi = phi.cos();
-                let sin_phi = phi.sin();
-
-                let circle_x = 2.0 + cos_theta;
-                let circle_y = sin_theta;
-
-                let x = circle_x * (cos_b * cos_phi + sin_a * sin_b * sin_phi)
-                    - circle_y * cos_a * sin_b;
-                let y = circle_x * (sin_b * cos_phi - sin_a * cos_b * sin_phi)
-                    + circle_y * cos_a * cos_b;
-                let z = 5.0 + cos_a * circle_x * sin_phi + circle_y * sin_a;
-                let ooz = 1.0 / z;
-
-                let xp = (width as f32 / 2.0 + width as f32 * 0.35 * ooz * x) as isize;
-                let yp = (height as f32 / 2.0 - height as f32 * 0.35 * ooz * y) as isize;
-
-                let lum =
-                    cos_phi * cos_theta * sin_b - cos_a * cos_theta * sin_phi - sin_a * sin_theta
-                        + cos_b * (cos_a * sin_theta - cos_theta * sin_a * sin_phi);
-
-                if xp >= 0
-                    && (xp as usize) < width
-                    && yp >= 0
-                    && (yp as usize) < height
-                    && ooz > zbuffer[yp as usize][xp as usize]
-                {
-                    zbuffer[yp as usize][xp as usize] = ooz;
-                    let li = (lum * 8.0).max(0.0).min((LUMINANCE.len() - 1) as f32) as usize;
-                    output[yp as usize][xp as usize] = LUMINANCE[li];
-                }
-
-                phi += 0.02;
-            }
-            theta += 0.07;
-        }
-    })
-}
-
-fn render_startup_animation(
-    elapsed: f32,
-    width: usize,
-    height: usize,
-    variant: &str,
-) -> Vec<String> {
-    match variant {
-        "donut" => render_donut(elapsed, width, height),
-        "globe" => render_globe(elapsed, width, height),
-        "cube" => render_cube(elapsed, width, height),
-        "octahedron" => render_octahedron(elapsed, width, height),
-        "lorenz" => render_lorenz(elapsed, width, height),
-        "rabbit" => render_rabbit(elapsed, width, height),
-        "black_hole" => render_black_hole(elapsed, width, height),
-        _ => render_donut(elapsed, width, height),
-    }
-}
-
-fn render_black_hole(elapsed: f32, width: usize, height: usize) -> Vec<String> {
-    with_render_buffers(width, height, |output, _zbuffer| {
-        let cx = width as f32 / 2.0;
-        let cy = height as f32 / 2.0;
-        let aspect = 0.5f32;
-        let disk_half_len = width as f32 * 0.36;
-        let disk_half_thickness = (height as f32 * 0.055).max(0.8);
-        let horizon_r = height.min(width / 3) as f32 * 0.16;
-        let halo_r = horizon_r * 1.85;
-        let shimmer = elapsed * 2.4;
-
-        for (y, row) in output.iter_mut().enumerate().take(height) {
-            for (x, cell) in row.iter_mut().enumerate().take(width) {
-                let dx = x as f32 - cx;
-                let dy = (y as f32 - cy) / aspect;
-                let r = (dx * dx + dy * dy).sqrt();
-
-                let abs_x = dx.abs();
-                let abs_y = dy.abs();
-
-                let disk_falloff_x = (1.0 - abs_x / disk_half_len).clamp(0.0, 1.0);
-                let disk_core = (1.0 - abs_y / disk_half_thickness).clamp(0.0, 1.0);
-                let disk_glow =
-                    (1.0 - abs_y / (disk_half_thickness * 3.8 + 1.0)).clamp(0.0, 1.0) * 0.42;
-                let lens_band = (1.0
-                    - ((abs_y - horizon_r * 0.72).abs() / (horizon_r * 0.55 + 0.1)))
-                    .clamp(0.0, 1.0)
-                    * (1.0 - abs_x / (halo_r * 1.5 + 1.0)).clamp(0.0, 1.0);
-                let halo =
-                    (1.0 - ((r - halo_r).abs() / (horizon_r * 0.95 + 0.1))).clamp(0.0, 1.0) * 0.38;
-
-                let streak_phase = shimmer + dx * 0.33;
-                let streaks = ((streak_phase.sin() * 0.5 + 0.5) * 0.55
-                    + ((streak_phase * 0.47 + 1.7).sin() * 0.5 + 0.5) * 0.45)
-                    * disk_falloff_x;
-                let relativistic_beam = (1.0
-                    - ((dx - disk_half_len * 0.34).abs() / (disk_half_len * 0.52 + 0.1)))
-                    .clamp(0.0, 1.0)
-                    * 0.32;
-
-                let mut brightness = disk_core * (0.55 + 0.45 * streaks) * disk_falloff_x
-                    + disk_glow * disk_falloff_x
-                    + lens_band * 0.62
-                    + halo * 0.28
-                    + relativistic_beam * disk_core;
-
-                if r <= horizon_r {
-                    brightness = 0.0;
-                }
-
-                if abs_x <= horizon_r * 0.95 && abs_y <= disk_half_thickness * 1.2 {
-                    brightness *= (abs_x / (horizon_r * 0.95 + 0.1)).clamp(0.0, 1.0);
-                }
-
-                brightness = brightness.clamp(0.0, 1.0);
-                let idx = (brightness * (LUMINANCE.len() - 1) as f32) as usize;
-                *cell = LUMINANCE[idx.min(LUMINANCE.len() - 1)];
-            }
-        }
-    })
-}
-
-fn render_globe(elapsed: f32, width: usize, height: usize) -> Vec<String> {
-    with_render_buffers(width, height, |output, zbuffer| {
-        let rot = elapsed * 0.8;
-        let cos_r = rot.cos();
-        let sin_r = rot.sin();
-        let radius = (width.min(height * 2) as f32) * 0.35;
-        let cx = width as f32 / 2.0;
-        let cy = height as f32 / 2.0;
-
-        let mut lat: f32 = -std::f32::consts::FRAC_PI_2;
-        while lat < std::f32::consts::FRAC_PI_2 {
-            let cos_lat = lat.cos();
-            let sin_lat = lat.sin();
-            let mut lon: f32 = 0.0;
-            while lon < std::f32::consts::TAU {
-                let cos_lon = lon.cos();
-                let sin_lon = lon.sin();
-                let x3 = cos_lat * sin_lon;
-                let y3 = sin_lat;
-                let z3 = cos_lat * cos_lon;
-                let rx = x3 * cos_r + z3 * sin_r;
-                let rz = -x3 * sin_r + z3 * cos_r;
-                if rz < -0.1 {
-                    lon += 0.03;
-                    continue;
-                }
-                let xp = (cx + rx * radius) as isize;
-                let yp = (cy - y3 * radius * 0.5) as isize;
-                let lum = (rz + 1.0) * 0.5;
-                if xp >= 0 && (xp as usize) < width && yp >= 0 && (yp as usize) < height {
-                    let depth = rz + 1.0;
-                    if depth > zbuffer[yp as usize][xp as usize] {
-                        zbuffer[yp as usize][xp as usize] = depth;
-                        let is_grid = (lat * 6.0).fract().abs() < 0.15
-                            || ((lon + rot) * 6.0 / std::f32::consts::TAU).fract().abs() < 0.1;
-                        if is_grid {
-                            let li = (lum * (LUMINANCE.len() - 1) as f32)
-                                .max(0.0)
-                                .min((LUMINANCE.len() - 1) as f32)
-                                as usize;
-                            output[yp as usize][xp as usize] = LUMINANCE[li];
-                        } else {
-                            let li = (lum * 3.0).clamp(0.0, 2.0) as usize;
-                            output[yp as usize][xp as usize] = b".,:"[li];
-                        }
-                    }
-                }
-                lon += 0.03;
-            }
-            lat += 0.03;
-        }
-    })
-}
 
 fn rotate_xyz(x: f32, y: f32, z: f32, ax: f32, ay: f32, az: f32) -> (f32, f32, f32) {
     let (sx, cx) = ax.sin_cos();
@@ -274,326 +18,6 @@ fn rotate_xyz(x: f32, y: f32, z: f32, ax: f32, ay: f32, az: f32) -> (f32, f32, f
     let x2 = x1 * cz - y1 * sz;
     let y2 = x1 * sz + y1 * cz;
     (x2, y2, z2)
-}
-
-fn project_3d(
-    x: f32,
-    y: f32,
-    z: f32,
-    width: usize,
-    height: usize,
-    cam_dist: f32,
-) -> Option<(isize, isize, f32)> {
-    let d = cam_dist + z;
-    if d < 0.1 {
-        return None;
-    }
-    let scale = cam_dist / d;
-    let xp = (width as f32 / 2.0 + x * scale * height as f32 * 0.4) as isize;
-    let yp = (height as f32 / 2.0 - y * scale * height as f32 * 0.4) as isize;
-    Some((xp, yp, 1.0 / d))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_line_3d(
-    output: &mut [Vec<u8>],
-    zbuffer: &mut [Vec<f32>],
-    x0: f32,
-    y0: f32,
-    z0: f32,
-    x1: f32,
-    y1: f32,
-    z1: f32,
-    width: usize,
-    height: usize,
-    cam_dist: f32,
-    ch: u8,
-) {
-    let steps = 40;
-    for i in 0..=steps {
-        let t = i as f32 / steps as f32;
-        let x = x0 + (x1 - x0) * t;
-        let y = y0 + (y1 - y0) * t;
-        let z = z0 + (z1 - z0) * t;
-        if let Some((xp, yp, depth)) = project_3d(x, y, z, width, height, cam_dist)
-            && xp >= 0
-            && (xp as usize) < width
-            && yp >= 0
-            && (yp as usize) < height
-            && depth > zbuffer[yp as usize][xp as usize]
-        {
-            zbuffer[yp as usize][xp as usize] = depth;
-            output[yp as usize][xp as usize] = ch;
-        }
-    }
-}
-
-fn render_cube_with_style(
-    elapsed: f32,
-    width: usize,
-    height: usize,
-    edge_ch: u8,
-    vertex_ch: u8,
-) -> Vec<String> {
-    with_render_buffers(width, height, |output, zbuffer| {
-        let ax = elapsed * 0.7;
-        let ay = elapsed * 1.1;
-        let az = elapsed * 0.3;
-        let cam_dist = 5.0;
-        let verts: [(f32, f32, f32); 8] = [
-            (-1.0, -1.0, -1.0),
-            (1.0, -1.0, -1.0),
-            (1.0, 1.0, -1.0),
-            (-1.0, 1.0, -1.0),
-            (-1.0, -1.0, 1.0),
-            (1.0, -1.0, 1.0),
-            (1.0, 1.0, 1.0),
-            (-1.0, 1.0, 1.0),
-        ];
-        let edges: [(usize, usize); 12] = [
-            (0, 1),
-            (1, 2),
-            (2, 3),
-            (3, 0),
-            (4, 5),
-            (5, 6),
-            (6, 7),
-            (7, 4),
-            (0, 4),
-            (1, 5),
-            (2, 6),
-            (3, 7),
-        ];
-        let rotated: Vec<(f32, f32, f32)> = verts
-            .iter()
-            .map(|&(x, y, z)| rotate_xyz(x, y, z, ax, ay, az))
-            .collect();
-        for &(a, b) in &edges {
-            let (x0, y0, z0) = rotated[a];
-            let (x1, y1, z1) = rotated[b];
-            draw_line_3d(
-                output, zbuffer, x0, y0, z0, x1, y1, z1, width, height, cam_dist, edge_ch,
-            );
-        }
-        for &(x, y, z) in &rotated {
-            if let Some((xp, yp, _)) = project_3d(x, y, z, width, height, cam_dist)
-                && xp >= 0
-                && (xp as usize) < width
-                && yp >= 0
-                && (yp as usize) < height
-            {
-                output[yp as usize][xp as usize] = vertex_ch;
-            }
-        }
-    })
-}
-
-fn render_cube(elapsed: f32, width: usize, height: usize) -> Vec<String> {
-    render_cube_with_style(elapsed, width, height, b'#', b'@')
-}
-
-fn render_octahedron(elapsed: f32, width: usize, height: usize) -> Vec<String> {
-    with_render_buffers(width, height, |output, zbuffer| {
-        let ax = elapsed * 0.9;
-        let ay = elapsed * 0.6;
-        let az = elapsed * 0.4;
-        let cam_dist = 4.5;
-        let s = 1.3;
-        let verts: [(f32, f32, f32); 6] = [
-            (s, 0.0, 0.0),
-            (-s, 0.0, 0.0),
-            (0.0, s, 0.0),
-            (0.0, -s, 0.0),
-            (0.0, 0.0, s),
-            (0.0, 0.0, -s),
-        ];
-        let edges: [(usize, usize); 12] = [
-            (0, 2),
-            (0, 3),
-            (0, 4),
-            (0, 5),
-            (1, 2),
-            (1, 3),
-            (1, 4),
-            (1, 5),
-            (2, 4),
-            (4, 3),
-            (3, 5),
-            (5, 2),
-        ];
-        let rotated: Vec<(f32, f32, f32)> = verts
-            .iter()
-            .map(|&(x, y, z)| rotate_xyz(x, y, z, ax, ay, az))
-            .collect();
-        for &(a, b) in &edges {
-            let (x0, y0, z0) = rotated[a];
-            let (x1, y1, z1) = rotated[b];
-            draw_line_3d(
-                output, zbuffer, x0, y0, z0, x1, y1, z1, width, height, cam_dist, b'=',
-            );
-        }
-        for &(x, y, z) in &rotated {
-            if let Some((xp, yp, _)) = project_3d(x, y, z, width, height, cam_dist)
-                && xp >= 0
-                && (xp as usize) < width
-                && yp >= 0
-                && (yp as usize) < height
-            {
-                output[yp as usize][xp as usize] = b'@';
-            }
-        }
-    })
-}
-
-fn render_lorenz(elapsed: f32, width: usize, height: usize) -> Vec<String> {
-    with_render_buffers(width, height, |output, _zbuffer| {
-        let sigma: f32 = 10.0;
-        let rho: f32 = 28.0;
-        let beta: f32 = 8.0 / 3.0;
-        let dt: f32 = 0.005;
-        let mut x: f32 = 0.1;
-        let mut y: f32 = 0.0;
-        let mut z: f32 = 0.0;
-        let rot = elapsed * 0.3;
-        let cos_r = rot.cos();
-        let sin_r = rot.sin();
-        let scale_x = width as f32 / 55.0;
-        let scale_y = height as f32 / 55.0;
-        let cx = width as f32 / 2.0;
-        let cy = height as f32 * 0.65;
-        let total_steps = (4000 + (elapsed * 500.0) as usize).min(8000);
-        let trail_start = total_steps.saturating_sub(3000);
-        for step in 0..total_steps {
-            let dx = sigma * (y - x);
-            let dy = x * (rho - z) - y;
-            let dz = x * y - beta * z;
-            x += dx * dt;
-            y += dy * dt;
-            z += dz * dt;
-            if step >= trail_start {
-                let rx = x * cos_r - y * sin_r;
-                let xp = (cx + rx * scale_x) as isize;
-                let yp = (cy - z * scale_y) as isize;
-                if xp >= 0 && (xp as usize) < width && yp >= 0 && (yp as usize) < height {
-                    let age = (step - trail_start) as f32 / 3000.0;
-                    let li = (age * (LUMINANCE.len() - 1) as f32) as usize;
-                    let ch = LUMINANCE[li.min(LUMINANCE.len() - 1)];
-                    if ch > output[yp as usize][xp as usize]
-                        || output[yp as usize][xp as usize] == b' '
-                    {
-                        output[yp as usize][xp as usize] = ch;
-                    }
-                }
-            }
-        }
-    })
-}
-
-fn render_rabbit(elapsed: f32, width: usize, height: usize) -> Vec<String> {
-    with_render_buffers(width, height, |output, zbuffer| {
-        let ax = -0.25;
-        let ay = elapsed * 0.4;
-        let az = 0.0;
-        let cam_dist = 5.0;
-
-        let sample = |output: &mut Vec<Vec<u8>>,
-                      zbuffer: &mut Vec<Vec<f32>>,
-                      cx: f32,
-                      cy: f32,
-                      cz: f32,
-                      rx: f32,
-                      ry: f32,
-                      rz: f32| {
-            let max_r = rx.max(ry).max(rz);
-            let step = (0.05 / max_r).clamp(0.03, 0.12);
-            let mut theta: f32 = 0.0;
-            while theta < std::f32::consts::TAU {
-                let ct = theta.cos();
-                let st = theta.sin();
-                let mut phi: f32 = -std::f32::consts::FRAC_PI_2;
-                while phi < std::f32::consts::FRAC_PI_2 {
-                    let cp = phi.cos();
-                    let sp = phi.sin();
-                    let lx = rx * cp * ct;
-                    let ly = ry * sp;
-                    let lz = rz * cp * st;
-                    let nx = lx / (rx * rx);
-                    let ny = ly / (ry * ry);
-                    let nz = lz / (rz * rz);
-                    let nm = (nx * nx + ny * ny + nz * nz).sqrt();
-                    let px = lx + cx;
-                    let py = ly + cy;
-                    let pz = lz + cz;
-                    let (rpx, rpy, rpz) = rotate_xyz(px, py, pz, ax, ay, az);
-                    let (rnx, rny, rnz) = rotate_xyz(nx / nm, ny / nm, nz / nm, ax, ay, az);
-                    let lum = rnx * 0.3 + rny * 0.5 + rnz * 0.7;
-                    if lum > -0.2
-                        && let Some((xp, yp, depth)) =
-                            project_3d(rpx, rpy, rpz, width, height, cam_dist)
-                        && xp >= 0
-                        && (xp as usize) < width
-                        && yp >= 0
-                        && (yp as usize) < height
-                        && depth > zbuffer[yp as usize][xp as usize]
-                    {
-                        zbuffer[yp as usize][xp as usize] = depth;
-                        let li = (lum.max(0.0) * (LUMINANCE.len() - 1) as f32) as usize;
-                        output[yp as usize][xp as usize] = LUMINANCE[li.min(LUMINANCE.len() - 1)];
-                    }
-                    phi += step;
-                }
-                theta += step;
-            }
-        };
-
-        let eye = |output: &mut Vec<Vec<u8>>,
-                   zbuffer: &mut Vec<Vec<f32>>,
-                   cx: f32,
-                   cy: f32,
-                   cz: f32,
-                   radius: f32| {
-            let step = 0.12;
-            let mut theta: f32 = 0.0;
-            while theta < std::f32::consts::TAU {
-                let mut phi: f32 = -std::f32::consts::FRAC_PI_2;
-                while phi < std::f32::consts::FRAC_PI_2 {
-                    let cp = phi.cos();
-                    let sp = phi.sin();
-                    let ct = theta.cos();
-                    let px = radius * cp * ct + cx;
-                    let py = radius * sp + cy;
-                    let pz = radius * cp * theta.sin() + cz;
-                    let (rpx, rpy, rpz) = rotate_xyz(px, py, pz, ax, ay, az);
-                    if let Some((xp, yp, depth)) =
-                        project_3d(rpx, rpy, rpz, width, height, cam_dist)
-                        && xp >= 0
-                        && (xp as usize) < width
-                        && yp >= 0
-                        && (yp as usize) < height
-                        && depth > zbuffer[yp as usize][xp as usize]
-                    {
-                        zbuffer[yp as usize][xp as usize] = depth;
-                        output[yp as usize][xp as usize] = b'@';
-                    }
-                    phi += step;
-                }
-                theta += step;
-            }
-        };
-
-        sample(output, zbuffer, 0.0, -0.2, 0.0, 1.3, 0.85, 0.85);
-        sample(output, zbuffer, 0.0, 0.7, 0.7, 0.55, 0.5, 0.5);
-        sample(output, zbuffer, -0.25, 1.85, 0.5, 0.13, 0.7, 0.08);
-        sample(output, zbuffer, 0.25, 1.85, 0.5, 0.13, 0.7, 0.08);
-        sample(output, zbuffer, 0.0, -0.1, -1.2, 0.25, 0.25, 0.25);
-        sample(output, zbuffer, -0.45, -0.9, 0.5, 0.2, 0.15, 0.35);
-        sample(output, zbuffer, 0.45, -0.9, 0.5, 0.2, 0.15, 0.35);
-        sample(output, zbuffer, -0.55, -0.95, -0.4, 0.25, 0.2, 0.45);
-        sample(output, zbuffer, 0.55, -0.95, -0.4, 0.25, 0.2, 0.45);
-        eye(output, zbuffer, -0.2, 0.85, 1.1, 0.08);
-        eye(output, zbuffer, 0.2, 0.85, 1.1, 0.08);
-        eye(output, zbuffer, 0.0, 0.65, 1.15, 0.06);
-    })
 }
 
 fn animation_seed() -> u64 {
@@ -658,61 +82,6 @@ fn choose_animation_variant_from_disabled<'a>(
 fn choose_animation_variant<'a>(variants: &'a [&'a str], salt: u64) -> &'a str {
     let disabled = disabled_animation_names();
     choose_animation_variant_from_disabled(variants, salt, &disabled)
-}
-
-fn startup_animation_variant() -> &'static str {
-    choose_animation_variant(STARTUP_VARIANTS, 0x0053_5441_5254_5550)
-}
-
-pub(super) fn build_startup_animation_lines(
-    app: &dyn TuiState,
-    term_width: u16,
-) -> Vec<Line<'static>> {
-    let elapsed = app.animation_elapsed();
-    let status_idx =
-        ((elapsed * STARTUP_ASCII_STATUS_FPS) as usize) % STARTUP_ASCII_STATUS_SPINNER.len();
-    let status_spinner = STARTUP_ASCII_STATUS_SPINNER[status_idx];
-    let progress = (elapsed / STARTUP_ANIMATION_WINDOW.as_secs_f32()).clamp(0.0, 1.0);
-    let fade_in = (progress / 0.2).clamp(0.0, 1.0);
-    let fade_out = ((1.0 - progress) / 0.25).clamp(0.0, 1.0);
-    let envelope = fade_in.min(fade_out);
-    let boost = (envelope * 120.0) as u8;
-    let base = 80u8.saturating_add(boost);
-    let art_color = rgb(base, base.saturating_add(16), base.saturating_add(30));
-    let centered = app.centered_mode();
-    let align = if centered {
-        Alignment::Center
-    } else {
-        Alignment::Left
-    };
-
-    let max_w = (term_width as usize).min(80);
-    let max_h = max_w / 2;
-    let variant = startup_animation_variant();
-    let anim_lines = render_startup_animation(elapsed, max_w, max_h, variant);
-
-    let mut lines = Vec::new();
-    lines.push(Line::from(""));
-    for line in &anim_lines {
-        lines.push(Line::from(Span::styled(
-            line.clone(),
-            Style::default().fg(art_color),
-        )));
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        format!("{} booting jcode interface...", status_spinner),
-        Style::default().fg(dim_color()),
-    )));
-    lines.push(Line::from(Span::styled(
-        "waiting for your first prompt",
-        Style::default().fg(dim_color()),
-    )));
-
-    lines
-        .into_iter()
-        .map(|line| line.alignment(align))
-        .collect()
 }
 
 struct IdleBuffers {
@@ -982,7 +351,7 @@ fn sample_cube(
     let rot_z = elapsed * 0.35 + (elapsed * 0.55).cos() * 0.12;
     let cam_dist = 6.8f32;
     let aspect = 0.5f32;
-    let scale_base = (sw as f32).min(sh as f32 / aspect) * 0.46;
+    let scale_base = (sw as f32).min(sh as f32 / aspect) * 0.24;
     let s = 1.45f32;
 
     let faces = [
@@ -1154,7 +523,7 @@ fn sample_gyroscope(
     let rot_z = elapsed * 0.28 + (elapsed * 0.5).cos() * 0.18;
     let cam_dist = 8.5f32;
     let aspect = 0.5;
-    let scale_base = (sw as f32).min(sh as f32 / aspect) * 0.30;
+    let scale_base = (sw as f32).min(sh as f32 / aspect) * 0.26;
 
     let rings = [(0u8, 2.0f32, 0.17f32), (1, 1.45, 0.15), (2, 0.95, 0.13)];
 
@@ -1576,10 +945,61 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn startup_variants_exclude_mobius_and_black_hole() {
-        assert!(!STARTUP_VARIANTS.contains(&"mobius"));
-        assert!(!STARTUP_VARIANTS.contains(&"black_hole"));
+    type IdleSampler = fn(f32, usize, usize, &mut [bool], &mut [f32], &mut [f32]);
+
+    fn hit_bounds(hit: &[bool], sw: usize, sh: usize) -> Option<(usize, usize, usize, usize)> {
+        let mut min_x = sw;
+        let mut max_x = 0usize;
+        let mut min_y = sh;
+        let mut max_y = 0usize;
+        let mut any = false;
+
+        for y in 0..sh {
+            for x in 0..sw {
+                if hit[y * sw + x] {
+                    any = true;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+
+        any.then_some((min_x, max_x, min_y, max_y))
+    }
+
+    fn assert_idle_sampler_avoids_heavy_border_clipping(name: &str, sampler: IdleSampler) {
+        let sw = 120;
+        let sh = 60;
+
+        for &elapsed in &[0.0f32, 0.8, 1.6, 2.4] {
+            let mut hit = vec![false; sw * sh];
+            let mut lum_map = vec![0.0; sw * sh];
+            let mut z_buf = vec![0.0; sw * sh];
+            sampler(elapsed, sw, sh, &mut hit, &mut lum_map, &mut z_buf);
+
+            let (_min_x, _max_x, _min_y, _max_y) =
+                hit_bounds(&hit, sw, sh).unwrap_or_else(|| panic!("{name} should draw pixels"));
+            let lit_pixels = hit.iter().filter(|&&value| value).count();
+            let border_pixels = hit
+                .iter()
+                .enumerate()
+                .filter(|(idx, value)| {
+                    if !**value {
+                        return false;
+                    }
+                    let x = idx % sw;
+                    let y = idx / sw;
+                    x == 0 || x + 1 == sw || y == 0 || y + 1 == sh
+                })
+                .count();
+
+            assert!(
+                border_pixels * 12 < lit_pixels.max(1),
+                "{name} at t={elapsed} is too clipped at viewport border: border_pixels={border_pixels}, lit_pixels={lit_pixels}"
+            );
+        }
     }
 
     #[test]
@@ -1623,5 +1043,13 @@ mod tests {
 
         let lit_pixels = hit.iter().filter(|&&value| value).count();
         assert!(lit_pixels > (sw * sh) / 40);
+    }
+
+    #[test]
+    fn idle_animation_samplers_avoid_heavy_border_clipping() {
+        assert_idle_sampler_avoids_heavy_border_clipping("donut", sample_donut);
+        assert_idle_sampler_avoids_heavy_border_clipping("three_rings", sample_gyroscope);
+        assert_idle_sampler_avoids_heavy_border_clipping("orbit_rings", sample_orbit_rings);
+        assert_idle_sampler_avoids_heavy_border_clipping("cube", sample_cube);
     }
 }

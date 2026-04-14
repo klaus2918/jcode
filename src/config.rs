@@ -433,8 +433,6 @@ pub struct DisplayConfig {
     pub markdown_spacing: MarkdownSpacingMode,
     /// Pin read images to side pane (default: true)
     pub pin_images: bool,
-    /// Show startup animation (default: false)
-    pub startup_animation: bool,
     /// Show idle animation before first prompt (default: true)
     pub idle_animation: bool,
     /// Briefly animate user prompt line when it enters viewport (default: true)
@@ -469,7 +467,6 @@ impl Default for DisplayConfig {
             show_thinking: false,
             diagram_mode: DiagramDisplayMode::default(),
             markdown_spacing: MarkdownSpacingMode::default(),
-            startup_animation: false,
             idle_animation: true,
             prompt_entry_animation: true,
             disabled_animations: Vec::new(),
@@ -920,11 +917,6 @@ impl Config {
                     self.display.markdown_spacing = MarkdownSpacingMode::Document;
                 }
                 _ => {}
-            }
-        }
-        if let Ok(v) = std::env::var("JCODE_STARTUP_ANIMATION") {
-            if let Some(parsed) = parse_env_bool(&v) {
-                self.display.startup_animation = parsed;
             }
         }
         if let Ok(v) = std::env::var("JCODE_IDLE_ANIMATION") {
@@ -1555,9 +1547,6 @@ show_thinking = false
 # Markdown spacing style: "compact" (chat/TUI) or "document" (docs-like)
 # markdown_spacing = "compact"
 
-# Show startup animation (default: false)
-startup_animation = false
-
 # Show idle animation before first prompt (default: true)
 idle_animation = true
 
@@ -1572,13 +1561,12 @@ prompt_entry_animation = true
 # Performance tier: auto/full/reduced/minimal (default: auto)
 # auto = detect system load, memory, terminal type, SSH, and apply extra caps for WSL/Windows Terminal
 # full = all animations enabled
-# reduced = skip startup/idle animations, keep spinners
+# reduced = skip idle animations, keep spinners
 # minimal = disable all animations, slower redraw rate
 # performance = "auto"
 
-# Animation FPS (startup animation, idle donut): 1-120 (default: 60)
+# Animation FPS (idle animation): 1-120 (default: 60)
 # Runtime policy may cap this lower on slower environments such as WSL/Windows Terminal.
-# Startup animation is skipped entirely if animation_fps < 20 (shows nothing instead of low-FPS jank)
 # animation_fps = 60
 
 # Active redraw FPS (processing, streaming, spinners): 1-120 (default: 60)
@@ -1741,7 +1729,6 @@ desktop_notifications = true
 - Auto server reload: {}
 - Mouse capture: {}
 - Debug socket: {}
-- Startup animation: {}
 - Idle animation: {}
 - Prompt entry animation: {}
 - Chat native scrollbar: {}
@@ -1841,7 +1828,6 @@ desktop_notifications = true
             self.display.auto_server_reload,
             self.display.mouse_capture,
             self.display.debug_socket,
-            self.display.startup_animation,
             self.display.idle_animation,
             self.display.prompt_entry_animation,
             self.display.native_scrollbars.chat,

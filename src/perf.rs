@@ -28,10 +28,6 @@ impl PerformanceTier {
         !matches!(self, Self::Minimal)
     }
 
-    pub fn startup_animation_enabled(self) -> bool {
-        matches!(self, Self::Full)
-    }
-
     pub fn idle_animation_enabled(self) -> bool {
         matches!(self, Self::Full)
     }
@@ -679,17 +675,14 @@ mod tests {
     #[test]
     fn test_animation_gates() {
         assert!(PerformanceTier::Full.animations_enabled());
-        assert!(PerformanceTier::Full.startup_animation_enabled());
         assert!(PerformanceTier::Full.idle_animation_enabled());
         assert!(PerformanceTier::Full.prompt_entry_animation_enabled());
 
         assert!(PerformanceTier::Reduced.animations_enabled());
-        assert!(!PerformanceTier::Reduced.startup_animation_enabled());
         assert!(!PerformanceTier::Reduced.idle_animation_enabled());
         assert!(PerformanceTier::Reduced.prompt_entry_animation_enabled());
 
         assert!(!PerformanceTier::Minimal.animations_enabled());
-        assert!(!PerformanceTier::Minimal.startup_animation_enabled());
         assert!(!PerformanceTier::Minimal.idle_animation_enabled());
         assert!(!PerformanceTier::Minimal.prompt_entry_animation_enabled());
     }

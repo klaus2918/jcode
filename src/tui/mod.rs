@@ -766,38 +766,6 @@ pub(crate) const REDRAW_DEEP_IDLE: Duration = Duration::from_millis(1000);
 pub(crate) const REDRAW_REMOTE_STARTUP: Duration = Duration::from_millis(1000);
 pub(crate) const REDRAW_PASSIVE_LIVENESS: Duration = Duration::from_millis(1000);
 const REDRAW_DEEP_IDLE_AFTER: Duration = Duration::from_secs(30);
-pub(crate) const STARTUP_ANIMATION_WINDOW: Duration = Duration::from_millis(3000);
-
-const STARTUP_ANIMATION_MIN_FPS: u32 = 20;
-
-fn startup_animation_active_with_policy(
-    state: &dyn TuiState,
-    policy: &crate::perf::TuiPerfPolicy,
-) -> bool {
-    if state.remote_startup_phase_active() {
-        return false;
-    }
-
-    let cfg = &crate::config::config().display;
-    policy.enable_decorative_animations
-        && cfg.startup_animation
-        && policy.tier.startup_animation_enabled()
-        && policy.animation_fps >= STARTUP_ANIMATION_MIN_FPS
-        && state.animation_elapsed() < STARTUP_ANIMATION_WINDOW.as_secs_f32()
-        && !state.is_processing()
-        && state.display_messages().is_empty()
-        && state.streaming_text().is_empty()
-        && state.input().trim().is_empty()
-        && state.queued_messages().is_empty()
-        && state.interleave_message().is_none()
-        && state.pending_soft_interrupts().is_empty()
-        && state.inline_ui_state().is_none()
-}
-
-pub(crate) fn startup_animation_active(state: &dyn TuiState) -> bool {
-    let policy = crate::perf::tui_policy();
-    startup_animation_active_with_policy(state, &policy)
-}
 
 fn idle_donut_active_with_policy(
     state: &dyn TuiState,
@@ -832,9 +800,7 @@ pub(crate) fn redraw_interval_with_policy(
     let animation_interval = fps_to_duration(policy.animation_fps);
     let fast_interval = fps_to_duration(policy.redraw_fps);
 
-    if startup_animation_active_with_policy(state, policy)
-        || idle_donut_active_with_policy(state, policy)
-    {
+    if idle_donut_active_with_policy(state, policy) {
         return match policy.tier {
             crate::perf::PerformanceTier::Minimal => fast_interval,
             _ => animation_interval,
@@ -892,9 +858,7 @@ pub(crate) fn redraw_interval(state: &dyn TuiState) -> Duration {
 pub(crate) fn periodic_redraw_required(state: &dyn TuiState) -> bool {
     let policy = crate::perf::tui_policy();
 
-    if startup_animation_active_with_policy(state, &policy)
-        || idle_donut_active_with_policy(state, &policy)
-    {
+    if idle_donut_active_with_policy(state, &policy) {
         return true;
     }
 

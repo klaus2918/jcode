@@ -255,11 +255,8 @@ pub(super) fn prepare_messages(
     height: u16,
 ) -> Arc<PreparedMessages> {
     if cfg!(test) {
-        let startup_active = super::super::startup_animation_active(app);
-        return Arc::new(prepare_messages_inner(app, width, height, startup_active));
+        return Arc::new(prepare_messages_inner(app, width, height));
     }
-
-    let startup_active = super::super::startup_animation_active(app);
 
     let key = FullPrepCacheKey {
         width,
@@ -272,7 +269,6 @@ pub(super) fn prepare_messages(
         streaming_text_len: app.streaming_text().len(),
         streaming_text_hash: super::hash_text_for_cache(app.streaming_text()),
         batch_progress_hash: active_batch_progress_hash(app),
-        startup_active,
     };
 
     {
@@ -290,7 +286,7 @@ pub(super) fn prepare_messages(
         }
     }
 
-    let prepared = Arc::new(prepare_messages_inner(app, width, height, startup_active));
+    let prepared = Arc::new(prepare_messages_inner(app, width, height));
 
     {
         if let Ok(mut cache) = full_prep_cache().lock() {
@@ -301,39 +297,10 @@ pub(super) fn prepare_messages(
     prepared
 }
 
-fn prepare_messages_inner(
-    app: &dyn TuiState,
-    width: u16,
-    height: u16,
-    startup_active: bool,
-) -> PreparedMessages {
+fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> PreparedMessages {
     let mut all_header_lines = header::build_persistent_header(app, width);
     all_header_lines.extend(header::build_header_lines(app, width));
     let header_prepared = wrap_lines(all_header_lines, &[], &[], &[], width);
-    let startup_prepared = if startup_active {
-        wrap_lines(
-            animations::build_startup_animation_lines(app, width),
-            &[],
-            &[],
-            &[],
-            width,
-        )
-    } else {
-        PreparedMessages {
-            wrapped_lines: Vec::new(),
-            wrapped_plain_lines: Arc::new(Vec::new()),
-            wrapped_copy_offsets: Arc::new(Vec::new()),
-            raw_plain_lines: Arc::new(Vec::new()),
-            wrapped_line_map: Arc::new(Vec::new()),
-            wrapped_user_indices: Vec::new(),
-            wrapped_user_prompt_starts: Vec::new(),
-            wrapped_user_prompt_ends: Vec::new(),
-            user_prompt_texts: Vec::new(),
-            image_regions: Vec::new(),
-            edit_tool_ranges: Vec::new(),
-            copy_targets: Vec::new(),
-        }
-    };
 
     let body_prepared = prepare_body_cached(app, width);
     let has_batch_progress = active_batch_progress(app).is_some();
@@ -365,52 +332,7 @@ fn prepare_messages_inner(
     let edit_tool_ranges;
     let copy_targets;
 
-    if startup_active {
-        let elapsed = app.animation_elapsed();
-        let anim_duration = super::super::STARTUP_ANIMATION_WINDOW.as_secs_f32();
-        let morph_t = (elapsed / anim_duration).clamp(0.0, 1.0);
-
-        let anim_lines = &startup_prepared.wrapped_lines;
-        let header_lines = &header_prepared.wrapped_lines;
-
-        let content_lines: Vec<Line<'static>> = if morph_t < 0.6 {
-            anim_lines.clone()
-        } else {
-            morph_lines_to_header(anim_lines, header_lines, morph_t, width)
-        };
-
-        let content_height = content_lines.len();
-        let input_reserve = 4;
-        let available = (height as usize).saturating_sub(input_reserve);
-        let centered_pad = available.saturating_sub(content_height) / 2;
-        let header_height = header_prepared.wrapped_lines.len();
-        let header_pad = available.saturating_sub(header_height) / 2;
-
-        let slide_t = if morph_t > 0.85 {
-            ((morph_t - 0.85) / 0.15).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let slide_ease = slide_t * slide_t * (3.0 - 2.0 * slide_t);
-        let pad_top =
-            (centered_pad as f32 + (header_pad as f32 - centered_pad as f32) * slide_ease) as usize;
-
-        wrapped_lines = Vec::with_capacity(pad_top + content_height);
-        for _ in 0..pad_top {
-            wrapped_lines.push(Line::from(""));
-        }
-        wrapped_lines.extend(content_lines);
-        wrapped_user_indices = Vec::new();
-        raw_plain_lines = Vec::new();
-        wrapped_line_map = Vec::new();
-        wrapped_copy_offsets = vec![0; wrapped_lines.len()];
-        wrapped_user_prompt_starts = Vec::new();
-        wrapped_user_prompt_ends = Vec::new();
-        user_prompt_texts = Vec::new();
-        image_regions = Vec::new();
-        edit_tool_ranges = Vec::new();
-        copy_targets = Vec::new();
-    } else {
+    {
         let is_initial_empty = app.display_messages().is_empty()
             && !app.is_processing()
             && app.streaming_text().is_empty();
@@ -488,42 +410,31 @@ fn prepare_messages_inner(
             wrapped_copy_offsets = vec![0; wrapped_lines.len()];
         } else {
             let header_raw_len = header_prepared.raw_plain_lines.len();
-            let startup_raw_len = startup_prepared.raw_plain_lines.len();
             let body_raw_len = body_prepared.raw_plain_lines.len();
             let batch_raw_len = batch_progress_prepared.raw_plain_lines.len();
 
             let mut all_raw_plain_lines = Vec::with_capacity(
                 header_raw_len
-                    + startup_raw_len
                     + body_raw_len
                     + batch_raw_len
                     + streaming_prepared.raw_plain_lines.len(),
             );
             all_raw_plain_lines.extend(header_prepared.raw_plain_lines.iter().cloned());
-            all_raw_plain_lines.extend(startup_prepared.raw_plain_lines.iter().cloned());
             all_raw_plain_lines.extend(body_prepared.raw_plain_lines.iter().cloned());
             all_raw_plain_lines.extend(batch_progress_prepared.raw_plain_lines.iter().cloned());
             all_raw_plain_lines.extend(streaming_prepared.raw_plain_lines.iter().cloned());
 
-            let startup_raw_offset = header_raw_len;
-            let body_raw_offset = startup_raw_offset + startup_raw_len;
+            let body_raw_offset = header_raw_len;
             let batch_raw_offset = body_raw_offset + body_raw_len;
             let streaming_raw_offset = batch_raw_offset + batch_raw_len;
 
             let mut all_wrapped_line_map = Vec::with_capacity(
                 header_prepared.wrapped_line_map.len()
-                    + startup_prepared.wrapped_line_map.len()
                     + body_prepared.wrapped_line_map.len()
                     + batch_progress_prepared.wrapped_line_map.len()
                     + streaming_prepared.wrapped_line_map.len(),
             );
             all_wrapped_line_map.extend(header_prepared.wrapped_line_map.iter().copied());
-            all_wrapped_line_map.extend(startup_prepared.wrapped_line_map.iter().map(|map| {
-                WrappedLineMap {
-                    raw_line: map.raw_line + startup_raw_offset,
-                    ..*map
-                }
-            }));
             all_wrapped_line_map.extend(body_prepared.wrapped_line_map.iter().map(|map| {
                 WrappedLineMap {
                     raw_line: map.raw_line + body_raw_offset,
@@ -545,13 +456,11 @@ fn prepare_messages_inner(
 
             let mut all_wrapped_copy_offsets = Vec::with_capacity(
                 header_prepared.wrapped_copy_offsets.len()
-                    + startup_prepared.wrapped_copy_offsets.len()
                     + body_prepared.wrapped_copy_offsets.len()
                     + batch_progress_prepared.wrapped_copy_offsets.len()
                     + streaming_prepared.wrapped_copy_offsets.len(),
             );
             all_wrapped_copy_offsets.extend(header_prepared.wrapped_copy_offsets.iter().copied());
-            all_wrapped_copy_offsets.extend(startup_prepared.wrapped_copy_offsets.iter().copied());
             all_wrapped_copy_offsets.extend(body_prepared.wrapped_copy_offsets.iter().copied());
             all_wrapped_copy_offsets
                 .extend(batch_progress_prepared.wrapped_copy_offsets.iter().copied());
@@ -564,9 +473,7 @@ fn prepare_messages_inner(
         }
 
         let header_len = wrapped_lines.len();
-        let startup_len = startup_prepared.wrapped_lines.len();
-        wrapped_lines.extend(startup_prepared.wrapped_lines);
-        let body_offset = header_len + startup_len;
+        let body_offset = header_len;
         let body_len = body_prepared.wrapped_lines.len();
         let batch_len = batch_progress_prepared.wrapped_lines.len();
         wrapped_lines.extend_from_slice(&body_prepared.wrapped_lines);

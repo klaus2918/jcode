@@ -310,7 +310,6 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         streaming_text_len: 0,
         streaming_text_hash: 0,
         batch_progress_hash: 0,
-        startup_active: false,
     };
     let key_b = FullPrepCacheKey {
         width: 39,
@@ -378,7 +377,6 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
             streaming_text_len: 0,
             streaming_text_hash: 0,
             batch_progress_hash: 0,
-            startup_active: false,
         };
         let prepared = Arc::new(PreparedMessages {
             wrapped_lines: vec![Line::from(format!("{idx}"))],
