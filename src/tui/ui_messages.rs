@@ -4,8 +4,40 @@ mod cache_support;
 use crate::message::parse_background_task_notification_markdown;
 pub(super) use cache_support::get_cached_message_lines;
 use cache_support::{centered_wrap_width, left_pad_lines_for_centered_mode};
+use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use unicode_width::UnicodeWidthStr;
+
+fn prefer_width_stable_system_glyphs() -> bool {
+    std::env::var("TERM_PROGRAM")
+        .ok()
+        .map(|value| value.eq_ignore_ascii_case("kitty"))
+        .unwrap_or(false)
+        || std::env::var("TERM")
+            .ok()
+            .map(|value| value.to_ascii_lowercase().contains("kitty"))
+            .unwrap_or(false)
+}
+
+fn width_stable_system_title<'a>(normal: &'a str, stable: &'a str) -> &'a str {
+    if prefer_width_stable_system_glyphs() {
+        stable
+    } else {
+        normal
+    }
+}
+
+fn normalize_system_content_for_display(content: &str) -> Cow<'_, str> {
+    if !prefer_width_stable_system_glyphs() {
+        return Cow::Borrowed(content);
+    }
+
+    let normalized = content
+        .replace("⚡ ", "! ")
+        .replace("⏳ ", "... ")
+        .replace("⏰ ", "* ");
+    Cow::Owned(normalized)
+}
 
 pub(crate) fn render_assistant_message(
     msg: &DisplayMessage,
@@ -136,10 +168,10 @@ pub(crate) fn render_system_message(
 
     let centered = markdown::center_code_blocks();
     let wrap_width = centered_wrap_width(width.saturating_sub(4), centered, 96);
-    let mut lines = markdown::render_markdown_with_width(&msg.content, Some(wrap_width));
+    let display_content = normalize_system_content_for_display(&msg.content);
+    let mut lines = markdown::render_markdown_with_width(&display_content, Some(wrap_width));
     if lines.iter().any(|line| line.width() > wrap_width) {
-        lines = msg
-            .content
+        lines = display_content
             .lines()
             .flat_map(|line| {
                 if line.is_empty() {
@@ -345,7 +377,7 @@ fn render_scheduled_session_message(
     );
 
     let mut lines = render_rounded_box(
-        "⏰ scheduled task due",
+        width_stable_system_title("⏰ scheduled task due", "scheduled task due"),
         box_content,
         max_box_width,
         border_style,
@@ -473,7 +505,12 @@ fn render_scheduled_tool_message(msg: &DisplayMessage, width: u16) -> Option<Vec
         meta_style,
     );
 
-    let mut lines = render_rounded_box("⏰ scheduled", box_content, max_box_width, border_style);
+    let mut lines = render_rounded_box(
+        width_stable_system_title("⏰ scheduled", "scheduled"),
+        box_content,
+        max_box_width,
+        border_style,
+    );
     if centered {
         left_pad_lines_for_centered_mode(&mut lines, width);
     }
@@ -514,7 +551,12 @@ fn render_reload_system_message(msg: &DisplayMessage, width: u16) -> Vec<Line<'s
         }
     }
 
-    let mut lines = render_rounded_box("⚡ reload", box_content, max_box_width, border_style);
+    let mut lines = render_rounded_box(
+        width_stable_system_title("⚡ reload", "reload"),
+        box_content,
+        max_box_width,
+        border_style,
+    );
     if centered {
         left_pad_lines_for_centered_mode(&mut lines, width);
     }
@@ -566,7 +608,7 @@ fn render_connection_system_message(msg: &DisplayMessage, width: u16) -> Vec<Lin
     let (title, border_color, status_color, status_line, detail, hint) =
         if let Some((status_line, detail, hint)) = parse_connection_retry_message(content) {
             (
-                "⚡ reconnecting",
+                width_stable_system_title("⚡ reconnecting", "reconnecting"),
                 rgb(255, 193, 94),
                 rgb(255, 220, 140),
                 status_line,
@@ -576,7 +618,7 @@ fn render_connection_system_message(msg: &DisplayMessage, width: u16) -> Vec<Lin
         } else if let Some((status_line, detail, hint)) = parse_connection_waiting_message(content)
         {
             (
-                "⚡ waiting for reload",
+                width_stable_system_title("⚡ waiting for reload", "waiting for reload"),
                 rgb(120, 180, 255),
                 rgb(180, 215, 255),
                 status_line,
@@ -585,7 +627,7 @@ fn render_connection_system_message(msg: &DisplayMessage, width: u16) -> Vec<Lin
             )
         } else if content.starts_with("⏳ Starting server") {
             (
-                "⏳ starting server",
+                width_stable_system_title("⏳ starting server", "starting server"),
                 rgb(255, 193, 94),
                 rgb(255, 220, 140),
                 "Starting shared server".to_string(),
@@ -593,7 +635,8 @@ fn render_connection_system_message(msg: &DisplayMessage, width: u16) -> Vec<Lin
                 None,
             )
         } else {
-            let mut lines = markdown::render_markdown_with_width(content, Some(inner_width));
+            let display_content = normalize_system_content_for_display(content);
+            let mut lines = markdown::render_markdown_with_width(&display_content, Some(inner_width));
             if centered {
                 left_pad_lines_for_centered_mode(&mut lines, width);
             }
@@ -1206,6 +1249,15 @@ mod tests {
         text.chars().take_while(|c| *c == ' ').count()
     }
 
+    fn system_glyph_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn render_system_message_forces_system_color_on_all_spans() {
         let msg = DisplayMessage::system("**Reload complete** — continuing.");
@@ -1243,6 +1295,39 @@ mod tests {
             );
         }
         crate::tui::markdown::set_center_code_blocks(saved);
+    }
+
+    #[test]
+    fn render_system_message_uses_width_stable_titles_on_kitty() {
+        let _guard = system_glyph_env_lock();
+        let prev_term_program = std::env::var("TERM_PROGRAM").ok();
+        let prev_term = std::env::var("TERM").ok();
+        crate::env::set_var("TERM_PROGRAM", "kitty");
+        crate::env::set_var("TERM", "xterm-kitty");
+
+        let msg = DisplayMessage::system(
+            "⚡ Connection lost — retrying (attempt 2, 7s) — connection reset by server",
+        )
+        .with_title("Connection");
+
+        let lines = render_system_message(&msg, 80, crate::config::DiffDisplayMode::Off);
+        let plain = lines
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(plain.contains("reconnecting"));
+        assert!(!plain.contains("⚡ reconnecting"));
+
+        match prev_term_program {
+            Some(value) => crate::env::set_var("TERM_PROGRAM", value),
+            None => crate::env::remove_var("TERM_PROGRAM"),
+        }
+        match prev_term {
+            Some(value) => crate::env::set_var("TERM", value),
+            None => crate::env::remove_var("TERM"),
+        }
     }
 
     #[test]
