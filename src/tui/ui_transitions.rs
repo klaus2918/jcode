@@ -1,6 +1,6 @@
-use crate::tui::color_support::rgb;
 use super::theme_support::color_to_floats;
 use super::*;
+use crate::tui::color_support::rgb;
 
 #[cfg(test)]
 pub(crate) fn inline_ui_gap_height(app: &dyn TuiState) -> u16 {

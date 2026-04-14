@@ -636,7 +636,8 @@ fn render_connection_system_message(msg: &DisplayMessage, width: u16) -> Vec<Lin
             )
         } else {
             let display_content = normalize_system_content_for_display(content);
-            let mut lines = markdown::render_markdown_with_width(&display_content, Some(inner_width));
+            let mut lines =
+                markdown::render_markdown_with_width(&display_content, Some(inner_width));
             if centered {
                 left_pad_lines_for_centered_mode(&mut lines, width);
             }

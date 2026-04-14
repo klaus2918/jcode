@@ -1508,4 +1508,3 @@ fn is_rendered_table_line(line: &Line<'_>) -> bool {
 #[cfg(test)]
 #[path = "ui_pinned_tests.rs"]
 mod tests;
-

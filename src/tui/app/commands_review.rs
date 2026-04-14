@@ -1,5 +1,5 @@
-use super::{App, DisplayMessage};
 use super::commands::{REVIEW_PREFERRED_MODEL, active_session_id, active_working_dir};
+use super::{App, DisplayMessage};
 use crate::id;
 use crate::message::{ContentBlock, Role, ToolCall};
 use crate::session::{Session, StoredMessage};

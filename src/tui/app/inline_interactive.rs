@@ -29,9 +29,9 @@ impl InlinePickerPreviewRequest {
 
     fn filter(&self) -> &str {
         match self {
-            Self::Model { filter }
-            | Self::Login { filter }
-            | Self::Account { filter, .. } => filter,
+            Self::Model { filter } | Self::Login { filter } | Self::Account { filter, .. } => {
+                filter
+            }
         }
     }
 

@@ -1,13 +1,13 @@
-#[path = "auth_types.rs"]
-mod auth_types;
 #[path = "auth_account_commands.rs"]
 mod auth_account_commands;
 #[path = "auth_account_picker.rs"]
 mod auth_account_picker;
+#[path = "auth_types.rs"]
+mod auth_types;
 
 pub(crate) use self::auth_account_commands::{
-    handle_account_command_remote, handle_auth_command, save_openai_fast_setting_local,
-    resolve_account_provider_descriptor,
+    handle_account_command_remote, handle_auth_command, resolve_account_provider_descriptor,
+    save_openai_fast_setting_local,
 };
 pub(super) use self::auth_types::{AccountCommand, PendingAccountInput, PendingLogin};
 
@@ -280,8 +280,6 @@ impl App {
             redirect_uri: None,
         });
     }
-
-
 
     pub(super) fn switch_account(&mut self, label: &str) {
         match crate::auth::claude::set_active_account(label) {

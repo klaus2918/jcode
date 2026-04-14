@@ -120,11 +120,6 @@ use file_diff_ui::{
 };
 pub(crate) use header::capitalize;
 use inline_ui::{draw_inline_ui, inline_ui_height};
-use transitions::morph_lines_to_header;
-#[cfg(test)]
-use transitions::extract_line_text;
-#[cfg(test)]
-use transitions::inline_ui_gap_height;
 #[cfg(test)]
 use memory_ui::{
     MemoryTileItem, choose_memory_tile_span, parse_memory_display_entries, plan_memory_tile,
@@ -143,6 +138,11 @@ pub(crate) use pinned_ui::{
 use pinned_ui::{
     collect_pinned_content_cached, draw_pinned_content_cached, draw_side_panel_markdown,
 };
+#[cfg(test)]
+use transitions::extract_line_text;
+#[cfg(test)]
+use transitions::inline_ui_gap_height;
+use transitions::morph_lines_to_header;
 #[cfg(test)]
 use viewport::compute_visible_margins;
 use viewport::draw_messages;
@@ -309,10 +309,10 @@ use status_support::{
 };
 use theme_support::{
     accent_color, activity_indicator, activity_indicator_frame_index, ai_color, ai_text,
-    animated_tool_color, asap_color, blend_color, dim_color, file_link_color,
-    header_icon_color, header_name_color, header_session_color, pending_color,
-    prompt_entry_bg_color, prompt_entry_color, prompt_entry_shimmer_color, queued_color,
-    rainbow_prompt_color, system_message_color, tool_color, user_bg, user_color, user_text,
+    animated_tool_color, asap_color, blend_color, dim_color, file_link_color, header_icon_color,
+    header_name_color, header_session_color, pending_color, prompt_entry_bg_color,
+    prompt_entry_color, prompt_entry_shimmer_color, queued_color, rainbow_prompt_color,
+    system_message_color, tool_color, user_bg, user_color, user_text,
 };
 
 /// Render context window as vertical list with smart grouping
@@ -2158,8 +2158,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         record_profile(prep_elapsed, total_draw, total_start.elapsed());
     }
 }
-
-
 
 pub(crate) fn split_native_scrollbar_area(area: Rect, enabled: bool) -> (Rect, Option<Rect>) {
     if !enabled || area.width <= 1 {

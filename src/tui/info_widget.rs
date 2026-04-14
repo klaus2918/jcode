@@ -18,10 +18,10 @@ mod memory_utils;
 mod model;
 #[path = "info_widget_text.rs"]
 mod text;
-#[path = "info_widget_todos.rs"]
-mod todos_render;
 #[path = "info_widget_tips.rs"]
 mod tips;
+#[path = "info_widget_todos.rs"]
+mod todos_render;
 #[path = "info_widget_usage.rs"]
 mod usage_render;
 use super::info_widget_overview::{InfoPageKind, MAX_TODO_LINES, compute_page_layout};
@@ -52,9 +52,9 @@ use memory_utils::{
 };
 use model::{render_model_info, render_model_widget};
 use text::{truncate_smart, truncate_with_ellipsis};
-use todos_render::{render_todos_compact, render_todos_expanded, render_todos_widget};
 pub(crate) use tips::occasional_status_tip;
 use tips::{render_tips_widget, tips_widget_height};
+use todos_render::{render_todos_compact, render_todos_expanded, render_todos_widget};
 #[cfg(test)]
 use usage_render::render_usage_bar;
 use usage_render::{render_context_usage_line, render_usage_compact, render_usage_widget};
@@ -1481,8 +1481,6 @@ fn render_widget_content(
     }
 }
 
-
-
 /// Render context usage widget
 fn render_context_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
     let Some(info) = &data.context_info else {
@@ -1898,8 +1896,6 @@ fn render_sections(
     lines
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Tips widget — rotating helpful tips and keyboard shortcuts
 // ---------------------------------------------------------------------------
@@ -1907,8 +1903,6 @@ fn render_sections(
 #[cfg(test)]
 #[path = "info_widget_tests.rs"]
 mod tests;
-
-
 
 fn format_event_for_expanded(
     event: &MemoryEvent,
