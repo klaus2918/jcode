@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod agentgrep;
 pub mod ambient;
 mod apply_patch;

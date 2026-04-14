@@ -110,7 +110,6 @@ struct RegionConfidenceProfile {
 #[derive(Debug, Clone)]
 struct PendingTraceRegion {
     path: String,
-    label: String,
     kind: Option<&'static str>,
     start_line: usize,
     end_line: usize,
@@ -143,6 +142,7 @@ impl AgentGrepTool {
         }
     }
 
+    #[cfg(test)]
     fn with_binary_override(path: PathBuf) -> Self {
         Self {
             binary_override: Some(path),
@@ -909,7 +909,6 @@ fn collect_trace_exposure(
             if let Some((label, start_line, end_line)) = parse_region_header_line(trimmed) {
                 pending_region = Some(PendingTraceRegion {
                     path: file_path.clone(),
-                    label: label.clone(),
                     kind: None,
                     start_line,
                     end_line,

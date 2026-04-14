@@ -25,11 +25,6 @@ impl MemoryTool {
         }
     }
 
-    /// Check if running in test mode
-    pub fn is_test_mode(&self) -> bool {
-        self.manager.is_test_mode()
-    }
-
     fn parse_scope(scope: Option<&str>, default: MemoryScope) -> Result<MemoryScope> {
         match scope.unwrap_or(match default {
             MemoryScope::Project => "project",

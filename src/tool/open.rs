@@ -99,7 +99,7 @@ impl LocalTargetKind {
 }
 
 struct OpenOutcome {
-    backend: String,
+    _backend: String,
     message: String,
     metadata: Value,
 }
@@ -279,7 +279,7 @@ async fn perform_open(target: &ResolvedTarget) -> Result<OpenOutcome> {
     };
 
     Ok(OpenOutcome {
-        backend,
+        _backend: backend,
         message,
         metadata,
     })
@@ -312,7 +312,7 @@ async fn perform_reveal(target: &ResolvedTarget) -> Result<OpenOutcome> {
     };
 
     Ok(OpenOutcome {
-        backend: backend.clone(),
+        _backend: backend.clone(),
         message,
         metadata: json!({
             "action": "reveal",

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::dim_color;
 use crate::tui::{STARTUP_ANIMATION_WINDOW, TuiState, color_support::rgb};
 use ratatui::{prelude::*, widgets::Paragraph};

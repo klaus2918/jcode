@@ -52,8 +52,8 @@ struct SubagentInput {
     model: Option<String>,
     #[serde(default)]
     session_id: Option<String>,
-    #[serde(default)]
-    command: Option<String>,
+    #[serde(rename = "command", default)]
+    _command: Option<String>,
 }
 
 #[async_trait]
@@ -248,7 +248,7 @@ mod tests {
             subagent_type: "general".to_string(),
             model: None,
             session_id: None,
-            command: None,
+            _command: None,
         };
 
         assert_eq!(
