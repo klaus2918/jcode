@@ -51,6 +51,7 @@ use crate::message::format_background_task_notification_markdown;
 use crate::protocol::{NotificationType, ServerEvent};
 use crate::provider::Provider;
 use crate::runtime_memory_log::{
+    RuntimeMemoryLogController, RuntimeMemoryLogSampling, RuntimeMemoryLogTrigger,
     ServerRuntimeMemoryBackground, ServerRuntimeMemoryClients, ServerRuntimeMemoryEmbeddings,
     ServerRuntimeMemorySample, ServerRuntimeMemoryServer, ServerRuntimeMemorySessions,
     ServerRuntimeMemoryTopSession,
@@ -62,7 +63,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, OnceCell, RwLock, broadcast};
+use tokio::sync::{Mutex, OnceCell, RwLock, broadcast, mpsc};
 
 pub(super) type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 pub(super) type ChannelSubscriptions =
@@ -187,12 +188,14 @@ async fn dispatch_background_task_completion(
     }
 }
 
-async fn capture_runtime_memory_sample(
+async fn capture_runtime_memory_common_sample(
     identity: &ServerIdentity,
-    sessions: &SessionAgents,
     client_count: &Arc<RwLock<usize>>,
     server_start_time: Instant,
+    kind: &str,
     source: &str,
+    trigger: RuntimeMemoryLogTrigger,
+    sampling: RuntimeMemoryLogSampling,
 ) -> ServerRuntimeMemorySample {
     let now = chrono::Utc::now();
     let process = crate::process_memory::snapshot_with_source(format!("server:runtime-log:{source}"));
@@ -200,6 +203,76 @@ async fn capture_runtime_memory_sample(
     let background_task_count = crate::background::global().list().await.len();
     let embedder_stats = crate::embedding::stats();
     let embedding_model_available = crate::embedding::is_model_available();
+
+    ServerRuntimeMemorySample {
+        schema_version: 2,
+        kind: kind.to_string(),
+        timestamp: now.to_rfc3339(),
+        timestamp_ms: now.timestamp_millis(),
+        source: source.to_string(),
+        trigger,
+        sampling,
+        server: ServerRuntimeMemoryServer {
+            id: identity.id.clone(),
+            name: identity.name.clone(),
+            icon: identity.icon.clone(),
+            version: identity.version.clone(),
+            git_hash: identity.git_hash.clone(),
+            uptime_secs: server_start_time.elapsed().as_secs(),
+        },
+        process_diagnostics: crate::runtime_memory_log::build_process_diagnostics(&process),
+        process,
+        clients: ServerRuntimeMemoryClients { connected_count },
+        sessions: None,
+        background: ServerRuntimeMemoryBackground {
+            task_count: background_task_count,
+        },
+        embeddings: ServerRuntimeMemoryEmbeddings {
+            model_available: embedding_model_available,
+            stats: embedder_stats,
+        },
+    }
+}
+
+async fn capture_runtime_memory_process_sample(
+    identity: &ServerIdentity,
+    client_count: &Arc<RwLock<usize>>,
+    server_start_time: Instant,
+    source: &str,
+    trigger: RuntimeMemoryLogTrigger,
+    sampling: RuntimeMemoryLogSampling,
+) -> ServerRuntimeMemorySample {
+    capture_runtime_memory_common_sample(
+        identity,
+        client_count,
+        server_start_time,
+        "process",
+        source,
+        trigger,
+        sampling,
+    )
+    .await
+}
+
+async fn capture_runtime_memory_attribution_sample(
+    identity: &ServerIdentity,
+    sessions: &SessionAgents,
+    client_count: &Arc<RwLock<usize>>,
+    server_start_time: Instant,
+    source: &str,
+    trigger: RuntimeMemoryLogTrigger,
+    sampling: RuntimeMemoryLogSampling,
+) -> ServerRuntimeMemorySample {
+    let mut sample = capture_runtime_memory_common_sample(
+        identity,
+        client_count,
+        server_start_time,
+        "attribution",
+        source,
+        trigger,
+        sampling,
+    )
+    .await;
 
     let sessions_guard = sessions.read().await;
     let live_count = sessions_guard.len();
@@ -271,45 +344,23 @@ async fn capture_runtime_memory_sample(
     top_sessions.sort_by(|left, right| right.json_bytes.cmp(&left.json_bytes));
     top_sessions.truncate(5);
 
-    ServerRuntimeMemorySample {
-        schema_version: 1,
-        timestamp: now.to_rfc3339(),
-        timestamp_ms: now.timestamp_millis(),
-        source: source.to_string(),
-        server: ServerRuntimeMemoryServer {
-            id: identity.id.clone(),
-            name: identity.name.clone(),
-            icon: identity.icon.clone(),
-            version: identity.version.clone(),
-            git_hash: identity.git_hash.clone(),
-            uptime_secs: server_start_time.elapsed().as_secs(),
-        },
-        process,
-        clients: ServerRuntimeMemoryClients { connected_count },
-        sessions: ServerRuntimeMemorySessions {
-            live_count,
-            sampled_count,
-            contended_count,
-            memory_enabled_session_count,
-            total_message_count,
-            total_provider_cache_message_count,
-            total_json_bytes,
-            total_payload_text_bytes,
-            total_provider_cache_json_bytes,
-            total_tool_result_bytes,
-            total_provider_cache_tool_result_bytes,
-            total_large_blob_bytes,
-            total_provider_cache_large_blob_bytes,
-            top_by_json_bytes: top_sessions,
-        },
-        background: ServerRuntimeMemoryBackground {
-            task_count: background_task_count,
-        },
-        embeddings: ServerRuntimeMemoryEmbeddings {
-            model_available: embedding_model_available,
-            stats: embedder_stats,
-        },
-    }
+    sample.sessions = Some(ServerRuntimeMemorySessions {
+        live_count,
+        sampled_count,
+        contended_count,
+        memory_enabled_session_count,
+        total_message_count,
+        total_provider_cache_message_count,
+        total_json_bytes,
+        total_payload_text_bytes,
+        total_provider_cache_json_bytes,
+        total_tool_result_bytes,
+        total_provider_cache_tool_result_bytes,
+        total_large_blob_bytes,
+        total_provider_cache_large_blob_bytes,
+        top_by_json_bytes: top_sessions,
+    });
+    sample
 }
 
 mod state;
@@ -693,6 +744,8 @@ impl Server {
             let log_identity = self.identity.clone();
             let log_sessions = Arc::clone(&self.sessions);
             let log_client_count = Arc::clone(&self.client_count);
+            let (memory_event_tx, mut memory_event_rx) = mpsc::unbounded_channel();
+            crate::runtime_memory_log::install_event_sink(memory_event_tx);
             tokio::spawn(async move {
                 match crate::runtime_memory_log::prune_old_server_logs() {
                     Ok(removed) if removed > 0 => {
@@ -710,28 +763,46 @@ impl Server {
                     }
                 }
 
-                let log_interval = crate::runtime_memory_log::server_logging_interval();
+                let log_config = crate::runtime_memory_log::server_logging_config();
                 match crate::runtime_memory_log::current_server_log_path() {
                     Ok(path) => crate::logging::info(&format!(
-                        "Runtime memory logging enabled every {}s -> {}",
-                        log_interval.as_secs(),
+                        "Runtime memory logging enabled: process={}s attribution={}s -> {}",
+                        log_config.process_interval.as_secs(),
+                        log_config.attribution_interval.as_secs(),
                         path.display()
                     )),
                     Err(err) => crate::logging::info(&format!(
-                        "Runtime memory logging enabled every {}s (path unavailable: {})",
-                        log_interval.as_secs(),
+                        "Runtime memory logging enabled: process={}s attribution={}s (path unavailable: {})",
+                        log_config.process_interval.as_secs(),
+                        log_config.attribution_interval.as_secs(),
                         err
                     )),
                 }
 
-                let startup_sample = capture_runtime_memory_sample(
+                let mut controller = RuntimeMemoryLogController::new(log_config);
+                let startup_now = Instant::now();
+                let mut startup_sample = capture_runtime_memory_attribution_sample(
                     &log_identity,
                     &log_sessions,
                     &log_client_count,
                     server_start_time,
-                    "startup",
+                    "attribution:startup",
+                    RuntimeMemoryLogTrigger {
+                        category: "startup".to_string(),
+                        reason: "server_start".to_string(),
+                        session_id: None,
+                        detail: None,
+                    },
+                    RuntimeMemoryLogSampling {
+                        forced: true,
+                        threshold_reasons: vec!["initial_attribution".to_string()],
+                        pending_event_count: 0,
+                        pending_categories: Vec::new(),
+                    },
                 )
                 .await;
+                controller.record_process_sample(startup_now);
+                controller.finalize_attribution_sample(startup_now, &mut startup_sample);
                 if let Err(err) = crate::runtime_memory_log::append_server_sample(&startup_sample) {
                     crate::logging::info(&format!(
                         "Runtime memory logging startup sample failed: {}",
@@ -739,23 +810,211 @@ impl Server {
                     ));
                 }
 
-                let mut interval = tokio::time::interval(log_interval);
-                interval.tick().await;
+                let mut process_interval = tokio::time::interval(controller.config().process_interval);
+                let mut attribution_interval =
+                    tokio::time::interval(controller.config().attribution_interval);
+                process_interval.tick().await;
+                attribution_interval.tick().await;
                 loop {
-                    interval.tick().await;
-                    let sample = capture_runtime_memory_sample(
-                        &log_identity,
-                        &log_sessions,
-                        &log_client_count,
-                        server_start_time,
-                        "interval",
-                    )
-                    .await;
-                    if let Err(err) = crate::runtime_memory_log::append_server_sample(&sample) {
-                        crate::logging::info(&format!(
-                            "Runtime memory logging interval sample failed: {}",
-                            err
-                        ));
+                    tokio::select! {
+                        _ = process_interval.tick() => {
+                            let now = Instant::now();
+                            let process_sample = capture_runtime_memory_process_sample(
+                                &log_identity,
+                                &log_client_count,
+                                server_start_time,
+                                "process:heartbeat",
+                                RuntimeMemoryLogTrigger {
+                                    category: "process_heartbeat".to_string(),
+                                    reason: "periodic".to_string(),
+                                    session_id: None,
+                                    detail: None,
+                                },
+                                controller.build_sampling_for_process(None),
+                            )
+                            .await;
+                            controller.record_process_sample(now);
+                            if let Err(err) = crate::runtime_memory_log::append_server_sample(&process_sample) {
+                                crate::logging::info(&format!(
+                                    "Runtime memory logging process heartbeat sample failed: {}",
+                                    err
+                                ));
+                            }
+
+                            if let Some(sampling) = controller.build_sampling_for_attribution(
+                                now,
+                                &process_sample.process,
+                                None,
+                                None,
+                            ) {
+                                let mut attribution_sample = capture_runtime_memory_attribution_sample(
+                                    &log_identity,
+                                    &log_sessions,
+                                    &log_client_count,
+                                    server_start_time,
+                                    "attribution:process-heartbeat",
+                                    RuntimeMemoryLogTrigger {
+                                        category: "process_heartbeat".to_string(),
+                                        reason: "threshold_flush".to_string(),
+                                        session_id: None,
+                                        detail: None,
+                                    },
+                                    sampling,
+                                )
+                                .await;
+                                controller.finalize_attribution_sample(now, &mut attribution_sample);
+                                if let Err(err) = crate::runtime_memory_log::append_server_sample(&attribution_sample) {
+                                    crate::logging::info(&format!(
+                                        "Runtime memory logging attribution flush failed: {}",
+                                        err
+                                    ));
+                                }
+                            }
+                        }
+                        _ = attribution_interval.tick() => {
+                            let now = Instant::now();
+                            let preflight = capture_runtime_memory_process_sample(
+                                &log_identity,
+                                &log_client_count,
+                                server_start_time,
+                                "process:attribution-preflight",
+                                RuntimeMemoryLogTrigger {
+                                    category: "attribution_heartbeat".to_string(),
+                                    reason: "preflight".to_string(),
+                                    session_id: None,
+                                    detail: None,
+                                },
+                                RuntimeMemoryLogSampling::default(),
+                            )
+                            .await;
+                            if let Some(sampling) = controller.build_sampling_for_attribution(
+                                now,
+                                &preflight.process,
+                                None,
+                                Some("attribution_heartbeat"),
+                            ) {
+                                let mut attribution_sample = capture_runtime_memory_attribution_sample(
+                                    &log_identity,
+                                    &log_sessions,
+                                    &log_client_count,
+                                    server_start_time,
+                                    "attribution:heartbeat",
+                                    RuntimeMemoryLogTrigger {
+                                        category: "attribution_heartbeat".to_string(),
+                                        reason: "periodic".to_string(),
+                                        session_id: None,
+                                        detail: None,
+                                    },
+                                    sampling,
+                                )
+                                .await;
+                                controller.finalize_attribution_sample(now, &mut attribution_sample);
+                                if let Err(err) = crate::runtime_memory_log::append_server_sample(&attribution_sample) {
+                                    crate::logging::info(&format!(
+                                        "Runtime memory logging attribution heartbeat failed: {}",
+                                        err
+                                    ));
+                                }
+                            } else {
+                                controller.mark_attribution_heartbeat_pending();
+                            }
+                        }
+                        maybe_event = memory_event_rx.recv() => {
+                            let Some(event) = maybe_event else {
+                                break;
+                            };
+                            let now = Instant::now();
+                            let should_write_process = controller.should_write_process_for_event(now, &event);
+                            let process_sample = if should_write_process {
+                                Some(
+                                    capture_runtime_memory_process_sample(
+                                        &log_identity,
+                                        &log_client_count,
+                                        server_start_time,
+                                        &format!("process:event:{}", event.category),
+                                        RuntimeMemoryLogTrigger {
+                                            category: event.category.clone(),
+                                            reason: event.reason.clone(),
+                                            session_id: event.session_id.clone(),
+                                            detail: event.detail.clone(),
+                                        },
+                                        controller.build_sampling_for_process(Some(&event)),
+                                    )
+                                    .await,
+                                )
+                            } else {
+                                None
+                            };
+
+                            if let Some(process_sample) = process_sample.as_ref() {
+                                controller.record_process_sample(now);
+                                if let Err(err) = crate::runtime_memory_log::append_server_sample(process_sample) {
+                                    crate::logging::info(&format!(
+                                        "Runtime memory logging event process sample failed: {}",
+                                        err
+                                    ));
+                                }
+                            }
+
+                            let mut wrote_attribution = false;
+                            let preflight_sample = if process_sample.is_none() && controller.can_write_attribution(now) {
+                                Some(
+                                    capture_runtime_memory_process_sample(
+                                        &log_identity,
+                                        &log_client_count,
+                                        server_start_time,
+                                        &format!("process:event-preflight:{}", event.category),
+                                        RuntimeMemoryLogTrigger {
+                                            category: event.category.clone(),
+                                            reason: "preflight".to_string(),
+                                            session_id: event.session_id.clone(),
+                                            detail: event.detail.clone(),
+                                        },
+                                        RuntimeMemoryLogSampling::default(),
+                                    )
+                                    .await,
+                                )
+                            } else {
+                                None
+                            };
+                            let preflight = process_sample.as_ref().or(preflight_sample.as_ref());
+                            if let Some(preflight) = preflight
+                                && let Some(sampling) = controller.build_sampling_for_attribution(
+                                    now,
+                                    &preflight.process,
+                                    Some(&event),
+                                    None,
+                                )
+                            {
+                                    let mut attribution_sample = capture_runtime_memory_attribution_sample(
+                                        &log_identity,
+                                        &log_sessions,
+                                        &log_client_count,
+                                        server_start_time,
+                                        &format!("attribution:event:{}", event.category),
+                                        RuntimeMemoryLogTrigger {
+                                            category: event.category.clone(),
+                                            reason: event.reason.clone(),
+                                            session_id: event.session_id.clone(),
+                                            detail: event.detail.clone(),
+                                        },
+                                        sampling,
+                                    )
+                                    .await;
+                                    controller.finalize_attribution_sample(now, &mut attribution_sample);
+                                    wrote_attribution = true;
+                                    if let Err(err) = crate::runtime_memory_log::append_server_sample(&attribution_sample) {
+                                        crate::logging::info(&format!(
+                                            "Runtime memory logging event attribution sample failed: {}",
+                                            err
+                                        ));
+                                    }
+                                }
+
+                            if !wrote_attribution {
+                                controller.defer_event(event);
+                            }
+                        }
                     }
                 }
             });

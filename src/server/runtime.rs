@@ -176,10 +176,22 @@ impl ServerRuntime {
 
     async fn increment_client_count(&self) {
         *self.client_count.write().await += 1;
+        crate::runtime_memory_log::emit_event(
+            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                "client_connected",
+                "client_count_incremented",
+            ),
+        );
     }
 
     async fn decrement_client_count(&self) {
         *self.client_count.write().await -= 1;
+        crate::runtime_memory_log::emit_event(
+            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                "client_disconnected",
+                "client_count_decremented",
+            ),
+        );
     }
 
     async fn run_client_stream(

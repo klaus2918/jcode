@@ -451,6 +451,18 @@ pub(super) async fn handle_set_feature(
             if !enabled {
                 crate::memory::clear_pending_memory(client_session_id);
             }
+            crate::runtime_memory_log::emit_event(
+                crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                    "memory_feature_toggled",
+                    if enabled {
+                        "memory_feature_enabled"
+                    } else {
+                        "memory_feature_disabled"
+                    },
+                )
+                .with_session_id(client_session_id.to_string())
+                .force_attribution(),
+            );
             let _ = client_event_tx.send(ServerEvent::Done { id });
         }
         FeatureToggle::Autoreview => {
@@ -1076,6 +1088,7 @@ pub(super) fn handle_compact(
     let tx = client_event_tx.clone();
     tokio::spawn(async move {
         let mut agent_guard = agent.lock().await;
+        let session_id = agent_guard.session_id().to_string();
         let provider = agent_guard.provider_fork();
         let compaction = agent_guard.registry().compaction();
         let messages = agent_guard.provider_messages();
@@ -1114,7 +1127,16 @@ pub(super) fn handle_compact(
                 );
 
                 match manager.force_compact_with(&messages, provider) {
-                    Ok(()) => ServerEvent::CompactResult {
+                    Ok(()) => {
+                        crate::runtime_memory_log::emit_event(
+                            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                                "manual_compaction_requested",
+                                "manual_compaction_started",
+                            )
+                            .with_session_id(session_id.clone())
+                            .force_attribution(),
+                        );
+                        ServerEvent::CompactResult {
                         id,
                         message: format!(
                             "{}\n\n📦 **Compacting context** (manual) — summarizing older messages in the background to stay within the context window.\n\
@@ -1122,6 +1144,7 @@ pub(super) fn handle_compact(
                             status_msg
                         ),
                         success: true,
+                    }
                     },
                     Err(reason) => ServerEvent::CompactResult {
                         id,

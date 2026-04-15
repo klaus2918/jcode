@@ -161,6 +161,14 @@ pub(super) async fn handle_clear_session(
         sessions_guard.remove(client_session_id);
         sessions_guard.insert(new_id.clone(), Arc::clone(agent));
     }
+    crate::runtime_memory_log::emit_event(
+        crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+            "session_cleared",
+            "session_replaced_with_fresh_agent",
+        )
+        .with_session_id(new_id.clone())
+        .force_attribution(),
+    );
     {
         let agent_guard = agent.lock().await;
         register_session_interrupt_queue(
@@ -959,6 +967,14 @@ pub(super) async fn handle_resume_session(
                 sessions_guard.remove(&old_session_id);
                 sessions_guard.insert(session_id.clone(), Arc::clone(agent));
             }
+            crate::runtime_memory_log::emit_event(
+                crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                    "session_resumed",
+                    "existing_session_attached",
+                )
+                .with_session_id(session_id.clone())
+                .force_attribution(),
+            );
             rename_shutdown_signal(shutdown_signals, &old_session_id, &session_id).await;
             rename_session_interrupt_queue(soft_interrupt_queues, &old_session_id, &session_id)
                 .await;

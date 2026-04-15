@@ -347,6 +347,14 @@ impl Agent {
         self.provider_session_id = None;
         self.session.provider_session_id = None;
         self.session.save()?;
+        crate::runtime_memory_log::emit_event(
+            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                "native_compaction_applied",
+                "provider_native_compaction_persisted",
+            )
+            .with_session_id(self.session.id.clone())
+            .force_attribution(),
+        );
         Ok(())
     }
 

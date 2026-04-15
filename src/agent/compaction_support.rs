@@ -66,6 +66,15 @@ impl Agent {
             "Context limit exceeded; auto-compacted and retrying (dropped {} messages, usage was {:.1}%)",
             dropped, usage_pct
         ));
+        crate::runtime_memory_log::emit_event(
+            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                "auto_compaction_applied",
+                "context_limit_auto_compaction",
+            )
+            .with_session_id(self.session.id.clone())
+            .with_detail(format!("dropped_messages={dropped},usage_pct={usage_pct:.1}"))
+            .force_attribution(),
+        );
 
         true
     }

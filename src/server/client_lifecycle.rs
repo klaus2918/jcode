@@ -198,6 +198,14 @@ pub(super) async fn handle_client(
         let mut sessions_guard = sessions.write().await;
         sessions_guard.insert(client_session_id.clone(), Arc::clone(&agent));
     }
+    crate::runtime_memory_log::emit_event(
+        crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+            "session_created",
+            "new_live_session_attached",
+        )
+        .with_session_id(client_session_id.clone())
+        .force_attribution(),
+    );
 
     // Per-client event channel (not shared with other clients)
     let (client_event_tx, mut client_event_rx) =
@@ -1738,7 +1746,19 @@ pub(super) async fn process_message_streaming_mpsc(
     event_tx: tokio::sync::mpsc::UnboundedSender<ServerEvent>,
 ) -> Result<()> {
     let mut agent = agent.lock().await;
-    agent
+    let session_id = agent.session_id().to_string();
+    let result = agent
         .run_once_streaming_mpsc(content, images, system_reminder, event_tx)
-        .await
+        .await;
+    if result.is_ok() {
+        crate::runtime_memory_log::emit_event(
+            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                "turn_completed",
+                "message_turn_finished",
+            )
+            .with_session_id(session_id)
+            .force_attribution(),
+        );
+    }
+    result
 }

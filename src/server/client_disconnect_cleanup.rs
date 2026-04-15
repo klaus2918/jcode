@@ -137,6 +137,23 @@ pub(super) async fn cleanup_client_connection(
                     let sid = client_session_id.to_string();
                     let working_dir = agent.working_dir().map(|dir| dir.to_string());
                     drop(agent);
+                    let event = match disposition {
+                        DisconnectDisposition::Closed => crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                            "session_closed",
+                            "client_disconnected",
+                        ),
+                        DisconnectDisposition::Crashed => crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                            "session_crashed",
+                            "client_disconnected_while_processing",
+                        ),
+                        DisconnectDisposition::Reloading => crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                            "session_reloading",
+                            "server_reload_disconnect",
+                        ),
+                    }
+                    .with_session_id(sid.clone())
+                    .force_attribution();
+                    crate::runtime_memory_log::emit_event(event);
                     if let Some(transcript) = transcript {
                         crate::memory_agent::trigger_final_extraction_with_dir(
                             transcript,

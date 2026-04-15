@@ -137,6 +137,13 @@ pub fn get_embedder() -> Result<Arc<Embedder>> {
     cache.last_used_at = Some(now);
 
     crate::logging::info("Embedding model loaded into memory");
+    crate::runtime_memory_log::emit_event(
+        crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+            "embedding_loaded",
+            "embedding_model_loaded",
+        )
+        .force_attribution(),
+    );
     Ok(loaded)
 }
 
@@ -235,6 +242,14 @@ pub fn maybe_unload_if_idle(idle_for: Duration) -> bool {
             "Unloaded embedding model after {}s idle",
             idle_secs
         ));
+        crate::runtime_memory_log::emit_event(
+            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                "embedding_unloaded",
+                "embedding_model_idle_unload",
+            )
+            .with_detail(format!("idle_secs={idle_secs}"))
+            .force_attribution(),
+        );
 
         #[cfg(feature = "jemalloc")]
         if let Err(err) = crate::process_memory::purge_allocator() {
@@ -279,6 +294,13 @@ pub fn unload_now() -> bool {
 
     if unloaded {
         crate::logging::info("Embedding model force-unloaded");
+        crate::runtime_memory_log::emit_event(
+            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                "embedding_unloaded",
+                "embedding_model_force_unload",
+            )
+            .force_attribution(),
+        );
 
         #[cfg(feature = "jemalloc")]
         if let Err(err) = crate::process_memory::purge_allocator() {
