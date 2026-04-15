@@ -323,7 +323,7 @@ mod tests {
                 summary: Some("edited lines 323-348 (1 occurrence)".to_string()),
                 detail: Some("323- old line\n323+ new line".to_string()),
             },
-            "⚠️ File activity: /home/jeremy/jcode/src/tool/communicate.rs — moss just edited this file you previously worked with: edited lines 323-348 (1 occurrence)",
+            "⚠ File activity: /home/jeremy/jcode/src/tool/communicate.rs — moss just edited this file you previously worked with: edited lines 323-348 (1 occurrence)",
         );
 
         assert_eq!(presentation.title, "File activity · moss");

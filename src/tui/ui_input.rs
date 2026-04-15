@@ -52,6 +52,10 @@ fn shell_mode_hint(mode: ComposerMode) -> Option<&'static str> {
     }
 }
 
+fn normalize_repaint_sensitive_notice_text(text: &str) -> String {
+    text.replace("⚠️", "⚠")
+}
+
 pub(super) fn input_hint_line_height(app: &dyn TuiState) -> u16 {
     let suggestions = app.command_suggestions();
     let mode = composer_mode(app.input(), app.is_remote_mode());
@@ -146,17 +150,29 @@ pub(super) fn pending_queue_preview(app: &dyn TuiState) -> Vec<String> {
     if app.is_processing() {
         for msg in app.pending_soft_interrupts() {
             if !msg.is_empty() {
-                previews.push(format!("↻ {}", msg.chars().take(100).collect::<String>()));
+                let normalized = normalize_repaint_sensitive_notice_text(msg);
+                previews.push(format!(
+                    "↻ {}",
+                    normalized.chars().take(100).collect::<String>()
+                ));
             }
         }
         if let Some(msg) = app.interleave_message()
             && !msg.is_empty()
         {
-            previews.push(format!("⚡ {}", msg.chars().take(100).collect::<String>()));
+            let normalized = normalize_repaint_sensitive_notice_text(msg);
+            previews.push(format!(
+                "⚡ {}",
+                normalized.chars().take(100).collect::<String>()
+            ));
         }
     }
     for msg in app.queued_messages() {
-        previews.push(format!("⏳ {}", msg.chars().take(100).collect::<String>()));
+        let normalized = normalize_repaint_sensitive_notice_text(msg);
+        previews.push(format!(
+            "⏳ {}",
+            normalized.chars().take(100).collect::<String>()
+        ));
     }
     previews
 }
@@ -185,6 +201,7 @@ pub(super) fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, sta
         .take(3)
         .enumerate()
         .map(|(i, (msg_type, msg))| {
+            let normalized_msg = normalize_repaint_sensitive_notice_text(msg);
             let distance = pending_count.saturating_sub(i);
             let num_color = rainbow_prompt_color(distance);
             let (indicator, indicator_color, msg_color, dim) = match msg_type {
@@ -201,7 +218,7 @@ pub(super) fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, sta
                 Span::raw(" "),
                 Span::styled(indicator, Style::default().fg(indicator_color)),
                 Span::raw(" "),
-                Span::styled(*msg, msg_style),
+                Span::styled(normalized_msg, msg_style),
             ])
         })
         .collect();
@@ -922,6 +939,18 @@ mod tests {
     fn shell_mode_color_is_distinct() {
         assert_eq!(shell_mode_color(), rgb(110, 214, 151));
     }
+
+    #[test]
+    fn normalize_repaint_sensitive_notice_text_drops_warning_variation_selector() {
+        assert_eq!(
+            normalize_repaint_sensitive_notice_text("⚠️ File activity: read lines 1-9"),
+            "⚠ File activity: read lines 1-9"
+        );
+        assert_eq!(
+            normalize_repaint_sensitive_notice_text("all clear"),
+            "all clear"
+        );
+    }
 }
 
 /// Build the spans for the notification line. Returns empty vec when there is nothing to show.
@@ -963,7 +992,10 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
 
     if let Some(notice) = app.status_notice() {
         push_sep(&mut spans);
-        spans.push(Span::styled(notice, Style::default().fg(accent_color())));
+        spans.push(Span::styled(
+            normalize_repaint_sensitive_notice_text(&notice),
+            Style::default().fg(accent_color()),
+        ));
     }
 
     if !app.is_processing() {

@@ -7762,7 +7762,9 @@ fn test_handle_post_connect_clears_deferred_dispatch_before_reload_followup() {
 
     let session_id = "session_reload_deferred_dispatch";
     crate::tool::selfdev::ReloadContext {
-        task_context: Some("Verify deferred dispatch does not block reload continuation".to_string()),
+        task_context: Some(
+            "Verify deferred dispatch does not block reload continuation".to_string(),
+        ),
         version_before: "old-build".to_string(),
         version_after: "new-build".to_string(),
         session_id: session_id.to_string(),
@@ -7801,7 +7803,10 @@ fn test_handle_post_connect_clears_deferred_dispatch_before_reload_followup() {
         "post-connect should clear deferred dispatch before sending reload continuation"
     );
     assert!(app.hidden_queued_system_messages.is_empty());
-    assert!(app.is_processing, "reload continuation should still dispatch");
+    assert!(
+        app.is_processing,
+        "reload continuation should still dispatch"
+    );
     assert!(matches!(app.status, ProcessingStatus::Sending));
     assert!(app.current_message_id.is_some());
 
@@ -10819,6 +10824,136 @@ fn test_streaming_repaint_does_not_leave_bracket_artifact() {
     assert!(
         !text.lines().any(|line| line.trim() == "["),
         "stale standalone '[' artifact should not persist after repaint"
+    );
+}
+
+#[test]
+fn test_queued_file_activity_repaint_does_not_leave_trailing_digit_artifact() {
+    let _lock = scroll_render_test_lock();
+
+    let mut app = create_test_app();
+    let backend = ratatui::backend::TestBackend::new(140, 20);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+
+    app.is_processing = true;
+    app.status = ProcessingStatus::Streaming;
+    app.pending_soft_interrupts = vec![
+        "⚠️ File activity: /home/jeremy/jcode/src/lib.rs — amber previously read this file: read lines 1-9999"
+            .to_string(),
+    ];
+    let first = render_and_snap(&app, &mut terminal);
+    assert!(
+        first.contains("1-9999"),
+        "expected initial queued alert to render fully"
+    );
+
+    app.pending_soft_interrupts = vec![
+        "⚠️ File activity: /home/jeremy/jcode/src/lib.rs — amber previously read this file: read lines 1-9"
+            .to_string(),
+    ];
+    let second = render_and_snap(&app, &mut terminal);
+
+    assert!(
+        second.contains("⚠ File activity:"),
+        "expected queued alert to use width-stable warning glyph, got:\n{second}"
+    );
+    assert!(
+        !second.contains("⚠️ File activity:"),
+        "queued alert should not use emoji warning presentation in repaint-sensitive UI:\n{second}"
+    );
+    assert!(
+        second.contains("read lines 1-9"),
+        "expected updated queued alert to render, got:\n{second}"
+    );
+    assert!(
+        !second.contains("1-9999"),
+        "stale trailing digits from the previous queued alert should not persist after repaint:\n{second}"
+    );
+}
+
+#[test]
+fn test_notification_file_activity_repaint_does_not_leave_trailing_digit_artifact() {
+    let _lock = scroll_render_test_lock();
+
+    let mut app = create_test_app();
+    let backend = ratatui::backend::TestBackend::new(140, 20);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+
+    app.status_notice = Some((
+        "File activity · /home/jeremy/jcode/src/lib.rs · read lines 1-9999".to_string(),
+        std::time::Instant::now(),
+    ));
+    let first = render_and_snap(&app, &mut terminal);
+    assert!(
+        first.contains("1-9999"),
+        "expected initial notification to render fully"
+    );
+
+    app.status_notice = Some((
+        "File activity · /home/jeremy/jcode/src/lib.rs · read lines 1-9".to_string(),
+        std::time::Instant::now(),
+    ));
+    let second = render_and_snap(&app, &mut terminal);
+
+    assert!(
+        second.contains("read lines 1-9"),
+        "expected updated notification to render, got:\n{second}"
+    );
+    assert!(
+        !second.contains("1-9999"),
+        "stale trailing digits from the previous notification should not persist after repaint:\n{second}"
+    );
+}
+
+#[test]
+fn test_file_activity_scroll_reproduces_trailing_nines_after_native_scroll_like_mutation() {
+    let _lock = scroll_render_test_lock();
+
+    let mut app = create_test_app();
+    let backend = ratatui::backend::TestBackend::new(120, 12);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+
+    let mut lines = vec![
+        "⚠️ File activity: /home/jeremy/jcode/src/lib.rs — amber previously read this file: read lines 1-9"
+            .to_string(),
+    ];
+    for idx in 1..=40 {
+        lines.push(format!("filler line {idx:02}"));
+    }
+
+    app.display_messages = vec![DisplayMessage::assistant(lines.join("\n"))];
+    app.bump_display_messages_version();
+    app.auto_scroll_paused = true;
+    app.scroll_offset = 0;
+
+    let clean = render_and_snap(&app, &mut terminal);
+    let target_row = clean
+        .lines()
+        .position(|line| line.contains("read lines"))
+        .unwrap_or_else(|| panic!("expected file activity line to be visible, got:\n{clean}"));
+    let target_line = clean.lines().nth(target_row).expect("target line text");
+    let trail_start = target_line
+        .find("read lines 1-9")
+        .expect("expected file activity suffix")
+        + "read lines 1-9".len();
+
+    let ghost = ratatui::buffer::Buffer::with_lines(["9999"]);
+    let updates = ghost
+        .content()
+        .iter()
+        .enumerate()
+        .map(|(idx, cell)| (trail_start as u16 + idx as u16, target_row as u16, cell));
+    terminal
+        .backend_mut()
+        .draw(updates)
+        .expect("inject trailing nines after file activity line");
+
+    app.scroll_offset = 1;
+    let scrolled = render_and_snap(&app, &mut terminal);
+
+    assert!(
+        scrolled.contains("9999"),
+        "expected stale trailing nines to remain after scroll-like repaint:\n{scrolled}"
     );
 }
 

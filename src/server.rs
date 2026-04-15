@@ -198,7 +198,8 @@ async fn capture_runtime_memory_common_sample(
     sampling: RuntimeMemoryLogSampling,
 ) -> ServerRuntimeMemorySample {
     let now = chrono::Utc::now();
-    let process = crate::process_memory::snapshot_with_source(format!("server:runtime-log:{source}"));
+    let process =
+        crate::process_memory::snapshot_with_source(format!("server:runtime-log:{source}"));
     let connected_count = *client_count.read().await;
     let background_task_count = crate::background::global().list().await.len();
     let embedder_stats = crate::embedding::stats();
@@ -810,7 +811,8 @@ impl Server {
                     ));
                 }
 
-                let mut process_interval = tokio::time::interval(controller.config().process_interval);
+                let mut process_interval =
+                    tokio::time::interval(controller.config().process_interval);
                 let mut attribution_interval =
                     tokio::time::interval(controller.config().attribution_interval);
                 process_interval.tick().await;
@@ -1259,7 +1261,7 @@ impl Server {
                                 let prev_member = members.get(&prev.session_id);
                                 let prev_name = prev_member.and_then(|m| m.friendly_name.clone());
                                 let alert_msg = format!(
-                                    "⚠️ File activity: {} — {} previously {} this file{}",
+                                    "⚠ File activity: {} — {} previously {} this file{}",
                                     path.display(),
                                     prev_name.as_deref().unwrap_or(&prev.session_id[..8]),
                                     prev.op.as_str(),
@@ -1303,7 +1305,7 @@ impl Server {
                         for prev in &previous_touches {
                             if let Some(prev_member) = members.get(&prev.session_id) {
                                 let alert_msg = format!(
-                                    "⚠️ File activity: {} — {} just {} this file you previously worked with{}",
+                                    "⚠ File activity: {} — {} just {} this file you previously worked with{}",
                                     path.display(),
                                     current_name
                                         .as_deref()
