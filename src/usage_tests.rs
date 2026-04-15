@@ -206,7 +206,7 @@ fn test_classify_openai_limits_recognizes_five_weekly_and_spark() {
         },
     ];
 
-    let classified = classify_openai_limits(&limits);
+    let classified = openai_helpers::classify_openai_limits(&limits);
 
     assert_eq!(
         classified.five_hour.as_ref().map(|w| w.usage_ratio),
@@ -225,7 +225,7 @@ fn test_parse_usage_percent_supports_used_limit_shape() {
     obj.insert("used".to_string(), serde_json::json!(20));
     obj.insert("limit".to_string(), serde_json::json!(80));
 
-    let percent = parse_usage_percent_from_obj(&obj);
+    let percent = openai_helpers::parse_usage_percent_from_obj(&obj);
     assert_eq!(percent, Some(25.0));
 }
 
@@ -235,7 +235,7 @@ fn test_parse_usage_percent_supports_remaining_limit_shape() {
     obj.insert("remaining".to_string(), serde_json::json!(60));
     obj.insert("limit".to_string(), serde_json::json!(80));
 
-    let percent = parse_usage_percent_from_obj(&obj);
+    let percent = openai_helpers::parse_usage_percent_from_obj(&obj);
     assert_eq!(percent, Some(25.0));
 }
 
@@ -371,7 +371,7 @@ fn test_parse_openai_hard_limit_reached_detects_rate_limit_denials() {
         "limit_reached": true
     });
 
-    assert!(parse_openai_hard_limit_reached(&json));
+    assert!(openai_helpers::parse_openai_hard_limit_reached(&json));
 }
 
 #[test]
@@ -388,7 +388,84 @@ fn test_parse_openai_hard_limit_reached_ignores_unrelated_allowed_flags() {
         }
     });
 
-    assert!(!parse_openai_hard_limit_reached(&json));
+    assert!(!openai_helpers::parse_openai_hard_limit_reached(&json));
+}
+
+#[test]
+fn test_parse_openai_usage_payload_prefers_wham_windows_and_additional_limits() {
+    let json = serde_json::json!({
+        "plan_type": "pro",
+        "rate_limit": {
+            "allowed": true,
+            "primary_window": {
+                "used_percent": 25.0,
+                "reset_at": 1_766_000_000
+            },
+            "secondary_window": {
+                "used_percent": 50.0,
+                "reset_at": 1_766_086_400
+            }
+        },
+        "additional_rate_limits": [{
+            "limit_name": "Codex Spark",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 75.0,
+                    "reset_at": 1_766_000_000
+                }
+            }
+        }]
+    });
+
+    let parsed = openai_helpers::parse_openai_usage_payload(&json);
+
+    assert_eq!(
+        parsed.extra_info.first(),
+        Some(&("Plan".to_string(), "pro".to_string()))
+    );
+    assert!(!parsed.hard_limit_reached);
+    assert_eq!(parsed.limits.len(), 3);
+    assert_eq!(parsed.limits[0].name, "5-hour window");
+    assert_eq!(parsed.limits[0].usage_percent, 25.0);
+    assert_eq!(parsed.limits[1].name, "7-day window");
+    assert_eq!(parsed.limits[1].usage_percent, 50.0);
+    assert_eq!(parsed.limits[2].name, "Codex Spark (5h)");
+    assert_eq!(parsed.limits[2].usage_percent, 75.0);
+}
+
+#[test]
+fn test_parse_openai_usage_payload_falls_back_to_nested_rate_limits() {
+    let json = serde_json::json!({
+        "plan": "team",
+        "codex": {
+            "rate_limits": [
+                {
+                    "name": "Codex 5h",
+                    "used": 20,
+                    "limit": 80,
+                    "resets_at": "2026-01-01T00:00:00Z"
+                },
+                {
+                    "name": "Codex 1w",
+                    "remaining": 60,
+                    "limit": 80,
+                    "resets_at": "2026-01-07T00:00:00Z"
+                }
+            ]
+        }
+    });
+
+    let parsed = openai_helpers::parse_openai_usage_payload(&json);
+
+    assert_eq!(
+        parsed.extra_info.first(),
+        Some(&("Plan".to_string(), "team".to_string()))
+    );
+    assert_eq!(parsed.limits.len(), 2);
+    assert_eq!(parsed.limits[0].name, "Codex 5h");
+    assert_eq!(parsed.limits[0].usage_percent, 25.0);
+    assert_eq!(parsed.limits[1].name, "Codex 1w");
+    assert_eq!(parsed.limits[1].usage_percent, 25.0);
 }
 
 #[test]
