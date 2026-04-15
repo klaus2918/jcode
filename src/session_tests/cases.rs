@@ -1,30 +1,32 @@
 use super::*;
+use anyhow::{Result, anyhow};
 
 #[test]
-fn test_session_exists_roundtrip() {
+fn test_session_exists_roundtrip() -> Result<()> {
     let tmp_dir = std::env::temp_dir().join(format!(
         "jcode-session-test-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| anyhow!(e))?
             .as_nanos()
     ));
-    std::fs::create_dir_all(tmp_dir.join("sessions")).unwrap();
+    std::fs::create_dir_all(tmp_dir.join("sessions"))?;
 
     assert!(!session_path_in_dir(&tmp_dir, "missing-session").exists());
 
     let session_path = session_path_in_dir(&tmp_dir, "exists-session");
-    std::fs::write(&session_path, "{}").unwrap();
+    std::fs::write(&session_path, "{}")?;
     assert!(session_path.exists());
 
     let random_id = format!(
         "missing-session-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| anyhow!(e))?
             .as_nanos()
     );
     assert!(!session_exists(&random_id));
+    Ok(())
 }
 
 #[test]
@@ -75,12 +77,12 @@ fn test_debug_memory_profile_reports_messages_and_provider_cache() {
 }
 
 #[test]
-fn load_startup_stub_preserves_metadata_but_skips_heavy_vectors() {
+fn load_startup_stub_preserves_metadata_but_skips_heavy_vectors() -> Result<()> {
     let _env_lock = lock_env();
     let temp_home = tempfile::Builder::new()
         .prefix("jcode-startup-stub-test-")
         .tempdir()
-        .expect("create temp JCODE_HOME");
+        .map_err(|e| anyhow!(e))?;
     let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
 
     let session_id = "session_startup_stub_roundtrip";
@@ -131,9 +133,9 @@ fn load_startup_stub_preserves_metadata_but_skips_heavy_vectors() {
         Vec::new(),
     );
     session.record_replay_display_message("system", Some("Launch".to_string()), "boot");
-    session.save().expect("save session");
+    session.save()?;
 
-    let stub = Session::load_startup_stub(session_id).expect("load startup stub");
+    let stub = Session::load_startup_stub(session_id)?;
     assert_eq!(stub.id, session_id);
     assert_eq!(stub.parent_id.as_deref(), Some("parent_123"));
     assert_eq!(stub.title.as_deref(), Some("startup stub"));
@@ -144,15 +146,16 @@ fn load_startup_stub_preserves_metadata_but_skips_heavy_vectors() {
     assert!(stub.env_snapshots.is_empty());
     assert!(stub.memory_injections.is_empty());
     assert!(stub.replay_events.is_empty());
+    Ok(())
 }
 
 #[test]
-fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors() {
+fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors() -> Result<()> {
     let _env_lock = lock_env();
     let temp_home = tempfile::Builder::new()
         .prefix("jcode-remote-startup-test-")
         .tempdir()
-        .expect("create temp JCODE_HOME");
+        .map_err(|e| anyhow!(e))?;
     let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
 
     let session_id = "session_remote_startup_roundtrip";
@@ -201,9 +204,9 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
         Vec::new(),
     );
     session.record_replay_display_message("system", Some("Launch".to_string()), "boot");
-    session.save().expect("save session");
+    session.save()?;
 
-    let loaded = Session::load_for_remote_startup(session_id).expect("load remote startup");
+    let loaded = Session::load_for_remote_startup(session_id)?;
     assert_eq!(loaded.id, session_id);
     assert_eq!(loaded.parent_id.as_deref(), Some("parent_remote"));
     assert_eq!(loaded.model.as_deref(), Some("gpt-5.4"));
@@ -211,6 +214,7 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
     assert!(loaded.replay_events.is_empty());
     assert!(loaded.env_snapshots.is_empty());
     assert!(loaded.memory_injections.is_empty());
+    Ok(())
 }
 
 #[test]
@@ -235,12 +239,12 @@ fn test_create_not_debug_when_test_session_env_disabled() {
 }
 
 #[test]
-fn test_recover_crashed_sessions_preserves_debug_flag() {
+fn test_recover_crashed_sessions_preserves_debug_flag() -> Result<()> {
     let _env_lock = lock_env();
     let temp_home = tempfile::Builder::new()
         .prefix("jcode-recover-debug-test-")
         .tempdir()
-        .expect("create temp JCODE_HOME");
+        .map_err(|e| anyhow!(e))?;
     let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
     let _test_flag = EnvVarGuard::set("JCODE_TEST_SESSION", "0");
 
@@ -258,22 +262,23 @@ fn test_recover_crashed_sessions_preserves_debug_flag() {
             cache_control: None,
         }],
     );
-    crashed.save().expect("save crashed session");
+    crashed.save()?;
 
-    let recovered_ids = recover_crashed_sessions().expect("recover crashed sessions");
+    let recovered_ids = recover_crashed_sessions()?;
     assert_eq!(recovered_ids.len(), 1);
 
-    let recovered = Session::load(&recovered_ids[0]).expect("load recovered session");
+    let recovered = Session::load(&recovered_ids[0])?;
     assert!(recovered.is_debug);
+    Ok(())
 }
 
 #[test]
-fn test_save_persists_full_session_content() {
+fn test_save_persists_full_session_content() -> Result<()> {
     let _env_lock = lock_env();
     let temp_home = tempfile::Builder::new()
         .prefix("jcode-session-save-test-")
         .tempdir()
-        .expect("create temp JCODE_HOME");
+        .map_err(|e| anyhow!(e))?;
     let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
 
     let mut session = Session::create_with_id(
@@ -302,35 +307,32 @@ fn test_save_persists_full_session_content() {
         }],
     );
 
-    session.save().expect("save session");
+    session.save()?;
 
-    let loaded = Session::load("session_save_persist_test").expect("load saved session");
+    let loaded = Session::load("session_save_persist_test")?;
 
-    match &loaded.messages[0].content[0] {
-        ContentBlock::ToolResult { content, .. } => {
-            assert!(content.contains("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"));
-            assert!(!content.contains("[REDACTED_SECRET]"));
-        }
-        _ => panic!("expected tool result block"),
-    }
+    let ContentBlock::ToolResult { content, .. } = &loaded.messages[0].content[0] else {
+        return Err(anyhow!("expected tool result block"));
+    };
+    assert!(content.contains("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"));
+    assert!(!content.contains("[REDACTED_SECRET]"));
 
-    match &loaded.messages[1].content[0] {
-        ContentBlock::ToolUse { input, .. } => {
-            let input_str = input.to_string();
-            assert!(input_str.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"));
-            assert!(!input_str.contains("[REDACTED_SECRET]"));
-        }
-        _ => panic!("expected tool use block"),
-    }
+    let ContentBlock::ToolUse { input, .. } = &loaded.messages[1].content[0] else {
+        return Err(anyhow!("expected tool use block"));
+    };
+    let input_str = input.to_string();
+    assert!(input_str.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"));
+    assert!(!input_str.contains("[REDACTED_SECRET]"));
+    Ok(())
 }
 
 #[test]
-fn test_save_persists_compaction_state() {
+fn test_save_persists_compaction_state() -> Result<()> {
     let _env_lock = lock_env();
     let temp_home = tempfile::Builder::new()
         .prefix("jcode-session-compaction-save-test-")
         .tempdir()
-        .expect("create temp JCODE_HOME");
+        .map_err(|e| anyhow!(e))?;
     let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
 
     let mut session = Session::create_with_id(
@@ -346,19 +348,20 @@ fn test_save_persists_compaction_state() {
         compacted_count: 8,
     });
 
-    session.save().expect("save session with compaction state");
+    session.save()?;
 
-    let loaded = Session::load("session_compaction_persist_test").expect("load saved session");
+    let loaded = Session::load("session_compaction_persist_test")?;
     assert_eq!(loaded.compaction, session.compaction);
+    Ok(())
 }
 
 #[test]
-fn test_save_persists_provider_key() {
+fn test_save_persists_provider_key() -> Result<()> {
     let _env_lock = lock_env();
     let temp_home = tempfile::Builder::new()
         .prefix("jcode-session-provider-key-save-test-")
         .tempdir()
-        .expect("create temp JCODE_HOME");
+        .map_err(|e| anyhow!(e))?;
     let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
 
     let mut session = Session::create_with_id(
@@ -369,21 +372,21 @@ fn test_save_persists_provider_key() {
     session.provider_key = Some("opencode".to_string());
     session.model = Some("anthropic/claude-sonnet-4".to_string());
 
-    session.save().expect("save session with provider key");
+    session.save()?;
 
-    let loaded = Session::load("session_provider_key_persist_test")
-        .expect("load saved session with provider key");
+    let loaded = Session::load("session_provider_key_persist_test")?;
     assert_eq!(loaded.provider_key.as_deref(), Some("opencode"));
     assert_eq!(loaded.model.as_deref(), Some("anthropic/claude-sonnet-4"));
+    Ok(())
 }
 
 #[test]
-fn test_save_appends_journal_and_load_replays_it() {
+fn test_save_appends_journal_and_load_replays_it() -> Result<()> {
     let _env_lock = lock_env();
     let temp_home = tempfile::Builder::new()
         .prefix("jcode-session-journal-test-")
         .tempdir()
-        .expect("create temp JCODE_HOME");
+        .map_err(|e| anyhow!(e))?;
     let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
 
     let mut session = Session::create_with_id(
@@ -398,10 +401,10 @@ fn test_save_appends_journal_and_load_replays_it() {
             cache_control: None,
         }],
     );
-    session.save().expect("save initial snapshot");
+    session.save()?;
 
-    let snapshot_path = session_path("session_journal_append_test").expect("snapshot path");
-    let journal_path = session_journal_path("session_journal_append_test").expect("journal path");
+    let snapshot_path = session_path("session_journal_append_test")?;
+    let journal_path = session_journal_path("session_journal_append_test")?;
     assert!(snapshot_path.exists());
     assert!(!journal_path.exists());
 
@@ -412,24 +415,25 @@ fn test_save_appends_journal_and_load_replays_it() {
             cache_control: None,
         }],
     );
-    session.save().expect("append journal delta");
+    session.save()?;
 
     assert!(journal_path.exists());
-    let journal = std::fs::read_to_string(&journal_path).expect("read journal");
+    let journal = std::fs::read_to_string(&journal_path)?;
     assert!(journal.contains("second"));
 
-    let loaded = Session::load("session_journal_append_test").expect("load with journal");
+    let loaded = Session::load("session_journal_append_test")?;
     assert_eq!(loaded.messages.len(), 2);
     assert_eq!(loaded.messages[1].content_preview(), "second");
+    Ok(())
 }
 
 #[test]
-fn test_save_checkpoints_after_full_mutation_and_clears_journal() {
+fn test_save_checkpoints_after_full_mutation_and_clears_journal() -> Result<()> {
     let _env_lock = lock_env();
     let temp_home = tempfile::Builder::new()
         .prefix("jcode-session-checkpoint-test-")
         .tempdir()
-        .expect("create temp JCODE_HOME");
+        .map_err(|e| anyhow!(e))?;
     let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
 
     let mut session = Session::create_with_id(
@@ -444,7 +448,7 @@ fn test_save_checkpoints_after_full_mutation_and_clears_journal() {
             cache_control: None,
         }],
     );
-    session.save().expect("save initial snapshot");
+    session.save()?;
 
     session.add_message(
         Role::Assistant,
@@ -453,27 +457,26 @@ fn test_save_checkpoints_after_full_mutation_and_clears_journal() {
             cache_control: None,
         }],
     );
-    session.save().expect("save journal append");
+    session.save()?;
 
-    let journal_path =
-        session_journal_path("session_journal_checkpoint_test").expect("journal path");
+    let journal_path = session_journal_path("session_journal_checkpoint_test")?;
     assert!(journal_path.exists());
 
     session.truncate_messages(1);
     session.title = Some("checkpointed title".to_string());
-    session.save().expect("checkpoint snapshot");
+    session.save()?;
 
     assert!(!journal_path.exists());
 
-    let loaded =
-        Session::load("session_journal_checkpoint_test").expect("load checkpointed session");
+    let loaded = Session::load("session_journal_checkpoint_test")?;
     assert_eq!(loaded.title.as_deref(), Some("checkpointed title"));
     assert_eq!(loaded.messages.len(), 1);
     assert_eq!(loaded.messages[0].content_preview(), "one");
+    Ok(())
 }
 
 #[test]
-fn test_redacted_for_export_redacts_tool_result_and_tool_input() {
+fn test_redacted_for_export_redacts_tool_result_and_tool_input() -> Result<()> {
     let mut session = Session::create_with_id(
         "session_redact_persist_test".to_string(),
         None,
@@ -503,27 +506,24 @@ fn test_redacted_for_export_redacts_tool_result_and_tool_input() {
     let persisted = session.redacted_for_export();
 
     let first_content = &persisted.messages[0].content[0];
-    match first_content {
-        ContentBlock::ToolResult { content, .. } => {
-            assert!(content.contains("OPENROUTER_API_KEY=[REDACTED_SECRET]"));
-            assert!(!content.contains("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"));
-        }
-        _ => panic!("expected tool result block"),
-    }
+    let ContentBlock::ToolResult { content, .. } = first_content else {
+        return Err(anyhow!("expected tool result block"));
+    };
+    assert!(content.contains("OPENROUTER_API_KEY=[REDACTED_SECRET]"));
+    assert!(!content.contains("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"));
 
     let second_content = &persisted.messages[1].content[0];
-    match second_content {
-        ContentBlock::ToolUse { input, .. } => {
-            let input_str = input.to_string();
-            assert!(input_str.contains("[REDACTED_SECRET]"));
-            assert!(!input_str.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"));
-        }
-        _ => panic!("expected tool use block"),
-    }
+    let ContentBlock::ToolUse { input, .. } = second_content else {
+        return Err(anyhow!("expected tool use block"));
+    };
+    let input_str = input.to_string();
+    assert!(input_str.contains("[REDACTED_SECRET]"));
+    assert!(!input_str.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"));
+    Ok(())
 }
 
 #[test]
-fn test_redacted_for_export_redacts_replay_events() {
+fn test_redacted_for_export_redacts_replay_events() -> Result<()> {
     let mut session = Session::create_with_id(
         "session_redacted_replay_events_test".to_string(),
         None,
@@ -560,41 +560,34 @@ fn test_redacted_for_export_redacts_replay_events() {
     let redacted = session.redacted_for_export();
     assert_eq!(redacted.replay_events.len(), 3);
 
-    match &redacted.replay_events[0].kind {
-        StoredReplayEventKind::DisplayMessage { content, .. } => {
-            assert!(content.contains("OPENROUTER_API_KEY=[REDACTED_SECRET]"));
-            assert!(!content.contains("sk-or-v1-secret-value"));
-        }
-        other => panic!("expected display message replay event, got {other:?}"),
-    }
+    let StoredReplayEventKind::DisplayMessage { content, .. } = &redacted.replay_events[0].kind
+    else {
+        return Err(anyhow!("expected display message replay event"));
+    };
+    assert!(content.contains("OPENROUTER_API_KEY=[REDACTED_SECRET]"));
+    assert!(!content.contains("sk-or-v1-secret-value"));
 
-    match &redacted.replay_events[1].kind {
-        StoredReplayEventKind::SwarmStatus { members } => {
-            let detail = members[0].detail.as_deref().unwrap_or_default();
-            assert!(detail.contains("ANTHROPIC_API_KEY=[REDACTED_SECRET]"));
-            assert!(!detail.contains("sk-ant-secret-value"));
-        }
-        other => panic!("expected swarm status replay event, got {other:?}"),
-    }
+    let StoredReplayEventKind::SwarmStatus { members } = &redacted.replay_events[1].kind else {
+        return Err(anyhow!("expected swarm status replay event"));
+    };
+    let detail = members[0].detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("ANTHROPIC_API_KEY=[REDACTED_SECRET]"));
+    assert!(!detail.contains("sk-ant-secret-value"));
 
-    match &redacted.replay_events[2].kind {
-        StoredReplayEventKind::SwarmPlan { items, reason, .. } => {
-            assert!(
-                items[0]
-                    .content
-                    .contains("OPENROUTER_API_KEY=[REDACTED_SECRET]")
-            );
-            assert!(
-                !items[0]
-                    .content
-                    .contains("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789")
-            );
-            let reason = reason.as_deref().unwrap_or_default();
-            assert!(reason.contains("ANTHROPIC_API_KEY=[REDACTED_SECRET]"));
-            assert!(!reason.contains("sk-ant-secret-value"));
-        }
-        other => panic!("expected swarm plan replay event, got {other:?}"),
-    }
+    let StoredReplayEventKind::SwarmPlan { items, reason, .. } = &redacted.replay_events[2].kind
+    else {
+        return Err(anyhow!("expected swarm plan replay event"));
+    };
+    assert!(items[0]
+        .content
+        .contains("OPENROUTER_API_KEY=[REDACTED_SECRET]"));
+    assert!(!items[0]
+        .content
+        .contains("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"));
+    let reason = reason.as_deref().unwrap_or_default();
+    assert!(reason.contains("ANTHROPIC_API_KEY=[REDACTED_SECRET]"));
+    assert!(!reason.contains("sk-ant-secret-value"));
+    Ok(())
 }
 
 #[test]

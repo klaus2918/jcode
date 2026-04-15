@@ -1,7 +1,8 @@
 use super::*;
+use anyhow::{Result, anyhow};
 
 #[tokio::test]
-async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_registration() {
+async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_registration() -> Result<()> {
     let _guard = crate::storage::lock_test_env();
 
     let old_session_id = "session_before_clear";
@@ -104,7 +105,7 @@ async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_regi
 
     old_queue
         .lock()
-        .expect("old queue lock")
+        .map_err(|_| anyhow!("old queue lock"))?
         .push(jcode_agent_runtime::SoftInterruptMessage {
             content: "stale queued message".to_string(),
             urgent: false,
@@ -136,14 +137,21 @@ async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_regi
     assert!(!signals.contains_key(old_session_id));
     let registered_signal = signals
         .get(&client_session_id)
-        .expect("new session should have shutdown signal")
+        .ok_or_else(|| anyhow!("new session should have shutdown signal"))?
         .clone();
     drop(signals);
     registered_signal.fire();
     assert!(new_cancel_signal.is_set());
 
-    let first = client_event_rx.recv().await.expect("session id event");
+    let first = client_event_rx
+        .recv()
+        .await
+        .ok_or_else(|| anyhow!("session id event"))?;
     assert!(matches!(first, ServerEvent::SessionId { .. }));
-    let second = client_event_rx.recv().await.expect("done event");
+    let second = client_event_rx
+        .recv()
+        .await
+        .ok_or_else(|| anyhow!("done event"))?;
     assert!(matches!(second, ServerEvent::Done { id: 7 }));
+    Ok(())
 }

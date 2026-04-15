@@ -1,11 +1,32 @@
 use super::*;
+use anyhow::{Result, anyhow};
+use crate::transport::WriteHalf;
 
-#[tokio::test]
-async fn handle_resume_session_allows_multiple_live_tui_attach() {
-    let _guard = crate::storage::lock_test_env();
-    let runtime = tempfile::TempDir::new().expect("create runtime dir");
+fn setup_runtime_dir() -> Result<(tempfile::TempDir, Option<std::ffi::OsString>)> {
+    let runtime = tempfile::TempDir::new().map_err(|e| anyhow!(e))?;
     let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
     crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+    Ok((runtime, prev_runtime))
+}
+
+fn restore_runtime_dir(prev_runtime: Option<std::ffi::OsString>) {
+    if let Some(prev_runtime) = prev_runtime {
+        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+    } else {
+        crate::env::remove_var("JCODE_RUNTIME_DIR");
+    }
+}
+
+fn test_writer() -> Result<(Arc<Mutex<WriteHalf>>, crate::transport::Stream)> {
+    let (stream_a, stream_b) = crate::transport::stream_pair().map_err(|e| anyhow!(e))?;
+    let (_reader, writer_half) = stream_a.into_split();
+    Ok((Arc::new(Mutex::new(writer_half)), stream_b))
+}
+
+#[tokio::test]
+async fn handle_resume_session_allows_multiple_live_tui_attach() -> Result<()> {
+    let _guard = crate::storage::lock_test_env();
+    let (_runtime, prev_runtime) = setup_runtime_dir()?;
 
     let target_session_id = "session_existing_live";
     let temp_session_id = "session_temp_connecting";
@@ -80,9 +101,7 @@ async fn handle_resume_session_allows_multiple_live_tui_attach() {
     let swarm_plans = Arc::new(RwLock::new(HashMap::<String, VersionedPlan>::new()));
     let swarm_coordinators = Arc::new(RwLock::new(HashMap::<String, String>::new()));
     let client_count = Arc::new(RwLock::new(2usize));
-    let (stream_a, _stream_b) = crate::transport::stream_pair().expect("stream pair");
-    let (_reader, writer_half) = stream_a.into_split();
-    let writer = Arc::new(Mutex::new(writer_half));
+    let (writer, _peer_stream) = test_writer()?;
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
     let event_history = Arc::new(RwLock::new(VecDeque::<SwarmEvent>::new()));
     let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -128,7 +147,7 @@ async fn handle_resume_session_allows_multiple_live_tui_attach() {
         &swarm_event_tx,
     )
     .await
-    .expect("resume attach should succeed");
+    ?;
 
     let events = collect_events_until_done(&mut client_event_rx, 42).await;
     assert!(
@@ -148,7 +167,7 @@ async fn handle_resume_session_allows_multiple_live_tui_attach() {
     let sessions_guard = sessions.read().await;
     let mapped_agent = sessions_guard
         .get(target_session_id)
-        .expect("existing live session should remain mapped");
+        .ok_or_else(|| anyhow!("existing live session should remain mapped"))?;
     assert!(Arc::ptr_eq(mapped_agent, &existing_agent));
     assert!(!sessions_guard.contains_key(temp_session_id));
     drop(sessions_guard);
@@ -162,19 +181,14 @@ async fn handle_resume_session_allows_multiple_live_tui_attach() {
         Some(target_session_id)
     );
 
-    if let Some(prev_runtime) = prev_runtime {
-        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
-    } else {
-        crate::env::remove_var("JCODE_RUNTIME_DIR");
-    }
+    restore_runtime_dir(prev_runtime);
+    Ok(())
 }
 
 #[tokio::test]
-async fn handle_resume_session_allows_reconnect_takeover_with_local_history() {
+async fn handle_resume_session_allows_reconnect_takeover_with_local_history() -> Result<()> {
     let _guard = crate::storage::lock_test_env();
-    let runtime = tempfile::TempDir::new().expect("create runtime dir");
-    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-    crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+    let (_runtime, prev_runtime) = setup_runtime_dir()?;
 
     let target_session_id = "session_existing_live_takeover";
     let temp_session_id = "session_temp_connecting_takeover";
@@ -184,9 +198,7 @@ async fn handle_resume_session_allows_reconnect_takeover_with_local_history() {
         None,
         Some("Reconnect Takeover".to_string()),
     );
-    persisted
-        .save()
-        .expect("persist reconnect takeover session");
+    persisted.save()?;
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let existing_registry = Registry::new(provider.clone()).await;
@@ -260,9 +272,7 @@ async fn handle_resume_session_allows_reconnect_takeover_with_local_history() {
     let swarm_plans = Arc::new(RwLock::new(HashMap::<String, VersionedPlan>::new()));
     let swarm_coordinators = Arc::new(RwLock::new(HashMap::<String, String>::new()));
     let client_count = Arc::new(RwLock::new(2usize));
-    let (stream_a, _stream_b) = crate::transport::stream_pair().expect("stream pair");
-    let (_reader, writer_half) = stream_a.into_split();
-    let writer = Arc::new(Mutex::new(writer_half));
+    let (writer, _peer_stream) = test_writer()?;
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
     let event_history = Arc::new(RwLock::new(VecDeque::<SwarmEvent>::new()));
     let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -308,7 +318,7 @@ async fn handle_resume_session_allows_reconnect_takeover_with_local_history() {
         &swarm_event_tx,
     )
     .await
-    .expect("takeover resume should succeed");
+    ?;
 
     while let Ok(event) = client_event_rx.try_recv() {
         assert!(
@@ -333,19 +343,14 @@ async fn handle_resume_session_allows_reconnect_takeover_with_local_history() {
         Some(target_session_id)
     );
 
-    if let Some(prev_runtime) = prev_runtime {
-        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
-    } else {
-        crate::env::remove_var("JCODE_RUNTIME_DIR");
-    }
+    restore_runtime_dir(prev_runtime);
+    Ok(())
 }
 
 #[tokio::test]
-async fn handle_resume_session_allows_attach_without_local_history() {
+async fn handle_resume_session_allows_attach_without_local_history() -> Result<()> {
     let _guard = crate::storage::lock_test_env();
-    let runtime = tempfile::TempDir::new().expect("create runtime dir");
-    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-    crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+    let (_runtime, prev_runtime) = setup_runtime_dir()?;
 
     let target_session_id = "session_existing_live_takeover_rejected";
     let temp_session_id = "session_temp_connecting_takeover_rejected";
@@ -355,9 +360,7 @@ async fn handle_resume_session_allows_attach_without_local_history() {
         None,
         Some("Reconnect Takeover Rejected".to_string()),
     );
-    persisted
-        .save()
-        .expect("persist reconnect takeover rejected session");
+    persisted.save()?;
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let existing_registry = Registry::new(provider.clone()).await;
@@ -431,9 +434,7 @@ async fn handle_resume_session_allows_attach_without_local_history() {
     let swarm_plans = Arc::new(RwLock::new(HashMap::<String, VersionedPlan>::new()));
     let swarm_coordinators = Arc::new(RwLock::new(HashMap::<String, String>::new()));
     let client_count = Arc::new(RwLock::new(2usize));
-    let (stream_a, _stream_b) = crate::transport::stream_pair().expect("stream pair");
-    let (_reader, writer_half) = stream_a.into_split();
-    let writer = Arc::new(Mutex::new(writer_half));
+    let (writer, _peer_stream) = test_writer()?;
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
     let event_history = Arc::new(RwLock::new(VecDeque::<SwarmEvent>::new()));
     let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -479,7 +480,7 @@ async fn handle_resume_session_allows_attach_without_local_history() {
         &swarm_event_tx,
     )
     .await
-    .expect("attach without local history should succeed");
+    ?;
 
     let events = collect_events_until_done(&mut client_event_rx, 44).await;
     assert!(
@@ -513,24 +514,19 @@ async fn handle_resume_session_allows_attach_without_local_history() {
     assert!(Arc::ptr_eq(
         sessions_guard
             .get(target_session_id)
-            .expect("existing live session should remain mapped"),
+            .ok_or_else(|| anyhow!("existing live session should remain mapped"))?,
         &existing_agent
     ));
     assert!(!sessions_guard.contains_key(temp_session_id));
 
-    if let Some(prev_runtime) = prev_runtime {
-        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
-    } else {
-        crate::env::remove_var("JCODE_RUNTIME_DIR");
-    }
+    restore_runtime_dir(prev_runtime);
+    Ok(())
 }
 
 #[tokio::test]
-async fn handle_resume_session_allows_attach_from_different_client_instance() {
+async fn handle_resume_session_allows_attach_from_different_client_instance() -> Result<()> {
     let _guard = crate::storage::lock_test_env();
-    let runtime = tempfile::TempDir::new().expect("create runtime dir");
-    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-    crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+    let (_runtime, prev_runtime) = setup_runtime_dir()?;
 
     let target_session_id = "session_existing_live_local_history_rejected";
     let temp_session_id = "session_temp_connecting_local_history_rejected";
@@ -540,9 +536,7 @@ async fn handle_resume_session_allows_attach_from_different_client_instance() {
         None,
         Some("Reconnect Local History Rejected".to_string()),
     );
-    persisted
-        .save()
-        .expect("persist reconnect local-history rejected session");
+    persisted.save()?;
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let existing_registry = Registry::new(provider.clone()).await;
@@ -616,9 +610,7 @@ async fn handle_resume_session_allows_attach_from_different_client_instance() {
     let swarm_plans = Arc::new(RwLock::new(HashMap::<String, VersionedPlan>::new()));
     let swarm_coordinators = Arc::new(RwLock::new(HashMap::<String, String>::new()));
     let client_count = Arc::new(RwLock::new(2usize));
-    let (stream_a, _stream_b) = crate::transport::stream_pair().expect("stream pair");
-    let (_reader, writer_half) = stream_a.into_split();
-    let writer = Arc::new(Mutex::new(writer_half));
+    let (writer, _peer_stream) = test_writer()?;
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
     let event_history = Arc::new(RwLock::new(VecDeque::<SwarmEvent>::new()));
     let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -664,7 +656,7 @@ async fn handle_resume_session_allows_attach_from_different_client_instance() {
         &swarm_event_tx,
     )
     .await
-    .expect("different-instance attach should succeed");
+    ?;
 
     let events = collect_events_until_done(&mut client_event_rx, 45).await;
     assert!(
@@ -698,24 +690,19 @@ async fn handle_resume_session_allows_attach_from_different_client_instance() {
     assert!(Arc::ptr_eq(
         sessions_guard
             .get(target_session_id)
-            .expect("existing live session should remain mapped"),
+            .ok_or_else(|| anyhow!("existing live session should remain mapped"))?,
         &existing_agent
     ));
     assert!(!sessions_guard.contains_key(temp_session_id));
 
-    if let Some(prev_runtime) = prev_runtime {
-        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
-    } else {
-        crate::env::remove_var("JCODE_RUNTIME_DIR");
-    }
+    restore_runtime_dir(prev_runtime);
+    Ok(())
 }
 
 #[tokio::test]
-async fn handle_resume_session_registers_live_events_before_history_replay() {
+async fn handle_resume_session_registers_live_events_before_history_replay() -> Result<()> {
     let _guard = crate::storage::lock_test_env();
-    let runtime = tempfile::TempDir::new().expect("create runtime dir");
-    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-    crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+    let (_runtime, prev_runtime) = setup_runtime_dir()?;
 
     let target_session_id = "session_restore_target";
     let temp_session_id = "session_restore_temp";
@@ -725,9 +712,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() {
         None,
         Some("Resume Registration Ordering".to_string()),
     );
-    persisted
-        .save()
-        .expect("persist resume registration ordering session");
+    persisted.save()?;
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider.clone()).await;
@@ -794,9 +779,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() {
     let swarm_plans = Arc::new(RwLock::new(HashMap::<String, VersionedPlan>::new()));
     let swarm_coordinators = Arc::new(RwLock::new(HashMap::<String, String>::new()));
     let client_count = Arc::new(RwLock::new(1usize));
-    let (stream_a, _stream_b) = crate::transport::stream_pair().expect("stream pair");
-    let (_reader, writer_half) = stream_a.into_split();
-    let writer = Arc::new(Mutex::new(writer_half));
+    let (writer, _peer_stream) = test_writer()?;
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
     let event_history = Arc::new(RwLock::new(VecDeque::<SwarmEvent>::new()));
     let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -887,7 +870,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() {
         }
     })
     .await
-    .expect("live event sender should register before history replay completes");
+    .map_err(|_| anyhow!("live event sender should register before history replay completes"))?;
 
     assert!(
         !resume_task.is_finished(),
@@ -898,8 +881,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() {
 
     resume_task
         .await
-        .expect("resume task join")
-        .expect("restore resume should succeed");
+        .map_err(|e| anyhow!("resume task join: {e}"))??;
 
     let events = collect_events_until_done(&mut client_event_rx, 46).await;
     assert!(
@@ -915,19 +897,14 @@ async fn handle_resume_session_registers_live_events_before_history_replay() {
         "restore resume should not emit error events: {events:?}"
     );
 
-    if let Some(prev_runtime) = prev_runtime {
-        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
-    } else {
-        crate::env::remove_var("JCODE_RUNTIME_DIR");
-    }
+    restore_runtime_dir(prev_runtime);
+    Ok(())
 }
 
 #[tokio::test]
-async fn handle_resume_session_allows_same_client_instance_takeover_without_local_history() {
+async fn handle_resume_session_allows_same_client_instance_takeover_without_local_history() -> Result<()> {
     let _guard = crate::storage::lock_test_env();
-    let runtime = tempfile::TempDir::new().expect("create runtime dir");
-    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-    crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+    let (_runtime, prev_runtime) = setup_runtime_dir()?;
 
     let target_session_id = "session_existing_live_same_instance_takeover";
     let temp_session_id = "session_temp_connecting_same_instance_takeover";
@@ -938,9 +915,7 @@ async fn handle_resume_session_allows_same_client_instance_takeover_without_loca
         None,
         Some("Reconnect Same Instance Takeover".to_string()),
     );
-    persisted
-        .save()
-        .expect("persist reconnect same-instance session");
+    persisted.save()?;
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let existing_registry = Registry::new(provider.clone()).await;
@@ -1014,9 +989,7 @@ async fn handle_resume_session_allows_same_client_instance_takeover_without_loca
     let swarm_plans = Arc::new(RwLock::new(HashMap::<String, VersionedPlan>::new()));
     let swarm_coordinators = Arc::new(RwLock::new(HashMap::<String, String>::new()));
     let client_count = Arc::new(RwLock::new(2usize));
-    let (stream_a, _stream_b) = crate::transport::stream_pair().expect("stream pair");
-    let (_reader, writer_half) = stream_a.into_split();
-    let writer = Arc::new(Mutex::new(writer_half));
+    let (writer, _peer_stream) = test_writer()?;
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
     let event_history = Arc::new(RwLock::new(VecDeque::<SwarmEvent>::new()));
     let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1062,7 +1035,7 @@ async fn handle_resume_session_allows_same_client_instance_takeover_without_loca
         &swarm_event_tx,
     )
     .await
-    .expect("same-instance attach should succeed");
+    ?;
 
     let events = collect_events_until_done(&mut client_event_rx, 45).await;
     assert!(
@@ -1097,14 +1070,11 @@ async fn handle_resume_session_allows_same_client_instance_takeover_without_loca
     assert!(Arc::ptr_eq(
         sessions_guard
             .get(target_session_id)
-            .expect("existing live session should remain mapped"),
+            .ok_or_else(|| anyhow!("existing live session should remain mapped"))?,
         &existing_agent
     ));
     assert!(!sessions_guard.contains_key(temp_session_id));
 
-    if let Some(prev_runtime) = prev_runtime {
-        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
-    } else {
-        crate::env::remove_var("JCODE_RUNTIME_DIR");
-    }
+    restore_runtime_dir(prev_runtime);
+    Ok(())
 }
