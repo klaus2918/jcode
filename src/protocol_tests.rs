@@ -121,48 +121,46 @@ fn test_history_event_decodes_without_compaction_mode_for_older_servers() -> Res
 }
 
 #[test]
-fn test_error_event_retry_after_roundtrip() {
+fn test_error_event_retry_after_roundtrip() -> Result<()> {
     let event = ServerEvent::Error {
         id: 42,
         message: "rate limited".to_string(),
         retry_after_secs: Some(17),
     };
     let json = encode_event(&event);
-    let decoded: ServerEvent = serde_json::from_str(json.trim()).unwrap();
-    match decoded {
-        ServerEvent::Error {
-            id,
-            message,
-            retry_after_secs,
-        } => {
-            assert_eq!(id, 42);
-            assert_eq!(message, "rate limited");
-            assert_eq!(retry_after_secs, Some(17));
-        }
-        _ => panic!("wrong event type"),
-    }
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::Error {
+        id,
+        message,
+        retry_after_secs,
+    } = decoded else {
+        return Err(anyhow!("wrong event type"));
+    };
+    assert_eq!(id, 42);
+    assert_eq!(message, "rate limited");
+    assert_eq!(retry_after_secs, Some(17));
+    Ok(())
 }
 
 #[test]
-fn test_error_event_retry_after_back_compat_default() {
+fn test_error_event_retry_after_back_compat_default() -> Result<()> {
     let json = r#"{"type":"error","id":7,"message":"oops"}"#;
-    let decoded: ServerEvent = serde_json::from_str(json).unwrap();
-    match decoded {
-        ServerEvent::Error {
-            id,
-            message,
-            retry_after_secs,
-        } => {
-            assert_eq!(id, 7);
-            assert_eq!(message, "oops");
-            assert_eq!(retry_after_secs, None);
-        }
-        _ => panic!("wrong event type"),
-    }
+    let decoded = parse_event_json(json)?;
+    let ServerEvent::Error {
+        id,
+        message,
+        retry_after_secs,
+    } = decoded else {
+        return Err(anyhow!("wrong event type"));
+    };
+    assert_eq!(id, 7);
+    assert_eq!(message, "oops");
+    assert_eq!(retry_after_secs, None);
+    Ok(())
 }
 
 #[test]
-fn test_comm_propose_plan_roundtrip() {
+fn test_comm_propose_plan_roundtrip() -> Result<()> {
     let req = Request::CommProposePlan {
         id: 42,
         session_id: "sess_a".to_string(),
@@ -175,61 +173,58 @@ fn test_comm_propose_plan_roundtrip() {
             assigned_to: Some("sess_b".to_string()),
         }],
     };
-    let json = serde_json::to_string(&req).unwrap();
-    let decoded: Request = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(&req)?;
+    let decoded = parse_request_json(&json)?;
     assert_eq!(decoded.id(), 42);
-    match decoded {
-        Request::CommProposePlan { items, .. } => {
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].id, "p1");
-        }
-        _ => panic!("wrong request type"),
-    }
+    let Request::CommProposePlan { items, .. } = decoded else {
+        return Err(anyhow!("wrong request type"));
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, "p1");
+    Ok(())
 }
 
 #[test]
-fn test_stdin_response_roundtrip() {
+fn test_stdin_response_roundtrip() -> Result<()> {
     let req = Request::StdinResponse {
         id: 99,
         request_id: "stdin-call_abc-1".to_string(),
         input: "my_password".to_string(),
     };
-    let json = serde_json::to_string(&req).unwrap();
+    let json = serde_json::to_string(&req)?;
     assert!(json.contains("\"type\":\"stdin_response\""));
     assert!(json.contains("\"request_id\":\"stdin-call_abc-1\""));
     assert!(json.contains("\"input\":\"my_password\""));
 
-    let decoded: Request = serde_json::from_str(&json).unwrap();
+    let decoded = parse_request_json(&json)?;
     assert_eq!(decoded.id(), 99);
-    match decoded {
-        Request::StdinResponse {
-            request_id, input, ..
-        } => {
-            assert_eq!(request_id, "stdin-call_abc-1");
-            assert_eq!(input, "my_password");
-        }
-        _ => panic!("expected StdinResponse"),
-    }
+    let Request::StdinResponse {
+        request_id, input, ..
+    } = decoded else {
+        return Err(anyhow!("expected StdinResponse"));
+    };
+    assert_eq!(request_id, "stdin-call_abc-1");
+    assert_eq!(input, "my_password");
+    Ok(())
 }
 
 #[test]
-fn test_stdin_response_deserialize_from_json() {
+fn test_stdin_response_deserialize_from_json() -> Result<()> {
     let json = r#"{"type":"stdin_response","id":5,"request_id":"req-42","input":"hello world"}"#;
-    let decoded: Request = serde_json::from_str(json).unwrap();
+    let decoded = parse_request_json(json)?;
     assert_eq!(decoded.id(), 5);
-    match decoded {
-        Request::StdinResponse {
-            request_id, input, ..
-        } => {
-            assert_eq!(request_id, "req-42");
-            assert_eq!(input, "hello world");
-        }
-        _ => panic!("expected StdinResponse"),
-    }
+    let Request::StdinResponse {
+        request_id, input, ..
+    } = decoded else {
+        return Err(anyhow!("expected StdinResponse"));
+    };
+    assert_eq!(request_id, "req-42");
+    assert_eq!(input, "hello world");
+    Ok(())
 }
 
 #[test]
-fn test_stdin_request_event_roundtrip() {
+fn test_stdin_request_event_roundtrip() -> Result<()> {
     let event = ServerEvent::StdinRequest {
         request_id: "stdin-xyz-1".to_string(),
         prompt: "Password: ".to_string(),
@@ -240,38 +235,36 @@ fn test_stdin_request_event_roundtrip() {
     assert!(json.contains("\"type\":\"stdin_request\""));
     assert!(json.contains("\"is_password\":true"));
 
-    let decoded: ServerEvent = serde_json::from_str(json.trim()).unwrap();
-    match decoded {
-        ServerEvent::StdinRequest {
-            request_id,
-            prompt,
-            is_password,
-            tool_call_id,
-        } => {
-            assert_eq!(request_id, "stdin-xyz-1");
-            assert_eq!(prompt, "Password: ");
-            assert!(is_password);
-            assert_eq!(tool_call_id, "call_abc");
-        }
-        _ => panic!("expected StdinRequest"),
-    }
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::StdinRequest {
+        request_id,
+        prompt,
+        is_password,
+        tool_call_id,
+    } = decoded else {
+        return Err(anyhow!("expected StdinRequest"));
+    };
+    assert_eq!(request_id, "stdin-xyz-1");
+    assert_eq!(prompt, "Password: ");
+    assert!(is_password);
+    assert_eq!(tool_call_id, "call_abc");
+    Ok(())
 }
 
 #[test]
-fn test_stdin_request_event_defaults() {
+fn test_stdin_request_event_defaults() -> Result<()> {
     // is_password defaults to false when not present
     let json = r#"{"type":"stdin_request","request_id":"r1","prompt":"","tool_call_id":"tc1"}"#;
-    let decoded: ServerEvent = serde_json::from_str(json).unwrap();
-    match decoded {
-        ServerEvent::StdinRequest { is_password, .. } => {
-            assert!(!is_password, "is_password should default to false");
-        }
-        _ => panic!("expected StdinRequest"),
-    }
+    let decoded = parse_event_json(json)?;
+    let ServerEvent::StdinRequest { is_password, .. } = decoded else {
+        return Err(anyhow!("expected StdinRequest"));
+    };
+    assert!(!is_password, "is_password should default to false");
+    Ok(())
 }
 
 #[test]
-fn test_comm_await_members_roundtrip() {
+fn test_comm_await_members_roundtrip() -> Result<()> {
     let req = Request::CommAwaitMembers {
         id: 55,
         session_id: "sess_waiter".to_string(),
@@ -279,50 +272,45 @@ fn test_comm_await_members_roundtrip() {
         session_ids: vec!["sess_a".to_string(), "sess_b".to_string()],
         timeout_secs: Some(120),
     };
-    let json = serde_json::to_string(&req).unwrap();
+    let json = serde_json::to_string(&req)?;
     assert!(json.contains("\"type\":\"comm_await_members\""));
-    let decoded: Request = serde_json::from_str(&json).unwrap();
+    let decoded = parse_request_json(&json)?;
     assert_eq!(decoded.id(), 55);
-    match decoded {
-        Request::CommAwaitMembers {
-            session_id,
-            target_status,
-            session_ids,
-            timeout_secs,
-            ..
-        } => {
-            assert_eq!(session_id, "sess_waiter");
-            assert_eq!(target_status, vec!["completed", "stopped"]);
-            assert_eq!(session_ids, vec!["sess_a", "sess_b"]);
-            assert_eq!(timeout_secs, Some(120));
-        }
-        _ => panic!("expected CommAwaitMembers"),
-    }
+    let Request::CommAwaitMembers {
+        session_id,
+        target_status,
+        session_ids,
+        timeout_secs,
+        ..
+    } = decoded else {
+        return Err(anyhow!("expected CommAwaitMembers"));
+    };
+    assert_eq!(session_id, "sess_waiter");
+    assert_eq!(target_status, vec!["completed", "stopped"]);
+    assert_eq!(session_ids, vec!["sess_a", "sess_b"]);
+    assert_eq!(timeout_secs, Some(120));
+    Ok(())
 }
 
 #[test]
-fn test_comm_await_members_defaults() {
+fn test_comm_await_members_defaults() -> Result<()> {
     let json =
         r#"{"type":"comm_await_members","id":1,"session_id":"s1","target_status":["completed"]}"#;
-    let decoded: Request = serde_json::from_str(json).unwrap();
-    match decoded {
-        Request::CommAwaitMembers {
-            session_ids,
-            timeout_secs,
-            ..
-        } => {
-            assert!(
-                session_ids.is_empty(),
-                "session_ids should default to empty"
-            );
-            assert_eq!(timeout_secs, None, "timeout_secs should default to None");
-        }
-        _ => panic!("expected CommAwaitMembers"),
-    }
+    let decoded = parse_request_json(json)?;
+    let Request::CommAwaitMembers {
+        session_ids,
+        timeout_secs,
+        ..
+    } = decoded else {
+        return Err(anyhow!("expected CommAwaitMembers"));
+    };
+    assert!(session_ids.is_empty(), "session_ids should default to empty");
+    assert_eq!(timeout_secs, None, "timeout_secs should default to None");
+    Ok(())
 }
 
 #[test]
-fn test_comm_await_members_response_roundtrip() {
+fn test_comm_await_members_response_roundtrip() -> Result<()> {
     let event = ServerEvent::CommAwaitMembersResponse {
         id: 55,
         completed: true,
@@ -344,28 +332,27 @@ fn test_comm_await_members_response_roundtrip() {
     };
     let json = encode_event(&event);
     assert!(json.contains("\"type\":\"comm_await_members_response\""));
-    let decoded: ServerEvent = serde_json::from_str(json.trim()).unwrap();
-    match decoded {
-        ServerEvent::CommAwaitMembersResponse {
-            id,
-            completed,
-            members,
-            summary,
-        } => {
-            assert_eq!(id, 55);
-            assert!(completed);
-            assert_eq!(members.len(), 2);
-            assert_eq!(members[0].friendly_name.as_deref(), Some("fox"));
-            assert!(members[0].done);
-            assert_eq!(members[1].status, "stopped");
-            assert!(summary.contains("fox"));
-        }
-        _ => panic!("expected CommAwaitMembersResponse"),
-    }
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::CommAwaitMembersResponse {
+        id,
+        completed,
+        members,
+        summary,
+    } = decoded else {
+        return Err(anyhow!("expected CommAwaitMembersResponse"));
+    };
+    assert_eq!(id, 55);
+    assert!(completed);
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0].friendly_name.as_deref(), Some("fox"));
+    assert!(members[0].done);
+    assert_eq!(members[1].status, "stopped");
+    assert!(summary.contains("fox"));
+    Ok(())
 }
 
 #[test]
-fn test_comm_members_roundtrip_includes_status() {
+fn test_comm_members_roundtrip_includes_status() -> Result<()> {
     let event = ServerEvent::CommMembers {
         id: 9,
         members: vec![AgentInfo {
@@ -382,66 +369,63 @@ fn test_comm_members_roundtrip_includes_status() {
     assert!(json.contains("\"type\":\"comm_members\""));
     assert!(json.contains("\"status\":\"running\""));
 
-    let decoded: ServerEvent = serde_json::from_str(json.trim()).unwrap();
-    match decoded {
-        ServerEvent::CommMembers { id, members } => {
-            assert_eq!(id, 9);
-            assert_eq!(members.len(), 1);
-            assert_eq!(members[0].friendly_name.as_deref(), Some("bear"));
-            assert_eq!(members[0].status.as_deref(), Some("running"));
-            assert_eq!(members[0].detail.as_deref(), Some("working on tests"));
-        }
-        _ => panic!("expected CommMembers"),
-    }
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::CommMembers { id, members } = decoded else {
+        return Err(anyhow!("expected CommMembers"));
+    };
+    assert_eq!(id, 9);
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].friendly_name.as_deref(), Some("bear"));
+    assert_eq!(members[0].status.as_deref(), Some("running"));
+    assert_eq!(members[0].detail.as_deref(), Some("working on tests"));
+    Ok(())
 }
 
 #[test]
-fn test_transcript_request_roundtrip() {
+fn test_transcript_request_roundtrip() -> Result<()> {
     let req = Request::Transcript {
         id: 77,
         text: "hello from whisper".to_string(),
         mode: TranscriptMode::Send,
         session_id: Some("sess_abc".to_string()),
     };
-    let json = serde_json::to_string(&req).unwrap();
+    let json = serde_json::to_string(&req)?;
     assert!(json.contains("\"type\":\"transcript\""));
-    let decoded: Request = serde_json::from_str(&json).unwrap();
+    let decoded = parse_request_json(&json)?;
     assert_eq!(decoded.id(), 77);
-    match decoded {
-        Request::Transcript {
-            text,
-            mode,
-            session_id,
-            ..
-        } => {
-            assert_eq!(text, "hello from whisper");
-            assert_eq!(mode, TranscriptMode::Send);
-            assert_eq!(session_id.as_deref(), Some("sess_abc"));
-        }
-        _ => panic!("expected Transcript request"),
-    }
+    let Request::Transcript {
+        text,
+        mode,
+        session_id,
+        ..
+    } = decoded else {
+        return Err(anyhow!("expected Transcript request"));
+    };
+    assert_eq!(text, "hello from whisper");
+    assert_eq!(mode, TranscriptMode::Send);
+    assert_eq!(session_id.as_deref(), Some("sess_abc"));
+    Ok(())
 }
 
 #[test]
-fn test_transcript_event_roundtrip() {
+fn test_transcript_event_roundtrip() -> Result<()> {
     let event = ServerEvent::Transcript {
         text: "dictated text".to_string(),
         mode: TranscriptMode::Replace,
     };
     let json = encode_event(&event);
     assert!(json.contains("\"type\":\"transcript\""));
-    let decoded: ServerEvent = serde_json::from_str(json.trim()).unwrap();
-    match decoded {
-        ServerEvent::Transcript { text, mode } => {
-            assert_eq!(text, "dictated text");
-            assert_eq!(mode, TranscriptMode::Replace);
-        }
-        _ => panic!("expected Transcript event"),
-    }
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::Transcript { text, mode } = decoded else {
+        return Err(anyhow!("expected Transcript event"));
+    };
+    assert_eq!(text, "dictated text");
+    assert_eq!(mode, TranscriptMode::Replace);
+    Ok(())
 }
 
 #[test]
-fn test_memory_activity_event_roundtrip() {
+fn test_memory_activity_event_roundtrip() -> Result<()> {
     let event = ServerEvent::MemoryActivity {
         activity: MemoryActivitySnapshot {
             state: MemoryStateSnapshot::SidecarChecking { count: 3 },
@@ -465,44 +449,42 @@ fn test_memory_activity_event_roundtrip() {
 
     let json = encode_event(&event);
     assert!(json.contains("\"type\":\"memory_activity\""));
-    let decoded: ServerEvent = serde_json::from_str(json.trim()).unwrap();
-    match decoded {
-        ServerEvent::MemoryActivity { activity } => {
-            assert_eq!(
-                activity.state,
-                MemoryStateSnapshot::SidecarChecking { count: 3 }
-            );
-            assert_eq!(activity.state_age_ms, 275);
-            let pipeline = activity.pipeline.expect("pipeline snapshot");
-            assert_eq!(pipeline.search, MemoryStepStatusSnapshot::Done);
-            assert_eq!(pipeline.verify, MemoryStepStatusSnapshot::Running);
-            assert_eq!(pipeline.verify_progress, Some((1, 3)));
-        }
-        _ => panic!("expected MemoryActivity event"),
-    }
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::MemoryActivity { activity } = decoded else {
+        return Err(anyhow!("expected MemoryActivity event"));
+    };
+    assert_eq!(
+        activity.state,
+        MemoryStateSnapshot::SidecarChecking { count: 3 }
+    );
+    assert_eq!(activity.state_age_ms, 275);
+    let pipeline = activity.pipeline.ok_or_else(|| anyhow!("pipeline snapshot"))?;
+    assert_eq!(pipeline.search, MemoryStepStatusSnapshot::Done);
+    assert_eq!(pipeline.verify, MemoryStepStatusSnapshot::Running);
+    assert_eq!(pipeline.verify_progress, Some((1, 3)));
+    Ok(())
 }
 
 #[test]
-fn test_input_shell_request_roundtrip() {
+fn test_input_shell_request_roundtrip() -> Result<()> {
     let req = Request::InputShell {
         id: 88,
         command: "ls -la".to_string(),
     };
-    let json = serde_json::to_string(&req).unwrap();
+    let json = serde_json::to_string(&req)?;
     assert!(json.contains("\"type\":\"input_shell\""));
-    let decoded: Request = serde_json::from_str(&json).unwrap();
+    let decoded = parse_request_json(&json)?;
     assert_eq!(decoded.id(), 88);
-    match decoded {
-        Request::InputShell { id, command } => {
-            assert_eq!(id, 88);
-            assert_eq!(command, "ls -la");
-        }
-        _ => panic!("expected InputShell request"),
-    }
+    let Request::InputShell { id, command } = decoded else {
+        return Err(anyhow!("expected InputShell request"));
+    };
+    assert_eq!(id, 88);
+    assert_eq!(command, "ls -la");
+    Ok(())
 }
 
 #[test]
-fn test_input_shell_result_event_roundtrip() {
+fn test_input_shell_result_event_roundtrip() -> Result<()> {
     let event = ServerEvent::InputShellResult {
         result: crate::message::InputShellResult {
             command: "pwd".to_string(),
@@ -516,13 +498,12 @@ fn test_input_shell_result_event_roundtrip() {
     };
     let json = encode_event(&event);
     assert!(json.contains("\"type\":\"input_shell_result\""));
-    let decoded: ServerEvent = serde_json::from_str(json.trim()).unwrap();
-    match decoded {
-        ServerEvent::InputShellResult { result } => {
-            assert_eq!(result.command, "pwd");
-            assert_eq!(result.cwd.as_deref(), Some("/tmp/project"));
-            assert_eq!(result.exit_code, Some(0));
-        }
-        _ => panic!("expected InputShellResult event"),
-    }
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::InputShellResult { result } = decoded else {
+        return Err(anyhow!("expected InputShellResult event"));
+    };
+    assert_eq!(result.command, "pwd");
+    assert_eq!(result.cwd.as_deref(), Some("/tmp/project"));
+    assert_eq!(result.exit_code, Some(0));
+    Ok(())
 }
