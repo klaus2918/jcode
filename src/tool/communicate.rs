@@ -390,7 +390,10 @@ impl Tool for CommunicateTool {
                 "message": {
                     "type": "string"
                 },
-                "to_session": { "type": "string" },
+                "to_session": {
+                    "type": "string",
+                    "description": "DM target. Accepts an exact session ID or a unique friendly name within the swarm. If a friendly name is ambiguous, run swarm list and use the exact session ID."
+                },
                 "channel": { "type": "string" },
                 "proposer_session": { "type": "string" },
                 "reason": { "type": "string" },
@@ -1035,6 +1038,12 @@ mod tests {
         assert!(props.contains_key("value"));
         assert!(props.contains_key("message"));
         assert!(props.contains_key("to_session"));
+        assert_eq!(
+            props["to_session"]["description"],
+            json!(
+                "DM target. Accepts an exact session ID or a unique friendly name within the swarm. If a friendly name is ambiguous, run swarm list and use the exact session ID."
+            )
+        );
         assert!(props.contains_key("channel"));
         assert!(props.contains_key("proposer_session"));
         assert!(props.contains_key("reason"));
