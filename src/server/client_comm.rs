@@ -38,6 +38,23 @@ async fn friendly_name_for_session(
         .and_then(|member| member.friendly_name.clone())
 }
 
+fn session_display_suffix(session_id: &str) -> &str {
+    let suffix = session_id.rsplit('_').next().unwrap_or(session_id);
+    if suffix.len() > 6 {
+        &suffix[suffix.len() - 6..]
+    } else {
+        suffix
+    }
+}
+
+fn dm_target_label(session_id: &str, member: Option<&SwarmMember>) -> String {
+    if let Some(name) = member.and_then(|member| member.friendly_name.as_deref()) {
+        format!("{} [{}] ({})", name, session_display_suffix(session_id), session_id)
+    } else {
+        session_id.to_string()
+    }
+}
+
 async fn resolve_dm_target_session(
     target: &str,
     swarm_session_ids: &[String],
@@ -74,13 +91,22 @@ async fn resolve_dm_target_session(
     matches.dedup();
 
     match matches.len() {
-        0 => Err(format!("DM failed: session '{}' not in swarm", target)),
-        1 => Ok(matches.remove(0)),
-        _ => Err(format!(
-            "DM failed: session '{}' is ambiguous in swarm; matches: {}",
-            target,
-            matches.join(", ")
+        0 => Err(format!(
+            "DM failed: session '{}' not in swarm. Use swarm list to inspect available members.",
+            target
         )),
+        1 => Ok(matches.remove(0)),
+        _ => {
+            let labels: Vec<String> = matches
+                .iter()
+                .map(|session_id| dm_target_label(session_id, members.get(session_id)))
+                .collect();
+            Err(format!(
+                "DM failed: session '{}' is ambiguous in swarm. Use an exact session id. Matches: {}",
+                target,
+                labels.join(", ")
+            ))
+        }
     }
 }
 
@@ -1439,8 +1465,10 @@ mod tests {
             ServerEvent::Error { id, message, .. } => {
                 assert_eq!(id, 1);
                 assert!(message.contains("ambiguous in swarm"), "{message}");
+                assert!(message.contains("Use an exact session id"), "{message}");
                 assert!(message.contains(&target_one_id), "{message}");
                 assert!(message.contains(&target_two_id), "{message}");
+                assert!(message.contains("bear ["), "{message}");
             }
             other => panic!("unexpected client event: {:?}", other),
         }
