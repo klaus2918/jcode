@@ -6569,6 +6569,37 @@ fn test_restore_session_adds_reload_message() {
 }
 
 #[test]
+fn test_restore_session_with_selfdev_reload_tool_result_queues_continuation() {
+    use crate::session::Session;
+
+    let mut app = create_test_app();
+
+    let mut session = Session::create(None, None);
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::ToolResult {
+            tool_use_id: "tool_selfdev_reload".to_string(),
+            content: "Reload initiated. Process restarting...".to_string(),
+            is_error: Some(false),
+        }],
+    );
+    let session_id = session.id.clone();
+    session.save().unwrap();
+
+    app.restore_session(&session_id);
+
+    assert!(
+        app.hidden_queued_system_messages
+            .iter()
+            .any(|message| message.contains("Continue exactly where you left off"))
+    );
+    assert!(app.pending_turn);
+    assert!(matches!(app.status, ProcessingStatus::Sending));
+
+    let _ = std::fs::remove_file(crate::session::session_path(&session_id).unwrap());
+}
+
+#[test]
 fn test_system_reminder_is_added_to_system_prompt_not_user_messages() {
     let mut app = create_test_app();
     app.current_turn_system_reminder = Some(

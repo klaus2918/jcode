@@ -418,7 +418,8 @@ impl App {
 
     /// Check if the current session was interrupted by a server reload.
     /// Detects two patterns:
-    /// 1. Last message is a User ToolResult containing reload interruption text
+    /// 1. Last message is a User ToolResult containing reload interruption text,
+    ///    including the non-error self-dev reload handoff marker
     /// 2. Last assistant message ends with "[generation interrupted - server reloading]"
     pub(super) fn was_interrupted_by_reload(&self) -> bool {
         use crate::message::{ContentBlock, Role};
@@ -432,9 +433,10 @@ impl App {
                 ContentBlock::ToolResult {
                     content, is_error, ..
                 } => {
-                    is_error.unwrap_or(false)
-                        && (content.contains("interrupted by server reload")
-                            || content.contains("Skipped - server reloading"))
+                    content == "Reload initiated. Process restarting..."
+                        || (is_error.unwrap_or(false)
+                            && (content.contains("interrupted by server reload")
+                                || content.contains("Skipped - server reloading")))
                 }
                 _ => false,
             }),

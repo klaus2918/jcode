@@ -41,9 +41,10 @@ fn session_was_interrupted_by_reload(agent: &Agent) -> bool {
         ContentBlock::ToolResult {
             content, is_error, ..
         } => {
-            is_error.unwrap_or(false)
-                && (content.contains("interrupted by server reload")
-                    || content.contains("Skipped - server reloading"))
+            content == "Reload initiated. Process restarting..."
+                || (is_error.unwrap_or(false)
+                    && (content.contains("interrupted by server reload")
+                        || content.contains("Skipped - server reloading")))
         }
         _ => false,
     })

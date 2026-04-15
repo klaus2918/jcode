@@ -58,6 +58,25 @@ fn detects_reload_skipped_tool_result() {
 }
 
 #[test]
+fn detects_selfdev_reload_tool_result_even_when_not_marked_error() {
+    let agent = test_agent(vec![crate::session::StoredMessage {
+        id: "msg_3b".to_string(),
+        role: crate::message::Role::User,
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "tool_2b".to_string(),
+            content: "Reload initiated. Process restarting...".to_string(),
+            is_error: Some(false),
+        }],
+        display_role: None,
+        timestamp: None,
+        tool_duration_ms: None,
+        token_usage: None,
+    }]);
+
+    assert!(session_was_interrupted_by_reload(&agent));
+}
+
+#[test]
 fn ignores_normal_tool_errors() {
     let agent = test_agent(vec![crate::session::StoredMessage {
         id: "msg_4".to_string(),
