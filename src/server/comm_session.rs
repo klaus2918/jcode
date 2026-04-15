@@ -71,6 +71,16 @@ fn clear_headed_startup_message(session_id: &str) {
     }
 }
 
+fn cleanup_prepared_visible_spawn_session(session_id: &str) {
+    clear_headed_startup_message(session_id);
+    if let Ok(path) = crate::session::session_path(session_id) {
+        let _ = std::fs::remove_file(path);
+    }
+    if let Ok(path) = crate::session::session_journal_path(session_id) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn prepare_visible_spawn_session<F>(
     working_dir: Option<&str>,
     model_override: Option<&str>,
@@ -90,15 +100,13 @@ where
 
     match launch_visible(&new_session_id, &cwd, selfdev_requested) {
         Ok(launched) => {
-            if !launched && startup_message.is_some() {
-                clear_headed_startup_message(&new_session_id);
+            if !launched {
+                cleanup_prepared_visible_spawn_session(&new_session_id);
             }
             Ok((new_session_id, launched))
         }
         Err(error) => {
-            if startup_message.is_some() {
-                clear_headed_startup_message(&new_session_id);
-            }
+            cleanup_prepared_visible_spawn_session(&new_session_id);
             Err(error)
         }
     }
@@ -831,6 +839,44 @@ mod tests {
         assert!(
             !path.exists(),
             "startup file should be removed when visible launch does not start"
+        );
+        assert!(
+            !crate::session::session_exists(&session_id),
+            "prepared session should be cleaned up when visible launch does not start"
+        );
+
+        crate::env::remove_var("JCODE_HOME");
+    }
+
+    #[test]
+    fn prepare_visible_spawn_session_cleans_session_when_launch_errors() {
+        let _guard = crate::storage::lock_test_env();
+        let temp_home = tempfile::TempDir::new().expect("temp home");
+        crate::env::set_var("JCODE_HOME", temp_home.path());
+
+        let worktree = tempfile::TempDir::new().expect("temp worktree");
+
+        let error = prepare_visible_spawn_session(
+            Some(worktree.path().to_str().expect("utf8 worktree path")),
+            None,
+            false,
+            Some("Do the thing."),
+            |_session_id, _cwd: &std::path::Path, _selfdev| {
+                Err(anyhow::anyhow!("launch failed"))
+            },
+        )
+        .expect_err("visible spawn preparation should surface launch error");
+
+        assert!(error.to_string().contains("launch failed"));
+        let sessions_dir = crate::storage::jcode_dir()
+            .expect("jcode dir")
+            .join("sessions");
+        let remaining_sessions = std::fs::read_dir(&sessions_dir)
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(
+            remaining_sessions, 0,
+            "failed visible launch should not leave orphan prepared sessions"
         );
 
         crate::env::remove_var("JCODE_HOME");
