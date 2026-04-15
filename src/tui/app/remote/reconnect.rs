@@ -669,6 +669,12 @@ pub(in crate::tui::app) async fn handle_post_connect<B: ratatui::backend::Backen
         crate::logging::info(
             "Post-connect history restored with queued followups; dispatching immediately",
         );
+        if app.pending_queued_dispatch {
+            crate::logging::info(
+                "Clearing deferred queued-dispatch flag during post-connect so restored followups continue immediately",
+            );
+            app.pending_queued_dispatch = false;
+        }
         process_remote_followups(app, remote).await;
     }
 

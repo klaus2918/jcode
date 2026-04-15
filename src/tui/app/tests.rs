@@ -7723,6 +7723,66 @@ fn test_handle_post_connect_dispatches_hidden_reload_followup_immediately() {
 }
 
 #[test]
+fn test_handle_post_connect_clears_deferred_dispatch_before_reload_followup() {
+    let _guard = crate::storage::lock_test_env();
+    let temp_home = tempfile::TempDir::new().expect("create temp home");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp_home.path());
+
+    let session_id = "session_reload_deferred_dispatch";
+    crate::tool::selfdev::ReloadContext {
+        task_context: Some("Verify deferred dispatch does not block reload continuation".to_string()),
+        version_before: "old-build".to_string(),
+        version_after: "new-build".to_string(),
+        session_id: session_id.to_string(),
+        timestamp: "2026-04-15T00:00:00Z".to_string(),
+    }
+    .save()
+    .expect("save reload context");
+
+    let mut app = create_test_app();
+    app.pending_queued_dispatch = true;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _enter = rt.enter();
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    let mut state = super::remote::RemoteRunState {
+        reconnect_attempts: 1,
+        ..Default::default()
+    };
+
+    let outcome = rt
+        .block_on(super::remote::handle_post_connect(
+            &mut app,
+            &mut terminal,
+            &mut remote,
+            &mut state,
+            Some(session_id),
+        ))
+        .expect("post connect should succeed");
+
+    assert!(matches!(outcome, super::remote::PostConnectOutcome::Ready));
+    assert!(
+        !app.pending_queued_dispatch,
+        "post-connect should clear deferred dispatch before sending reload continuation"
+    );
+    assert!(app.hidden_queued_system_messages.is_empty());
+    assert!(app.is_processing, "reload continuation should still dispatch");
+    assert!(matches!(app.status, ProcessingStatus::Sending));
+    assert!(app.current_message_id.is_some());
+
+    cleanup_reload_context_file(session_id);
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
 fn test_handle_post_connect_requests_client_reload_after_server_reload_even_without_newer_binary() {
     use std::time::{Duration, SystemTime};
 
