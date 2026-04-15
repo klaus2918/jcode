@@ -212,7 +212,13 @@ fn format_tool_summary(target: &str, calls: &[ToolCallSummary]) -> ToolOutput {
     if calls.is_empty() {
         ToolOutput::new(format!("No tool calls found for {}", target))
     } else {
-        let mut output = format!("Tool call summary for {}:\n\n", target);
+        let call_count = calls.len();
+        let mut output = format!(
+            "Tool call summary for {} ({} call{}):\n\n",
+            target,
+            call_count,
+            if call_count == 1 { "" } else { "s" }
+        );
         for call in calls {
             output.push_str(&format!("  {} — {}\n", call.tool_name, call.brief_output));
         }
@@ -1000,7 +1006,7 @@ mod tests {
         format_awaited_members, format_members,
     };
     use crate::message::{Message, StreamEvent, ToolDefinition};
-    use crate::protocol::{AgentInfo, AwaitedMemberStatus, Request, ServerEvent};
+    use crate::protocol::{AgentInfo, AwaitedMemberStatus, Request, ServerEvent, ToolCallSummary};
     use crate::provider::{EventStream, Provider};
     use crate::server::Server;
     use crate::tool::{Tool, ToolContext, ToolExecutionMode};
@@ -1390,6 +1396,33 @@ mod tests {
         }))
         .expect("share_append should deserialize");
         assert_eq!(append.action, "share_append");
+    }
+
+    #[test]
+    fn format_tool_summary_includes_call_count() {
+        let output = super::format_tool_summary(
+            "session-123",
+            &[
+                ToolCallSummary {
+                    tool_name: "read".to_string(),
+                    brief_output: "Read 20 lines".to_string(),
+                    timestamp_secs: None,
+                },
+                ToolCallSummary {
+                    tool_name: "grep".to_string(),
+                    brief_output: "Found 3 matches".to_string(),
+                    timestamp_secs: None,
+                },
+            ],
+        );
+
+        assert!(
+            output
+                .output
+                .contains("Tool call summary for session-123 (2 calls):")
+        );
+        assert!(output.output.contains("read — Read 20 lines"));
+        assert!(output.output.contains("grep — Found 3 matches"));
     }
 
     #[test]
