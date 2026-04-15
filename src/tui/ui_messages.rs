@@ -973,7 +973,8 @@ pub(crate) fn render_tool_message(
         width as usize
     };
     let row_width = block_width.saturating_sub(1);
-    let base_prefix = format!("  {} {} ", icon, tc.name);
+    let display_name = tools_ui::resolve_display_tool_name(&tc.name).to_string();
+    let base_prefix = format!("  {} {} ", icon, display_name);
     let token_suffix_width =
         UnicodeWidthStr::width(format!(" · {}", token_badge.label.as_str()).as_str());
     let edit_suffix_width = if is_edit_tool {
@@ -1005,7 +1006,7 @@ pub(crate) fn render_tool_message(
 
     let mut tool_line = vec![
         Span::styled(format!("  {} ", icon), Style::default().fg(icon_color)),
-        Span::styled(tc.name.clone(), Style::default().fg(tool_color())),
+        Span::styled(display_name, Style::default().fg(tool_color())),
         Span::styled(format!(" {}", summary), Style::default().fg(dim_color())),
     ];
     if is_edit_tool {
@@ -1996,6 +1997,78 @@ mod tests {
         );
 
         crate::tui::markdown::set_center_code_blocks(saved);
+    }
+
+    #[test]
+    fn render_tool_message_shows_swarm_spawn_prompt_summary() {
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: "spawned".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_swarm_spawn".to_string(),
+                name: "swarm".to_string(),
+                input: serde_json::json!({
+                    "action": "spawn",
+                    "prompt": "Extract the restart command cluster from cli commands and validate it"
+                }),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+        let rendered: String = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(rendered.contains("swarm spawn"), "rendered={rendered}");
+        assert!(
+            rendered.contains("Extract the restart command cluster"),
+            "rendered={rendered}"
+        );
+    }
+
+    #[test]
+    fn render_tool_message_batch_subcall_shows_swarm_dm_details() {
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: "--- [1] swarm ---\nDone\n\nCompleted: 1 succeeded, 0 failed".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_batch_swarm".to_string(),
+                name: "batch".to_string(),
+                input: serde_json::json!({
+                    "tool_calls": [
+                        {
+                            "tool": "swarm",
+                            "action": "dm",
+                            "to_session": "shark",
+                            "message": "Please validate the restart extraction and report back"
+                        }
+                    ]
+                }),
+                intent: None,
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+        let rendered = lines
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("swarm dm → shark"), "rendered={rendered}");
+        assert!(
+            rendered.contains("Please validate the restart"),
+            "rendered={rendered}"
+        );
     }
 }
 

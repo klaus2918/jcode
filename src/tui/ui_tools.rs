@@ -8,6 +8,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// Mirrors `Registry::resolve_tool_name` so the TUI shows friendly names.
 pub(crate) fn resolve_display_tool_name(name: &str) -> &str {
     match name {
+        "communicate" => "swarm",
         "task" | "task_runner" => "subagent",
         "shell_exec" => "bash",
         "file_read" => "read",
@@ -22,6 +23,7 @@ pub(crate) fn resolve_display_tool_name(name: &str) -> &str {
 
 pub(crate) fn canonical_tool_name(name: &str) -> &str {
     match name {
+        "communicate" => "swarm",
         "Write" => "write",
         "Edit" => "edit",
         "MultiEdit" => "multiedit",
@@ -354,6 +356,80 @@ fn truncate_middle_display(s: &str, max_width: usize) -> String {
         display_prefix_by_width(s, head),
         display_suffix_by_width(s, tail)
     )
+}
+
+fn truncate_swarm_text(value: &str, max_width: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    truncate_query_display(trimmed, max_width)
+}
+
+fn summarize_swarm_tool_action(tool: &ToolCall, bounded: &dyn Fn(usize) -> usize) -> String {
+    let action = tool
+        .input
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let target = tool
+        .input
+        .get("to_session")
+        .or_else(|| tool.input.get("target_session"))
+        .or_else(|| tool.input.get("channel"))
+        .and_then(|v| v.as_str())
+        .map(|value| truncate_identifier_display(value, bounded(24)));
+    let prompt = tool
+        .input
+        .get("prompt")
+        .or_else(|| tool.input.get("message"))
+        .and_then(|v| v.as_str())
+        .map(|value| truncate_swarm_text(value, bounded(34)));
+
+    let summary = match action {
+        "spawn" => {
+            if let Some(prompt) = prompt.as_deref().filter(|value| !value.is_empty()) {
+                format!("spawn '{}'", prompt)
+            } else if let Some(dir) = tool.input.get("working_dir").and_then(|v| v.as_str()) {
+                format!("spawn in {}", truncate_path_display(dir, bounded(28)))
+            } else {
+                "spawn".to_string()
+            }
+        }
+        "dm" | "message" => {
+            let base = target
+                .as_deref()
+                .map(|target| format!("{} → {}", action, target))
+                .unwrap_or_else(|| action.to_string());
+            if let Some(prompt) = prompt.as_deref().filter(|value| !value.is_empty()) {
+                format!("{} '{}'", base, prompt)
+            } else {
+                base
+            }
+        }
+        "channel" | "broadcast" => {
+            let base = target
+                .as_deref()
+                .map(|target| format!("{} {}", action, target))
+                .unwrap_or_else(|| action.to_string());
+            if let Some(prompt) = prompt.as_deref().filter(|value| !value.is_empty()) {
+                format!("{} '{}'", base, prompt)
+            } else {
+                base
+            }
+        }
+        "summary" | "read_context" | "stop" | "approve_plan" | "reject_plan" | "assign_task"
+        | "assign_role" | "await_members" => target
+            .as_deref()
+            .map(|target| format!("{} {}", action, target))
+            .unwrap_or_else(|| action.to_string()),
+        _ => target
+            .as_deref()
+            .map(|target| format!("{} {}", action, target))
+            .unwrap_or_else(|| action.to_string()),
+    };
+
+    truncate_end_display(summary.as_str(), bounded(42))
 }
 
 fn truncate_path_display(path: &str, max_width: usize) -> String {
@@ -1196,28 +1272,7 @@ pub(super) fn get_tool_summary_with_budget(
                 .unwrap_or("?");
             action.to_string()
         }
-        "communicate" => {
-            let action = tool
-                .input
-                .get("action")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let target = tool
-                .input
-                .get("to_session")
-                .or_else(|| tool.input.get("target_session"))
-                .or_else(|| tool.input.get("channel"))
-                .and_then(|v| v.as_str());
-            if let Some(t) = target {
-                format!(
-                    "{} → {}",
-                    action,
-                    truncate_identifier_display(t, bounded(25))
-                )
-            } else {
-                action.to_string()
-            }
-        }
+        "swarm" => summarize_swarm_tool_action(tool, &bounded),
         "session_search" => tool
             .input
             .get("query")
