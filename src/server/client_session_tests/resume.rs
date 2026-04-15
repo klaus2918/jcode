@@ -1,6 +1,6 @@
 use super::*;
-use anyhow::{Result, anyhow};
 use crate::transport::WriteHalf;
+use anyhow::{Result, anyhow};
 
 fn setup_runtime_dir() -> Result<(tempfile::TempDir, Option<std::ffi::OsString>)> {
     let runtime = tempfile::TempDir::new().map_err(|e| anyhow!(e))?;
@@ -146,8 +146,7 @@ async fn handle_resume_session_allows_multiple_live_tui_attach() -> Result<()> {
         &event_counter,
         &swarm_event_tx,
     )
-    .await
-    ?;
+    .await?;
 
     let events = collect_events_until_done(&mut client_event_rx, 42).await;
     assert!(
@@ -317,8 +316,7 @@ async fn handle_resume_session_allows_reconnect_takeover_with_local_history() ->
         &event_counter,
         &swarm_event_tx,
     )
-    .await
-    ?;
+    .await?;
 
     while let Ok(event) = client_event_rx.try_recv() {
         assert!(
@@ -479,8 +477,7 @@ async fn handle_resume_session_allows_attach_without_local_history() -> Result<(
         &event_counter,
         &swarm_event_tx,
     )
-    .await
-    ?;
+    .await?;
 
     let events = collect_events_until_done(&mut client_event_rx, 44).await;
     assert!(
@@ -655,8 +652,7 @@ async fn handle_resume_session_allows_attach_from_different_client_instance() ->
         &event_counter,
         &swarm_event_tx,
     )
-    .await
-    ?;
+    .await?;
 
     let events = collect_events_until_done(&mut client_event_rx, 45).await;
     assert!(
@@ -902,7 +898,8 @@ async fn handle_resume_session_registers_live_events_before_history_replay() -> 
 }
 
 #[tokio::test]
-async fn handle_resume_session_allows_same_client_instance_takeover_without_local_history() -> Result<()> {
+async fn handle_resume_session_allows_same_client_instance_takeover_without_local_history()
+-> Result<()> {
     let _guard = crate::storage::lock_test_env();
     let (_runtime, prev_runtime) = setup_runtime_dir()?;
 
@@ -1034,8 +1031,7 @@ async fn handle_resume_session_allows_same_client_instance_takeover_without_loca
         &event_counter,
         &swarm_event_tx,
     )
-    .await
-    ?;
+    .await?;
 
     let events = collect_events_until_done(&mut client_event_rx, 45).await;
     assert!(

@@ -578,12 +578,16 @@ fn test_redacted_for_export_redacts_replay_events() -> Result<()> {
     else {
         return Err(anyhow!("expected swarm plan replay event"));
     };
-    assert!(items[0]
-        .content
-        .contains("OPENROUTER_API_KEY=[REDACTED_SECRET]"));
-    assert!(!items[0]
-        .content
-        .contains("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789"));
+    assert!(
+        items[0]
+            .content
+            .contains("OPENROUTER_API_KEY=[REDACTED_SECRET]")
+    );
+    assert!(
+        !items[0]
+            .content
+            .contains("sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789")
+    );
     let reason = reason.as_deref().unwrap_or_default();
     assert!(reason.contains("ANTHROPIC_API_KEY=[REDACTED_SECRET]"));
     assert!(!reason.contains("sk-ant-secret-value"));

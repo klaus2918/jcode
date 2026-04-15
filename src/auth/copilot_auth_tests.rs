@@ -1,4 +1,3 @@
-
 use super::*;
 use anyhow::{Result, anyhow};
 
@@ -285,8 +284,7 @@ fn load_token_from_json_does_not_change_external_permissions() -> Result<()> {
     std::fs::write(
         &path,
         r#"{"github.com":{"oauth_token":"gho_test","user":"tester"}}"#,
-    )
-    ?;
+    )?;
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
 
@@ -389,7 +387,11 @@ fn access_token_response_success() -> Result<()> {
             "scope": "read:user"
         }"#;
     let resp: AccessTokenResponse = serde_json::from_str(json)?;
-    assert_eq!(resp.access_token.ok_or_else(|| anyhow!("missing access token"))?, "gho_xxx123");
+    assert_eq!(
+        resp.access_token
+            .ok_or_else(|| anyhow!("missing access token"))?,
+        "gho_xxx123"
+    );
     assert!(resp.error.is_none());
     Ok(())
 }
@@ -402,7 +404,10 @@ fn access_token_response_pending() -> Result<()> {
         }"#;
     let resp: AccessTokenResponse = serde_json::from_str(json)?;
     assert!(resp.access_token.is_none());
-    assert_eq!(resp.error.ok_or_else(|| anyhow!("missing error"))?, "authorization_pending");
+    assert_eq!(
+        resp.error.ok_or_else(|| anyhow!("missing error"))?,
+        "authorization_pending"
+    );
     Ok(())
 }
 
@@ -413,7 +418,10 @@ fn access_token_response_expired() -> Result<()> {
             "error_description": "The device code has expired."
         }"#;
     let resp: AccessTokenResponse = serde_json::from_str(json)?;
-    assert_eq!(resp.error.ok_or_else(|| anyhow!("missing error"))?, "expired_token");
+    assert_eq!(
+        resp.error.ok_or_else(|| anyhow!("missing error"))?,
+        "expired_token"
+    );
     Ok(())
 }
 

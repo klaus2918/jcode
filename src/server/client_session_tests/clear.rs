@@ -2,7 +2,8 @@ use super::*;
 use anyhow::{Result, anyhow};
 
 #[tokio::test]
-async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_registration() -> Result<()> {
+async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_registration()
+-> Result<()> {
     let _guard = crate::storage::lock_test_env();
 
     let old_session_id = "session_before_clear";
