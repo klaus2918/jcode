@@ -1,6 +1,6 @@
 use super::{
     SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan, broadcast_swarm_plan,
-    record_swarm_event,
+    persist_swarm_state_for, record_swarm_event,
 };
 use crate::agent::Agent;
 use crate::protocol::{NotificationType, ServerEvent};
@@ -177,6 +177,7 @@ pub(super) async fn handle_comm_resync_plan(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
@@ -197,6 +198,7 @@ pub(super) async fn handle_comm_resync_plan(
             })
         };
         if let Some((version, item_count)) = plan_state {
+            persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators).await;
             if let Some(member) = swarm_members.read().await.get(&req_session_id) {
                 let _ = member.event_tx.send(ServerEvent::Notification {
                     from_session: req_session_id.clone(),

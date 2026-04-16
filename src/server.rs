@@ -28,6 +28,7 @@ mod reload_state;
 mod runtime;
 mod socket;
 mod swarm;
+mod swarm_persistence;
 mod util;
 
 pub(super) use self::await_members_state::AwaitMembersRuntime;
@@ -36,13 +37,17 @@ use self::debug_jobs::DebugJob;
 use self::headless::create_headless_session;
 use self::reload::await_reload_signal;
 use self::runtime::ServerRuntime;
-#[allow(unused_imports)]
 use self::swarm::{
     broadcast_swarm_plan, broadcast_swarm_status, record_swarm_event,
     record_swarm_event_for_session, remove_plan_participant, remove_session_channel_subscriptions,
     remove_session_file_touches, remove_session_from_swarm, rename_plan_participant,
     run_swarm_message, subscribe_session_to_channel, summarize_plan_items, truncate_detail,
     unsubscribe_session_from_channel, update_member_status,
+};
+use self::swarm_persistence::{
+    load_runtime_state as load_persisted_swarm_runtime_state,
+    persist_swarm_state as persist_swarm_state_snapshot,
+    remove_swarm_state as remove_persisted_swarm_state,
 };
 use crate::agent::Agent;
 use crate::ambient_runner::AmbientRunnerHandle;
@@ -68,6 +73,26 @@ use tokio::sync::{Mutex, OnceCell, RwLock, broadcast, mpsc};
 pub(super) type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 pub(super) type ChannelSubscriptions =
     Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+
+pub(super) async fn persist_swarm_state_for(
+    swarm_id: &str,
+    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
+) {
+    let plans = swarm_plans.read().await;
+    let coordinators = swarm_coordinators.read().await;
+    persist_swarm_state_snapshot(swarm_id, &plans, &coordinators);
+}
+
+pub(super) async fn remove_persisted_swarm_state_for(
+    swarm_id: &str,
+    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+) {
+    if swarm_plans.read().await.contains_key(swarm_id) {
+        return;
+    }
+    remove_persisted_swarm_state(swarm_id);
+}
 
 async fn run_background_task_message_in_live_session_if_idle(
     session_id: &str,
@@ -518,6 +543,9 @@ impl Server {
             Some(handle)
         };
 
+        let (restored_swarm_plans, restored_swarm_coordinators) =
+            load_persisted_swarm_runtime_state();
+
         Self {
             provider,
             socket_path: socket_path(),
@@ -535,8 +563,8 @@ impl Server {
             swarm_members: Arc::new(RwLock::new(HashMap::new())),
             swarms_by_id: Arc::new(RwLock::new(HashMap::new())),
             shared_context: Arc::new(RwLock::new(HashMap::new())),
-            swarm_plans: Arc::new(RwLock::new(HashMap::new())),
-            swarm_coordinators: Arc::new(RwLock::new(HashMap::new())),
+            swarm_plans: Arc::new(RwLock::new(restored_swarm_plans)),
+            swarm_coordinators: Arc::new(RwLock::new(restored_swarm_coordinators)),
             client_debug_state: Arc::new(RwLock::new(ClientDebugState::default())),
             client_debug_response_tx,
             debug_jobs: Arc::new(RwLock::new(HashMap::new())),

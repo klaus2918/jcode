@@ -304,6 +304,11 @@ pub(super) async fn handle_client(
         })
     };
 
+    // Do not drain global bus traffic until the client has completed its first
+    // subscribe. Under heavy swarm file-activity load, ignored bus frames can
+    // otherwise monopolize the select loop before the initial subscribe/read.
+    let mut client_subscribed = false;
+
     loop {
         line.clear();
         tokio::select! {
@@ -417,7 +422,7 @@ pub(super) async fn handle_client(
                 continue;
             }
             // Forward bus events to this client
-            bus_event = bus_rx.recv() => {
+            bus_event = bus_rx.recv(), if client_subscribed => {
                 match bus_event {
                     Ok(BusEvent::ModelsUpdated) => {
                         let (models, model_routes) = {
@@ -815,6 +820,7 @@ pub(super) async fn handle_client(
                     };
                     last_available_models_snapshot = Some(snapshot);
                 }
+                client_subscribed = true;
             }
 
             Request::GetHistory { id } => {
@@ -1420,6 +1426,7 @@ pub(super) async fn handle_client(
                     &swarm_members,
                     &swarms_by_id,
                     &swarm_plans,
+                    &swarm_coordinators,
                     &event_history,
                     &event_counter,
                     &swarm_event_tx,

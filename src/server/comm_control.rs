@@ -6,8 +6,9 @@ use super::await_members_state::{
 };
 use super::{
     AwaitMembersRuntime, ClientConnectionInfo, SwarmEvent, SwarmEventType, SwarmMember,
-    VersionedPlan, broadcast_swarm_plan, broadcast_swarm_status, queue_soft_interrupt_for_session,
-    record_swarm_event, truncate_detail, update_member_status,
+    VersionedPlan, broadcast_swarm_plan, broadcast_swarm_status, persist_swarm_state_for,
+    queue_soft_interrupt_for_session, record_swarm_event, truncate_detail,
+    update_member_status,
 };
 use crate::agent::Agent;
 use crate::protocol::{AwaitedMemberStatus, NotificationType, ServerEvent};
@@ -391,6 +392,8 @@ pub(super) async fn handle_comm_assign_task(
         return;
     };
 
+    persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators).await;
+
     broadcast_swarm_plan(
         &swarm_id,
         Some("task_assigned".to_string()),
@@ -464,6 +467,7 @@ pub(super) async fn handle_comm_assign_task(
         let swarm_members_for_run = Arc::clone(swarm_members);
         let swarms_for_run = Arc::clone(swarms_by_id);
         let swarm_plans_for_run = Arc::clone(swarm_plans);
+        let swarm_coordinators_for_run = Arc::clone(swarm_coordinators);
         let swarm_id_for_run = swarm_id.clone();
         let task_id_for_run = task_id.clone();
         let event_history_for_run = Arc::clone(event_history);
@@ -490,6 +494,12 @@ pub(super) async fn handle_comm_assign_task(
                     plan.version += 1;
                 }
             }
+            persist_swarm_state_for(
+                &swarm_id_for_run,
+                &swarm_plans_for_run,
+                &swarm_coordinators_for_run,
+            )
+            .await;
             broadcast_swarm_plan(
                 &swarm_id_for_run,
                 Some("task_running".to_string()),
@@ -529,6 +539,12 @@ pub(super) async fn handle_comm_assign_task(
                             plan.version += 1;
                         }
                     }
+                    persist_swarm_state_for(
+                        &swarm_id_for_run,
+                        &swarm_plans_for_run,
+                        &swarm_coordinators_for_run,
+                    )
+                    .await;
                     broadcast_swarm_plan(
                         &swarm_id_for_run,
                         Some("task_completed".to_string()),
@@ -562,6 +578,12 @@ pub(super) async fn handle_comm_assign_task(
                             plan.version += 1;
                         }
                     }
+                    persist_swarm_state_for(
+                        &swarm_id_for_run,
+                        &swarm_plans_for_run,
+                        &swarm_coordinators_for_run,
+                    )
+                    .await;
                     broadcast_swarm_plan(
                         &swarm_id_for_run,
                         Some("task_failed".to_string()),

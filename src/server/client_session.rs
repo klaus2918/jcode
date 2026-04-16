@@ -6,10 +6,11 @@ use super::client_state::{
 use super::{
     ClientConnectionInfo, ClientDebugState, FileAccess, SessionInterruptQueues, SwarmEvent,
     SwarmMember, VersionedPlan, broadcast_swarm_status, fanout_live_client_event,
-    register_session_event_sender, register_session_interrupt_queue, remove_plan_participant,
-    remove_session_channel_subscriptions, remove_session_file_touches, remove_session_from_swarm,
-    remove_session_interrupt_queue, rename_plan_participant, rename_session_interrupt_queue,
-    swarm_id_for_dir, unregister_session_event_sender, update_member_status,
+    persist_swarm_state_for, register_session_event_sender, register_session_interrupt_queue,
+    remove_plan_participant, remove_session_channel_subscriptions, remove_session_file_touches,
+    remove_session_from_swarm, remove_session_interrupt_queue, rename_plan_participant,
+    rename_session_interrupt_queue, swarm_id_for_dir, unregister_session_event_sender,
+    update_member_status,
 };
 use crate::agent::Agent;
 use crate::message::ContentBlock;
@@ -476,6 +477,7 @@ pub(super) async fn handle_subscribe(
         if let Some(old_id) = old_swarm_id.clone() {
             if updated_swarm_id.as_ref() != Some(&old_id) {
                 remove_plan_participant(&old_id, client_session_id, swarm_plans).await;
+                persist_swarm_state_for(&old_id, swarm_plans, swarm_coordinators).await;
             }
             broadcast_swarm_status(&old_id, swarm_members, swarms_by_id).await;
         }
@@ -1037,6 +1039,7 @@ pub(super) async fn handle_resume_session(
                     .and_then(|member| member.swarm_id.clone())
             } {
                 rename_plan_participant(&swarm_id, &old_session_id, &session_id, swarm_plans).await;
+                persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators).await;
             }
 
             register_session_event_sender(

@@ -1,8 +1,9 @@
 use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
     SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
-    broadcast_swarm_plan, broadcast_swarm_status, create_headless_session, record_swarm_event,
-    record_swarm_event_for_session, remove_plan_participant, remove_session_channel_subscriptions,
+    broadcast_swarm_plan, broadcast_swarm_status, create_headless_session,
+    persist_swarm_state_for, record_swarm_event, record_swarm_event_for_session,
+    remove_session_channel_subscriptions, remove_session_from_swarm,
     remove_session_interrupt_queue, truncate_detail, update_member_status,
 };
 use crate::agent::Agent;
@@ -298,6 +299,7 @@ pub(super) async fn handle_comm_spawn(
     match spawn_result {
         Ok((new_session_id, is_headless_fallback)) => {
             let startup_message = initial_message.clone();
+            let mut plan_participants_changed = false;
             {
                 let mut plans = swarm_plans.write().await;
                 if let Some(plan) = plans.get_mut(&swarm_id)
@@ -305,7 +307,11 @@ pub(super) async fn handle_comm_spawn(
                 {
                     plan.participants.insert(req_session_id.clone());
                     plan.participants.insert(new_session_id.clone());
+                    plan_participants_changed = true;
                 }
+            }
+            if plan_participants_changed {
+                persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators).await;
             }
 
             broadcast_swarm_plan(
@@ -495,45 +501,15 @@ pub(super) async fn handle_comm_stop(
                 },
             )
             .await;
-            remove_plan_participant(swarm_id, &target_session, swarm_plans).await;
-            {
-                let mut swarms = swarms_by_id.write().await;
-                if let Some(swarm) = swarms.get_mut(swarm_id) {
-                    swarm.remove(&target_session);
-                    if swarm.is_empty() {
-                        swarms.remove(swarm_id);
-                    }
-                }
-            }
-            let was_coordinator = {
-                let coordinators = swarm_coordinators.read().await;
-                coordinators
-                    .get(swarm_id)
-                    .map(|coordinator| coordinator == &target_session)
-                    .unwrap_or(false)
-            };
-            if was_coordinator {
-                let new_coordinator = {
-                    let swarms = swarms_by_id.read().await;
-                    swarms
-                        .get(swarm_id)
-                        .and_then(|swarm| swarm.iter().min().cloned())
-                };
-                let mut coordinators = swarm_coordinators.write().await;
-                coordinators.remove(swarm_id);
-                if let Some(ref new_id) = new_coordinator {
-                    coordinators.insert(swarm_id.clone(), new_id.clone());
-                    let mut members = swarm_members.write().await;
-                    if let Some(member) = members.get_mut(new_id) {
-                        member.role = "coordinator".to_string();
-                    }
-                    let mut plans = swarm_plans.write().await;
-                    if let Some(plan) = plans.get_mut(swarm_id) {
-                        plan.participants.insert(new_id.clone());
-                    }
-                }
-            }
-            broadcast_swarm_status(swarm_id, swarm_members, swarms_by_id).await;
+            remove_session_from_swarm(
+                &target_session,
+                swarm_id,
+                swarm_members,
+                swarms_by_id,
+                swarm_coordinators,
+                swarm_plans,
+            )
+            .await;
         }
         remove_session_channel_subscriptions(
             &target_session,

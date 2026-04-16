@@ -1,4 +1,5 @@
 use super::state::{MAX_EVENT_HISTORY, fanout_session_event};
+use super::{persist_swarm_state_for, remove_persisted_swarm_state_for};
 use super::{FileAccess, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan};
 use crate::agent::Agent;
 use crate::plan::PlanItem;
@@ -17,8 +18,8 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 
 type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 
-const DEFAULT_SWARM_STATUS_DEBOUNCE_MEMBER_THRESHOLD: usize = 16;
-const DEFAULT_SWARM_STATUS_DEBOUNCE_MS: u64 = 30;
+const DEFAULT_SWARM_STATUS_DEBOUNCE_MEMBER_THRESHOLD: usize = 2;
+const DEFAULT_SWARM_STATUS_DEBOUNCE_MS: u64 = 75;
 
 #[derive(Default, Clone, Copy)]
 struct PendingSwarmStatusBroadcast {
@@ -498,6 +499,12 @@ pub(super) async fn remove_session_from_swarm(
         if let Some(member) = members.get_mut(session_id) {
             member.role = "agent".to_string();
         }
+    }
+
+    if swarm_plans.read().await.contains_key(swarm_id) {
+        persist_swarm_state_for(swarm_id, swarm_plans, swarm_coordinators).await;
+    } else {
+        remove_persisted_swarm_state_for(swarm_id, swarm_plans).await;
     }
 
     broadcast_swarm_status(swarm_id, swarm_members, swarms_by_id).await;

@@ -1,7 +1,7 @@
 use super::{
     SessionInterruptQueues, SharedContext, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
-    broadcast_swarm_plan, queue_soft_interrupt_for_session, record_swarm_event,
-    summarize_plan_items,
+    broadcast_swarm_plan, persist_swarm_state_for, queue_soft_interrupt_for_session,
+    record_swarm_event, summarize_plan_items,
 };
 use crate::agent::Agent;
 use crate::plan::PlanItem;
@@ -124,6 +124,8 @@ pub(super) async fn handle_comm_propose_plan(
             )
             .await;
         }
+
+        persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators).await;
 
         broadcast_swarm_plan(
             &swarm_id,
@@ -386,6 +388,8 @@ pub(super) async fn handle_comm_approve_plan(
                 .await;
             }
         }
+
+        persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators).await;
     }
 
     let _ = client_event_tx.send(ServerEvent::Done { id });
