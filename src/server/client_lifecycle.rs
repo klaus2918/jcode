@@ -307,73 +307,24 @@ pub(super) async fn handle_client(
     loop {
         line.clear();
         tokio::select! {
-            // Forward bus events to this client
-            bus_event = bus_rx.recv() => {
-                match bus_event {
-                    Ok(BusEvent::ModelsUpdated) => {
-                        let (models, model_routes) = {
-                            let agent_guard = agent.lock().await;
-                            (
-                                agent_guard.available_models_display(),
-                                agent_guard.model_routes(),
-                            )
-                        };
-                        let routes_json = serde_json::to_string(&model_routes).unwrap_or_default();
-                        if last_available_models_snapshot
-                            .as_ref()
-                            .map(|(prev_models, prev_routes)| prev_models == &models && prev_routes == &routes_json)
-                            .unwrap_or(false)
-                        {
-                            continue;
-                        }
-                        let event = ServerEvent::AvailableModelsUpdated {
-                            available_models: models.clone(),
-                            available_model_routes: model_routes,
-                        };
-                        let encoded_len = crate::protocol::encode_event(&event).len();
-                        if encoded_len > MAX_LIVE_AVAILABLE_MODELS_UPDATE_BYTES {
-                            crate::logging::warn(&format!(
-                                "Skipping oversized bus AvailableModelsUpdated frame for connection {} ({} bytes)",
-                                client_connection_id, encoded_len
-                            ));
-                            last_available_models_snapshot = Some((models, routes_json));
-                            continue;
-                        }
-                        let _ = client_event_tx.send(event);
-                        last_available_models_snapshot = Some((models, routes_json));
+            biased;
+            // Prioritize direct client I/O so subscribe/ping/message requests do not get
+            // starved behind noisy background bus traffic.
+            n = reader.read_line(&mut line) => {
+                let n = match n {
+                    Ok(n) => n,
+                    Err(e) => {
+                        crate::logging::error(&format!("Client read error: {}", e));
+                        break;
                     }
-                    Ok(BusEvent::BatchProgress(progress)) => {
-                        if progress.session_id == client_session_id {
-                            let _ = client_event_tx.send(ServerEvent::BatchProgress { progress });
-                        }
-                    }
-                    Ok(BusEvent::SidePanelUpdated(update)) => {
-                        if update.session_id == client_session_id {
-                            let _ = client_event_tx.send(ServerEvent::SidePanelState {
-                                snapshot: update.snapshot,
-                            });
-                        }
-                    }
-                    _ => {}
+                };
+                if n == 0 {
+                    break; // Client disconnected
                 }
-                continue;
-            }
-            // Handle client debug commands from debug socket
-            debug_cmd = debug_cmd_rx.recv() => {
-                if let Some((request_id, command)) = debug_cmd
-                    && client_event_tx
-                        .send(ServerEvent::ClientDebugRequest {
-                            id: request_id,
-                            command,
-                        })
-                        .is_err()
-                {
-                    let _ = client_debug_response_tx.send((
-                        request_id,
-                        "No TUI client connected".to_string(),
-                    ));
+                let mut connections = client_connections.write().await;
+                if let Some(info) = connections.get_mut(&client_connection_id) {
+                    info.last_seen = Instant::now();
                 }
-                continue;
             }
             done = processing_done_rx.recv() => {
                 if let Some((done_id, result)) = done {
@@ -465,21 +416,73 @@ pub(super) async fn handle_client(
                 }
                 continue;
             }
-            n = reader.read_line(&mut line) => {
-                let n = match n {
-                    Ok(n) => n,
-                    Err(e) => {
-                        crate::logging::error(&format!("Client read error: {}", e));
-                        break;
+            // Forward bus events to this client
+            bus_event = bus_rx.recv() => {
+                match bus_event {
+                    Ok(BusEvent::ModelsUpdated) => {
+                        let (models, model_routes) = {
+                            let agent_guard = agent.lock().await;
+                            (
+                                agent_guard.available_models_display(),
+                                agent_guard.model_routes(),
+                            )
+                        };
+                        let routes_json = serde_json::to_string(&model_routes).unwrap_or_default();
+                        if last_available_models_snapshot
+                            .as_ref()
+                            .map(|(prev_models, prev_routes)| prev_models == &models && prev_routes == &routes_json)
+                            .unwrap_or(false)
+                        {
+                            continue;
+                        }
+                        let event = ServerEvent::AvailableModelsUpdated {
+                            available_models: models.clone(),
+                            available_model_routes: model_routes,
+                        };
+                        let encoded_len = crate::protocol::encode_event(&event).len();
+                        if encoded_len > MAX_LIVE_AVAILABLE_MODELS_UPDATE_BYTES {
+                            crate::logging::warn(&format!(
+                                "Skipping oversized bus AvailableModelsUpdated frame for connection {} ({} bytes)",
+                                client_connection_id, encoded_len
+                            ));
+                            last_available_models_snapshot = Some((models, routes_json));
+                            continue;
+                        }
+                        let _ = client_event_tx.send(event);
+                        last_available_models_snapshot = Some((models, routes_json));
                     }
-                };
-                if n == 0 {
-                    break; // Client disconnected
+                    Ok(BusEvent::BatchProgress(progress)) => {
+                        if progress.session_id == client_session_id {
+                            let _ = client_event_tx.send(ServerEvent::BatchProgress { progress });
+                        }
+                    }
+                    Ok(BusEvent::SidePanelUpdated(update)) => {
+                        if update.session_id == client_session_id {
+                            let _ = client_event_tx.send(ServerEvent::SidePanelState {
+                                snapshot: update.snapshot,
+                            });
+                        }
+                    }
+                    _ => {}
                 }
-                let mut connections = client_connections.write().await;
-                if let Some(info) = connections.get_mut(&client_connection_id) {
-                    info.last_seen = Instant::now();
+                continue;
+            }
+            // Handle client debug commands from debug socket
+            debug_cmd = debug_cmd_rx.recv() => {
+                if let Some((request_id, command)) = debug_cmd
+                    && client_event_tx
+                        .send(ServerEvent::ClientDebugRequest {
+                            id: request_id,
+                            command,
+                        })
+                        .is_err()
+                {
+                    let _ = client_debug_response_tx.send((
+                        request_id,
+                        "No TUI client connected".to_string(),
+                    ));
                 }
+                continue;
             }
         }
 
