@@ -42,6 +42,7 @@ pub(super) async fn process_turn_with_input(
 
 pub(super) fn handle_tick(app: &mut App) -> bool {
     let mut needs_redraw = crate::tui::periodic_redraw_required(app);
+    app.maybe_capture_runtime_memory_heartbeat();
     app.progress_mouse_scroll_animation();
     if app.submit_input_on_startup && !app.is_processing {
         app.submit_input_on_startup = false;
@@ -307,4 +308,5 @@ pub(super) fn finish_turn(app: &mut App) {
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;
     app.thinking_buffer.clear();
+    app.note_runtime_memory_event_force("turn_completed", "local_turn_finished");
 }

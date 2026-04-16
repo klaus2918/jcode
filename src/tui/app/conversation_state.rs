@@ -178,18 +178,16 @@ impl App {
     }
 
     pub(super) fn add_provider_message(&mut self, message: Message) {
-        self.ensure_provider_messages_hydrated();
-        self.messages.push(message);
+        if self.is_remote {
+            self.ensure_provider_messages_hydrated();
+            self.messages.push(message.clone());
+        }
         if self.is_remote || !self.provider.uses_jcode_compaction() {
             return;
         }
         let compaction = self.registry.compaction();
         if let Ok(mut manager) = compaction.try_write() {
-            if let Some(message) = self.messages.last() {
-                manager.notify_message_added_with(message);
-            } else {
-                manager.notify_message_added();
-            }
+            manager.notify_message_added_with(&message);
         };
     }
 
@@ -198,6 +196,7 @@ impl App {
         self.last_injected_memory_signature = None;
         self.reset_tool_output_tracking();
         self.reseed_compaction_from_provider_messages();
+        self.note_runtime_memory_event_force("provider_messages_replaced", "provider_view_reset");
     }
 
     pub(super) fn clear_provider_messages(&mut self) {
@@ -205,6 +204,7 @@ impl App {
         self.last_injected_memory_signature = None;
         self.reset_tool_output_tracking();
         self.reseed_compaction_from_provider_messages();
+        self.note_runtime_memory_event_force("provider_messages_cleared", "provider_view_cleared");
     }
 
     pub(super) fn reset_tool_output_tracking(&mut self) {

@@ -62,6 +62,21 @@ fn create_test_app() -> App {
     app
 }
 
+#[test]
+fn local_add_provider_message_does_not_retain_local_provider_copy() {
+    let mut app = create_test_app();
+    app.add_provider_message(Message::user("hello"));
+    assert!(app.messages.is_empty());
+}
+
+#[test]
+fn remote_add_provider_message_retains_remote_provider_copy() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.add_provider_message(Message::user("hello"));
+    assert_eq!(app.messages.len(), 1);
+}
+
 fn test_side_panel_snapshot(page_id: &str, title: &str) -> crate::side_panel::SidePanelSnapshot {
     crate::side_panel::SidePanelSnapshot {
         focused_page_id: Some(page_id.to_string()),

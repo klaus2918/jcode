@@ -57,6 +57,7 @@ pub(super) enum RemoteEventOutcome {
 
 pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) -> bool {
     let mut needs_redraw = crate::tui::periodic_redraw_required(app);
+    app.maybe_capture_runtime_memory_heartbeat();
     app.progress_mouse_scroll_animation();
     if let Some(chunk) = app.stream_buffer.flush() {
         app.append_streaming_text(&chunk);

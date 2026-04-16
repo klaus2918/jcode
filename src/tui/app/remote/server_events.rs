@@ -299,6 +299,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.thinking_buffer.clear();
                 remote.clear_pending();
                 remote.reset_call_output_tokens_seen();
+                app.note_runtime_memory_event_force("turn_completed", "remote_turn_finished");
             } else if app.is_processing {
                 let is_stale = app.current_message_id.is_some_and(|mid| id < mid);
                 if is_stale {
@@ -624,6 +625,7 @@ pub(in crate::tui::app) fn handle_server_event(
                     app.pending_images.clear();
                     app.set_status_notice("Reload complete — prompt preserved");
                 }
+                app.note_runtime_memory_event_force("history_loaded", "remote_history_applied");
             } else {
                 crate::logging::info(
                     "Ignoring duplicate History event for active session after local state was restored",

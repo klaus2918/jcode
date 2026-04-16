@@ -1,7 +1,16 @@
 use super::*;
+use std::borrow::Cow;
 
 impl App {
+    pub(in crate::tui::app) fn runtime_memory_profile(&self) -> serde_json::Value {
+        self.memory_profile_value(false)
+    }
+
     pub(in crate::tui::app) fn debug_memory_profile(&self) -> serde_json::Value {
+        self.memory_profile_value(true)
+    }
+
+    fn memory_profile_value(&self, include_history: bool) -> serde_json::Value {
         let process = crate::process_memory::snapshot_with_source("client:memory");
         let markdown = crate::tui::markdown::debug_memory_profile();
         let mermaid = crate::tui::mermaid::debug_memory_profile();
@@ -11,13 +20,13 @@ impl App {
             .try_read()
             .map(|manager| manager.debug_memory_profile())
             .ok();
-        let (provider_view_source, materialized_provider_messages) =
+        let (provider_view_source, materialized_provider_messages): (&str, Cow<'_, [Message]>) =
             if self.is_remote || !self.messages.is_empty() {
-                ("resident_ui", self.messages.clone())
+                ("resident_ui", Cow::Borrowed(&self.messages))
             } else {
                 (
                     "session_materialized",
-                    self.session.messages_for_provider_uncached(),
+                    Cow::Owned(self.session.messages_for_provider_uncached()),
                 )
             };
         let transcript_memory = crate::tui::transcript_memory_profile(
@@ -63,7 +72,7 @@ impl App {
             .map(crate::process_memory::estimate_json_bytes)
             .unwrap_or(0);
 
-        serde_json::json!({
+        let mut payload = serde_json::json!({
             "process": process,
             "session": self.session.debug_memory_profile(),
             "markdown": markdown,
@@ -142,7 +151,13 @@ impl App {
                 },
                 "mcp": mcp,
             },
-            "history": crate::process_memory::history(64),
-        })
+        });
+
+        if include_history {
+            payload["history"] = serde_json::to_value(crate::process_memory::history(64))
+                .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
+        }
+
+        payload
     }
 }

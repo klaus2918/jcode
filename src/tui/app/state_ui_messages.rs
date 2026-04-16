@@ -21,6 +21,7 @@ impl App {
         compact_display_messages_for_storage(&mut messages);
         self.display_messages = messages;
         self.bump_display_messages_version();
+        self.note_runtime_memory_event_force("display_messages_replaced", "display_history_reset");
     }
 
     pub(super) fn replace_display_message_content(&mut self, idx: usize, content: String) -> bool {

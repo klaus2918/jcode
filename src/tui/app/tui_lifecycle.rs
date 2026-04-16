@@ -150,6 +150,20 @@ impl App {
             .autojudge_enabled
             .unwrap_or(config().autojudge.enabled);
         let context_limit = provider.context_window() as u64;
+        let mut runtime_memory_log = if crate::runtime_memory_log::client_logging_enabled() {
+            Some(crate::runtime_memory_log::RuntimeMemoryLogController::new(
+                crate::runtime_memory_log::client_logging_config(),
+            ))
+        } else {
+            None
+        };
+        if let Some(controller) = runtime_memory_log.as_mut() {
+            controller.defer_event(
+                crate::runtime_memory_log::RuntimeMemoryLogEvent::new("startup", "client_started")
+                    .with_session_id(session.id.clone())
+                    .force_attribution(),
+            );
+        }
         let improve_mode = session.improve_mode.map(|mode| match mode {
             crate::session::SessionImproveMode::ImproveRun => ImproveMode::ImproveRun,
             crate::session::SessionImproveMode::ImprovePlan => ImproveMode::ImprovePlan,
@@ -361,6 +375,7 @@ impl App {
             pending_queued_dispatch: false,
             tab_completion_state: None,
             app_started: Instant::now(),
+            runtime_memory_log,
             client_binary_mtime: std::env::current_exe()
                 .ok()
                 .and_then(|p| std::fs::metadata(&p).ok())
@@ -416,6 +431,20 @@ impl App {
             .autojudge_enabled
             .unwrap_or(config().autojudge.enabled);
         let context_limit = provider.context_window() as u64;
+        let mut runtime_memory_log = if crate::runtime_memory_log::client_logging_enabled() {
+            Some(crate::runtime_memory_log::RuntimeMemoryLogController::new(
+                crate::runtime_memory_log::client_logging_config(),
+            ))
+        } else {
+            None
+        };
+        if let Some(controller) = runtime_memory_log.as_mut() {
+            controller.defer_event(
+                crate::runtime_memory_log::RuntimeMemoryLogEvent::new("startup", "client_started")
+                    .with_session_id(session.id.clone())
+                    .force_attribution(),
+            );
+        }
         let improve_mode = session.improve_mode.map(|mode| match mode {
             crate::session::SessionImproveMode::ImproveRun => ImproveMode::ImproveRun,
             crate::session::SessionImproveMode::ImprovePlan => ImproveMode::ImprovePlan,
@@ -657,6 +686,7 @@ impl App {
             pending_queued_dispatch: false,
             tab_completion_state: None,
             app_started: Instant::now(),
+            runtime_memory_log,
             client_binary_mtime: std::env::current_exe()
                 .ok()
                 .and_then(|p| std::fs::metadata(&p).ok())

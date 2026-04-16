@@ -12,6 +12,7 @@ use crate::message::{
     ContentBlock, Message, Role, StreamEvent, TOOL_OUTPUT_MISSING_TEXT, ToolCall,
 };
 use crate::provider::Provider;
+use crate::runtime_memory_log::RuntimeMemoryLogController;
 use crate::session::Session;
 use crate::skill::SkillRegistry;
 use crate::tool::selfdev::ReloadContext;
@@ -58,6 +59,7 @@ mod remote;
 mod remote_notifications;
 mod replay;
 mod run_shell;
+mod runtime_memory;
 mod split_view;
 mod state_ui;
 mod state_ui_input_helpers;
@@ -706,6 +708,8 @@ pub struct App {
     tab_completion_state: Option<(String, usize)>,
     // Time when app started (for startup animations)
     app_started: Instant,
+    // Optional client runtime memory logger for low-overhead attribution journaling.
+    runtime_memory_log: Option<RuntimeMemoryLogController>,
     // Binary modification time when client started (for smart reload detection)
     client_binary_mtime: Option<std::time::SystemTime>,
     // Rate limit state: when rate limit resets (if rate limited)

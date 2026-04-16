@@ -19,6 +19,15 @@ const DEFAULT_ATTRIBUTION_JSON_DELTA_THRESHOLD_MB: u64 = 4;
 const MAX_SERVER_LOG_FILES: usize = 90;
 const SERVER_LOG_FILE_PREFIX: &str = "server-runtime-memory-";
 const SERVER_LOG_FILE_SUFFIX: &str = ".jsonl";
+const DEFAULT_CLIENT_PROCESS_INTERVAL_SECS: u64 = 5 * 60;
+const DEFAULT_CLIENT_ATTRIBUTION_INTERVAL_SECS: u64 = 15 * 60;
+const DEFAULT_CLIENT_ATTRIBUTION_MIN_SPACING_SECS: u64 = 30;
+const DEFAULT_CLIENT_EVENT_PROCESS_MIN_SPACING_SECS: u64 = 15;
+const DEFAULT_CLIENT_PSS_DELTA_THRESHOLD_MB: u64 = 8;
+const DEFAULT_CLIENT_ATTRIBUTION_JSON_DELTA_THRESHOLD_MB: u64 = 2;
+const MAX_CLIENT_LOG_FILES: usize = 90;
+const CLIENT_LOG_FILE_PREFIX: &str = "client-runtime-memory-";
+const CLIENT_LOG_FILE_SUFFIX: &str = ".jsonl";
 const MAX_PENDING_EVENTS: usize = 64;
 const MAX_PENDING_CATEGORIES: usize = 8;
 
@@ -42,6 +51,74 @@ pub struct ServerRuntimeMemorySample {
     pub embeddings: ServerRuntimeMemoryEmbeddings,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions: Option<ServerRuntimeMemorySessions>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientRuntimeMemorySample {
+    pub schema_version: u32,
+    pub kind: String,
+    pub timestamp: String,
+    pub timestamp_ms: i64,
+    pub source: String,
+    pub trigger: RuntimeMemoryLogTrigger,
+    pub sampling: RuntimeMemoryLogSampling,
+    pub client: ClientRuntimeMemoryClient,
+    pub process: crate::process_memory::ProcessMemorySnapshot,
+    pub process_diagnostics: ServerRuntimeMemoryProcessDiagnostics,
+    pub totals: ClientRuntimeMemoryTotals,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mermaid: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visual_debug: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientRuntimeMemoryClient {
+    pub client_instance_id: String,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_session_id: Option<String>,
+    pub provider: String,
+    pub model: String,
+    pub is_remote: bool,
+    pub is_processing: bool,
+    pub uptime_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ClientRuntimeMemoryTotals {
+    pub session_json_bytes: u64,
+    pub canonical_transcript_json_bytes: u64,
+    pub provider_cache_json_bytes: u64,
+    pub provider_messages_json_bytes: u64,
+    pub provider_view_json_bytes: u64,
+    pub transient_provider_materialization_json_bytes: u64,
+    pub display_messages_estimate_bytes: u64,
+    pub display_content_bytes: u64,
+    pub display_tool_metadata_json_bytes: u64,
+    pub display_large_tool_output_bytes: u64,
+    pub side_panel_estimate_bytes: u64,
+    pub side_panel_content_bytes: u64,
+    pub input_text_bytes: u64,
+    pub streaming_text_bytes: u64,
+    pub thinking_buffer_bytes: u64,
+    pub stream_buffered_text_bytes: u64,
+    pub streaming_tool_calls_json_bytes: u64,
+    pub pasted_contents_bytes: u64,
+    pub pending_images_bytes: u64,
+    pub remote_state_bytes: u64,
+    pub mcp_estimate_bytes: u64,
+    pub markdown_cache_estimate_bytes: u64,
+    pub mermaid_working_set_estimate_bytes: u64,
+    pub mermaid_cache_metadata_estimate_bytes: u64,
+    pub visual_debug_frame_estimate_bytes: u64,
+    pub total_attributed_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -214,6 +291,18 @@ impl RuntimeMemoryLogController {
         &self.config
     }
 
+    pub fn process_heartbeat_due(&self, now: Instant) -> bool {
+        self.last_process_sample_at
+            .map(|last| now.duration_since(last) >= self.config.process_interval)
+            .unwrap_or(true)
+    }
+
+    pub fn attribution_heartbeat_due(&self, now: Instant) -> bool {
+        self.last_attribution_at
+            .map(|last| now.duration_since(last) >= self.config.attribution_interval)
+            .unwrap_or(true)
+    }
+
     pub fn should_write_process_for_event(
         &self,
         now: Instant,
@@ -334,16 +423,40 @@ impl RuntimeMemoryLogController {
     ) {
         let pss_bytes = sample.process.os.as_ref().and_then(|os| os.pss_bytes);
         if let Some(sessions) = sample.sessions.as_ref() {
+            self.finalize_attribution_totals(
+                now,
+                pss_bytes,
+                Some(sessions.total_json_bytes),
+                &mut sample.sampling.threshold_reasons,
+            );
+            return;
+        }
+        self.finalize_attribution_totals(
+            now,
+            pss_bytes,
+            None,
+            &mut sample.sampling.threshold_reasons,
+        );
+    }
+
+    pub fn finalize_attribution_totals(
+        &mut self,
+        now: Instant,
+        pss_bytes: Option<u64>,
+        total_json_bytes: Option<u64>,
+        threshold_reasons: &mut Vec<String>,
+    ) {
+        if let Some(total_json_bytes) = total_json_bytes {
             if let Some(last_total_json_bytes) = self.last_attribution_total_json_bytes {
-                let delta = sessions.total_json_bytes.abs_diff(last_total_json_bytes);
+                let delta = total_json_bytes.abs_diff(last_total_json_bytes);
                 if delta >= self.config.attribution_json_delta_threshold_bytes {
-                    sample.sampling.threshold_reasons.push(format!(
+                    threshold_reasons.push(format!(
                         "attributed_json_delta>= {} MB",
                         bytes_to_mb_string(delta)
                     ));
                 }
             }
-            self.last_attribution_total_json_bytes = Some(sessions.total_json_bytes);
+            self.last_attribution_total_json_bytes = Some(total_json_bytes);
         }
         self.last_attribution_pss_bytes = pss_bytes;
         self.last_attribution_at = Some(now);
@@ -412,6 +525,51 @@ pub fn server_logging_config() -> RuntimeMemoryLogConfig {
     }
 }
 
+pub fn client_logging_enabled() -> bool {
+    match std::env::var("JCODE_CLIENT_RUNTIME_MEMORY_LOG") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => server_logging_enabled(),
+    }
+}
+
+pub fn client_logging_config() -> RuntimeMemoryLogConfig {
+    let process_interval_secs = env_u64("JCODE_CLIENT_RUNTIME_MEMORY_LOG_PROCESS_INTERVAL_SECS")
+        .filter(|value| *value >= MIN_PROCESS_INTERVAL_SECS)
+        .unwrap_or(DEFAULT_CLIENT_PROCESS_INTERVAL_SECS);
+    let attribution_interval_secs =
+        env_u64("JCODE_CLIENT_RUNTIME_MEMORY_LOG_ATTRIBUTION_INTERVAL_SECS")
+            .filter(|value| *value >= MIN_ATTRIBUTION_INTERVAL_SECS)
+            .unwrap_or(DEFAULT_CLIENT_ATTRIBUTION_INTERVAL_SECS);
+    let attribution_min_spacing_secs =
+        env_u64("JCODE_CLIENT_RUNTIME_MEMORY_LOG_ATTRIBUTION_MIN_SPACING_SECS")
+            .filter(|value| *value >= MIN_ATTRIBUTION_MIN_SPACING_SECS)
+            .unwrap_or(DEFAULT_CLIENT_ATTRIBUTION_MIN_SPACING_SECS);
+    let event_process_min_spacing_secs =
+        env_u64("JCODE_CLIENT_RUNTIME_MEMORY_LOG_EVENT_PROCESS_MIN_SPACING_SECS")
+            .filter(|value| *value >= MIN_EVENT_PROCESS_MIN_SPACING_SECS)
+            .unwrap_or(DEFAULT_CLIENT_EVENT_PROCESS_MIN_SPACING_SECS);
+    let pss_delta_threshold_bytes =
+        env_u64("JCODE_CLIENT_RUNTIME_MEMORY_LOG_PSS_DELTA_THRESHOLD_MB")
+            .unwrap_or(DEFAULT_CLIENT_PSS_DELTA_THRESHOLD_MB)
+            .saturating_mul(1024 * 1024);
+    let attribution_json_delta_threshold_bytes =
+        env_u64("JCODE_CLIENT_RUNTIME_MEMORY_LOG_ATTRIBUTION_JSON_DELTA_THRESHOLD_MB")
+            .unwrap_or(DEFAULT_CLIENT_ATTRIBUTION_JSON_DELTA_THRESHOLD_MB)
+            .saturating_mul(1024 * 1024);
+
+    RuntimeMemoryLogConfig {
+        process_interval: Duration::from_secs(process_interval_secs),
+        attribution_interval: Duration::from_secs(attribution_interval_secs),
+        attribution_min_spacing: Duration::from_secs(attribution_min_spacing_secs),
+        event_process_min_spacing: Duration::from_secs(event_process_min_spacing_secs),
+        pss_delta_threshold_bytes,
+        attribution_json_delta_threshold_bytes,
+    }
+}
+
 pub fn install_event_sink(sender: mpsc::UnboundedSender<RuntimeMemoryLogEvent>) {
     if let Ok(mut guard) = event_sink().lock() {
         *guard = Some(sender);
@@ -434,8 +592,18 @@ pub fn current_server_log_path() -> Result<PathBuf> {
     server_log_path_for(Utc::now())
 }
 
+pub fn current_client_log_path() -> Result<PathBuf> {
+    client_log_path_for(Utc::now())
+}
+
 pub fn append_server_sample(sample: &ServerRuntimeMemorySample) -> Result<PathBuf> {
     let path = current_server_log_path()?;
+    crate::storage::append_json_line_fast(&path, sample)?;
+    Ok(path)
+}
+
+pub fn append_client_sample(sample: &ClientRuntimeMemorySample) -> Result<PathBuf> {
+    let path = current_client_log_path()?;
     crate::storage::append_json_line_fast(&path, sample)?;
     Ok(path)
 }
@@ -458,6 +626,33 @@ pub fn prune_old_server_logs() -> Result<usize> {
     }
 
     let remove_count = files.len() - MAX_SERVER_LOG_FILES;
+    let mut removed = 0;
+    for path in files.into_iter().take(remove_count) {
+        if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+pub fn prune_old_client_logs() -> Result<usize> {
+    let dir = server_logs_dir()?;
+    if !dir.exists() {
+        return Ok(0);
+    }
+
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| is_client_log_file(path))
+        .collect();
+    files.sort();
+
+    if files.len() <= MAX_CLIENT_LOG_FILES {
+        return Ok(0);
+    }
+
+    let remove_count = files.len() - MAX_CLIENT_LOG_FILES;
     let mut removed = 0;
     for path in files.into_iter().take(remove_count) {
         if std::fs::remove_file(&path).is_ok() {
@@ -528,11 +723,28 @@ fn server_log_path_for(now: chrono::DateTime<Utc>) -> Result<PathBuf> {
     )))
 }
 
+fn client_log_path_for(now: chrono::DateTime<Utc>) -> Result<PathBuf> {
+    let dir = server_logs_dir()?;
+    let date = now.format("%Y-%m-%d");
+    Ok(dir.join(format!(
+        "{CLIENT_LOG_FILE_PREFIX}{date}{CLIENT_LOG_FILE_SUFFIX}"
+    )))
+}
+
 fn is_server_log_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|value| value.to_str())
         .map(|name| {
             name.starts_with(SERVER_LOG_FILE_PREFIX) && name.ends_with(SERVER_LOG_FILE_SUFFIX)
+        })
+        .unwrap_or(false)
+}
+
+fn is_client_log_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(|name| {
+            name.starts_with(CLIENT_LOG_FILE_PREFIX) && name.ends_with(CLIENT_LOG_FILE_SUFFIX)
         })
         .unwrap_or(false)
 }
@@ -613,6 +825,59 @@ mod tests {
         assert_eq!(parsed["source"], "test");
         assert_eq!(parsed["server"]["id"], "server_test");
         assert_eq!(parsed["kind"], "process");
+
+        if let Some(prev) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+    }
+
+    #[test]
+    fn append_client_sample_writes_jsonl_under_memory_logs_dir() {
+        let _guard = crate::storage::lock_test_env();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = tempfile::TempDir::new().expect("create temp dir");
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        let sample = ClientRuntimeMemorySample {
+            schema_version: 2,
+            kind: "process".to_string(),
+            timestamp: Utc::now().to_rfc3339(),
+            timestamp_ms: Utc::now().timestamp_millis(),
+            source: "test".to_string(),
+            trigger: RuntimeMemoryLogTrigger {
+                category: "test".to_string(),
+                reason: "unit".to_string(),
+                session_id: Some("session_test".to_string()),
+                detail: None,
+            },
+            sampling: RuntimeMemoryLogSampling::default(),
+            client: ClientRuntimeMemoryClient {
+                client_instance_id: "client_test".to_string(),
+                session_id: "session_test".to_string(),
+                remote_session_id: None,
+                provider: "mock".to_string(),
+                model: "test-model".to_string(),
+                is_remote: false,
+                is_processing: false,
+                uptime_secs: 1,
+            },
+            process: crate::process_memory::ProcessMemorySnapshot::default(),
+            process_diagnostics: ServerRuntimeMemoryProcessDiagnostics::default(),
+            totals: ClientRuntimeMemoryTotals::default(),
+            session: None,
+            ui: None,
+            markdown: None,
+            mermaid: None,
+            visual_debug: None,
+        };
+
+        let path = append_client_sample(&sample).expect("append client sample");
+        assert!(path.starts_with(temp.path()));
+        let contents = std::fs::read_to_string(&path).expect("read client log");
+        assert!(contents.contains("\"client_test\""));
+        assert!(contents.contains("\"session_test\""));
 
         if let Some(prev) = prev_home {
             crate::env::set_var("JCODE_HOME", prev);

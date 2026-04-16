@@ -492,6 +492,7 @@ impl App {
         }
         self.last_side_panel_refresh = None;
         self.side_panel = snapshot;
+        self.note_runtime_memory_event("side_panel_updated", "side_panel_snapshot_applied");
         if focused_changed {
             self.diff_pane_scroll = 0;
             self.diff_pane_scroll_x = 0;
