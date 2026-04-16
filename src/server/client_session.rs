@@ -760,22 +760,20 @@ pub(super) async fn handle_resume_session(
         )
         .await;
 
-        let is_canary = {
-            let agent_guard = live_target_agent.lock().await;
-            agent_guard.is_canary()
-        };
+        let is_canary = live_target_agent
+            .try_lock()
+            .ok()
+            .map(|agent_guard| agent_guard.is_canary())
+            .or_else(|| {
+                crate::session::Session::load_startup_stub(&session_id)
+                    .ok()
+                    .map(|session| session.is_canary)
+            })
+            .unwrap_or(false);
         if is_canary {
             *client_selfdev = true;
             registry.register_selfdev_tools().await;
         }
-
-        registry
-            .register_mcp_tools(
-                Some(client_event_tx.clone()),
-                Some(Arc::clone(mcp_pool)),
-                Some(session_id.clone()),
-            )
-            .await;
 
         *client_session_id = session_id.clone();
 
@@ -794,6 +792,13 @@ pub(super) async fn handle_resume_session(
         )
         .await?;
         let _ = client_event_tx.send(ServerEvent::Done { id });
+        registry
+            .register_mcp_tools(
+                Some(client_event_tx.clone()),
+                Some(Arc::clone(mcp_pool)),
+                Some(session_id.clone()),
+            )
+            .await;
         spawn_model_prefetch_update(Arc::clone(provider), Arc::clone(live_target_agent));
         return Ok(Arc::clone(live_target_agent));
     }
@@ -940,16 +945,6 @@ pub(super) async fn handle_resume_session(
         registry.register_selfdev_tools().await;
     }
 
-    if result.is_ok() {
-        registry
-            .register_mcp_tools(
-                Some(client_event_tx.clone()),
-                Some(Arc::clone(mcp_pool)),
-                Some(session_id.clone()),
-            )
-            .await;
-    }
-
     match result {
         Ok(_prev_status) => {
             let old_session_id = client_session_id.clone();
@@ -1056,6 +1051,13 @@ pub(super) async fn handle_resume_session(
             )
             .await?;
             let _ = client_event_tx.send(ServerEvent::Done { id });
+            registry
+                .register_mcp_tools(
+                    Some(client_event_tx.clone()),
+                    Some(Arc::clone(mcp_pool)),
+                    Some(session_id.clone()),
+                )
+                .await;
             spawn_model_prefetch_update(Arc::clone(provider), Arc::clone(agent));
         }
         Err(error) => {
