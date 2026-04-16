@@ -625,7 +625,7 @@ fn prepare_body_incremental(
         ratatui::layout::Alignment::Left
     };
 
-    let total_prompts = messages.iter().filter(|m| m.role == "user").count();
+    let total_prompts = app.display_user_message_count();
     let pending_count = input_ui::pending_prompt_count(app);
 
     let mut prompt_num = messages[..prev_msg_count]
@@ -1076,11 +1076,7 @@ fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> Prep
     markdown::set_center_code_blocks(centered);
     let display_width = width.saturating_sub(4) as usize;
     let mut prompt_num = 0usize;
-    let total_prompts = app
-        .display_messages()
-        .iter()
-        .filter(|m| m.role == "user")
-        .count();
+    let total_prompts = app.display_user_message_count();
     let pending_count = input_ui::pending_prompt_count(app);
 
     for (msg_idx, msg) in app.display_messages().iter().enumerate() {

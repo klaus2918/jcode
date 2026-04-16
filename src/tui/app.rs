@@ -365,6 +365,8 @@ pub struct App {
     session: Session,
     display_messages: Vec<DisplayMessage>,
     display_messages_version: u64,
+    display_user_message_count: usize,
+    display_edit_tool_message_count: usize,
     input: String,
     cursor_pos: usize,
     scroll_offset: usize,

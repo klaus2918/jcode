@@ -98,11 +98,7 @@ pub(crate) fn input_prompt_len(app: &dyn TuiState, next_prompt: usize) -> usize 
 }
 
 pub(crate) fn next_input_prompt_number(app: &dyn TuiState) -> usize {
-    app.display_messages()
-        .iter()
-        .filter(|m| m.role == "user")
-        .count()
-        + 1
+    app.display_user_message_count() + 1
 }
 
 pub(super) fn wrapped_input_line_count(
@@ -387,11 +383,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
     let elapsed = app.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
     let stale_secs = app.time_since_activity().map(|d| d.as_secs_f32());
     let (cache_read, cache_creation) = app.streaming_cache_tokens();
-    let user_turn_count = app
-        .display_messages()
-        .iter()
-        .filter(|m| m.role == "user")
-        .count();
+    let user_turn_count = app.display_user_message_count();
     let unexpected_cache_miss =
         is_unexpected_cache_miss(user_turn_count, cache_read, cache_creation);
 

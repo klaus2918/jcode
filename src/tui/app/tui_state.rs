@@ -283,6 +283,14 @@ impl crate::tui::TuiState for App {
         &self.display_messages
     }
 
+    fn display_user_message_count(&self) -> usize {
+        self.display_user_message_count
+    }
+
+    fn has_display_edit_tool_messages(&self) -> bool {
+        self.display_edit_tool_message_count > 0
+    }
+
     fn side_pane_images(&self) -> Vec<crate::session::RenderedImage> {
         if self.is_remote {
             self.remote_side_pane_images.clone()

@@ -1929,13 +1929,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     } else {
         false
     };
-    let has_file_diff_edits = diff_mode.is_file()
-        && app.display_messages().iter().any(|m| {
-            m.tool_data
-                .as_ref()
-                .map(|tc| tools_ui::is_edit_tool_name(&tc.name))
-                .unwrap_or(false)
-        });
+    let has_file_diff_edits = diff_mode.is_file() && app.has_display_edit_tool_messages();
 
     let needs_side_pane = has_side_panel_content || has_pinned_content || has_file_diff_edits;
 
@@ -1975,11 +1969,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let queued_height = pending_count.min(3) as u16;
 
     // Count user messages to show next prompt number
-    let user_count = app
-        .display_messages()
-        .iter()
-        .filter(|m| m.role == "user")
-        .count();
+    let user_count = app.display_user_message_count();
     let next_prompt = user_count + 1;
 
     // Calculate input height based on the same wrapping logic used for rendering

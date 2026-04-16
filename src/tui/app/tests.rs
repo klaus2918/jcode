@@ -1219,6 +1219,37 @@ fn test_splitview_mirrors_chat_and_streaming_text() {
 }
 
 #[test]
+fn test_splitview_does_not_build_cache_while_disabled() {
+    let mut app = create_test_app();
+    app.display_messages = vec![
+        DisplayMessage::user("What did we decide?".to_string()),
+        DisplayMessage::assistant("We decided to ship it.".to_string()),
+    ];
+
+    app.bump_display_messages_version();
+
+    assert!(!app.split_view_enabled());
+    assert!(app.split_view_markdown.is_empty());
+}
+
+#[test]
+fn test_splitview_disable_clears_cached_markdown() {
+    let mut app = create_test_app();
+    app.display_messages = vec![
+        DisplayMessage::user("What did we decide?".to_string()),
+        DisplayMessage::assistant("We decided to ship it.".to_string()),
+    ];
+    app.bump_display_messages_version();
+    app.set_split_view_enabled(true, true);
+
+    assert!(!app.split_view_markdown.is_empty());
+
+    app.set_split_view_enabled(false, false);
+
+    assert!(app.split_view_markdown.is_empty());
+}
+
+#[test]
 fn test_observe_command_off_restores_previous_side_panel_page() {
     let mut app = create_test_app();
     app.set_side_panel_snapshot(test_side_panel_snapshot("plan", "Plan"));

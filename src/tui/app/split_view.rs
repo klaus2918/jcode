@@ -15,7 +15,11 @@ impl App {
 
     pub(super) fn set_split_view_enabled(&mut self, enabled: bool, focus: bool) {
         self.split_view_enabled = enabled;
-        self.refresh_split_view_cache(true);
+        if enabled {
+            self.refresh_split_view_cache(true);
+        } else {
+            self.clear_split_view_cache();
+        }
 
         let mut snapshot = self.snapshot_without_split_view();
         if enabled {
@@ -62,11 +66,22 @@ impl App {
     }
 
     pub(super) fn refresh_split_view_if_needed(&mut self) {
+        if !self.split_view_enabled {
+            return;
+        }
         let changed = self.refresh_split_view_cache(false);
-        if !self.split_view_enabled || !changed {
+        if !changed {
             return;
         }
         self.refresh_split_view_page();
+    }
+
+    fn clear_split_view_cache(&mut self) {
+        self.split_view_markdown.clear();
+        self.split_view_markdown.shrink_to_fit();
+        self.split_view_updated_at_ms = now_ms();
+        self.split_view_rendered_display_version = 0;
+        self.split_view_rendered_streaming_hash = 0;
     }
 
     fn refresh_split_view_page(&mut self) {
