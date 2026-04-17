@@ -100,17 +100,19 @@ pub fn is_process_running(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if handle.is_null() {
                 return false;
             }
+            let mut exit_code = 0u32;
+            let ok = GetExitCodeProcess(handle, &mut exit_code);
             CloseHandle(handle);
-            true
+            ok != 0 && exit_code == STILL_ACTIVE as u32
         }
     }
 }
@@ -239,6 +241,13 @@ pub fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result<std::p
     cmd.spawn()
 }
 
+#[cfg(windows)]
+fn spawn_replacement_process(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    cmd.spawn()
+}
+
 /// Replace the current process with a new command (exec on Unix).
 ///
 /// On Unix, this calls exec() which never returns on success.
@@ -254,8 +263,8 @@ pub fn replace_process(cmd: &mut std::process::Command) -> std::io::Error {
     }
     #[cfg(windows)]
     {
-        match cmd.status() {
-            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        match spawn_replacement_process(cmd) {
+            Ok(_child) => std::process::exit(0),
             Err(e) => e,
         }
     }
@@ -298,5 +307,63 @@ mod tests {
             child_sid as i32, parent_sid,
             "detached child should not share parent session"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn is_process_running_reports_exited_children_as_stopped() {
+        use std::process::{Command, Stdio};
+        use std::time::Duration;
+
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/C", "ping -n 3 127.0.0.1 >NUL"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let mut child = cmd.spawn().expect("spawn child");
+        let pid = child.id();
+        assert!(
+            super::is_process_running(pid),
+            "child should initially be running"
+        );
+
+        let status = child.wait().expect("wait for child");
+        assert!(status.success(), "child should exit successfully");
+        std::thread::sleep(Duration::from_millis(100));
+
+        assert!(
+            !super::is_process_running(pid),
+            "exited child should not be reported as running"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn spawn_replacement_process_returns_without_waiting_for_child_exit() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/C", "ping -n 4 127.0.0.1 >NUL"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let start = Instant::now();
+        let mut child = super::spawn_replacement_process(&mut cmd)
+            .expect("spawn replacement process should succeed");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "replacement spawn should not block, took {:?}",
+            elapsed
+        );
+        assert!(
+            child.try_wait().expect("poll child status").is_none(),
+            "replacement child should still be running immediately after spawn"
+        );
+
+        child.kill().ok();
+        let _ = child.wait();
     }
 }

@@ -64,6 +64,8 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
 
 #[cfg(test)]
 mod utf8_truncation_tests {
+    #[cfg(windows)]
+    use super::build_shell_command;
     use super::format_command_output;
 
     #[test]
@@ -72,6 +74,22 @@ mod utf8_truncation_tests {
         let output = format_command_output(input, None);
         assert!(output.ends_with("\n... (output truncated)"));
         assert!(output.starts_with(&"a".repeat(29_999)));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn build_shell_command_uses_cmd_and_executes_command() {
+        let output = build_shell_command("echo hello-from-cmd")
+            .output()
+            .await
+            .expect("run cmd command");
+        assert!(output.status.success(), "cmd command should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.to_ascii_lowercase().contains("hello-from-cmd"),
+            "unexpected stdout: {}",
+            stdout
+        );
     }
 }
 
