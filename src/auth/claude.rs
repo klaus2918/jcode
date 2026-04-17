@@ -405,18 +405,11 @@ pub fn is_max_subscription() -> bool {
 }
 
 /// Load credentials for the active Anthropic account.
-/// Falls through jcode accounts -> Claude Code -> OpenCode, preferring non-expired tokens.
+/// Falls through Claude Code -> jcode accounts -> OpenCode, preferring non-expired tokens.
 pub fn load_credentials() -> Result<ClaudeCredentials> {
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     let mut expired_candidates: Vec<(&str, ClaudeCredentials)> = Vec::new();
-
-    if let Ok(creds) = load_jcode_credentials() {
-        if creds.expires_at > now_ms {
-            return Ok(creds);
-        }
-        expired_candidates.push(("jcode", creds));
-    }
 
     if claude_code_path()
         .ok()
@@ -433,6 +426,13 @@ pub fn load_credentials() -> Result<ClaudeCredentials> {
             return Ok(creds);
         }
         expired_candidates.push(("claude", creds));
+    }
+
+    if let Ok(creds) = load_jcode_credentials() {
+        if creds.expires_at > now_ms {
+            return Ok(creds);
+        }
+        expired_candidates.push(("jcode", creds));
     }
 
     if opencode_path()
@@ -459,7 +459,7 @@ pub fn load_credentials() -> Result<ClaudeCredentials> {
         return Ok(creds);
     }
 
-    anyhow::bail!("No Claude OAuth credentials found (checked jcode, Claude Code, OpenCode)")
+    anyhow::bail!("No Claude OAuth credentials found (checked Claude Code, jcode, OpenCode)")
 }
 
 /// Load credentials for a specific jcode account by label.

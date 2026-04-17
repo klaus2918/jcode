@@ -286,6 +286,7 @@ impl Sidecar {
                 .header("anthropic-beta", OAUTH_BETA_HEADERS)
                 .header("content-type", "application/json")
                 .json(&request),
+            &crate::provider::anthropic::new_oauth_request_id(),
         )
         .send()
         .await

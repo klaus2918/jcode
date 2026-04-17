@@ -603,6 +603,7 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
             )
             .header("Authorization", format!("Bearer {}", access_token))
             .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219"),
+        &crate::provider::anthropic::new_oauth_request_id(),
     )
     .send()
     .await;

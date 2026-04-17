@@ -154,6 +154,7 @@ pub async fn fetch_anthropic_model_catalog_oauth(
                     crate::provider::anthropic::OAUTH_BETA_HEADERS,
                 )
                 .query(&[("limit", "1000")]),
+            &crate::provider::anthropic::new_oauth_request_id(),
         );
 
         if let Some(after) = after_id {

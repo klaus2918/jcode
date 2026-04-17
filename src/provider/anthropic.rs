@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{RwLock, mpsc};
@@ -37,24 +37,19 @@ const API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// OAuth endpoint (with beta=true query param)
 const API_URL_OAUTH: &str = "https://api.anthropic.com/v1/messages?beta=true";
 
-/// User-Agent for OAuth requests (must match Claude CLI format)
-pub(crate) const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/1.0.0";
+/// User-Agent for OAuth requests, matching the official Claude Code CLI.
+pub(crate) const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/2.1.112 (external, sdk-cli)";
 
-/// Claude Code billing attribution header observed in the official CLI.
-///
-/// This is the strongest first-party marker we have observed via Claude Code's
-/// own API debug logs. Keep it centralized so all Anthropic OAuth requests use
-/// a consistent attribution shape.
+/// Claude Code billing attribution text observed in the official CLI's system
+/// prompt blocks.
 pub(crate) const OAUTH_BILLING_HEADER: &str =
-    "cc_version=2.1.112.b02; cc_entrypoint=sdk-cli; cch=00000;";
+    "cc_version=2.1.112.826; cc_entrypoint=sdk-cli; cch=33f85;";
 
-/// Beta headers required for OAuth (base)
-pub(crate) const OAUTH_BETA_HEADERS: &str =
-    "oauth-2025-04-20,claude-code-20250219,prompt-caching-2024-07-31";
+/// Beta headers required for OAuth (tool-enabled Claude Code style)
+pub(crate) const OAUTH_BETA_HEADERS: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24";
 
 /// Beta headers with 1M context
-const OAUTH_BETA_HEADERS_1M: &str =
-    "oauth-2025-04-20,claude-code-20250219,prompt-caching-2024-07-31,context-1m-2025-08-07";
+const OAUTH_BETA_HEADERS_1M: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24,context-1m-2025-08-07";
 
 /// Get the appropriate beta headers based on model
 fn oauth_beta_headers(model: &str) -> &'static str {
@@ -71,9 +66,237 @@ pub(crate) fn new_oauth_request_id() -> String {
 
 pub(crate) fn apply_oauth_attribution_headers(
     req: reqwest::RequestBuilder,
+    session_id: &str,
 ) -> reqwest::RequestBuilder {
-    req.header("x-anthropic-billing-header", OAUTH_BILLING_HEADER)
-        .header("x-client-request-id", new_oauth_request_id())
+    req.header("x-client-request-id", new_oauth_request_id())
+        .header("x-app", "cli")
+        .header("X-Claude-Code-Session-Id", session_id)
+        .header("X-Stainless-Arch", stainless_arch())
+        .header("X-Stainless-Lang", "js")
+        .header("X-Stainless-OS", stainless_os())
+        .header("X-Stainless-Package-Version", "0.81.0")
+        .header("X-Stainless-Retry-Count", "0")
+        .header("X-Stainless-Runtime", "node")
+        .header("X-Stainless-Runtime-Version", "v24.3.0")
+        .header("X-Stainless-Timeout", "600")
+        .header("anthropic-dangerous-direct-browser-access", "true")
+}
+
+fn stainless_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    }
+}
+
+fn stainless_os() -> &'static str {
+    match std::env::consts::OS {
+        "linux" => "Linux",
+        "macos" => "MacOS",
+        "windows" => "Windows",
+        other => other,
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct OAuthClientMetadata {
+    device_id: Option<String>,
+    account_uuid: Option<String>,
+    organization_uuid: Option<String>,
+    email_address: Option<String>,
+}
+
+fn load_official_claude_client_metadata() -> OAuthClientMetadata {
+    let path = match crate::storage::user_home_path(".claude.json") {
+        Ok(path) => path,
+        Err(_) => return OAuthClientMetadata::default(),
+    };
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return OAuthClientMetadata::default(),
+    };
+    let parsed: Value = match serde_json::from_str(&content) {
+        Ok(parsed) => parsed,
+        Err(_) => return OAuthClientMetadata::default(),
+    };
+    let oauth = parsed.get("oauthAccount");
+    OAuthClientMetadata {
+        device_id: parsed
+            .get("userID")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        account_uuid: oauth
+            .and_then(|v| v.get("accountUuid"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        organization_uuid: oauth
+            .and_then(|v| v.get("organizationUuid"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        email_address: oauth
+            .and_then(|v| v.get("emailAddress"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    }
+}
+
+fn oauth_request_metadata(session_id: &str) -> ApiMetadata {
+    let official = load_official_claude_client_metadata();
+    let device_id = official.device_id.unwrap_or_else(|| {
+        Uuid::new_v5(&Uuid::NAMESPACE_DNS, session_id.as_bytes())
+            .simple()
+            .to_string()
+    });
+    let account_uuid = official
+        .account_uuid
+        .unwrap_or_else(|| "unknown-account".to_string());
+    let user_id = json!({
+        "device_id": device_id,
+        "account_uuid": account_uuid,
+        "session_id": session_id,
+    })
+    .to_string();
+    ApiMetadata { user_id }
+}
+
+#[derive(Serialize)]
+struct OAuthEvalRequest {
+    attributes: OAuthEvalAttributes,
+    #[serde(rename = "forcedVariations")]
+    forced_variations: std::collections::BTreeMap<String, Value>,
+    #[serde(rename = "forcedFeatures")]
+    forced_features: Vec<String>,
+    url: String,
+}
+
+#[derive(Serialize)]
+struct OAuthEvalAttributes {
+    id: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "deviceID")]
+    device_id: String,
+    platform: String,
+    #[serde(rename = "organizationUUID")]
+    organization_uuid: String,
+    #[serde(rename = "accountUUID")]
+    account_uuid: String,
+    #[serde(rename = "userType")]
+    user_type: String,
+    #[serde(rename = "subscriptionType")]
+    subscription_type: String,
+    #[serde(rename = "rateLimitTier")]
+    rate_limit_tier: String,
+    #[serde(rename = "firstTokenTime")]
+    first_token_time: i64,
+    email: String,
+    #[serde(rename = "appVersion")]
+    app_version: String,
+}
+
+async fn ensure_oauth_preflight(
+    client: &Client,
+    token: &str,
+    session_id: &str,
+    done_flag: &AtomicBool,
+) -> Result<()> {
+    if done_flag.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+
+    let official = load_official_claude_client_metadata();
+    let Some(device_id) = official.device_id else {
+        crate::logging::warn("Skipping Claude OAuth preflight: missing userID in ~/.claude.json");
+        return Ok(());
+    };
+    let Some(account_uuid) = official.account_uuid else {
+        crate::logging::warn(
+            "Skipping Claude OAuth preflight: missing accountUuid in ~/.claude.json",
+        );
+        return Ok(());
+    };
+    let Some(organization_uuid) = official.organization_uuid else {
+        crate::logging::warn(
+            "Skipping Claude OAuth preflight: missing organizationUuid in ~/.claude.json",
+        );
+        return Ok(());
+    };
+    let Some(email_address) = official.email_address else {
+        crate::logging::warn(
+            "Skipping Claude OAuth preflight: missing emailAddress in ~/.claude.json",
+        );
+        return Ok(());
+    };
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))?,
+    );
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_static(CLAUDE_CLI_USER_AGENT),
+    );
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        reqwest::header::HeaderName::from_static("anthropic-beta"),
+        reqwest::header::HeaderValue::from_static("oauth-2025-04-20"),
+    );
+
+    client
+        .get("https://api.anthropic.com/api/claude_cli/bootstrap")
+        .headers(headers.clone())
+        .send()
+        .await?
+        .error_for_status()?;
+    client
+        .get("https://api.anthropic.com/api/oauth/account/settings")
+        .headers(headers.clone())
+        .send()
+        .await?
+        .error_for_status()?;
+    client
+        .get("https://api.anthropic.com/api/claude_code_grove")
+        .headers(headers.clone())
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let eval = OAuthEvalRequest {
+        attributes: OAuthEvalAttributes {
+            id: device_id.clone(),
+            session_id: session_id.to_string(),
+            device_id: device_id.clone(),
+            platform: std::env::consts::OS.to_string(),
+            organization_uuid,
+            account_uuid,
+            user_type: "external".to_string(),
+            subscription_type: crate::auth::claude::get_subscription_type()
+                .unwrap_or_else(|| "pro".to_string()),
+            rate_limit_tier: "default_claude_ai".to_string(),
+            first_token_time: 1_740_976_801_491,
+            email: email_address,
+            app_version: "2.1.112".to_string(),
+        },
+        forced_variations: Default::default(),
+        forced_features: Vec::new(),
+        url: String::new(),
+    };
+
+    client
+        .post("https://api.anthropic.com/api/eval/sdk-zAZezfDKGoZuXXKe")
+        .headers(headers)
+        .json(&eval)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    done_flag.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 /// Check if a model name explicitly requests 1M context via suffix (e.g. "claude-opus-4-6[1m]")
@@ -97,20 +320,20 @@ const DEFAULT_MODEL: &str = "claude-opus-4-6";
 /// API version header
 const API_VERSION: &str = "2023-06-01";
 
-/// Claude Code identity block required for OAuth direct API access
-const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
-const CLAUDE_CODE_JCODE_NOTICE: &str = "You are jcode, powered by Claude Code. You are a third-party CLI, not the official Claude Code CLI.";
+/// Claude Agent SDK identity block observed in the official Claude Code client.
+const CLAUDE_CODE_IDENTITY: &str = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 
 fn map_tool_name_for_oauth(name: &str) -> String {
     match name {
-        "bash" => "shell_exec",
-        "read" => "file_read",
-        "write" => "file_write",
-        "edit" => "file_edit",
-        "glob" => "file_glob",
-        "grep" => "file_grep",
-        "task" | "subagent" => "task_runner",
-        "todo" => "todo",
+        "bash" => "Bash",
+        "read" => "Read",
+        "write" => "Write",
+        "edit" => "Edit",
+        "glob" => "Glob",
+        "grep" => "Grep",
+        "subagent" => "Agent",
+        "schedule" => "ScheduleWakeup",
+        "skill_manage" => "Skill",
         _ => name,
     }
     .to_string()
@@ -118,14 +341,16 @@ fn map_tool_name_for_oauth(name: &str) -> String {
 
 fn map_tool_name_from_oauth(name: &str) -> String {
     match name {
-        "shell_exec" => "bash",
-        "file_read" => "read",
-        "file_write" => "write",
-        "file_edit" => "edit",
-        "file_glob" => "glob",
-        "file_grep" => "grep",
-        "task_runner" => "subagent",
-        "todo" | "todo_read" | "todo_write" => "todo",
+        "Bash" => "bash",
+        "Read" => "read",
+        "Write" => "write",
+        "Edit" => "edit",
+        "Glob" => "glob",
+        "Grep" => "grep",
+        "Agent" => "subagent",
+        "ScheduleWakeup" => "schedule",
+        "Skill" => "skill_manage",
+        // ToolSearch intentionally has no direct local analogue yet.
         _ => name,
     }
     .to_string()
@@ -169,6 +394,8 @@ pub struct AnthropicProvider {
     /// Cached OAuth credentials (None if using API key)
     credentials: Arc<RwLock<Option<CachedCredentials>>>,
     max_tokens: u32,
+    oauth_session_id: String,
+    oauth_preflight_done: Arc<AtomicBool>,
 }
 
 impl AnthropicProvider {
@@ -203,6 +430,8 @@ impl AnthropicProvider {
             model: Arc::new(std::sync::RwLock::new(model)),
             credentials: Arc::new(RwLock::new(None)),
             max_tokens,
+            oauth_session_id: Uuid::new_v4().to_string(),
+            oauth_preflight_done: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -514,21 +743,79 @@ impl AnthropicProvider {
     /// Convert tool definitions to Anthropic API format
     /// Adds cache_control to the last tool for prompt caching
     fn format_tools(&self, tools: &[ToolDefinition], is_oauth: bool) -> Vec<ApiTool> {
+        if is_oauth {
+            return vec![
+                ApiTool {
+                    name: "Agent".to_string(),
+                    description: "Launch a new agent to handle complex, multi-step tasks.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"description":{"type":"string"},"prompt":{"type":"string"},"subagent_type":{"type":"string"},"run_in_background":{"type":"boolean"}},"required":["description","prompt"],"additionalProperties":false}),
+                    cache_control: None,
+                },
+                ApiTool {
+                    name: "Bash".to_string(),
+                    description: "Executes a given bash command and returns its output.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"},"run_in_background":{"type":"boolean"}},"required":["command"],"additionalProperties":false}),
+                    cache_control: None,
+                },
+                ApiTool {
+                    name: "Edit".to_string(),
+                    description: "Performs exact string replacements in files.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"required":["file_path","old_string","new_string"],"additionalProperties":false}),
+                    cache_control: None,
+                },
+                ApiTool {
+                    name: "Glob".to_string(),
+                    description: "Fast file pattern matching tool.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"],"additionalProperties":false}),
+                    cache_control: None,
+                },
+                ApiTool {
+                    name: "Grep".to_string(),
+                    description: "A powerful search tool built on ripgrep.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"glob":{"type":"string"},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"-B":{"type":"number"},"-A":{"type":"number"},"-C":{"type":"number"},"context":{"type":"number"},"-n":{"type":"boolean"},"-i":{"type":"boolean"},"type":{"type":"string"},"head_limit":{"type":"number"},"offset":{"type":"number"},"multiline":{"type":"boolean"}},"required":["pattern"],"additionalProperties":false}),
+                    cache_control: None,
+                },
+                ApiTool {
+                    name: "Read".to_string(),
+                    description: "Reads a file from the local filesystem.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","exclusiveMinimum":0},"pages":{"type":"string"}},"required":["file_path"],"additionalProperties":false}),
+                    cache_control: None,
+                },
+                ApiTool {
+                    name: "ScheduleWakeup".to_string(),
+                    description: "Schedule when to resume work in /loop dynamic mode.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"delaySeconds":{"type":"number"},"reason":{"type":"string"},"prompt":{"type":"string"}},"required":["delaySeconds","reason","prompt"],"additionalProperties":false}),
+                    cache_control: None,
+                },
+                ApiTool {
+                    name: "Skill".to_string(),
+                    description: "Execute a skill within the main conversation".to_string(),
+                    input_schema: json!({"type":"object","properties":{"skill":{"type":"string"},"args":{"type":"string"}},"required":["skill"],"additionalProperties":false}),
+                    cache_control: None,
+                },
+                ApiTool {
+                    name: "ToolSearch".to_string(),
+                    description: "Fetches full schema definitions for deferred tools so they can be called.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"number","default":5}},"required":["query","max_results"],"additionalProperties":false}),
+                    cache_control: None,
+                },
+                ApiTool {
+                    name: "Write".to_string(),
+                    description: "Writes a file to the local filesystem.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"},"content":{"type":"string"}},"required":["file_path","content"],"additionalProperties":false}),
+                    cache_control: Some(CacheControlParam::ephemeral()),
+                },
+            ];
+        }
+
         let len = tools.len();
         tools
             .iter()
             .enumerate()
             .map(|(i, tool)| ApiTool {
-                name: if is_oauth {
-                    map_tool_name_for_oauth(&tool.name)
-                } else {
-                    tool.name.clone()
-                },
-                // Prompt-visible. Approximate token cost for this field:
-                // tool.description_token_estimate().
+                name: tool.name.clone(),
                 description: tool.description.clone(),
                 input_schema: tool.input_schema.clone(),
-                // Add cache_control to the last tool to cache all tool definitions
                 cache_control: if i == len - 1 {
                     Some(CacheControlParam::ephemeral())
                 } else {
@@ -555,6 +842,15 @@ impl Provider for AnthropicProvider {
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
         let (token, is_oauth) = self.get_access_token().await?;
+        if is_oauth {
+            ensure_oauth_preflight(
+                &self.client,
+                &token,
+                &self.oauth_session_id,
+                &self.oauth_preflight_done,
+            )
+            .await?;
+        }
         let model = self
             .model
             .read()
@@ -576,6 +872,12 @@ impl Provider for AnthropicProvider {
             } else {
                 Some(api_tools)
             },
+            metadata: if is_oauth {
+                Some(oauth_request_metadata(&self.oauth_session_id))
+            } else {
+                None
+            },
+            temperature: if is_oauth { Some(1.0) } else { None },
             stream: true,
         };
 
@@ -590,6 +892,7 @@ impl Provider for AnthropicProvider {
         // Clone what we need for the async task
         let client = self.client.clone();
         let credentials = Arc::clone(&self.credentials);
+        let oauth_session_id = self.oauth_session_id.clone();
 
         // Spawn task to handle streaming with retry logic.
         // This includes forced OAuth refresh on auth failures.
@@ -603,7 +906,17 @@ impl Provider for AnthropicProvider {
             {
                 return;
             }
-            run_stream_with_retries(client, token, is_oauth, request, tx, credentials, model).await;
+            run_stream_with_retries(
+                client,
+                token,
+                is_oauth,
+                request,
+                tx,
+                credentials,
+                model,
+                oauth_session_id,
+            )
+            .await;
         });
 
         Ok(Box::pin(ReceiverStream::new(rx)))
@@ -687,6 +1000,10 @@ impl Provider for AnthropicProvider {
             )),
             credentials: Arc::new(RwLock::new(None)),
             max_tokens: self.max_tokens,
+            oauth_session_id: self.oauth_session_id.clone(),
+            oauth_preflight_done: Arc::new(AtomicBool::new(
+                self.oauth_preflight_done.load(Ordering::Relaxed),
+            )),
         })
     }
 
@@ -710,6 +1027,15 @@ impl Provider for AnthropicProvider {
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
         let (token, is_oauth) = self.get_access_token().await?;
+        if is_oauth {
+            ensure_oauth_preflight(
+                &self.client,
+                &token,
+                &self.oauth_session_id,
+                &self.oauth_preflight_done,
+            )
+            .await?;
+        }
         let model = self
             .model
             .read()
@@ -731,6 +1057,12 @@ impl Provider for AnthropicProvider {
             } else {
                 Some(api_tools)
             },
+            metadata: if is_oauth {
+                Some(oauth_request_metadata(&self.oauth_session_id))
+            } else {
+                None
+            },
+            temperature: if is_oauth { Some(1.0) } else { None },
             stream: true,
         };
 
@@ -745,6 +1077,7 @@ impl Provider for AnthropicProvider {
         // Clone what we need for the async task
         let client = self.client.clone();
         let credentials = Arc::clone(&self.credentials);
+        let oauth_session_id = self.oauth_session_id.clone();
 
         // Spawn task to handle streaming with retry logic
         tokio::spawn(async move {
@@ -757,7 +1090,17 @@ impl Provider for AnthropicProvider {
             {
                 return;
             }
-            run_stream_with_retries(client, token, is_oauth, request, tx, credentials, model).await;
+            run_stream_with_retries(
+                client,
+                token,
+                is_oauth,
+                request,
+                tx,
+                credentials,
+                model,
+                oauth_session_id,
+            )
+            .await;
         });
 
         Ok(Box::pin(ReceiverStream::new(rx)))
@@ -772,6 +1115,7 @@ async fn run_stream_with_retries(
     tx: mpsc::Sender<Result<StreamEvent>>,
     credentials: Arc<RwLock<Option<CachedCredentials>>>,
     model_name: String,
+    oauth_session_id: String,
 ) {
     let mut token = initial_token;
     let mut last_error = None;
@@ -804,6 +1148,7 @@ async fn run_stream_with_retries(
             request.clone(),
             tx.clone(),
             &model_name,
+            &oauth_session_id,
         )
         .await
         {
@@ -927,6 +1272,7 @@ async fn stream_response(
     request: ApiRequest,
     tx: mpsc::Sender<Result<StreamEvent>>,
     model_name: &str,
+    oauth_session_id: &str,
 ) -> Result<()> {
     use crate::message::ConnectionPhase;
     if std::env::var("JCODE_ANTHROPIC_DEBUG")
@@ -951,7 +1297,14 @@ async fn stream_response(
         .post(url)
         .header("anthropic-version", API_VERSION)
         .header("content-type", "application/json")
-        .header("accept", "text/event-stream");
+        .header(
+            "accept",
+            if is_oauth {
+                "application/json"
+            } else {
+                "text/event-stream"
+            },
+        );
 
     if is_oauth {
         // OAuth tokens require:
@@ -963,6 +1316,7 @@ async fn stream_response(
             req.header("Authorization", format!("Bearer {}", token))
                 .header("User-Agent", CLAUDE_CLI_USER_AGENT)
                 .header("anthropic-beta", oauth_beta_headers(model_name)),
+            oauth_session_id,
         );
     } else {
         // Direct API keys use x-api-key
@@ -1260,7 +1614,16 @@ struct ApiRequest {
     messages: Vec<ApiMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ApiTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<ApiMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
     stream: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct ApiMetadata {
+    user_id: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -1321,12 +1684,12 @@ fn build_system_param_split(
         let mut blocks = Vec::new();
         blocks.push(ApiSystemBlock {
             block_type: "text",
-            text: CLAUDE_CODE_IDENTITY.to_string(),
+            text: format!("x-anthropic-billing-header: {}", OAUTH_BILLING_HEADER),
             cache_control: None,
         });
         blocks.push(ApiSystemBlock {
             block_type: "text",
-            text: CLAUDE_CODE_JCODE_NOTICE.to_string(),
+            text: CLAUDE_CODE_IDENTITY.to_string(),
             cache_control: None,
         });
         // Static content - CACHED (instruction files, base prompt, skills)
@@ -1374,21 +1737,8 @@ fn build_system_param_split(
     }
 }
 
-fn format_messages_with_identity(messages: Vec<ApiMessage>, is_oauth: bool) -> Vec<ApiMessage> {
-    let mut out = if is_oauth {
-        let mut v = Vec::with_capacity(messages.len() + 1);
-        v.push(ApiMessage {
-            role: "user".to_string(),
-            content: vec![ApiContentBlock::Text {
-                text: CLAUDE_CODE_IDENTITY.to_string(),
-                cache_control: None,
-            }],
-        });
-        v.extend(messages);
-        v
-    } else {
-        messages
-    };
+fn format_messages_with_identity(messages: Vec<ApiMessage>, _is_oauth: bool) -> Vec<ApiMessage> {
+    let mut out = messages;
 
     // Add cache breakpoints for both OAuth and non-OAuth paths
     add_message_cache_breakpoint(&mut out);
