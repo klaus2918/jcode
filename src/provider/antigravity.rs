@@ -4,9 +4,9 @@ use crate::auth::antigravity as antigravity_auth;
 use crate::message::{Message, ToolDefinition};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -30,23 +30,75 @@ const FETCH_MODELS_API_URL: &str =
 const VERSION_ENV: &str = "JCODE_ANTIGRAVITY_VERSION";
 const ANTIGRAVITY_VERSION: &str = "1.18.3";
 const X_GOOG_API_CLIENT: &str = "google-cloud-sdk vscode_cloudshelleditor/0.1";
+const CATALOG_REFRESH_TTL_HOURS: i64 = 6;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 struct PersistedCatalog {
-    models: Vec<String>,
+    models: Vec<CatalogModel>,
     fetched_at_rfc3339: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+struct CatalogModel {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reset_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u64>,
+    #[serde(default)]
+    recommended: bool,
+    #[serde(default)]
+    available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remaining_fraction_milli: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]
 struct FetchAvailableModelsResponse {
     #[serde(default)]
     models: HashMap<String, FetchAvailableModelEntry>,
+    #[serde(default)]
+    default_agent_model_id: Option<String>,
+    #[serde(default)]
+    command_model_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct FetchAvailableModelEntry {
     #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
     model_name: Option<String>,
+    #[serde(default)]
+    quota_info: Option<FetchAvailableQuotaInfo>,
+    #[serde(default)]
+    recommended: bool,
+    #[serde(default)]
+    tag_title: Option<String>,
+    #[serde(default)]
+    model_provider: Option<String>,
+    #[serde(default)]
+    max_tokens: Option<u64>,
+    #[serde(default)]
+    max_output_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FetchAvailableQuotaInfo {
+    #[serde(default)]
+    remaining_fraction: Option<f64>,
+    #[serde(default)]
+    reset_time: Option<String>,
 }
 
 fn metadata_platform() -> &'static str {
@@ -82,7 +134,22 @@ fn client_metadata_header() -> String {
     )
 }
 
-fn merge_antigravity_model_lists(models: Vec<String>) -> Vec<String> {
+fn remaining_fraction_to_milli(value: Option<f64>) -> Option<u16> {
+    let value = value?;
+    if !value.is_finite() {
+        return None;
+    }
+    let clamped = value.clamp(0.0, 1.0);
+    Some((clamped * 1000.0).round() as u16)
+}
+
+fn merge_antigravity_model_ids(models: impl IntoIterator<Item = String>) -> Vec<String> {
+    let models: Vec<String> = models
+        .into_iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .collect();
+
     let mut seen = HashSet::new();
     let mut preferred = Vec::new();
 
@@ -94,38 +161,192 @@ fn merge_antigravity_model_lists(models: Vec<String>) -> Vec<String> {
 
     let mut extras: Vec<String> = models
         .into_iter()
-        .map(|model| model.trim().to_string())
-        .filter(|model| !model.is_empty() && seen.insert(model.clone()))
+        .filter(|model| seen.insert(model.clone()))
         .collect();
     extras.sort();
     preferred.extend(extras);
     preferred
 }
 
-fn parse_fetch_available_models_response(response: &FetchAvailableModelsResponse) -> Vec<String> {
-    let mut discovered = BTreeSet::new();
+fn parse_fetch_available_models_response(
+    response: &FetchAvailableModelsResponse,
+) -> Vec<CatalogModel> {
+    let mut preferred_ids = Vec::new();
+    if let Some(default_agent_model_id) = response.default_agent_model_id.as_deref() {
+        preferred_ids.push(default_agent_model_id.trim().to_string());
+    }
+    preferred_ids.extend(
+        response
+            .command_model_ids
+            .iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty()),
+    );
+    preferred_ids.extend(response.models.keys().map(|id| id.trim().to_string()));
+
+    let ordered_ids = merge_antigravity_model_ids(preferred_ids);
+    let mut by_id: HashMap<String, CatalogModel> = HashMap::new();
 
     for (model_id, entry) in &response.models {
-        let trimmed = model_id.trim();
-        if !trimmed.is_empty() {
-            discovered.insert(trimmed.to_string());
+        let id = model_id.trim();
+        if id.is_empty() {
+            continue;
         }
-        if let Some(model_name) = entry.model_name.as_deref() {
-            let trimmed = model_name.trim();
-            if !trimmed.is_empty() {
-                discovered.insert(trimmed.to_string());
-            }
+        let available = entry
+            .quota_info
+            .as_ref()
+            .and_then(|quota| quota.remaining_fraction)
+            .map(|remaining| remaining > 0.0)
+            .unwrap_or(true);
+        by_id.insert(
+            id.to_string(),
+            CatalogModel {
+                id: id.to_string(),
+                display_name: entry
+                    .display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                reset_time: entry
+                    .quota_info
+                    .as_ref()
+                    .and_then(|quota| quota.reset_time.as_deref())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                tag_title: entry
+                    .tag_title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                model_provider: entry
+                    .model_provider
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                max_tokens: entry.max_tokens,
+                max_output_tokens: entry.max_output_tokens,
+                recommended: entry.recommended,
+                available,
+                remaining_fraction_milli: remaining_fraction_to_milli(
+                    entry
+                        .quota_info
+                        .as_ref()
+                        .and_then(|quota| quota.remaining_fraction),
+                ),
+            },
+        );
+
+        if let Some(alias) = entry.model_name.as_deref().map(str::trim)
+            && !alias.is_empty()
+            && alias != id
+        {
+            by_id
+                .entry(alias.to_string())
+                .or_insert_with(|| CatalogModel {
+                    id: alias.to_string(),
+                    display_name: entry
+                        .display_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    reset_time: entry
+                        .quota_info
+                        .as_ref()
+                        .and_then(|quota| quota.reset_time.as_deref())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    tag_title: entry
+                        .tag_title
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    model_provider: entry
+                        .model_provider
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    max_tokens: entry.max_tokens,
+                    max_output_tokens: entry.max_output_tokens,
+                    recommended: entry.recommended,
+                    available,
+                    remaining_fraction_milli: remaining_fraction_to_milli(
+                        entry
+                            .quota_info
+                            .as_ref()
+                            .and_then(|quota| quota.remaining_fraction),
+                    ),
+                });
         }
     }
 
-    merge_antigravity_model_lists(discovered.into_iter().collect())
+    ordered_ids
+        .into_iter()
+        .map(|id| {
+            by_id.remove(&id).unwrap_or(CatalogModel {
+                id,
+                display_name: None,
+                reset_time: None,
+                tag_title: None,
+                model_provider: None,
+                max_tokens: None,
+                max_output_tokens: None,
+                recommended: false,
+                available: true,
+                remaining_fraction_milli: None,
+            })
+        })
+        .collect()
+}
+
+fn catalog_model_detail(model: &CatalogModel) -> String {
+    let mut parts = Vec::new();
+    if let Some(display_name) = model.display_name.as_deref()
+        && display_name != model.id
+    {
+        parts.push(display_name.to_string());
+    }
+    if model.recommended {
+        parts.push("recommended".to_string());
+    }
+    if let Some(tag_title) = model.tag_title.as_deref() {
+        parts.push(tag_title.to_string());
+    }
+    if let Some(model_provider) = model.model_provider.as_deref() {
+        parts.push(model_provider.to_ascii_lowercase());
+    }
+    if let Some(remaining) = model.remaining_fraction_milli {
+        let percent = remaining as f64 / 10.0;
+        parts.push(format!("quota {:.1}%", percent));
+    }
+    if let Some(reset_time) = model.reset_time.as_deref() {
+        parts.push(format!("resets {}", reset_time));
+    }
+    parts.join(" · ")
+}
+
+fn catalog_is_stale(fetched_at_rfc3339: &str) -> bool {
+    let Ok(fetched_at) = DateTime::parse_from_rfc3339(fetched_at_rfc3339) else {
+        return true;
+    };
+    Utc::now()
+        .signed_duration_since(fetched_at.with_timezone(&Utc))
+        .num_hours()
+        >= CATALOG_REFRESH_TTL_HOURS
 }
 
 pub struct AntigravityCliProvider {
     cli_path: String,
     client: reqwest::Client,
     model: Arc<RwLock<String>>,
-    fetched_models: Arc<RwLock<Vec<String>>>,
+    fetched_catalog: Arc<RwLock<Vec<CatalogModel>>>,
     prompt_flag: Option<String>,
     model_flag: Option<String>,
 }
@@ -136,7 +357,7 @@ impl Clone for AntigravityCliProvider {
             cli_path: self.cli_path.clone(),
             client: self.client.clone(),
             model: self.model.clone(),
-            fetched_models: self.fetched_models.clone(),
+            fetched_catalog: self.fetched_catalog.clone(),
             prompt_flag: self.prompt_flag.clone(),
             model_flag: self.model_flag.clone(),
         }
@@ -155,7 +376,7 @@ impl AntigravityCliProvider {
             .filter(|catalog: &PersistedCatalog| !catalog.models.is_empty())
     }
 
-    fn persist_catalog(models: &[String]) {
+    fn persist_catalog(models: &[CatalogModel]) {
         if models.is_empty() {
             return;
         }
@@ -177,8 +398,13 @@ impl AntigravityCliProvider {
 
     fn seed_cached_catalog(&self) {
         if let Some(catalog) = Self::load_persisted_catalog()
-            && let Ok(mut models) = self.fetched_models.write()
+            && let Ok(mut models) = self.fetched_catalog.write()
         {
+            if catalog_is_stale(&catalog.fetched_at_rfc3339) {
+                crate::logging::info(
+                    "Loaded stale persisted Antigravity model catalog; a refresh will update it on next prefetch",
+                );
+            }
             *models = catalog.models;
         }
     }
@@ -199,7 +425,7 @@ impl AntigravityCliProvider {
             cli_path,
             client: crate::provider::shared_http_client(),
             model: Arc::new(RwLock::new(model)),
-            fetched_models: Arc::new(RwLock::new(Vec::new())),
+            fetched_catalog: Arc::new(RwLock::new(Vec::new())),
             prompt_flag,
             model_flag,
         };
@@ -207,18 +433,23 @@ impl AntigravityCliProvider {
         provider
     }
 
-    async fn fetch_available_models(&self) -> Result<Vec<String>> {
-        let mut tokens = antigravity_auth::load_or_refresh_tokens().await?;
-        let project_id = match tokens.project_id.clone() {
-            Some(project_id) if !project_id.trim().is_empty() => project_id,
-            _ => {
-                let project_id = antigravity_auth::fetch_project_id(&tokens.access_token)
-                    .await
-                    .context("Failed to resolve Antigravity project for model discovery")?;
-                tokens.project_id = Some(project_id.clone());
-                let _ = antigravity_auth::save_tokens(&tokens);
-                project_id
-            }
+    fn fetched_catalog(&self) -> Vec<CatalogModel> {
+        self.fetched_catalog
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    async fn fetch_available_models_with_project(
+        &self,
+        access_token: &str,
+        project_id: Option<&str>,
+    ) -> Result<Vec<CatalogModel>> {
+        let request = if let Some(project_id) = project_id.filter(|value| !value.trim().is_empty())
+        {
+            serde_json::json!({ "project": project_id })
+        } else {
+            serde_json::json!({})
         };
 
         let response = self
@@ -226,7 +457,7 @@ impl AntigravityCliProvider {
             .post(FETCH_MODELS_API_URL)
             .header(
                 reqwest::header::AUTHORIZATION,
-                format!("Bearer {}", tokens.access_token),
+                format!("Bearer {}", access_token),
             )
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header(reqwest::header::USER_AGENT, antigravity_user_agent())
@@ -238,7 +469,7 @@ impl AntigravityCliProvider {
                 reqwest::header::HeaderName::from_static("client-metadata"),
                 client_metadata_header(),
             )
-            .json(&serde_json::json!({ "project": project_id }))
+            .json(&request)
             .send()
             .await
             .context("Failed to fetch Antigravity model catalog")?;
@@ -258,6 +489,39 @@ impl AntigravityCliProvider {
             .await
             .context("Failed to decode Antigravity model catalog response")?;
         Ok(parse_fetch_available_models_response(&parsed))
+    }
+
+    async fn fetch_available_models(&self) -> Result<Vec<CatalogModel>> {
+        let mut tokens = antigravity_auth::load_or_refresh_tokens().await?;
+
+        if let Ok(models) = self
+            .fetch_available_models_with_project(&tokens.access_token, None)
+            .await
+            && !models.is_empty()
+        {
+            return Ok(models);
+        }
+
+        if let Some(project_id) = tokens.project_id.clone()
+            && !project_id.trim().is_empty()
+            && let Ok(models) = self
+                .fetch_available_models_with_project(&tokens.access_token, Some(&project_id))
+                .await
+            && !models.is_empty()
+        {
+            return Ok(models);
+        }
+
+        if let Ok(project_id) = antigravity_auth::fetch_project_id(&tokens.access_token).await {
+            tokens.project_id = Some(project_id.clone());
+            let _ = antigravity_auth::save_tokens(&tokens);
+            return self
+                .fetch_available_models_with_project(&tokens.access_token, Some(&project_id))
+                .await;
+        }
+
+        self.fetch_available_models_with_project(&tokens.access_token, None)
+            .await
     }
 }
 
@@ -347,16 +611,12 @@ impl Provider for AntigravityCliProvider {
     }
 
     fn available_models_display(&self) -> Vec<String> {
-        let dynamic = self
-            .fetched_models
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        merge_antigravity_model_lists(
-            dynamic
+        let catalog = self.fetched_catalog();
+        merge_antigravity_model_ids(
+            catalog
                 .into_iter()
-                .chain(std::iter::once(self.model()))
-                .collect(),
+                .map(|model| model.id)
+                .chain(std::iter::once(self.model())),
         )
     }
 
@@ -365,6 +625,21 @@ impl Provider for AntigravityCliProvider {
     }
 
     fn model_routes(&self) -> Vec<super::ModelRoute> {
+        let catalog = self.fetched_catalog();
+        if !catalog.is_empty() {
+            return catalog
+                .into_iter()
+                .map(|model| super::ModelRoute {
+                    model: model.id.clone(),
+                    provider: "Antigravity".to_string(),
+                    api_method: "cli".to_string(),
+                    available: model.available,
+                    detail: catalog_model_detail(&model),
+                    cheapness: None,
+                })
+                .collect();
+        }
+
         self.available_models_display()
             .into_iter()
             .map(|model| super::ModelRoute {
@@ -372,7 +647,7 @@ impl Provider for AntigravityCliProvider {
                 provider: "Antigravity".to_string(),
                 api_method: "cli".to_string(),
                 available: true,
-                detail: String::new(),
+                detail: "fallback catalog".to_string(),
                 cheapness: None,
             })
             .collect()
@@ -395,11 +670,15 @@ impl Provider for AntigravityCliProvider {
                 if !models.is_empty() {
                     crate::logging::info(&format!(
                         "Discovered Antigravity models: {}",
-                        models.join(", ")
+                        models
+                            .iter()
+                            .map(|model| model.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
                     Self::persist_catalog(&models);
                     *self
-                        .fetched_models
+                        .fetched_catalog
                         .write()
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) = models;
                 }
@@ -424,7 +703,7 @@ impl Provider for AntigravityCliProvider {
             cli_path: self.cli_path.clone(),
             client: self.client.clone(),
             model: Arc::new(RwLock::new(self.model())),
-            fetched_models: self.fetched_models.clone(),
+            fetched_catalog: self.fetched_catalog.clone(),
             prompt_flag: self.prompt_flag.clone(),
             model_flag: self.model_flag.clone(),
         })
@@ -436,39 +715,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_fetch_available_models_response_discovers_keys_and_model_names() {
+    fn parse_fetch_available_models_response_discovers_metadata_and_priority_order() {
         let response: FetchAvailableModelsResponse = serde_json::from_value(serde_json::json!({
+            "defaultAgentModelId": "gemini-3.1-pro-high",
+            "commandModelIds": ["gemini-3-flash"],
             "models": {
                 "claude-opus-4-6-thinking": {
-                    "modelName": "claude-opus-4-6-thinking"
+                    "displayName": "Claude Opus 4.6 (Thinking)",
+                    "quotaInfo": { "remainingFraction": 1, "resetTime": "2026-04-24T20:53:26Z" },
+                    "recommended": true,
+                    "modelProvider": "MODEL_PROVIDER_ANTHROPIC"
                 },
-                "gemini-3-pro-high": {
-                    "modelName": "gemini-3-pro-high"
+                "gemini-3.1-pro-high": {
+                    "displayName": "Gemini 3.1 Pro (High)",
+                    "quotaInfo": { "remainingFraction": 0.25 }
                 },
                 "gpt-oss-120b-medium": {}
             }
         }))
         .expect("parse response");
 
+        let parsed = parse_fetch_available_models_response(&response);
+        assert_eq!(parsed[0].id, "claude-opus-4-6-thinking");
+        assert_eq!(parsed[1].id, "gemini-3.1-pro-high");
+        assert_eq!(parsed[2].id, "gpt-oss-120b-medium");
         assert_eq!(
-            parse_fetch_available_models_response(&response),
-            vec![
-                "claude-opus-4-6-thinking".to_string(),
-                "gemini-3-pro-high".to_string(),
-                "gpt-oss-120b-medium".to_string(),
-            ]
+            parsed[0].display_name.as_deref(),
+            Some("Claude Opus 4.6 (Thinking)")
         );
+        assert_eq!(parsed[1].remaining_fraction_milli, Some(250));
     }
 
     #[test]
     fn available_models_display_includes_dynamic_cache_and_current_override() {
         let provider = AntigravityCliProvider::new();
-        *provider
-            .fetched_models
-            .write()
-            .expect("fetched models lock") = vec![
-            "claude-opus-4-6-thinking".to_string(),
-            "gemini-3-pro-high".to_string(),
+        *provider.fetched_catalog.write().expect("catalog lock") = vec![
+            CatalogModel {
+                id: "claude-opus-4-6-thinking".to_string(),
+                display_name: None,
+                reset_time: None,
+                tag_title: None,
+                model_provider: None,
+                max_tokens: None,
+                max_output_tokens: None,
+                recommended: true,
+                available: true,
+                remaining_fraction_milli: Some(1000),
+            },
+            CatalogModel {
+                id: "gemini-3-pro-high".to_string(),
+                display_name: None,
+                reset_time: None,
+                tag_title: None,
+                model_provider: None,
+                max_tokens: None,
+                max_output_tokens: None,
+                recommended: false,
+                available: true,
+                remaining_fraction_milli: Some(1000),
+            },
         ];
         provider
             .set_model("custom-antigravity-model")
@@ -492,7 +797,18 @@ mod tests {
         crate::storage::write_json(
             &path,
             &PersistedCatalog {
-                models: vec!["claude-opus-4-6-thinking".to_string()],
+                models: vec![CatalogModel {
+                    id: "claude-opus-4-6-thinking".to_string(),
+                    display_name: Some("Claude Opus 4.6 (Thinking)".to_string()),
+                    reset_time: None,
+                    tag_title: None,
+                    model_provider: None,
+                    max_tokens: None,
+                    max_output_tokens: None,
+                    recommended: true,
+                    available: true,
+                    remaining_fraction_milli: Some(1000),
+                }],
                 fetched_at_rfc3339: Utc::now().to_rfc3339(),
             },
         )
@@ -510,5 +826,30 @@ mod tests {
         } else {
             crate::env::remove_var("JCODE_HOME");
         }
+    }
+
+    #[test]
+    fn catalog_detail_mentions_quota_and_reset() {
+        let detail = catalog_model_detail(&CatalogModel {
+            id: "claude-opus-4-6-thinking".to_string(),
+            display_name: Some("Claude Opus 4.6 (Thinking)".to_string()),
+            reset_time: Some("2026-04-24T20:53:26Z".to_string()),
+            tag_title: Some("New".to_string()),
+            model_provider: Some("MODEL_PROVIDER_ANTHROPIC".to_string()),
+            max_tokens: Some(250_000),
+            max_output_tokens: Some(64_000),
+            recommended: true,
+            available: true,
+            remaining_fraction_milli: Some(1000),
+        });
+
+        assert!(detail.contains("recommended"));
+        assert!(detail.contains("quota 100.0%"));
+        assert!(detail.contains("resets 2026-04-24T20:53:26Z"));
+    }
+
+    #[test]
+    fn catalog_stale_handles_invalid_timestamp() {
+        assert!(catalog_is_stale("not-a-time"));
     }
 }
