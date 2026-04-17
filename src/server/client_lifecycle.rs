@@ -22,7 +22,8 @@ use super::comm_plan::{
 };
 use super::comm_session::{handle_comm_spawn, handle_comm_stop};
 use super::comm_sync::{
-    handle_comm_read_context, handle_comm_resync_plan, handle_comm_status, handle_comm_summary,
+    handle_comm_plan_status, handle_comm_read_context, handle_comm_resync_plan, handle_comm_status,
+    handle_comm_summary,
 };
 use super::provider_control::{
     handle_cycle_model, handle_notify_auth_changed, handle_refresh_models,
@@ -1404,6 +1405,20 @@ pub(super) async fn handle_client(
                     &swarm_members,
                     &client_connections,
                     &files_touched_by_session,
+                    &client_event_tx,
+                )
+                .await;
+            }
+
+            Request::CommPlanStatus {
+                id,
+                session_id: req_session_id,
+            } => {
+                handle_comm_plan_status(
+                    id,
+                    req_session_id,
+                    &swarm_members,
+                    &swarm_plans,
                     &client_event_tx,
                 )
                 .await;

@@ -455,6 +455,23 @@ fn test_comm_status_roundtrip() -> Result<()> {
 }
 
 #[test]
+fn test_comm_plan_status_roundtrip() -> Result<()> {
+    let req = Request::CommPlanStatus {
+        id: 59,
+        session_id: "sess_coord".to_string(),
+    };
+    let json = serde_json::to_string(&req)?;
+    assert!(json.contains("\"type\":\"comm_plan_status\""));
+    let decoded = parse_request_json(&json)?;
+    assert_eq!(decoded.id(), 59);
+    let Request::CommPlanStatus { session_id, .. } = decoded else {
+        return Err(anyhow!("expected CommPlanStatus"));
+    };
+    assert_eq!(session_id, "sess_coord");
+    Ok(())
+}
+
+#[test]
 fn test_comm_members_roundtrip_includes_status() -> Result<()> {
     let event = ServerEvent::CommMembers {
         id: 9,

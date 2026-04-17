@@ -4,7 +4,7 @@ use super::{Tool, ToolContext, ToolOutput};
 use crate::plan::PlanItem;
 use crate::protocol::{
     AgentInfo, AgentStatusSnapshot, AwaitedMemberStatus, CommDeliveryMode, ContextEntry,
-    HistoryMessage, Request, ServerEvent, SwarmChannelInfo, ToolCallSummary,
+    HistoryMessage, PlanGraphStatus, Request, ServerEvent, SwarmChannelInfo, ToolCallSummary,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -307,6 +307,54 @@ fn format_status_snapshot(snapshot: &AgentStatusSnapshot) -> ToolOutput {
     ToolOutput::new(output)
 }
 
+fn format_plan_status(summary: &PlanGraphStatus) -> ToolOutput {
+    let swarm_id = summary.swarm_id.as_deref().unwrap_or("unknown");
+    let mut output = format!(
+        "Plan status for swarm {}\n\n  Version: {}\n  Items: {}\n",
+        swarm_id, summary.version, summary.item_count
+    );
+
+    output.push_str(&format!(
+        "  Ready: {}\n",
+        if summary.ready_ids.is_empty() {
+            "(none)".to_string()
+        } else {
+            summary.ready_ids.join(", ")
+        }
+    ));
+    output.push_str(&format!(
+        "  Next up: {}\n",
+        if summary.next_ready_ids.is_empty() {
+            "(none)".to_string()
+        } else {
+            summary.next_ready_ids.join(", ")
+        }
+    ));
+    if !summary.blocked_ids.is_empty() {
+        output.push_str(&format!("  Blocked: {}\n", summary.blocked_ids.join(", ")));
+    }
+    if !summary.active_ids.is_empty() {
+        output.push_str(&format!("  Active: {}\n", summary.active_ids.join(", ")));
+    }
+    if !summary.completed_ids.is_empty() {
+        output.push_str(&format!(
+            "  Completed: {}\n",
+            summary.completed_ids.join(", ")
+        ));
+    }
+    if !summary.cycle_ids.is_empty() {
+        output.push_str(&format!("  Cycles: {}\n", summary.cycle_ids.join(", ")));
+    }
+    if !summary.unresolved_dependency_ids.is_empty() {
+        output.push_str(&format!(
+            "  Missing deps: {}\n",
+            summary.unresolved_dependency_ids.join(", ")
+        ));
+    }
+
+    ToolOutput::new(output)
+}
+
 fn format_context_history(target: &str, messages: &[HistoryMessage]) -> ToolOutput {
     if messages.is_empty() {
         ToolOutput::new(format!("No conversation history for {}", target))
@@ -461,7 +509,7 @@ impl Tool for CommunicateTool {
                     "type": "string",
                     "enum": ["share", "share_append", "read", "message", "broadcast", "dm", "channel", "list", "list_channels", "channel_members",
                              "propose_plan", "approve_plan", "reject_plan", "spawn", "stop", "assign_role",
-                             "status", "summary", "read_context", "resync_plan", "assign_task",
+                             "status", "plan_status", "summary", "read_context", "resync_plan", "assign_task",
                              "start", "wake", "resume", "retry", "reassign", "replace", "salvage",
                              "subscribe_channel", "unsubscribe_channel", "await_members"],
                     "description": "Action. For spawn, prefer including prompt with the initial task so the new agent starts useful work immediately."
@@ -931,6 +979,24 @@ impl Tool for CommunicateTool {
                 }
             }
 
+            "plan_status" => {
+                let request = Request::CommPlanStatus {
+                    id: REQUEST_ID,
+                    session_id: ctx.session_id.clone(),
+                };
+
+                match send_request(request).await {
+                    Ok(ServerEvent::CommPlanStatusResponse { summary, .. }) => {
+                        Ok(format_plan_status(&summary))
+                    }
+                    Ok(response) => {
+                        ensure_success(&response)?;
+                        Ok(ToolOutput::new("No plan status returned."))
+                    }
+                    Err(e) => Err(anyhow::anyhow!("Failed to get plan status: {}", e)),
+                }
+            }
+
             "summary" => {
                 let target = params.target_session.ok_or_else(|| {
                     anyhow::anyhow!("'target_session' is required for summary action")
@@ -1133,7 +1199,7 @@ impl Tool for CommunicateTool {
 
             _ => Err(anyhow::anyhow!(
                 "Unknown action '{}'. Valid actions: share, share_append, read, message, broadcast, dm, channel, list, list_channels, channel_members, \
-                 propose_plan, approve_plan, reject_plan, spawn, stop, assign_role, status, summary, read_context, \
+                 propose_plan, approve_plan, reject_plan, spawn, stop, assign_role, status, plan_status, summary, read_context, \
                  resync_plan, assign_task, start, wake, resume, retry, reassign, replace, salvage, subscribe_channel, unsubscribe_channel, await_members",
                 params.action
             )),
@@ -1145,7 +1211,7 @@ impl Tool for CommunicateTool {
 mod tests {
     use super::{
         CommunicateInput, CommunicateTool, default_await_target_statuses, format_awaited_members,
-        format_members,
+        format_members, format_plan_status,
     };
     use crate::message::{Message, StreamEvent, ToolDefinition};
     use crate::protocol::{
@@ -1168,6 +1234,26 @@ mod tests {
     #[test]
     fn tool_is_named_swarm() {
         assert_eq!(CommunicateTool::new().name(), "swarm");
+    }
+
+    #[test]
+    fn format_plan_status_includes_next_ready() {
+        let output = format_plan_status(&crate::protocol::PlanGraphStatus {
+            swarm_id: Some("swarm-a".to_string()),
+            version: 3,
+            item_count: 4,
+            ready_ids: vec!["task-2".to_string(), "task-3".to_string()],
+            blocked_ids: vec!["task-4".to_string()],
+            active_ids: vec!["task-1".to_string()],
+            completed_ids: vec!["setup".to_string()],
+            cycle_ids: Vec::new(),
+            unresolved_dependency_ids: Vec::new(),
+            next_ready_ids: vec!["task-2".to_string()],
+        });
+        let text = output.output;
+        assert!(text.contains("Plan status for swarm swarm-a"));
+        assert!(text.contains("Next up: task-2"));
+        assert!(text.contains("Blocked: task-4"));
     }
 
     #[test]
@@ -1223,6 +1309,12 @@ mod tests {
                 .as_array()
                 .expect("action enum")
                 .contains(&json!("status"))
+        );
+        assert!(
+            schema["properties"]["action"]["enum"]
+                .as_array()
+                .expect("action enum")
+                .contains(&json!("plan_status"))
         );
         assert!(
             schema["properties"]["action"]["enum"]

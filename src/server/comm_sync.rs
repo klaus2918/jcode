@@ -3,8 +3,9 @@ use super::{
     broadcast_swarm_plan, persist_swarm_state_for, record_swarm_event,
 };
 use crate::agent::Agent;
+use crate::plan::{next_runnable_item_ids, summarize_plan_graph};
 use crate::protocol::{
-    AgentStatusSnapshot, NotificationType, ServerEvent, SessionActivitySnapshot,
+    AgentStatusSnapshot, NotificationType, PlanGraphStatus, ServerEvent, SessionActivitySnapshot,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -297,6 +298,65 @@ pub(super) async fn handle_comm_read_context(
             retry_after_secs: None,
         });
     }
+}
+
+pub(super) async fn handle_comm_plan_status(
+    id: u64,
+    req_session_id: String,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    let swarm_id = {
+        let members = swarm_members.read().await;
+        members
+            .get(&req_session_id)
+            .and_then(|member| member.swarm_id.clone())
+    };
+
+    let Some(swarm_id) = swarm_id else {
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: "Not in a swarm.".to_string(),
+            retry_after_secs: None,
+        });
+        return;
+    };
+
+    let summary = {
+        let plans = swarm_plans.read().await;
+        let plan = plans.get(&swarm_id);
+        if let Some(plan) = plan {
+            let graph = summarize_plan_graph(&plan.items);
+            PlanGraphStatus {
+                swarm_id: Some(swarm_id.clone()),
+                version: plan.version,
+                item_count: plan.items.len(),
+                ready_ids: graph.ready_ids,
+                blocked_ids: graph.blocked_ids,
+                active_ids: graph.active_ids,
+                completed_ids: graph.completed_ids,
+                cycle_ids: graph.cycle_ids,
+                unresolved_dependency_ids: graph.unresolved_dependency_ids,
+                next_ready_ids: next_runnable_item_ids(&plan.items, Some(8)),
+            }
+        } else {
+            PlanGraphStatus {
+                swarm_id: Some(swarm_id.clone()),
+                version: 0,
+                item_count: 0,
+                ready_ids: Vec::new(),
+                blocked_ids: Vec::new(),
+                active_ids: Vec::new(),
+                completed_ids: Vec::new(),
+                cycle_ids: Vec::new(),
+                unresolved_dependency_ids: Vec::new(),
+                next_ready_ids: Vec::new(),
+            }
+        }
+    };
+
+    let _ = client_event_tx.send(ServerEvent::CommPlanStatusResponse { id, summary });
 }
 
 #[allow(clippy::too_many_arguments)]

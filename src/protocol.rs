@@ -455,6 +455,10 @@ pub enum Request {
     #[serde(rename = "comm_resync_plan")]
     CommResyncPlan { id: u64, session_id: String },
 
+    /// Get a lightweight summary of the current swarm plan graph
+    #[serde(rename = "comm_plan_status")]
+    CommPlanStatus { id: u64, session_id: String },
+
     /// Assign a task from the plan to a specific agent (coordinator only)
     #[serde(rename = "comm_assign_task")]
     CommAssignTask {
@@ -968,6 +972,10 @@ pub enum ServerEvent {
         snapshot: AgentStatusSnapshot,
     },
 
+    /// Response to comm_plan_status request
+    #[serde(rename = "comm_plan_status_response")]
+    CommPlanStatusResponse { id: u64, summary: PlanGraphStatus },
+
     /// Response to comm_read_context request
     #[serde(rename = "comm_context_history")]
     CommContextHistory {
@@ -1114,6 +1122,29 @@ pub struct AgentStatusSnapshot {
     pub provider_model: Option<String>,
 }
 
+/// Lightweight swarm plan graph summary for planner-friendly reads.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanGraphStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swarm_id: Option<String>,
+    pub version: u64,
+    pub item_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ready_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completed_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cycle_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_dependency_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next_ready_ids: Vec<String>,
+}
+
 /// Swarm member status for lifecycle updates
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SwarmMemberStatus {
@@ -1249,6 +1280,7 @@ impl Request {
             Request::CommStatus { id, .. } => *id,
             Request::CommReadContext { id, .. } => *id,
             Request::CommResyncPlan { id, .. } => *id,
+            Request::CommPlanStatus { id, .. } => *id,
             Request::CommAssignTask { id, .. } => *id,
             Request::CommTaskControl { id, .. } => *id,
             Request::CommSubscribeChannel { id, .. } => *id,
