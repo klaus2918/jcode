@@ -2471,10 +2471,84 @@ async fn cancel_processing_message(
     }
 }
 
+fn try_available_models_snapshot(agent: &Arc<Mutex<Agent>>) -> Option<(Vec<String>, String)> {
+    let Ok(agent_guard) = agent.try_lock() else {
+        return None;
+    };
+    let models = agent_guard.available_models_display();
+    let routes_json = serde_json::to_string(&agent_guard.model_routes()).unwrap_or_default();
+    Some((models, routes_json))
+}
+
+fn queue_soft_interrupt(
+    id: u64,
+    content: String,
+    urgent: bool,
+    source: SoftInterruptSource,
+    soft_interrupt_queue: &SoftInterruptQueue,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    let _ = enqueue_soft_interrupt(soft_interrupt_queue, content, urgent, source);
+    let _ = client_event_tx.send(ServerEvent::Ack { id });
+}
+
+fn clear_soft_interrupts(
+    id: u64,
+    session_id: &str,
+    soft_interrupt_queue: &SoftInterruptQueue,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    if let Ok(mut queue) = soft_interrupt_queue.lock() {
+        queue.clear();
+    }
+    if let Err(err) = crate::soft_interrupt_store::clear(session_id) {
+        crate::logging::warn(&format!(
+            "Failed to clear persisted soft interrupts for {}: {}",
+            session_id, err
+        ));
+    }
+    let _ = client_event_tx.send(ServerEvent::Ack { id });
+}
+
+fn move_tool_to_background(
+    id: u64,
+    background_tool_signal: &InterruptSignal,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    background_tool_signal.fire();
+    let _ = client_event_tx.send(ServerEvent::Ack { id });
+}
+
+/// Process a message and stream events (mpsc channel - per-client)
+pub(super) async fn process_message_streaming_mpsc(
+    agent: Arc<Mutex<Agent>>,
+    content: &str,
+    images: Vec<(String, String)>,
+    system_reminder: Option<String>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<ServerEvent>,
+) -> Result<()> {
+    let mut agent = agent.lock().await;
+    let session_id = agent.session_id().to_string();
+    let result = agent
+        .run_once_streaming_mpsc(content, images, system_reminder, event_tx)
+        .await;
+    if result.is_ok() {
+        crate::runtime_memory_log::emit_event(
+            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                "turn_completed",
+                "message_turn_finished",
+            )
+            .with_session_id(session_id)
+            .force_attribution(),
+        );
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Message, StreamEvent, ToolDefinition};
+    use crate::message::{Message, ToolDefinition};
     use crate::provider::{EventStream, Provider};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2627,78 +2701,4 @@ mod tests {
     fn decode_request_or_event(line: &str) -> ServerEvent {
         serde_json::from_str(line.trim()).expect("decode server event")
     }
-}
-
-fn try_available_models_snapshot(agent: &Arc<Mutex<Agent>>) -> Option<(Vec<String>, String)> {
-    let Ok(agent_guard) = agent.try_lock() else {
-        return None;
-    };
-    let models = agent_guard.available_models_display();
-    let routes_json = serde_json::to_string(&agent_guard.model_routes()).unwrap_or_default();
-    Some((models, routes_json))
-}
-
-fn queue_soft_interrupt(
-    id: u64,
-    content: String,
-    urgent: bool,
-    source: SoftInterruptSource,
-    soft_interrupt_queue: &SoftInterruptQueue,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-) {
-    let _ = enqueue_soft_interrupt(soft_interrupt_queue, content, urgent, source);
-    let _ = client_event_tx.send(ServerEvent::Ack { id });
-}
-
-fn clear_soft_interrupts(
-    id: u64,
-    session_id: &str,
-    soft_interrupt_queue: &SoftInterruptQueue,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-) {
-    if let Ok(mut queue) = soft_interrupt_queue.lock() {
-        queue.clear();
-    }
-    if let Err(err) = crate::soft_interrupt_store::clear(session_id) {
-        crate::logging::warn(&format!(
-            "Failed to clear persisted soft interrupts for {}: {}",
-            session_id, err
-        ));
-    }
-    let _ = client_event_tx.send(ServerEvent::Ack { id });
-}
-
-fn move_tool_to_background(
-    id: u64,
-    background_tool_signal: &InterruptSignal,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-) {
-    background_tool_signal.fire();
-    let _ = client_event_tx.send(ServerEvent::Ack { id });
-}
-
-/// Process a message and stream events (mpsc channel - per-client)
-pub(super) async fn process_message_streaming_mpsc(
-    agent: Arc<Mutex<Agent>>,
-    content: &str,
-    images: Vec<(String, String)>,
-    system_reminder: Option<String>,
-    event_tx: tokio::sync::mpsc::UnboundedSender<ServerEvent>,
-) -> Result<()> {
-    let mut agent = agent.lock().await;
-    let session_id = agent.session_id().to_string();
-    let result = agent
-        .run_once_streaming_mpsc(content, images, system_reminder, event_tx)
-        .await;
-    if result.is_ok() {
-        crate::runtime_memory_log::emit_event(
-            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
-                "turn_completed",
-                "message_turn_finished",
-            )
-            .with_session_id(session_id)
-            .force_attribution(),
-        );
-    }
-    result
 }
