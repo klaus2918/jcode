@@ -15,6 +15,10 @@ use super::*;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 impl App {
+    fn open_auth_browser(url: &str) -> bool {
+        open::that_detached(url).is_ok()
+    }
+
     pub(super) fn show_jcode_subscription_status(&mut self) {
         let configured_key = crate::subscription_catalog::configured_api_key().is_some();
         let configured_base = crate::subscription_catalog::configured_api_base()
@@ -264,7 +268,7 @@ impl App {
         .map(|section| format!("\n\n{section}"))
         .unwrap_or_default();
 
-        let _ = open::that(&auth_url);
+        let _ = Self::open_auth_browser(&auth_url);
 
         self.push_display_message(DisplayMessage::system(format!(
             "**Claude OAuth Login** (account: `{}`)\n\n\
@@ -452,7 +456,7 @@ impl App {
 
         let callback_listener = crate::auth::oauth::bind_callback_listener(port).ok();
         let callback_available = callback_listener.is_some();
-        let browser_opened = open::that(&auth_url).is_ok();
+        let browser_opened = Self::open_auth_browser(&auth_url);
         let label_owned = label.to_string();
 
         if let Some(listener) = callback_listener {
@@ -621,7 +625,7 @@ impl App {
         .map(|section| format!("\n\n{section}"))
         .unwrap_or_default();
 
-        let browser_opened = open::that(&auth_url).is_ok();
+        let browser_opened = Self::open_auth_browser(&auth_url);
         let callback_available = callback_listener.is_some() && pending_state.is_some();
 
         if let (Some(listener), Some(expected_state)) = (callback_listener, pending_state.clone()) {
@@ -1035,7 +1039,7 @@ impl App {
 
         let callback_listener = crate::auth::oauth::bind_callback_listener(port).ok();
         let callback_available = callback_listener.is_some();
-        let browser_opened = open::that(&auth_url).is_ok();
+        let browser_opened = Self::open_auth_browser(&auth_url);
 
         if let Some(listener) = callback_listener {
             let verifier_clone = verifier.clone();
@@ -1183,16 +1187,6 @@ impl App {
 
         match &pending {
             PendingLogin::OpenAiAccount { .. } if !looks_like_oauth_callback_input(trimmed) => {
-                self.push_display_message(DisplayMessage::system(
-                    "Still waiting for the browser callback. Paste the full callback URL or query string if you want to finish manually, or keep waiting for the automatic redirect.".to_string(),
-                ));
-                self.pending_login = Some(pending);
-                return;
-            }
-            PendingLogin::Gemini {
-                expected_state: Some(_),
-                ..
-            } if !looks_like_oauth_callback_input(trimmed) => {
                 self.push_display_message(DisplayMessage::system(
                     "Still waiting for the browser callback. Paste the full callback URL or query string if you want to finish manually, or keep waiting for the automatic redirect.".to_string(),
                 ));

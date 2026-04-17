@@ -393,21 +393,37 @@ pub async fn exchange_callback_input(
     expected_state: Option<&str>,
     redirect_uri: &str,
 ) -> Result<GeminiTokens> {
-    let code = if let Some(expected_state) = expected_state {
-        let (code, callback_state) = crate::auth::oauth::parse_callback_input_with_state(input)?;
+    let code = resolve_callback_or_manual_code(input, expected_state)?;
+
+    let tokens = exchange_authorization_code(&code, Some(verifier), redirect_uri).await?;
+    save_tokens(&tokens)?;
+    Ok(tokens)
+}
+
+fn resolve_callback_or_manual_code(input: &str, expected_state: Option<&str>) -> Result<String> {
+    let trimmed = input.trim();
+    if let Some(expected_state) = expected_state
+        && looks_like_callback_input(trimmed)
+    {
+        let (code, callback_state) = crate::auth::oauth::parse_callback_input_with_state(trimmed)?;
         if callback_state != expected_state {
             anyhow::bail!(
                 "OAuth state mismatch. Start Gemini login again and use the latest callback URL."
             );
         }
-        code
-    } else {
-        input.trim().to_string()
-    };
+        return Ok(code);
+    }
 
-    let tokens = exchange_authorization_code(&code, Some(verifier), redirect_uri).await?;
-    save_tokens(&tokens)?;
-    Ok(tokens)
+    Ok(trimmed.to_string())
+}
+
+fn looks_like_callback_input(input: &str) -> bool {
+    let input = input.trim();
+    input.starts_with("http://")
+        || input.starts_with("https://")
+        || input.starts_with('?')
+        || input.contains("code=")
+        || input.contains("state=")
 }
 
 pub async fn exchange_callback_code(
@@ -701,6 +717,30 @@ mod tests {
         assert!(url.contains("code_challenge=challenge-123"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(!url.contains("code_verifier="));
+    }
+
+    #[test]
+    fn resolve_callback_or_manual_code_accepts_manual_code_with_expected_state() {
+        let code = resolve_callback_or_manual_code("  authcode-123  ", Some("state-123"))
+            .expect("manual code should be accepted");
+        assert_eq!(code, "authcode-123");
+    }
+
+    #[test]
+    fn resolve_callback_or_manual_code_validates_state_for_callback_input() {
+        let code = resolve_callback_or_manual_code(
+            "http://127.0.0.1:1455/callback?code=authcode-123&state=state-123",
+            Some("state-123"),
+        )
+        .expect("callback should parse");
+        assert_eq!(code, "authcode-123");
+
+        let err = resolve_callback_or_manual_code(
+            "http://127.0.0.1:1455/callback?code=authcode-123&state=wrong-state",
+            Some("state-123"),
+        )
+        .expect_err("mismatched state should fail");
+        assert!(err.to_string().contains("OAuth state mismatch"));
     }
 
     #[test]
