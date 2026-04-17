@@ -76,10 +76,7 @@ pub(super) type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 pub(super) type ChannelSubscriptions =
     Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 
-pub(super) async fn persist_swarm_state_for(
-    swarm_id: &str,
-    swarm_state: &SwarmState,
-) {
+pub(super) async fn persist_swarm_state_for(swarm_id: &str, swarm_state: &SwarmState) {
     let plan = {
         let plans = swarm_state.plans.read().await;
         plans.get(swarm_id).cloned()
@@ -99,10 +96,7 @@ pub(super) async fn persist_swarm_state_for(
     persist_swarm_state_snapshot(swarm_id, plan.as_ref(), coordinator.as_deref(), &members);
 }
 
-pub(super) async fn remove_persisted_swarm_state_for(
-    swarm_id: &str,
-    swarm_state: &SwarmState,
-) {
+pub(super) async fn remove_persisted_swarm_state_for(swarm_id: &str, swarm_state: &SwarmState) {
     let has_plan = swarm_state.plans.read().await.contains_key(swarm_id);
     let has_coordinator = swarm_state.coordinators.read().await.contains_key(swarm_id);
     let has_members = {

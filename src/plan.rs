@@ -33,7 +33,10 @@ pub fn is_completed_status(status: &str) -> bool {
 }
 
 pub fn is_terminal_status(status: &str) -> bool {
-    matches!(status, "completed" | "done" | "failed" | "stopped" | "crashed")
+    matches!(
+        status,
+        "completed" | "done" | "failed" | "stopped" | "crashed"
+    )
 }
 
 pub fn is_active_status(status: &str) -> bool {
@@ -54,7 +57,8 @@ pub fn priority_rank(priority: &str) -> u8 {
 }
 
 pub fn completed_item_ids(items: &[PlanItem]) -> HashSet<String> {
-    items.iter()
+    items
+        .iter()
         .filter(|item| is_completed_status(&item.status))
         .map(|item| item.id.clone())
         .collect()
@@ -250,13 +254,19 @@ mod tests {
 
     #[test]
     fn summarize_plan_graph_reports_missing_dependencies() {
-        let items = vec![item("a", "queued", &["missing-task"]), item("b", "running", &[])];
+        let items = vec![
+            item("a", "queued", &["missing-task"]),
+            item("b", "running", &[]),
+        ];
 
         let summary = summarize_plan_graph(&items);
         assert_eq!(summary.ready_ids, Vec::<String>::new());
         assert_eq!(summary.blocked_ids, vec!["a".to_string()]);
         assert_eq!(summary.active_ids, vec!["b".to_string()]);
-        assert_eq!(summary.unresolved_dependency_ids, vec!["missing-task".to_string()]);
+        assert_eq!(
+            summary.unresolved_dependency_ids,
+            vec!["missing-task".to_string()]
+        );
     }
 
     #[test]
@@ -269,8 +279,14 @@ mod tests {
 
         let summary = summarize_plan_graph(&items);
         assert_eq!(summary.ready_ids, Vec::<String>::new());
-        assert_eq!(summary.blocked_ids, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
-        assert_eq!(summary.cycle_ids, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(
+            summary.blocked_ids,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+        assert_eq!(
+            summary.cycle_ids,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
     }
 
     #[test]

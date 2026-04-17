@@ -3,8 +3,7 @@
 use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
     ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmMember, SwarmState,
-    VersionedPlan,
-    broadcast_swarm_status, fanout_session_event, persist_swarm_state_for,
+    VersionedPlan, broadcast_swarm_status, fanout_session_event, persist_swarm_state_for,
     queue_soft_interrupt_for_session, remove_session_channel_subscriptions,
     remove_session_from_swarm, session_event_fanout_sender, swarm_id_for_dir, truncate_detail,
     update_member_status,
