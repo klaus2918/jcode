@@ -616,6 +616,8 @@ pub enum ServerEvent {
         participants: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<PlanGraphStatus>,
     },
 
     /// Plan proposal payload delivered to the coordinator.

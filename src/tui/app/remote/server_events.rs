@@ -679,6 +679,7 @@ pub(in crate::tui::app) fn handle_server_event(
             items,
             participants,
             reason,
+            summary: _,
         } => {
             app.swarm_plan_swarm_id = Some(swarm_id.clone());
             app.swarm_plan_version = Some(version);

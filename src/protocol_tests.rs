@@ -491,6 +491,60 @@ fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
 }
 
 #[test]
+fn test_swarm_plan_event_roundtrip_with_summary() -> Result<()> {
+    let event = ServerEvent::SwarmPlan {
+        swarm_id: "swarm_123".to_string(),
+        version: 7,
+        items: vec![PlanItem {
+            content: "Investigate planner state".to_string(),
+            status: "queued".to_string(),
+            priority: "high".to_string(),
+            id: "task-1".to_string(),
+            blocked_by: vec![],
+            assigned_to: None,
+        }],
+        participants: vec!["session_fox".to_string()],
+        reason: Some("task_completed".to_string()),
+        summary: Some(crate::protocol::PlanGraphStatus {
+            swarm_id: Some("swarm_123".to_string()),
+            version: 7,
+            item_count: 1,
+            ready_ids: vec!["task-1".to_string()],
+            blocked_ids: Vec::new(),
+            active_ids: Vec::new(),
+            completed_ids: Vec::new(),
+            cycle_ids: Vec::new(),
+            unresolved_dependency_ids: Vec::new(),
+            next_ready_ids: vec!["task-1".to_string()],
+        }),
+    };
+    let json = encode_event(&event);
+    assert!(json.contains("\"type\":\"swarm_plan\""));
+    assert!(json.contains("\"summary\""));
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::SwarmPlan {
+        swarm_id,
+        version,
+        items,
+        participants,
+        reason,
+        summary,
+    } = decoded
+    else {
+        return Err(anyhow!("expected SwarmPlan event"));
+    };
+    assert_eq!(swarm_id, "swarm_123");
+    assert_eq!(version, 7);
+    assert_eq!(participants, vec!["session_fox"]);
+    assert_eq!(reason.as_deref(), Some("task_completed"));
+    assert_eq!(items.len(), 1);
+    let summary = summary.ok_or_else(|| anyhow!("expected plan summary"))?;
+    assert_eq!(summary.ready_ids, vec!["task-1"]);
+    assert_eq!(summary.next_ready_ids, vec!["task-1"]);
+    Ok(())
+}
+
+#[test]
 fn test_comm_status_roundtrip() -> Result<()> {
     let req = Request::CommStatus {
         id: 56,
