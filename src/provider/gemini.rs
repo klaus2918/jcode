@@ -616,13 +616,7 @@ impl Provider for GeminiProvider {
             .map(|guard| guard.clone())
             .unwrap_or_default();
         if discovered.is_empty() {
-            return merge_gemini_model_lists(
-                AVAILABLE_MODELS
-                    .iter()
-                    .map(|model| (*model).to_string())
-                    .chain(std::iter::once(self.model()))
-                    .collect(),
-            );
+            return merge_gemini_model_lists(vec![self.model()]);
         }
 
         merge_gemini_model_lists(
@@ -954,6 +948,17 @@ mod tests {
                 "gemini-3-flash-preview".to_string(),
                 "gemini-4-pro-preview".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn available_models_display_without_discovery_uses_current_model_only() {
+        let provider = GeminiProvider::new();
+        provider.set_model("gemini-4-pro-preview").unwrap();
+
+        assert_eq!(
+            provider.available_models_display(),
+            vec!["gemini-4-pro-preview".to_string()]
         );
     }
 

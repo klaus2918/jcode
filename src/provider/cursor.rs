@@ -56,12 +56,6 @@ fn merge_cursor_models(dynamic: &[String], current: &str) -> Vec<String> {
         }
     }
 
-    for model in AVAILABLE_MODELS {
-        if !merged.iter().any(|known| known == model) {
-            merged.push((*model).to_string());
-        }
-    }
-
     let current = current.trim();
     if !current.is_empty() && !merged.iter().any(|known| known == current) {
         merged.push(current.to_string());
