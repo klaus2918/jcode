@@ -188,6 +188,47 @@ fn test_render_swarm_message_centered_mode_keeps_task_icon_and_padding() {
 }
 
 #[test]
+fn test_render_swarm_message_centered_mode_keeps_file_activity_preview_centered_when_diff_wraps() {
+    let saved = crate::tui::markdown::center_code_blocks();
+    crate::tui::markdown::set_center_code_blocks(true);
+
+    let msg = DisplayMessage::swarm(
+        "File activity · rose",
+        "`…/jcode/src/server/comm_sync.rs`
+
+Modified via apply_patch
+
+```text
+331-             persist_swarm_state_for(&swarm_id, swarm_state.clone()).await;
+331+             persist_swarm_state_for(&swarm_id, swarm_state).await;
+```",
+    );
+
+    let lines = render_swarm_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+    let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
+    let first_pad = rendered[0].chars().take_while(|c| *c == ' ').count();
+
+    assert!(
+        first_pad >= 8,
+        "centered file activity notification should preserve a visible left gutter: {rendered:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .all(|line| line.is_empty() || line.starts_with(&" ".repeat(first_pad))),
+        "wrapped file activity preview should keep one shared left pad: {rendered:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("persist_swarm_state_for")),
+        "expected diff preview to remain visible after wrapping: {rendered:?}"
+    );
+
+    crate::tui::markdown::set_center_code_blocks(saved);
+}
+
+#[test]
 fn test_truncate_line_to_width_uses_display_width() {
     let line = Line::from(Span::raw("🧠 hello world"));
     let truncated = truncate_line_to_width(&line, 8);

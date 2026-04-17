@@ -802,6 +802,12 @@ pub(crate) fn render_swarm_message(
         width.saturating_sub(4) as usize
     }
     .max(1);
+    let block_wrap_width = if centered {
+        content_width.saturating_add(2)
+    } else {
+        width.saturating_sub(1) as usize
+    }
+    .max(1);
 
     let mut lines = Vec::new();
     lines.push(Line::from(vec![
@@ -843,11 +849,16 @@ pub(crate) fn render_swarm_message(
         lines.push(Line::from(spans));
     }
 
-    if centered {
-        left_pad_lines_for_centered_mode(&mut lines, width);
+    let mut wrapped_lines = Vec::new();
+    for line in lines {
+        wrapped_lines.extend(markdown::wrap_line(line, block_wrap_width));
     }
 
-    lines
+    if centered {
+        left_pad_lines_for_centered_mode(&mut wrapped_lines, width);
+    }
+
+    wrapped_lines
 }
 
 pub(crate) fn render_tool_message(
