@@ -11,7 +11,7 @@ use super::swarm_mutation_state::{
 };
 use super::{
     AwaitMembersRuntime, ClientConnectionInfo, SwarmEvent, SwarmEventType, SwarmMember,
-    SwarmMutationRuntime, SwarmTaskProgress, VersionedPlan, broadcast_swarm_plan,
+    SwarmMutationRuntime, SwarmState, SwarmTaskProgress, VersionedPlan, broadcast_swarm_plan,
     broadcast_swarm_status, fanout_session_event, persist_swarm_state_for,
     queue_soft_interrupt_for_session, record_swarm_event, truncate_detail, update_member_status,
 };
@@ -216,7 +216,13 @@ fn spawn_assigned_task_run(
                 plan.version += 1;
             }
         }
-        persist_swarm_state_for(&swarm_id, &swarm_plans, &swarm_coordinators, &swarm_members).await;
+        let swarm_state = SwarmState {
+            members: Arc::clone(&swarm_members),
+            swarms_by_id: Arc::clone(&swarms_by_id),
+            plans: Arc::clone(&swarm_plans),
+            coordinators: Arc::clone(&swarm_coordinators),
+        };
+        persist_swarm_state_for(&swarm_id, &swarm_state).await;
         broadcast_swarm_plan(
             &swarm_id,
             Some("task_running".to_string()),
@@ -260,6 +266,7 @@ fn spawn_assigned_task_run(
                                 None,
                                 None,
                                 &swarm_members,
+                                &swarms_by_id,
                                 &swarm_plans,
                                 &swarm_coordinators,
                             )
@@ -328,13 +335,13 @@ fn spawn_assigned_task_run(
                         plan.version += 1;
                     }
                 }
-                persist_swarm_state_for(
-                    &swarm_id,
-                    &swarm_plans,
-                    &swarm_coordinators,
-                    &swarm_members,
-                )
-                .await;
+                let swarm_state = SwarmState {
+                    members: Arc::clone(&swarm_members),
+                    swarms_by_id: Arc::clone(&swarms_by_id),
+                    plans: Arc::clone(&swarm_plans),
+                    coordinators: Arc::clone(&swarm_coordinators),
+                };
+                persist_swarm_state_for(&swarm_id, &swarm_state).await;
                 broadcast_swarm_plan(
                     &swarm_id,
                     Some("task_completed".to_string()),
@@ -375,13 +382,13 @@ fn spawn_assigned_task_run(
                         plan.version += 1;
                     }
                 }
-                persist_swarm_state_for(
-                    &swarm_id,
-                    &swarm_plans,
-                    &swarm_coordinators,
-                    &swarm_members,
-                )
-                .await;
+                let swarm_state = SwarmState {
+                    members: Arc::clone(&swarm_members),
+                    swarms_by_id: Arc::clone(&swarms_by_id),
+                    plans: Arc::clone(&swarm_plans),
+                    coordinators: Arc::clone(&swarm_coordinators),
+                };
+                persist_swarm_state_for(&swarm_id, &swarm_state).await;
                 broadcast_swarm_plan(
                     &swarm_id,
                     Some("task_failed".to_string()),
@@ -612,6 +619,7 @@ fn task_progress_event_sender(
                     detail.clone(),
                     checkpoint_summary,
                     &swarm_members,
+                    &swarms_by_id,
                     &swarm_plans,
                     &swarm_coordinators,
                 )
@@ -876,7 +884,13 @@ pub(super) async fn handle_comm_assign_role(
         }
     }
 
-    persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+    let swarm_state = SwarmState {
+        members: Arc::clone(swarm_members),
+        swarms_by_id: Arc::clone(swarms_by_id),
+        plans: Arc::clone(swarm_plans),
+        coordinators: Arc::clone(swarm_coordinators),
+    };
+    persist_swarm_state_for(&swarm_id, &swarm_state).await;
 
     broadcast_swarm_status(&swarm_id, swarm_members, swarms_by_id).await;
     record_swarm_event(
@@ -1005,7 +1019,13 @@ pub(super) async fn handle_comm_assign_task(
         return;
     };
 
-    persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+    let swarm_state = SwarmState {
+        members: Arc::clone(swarm_members),
+        swarms_by_id: Arc::clone(swarms_by_id),
+        plans: Arc::clone(swarm_plans),
+        coordinators: Arc::clone(swarm_coordinators),
+    };
+    persist_swarm_state_for(&swarm_id, &swarm_state).await;
 
     broadcast_swarm_plan(
         &swarm_id,
@@ -1252,8 +1272,13 @@ pub(super) async fn handle_comm_task_control(
                 .await
                 .is_some()
             {
-                persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators, swarm_members)
-                    .await;
+                let swarm_state = SwarmState {
+                    members: Arc::clone(swarm_members),
+                    swarms_by_id: Arc::clone(swarms_by_id),
+                    plans: Arc::clone(swarm_plans),
+                    coordinators: Arc::clone(swarm_coordinators),
+                };
+                persist_swarm_state_for(&swarm_id, &swarm_state).await;
                 broadcast_swarm_plan(
                     &swarm_id,
                     Some(format!("task_{}", action.as_str())),

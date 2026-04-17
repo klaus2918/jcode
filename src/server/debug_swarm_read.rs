@@ -3,6 +3,7 @@ use super::{
     swarm_id_for_dir,
 };
 use crate::agent::Agent;
+use crate::plan::{next_runnable_item_ids, summarize_plan_graph};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -209,11 +210,20 @@ pub(super) async fn maybe_handle_swarm_read_command(
         let swarm_id = cmd.strip_prefix("swarm:plan_version:").unwrap_or("").trim();
         let plans = swarm_plans.read().await;
         let output = if let Some(vp) = plans.get(swarm_id) {
+            let summary = summarize_plan_graph(&vp.items);
+            let next_ready_ids = next_runnable_item_ids(&vp.items, Some(8));
             serde_json::json!({
                 "swarm_id": swarm_id,
                 "version": vp.version,
                 "item_count": vp.items.len(),
                 "stale_item_count": vp.items.iter().filter(|item| item.status == "running_stale").count(),
+                "ready_item_count": summary.ready_ids.len(),
+                "blocked_item_count": summary.blocked_ids.len(),
+                "active_item_count": summary.active_ids.len(),
+                "completed_item_count": summary.completed_ids.len(),
+                "next_ready_ids": next_ready_ids,
+                "cycle_ids": summary.cycle_ids,
+                "unresolved_dependency_ids": summary.unresolved_dependency_ids,
             })
             .to_string()
         } else {
@@ -222,6 +232,13 @@ pub(super) async fn maybe_handle_swarm_read_command(
                 "version": 0,
                 "item_count": 0,
                 "stale_item_count": 0,
+                "ready_item_count": 0,
+                "blocked_item_count": 0,
+                "active_item_count": 0,
+                "completed_item_count": 0,
+                "next_ready_ids": Vec::<String>::new(),
+                "cycle_ids": Vec::<String>::new(),
+                "unresolved_dependency_ids": Vec::<String>::new(),
             })
             .to_string()
         };
@@ -232,6 +249,8 @@ pub(super) async fn maybe_handle_swarm_read_command(
         let plans = swarm_plans.read().await;
         let mut out: Vec<serde_json::Value> = Vec::new();
         for (swarm_id, vp) in plans.iter() {
+            let summary = summarize_plan_graph(&vp.items);
+            let next_ready_ids = next_runnable_item_ids(&vp.items, Some(8));
             out.push(serde_json::json!({
                 "swarm_id": swarm_id,
                 "item_count": vp.items.len(),
@@ -239,6 +258,13 @@ pub(super) async fn maybe_handle_swarm_read_command(
                 "participants": &vp.participants,
                 "items": &vp.items,
                 "task_progress": &vp.task_progress,
+                "ready_ids": summary.ready_ids,
+                "blocked_ids": summary.blocked_ids,
+                "active_ids": summary.active_ids,
+                "completed_ids": summary.completed_ids,
+                "next_ready_ids": next_ready_ids,
+                "cycle_ids": summary.cycle_ids,
+                "unresolved_dependency_ids": summary.unresolved_dependency_ids,
             }));
         }
         return Ok(Some(
@@ -250,11 +276,20 @@ pub(super) async fn maybe_handle_swarm_read_command(
         let swarm_id = cmd.strip_prefix("swarm:plan:").unwrap_or("").trim();
         let plans = swarm_plans.read().await;
         let output = if let Some(vp) = plans.get(swarm_id) {
+            let summary = summarize_plan_graph(&vp.items);
+            let next_ready_ids = next_runnable_item_ids(&vp.items, Some(8));
             serde_json::json!({
                 "version": vp.version,
                 "participants": &vp.participants,
                 "items": &vp.items,
                 "task_progress": &vp.task_progress,
+                "ready_ids": summary.ready_ids,
+                "blocked_ids": summary.blocked_ids,
+                "active_ids": summary.active_ids,
+                "completed_ids": summary.completed_ids,
+                "next_ready_ids": next_ready_ids,
+                "cycle_ids": summary.cycle_ids,
+                "unresolved_dependency_ids": summary.unresolved_dependency_ids,
             })
             .to_string()
         } else {

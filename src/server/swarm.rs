@@ -1,5 +1,5 @@
 use super::state::{MAX_EVENT_HISTORY, fanout_session_event};
-use super::{FileAccess, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan};
+use super::{FileAccess, SwarmEvent, SwarmEventType, SwarmMember, SwarmState, VersionedPlan};
 use super::{persist_swarm_state_for, remove_persisted_swarm_state_for};
 use crate::agent::Agent;
 use crate::plan::PlanItem;
@@ -112,6 +112,7 @@ pub(super) async fn touch_swarm_task_progress(
     detail: Option<String>,
     checkpoint_summary: Option<String>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
 ) -> bool {
@@ -147,7 +148,13 @@ pub(super) async fn touch_swarm_task_progress(
             false
         }
     };
-    persist_swarm_state_for(swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+    let swarm_state = SwarmState {
+        members: Arc::clone(swarm_members),
+        swarms_by_id: Arc::clone(swarms_by_id),
+        plans: Arc::clone(swarm_plans),
+        coordinators: Arc::clone(swarm_coordinators),
+    };
+    persist_swarm_state_for(swarm_id, &swarm_state).await;
     revived
 }
 
@@ -200,7 +207,13 @@ pub(super) async fn refresh_swarm_task_staleness(
     };
 
     for swarm_id in changed_swarm_ids {
-        persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+        let swarm_state = SwarmState {
+            members: Arc::clone(swarm_members),
+            swarms_by_id: Arc::clone(swarms_by_id),
+            plans: Arc::clone(swarm_plans),
+            coordinators: Arc::clone(swarm_coordinators),
+        };
+        persist_swarm_state_for(&swarm_id, &swarm_state).await;
         broadcast_swarm_plan(
             &swarm_id,
             Some("task_staleness_changed".to_string()),
@@ -655,10 +668,21 @@ pub(super) async fn remove_session_from_swarm(
     }
 
     if swarm_plans.read().await.contains_key(swarm_id) {
-        persist_swarm_state_for(swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+        let swarm_state = SwarmState {
+            members: Arc::clone(swarm_members),
+            swarms_by_id: Arc::clone(swarms_by_id),
+            plans: Arc::clone(swarm_plans),
+            coordinators: Arc::clone(swarm_coordinators),
+        };
+        persist_swarm_state_for(swarm_id, &swarm_state).await;
     } else {
-        remove_persisted_swarm_state_for(swarm_id, swarm_plans, swarm_coordinators, swarm_members)
-            .await;
+        let swarm_state = SwarmState {
+            members: Arc::clone(swarm_members),
+            swarms_by_id: Arc::clone(swarms_by_id),
+            plans: Arc::clone(swarm_plans),
+            coordinators: Arc::clone(swarm_coordinators),
+        };
+        remove_persisted_swarm_state_for(swarm_id, &swarm_state).await;
     }
 
     broadcast_swarm_status(swarm_id, swarm_members, swarms_by_id).await;
@@ -1429,6 +1453,7 @@ mod tests {
             Some("still working".to_string()),
             Some("checkpoint saved".to_string()),
             &swarm_members,
+            &swarms_by_id,
             &swarm_plans,
             &swarm_coordinators,
         )

@@ -45,6 +45,31 @@ pub(super) fn latest_peer_touches(
     latest
 }
 
+/// Shared ownership of the core persisted swarm coordination state.
+#[derive(Clone)]
+pub struct SwarmState {
+    pub members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+    pub swarms_by_id: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    pub plans: Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    pub coordinators: Arc<RwLock<HashMap<String, String>>>,
+}
+
+impl SwarmState {
+    pub fn new(
+        members: HashMap<String, SwarmMember>,
+        swarms_by_id: HashMap<String, HashSet<String>>,
+        plans: HashMap<String, VersionedPlan>,
+        coordinators: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            members: Arc::new(RwLock::new(members)),
+            swarms_by_id: Arc::new(RwLock::new(swarms_by_id)),
+            plans: Arc::new(RwLock::new(plans)),
+            coordinators: Arc::new(RwLock::new(coordinators)),
+        }
+    }
+}
+
 /// Information about a session in a swarm
 #[derive(Clone, Debug)]
 pub struct SwarmMember {

@@ -1,4 +1,4 @@
-use super::{SharedContext, SwarmMember, VersionedPlan, persist_swarm_state_for};
+use super::{SharedContext, SwarmMember, SwarmState, VersionedPlan, persist_swarm_state_for};
 use crate::plan::PlanItem;
 use crate::protocol::{NotificationType, ServerEvent};
 use anyhow::Result;
@@ -31,7 +31,13 @@ pub(super) async fn maybe_handle_swarm_write_command(
                 }
             }
             drop(members);
-            persist_swarm_state_for(swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+            let swarm_state = SwarmState {
+                members: Arc::clone(swarm_members),
+                swarms_by_id: Arc::clone(swarms_by_id),
+                plans: Arc::clone(swarm_plans),
+                coordinators: Arc::clone(swarm_coordinators),
+            };
+            persist_swarm_state_for(swarm_id, &swarm_state).await;
             return Ok(Some(format!(
                 "Coordinator cleared for swarm '{}'. Any session can now self-promote.",
                 swarm_id

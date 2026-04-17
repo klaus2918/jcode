@@ -1,5 +1,5 @@
 use super::{
-    SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
+    SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, SwarmState, VersionedPlan,
     broadcast_swarm_status, create_headless_session, persist_swarm_state_for, record_swarm_event,
     remove_session_interrupt_queue,
 };
@@ -91,7 +91,13 @@ pub(super) async fn maybe_handle_session_admin_command(
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&created)
             && let Some(swarm_id) = value.get("swarm_id").and_then(|value| value.as_str())
         {
-            persist_swarm_state_for(swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+            let swarm_state = SwarmState {
+                members: Arc::clone(swarm_members),
+                swarms_by_id: Arc::clone(swarms_by_id),
+                plans: Arc::clone(swarm_plans),
+                coordinators: Arc::clone(swarm_coordinators),
+            };
+            persist_swarm_state_for(swarm_id, &swarm_state).await;
         }
         return Ok(Some(created));
     }
@@ -196,8 +202,13 @@ pub(super) async fn maybe_handle_session_admin_command(
                     coordinators.insert(swarm_id.clone(), new_id);
                 }
             }
-
-            persist_swarm_state_for(swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+            let swarm_state = SwarmState {
+                members: Arc::clone(swarm_members),
+                swarms_by_id: Arc::clone(swarms_by_id),
+                plans: Arc::clone(swarm_plans),
+                coordinators: Arc::clone(swarm_coordinators),
+            };
+            persist_swarm_state_for(swarm_id, &swarm_state).await;
 
             broadcast_swarm_status(swarm_id, swarm_members, swarms_by_id).await;
         }

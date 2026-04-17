@@ -3,8 +3,8 @@ use super::swarm_mutation_state::{
     request_key,
 };
 use super::{
-    SessionInterruptQueues, SharedContext, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
-    broadcast_swarm_plan, persist_swarm_state_for, queue_soft_interrupt_for_session,
+    SessionInterruptQueues, SharedContext, SwarmEvent, SwarmEventType, SwarmMember, SwarmState,
+    VersionedPlan, broadcast_swarm_plan, persist_swarm_state_for, queue_soft_interrupt_for_session,
     record_swarm_event, summarize_plan_items,
 };
 use crate::agent::Agent;
@@ -130,7 +130,13 @@ pub(super) async fn handle_comm_propose_plan(
             .await;
         }
 
-        persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+        let swarm_state = SwarmState {
+            members: Arc::clone(swarm_members),
+            swarms_by_id: Arc::clone(swarms_by_id),
+            plans: Arc::clone(swarm_plans),
+            coordinators: Arc::clone(swarm_coordinators),
+        };
+        persist_swarm_state_for(&swarm_id, &swarm_state).await;
 
         broadcast_swarm_plan(
             &swarm_id,
@@ -417,7 +423,13 @@ pub(super) async fn handle_comm_approve_plan(
             }
         }
 
-        persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+        let swarm_state = SwarmState {
+            members: Arc::clone(swarm_members),
+            swarms_by_id: Arc::clone(swarms_by_id),
+            plans: Arc::clone(swarm_plans),
+            coordinators: Arc::clone(swarm_coordinators),
+        };
+        persist_swarm_state_for(&swarm_id, &swarm_state).await;
     }
 
     finish_request(

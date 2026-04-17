@@ -2,7 +2,8 @@
 
 use super::client_lifecycle::process_message_streaming_mpsc;
 use super::{
-    ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmMember, VersionedPlan,
+    ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmMember, SwarmState,
+    VersionedPlan,
     broadcast_swarm_status, fanout_session_event, persist_swarm_state_for,
     queue_soft_interrupt_for_session, remove_session_channel_subscriptions,
     remove_session_from_swarm, session_event_fanout_sender, swarm_id_for_dir, truncate_detail,
@@ -557,8 +558,13 @@ pub(super) async fn handle_set_feature(
                     }
 
                     broadcast_swarm_status(id, swarm_members, swarms_by_id).await;
-                    persist_swarm_state_for(id, swarm_plans, swarm_coordinators, swarm_members)
-                        .await;
+                    let swarm_state = SwarmState {
+                        members: Arc::clone(swarm_members),
+                        swarms_by_id: Arc::clone(swarms_by_id),
+                        plans: Arc::clone(swarm_plans),
+                        coordinators: Arc::clone(swarm_coordinators),
+                    };
+                    persist_swarm_state_for(id, &swarm_state).await;
                 } else {
                     let _ = client_event_tx.send(ServerEvent::SwarmStatus {
                         members: Vec::new(),

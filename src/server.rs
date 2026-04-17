@@ -78,20 +78,18 @@ pub(super) type ChannelSubscriptions =
 
 pub(super) async fn persist_swarm_state_for(
     swarm_id: &str,
-    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
-    swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
-    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarm_state: &SwarmState,
 ) {
     let plan = {
-        let plans = swarm_plans.read().await;
+        let plans = swarm_state.plans.read().await;
         plans.get(swarm_id).cloned()
     };
     let coordinator = {
-        let coordinators = swarm_coordinators.read().await;
+        let coordinators = swarm_state.coordinators.read().await;
         coordinators.get(swarm_id).cloned()
     };
     let members = {
-        let members = swarm_members.read().await;
+        let members = swarm_state.members.read().await;
         members
             .values()
             .filter(|member| member.swarm_id.as_deref() == Some(swarm_id))
@@ -103,14 +101,12 @@ pub(super) async fn persist_swarm_state_for(
 
 pub(super) async fn remove_persisted_swarm_state_for(
     swarm_id: &str,
-    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
-    swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
-    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarm_state: &SwarmState,
 ) {
-    let has_plan = swarm_plans.read().await.contains_key(swarm_id);
-    let has_coordinator = swarm_coordinators.read().await.contains_key(swarm_id);
+    let has_plan = swarm_state.plans.read().await.contains_key(swarm_id);
+    let has_coordinator = swarm_state.coordinators.read().await.contains_key(swarm_id);
     let has_members = {
-        let members = swarm_members.read().await;
+        let members = swarm_state.members.read().await;
         members
             .values()
             .any(|member| member.swarm_id.as_deref() == Some(swarm_id))
@@ -420,8 +416,8 @@ mod state;
 
 use self::state::latest_peer_touches;
 pub use self::state::{
-    FileAccess, SharedContext, SwarmEvent, SwarmEventType, SwarmMember, SwarmTaskProgress,
-    VersionedPlan,
+    FileAccess, SharedContext, SwarmEvent, SwarmEventType, SwarmMember, SwarmState,
+    SwarmTaskProgress, VersionedPlan,
 };
 use self::state::{
     SessionInterruptQueues, enqueue_soft_interrupt, fanout_live_client_event, fanout_session_event,
@@ -503,16 +499,10 @@ pub struct Server {
     file_touches: Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
     /// Reverse index for file touches: session_id -> touched paths
     files_touched_by_session: Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>,
-    /// Swarm members: session_id -> SwarmMember info
-    swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
-    /// Swarm groupings by swarm id -> set of session_ids
-    swarms_by_id: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    /// Shared ownership of core swarm coordination state.
+    swarm_state: SwarmState,
     /// Shared context by swarm (swarm_id -> key -> SharedContext)
     shared_context: Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
-    /// Shared plans by swarm (swarm_id -> plan)
-    swarm_plans: Arc<RwLock<HashMap<String, VersionedPlan>>>,
-    /// Coordinator per swarm (swarm_id -> session_id)
-    swarm_coordinators: Arc<RwLock<HashMap<String, String>>>,
     /// Active and available TUI debug channels (request_id, command)
     client_debug_state: Arc<RwLock<ClientDebugState>>,
     /// Channel to receive client debug responses from TUI (request_id, response)
@@ -594,11 +584,13 @@ impl Server {
             client_connections: Arc::new(RwLock::new(HashMap::new())),
             file_touches: Arc::new(RwLock::new(HashMap::new())),
             files_touched_by_session: Arc::new(RwLock::new(HashMap::new())),
-            swarm_members: Arc::new(RwLock::new(restored_swarm_members)),
-            swarms_by_id: Arc::new(RwLock::new(restored_swarms_by_id)),
+            swarm_state: SwarmState::new(
+                restored_swarm_members,
+                restored_swarms_by_id,
+                restored_swarm_plans,
+                restored_swarm_coordinators,
+            ),
             shared_context: Arc::new(RwLock::new(HashMap::new())),
-            swarm_plans: Arc::new(RwLock::new(restored_swarm_plans)),
-            swarm_coordinators: Arc::new(RwLock::new(restored_swarm_coordinators)),
             client_debug_state: Arc::new(RwLock::new(ClientDebugState::default())),
             client_debug_response_tx,
             debug_jobs: Arc::new(RwLock::new(HashMap::new())),
@@ -702,7 +694,7 @@ impl Server {
         // In the unified server design, self-dev sessions share the main server,
         // so the shared server must always listen for reload signals.
         let signal_sessions = Arc::clone(&self.sessions);
-        let signal_swarm_members = Arc::clone(&self.swarm_members);
+        let signal_swarm_members = Arc::clone(&self.swarm_state.members);
         let signal_shutdown_signals = Arc::clone(&self.shutdown_signals);
         let signal_swarm_event_tx = self.swarm_event_tx.clone();
         tokio::spawn(async move {
@@ -733,10 +725,10 @@ impl Server {
         // Spawn the bus monitor for swarm coordination
         let monitor_file_touches = Arc::clone(&self.file_touches);
         let monitor_files_touched_by_session = Arc::clone(&self.files_touched_by_session);
-        let monitor_swarm_members = Arc::clone(&self.swarm_members);
-        let monitor_swarms_by_id = Arc::clone(&self.swarms_by_id);
-        let monitor_swarm_plans = Arc::clone(&self.swarm_plans);
-        let monitor_swarm_coordinators = Arc::clone(&self.swarm_coordinators);
+        let monitor_swarm_members = Arc::clone(&self.swarm_state.members);
+        let monitor_swarms_by_id = Arc::clone(&self.swarm_state.swarms_by_id);
+        let monitor_swarm_plans = Arc::clone(&self.swarm_state.plans);
+        let monitor_swarm_coordinators = Arc::clone(&self.swarm_state.coordinators);
         let monitor_shared_context = Arc::clone(&self.shared_context);
         let monitor_sessions = Arc::clone(&self.sessions);
         let monitor_soft_interrupt_queues = Arc::clone(&self.soft_interrupt_queues);
@@ -761,10 +753,10 @@ impl Server {
             .await;
         });
 
-        let stale_swarm_members = Arc::clone(&self.swarm_members);
-        let stale_swarms_by_id = Arc::clone(&self.swarms_by_id);
-        let stale_swarm_plans = Arc::clone(&self.swarm_plans);
-        let stale_swarm_coordinators = Arc::clone(&self.swarm_coordinators);
+        let stale_swarm_members = Arc::clone(&self.swarm_state.members);
+        let stale_swarms_by_id = Arc::clone(&self.swarm_state.swarms_by_id);
+        let stale_swarm_plans = Arc::clone(&self.swarm_state.plans);
+        let stale_swarm_coordinators = Arc::clone(&self.swarm_state.coordinators);
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(crate::server::swarm::swarm_task_sweep_interval());

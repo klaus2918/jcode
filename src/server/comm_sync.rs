@@ -1,5 +1,5 @@
 use super::{
-    ClientConnectionInfo, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
+    ClientConnectionInfo, SwarmEvent, SwarmEventType, SwarmMember, SwarmState, VersionedPlan,
     broadcast_swarm_plan, persist_swarm_state_for, record_swarm_event,
 };
 use crate::agent::Agent;
@@ -328,8 +328,13 @@ pub(super) async fn handle_comm_resync_plan(
             })
         };
         if let Some((version, item_count)) = plan_state {
-            persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators, swarm_members)
-                .await;
+            let swarm_state = SwarmState {
+                members: Arc::clone(swarm_members),
+                swarms_by_id: Arc::clone(swarms_by_id),
+                plans: Arc::clone(swarm_plans),
+                coordinators: Arc::clone(swarm_coordinators),
+            };
+            persist_swarm_state_for(&swarm_id, &swarm_state).await;
             if let Some(member) = swarm_members.read().await.get(&req_session_id) {
                 let _ = member.event_tx.send(ServerEvent::Notification {
                     from_session: req_session_id.clone(),

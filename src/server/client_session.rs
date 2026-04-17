@@ -3,7 +3,7 @@
 use super::client_state::{handle_get_history, spawn_model_prefetch_update};
 use super::{
     ClientConnectionInfo, ClientDebugState, FileAccess, SessionInterruptQueues, SwarmEvent,
-    SwarmMember, VersionedPlan, broadcast_swarm_status, fanout_live_client_event,
+    SwarmMember, SwarmState, VersionedPlan, broadcast_swarm_status, fanout_live_client_event,
     persist_swarm_state_for, register_session_event_sender, register_session_interrupt_queue,
     remove_plan_participant, remove_session_channel_subscriptions, remove_session_file_touches,
     remove_session_from_swarm, remove_session_interrupt_queue, rename_plan_participant,
@@ -475,8 +475,13 @@ pub(super) async fn handle_subscribe(
         if let Some(old_id) = old_swarm_id.clone() {
             if updated_swarm_id.as_ref() != Some(&old_id) {
                 remove_plan_participant(&old_id, client_session_id, swarm_plans).await;
-                persist_swarm_state_for(&old_id, swarm_plans, swarm_coordinators, swarm_members)
-                    .await;
+                let swarm_state = SwarmState {
+                    members: Arc::clone(swarm_members),
+                    swarms_by_id: Arc::clone(swarms_by_id),
+                    plans: Arc::clone(swarm_plans),
+                    coordinators: Arc::clone(swarm_coordinators),
+                };
+                persist_swarm_state_for(&old_id, &swarm_state).await;
             }
             broadcast_swarm_status(&old_id, swarm_members, swarms_by_id).await;
         }
@@ -1026,8 +1031,13 @@ pub(super) async fn handle_resume_session(
                     .and_then(|member| member.swarm_id.clone())
             } {
                 rename_plan_participant(&swarm_id, &old_session_id, &session_id, swarm_plans).await;
-                persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators, swarm_members)
-                    .await;
+                let swarm_state = SwarmState {
+                    members: Arc::clone(swarm_members),
+                    swarms_by_id: Arc::clone(swarms_by_id),
+                    plans: Arc::clone(swarm_plans),
+                    coordinators: Arc::clone(swarm_coordinators),
+                };
+                persist_swarm_state_for(&swarm_id, &swarm_state).await;
             }
 
             register_session_event_sender(

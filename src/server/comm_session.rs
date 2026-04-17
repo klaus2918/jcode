@@ -4,7 +4,7 @@ use super::swarm_mutation_state::{
     request_key,
 };
 use super::{
-    SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, VersionedPlan,
+    SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, SwarmState, VersionedPlan,
     broadcast_swarm_plan, broadcast_swarm_status, create_headless_session, persist_swarm_state_for,
     record_swarm_event, record_swarm_event_for_session, remove_session_channel_subscriptions,
     remove_session_from_swarm, remove_session_interrupt_queue, truncate_detail,
@@ -360,9 +360,13 @@ pub(super) async fn handle_comm_spawn(
                 )
                 .await;
             }
-
-            persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators, swarm_members)
-                .await;
+            let swarm_state = SwarmState {
+                members: Arc::clone(swarm_members),
+                swarms_by_id: Arc::clone(swarms_by_id),
+                plans: Arc::clone(swarm_plans),
+                coordinators: Arc::clone(swarm_coordinators),
+            };
+            persist_swarm_state_for(&swarm_id, &swarm_state).await;
 
             if let Some(initial_msg) = startup_message
                 && is_headless_fallback
@@ -649,7 +653,13 @@ async fn ensure_spawn_coordinator_swarm(
                 member.role = "coordinator".to_string();
             }
         }
-        persist_swarm_state_for(&swarm_id, swarm_plans, swarm_coordinators, swarm_members).await;
+        let swarm_state = SwarmState {
+            members: Arc::clone(swarm_members),
+            swarms_by_id: Arc::clone(swarms_by_id),
+            plans: Arc::clone(swarm_plans),
+            coordinators: Arc::clone(swarm_coordinators),
+        };
+        persist_swarm_state_for(&swarm_id, &swarm_state).await;
         broadcast_swarm_status(&swarm_id, swarm_members, swarms_by_id).await;
         let _ = client_event_tx.send(ServerEvent::Notification {
             from_session: req_session_id.to_string(),
