@@ -1111,6 +1111,10 @@ impl Provider for AnthropicProvider {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "stream retry helper needs auth/session/runtime knobs together and is kept local for clarity"
+)]
 async fn run_stream_with_retries(
     client: Client,
     initial_token: String,

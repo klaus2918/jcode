@@ -1,7 +1,11 @@
 mod await_members_state;
+mod comm_await;
 mod client_actions;
 mod client_api;
 mod client_comm;
+mod client_comm_channels;
+mod client_comm_context;
+mod client_comm_message;
 mod client_disconnect_cleanup;
 mod client_lifecycle;
 mod client_session;
@@ -21,6 +25,7 @@ mod debug_session_admin;
 mod debug_swarm_read;
 mod debug_swarm_write;
 mod debug_testers;
+mod durable_state;
 mod headless;
 mod provider_control;
 mod reload;
@@ -28,6 +33,7 @@ mod reload_state;
 mod runtime;
 mod socket;
 mod swarm;
+mod swarm_channels;
 mod swarm_mutation_state;
 mod swarm_persistence;
 mod util;
@@ -39,11 +45,15 @@ use self::headless::create_headless_session;
 use self::reload::await_reload_signal;
 use self::runtime::ServerRuntime;
 use self::swarm::{
-    broadcast_swarm_plan, broadcast_swarm_status, record_swarm_event,
-    record_swarm_event_for_session, refresh_swarm_task_staleness, remove_plan_participant,
-    remove_session_channel_subscriptions, remove_session_file_touches, remove_session_from_swarm,
-    rename_plan_participant, run_swarm_message, subscribe_session_to_channel, summarize_plan_items,
-    truncate_detail, unsubscribe_session_from_channel, update_member_status,
+    broadcast_swarm_plan, broadcast_swarm_plan_with_previous, broadcast_swarm_status,
+    record_swarm_event, record_swarm_event_for_session, refresh_swarm_task_staleness,
+    remove_plan_participant, remove_session_file_touches, remove_session_from_swarm,
+    rename_plan_participant, run_swarm_message, summarize_plan_items, truncate_detail,
+    update_member_status,
+};
+use self::swarm_channels::{
+    remove_session_channel_subscriptions, subscribe_session_to_channel,
+    unsubscribe_session_from_channel,
 };
 pub(super) use self::swarm_mutation_state::SwarmMutationRuntime;
 use self::swarm_persistence::{
@@ -77,35 +87,18 @@ pub(super) type ChannelSubscriptions =
     Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 
 pub(super) async fn persist_swarm_state_for(swarm_id: &str, swarm_state: &SwarmState) {
-    let plan = {
-        let plans = swarm_state.plans.read().await;
-        plans.get(swarm_id).cloned()
-    };
-    let coordinator = {
-        let coordinators = swarm_state.coordinators.read().await;
-        coordinators.get(swarm_id).cloned()
-    };
-    let members = {
-        let members = swarm_state.members.read().await;
-        members
-            .values()
-            .filter(|member| member.swarm_id.as_deref() == Some(swarm_id))
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    persist_swarm_state_snapshot(swarm_id, plan.as_ref(), coordinator.as_deref(), &members);
+    let runtime = swarm_state.load_runtime(swarm_id).await;
+    persist_swarm_state_snapshot(
+        swarm_id,
+        runtime.plan.as_ref(),
+        runtime.coordinator_session_id.as_deref(),
+        &runtime.members,
+    );
 }
 
 pub(super) async fn remove_persisted_swarm_state_for(swarm_id: &str, swarm_state: &SwarmState) {
-    let has_plan = swarm_state.plans.read().await.contains_key(swarm_id);
-    let has_coordinator = swarm_state.coordinators.read().await.contains_key(swarm_id);
-    let has_members = {
-        let members = swarm_state.members.read().await;
-        members
-            .values()
-            .any(|member| member.swarm_id.as_deref() == Some(swarm_id))
-    };
-    if has_plan || has_coordinator || has_members {
+    let runtime = swarm_state.load_runtime(swarm_id).await;
+    if runtime.has_any_state() {
         return;
     }
     remove_persisted_swarm_state(swarm_id);

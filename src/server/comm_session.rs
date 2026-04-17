@@ -189,6 +189,216 @@ async fn register_visible_spawned_member(
     broadcast_swarm_status(swarm_id, swarm_members, swarms_by_id).await;
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "server-side swarm spawning needs session, swarm state, provider, and event sinks together"
+)]
+pub(super) async fn spawn_swarm_agent(
+    req_session_id: &str,
+    swarm_id: &str,
+    working_dir: Option<String>,
+    initial_message: Option<String>,
+    sessions: &SessionAgents,
+    global_session_id: &Arc<RwLock<String>>,
+    provider_template: &Arc<dyn Provider>,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
+    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
+    event_counter: &Arc<std::sync::atomic::AtomicU64>,
+    swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
+    soft_interrupt_queues: &SessionInterruptQueues,
+) -> anyhow::Result<String> {
+    let coordinator_model = {
+        let agent_sessions = sessions.read().await;
+        agent_sessions.get(req_session_id).and_then(|agent| {
+            agent
+                .try_lock()
+                .ok()
+                .map(|agent_guard| agent_guard.provider_model())
+        })
+    };
+    let spawn_model = crate::config::config()
+        .agents
+        .swarm_model
+        .clone()
+        .or(coordinator_model.clone());
+    let coordinator_is_canary = {
+        let agent_sessions = sessions.read().await;
+        agent_sessions
+            .get(req_session_id)
+            .and_then(|agent| {
+                agent
+                    .try_lock()
+                    .ok()
+                    .map(|agent_guard| agent_guard.is_canary())
+            })
+            .unwrap_or(false)
+    };
+
+    let visible_spawn = prepare_visible_spawn_session(
+        working_dir.as_deref(),
+        spawn_model.as_deref(),
+        coordinator_is_canary,
+        initial_message.as_deref(),
+        spawn_visible_session_window,
+    );
+
+    let (new_session_id, is_headless_fallback) = match visible_spawn {
+        Ok((new_session_id, true)) => Ok((new_session_id, false)),
+        Ok((_, false)) | Err(_) => {
+            let cmd = if let Some(ref dir) = working_dir {
+                format!("create_session:{dir}")
+            } else {
+                "create_session".to_string()
+            };
+            create_headless_session(
+                sessions,
+                global_session_id,
+                provider_template,
+                &cmd,
+                swarm_members,
+                swarms_by_id,
+                swarm_coordinators,
+                swarm_plans,
+                soft_interrupt_queues,
+                coordinator_is_canary,
+                spawn_model.clone(),
+                Some(Arc::clone(mcp_pool)),
+                Some(req_session_id.to_string()),
+            )
+            .await
+            .and_then(|result_json| {
+                serde_json::from_str::<serde_json::Value>(&result_json)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("session_id")
+                            .and_then(|session_id| session_id.as_str())
+                            .map(|session_id| session_id.to_string())
+                    })
+                    .map(|session_id| (session_id, true))
+                    .ok_or_else(|| anyhow::anyhow!("Failed to parse spawned session id"))
+            })
+        }
+    }?;
+
+    let startup_message = initial_message.clone();
+    {
+        let mut plans = swarm_plans.write().await;
+        if let Some(plan) = plans.get_mut(swarm_id)
+            && (!plan.items.is_empty() || !plan.participants.is_empty())
+        {
+            plan.participants.insert(req_session_id.to_string());
+            plan.participants.insert(new_session_id.clone());
+        }
+    }
+
+    broadcast_swarm_plan(
+        swarm_id,
+        Some("participant_spawned".to_string()),
+        swarm_plans,
+        swarm_members,
+        swarms_by_id,
+    )
+    .await;
+    if !is_headless_fallback {
+        register_visible_spawned_member(
+            &new_session_id,
+            swarm_id,
+            working_dir.as_deref(),
+            startup_message.is_some(),
+            Some(req_session_id),
+            swarm_members,
+            swarms_by_id,
+            event_history,
+            event_counter,
+            swarm_event_tx,
+        )
+        .await;
+    }
+    let swarm_state = SwarmState {
+        members: Arc::clone(swarm_members),
+        swarms_by_id: Arc::clone(swarms_by_id),
+        plans: Arc::clone(swarm_plans),
+        coordinators: Arc::clone(swarm_coordinators),
+    };
+    persist_swarm_state_for(swarm_id, &swarm_state).await;
+
+    if let Some(initial_msg) = startup_message
+        && is_headless_fallback
+    {
+        record_swarm_event_for_session(
+            &new_session_id,
+            SwarmEventType::MemberChange {
+                action: "joined".to_string(),
+            },
+            swarm_members,
+            event_history,
+            event_counter,
+            swarm_event_tx,
+        )
+        .await;
+
+        let agent_arc = {
+            let agent_sessions = sessions.read().await;
+            agent_sessions.get(&new_session_id).cloned()
+        };
+        if let Some(agent_arc) = agent_arc {
+            let sid_clone = new_session_id.clone();
+            let swarm_members2 = Arc::clone(swarm_members);
+            let swarms_by_id2 = Arc::clone(swarms_by_id);
+            let event_history2 = Arc::clone(event_history);
+            let event_counter2 = Arc::clone(event_counter);
+            let swarm_event_tx2 = swarm_event_tx.clone();
+            tokio::spawn(async move {
+                update_member_status(
+                    &sid_clone,
+                    "running",
+                    Some(truncate_detail(&initial_msg, 120)),
+                    &swarm_members2,
+                    &swarms_by_id2,
+                    Some(&event_history2),
+                    Some(&event_counter2),
+                    Some(&swarm_event_tx2),
+                )
+                .await;
+                let event_tx = super::session_event_fanout_sender(
+                    sid_clone.clone(),
+                    Arc::clone(&swarm_members2),
+                );
+                let result = process_message_streaming_mpsc(
+                    Arc::clone(&agent_arc),
+                    &initial_msg,
+                    vec![],
+                    None,
+                    event_tx,
+                )
+                .await;
+                let (new_status, new_detail) = match result {
+                    Ok(()) => ("ready", None),
+                    Err(ref error) => ("failed", Some(truncate_detail(&error.to_string(), 120))),
+                };
+                update_member_status(
+                    &sid_clone,
+                    new_status,
+                    new_detail,
+                    &swarm_members2,
+                    &swarms_by_id2,
+                    Some(&event_history2),
+                    Some(&event_counter2),
+                    Some(&swarm_event_tx2),
+                )
+                .await;
+            });
+        }
+    }
+
+    Ok(new_session_id)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_comm_spawn(
     id: u64,
@@ -229,33 +439,6 @@ pub(super) async fn handle_comm_spawn(
         None => return,
     };
 
-    let coordinator_model = {
-        let agent_sessions = sessions.read().await;
-        agent_sessions.get(&req_session_id).and_then(|agent| {
-            agent
-                .try_lock()
-                .ok()
-                .map(|agent_guard| agent_guard.provider_model())
-        })
-    };
-    let spawn_model = crate::config::config()
-        .agents
-        .swarm_model
-        .clone()
-        .or(coordinator_model.clone());
-    let coordinator_is_canary = {
-        let agent_sessions = sessions.read().await;
-        agent_sessions
-            .get(&req_session_id)
-            .and_then(|agent| {
-                agent
-                    .try_lock()
-                    .ok()
-                    .map(|agent_guard| agent_guard.is_canary())
-            })
-            .unwrap_or(false)
-    };
-
     let mutation_key = request_key(
         &req_session_id,
         "spawn",
@@ -279,170 +462,27 @@ pub(super) async fn handle_comm_spawn(
         return;
     };
 
-    let visible_spawn = prepare_visible_spawn_session(
-        working_dir.as_deref(),
-        spawn_model.as_deref(),
-        coordinator_is_canary,
-        initial_message.as_deref(),
-        spawn_visible_session_window,
-    );
-
-    let spawn_result: anyhow::Result<(String, bool)> = match visible_spawn {
-        Ok((new_session_id, true)) => Ok((new_session_id, false)),
-        Ok((_, false)) | Err(_) => {
-            let cmd = if let Some(ref dir) = working_dir {
-                format!("create_session:{dir}")
-            } else {
-                "create_session".to_string()
-            };
-            create_headless_session(
-                sessions,
-                global_session_id,
-                provider_template,
-                &cmd,
-                swarm_members,
-                swarms_by_id,
-                swarm_coordinators,
-                swarm_plans,
-                soft_interrupt_queues,
-                coordinator_is_canary,
-                spawn_model.clone(),
-                Some(Arc::clone(mcp_pool)),
-                Some(req_session_id.clone()),
-            )
-            .await
-            .and_then(|result_json| {
-                serde_json::from_str::<serde_json::Value>(&result_json)
-                    .ok()
-                    .and_then(|value| {
-                        value
-                            .get("session_id")
-                            .and_then(|session_id| session_id.as_str())
-                            .map(|session_id| session_id.to_string())
-                    })
-                    .map(|session_id| (session_id, true))
-                    .ok_or_else(|| anyhow::anyhow!("Failed to parse spawned session id"))
-            })
-        }
-    };
-
-    let response = match spawn_result {
-        Ok((new_session_id, is_headless_fallback)) => {
-            let startup_message = initial_message.clone();
-            {
-                let mut plans = swarm_plans.write().await;
-                if let Some(plan) = plans.get_mut(&swarm_id)
-                    && (!plan.items.is_empty() || !plan.participants.is_empty())
-                {
-                    plan.participants.insert(req_session_id.clone());
-                    plan.participants.insert(new_session_id.clone());
-                }
-            }
-
-            broadcast_swarm_plan(
-                &swarm_id,
-                Some("participant_spawned".to_string()),
-                swarm_plans,
-                swarm_members,
-                swarms_by_id,
-            )
-            .await;
-            if !is_headless_fallback {
-                register_visible_spawned_member(
-                    &new_session_id,
-                    &swarm_id,
-                    working_dir.as_deref(),
-                    startup_message.is_some(),
-                    Some(&req_session_id),
-                    swarm_members,
-                    swarms_by_id,
-                    event_history,
-                    event_counter,
-                    swarm_event_tx,
-                )
-                .await;
-            }
-            let swarm_state = SwarmState {
-                members: Arc::clone(swarm_members),
-                swarms_by_id: Arc::clone(swarms_by_id),
-                plans: Arc::clone(swarm_plans),
-                coordinators: Arc::clone(swarm_coordinators),
-            };
-            persist_swarm_state_for(&swarm_id, &swarm_state).await;
-
-            if let Some(initial_msg) = startup_message
-                && is_headless_fallback
-            {
-                record_swarm_event_for_session(
-                    &new_session_id,
-                    SwarmEventType::MemberChange {
-                        action: "joined".to_string(),
-                    },
-                    swarm_members,
-                    event_history,
-                    event_counter,
-                    swarm_event_tx,
-                )
-                .await;
-
-                let agent_arc = {
-                    let agent_sessions = sessions.read().await;
-                    agent_sessions.get(&new_session_id).cloned()
-                };
-                if let Some(agent_arc) = agent_arc {
-                    let sid_clone = new_session_id.clone();
-                    let swarm_members2 = Arc::clone(swarm_members);
-                    let swarms_by_id2 = Arc::clone(swarms_by_id);
-                    let event_history2 = Arc::clone(event_history);
-                    let event_counter2 = Arc::clone(event_counter);
-                    let swarm_event_tx2 = swarm_event_tx.clone();
-                    tokio::spawn(async move {
-                        update_member_status(
-                            &sid_clone,
-                            "running",
-                            Some(truncate_detail(&initial_msg, 120)),
-                            &swarm_members2,
-                            &swarms_by_id2,
-                            Some(&event_history2),
-                            Some(&event_counter2),
-                            Some(&swarm_event_tx2),
-                        )
-                        .await;
-                        let event_tx = super::session_event_fanout_sender(
-                            sid_clone.clone(),
-                            Arc::clone(&swarm_members2),
-                        );
-                        let result = process_message_streaming_mpsc(
-                            Arc::clone(&agent_arc),
-                            &initial_msg,
-                            vec![],
-                            None,
-                            event_tx,
-                        )
-                        .await;
-                        let (new_status, new_detail) = match result {
-                            Ok(()) => ("ready", None),
-                            Err(ref error) => {
-                                ("failed", Some(truncate_detail(&error.to_string(), 120)))
-                            }
-                        };
-                        update_member_status(
-                            &sid_clone,
-                            new_status,
-                            new_detail,
-                            &swarm_members2,
-                            &swarms_by_id2,
-                            Some(&event_history2),
-                            Some(&event_counter2),
-                            Some(&swarm_event_tx2),
-                        )
-                        .await;
-                    });
-                }
-            }
-
-            PersistedSwarmMutationResponse::Spawn { new_session_id }
-        }
+    let response = match spawn_swarm_agent(
+        &req_session_id,
+        &swarm_id,
+        working_dir,
+        initial_message,
+        sessions,
+        global_session_id,
+        provider_template,
+        swarm_members,
+        swarms_by_id,
+        swarm_coordinators,
+        swarm_plans,
+        event_history,
+        event_counter,
+        swarm_event_tx,
+        mcp_pool,
+        soft_interrupt_queues,
+    )
+    .await
+    {
+        Ok(new_session_id) => PersistedSwarmMutationResponse::Spawn { new_session_id },
         Err(error) => PersistedSwarmMutationResponse::Error {
             message: format!("Failed to spawn agent: {error}"),
             retry_after_secs: None,
@@ -580,6 +620,10 @@ pub(super) async fn handle_comm_stop(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "spawn coordinator resolution checks swarm membership, coordinator state, and promotion side effects together"
+)]
 async fn ensure_spawn_coordinator_swarm(
     id: u64,
     req_session_id: &str,

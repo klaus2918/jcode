@@ -172,6 +172,8 @@ fn test_comm_propose_plan_roundtrip() -> Result<()> {
             status: "pending".to_string(),
             priority: "high".to_string(),
             id: "p1".to_string(),
+            subsystem: None,
+            file_scope: Vec::new(),
             blocked_by: vec!["p0".to_string()],
             assigned_to: Some("sess_b".to_string()),
         }],
@@ -460,6 +462,39 @@ fn test_comm_assign_task_response_roundtrip() -> Result<()> {
 }
 
 #[test]
+fn test_comm_assign_next_roundtrip() -> Result<()> {
+    let req = Request::CommAssignNext {
+        id: 60,
+        session_id: "sess_coord".to_string(),
+        target_session: Some("sess_worker".to_string()),
+        prefer_spawn: Some(true),
+        spawn_if_needed: Some(true),
+        message: Some("Take the next runnable task.".to_string()),
+    };
+    let json = serde_json::to_string(&req)?;
+    assert!(json.contains("\"type\":\"comm_assign_next\""));
+    let decoded = parse_request_json(&json)?;
+    assert_eq!(decoded.id(), 60);
+    let Request::CommAssignNext {
+        session_id,
+        target_session,
+        prefer_spawn,
+        spawn_if_needed,
+        message,
+        ..
+    } = decoded
+    else {
+        return Err(anyhow!("expected CommAssignNext"));
+    };
+    assert_eq!(session_id, "sess_coord");
+    assert_eq!(target_session.as_deref(), Some("sess_worker"));
+    assert_eq!(prefer_spawn, Some(true));
+    assert_eq!(spawn_if_needed, Some(true));
+    assert_eq!(message.as_deref(), Some("Take the next runnable task."));
+    Ok(())
+}
+
+#[test]
 fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
     let req = Request::CommSpawn {
         id: 59,
@@ -500,6 +535,8 @@ fn test_swarm_plan_event_roundtrip_with_summary() -> Result<()> {
             status: "queued".to_string(),
             priority: "high".to_string(),
             id: "task-1".to_string(),
+            subsystem: None,
+            file_scope: Vec::new(),
             blocked_by: vec![],
             assigned_to: None,
         }],
@@ -516,6 +553,7 @@ fn test_swarm_plan_event_roundtrip_with_summary() -> Result<()> {
             cycle_ids: Vec::new(),
             unresolved_dependency_ids: Vec::new(),
             next_ready_ids: vec!["task-1".to_string()],
+            newly_ready_ids: Vec::new(),
         }),
     };
     let json = encode_event(&event);
@@ -541,6 +579,52 @@ fn test_swarm_plan_event_roundtrip_with_summary() -> Result<()> {
     let summary = summary.ok_or_else(|| anyhow!("expected plan summary"))?;
     assert_eq!(summary.ready_ids, vec!["task-1"]);
     assert_eq!(summary.next_ready_ids, vec!["task-1"]);
+    Ok(())
+}
+
+#[test]
+fn test_comm_task_control_response_roundtrip() -> Result<()> {
+    let event = ServerEvent::CommTaskControlResponse {
+        id: 61,
+        action: "start".to_string(),
+        task_id: "task-1".to_string(),
+        target_session: Some("sess_worker".to_string()),
+        status: "running".to_string(),
+        summary: crate::protocol::PlanGraphStatus {
+            swarm_id: Some("swarm_123".to_string()),
+            version: 3,
+            item_count: 2,
+            ready_ids: vec!["task-2".to_string()],
+            blocked_ids: Vec::new(),
+            active_ids: vec!["task-1".to_string()],
+            completed_ids: vec!["setup".to_string()],
+            cycle_ids: Vec::new(),
+            unresolved_dependency_ids: Vec::new(),
+            next_ready_ids: vec!["task-2".to_string()],
+            newly_ready_ids: vec!["task-2".to_string()],
+        },
+    };
+    let json = encode_event(&event);
+    assert!(json.contains("\"type\":\"comm_task_control_response\""));
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::CommTaskControlResponse {
+        id,
+        action,
+        task_id,
+        target_session,
+        status,
+        summary,
+    } = decoded
+    else {
+        return Err(anyhow!("expected CommTaskControlResponse"));
+    };
+    assert_eq!(id, 61);
+    assert_eq!(action, "start");
+    assert_eq!(task_id, "task-1");
+    assert_eq!(target_session.as_deref(), Some("sess_worker"));
+    assert_eq!(status, "running");
+    assert_eq!(summary.next_ready_ids, vec!["task-2"]);
+    assert_eq!(summary.newly_ready_ids, vec!["task-2"]);
     Ok(())
 }
 

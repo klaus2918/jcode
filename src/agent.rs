@@ -1,26 +1,26 @@
 #![allow(unused_assignments)]
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
-mod compaction_support;
-mod env_support;
+mod compaction;
+mod environment;
 mod interrupts;
-mod message_support;
-mod prompt_support;
-mod provider_support;
+mod messages;
+mod prompting;
+mod provider;
 mod response_recovery;
-mod status_support;
-mod stream_support;
-mod tool_support;
+mod status;
+mod streaming;
+mod tools;
 mod turn_execution;
 mod turn_loops;
 mod turn_streaming_broadcast;
 mod turn_streaming_mpsc;
 mod utils;
 
-use self::stream_support::{
+use self::streaming::{
     send_stream_keepalive_broadcast, send_stream_keepalive_mpsc, stream_keepalive_ticker,
 };
-use self::tool_support::{print_tool_summary, tool_output_to_content_blocks};
+use self::tools::{print_tool_summary, tool_output_to_content_blocks};
 use self::utils::trace_enabled;
 use crate::build;
 use crate::bus::{Bus, BusEvent, SubagentStatus, ToolEvent, ToolStatus};

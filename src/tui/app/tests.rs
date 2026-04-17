@@ -2627,12 +2627,15 @@ fn test_accumulate_streaming_output_tokens_uses_deltas() {
     let mut seen = 0;
 
     app.streaming_tps_collect_output = true;
+    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(10));
 
     app.accumulate_streaming_output_tokens(10, &mut seen);
     app.accumulate_streaming_output_tokens(30, &mut seen);
     app.accumulate_streaming_output_tokens(30, &mut seen);
 
     assert_eq!(app.streaming_total_output_tokens, 30);
+    assert_eq!(app.streaming_tps_observed_output_tokens, 30);
+    assert!(app.streaming_tps_observed_elapsed >= Duration::from_secs(9));
     assert_eq!(seen, 30);
 }
 
@@ -2643,34 +2646,94 @@ fn test_accumulate_streaming_output_tokens_ignores_hidden_output_phase() {
 
     app.accumulate_streaming_output_tokens(20, &mut seen);
     assert_eq!(app.streaming_total_output_tokens, 0);
+    assert_eq!(app.streaming_tps_observed_output_tokens, 0);
     assert_eq!(seen, 20);
 
     app.streaming_tps_collect_output = true;
+    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(10));
     app.accumulate_streaming_output_tokens(60, &mut seen);
 
     assert_eq!(app.streaming_total_output_tokens, 40);
+    assert_eq!(app.streaming_tps_observed_output_tokens, 40);
     assert_eq!(seen, 60);
 }
 
 #[test]
-fn test_compute_streaming_tps_falls_back_to_output_usage_when_total_not_accumulated() {
+fn test_compute_streaming_tps_uses_latest_observed_snapshot_instead_of_current_repaint_time() {
     let mut app = create_test_app();
-    app.streaming_output_tokens = 440;
-    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(220));
+    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(20));
+    app.streaming_tps_observed_output_tokens = 40;
+    app.streaming_tps_observed_elapsed = Duration::from_secs(10);
 
     let tps = app.compute_streaming_tps().expect("tps");
-    assert!(tps > 1.9 && tps < 2.1, "unexpected tps: {tps}");
+    assert!(tps > 3.9 && tps < 4.1, "unexpected tps: {tps}");
 }
 
 #[test]
-fn test_compute_streaming_tps_prefers_accumulated_visible_output_tokens() {
+fn test_compute_streaming_tps_does_not_decay_on_redundant_usage_snapshots() {
     let mut app = create_test_app();
-    app.streaming_output_tokens = 60;
-    app.streaming_total_output_tokens = 40;
-    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(20));
+    let mut seen = 0;
+
+    app.streaming_tps_collect_output = true;
+    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(10));
+    app.accumulate_streaming_output_tokens(40, &mut seen);
+    let initial_tps = app.compute_streaming_tps().expect("initial tps");
+
+    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(30));
+    app.accumulate_streaming_output_tokens(40, &mut seen);
 
     let tps = app.compute_streaming_tps().expect("tps");
-    assert!(tps > 1.9 && tps < 2.1, "unexpected tps: {tps}");
+    assert!(
+        initial_tps > 3.9 && initial_tps < 4.1,
+        "unexpected initial tps: {initial_tps}"
+    );
+    assert!(
+        tps > 3.9 && tps < 4.1,
+        "unexpected tps after redundant snapshot: {tps}"
+    );
+}
+
+#[test]
+fn test_compute_streaming_tps_bursty_stream_simulation_stays_constant_between_real_updates() {
+    let mut app = create_test_app();
+    let mut seen = 0;
+
+    app.streaming_tps_collect_output = true;
+
+    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(2));
+    app.accumulate_streaming_output_tokens(10, &mut seen);
+    let tps_after_first_burst = app.compute_streaming_tps().expect("tps after first burst");
+
+    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(5));
+    app.accumulate_streaming_output_tokens(10, &mut seen);
+    let tps_after_idle_gap = app.compute_streaming_tps().expect("tps after idle gap");
+
+    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(6));
+    app.accumulate_streaming_output_tokens(30, &mut seen);
+    let tps_after_second_burst = app.compute_streaming_tps().expect("tps after second burst");
+
+    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(9));
+    app.accumulate_streaming_output_tokens(30, &mut seen);
+    let tps_after_second_idle_gap = app
+        .compute_streaming_tps()
+        .expect("tps after second idle gap");
+
+    assert!(
+        tps_after_first_burst > 4.9 && tps_after_first_burst < 5.1,
+        "unexpected first burst tps: {tps_after_first_burst}"
+    );
+    assert!(
+        (tps_after_idle_gap - tps_after_first_burst).abs() < 0.01,
+        "tps changed without new tokens: first={tps_after_first_burst} idle={tps_after_idle_gap}"
+    );
+    assert!(
+        tps_after_second_burst > 4.9 && tps_after_second_burst < 5.1,
+        "unexpected second burst tps: {tps_after_second_burst}"
+    );
+    assert!(
+        (tps_after_second_idle_gap - tps_after_second_burst).abs() < 0.01,
+        "tps changed without new tokens: second={tps_after_second_burst} idle={tps_after_second_idle_gap}"
+    );
 }
 
 #[test]
@@ -6452,7 +6515,9 @@ fn test_build_turn_footer_combines_compact_duration_with_streaming_stats() {
     app.streaming_input_tokens = 210_000;
     app.streaming_output_tokens = 440;
     app.streaming_tps_collect_output = true;
-    app.streaming_tps_start = Some(Instant::now() - Duration::from_secs(220));
+    app.streaming_total_output_tokens = 440;
+    app.streaming_tps_observed_output_tokens = 440;
+    app.streaming_tps_observed_elapsed = Duration::from_secs(220);
 
     let footer = app
         .build_turn_footer(Some(316.1))

@@ -303,6 +303,10 @@ fn idle_animation_variant() -> &'static str {
     choose_animation_variant(IDLE_VARIANTS, 0x4944_4c45_414e_494d)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "animation sampler is math-heavy and the hot-path scalar arguments are intentionally kept flat"
+)]
 fn plot_idle_sample(
     sw: usize,
     sh: usize,

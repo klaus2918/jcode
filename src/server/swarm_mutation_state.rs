@@ -1,10 +1,12 @@
 use crate::protocol::ServerEvent;
+use crate::protocol::PlanGraphStatus;
+use crate::server::durable_state::{
+    elapsed_exceeds, hashed_request_key, load_json_state, now_unix_ms, save_json_state,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::sync::{RwLock, mpsc};
 
 const SWARM_MUTATION_DIR: &str = "jcode-swarm-mutations";
@@ -12,11 +14,23 @@ const FINAL_STATE_TTL: Duration = Duration::from_secs(30);
 const PENDING_STATE_TTL: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "durable mutation responses prioritize straightforward serde persistence over boxing the summary payload"
+)]
 pub(crate) enum PersistedSwarmMutationResponse {
     Done,
     AssignTask {
         task_id: String,
         target_session: String,
+    },
+    TaskControl {
+        action: String,
+        task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_session: Option<String>,
+        status: String,
+        summary: PlanGraphStatus,
     },
     Error {
         message: String,
@@ -39,6 +53,20 @@ impl PersistedSwarmMutationResponse {
                 id,
                 task_id,
                 target_session,
+            },
+            Self::TaskControl {
+                action,
+                task_id,
+                target_session,
+                status,
+                summary,
+            } => ServerEvent::CommTaskControlResponse {
+                id,
+                action,
+                task_id,
+                target_session,
+                status,
+                summary,
             },
             Self::Error {
                 message,
@@ -120,75 +148,29 @@ impl SwarmMutationRuntime {
     }
 }
 
-fn now_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-fn state_dir() -> PathBuf {
-    crate::storage::runtime_dir().join(SWARM_MUTATION_DIR)
-}
-
-fn state_path(key: &str) -> PathBuf {
-    state_dir().join(format!("{key}.json"))
-}
-
 fn is_stale(state: &PersistedSwarmMutationState) -> bool {
-    let now = now_unix_ms();
     if state.final_response.is_some() {
-        now.saturating_sub(state.created_at_unix_ms) > FINAL_STATE_TTL.as_millis() as u64
+        elapsed_exceeds(state.created_at_unix_ms, FINAL_STATE_TTL)
     } else {
-        now.saturating_sub(state.created_at_unix_ms) > PENDING_STATE_TTL.as_millis() as u64
+        elapsed_exceeds(state.created_at_unix_ms, PENDING_STATE_TTL)
     }
 }
 
 pub(super) fn request_key(session_id: &str, action: &str, components: &[String]) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    session_id.hash(&mut hasher);
-    action.hash(&mut hasher);
-    for component in components {
-        component.hash(&mut hasher);
-    }
-    format!(
-        "{}-{:016x}",
-        sanitize_session_id(session_id),
-        hasher.finish()
-    )
-}
-
-fn sanitize_session_id(session_id: &str) -> String {
-    session_id
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    hashed_request_key(session_id, action, components)
 }
 
 pub(super) fn load_state(key: &str) -> Option<PersistedSwarmMutationState> {
-    let path = state_path(key);
-    let state = crate::storage::read_json::<PersistedSwarmMutationState>(&path).ok()?;
-    if is_stale(&state) {
-        let _ = std::fs::remove_file(path);
-        return None;
-    }
-    Some(state)
+    load_json_state(SWARM_MUTATION_DIR, key, is_stale)
 }
 
 pub(super) fn save_state(state: &PersistedSwarmMutationState) {
-    let path = state_path(&state.key);
-    if let Err(err) = crate::storage::write_json_fast(&path, state) {
-        crate::logging::warn(&format!(
-            "Failed to persist swarm mutation state {}: {}",
-            state.key, err
-        ));
-    }
+    save_json_state(
+        SWARM_MUTATION_DIR,
+        &state.key,
+        state,
+        "swarm mutation state",
+    )
 }
 
 pub(super) fn ensure_pending_state(

@@ -14,9 +14,10 @@ use super::client_session::{
 };
 use super::client_state::{handle_get_history, handle_get_state};
 use super::comm_control::{
-    handle_client_debug_command, handle_client_debug_response, handle_comm_assign_role,
-    handle_comm_assign_task, handle_comm_await_members, handle_comm_task_control,
+    handle_client_debug_command, handle_client_debug_response, handle_comm_assign_next,
+    handle_comm_assign_role, handle_comm_assign_task, handle_comm_task_control,
 };
+use super::comm_await::handle_comm_await_members;
 use super::comm_plan::{
     handle_comm_approve_plan, handle_comm_propose_plan, handle_comm_reject_plan,
 };
@@ -1486,6 +1487,40 @@ pub(super) async fn handle_client(
                     &event_history,
                     &event_counter,
                     &swarm_event_tx,
+                    &swarm_mutation_runtime,
+                )
+                .await;
+            }
+
+            Request::CommAssignNext {
+                id,
+                session_id: req_session_id,
+                target_session,
+                prefer_spawn,
+                spawn_if_needed,
+                message,
+            } => {
+                handle_comm_assign_next(
+                    id,
+                    req_session_id,
+                    target_session,
+                    prefer_spawn,
+                    spawn_if_needed,
+                    message,
+                    &client_event_tx,
+                    &sessions,
+                    &global_session_id,
+                    &provider_template,
+                    &soft_interrupt_queues,
+                    &client_connections,
+                    &swarm_members,
+                    &swarms_by_id,
+                    &swarm_plans,
+                    &swarm_coordinators,
+                    &event_history,
+                    &event_counter,
+                    &swarm_event_tx,
+                    &mcp_pool,
                     &swarm_mutation_runtime,
                 )
                 .await;

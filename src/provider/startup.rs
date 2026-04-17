@@ -1,6 +1,52 @@
 use super::*;
 
 impl MultiProvider {
+    pub(super) fn spawn_post_auth_model_refresh(
+        provider: Arc<dyn Provider>,
+        provider_label: &'static str,
+    ) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+
+        handle.spawn(async move {
+            provider.invalidate_credentials().await;
+            match provider.prefetch_models().await {
+                Ok(()) => {
+                    crate::bus::Bus::global().publish(crate::bus::BusEvent::ModelsUpdated);
+                }
+                Err(err) => {
+                    crate::logging::info(&format!(
+                        "Failed to refresh {} models after auth change: {}",
+                        provider_label, err
+                    ));
+                }
+            }
+        });
+    }
+
+    pub(super) async fn invalidate_provider_credentials_for_account_switch(
+        &self,
+        provider: ActiveProvider,
+    ) {
+        match provider {
+            ActiveProvider::Claude => {
+                if let Some(anthropic) = self.anthropic_provider() {
+                    anthropic.invalidate_credentials().await;
+                }
+                if let Some(claude) = self.claude_provider() {
+                    claude.invalidate_credentials().await;
+                }
+            }
+            ActiveProvider::OpenAI => {
+                if let Some(openai) = self.openai_provider() {
+                    openai.invalidate_credentials().await;
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn new_with_auth_status(auth_status: auth::AuthStatus) -> Self {
         let provider_init_start = std::time::Instant::now();
         let has_claude_creds = auth::claude::load_credentials().is_ok();

@@ -2,6 +2,19 @@ use super::*;
 
 /// Update cost calculation based on token usage (for API-key providers)
 impl App {
+    pub(super) fn current_streaming_tps_elapsed(&self) -> Duration {
+        let mut elapsed = self.streaming_tps_elapsed;
+        if let Some(start) = self.streaming_tps_start {
+            elapsed += start.elapsed();
+        }
+        elapsed
+    }
+
+    pub(super) fn snapshot_streaming_tps(&mut self) {
+        self.streaming_tps_observed_output_tokens = self.streaming_total_output_tokens;
+        self.streaming_tps_observed_elapsed = self.current_streaming_tps_elapsed();
+    }
+
     pub(super) fn resume_streaming_tps(&mut self) {
         self.streaming_tps_collect_output = true;
         if self.streaming_tps_start.is_none() {
@@ -21,6 +34,8 @@ impl App {
         self.streaming_tps_elapsed = Duration::ZERO;
         self.streaming_tps_collect_output = false;
         self.streaming_total_output_tokens = 0;
+        self.streaming_tps_observed_output_tokens = 0;
+        self.streaming_tps_observed_elapsed = Duration::ZERO;
     }
 
     pub(super) fn open_usage_inline_loading(&mut self) {
@@ -120,16 +135,8 @@ impl App {
     }
 
     pub(super) fn compute_streaming_tps(&self) -> Option<f32> {
-        let mut elapsed = self.streaming_tps_elapsed;
-        let total_tokens = if self.streaming_total_output_tokens > 0 {
-            self.streaming_total_output_tokens
-        } else {
-            self.streaming_output_tokens
-        };
-        if let Some(start) = self.streaming_tps_start {
-            elapsed += start.elapsed();
-        }
-        let elapsed_secs = elapsed.as_secs_f32();
+        let elapsed_secs = self.streaming_tps_observed_elapsed.as_secs_f32();
+        let total_tokens = self.streaming_tps_observed_output_tokens;
         if elapsed_secs > 0.1 && total_tokens > 0 {
             Some(total_tokens as f32 / elapsed_secs)
         } else {

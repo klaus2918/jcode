@@ -11,6 +11,10 @@ pub struct PlanItem {
     pub status: String,
     pub priority: String,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subsystem: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_scope: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked_by: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -222,6 +226,14 @@ pub fn next_runnable_item_ids(items: &[PlanItem], limit: Option<usize>) -> Vec<S
     }
 }
 
+pub fn newly_ready_item_ids(before: &[PlanItem], after: &[PlanItem]) -> Vec<String> {
+    let before_ready: HashSet<String> =
+        summarize_plan_graph(before).ready_ids.into_iter().collect();
+    let mut after_ready = summarize_plan_graph(after).ready_ids;
+    after_ready.retain(|item_id| !before_ready.contains(item_id));
+    after_ready
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +244,8 @@ mod tests {
             content: id.to_string(),
             status: status.to_string(),
             priority: "high".to_string(),
+            subsystem: None,
+            file_scope: Vec::new(),
             blocked_by: blocked_by.iter().map(|value| value.to_string()).collect(),
             assigned_to: None,
         }
@@ -267,6 +281,22 @@ mod tests {
             summary.unresolved_dependency_ids,
             vec!["missing-task".to_string()]
         );
+    }
+
+    #[test]
+    fn newly_ready_item_ids_reports_tasks_unblocked_by_completion() {
+        let before = vec![
+            item("setup", "running", &[]),
+            item("follow-up", "queued", &["setup"]),
+            item("later", "queued", &["follow-up"]),
+        ];
+        let after = vec![
+            item("setup", "completed", &[]),
+            item("follow-up", "queued", &["setup"]),
+            item("later", "queued", &["follow-up"]),
+        ];
+
+        assert_eq!(newly_ready_item_ids(&before, &after), vec!["follow-up"]);
     }
 
     #[test]

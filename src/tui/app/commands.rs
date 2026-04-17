@@ -903,6 +903,8 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
             app.streaming_tps_elapsed = std::time::Duration::ZERO;
             app.streaming_tps_collect_output = false;
             app.streaming_total_output_tokens = 0;
+            app.streaming_tps_observed_output_tokens = 0;
+            app.streaming_tps_observed_elapsed = std::time::Duration::ZERO;
             app.processing_started = Some(Instant::now());
             app.pending_turn = true;
         }

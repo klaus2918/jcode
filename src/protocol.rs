@@ -474,6 +474,21 @@ pub enum Request {
         message: Option<String>,
     },
 
+    /// Assign the next runnable unassigned task from the plan (coordinator only)
+    #[serde(rename = "comm_assign_next")]
+    CommAssignNext {
+        id: u64,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_session: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefer_spawn: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spawn_if_needed: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
     /// Control an existing assigned task lifecycle (coordinator only)
     #[serde(rename = "comm_task_control")]
     CommTaskControl {
@@ -997,6 +1012,18 @@ pub enum ServerEvent {
         target_session: String,
     },
 
+    /// Response to comm_task_control request
+    #[serde(rename = "comm_task_control_response")]
+    CommTaskControlResponse {
+        id: u64,
+        action: String,
+        task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_session: Option<String>,
+        status: String,
+        summary: PlanGraphStatus,
+    },
+
     /// Response to comm_read_context request
     #[serde(rename = "comm_context_history")]
     CommContextHistory {
@@ -1144,7 +1171,7 @@ pub struct AgentStatusSnapshot {
 }
 
 /// Lightweight swarm plan graph summary for planner-friendly reads.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanGraphStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swarm_id: Option<String>,
@@ -1164,6 +1191,8 @@ pub struct PlanGraphStatus {
     pub unresolved_dependency_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next_ready_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub newly_ready_ids: Vec<String>,
 }
 
 /// Swarm member status for lifecycle updates
@@ -1303,6 +1332,7 @@ impl Request {
             Request::CommResyncPlan { id, .. } => *id,
             Request::CommPlanStatus { id, .. } => *id,
             Request::CommAssignTask { id, .. } => *id,
+            Request::CommAssignNext { id, .. } => *id,
             Request::CommTaskControl { id, .. } => *id,
             Request::CommSubscribeChannel { id, .. } => *id,
             Request::CommUnsubscribeChannel { id, .. } => *id,

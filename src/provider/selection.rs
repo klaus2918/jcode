@@ -1,5 +1,15 @@
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ActiveProvider {
+    Claude,
+    OpenAI,
+    Copilot,
+    Gemini,
+    Cursor,
+    OpenRouter,
+}
+
 impl MultiProvider {
     pub(super) fn auto_default_provider(
         openai: bool,

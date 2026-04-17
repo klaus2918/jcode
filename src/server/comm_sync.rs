@@ -339,6 +339,7 @@ pub(super) async fn handle_comm_plan_status(
                 cycle_ids: graph.cycle_ids,
                 unresolved_dependency_ids: graph.unresolved_dependency_ids,
                 next_ready_ids: next_runnable_item_ids(&plan.items, Some(8)),
+                newly_ready_ids: Vec::new(),
             }
         } else {
             PlanGraphStatus {
@@ -352,6 +353,7 @@ pub(super) async fn handle_comm_plan_status(
                 cycle_ids: Vec::new(),
                 unresolved_dependency_ids: Vec::new(),
                 next_ready_ids: Vec::new(),
+                newly_ready_ids: Vec::new(),
             }
         }
     };

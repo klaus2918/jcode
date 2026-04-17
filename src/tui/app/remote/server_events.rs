@@ -1,5 +1,6 @@
 use super::*;
 use crate::tui::app as app_mod;
+use crate::tui::app::remote::swarm_plan_core::RemoteSwarmPlanSnapshot;
 
 pub(in crate::tui::app) fn handle_server_event(
     app: &mut App,
@@ -681,17 +682,29 @@ pub(in crate::tui::app) fn handle_server_event(
             items,
             participants,
             reason,
-            summary: _,
+            summary,
         } => {
-            app.swarm_plan_swarm_id = Some(swarm_id.clone());
-            app.swarm_plan_version = Some(version);
-            app.swarm_plan_items = items.clone();
-            persist_swarm_plan_snapshot(app, swarm_id, version, items, participants, reason);
-            app.set_status_notice(format!(
-                "Swarm plan synced (v{}, {} items)",
+            let snapshot = RemoteSwarmPlanSnapshot {
+                swarm_id: swarm_id.clone(),
                 version,
-                app.swarm_plan_items.len()
-            ));
+                items: items.clone(),
+                participants: participants.clone(),
+                reason: reason.clone(),
+                summary,
+            };
+            let notice = snapshot.status_notice();
+            app.swarm_plan_swarm_id = Some(snapshot.swarm_id.clone());
+            app.swarm_plan_version = Some(snapshot.version);
+            app.swarm_plan_items = snapshot.items.clone();
+            persist_swarm_plan_snapshot(
+                app,
+                snapshot.swarm_id,
+                snapshot.version,
+                snapshot.items,
+                snapshot.participants,
+                snapshot.reason,
+            );
+            app.set_status_notice(notice);
             false
         }
         ServerEvent::SwarmPlanProposal {

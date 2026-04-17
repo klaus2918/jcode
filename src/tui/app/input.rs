@@ -1592,6 +1592,9 @@ impl App {
         };
         if self.streaming_tps_collect_output {
             self.streaming_total_output_tokens += delta;
+            if delta > 0 {
+                self.snapshot_streaming_tps();
+            }
         }
         *call_output_tokens_seen = output_tokens;
     }
@@ -1908,6 +1911,8 @@ impl App {
         self.streaming_tps_elapsed = Duration::ZERO;
         self.streaming_tps_collect_output = false;
         self.streaming_total_output_tokens = 0;
+        self.streaming_tps_observed_output_tokens = 0;
+        self.streaming_tps_observed_elapsed = Duration::ZERO;
         self.processing_started = Some(Instant::now());
         self.pending_turn = true;
     }
@@ -1967,6 +1972,8 @@ impl App {
             self.streaming_tps_elapsed = Duration::ZERO;
             self.streaming_tps_collect_output = false;
             self.streaming_total_output_tokens = 0;
+            self.streaming_tps_observed_output_tokens = 0;
+            self.streaming_tps_observed_elapsed = Duration::ZERO;
             self.processing_started = Some(Instant::now());
             self.is_processing = true;
             self.status = ProcessingStatus::Sending;

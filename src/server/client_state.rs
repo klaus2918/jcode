@@ -645,6 +645,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "test intentionally keeps the agent busy lock held to exercise persisted-history fallback"
+    )]
     async fn handle_get_history_falls_back_to_persisted_snapshot_when_agent_is_busy() {
         let _guard = crate::storage::lock_test_env();
         let temp_home = tempfile::TempDir::new().expect("create temp home");

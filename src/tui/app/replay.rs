@@ -414,6 +414,8 @@ pub(super) fn apply_replay_event(
             app.streaming_tps_elapsed = Duration::ZERO;
             app.streaming_tps_collect_output = false;
             app.streaming_total_output_tokens = 0;
+            app.streaming_tps_observed_output_tokens = 0;
+            app.streaming_tps_observed_elapsed = Duration::ZERO;
             app.replay_processing_started_ms = replay_processing_started_ms;
         }
         ReplayEvent::MemoryInjection {

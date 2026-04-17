@@ -3,9 +3,7 @@
 //! Fetches usage information from Anthropic's OAuth usage endpoint and OpenAI's ChatGPT wham/usage endpoint.
 
 use crate::auth;
-#[path = "usage_display.rs"]
 mod display;
-#[path = "usage_openai.rs"]
 mod openai_helpers;
 use anyhow::{Context, Result};
 pub use display::{format_reset_time, format_usage_bar};
@@ -1899,5 +1897,4 @@ pub fn get_sync() -> UsageData {
 }
 
 #[cfg(test)]
-#[path = "usage_tests.rs"]
 mod tests;

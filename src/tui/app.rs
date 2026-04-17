@@ -425,6 +425,14 @@ pub struct App {
     /// Providers may emit repeated cumulative usage snapshots for a single API call,
     /// so we accumulate per-call deltas to avoid double counting.
     streaming_total_output_tokens: u64,
+    /// Latest visible-output token snapshot used for TPS display.
+    ///
+    /// We update this only when newly visible output tokens are observed. That keeps the
+    /// displayed TPS anchored to the latest real token sample instead of decaying on every
+    /// redraw while no new usage data has arrived.
+    streaming_tps_observed_output_tokens: u64,
+    /// Streaming-only elapsed time corresponding to streaming_tps_observed_output_tokens.
+    streaming_tps_observed_elapsed: Duration,
     // Current status
     status: ProcessingStatus,
     // Subagent status (shown during Task tool execution)

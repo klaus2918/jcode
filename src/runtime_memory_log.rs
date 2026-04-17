@@ -348,10 +348,9 @@ impl RuntimeMemoryLogController {
             && !pending_categories
                 .iter()
                 .any(|value| value == &event.category)
+            && pending_categories.len() < MAX_PENDING_CATEGORIES
         {
-            if pending_categories.len() < MAX_PENDING_CATEGORIES {
-                pending_categories.push(event.category.clone());
-            }
+            pending_categories.push(event.category.clone());
         }
         RuntimeMemoryLogSampling {
             forced: event.map(|value| value.force_attribution).unwrap_or(false),

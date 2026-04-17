@@ -2,8 +2,9 @@ use crate::bus::FileOp;
 use crate::plan::PlanItem;
 use crate::protocol::ServerEvent;
 use jcode_agent_runtime::{SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -54,6 +55,315 @@ pub struct SwarmState {
     pub coordinators: Arc<RwLock<HashMap<String, String>>>,
 }
 
+/// First-class snapshot of a single swarm's logical runtime state.
+#[derive(Clone, Debug)]
+pub struct SwarmRuntime {
+    pub swarm_id: String,
+    pub coordinator_session_id: Option<String>,
+    pub member_session_ids: HashSet<String>,
+    pub members: Vec<SwarmMember>,
+    pub plan: Option<VersionedPlan>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SwarmRole {
+    Agent,
+    Coordinator,
+    WorktreeManager,
+    Other(String),
+}
+
+impl SwarmRole {
+    pub fn as_str(&self) -> Cow<'_, str> {
+        match self {
+            Self::Agent => Cow::Borrowed("agent"),
+            Self::Coordinator => Cow::Borrowed("coordinator"),
+            Self::WorktreeManager => Cow::Borrowed("worktree_manager"),
+            Self::Other(value) => Cow::Borrowed(value.as_str()),
+        }
+    }
+}
+
+impl From<String> for SwarmRole {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "agent" => Self::Agent,
+            "coordinator" => Self::Coordinator,
+            "worktree_manager" => Self::WorktreeManager,
+            _ => Self::Other(value),
+        }
+    }
+}
+
+impl Serialize for SwarmRole {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str().as_ref())
+    }
+}
+
+impl<'de> Deserialize<'de> for SwarmRole {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Self::from(String::deserialize(deserializer)?))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SwarmLifecycleStatus {
+    Spawned,
+    Ready,
+    Running,
+    RunningStale,
+    Completed,
+    Done,
+    Failed,
+    Stopped,
+    Crashed,
+    Queued,
+    Blocked,
+    Pending,
+    Todo,
+    Other(String),
+}
+
+impl SwarmLifecycleStatus {
+    pub fn as_str(&self) -> Cow<'_, str> {
+        match self {
+            Self::Spawned => Cow::Borrowed("spawned"),
+            Self::Ready => Cow::Borrowed("ready"),
+            Self::Running => Cow::Borrowed("running"),
+            Self::RunningStale => Cow::Borrowed("running_stale"),
+            Self::Completed => Cow::Borrowed("completed"),
+            Self::Done => Cow::Borrowed("done"),
+            Self::Failed => Cow::Borrowed("failed"),
+            Self::Stopped => Cow::Borrowed("stopped"),
+            Self::Crashed => Cow::Borrowed("crashed"),
+            Self::Queued => Cow::Borrowed("queued"),
+            Self::Blocked => Cow::Borrowed("blocked"),
+            Self::Pending => Cow::Borrowed("pending"),
+            Self::Todo => Cow::Borrowed("todo"),
+            Self::Other(value) => Cow::Borrowed(value.as_str()),
+        }
+    }
+}
+
+impl From<String> for SwarmLifecycleStatus {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "spawned" => Self::Spawned,
+            "ready" => Self::Ready,
+            "running" => Self::Running,
+            "running_stale" => Self::RunningStale,
+            "completed" => Self::Completed,
+            "done" => Self::Done,
+            "failed" => Self::Failed,
+            "stopped" => Self::Stopped,
+            "crashed" => Self::Crashed,
+            "queued" => Self::Queued,
+            "blocked" => Self::Blocked,
+            "pending" => Self::Pending,
+            "todo" => Self::Todo,
+            _ => Self::Other(value),
+        }
+    }
+}
+
+impl Serialize for SwarmLifecycleStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str().as_ref())
+    }
+}
+
+impl<'de> Deserialize<'de> for SwarmLifecycleStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Self::from(String::deserialize(deserializer)?))
+    }
+}
+
+impl SwarmRuntime {
+    pub fn has_any_state(&self) -> bool {
+        self.plan.is_some() || self.coordinator_session_id.is_some() || !self.members.is_empty()
+    }
+}
+
+/// Durable, persistable portion of a swarm member.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmMemberRecord {
+    pub session_id: String,
+    pub working_dir: Option<PathBuf>,
+    pub swarm_id: Option<String>,
+    pub swarm_enabled: bool,
+    pub status: SwarmLifecycleStatus,
+    pub detail: Option<String>,
+    pub friendly_name: Option<String>,
+    pub report_back_to_session_id: Option<String>,
+    pub role: SwarmRole,
+    pub is_headless: bool,
+}
+
+/// Live transport attachment for a connected session.
+#[derive(Clone, Debug)]
+pub struct LiveSessionAttachment {
+    pub connection_id: String,
+    pub event_tx: mpsc::UnboundedSender<ServerEvent>,
+}
+
+/// Bidirectional index for swarm channel subscriptions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChannelIndex {
+    pub by_swarm_channel: HashMap<String, HashMap<String, HashSet<String>>>,
+    pub by_session: HashMap<String, HashMap<String, HashSet<String>>>,
+}
+
+impl ChannelIndex {
+    pub fn subscribe(&mut self, session_id: &str, swarm_id: &str, channel: &str) {
+        self.by_swarm_channel
+            .entry(swarm_id.to_string())
+            .or_default()
+            .entry(channel.to_string())
+            .or_default()
+            .insert(session_id.to_string());
+        self.by_session
+            .entry(session_id.to_string())
+            .or_default()
+            .entry(swarm_id.to_string())
+            .or_default()
+            .insert(channel.to_string());
+    }
+
+    pub fn unsubscribe(&mut self, session_id: &str, swarm_id: &str, channel: &str) {
+        let mut remove_swarm = false;
+        if let Some(swarm_subs) = self.by_swarm_channel.get_mut(swarm_id) {
+            if let Some(members) = swarm_subs.get_mut(channel) {
+                members.remove(session_id);
+                if members.is_empty() {
+                    swarm_subs.remove(channel);
+                }
+            }
+            remove_swarm = swarm_subs.is_empty();
+        }
+        if remove_swarm {
+            self.by_swarm_channel.remove(swarm_id);
+        }
+
+        let mut remove_session_entry = false;
+        if let Some(session_subs) = self.by_session.get_mut(session_id) {
+            let mut remove_swarm_entry = false;
+            if let Some(channels) = session_subs.get_mut(swarm_id) {
+                channels.remove(channel);
+                remove_swarm_entry = channels.is_empty();
+            }
+            if remove_swarm_entry {
+                session_subs.remove(swarm_id);
+            }
+            remove_session_entry = session_subs.is_empty();
+        }
+        if remove_session_entry {
+            self.by_session.remove(session_id);
+        }
+    }
+
+    pub fn remove_session(&mut self, session_id: &str) {
+        if let Some(session_subscriptions) = self.by_session.remove(session_id) {
+            for (swarm_id, channels) in session_subscriptions {
+                let mut remove_swarm = false;
+                if let Some(swarm_subs) = self.by_swarm_channel.get_mut(&swarm_id) {
+                    for channel_name in channels {
+                        if let Some(members) = swarm_subs.get_mut(&channel_name) {
+                            members.remove(session_id);
+                            if members.is_empty() {
+                                swarm_subs.remove(&channel_name);
+                            }
+                        }
+                    }
+                    remove_swarm = swarm_subs.is_empty();
+                }
+                if remove_swarm {
+                    self.by_swarm_channel.remove(&swarm_id);
+                }
+            }
+            return;
+        }
+
+        let swarm_ids: Vec<String> = self.by_swarm_channel.keys().cloned().collect();
+        for swarm_id in swarm_ids {
+            let mut remove_swarm = false;
+            if let Some(swarm_subs) = self.by_swarm_channel.get_mut(&swarm_id) {
+                let channel_names: Vec<String> = swarm_subs.keys().cloned().collect();
+                for channel_name in channel_names {
+                    if let Some(members) = swarm_subs.get_mut(&channel_name) {
+                        members.remove(session_id);
+                        if members.is_empty() {
+                            swarm_subs.remove(&channel_name);
+                        }
+                    }
+                }
+                remove_swarm = swarm_subs.is_empty();
+            }
+            if remove_swarm {
+                self.by_swarm_channel.remove(&swarm_id);
+            }
+        }
+    }
+
+    pub fn members(&self, swarm_id: &str, channel: &str) -> Vec<String> {
+        let mut members = self
+            .by_swarm_channel
+            .get(swarm_id)
+            .and_then(|swarm_subs| swarm_subs.get(channel))
+            .map(|members| members.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        members.sort();
+        members
+    }
+
+    #[allow(dead_code)]
+    pub fn channels_for_session(&self, session_id: &str, swarm_id: &str) -> Vec<String> {
+        let mut channels = self
+            .by_session
+            .get(session_id)
+            .and_then(|session_subs| session_subs.get(swarm_id))
+            .map(|channels| channels.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        channels.sort();
+        channels
+    }
+}
+
+#[cfg(test)]
+mod channel_index_tests {
+    use super::ChannelIndex;
+
+    #[test]
+    fn channel_index_keeps_bidirectional_maps_in_sync() {
+        let mut index = ChannelIndex::default();
+        index.subscribe("worker-1", "swarm-a", "build");
+        index.subscribe("worker-1", "swarm-a", "tests");
+        index.subscribe("worker-2", "swarm-a", "build");
+
+        assert_eq!(index.members("swarm-a", "build"), vec!["worker-1", "worker-2"]);
+        assert_eq!(index.channels_for_session("worker-1", "swarm-a"), vec!["build", "tests"]);
+
+        index.unsubscribe("worker-1", "swarm-a", "build");
+        assert_eq!(index.members("swarm-a", "build"), vec!["worker-2"]);
+
+        index.remove_session("worker-1");
+        assert!(index.channels_for_session("worker-1", "swarm-a").is_empty());
+        assert_eq!(index.members("swarm-a", "tests"), Vec::<String>::new());
+    }
+}
+
 impl SwarmState {
     pub fn new(
         members: HashMap<String, SwarmMember>,
@@ -66,6 +376,38 @@ impl SwarmState {
             swarms_by_id: Arc::new(RwLock::new(swarms_by_id)),
             plans: Arc::new(RwLock::new(plans)),
             coordinators: Arc::new(RwLock::new(coordinators)),
+        }
+    }
+
+    pub async fn load_runtime(&self, swarm_id: &str) -> SwarmRuntime {
+        let plan = {
+            let plans = self.plans.read().await;
+            plans.get(swarm_id).cloned()
+        };
+        let coordinator_session_id = {
+            let coordinators = self.coordinators.read().await;
+            coordinators.get(swarm_id).cloned()
+        };
+        let member_session_ids = {
+            let swarms = self.swarms_by_id.read().await;
+            swarms.get(swarm_id).cloned().unwrap_or_default()
+        };
+        let mut members = {
+            let members = self.members.read().await;
+            members
+                .values()
+                .filter(|member| member.swarm_id.as_deref() == Some(swarm_id))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        members.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+
+        SwarmRuntime {
+            swarm_id: swarm_id.to_string(),
+            coordinator_session_id,
+            member_session_ids,
+            members,
+            plan,
         }
     }
 }
@@ -106,6 +448,55 @@ pub struct SwarmMember {
     pub is_headless: bool,
 }
 
+impl SwarmMember {
+    pub fn durable_record(&self) -> SwarmMemberRecord {
+        SwarmMemberRecord {
+            session_id: self.session_id.clone(),
+            working_dir: self.working_dir.clone(),
+            swarm_id: self.swarm_id.clone(),
+            swarm_enabled: self.swarm_enabled,
+            status: SwarmLifecycleStatus::from(self.status.clone()),
+            detail: self.detail.clone(),
+            friendly_name: self.friendly_name.clone(),
+            report_back_to_session_id: self.report_back_to_session_id.clone(),
+            role: SwarmRole::from(self.role.clone()),
+            is_headless: self.is_headless,
+        }
+    }
+
+    pub fn live_attachments(&self) -> Vec<LiveSessionAttachment> {
+        self.event_txs
+            .iter()
+            .map(|(connection_id, event_tx)| LiveSessionAttachment {
+                connection_id: connection_id.clone(),
+                event_tx: event_tx.clone(),
+            })
+            .collect()
+    }
+
+    pub fn from_record(
+        record: SwarmMemberRecord,
+        event_tx: mpsc::UnboundedSender<ServerEvent>,
+    ) -> Self {
+        Self {
+            session_id: record.session_id,
+            event_tx,
+            event_txs: HashMap::new(),
+            working_dir: record.working_dir,
+            swarm_id: record.swarm_id,
+            swarm_enabled: record.swarm_enabled,
+            status: record.status.as_str().into_owned(),
+            detail: record.detail,
+            friendly_name: record.friendly_name,
+            report_back_to_session_id: record.report_back_to_session_id,
+            role: record.role.as_str().into_owned(),
+            joined_at: Instant::now(),
+            last_status_change: Instant::now(),
+            is_headless: record.is_headless,
+        }
+    }
+}
+
 /// A versioned plan for a swarm.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SwarmTaskProgress {
@@ -135,6 +526,41 @@ pub struct SwarmTaskProgress {
     pub checkpoint_count: Option<u64>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmPlanItemSpec {
+    pub id: String,
+    pub content: String,
+    pub priority: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subsystem: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_scope: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmPlanDefinition {
+    pub version: u64,
+    pub participants: Vec<String>,
+    pub items: Vec<SwarmPlanItemSpec>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmExecutionItemState {
+    pub task_id: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<SwarmTaskProgress>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmExecutionState {
+    pub items: Vec<SwarmExecutionItemState>,
+}
+
 #[derive(Clone, Debug)]
 pub struct VersionedPlan {
     pub items: Vec<PlanItem>,
@@ -152,6 +578,42 @@ impl VersionedPlan {
             version: 0,
             participants: HashSet::new(),
             task_progress: HashMap::new(),
+        }
+    }
+
+    pub fn plan_definition(&self) -> SwarmPlanDefinition {
+        let mut participants: Vec<String> = self.participants.iter().cloned().collect();
+        participants.sort();
+        SwarmPlanDefinition {
+            version: self.version,
+            participants,
+            items: self
+                .items
+                .iter()
+                .map(|item| SwarmPlanItemSpec {
+                    id: item.id.clone(),
+                    content: item.content.clone(),
+                    priority: item.priority.clone(),
+                    subsystem: item.subsystem.clone(),
+                    file_scope: item.file_scope.clone(),
+                    blocked_by: item.blocked_by.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn execution_state(&self) -> SwarmExecutionState {
+        SwarmExecutionState {
+            items: self
+                .items
+                .iter()
+                .map(|item| SwarmExecutionItemState {
+                    task_id: item.id.clone(),
+                    status: item.status.clone(),
+                    assigned_to: item.assigned_to.clone(),
+                    progress: self.task_progress.get(&item.id).cloned(),
+                })
+                .collect(),
         }
     }
 }

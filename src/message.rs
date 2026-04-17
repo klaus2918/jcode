@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-#[path = "message_notifications.rs"]
 mod notifications;
 
 pub use notifications::{

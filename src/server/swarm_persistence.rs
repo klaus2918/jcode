@@ -1,9 +1,9 @@
 use super::{SwarmMember, SwarmTaskProgress, VersionedPlan};
+use super::state::{SwarmLifecycleStatus, SwarmMemberRecord};
 use crate::protocol::ServerEvent;
 use crate::storage;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::Instant;
 use tokio::sync::mpsc;
 
 const SWARM_STATE_DIR: &str = "jcode-swarm-state";
@@ -38,21 +38,8 @@ struct PersistedVersionedPlan {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PersistedSwarmMember {
-    session_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    working_dir: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    swarm_id: Option<String>,
-    swarm_enabled: bool,
-    status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    detail: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    friendly_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    report_back_to_session_id: Option<String>,
-    role: String,
-    is_headless: bool,
+    #[serde(flatten)]
+    record: SwarmMemberRecord,
 }
 
 fn now_unix_ms() -> u64 {
@@ -112,16 +99,7 @@ fn to_persisted_plan(plan: &VersionedPlan) -> PersistedVersionedPlan {
 
 fn to_persisted_member(member: &SwarmMember) -> PersistedSwarmMember {
     PersistedSwarmMember {
-        session_id: member.session_id.clone(),
-        working_dir: member.working_dir.clone(),
-        swarm_id: member.swarm_id.clone(),
-        swarm_enabled: member.swarm_enabled,
-        status: member.status.clone(),
-        detail: member.detail.clone(),
-        friendly_name: member.friendly_name.clone(),
-        report_back_to_session_id: member.report_back_to_session_id.clone(),
-        role: member.role.clone(),
-        is_headless: member.is_headless,
+        record: member.durable_record(),
     }
 }
 
@@ -133,20 +111,27 @@ fn append_recovery_detail(detail: Option<String>, note: &str) -> Option<String> 
 }
 
 fn recover_member_status(
-    status: String,
+    status: SwarmLifecycleStatus,
     detail: Option<String>,
     is_headless: bool,
-) -> (String, Option<String>) {
-    if status == "running" {
+) -> (SwarmLifecycleStatus, Option<String>) {
+    if status == SwarmLifecycleStatus::Running {
         return (
-            "crashed".to_string(),
+            SwarmLifecycleStatus::Crashed,
             append_recovery_detail(detail, "recovered after reload while running"),
         );
     }
 
-    if is_headless && !matches!(status.as_str(), "completed" | "failed" | "stopped") {
+    if is_headless
+        && !matches!(
+            status,
+            SwarmLifecycleStatus::Completed
+                | SwarmLifecycleStatus::Failed
+                | SwarmLifecycleStatus::Stopped
+        )
+    {
         return (
-            "crashed".to_string(),
+            SwarmLifecycleStatus::Crashed,
             append_recovery_detail(detail, "headless session did not survive reload"),
         );
     }
@@ -161,23 +146,16 @@ fn recovered_member_event_tx() -> mpsc::UnboundedSender<ServerEvent> {
 }
 
 fn from_persisted_member(member: PersistedSwarmMember) -> SwarmMember {
-    let (status, detail) = recover_member_status(member.status, member.detail, member.is_headless);
-    SwarmMember {
-        session_id: member.session_id,
-        event_tx: recovered_member_event_tx(),
-        event_txs: HashMap::new(),
-        working_dir: member.working_dir,
-        swarm_id: member.swarm_id,
-        swarm_enabled: member.swarm_enabled,
-        status,
-        detail,
-        friendly_name: member.friendly_name,
-        report_back_to_session_id: member.report_back_to_session_id,
-        role: member.role,
-        joined_at: Instant::now(),
-        last_status_change: Instant::now(),
-        is_headless: member.is_headless,
-    }
+    let record = member.record;
+    let (status, detail) = recover_member_status(record.status, record.detail, record.is_headless);
+    SwarmMember::from_record(
+        SwarmMemberRecord {
+            status,
+            detail,
+            ..record
+        },
+        recovered_member_event_tx(),
+    )
 }
 
 pub(super) fn load_runtime_state() -> LoadedSwarmRuntimeState {
@@ -214,14 +192,14 @@ pub(super) fn load_runtime_state() -> LoadedSwarmRuntimeState {
             coordinators.insert(swarm_id, coordinator_session_id);
         }
         for member in state.members {
-            let Some(member_swarm_id) = member.swarm_id.clone() else {
+            let Some(member_swarm_id) = member.record.swarm_id.clone() else {
                 continue;
             };
             swarms_by_id
                 .entry(member_swarm_id.clone())
                 .or_insert_with(HashSet::new)
-                .insert(member.session_id.clone());
-            members.insert(member.session_id.clone(), from_persisted_member(member));
+                .insert(member.record.session_id.clone());
+            members.insert(member.record.session_id.clone(), from_persisted_member(member));
         }
     }
     LoadedSwarmRuntimeState {
@@ -247,7 +225,7 @@ pub(super) fn persist_swarm_state(
         .iter()
         .map(to_persisted_member)
         .collect::<Vec<_>>();
-    members.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+    members.sort_by(|left, right| left.record.session_id.cmp(&right.record.session_id));
 
     let state = PersistedSwarmState {
         swarm_id: swarm_id.to_string(),
@@ -272,6 +250,7 @@ pub(super) fn remove_swarm_state(swarm_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     struct EnvGuard {
         runtime: Option<std::ffi::OsString>,
@@ -308,6 +287,8 @@ mod tests {
                     status: "running".to_string(),
                     priority: "high".to_string(),
                     id: "task-1".to_string(),
+                    subsystem: None,
+                    file_scope: Vec::new(),
                     blocked_by: Vec::new(),
                     assigned_to: Some("session-1".to_string()),
                 }],

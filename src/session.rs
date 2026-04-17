@@ -9,7 +9,6 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
-#[path = "session_active_pids.rs"]
 mod active_pids;
 use active_pids::{active_pids_dir, register_active_pid, unregister_active_pid};
 pub use active_pids::{active_session_ids, find_active_session_id_by_pid};

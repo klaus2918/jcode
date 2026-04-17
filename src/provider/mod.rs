@@ -409,6 +409,8 @@ use self::models::{
     normalize_copilot_model_name,
 };
 use self::pricing::{cheapness_for_route, openrouter_pricing_from_model_pricing};
+use self::dispatch::CompletionMode;
+use self::selection::ActiveProvider;
 
 /// MultiProvider wraps multiple providers and allows seamless model switching
 pub struct MultiProvider {
@@ -436,110 +438,7 @@ pub struct MultiProvider {
     forced_provider: Option<ActiveProvider>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ActiveProvider {
-    Claude,
-    OpenAI,
-    Copilot,
-    Gemini,
-    Cursor,
-    OpenRouter,
-}
-
-#[derive(Clone, Copy)]
-enum CompletionMode<'a> {
-    Unified {
-        system: &'a str,
-    },
-    Split {
-        system_static: &'a str,
-        system_dynamic: &'a str,
-    },
-}
-
-impl CompletionMode<'_> {
-    fn log_suffix(self) -> &'static str {
-        match self {
-            CompletionMode::Unified { .. } => "",
-            CompletionMode::Split { .. } => " (split)",
-        }
-    }
-
-    fn switch_log_prefix(self) -> &'static str {
-        match self {
-            CompletionMode::Unified { .. } => "Auto-fallback",
-            CompletionMode::Split { .. } => "Auto-fallback (split)",
-        }
-    }
-}
-
 impl MultiProvider {
-    fn estimate_request_input(
-        messages: &[Message],
-        tools: &[ToolDefinition],
-        mode: CompletionMode<'_>,
-    ) -> (usize, usize) {
-        let mut chars = serde_json::to_string(messages)
-            .map(|value| value.len())
-            .unwrap_or(0)
-            + serde_json::to_string(tools)
-                .map(|value| value.len())
-                .unwrap_or(0);
-        match mode {
-            CompletionMode::Unified { system } => {
-                chars += system.len();
-            }
-            CompletionMode::Split {
-                system_static,
-                system_dynamic,
-            } => {
-                chars += system_static.len() + system_dynamic.len();
-            }
-        }
-        let tokens = chars / 4;
-        (chars, tokens)
-    }
-
-    fn spawn_post_auth_model_refresh(provider: Arc<dyn Provider>, provider_label: &'static str) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-
-        handle.spawn(async move {
-            provider.invalidate_credentials().await;
-            match provider.prefetch_models().await {
-                Ok(()) => {
-                    crate::bus::Bus::global().publish(crate::bus::BusEvent::ModelsUpdated);
-                }
-                Err(err) => {
-                    crate::logging::info(&format!(
-                        "Failed to refresh {} models after auth change: {}",
-                        provider_label, err
-                    ));
-                }
-            }
-        });
-    }
-
-    async fn invalidate_provider_credentials_for_account_switch(&self, provider: ActiveProvider) {
-        match provider {
-            ActiveProvider::Claude => {
-                if let Some(anthropic) = self.anthropic_provider() {
-                    anthropic.invalidate_credentials().await;
-                }
-                if let Some(claude) = self.claude_provider() {
-                    claude.invalidate_credentials().await;
-                }
-            }
-            ActiveProvider::OpenAI => {
-                if let Some(openai) = self.openai_provider() {
-                    openai.invalidate_credentials().await;
-                }
-            }
-            _ => {}
-        }
-    }
-
     async fn try_same_provider_account_failover(
         &self,
         provider: ActiveProvider,

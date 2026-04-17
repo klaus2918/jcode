@@ -118,9 +118,38 @@ fn ensure_success(response: &ServerEvent) -> Result<()> {
     }
 }
 
+async fn fetch_plan_status(session_id: &str) -> Result<PlanGraphStatus> {
+    let request = Request::CommPlanStatus {
+        id: REQUEST_ID,
+        session_id: session_id.to_string(),
+    };
+    match send_request(request).await {
+        Ok(ServerEvent::CommPlanStatusResponse { summary, .. }) => Ok(summary),
+        Ok(response) => {
+            ensure_success(&response)?;
+            Err(anyhow::anyhow!("No plan status returned."))
+        }
+        Err(e) => Err(anyhow::anyhow!("Failed to get plan status: {}", e)),
+    }
+}
+
+fn format_plan_followup(summary: &PlanGraphStatus) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("active={}", summary.active_ids.len()));
+    if !summary.next_ready_ids.is_empty() {
+        parts.push(format!("next={}", summary.next_ready_ids.join(", ")));
+    }
+    if !summary.newly_ready_ids.is_empty() {
+        parts.push(format!("newly_ready={}", summary.newly_ready_ids.join(", ")));
+    }
+    parts.join(" · ")
+}
+
 fn auto_assignment_needs_spawn(response: &ServerEvent) -> bool {
     check_error(response).is_some_and(|message| {
-        message.contains("No ready or completed swarm agents are available for automatic task assignment")
+        message.contains(
+            "No ready or completed swarm agents are available for automatic task assignment",
+        )
     })
 }
 
@@ -404,6 +433,12 @@ fn format_plan_status(summary: &PlanGraphStatus) -> ToolOutput {
             summary.next_ready_ids.join(", ")
         }
     ));
+    if !summary.newly_ready_ids.is_empty() {
+        output.push_str(&format!(
+            "  Newly ready: {}\n",
+            summary.newly_ready_ids.join(", ")
+        ));
+    }
     if !summary.blocked_ids.is_empty() {
         output.push_str(&format!("  Blocked: {}\n", summary.blocked_ids.join(", ")));
     }
@@ -562,6 +597,8 @@ struct CommunicateInput {
     wake: Option<bool>,
     #[serde(default)]
     delivery: Option<CommDeliveryMode>,
+    #[serde(default)]
+    concurrency_limit: Option<usize>,
 }
 
 impl CommunicateInput {
@@ -589,7 +626,7 @@ impl Tool for CommunicateTool {
                     "type": "string",
                     "enum": ["share", "share_append", "read", "message", "broadcast", "dm", "channel", "list", "list_channels", "channel_members",
                              "propose_plan", "approve_plan", "reject_plan", "spawn", "stop", "assign_role",
-                             "status", "plan_status", "summary", "read_context", "resync_plan", "assign_task",
+                             "status", "plan_status", "summary", "read_context", "resync_plan", "assign_task", "assign_next", "fill_slots",
                              "start", "wake", "resume", "retry", "reassign", "replace", "salvage",
                              "subscribe_channel", "unsubscribe_channel", "await_members"],
                     "description": "Action. For spawn, prefer including prompt with the initial task so the new agent starts useful work immediately."
@@ -658,6 +695,11 @@ impl Tool for CommunicateTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "Optional timeout for await_members."
+                },
+                "concurrency_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "For fill_slots: desired maximum number of active swarm tasks."
                 },
                 "wake": {
                     "type": "boolean",
@@ -1074,21 +1116,8 @@ impl Tool for CommunicateTool {
             }
 
             "plan_status" => {
-                let request = Request::CommPlanStatus {
-                    id: REQUEST_ID,
-                    session_id: ctx.session_id.clone(),
-                };
-
-                match send_request(request).await {
-                    Ok(ServerEvent::CommPlanStatusResponse { summary, .. }) => {
-                        Ok(format_plan_status(&summary))
-                    }
-                    Ok(response) => {
-                        ensure_success(&response)?;
-                        Ok(ToolOutput::new("No plan status returned."))
-                    }
-                    Err(e) => Err(anyhow::anyhow!("Failed to get plan status: {}", e)),
-                }
+                let summary = fetch_plan_status(&ctx.session_id).await?;
+                Ok(format_plan_status(&summary))
             }
 
             "summary" => {
@@ -1185,10 +1214,13 @@ impl Tool for CommunicateTool {
                         task_id,
                         target_session,
                         ..
-                    }) => Ok(ToolOutput::new(format!(
-                        "Task '{}' assigned to {}",
-                        task_id, target_session
-                    ))),
+                    }) => {
+                        let mut output = format!("Task '{}' assigned to {}", task_id, target_session);
+                        if let Ok(summary) = fetch_plan_status(&ctx.session_id).await {
+                            output.push_str(&format!("\n{}", format_plan_followup(&summary)));
+                        }
+                        Ok(ToolOutput::new(output))
+                    }
                     Ok(response)
                         if spawn_if_needed
                             && params.target_session.is_none()
@@ -1215,6 +1247,111 @@ impl Tool for CommunicateTool {
                 }
             }
 
+            "assign_next" => {
+                let target = params
+                    .target_session
+                    .clone()
+                    .unwrap_or_else(|| "next available agent".to_string());
+
+                let request = Request::CommAssignNext {
+                    id: REQUEST_ID,
+                    session_id: ctx.session_id.clone(),
+                    target_session: params.target_session.clone(),
+                    prefer_spawn: params.prefer_spawn,
+                    spawn_if_needed: params.spawn_if_needed,
+                    message: params.message.clone(),
+                };
+
+                match send_request(request).await {
+                    Ok(ServerEvent::CommAssignTaskResponse {
+                        task_id,
+                        target_session,
+                        ..
+                    }) => Ok(ToolOutput::new(format!(
+                        "Task '{}' assigned to {}",
+                        task_id, target_session
+                    ))),
+                    Ok(response) => {
+                        ensure_success(&response)?;
+                        Ok(ToolOutput::new(format!(
+                            "Assigned next runnable task to {}",
+                            target
+                        )))
+                    }
+                    Err(e) => Err(anyhow::anyhow!("Failed to assign next task: {}", e)),
+                }
+            }
+
+            "fill_slots" => {
+                let concurrency_limit = params.concurrency_limit.ok_or_else(|| {
+                    anyhow::anyhow!("'concurrency_limit' is required for fill_slots action")
+                })?;
+
+                let summary = fetch_plan_status(&ctx.session_id).await?;
+
+                let active_count = summary.active_ids.len();
+                if active_count >= concurrency_limit {
+                    return Ok(ToolOutput::new(format!(
+                        "Window already full: {} active task(s) >= limit {}",
+                        active_count, concurrency_limit
+                    )));
+                }
+
+                let mut assignments = Vec::new();
+                let available_slots = concurrency_limit.saturating_sub(active_count);
+                for _ in 0..available_slots {
+                    let request = Request::CommAssignNext {
+                        id: REQUEST_ID,
+                        session_id: ctx.session_id.clone(),
+                        target_session: params.target_session.clone(),
+                        prefer_spawn: params.prefer_spawn,
+                        spawn_if_needed: params.spawn_if_needed,
+                        message: params.message.clone(),
+                    };
+
+                    match send_request(request).await {
+                        Ok(ServerEvent::CommAssignTaskResponse {
+                            task_id,
+                            target_session,
+                            ..
+                        }) => assignments.push(format!("{} -> {}", task_id, target_session)),
+                        Ok(ServerEvent::Error { message, .. })
+                            if message.contains("No runnable unassigned tasks")
+                                || message.contains("No ready or completed swarm agents") =>
+                        {
+                            break;
+                        }
+                        Ok(response) => {
+                            ensure_success(&response)?;
+                        }
+                        Err(e) => {
+                            return Err(anyhow::anyhow!("Failed to fill slots: {}", e));
+                        }
+                    }
+                }
+
+                if assignments.is_empty() {
+                    Ok(ToolOutput::new(format!(
+                        "No assignments made. Active: {}, limit: {}",
+                        active_count, concurrency_limit
+                    )))
+                } else {
+                    let mut output = format!(
+                        "Filled {} slot(s):\n{}",
+                        assignments.len(),
+                        assignments
+                            .into_iter()
+                            .map(|line| format!("- {}", line))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
+                    if let Ok(summary) = fetch_plan_status(&ctx.session_id).await {
+                        output.push_str(&format!("\n{}", format_plan_followup(&summary)));
+                    }
+                    Ok(ToolOutput::new(output))
+                }
+            }
+
             "start" | "wake" | "resume" | "retry" | "reassign" | "replace" | "salvage" => {
                 let task_id = params.task_id.ok_or_else(|| {
                     anyhow::anyhow!("'task_id' is required for {} action", params.action)
@@ -1238,6 +1375,37 @@ impl Tool for CommunicateTool {
                 };
 
                 match send_request(request).await {
+                    Ok(ServerEvent::CommTaskControlResponse {
+                        task_id,
+                        action,
+                        target_session,
+                        status,
+                        summary,
+                        ..
+                    }) => {
+                        let mut output = format!(
+                            "Task '{}' {}",
+                            task_id,
+                            action
+                        );
+                        if let Some(target_session) = target_session {
+                            output.push_str(&format!(" -> {}", target_session));
+                        }
+                        output.push_str(&format!("\nStatus: {}", status));
+                        if !summary.next_ready_ids.is_empty() {
+                            output.push_str(&format!(
+                                "\nNext ready: {}",
+                                summary.next_ready_ids.join(", ")
+                            ));
+                        }
+                        if !summary.newly_ready_ids.is_empty() {
+                            output.push_str(&format!(
+                                "\nNewly ready: {}",
+                                summary.newly_ready_ids.join(", ")
+                            ));
+                        }
+                        Ok(ToolOutput::new(output))
+                    }
                     Ok(response) => {
                         ensure_success(&response)?;
                         let target_suffix = params
@@ -1331,7 +1499,7 @@ impl Tool for CommunicateTool {
             _ => Err(anyhow::anyhow!(
                 "Unknown action '{}'. Valid actions: share, share_append, read, message, broadcast, dm, channel, list, list_channels, channel_members, \
                  propose_plan, approve_plan, reject_plan, spawn, stop, assign_role, status, plan_status, summary, read_context, \
-                 resync_plan, assign_task, start, wake, resume, retry, reassign, replace, salvage, subscribe_channel, unsubscribe_channel, await_members",
+                 resync_plan, assign_task, assign_next, fill_slots, start, wake, resume, retry, reassign, replace, salvage, subscribe_channel, unsubscribe_channel, await_members",
                 params.action
             )),
         }
@@ -1380,10 +1548,12 @@ mod tests {
             cycle_ids: Vec::new(),
             unresolved_dependency_ids: Vec::new(),
             next_ready_ids: vec!["task-2".to_string()],
+            newly_ready_ids: vec!["task-3".to_string()],
         });
         let text = output.output;
         assert!(text.contains("Plan status for swarm swarm-a"));
         assert!(text.contains("Next up: task-2"));
+        assert!(text.contains("Newly ready: task-3"));
         assert!(text.contains("Blocked: task-4"));
     }
 
@@ -1426,6 +1596,7 @@ mod tests {
         assert!(props.contains_key("mode"));
         assert!(props.contains_key("target_status"));
         assert!(props.contains_key("timeout_minutes"));
+        assert!(props.contains_key("concurrency_limit"));
         assert!(props.contains_key("wake"));
         assert!(props.contains_key("delivery"));
         assert!(props.contains_key("plan_items"));
@@ -1455,6 +1626,18 @@ mod tests {
                 .as_array()
                 .expect("action enum")
                 .contains(&json!("start"))
+        );
+        assert!(
+            schema["properties"]["action"]["enum"]
+                .as_array()
+                .expect("action enum")
+                .contains(&json!("assign_next"))
+        );
+        assert!(
+            schema["properties"]["action"]["enum"]
+                .as_array()
+                .expect("action enum")
+                .contains(&json!("fill_slots"))
         );
         assert!(
             schema["properties"]["action"]["enum"]
@@ -2458,6 +2641,400 @@ mod tests {
             .find(|member| member.session_id == spawned_session)
             .expect("spawned worker should be listed");
         assert_eq!(spawned_member.role.as_deref(), Some("agent"));
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn communicate_assign_next_assigns_next_runnable_task() {
+        let _env_lock = crate::storage::lock_test_env();
+        let runtime_dir = tempfile::TempDir::new().expect("runtime tempdir");
+        let repo_dir = std::env::current_dir().expect("repo cwd");
+        let socket_path = runtime_dir.path().join("jcode.sock");
+        let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
+        let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
+        let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
+
+        let provider: Arc<dyn Provider> = Arc::new(DelayedTestProvider {
+            delay: Duration::from_millis(100),
+        });
+        let server = Arc::new(Server::new(provider));
+        let mut server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move { server.run().await })
+        };
+
+        wait_for_server_socket(&socket_path, &mut server_task)
+            .await
+            .expect("server socket should be ready");
+
+        let mut watcher = RawClient::connect(&socket_path)
+            .await
+            .expect("watcher should connect");
+        watcher
+            .subscribe(&repo_dir)
+            .await
+            .expect("watcher subscribe");
+
+        let watcher_session = watcher.session_id().await.expect("watcher session id");
+        let tool = CommunicateTool::new();
+        let ctx = test_ctx(&watcher_session, &repo_dir);
+
+        tool.execute(
+            json!({
+                "action": "assign_role",
+                "target_session": watcher_session,
+                "role": "coordinator"
+            }),
+            ctx.clone(),
+        )
+        .await
+        .expect("self-promotion to coordinator should succeed");
+
+        let spawn_output = tool
+            .execute(
+                json!({
+                    "action": "spawn"
+                }),
+                ctx.clone(),
+            )
+            .await
+            .expect("worker spawn should succeed");
+        let worker_session = spawn_output
+            .output
+            .strip_prefix("Spawned new agent: ")
+            .expect("spawn output should include session id")
+            .trim()
+            .to_string();
+
+        wait_for_member_presence(&mut watcher, &watcher_session, &worker_session)
+            .await
+            .expect("spawned worker should appear in swarm");
+
+        tool.execute(
+            json!({
+                "action": "propose_plan",
+                "plan_items": [{
+                    "id": "setup",
+                    "content": "setup",
+                    "status": "completed",
+                    "priority": "high"
+                }, {
+                    "id": "next",
+                    "content": "Take the next task",
+                    "status": "queued",
+                    "priority": "high",
+                    "blocked_by": ["setup"]
+                }]
+            }),
+            ctx.clone(),
+        )
+        .await
+        .expect("plan proposal should succeed");
+
+        let assign_output = tool
+            .execute(
+                json!({
+                    "action": "assign_next",
+                    "target_session": worker_session
+                }),
+                ctx,
+            )
+            .await
+            .expect("assign_next should succeed");
+
+        assert!(
+            assign_output.output.contains("Task 'next' assigned to"),
+            "unexpected assign_next output: {}",
+            assign_output.output
+        );
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn communicate_assign_next_can_prefer_fresh_spawn_server_side() {
+        let _env_lock = crate::storage::lock_test_env();
+        let runtime_dir = tempfile::TempDir::new().expect("runtime tempdir");
+        let repo_dir = std::env::current_dir().expect("repo cwd");
+        let socket_path = runtime_dir.path().join("jcode.sock");
+        let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
+        let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
+        let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
+
+        let provider: Arc<dyn Provider> = Arc::new(DelayedTestProvider {
+            delay: Duration::from_millis(100),
+        });
+        let server = Arc::new(Server::new(provider));
+        let mut server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move { server.run().await })
+        };
+
+        wait_for_server_socket(&socket_path, &mut server_task)
+            .await
+            .expect("server socket should be ready");
+
+        let mut watcher = RawClient::connect(&socket_path)
+            .await
+            .expect("watcher should connect");
+        watcher
+            .subscribe(&repo_dir)
+            .await
+            .expect("watcher subscribe");
+
+        let watcher_session = watcher.session_id().await.expect("watcher session id");
+        let tool = CommunicateTool::new();
+        let ctx = test_ctx(&watcher_session, &repo_dir);
+
+        tool.execute(
+            json!({
+                "action": "assign_role",
+                "target_session": watcher_session,
+                "role": "coordinator"
+            }),
+            ctx.clone(),
+        )
+        .await
+        .expect("self-promotion to coordinator should succeed");
+
+        let existing_output = tool
+            .execute(json!({"action": "spawn"}), ctx.clone())
+            .await
+            .expect("existing worker spawn should succeed");
+        let existing_worker = existing_output
+            .output
+            .strip_prefix("Spawned new agent: ")
+            .expect("spawn output should include session id")
+            .trim()
+            .to_string();
+        wait_for_member_presence(&mut watcher, &watcher_session, &existing_worker)
+            .await
+            .expect("existing worker should appear in swarm");
+
+        tool.execute(
+            json!({
+                "action": "propose_plan",
+                "plan_items": [{
+                    "id": "task-c",
+                    "content": "Use a fresh worker",
+                    "status": "queued",
+                    "priority": "high"
+                }]
+            }),
+            ctx.clone(),
+        )
+        .await
+        .expect("plan proposal should succeed");
+
+        let assign_output = tool
+            .execute(
+                json!({
+                    "action": "assign_next",
+                    "prefer_spawn": true
+                }),
+                ctx,
+            )
+            .await
+            .expect("assign_next with prefer_spawn should succeed");
+
+        let preferred_session = assign_output
+            .output
+            .strip_prefix("Task 'task-c' assigned to ")
+            .expect("assign_next output should include session id")
+            .trim()
+            .to_string();
+
+        assert_ne!(
+            preferred_session, existing_worker,
+            "server-side prefer_spawn should choose a fresh worker"
+        );
+
+        wait_for_member_presence(&mut watcher, &watcher_session, &preferred_session)
+            .await
+            .expect("preferred spawned worker should appear in swarm");
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn communicate_assign_next_can_spawn_if_needed_server_side() {
+        let _env_lock = crate::storage::lock_test_env();
+        let runtime_dir = tempfile::TempDir::new().expect("runtime tempdir");
+        let repo_dir = std::env::current_dir().expect("repo cwd");
+        let socket_path = runtime_dir.path().join("jcode.sock");
+        let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
+        let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
+        let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
+
+        let provider: Arc<dyn Provider> = Arc::new(DelayedTestProvider {
+            delay: Duration::from_millis(100),
+        });
+        let server = Arc::new(Server::new(provider));
+        let mut server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move { server.run().await })
+        };
+
+        wait_for_server_socket(&socket_path, &mut server_task)
+            .await
+            .expect("server socket should be ready");
+
+        let mut watcher = RawClient::connect(&socket_path)
+            .await
+            .expect("watcher should connect");
+        watcher
+            .subscribe(&repo_dir)
+            .await
+            .expect("watcher subscribe");
+
+        let watcher_session = watcher.session_id().await.expect("watcher session id");
+        let tool = CommunicateTool::new();
+        let ctx = test_ctx(&watcher_session, &repo_dir);
+
+        tool.execute(
+            json!({
+                "action": "assign_role",
+                "target_session": watcher_session,
+                "role": "coordinator"
+            }),
+            ctx.clone(),
+        )
+        .await
+        .expect("self-promotion to coordinator should succeed");
+
+        tool.execute(
+            json!({
+                "action": "propose_plan",
+                "plan_items": [{
+                    "id": "task-d",
+                    "content": "Spawn if no worker exists",
+                    "status": "queued",
+                    "priority": "high"
+                }]
+            }),
+            ctx.clone(),
+        )
+        .await
+        .expect("plan proposal should succeed");
+
+        let assign_output = tool
+            .execute(
+                json!({
+                    "action": "assign_next",
+                    "spawn_if_needed": true
+                }),
+                ctx,
+            )
+            .await
+            .expect("assign_next with spawn_if_needed should succeed");
+
+        let spawned_session = assign_output
+            .output
+            .strip_prefix("Task 'task-d' assigned to ")
+            .expect("assign_next output should include session id")
+            .trim()
+            .to_string();
+        assert!(
+            !spawned_session.is_empty(),
+            "server-side spawn_if_needed should assign a spawned worker"
+        );
+
+        wait_for_member_presence(&mut watcher, &watcher_session, &spawned_session)
+            .await
+            .expect("spawn_if_needed worker should appear in swarm");
+
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn communicate_fill_slots_tops_up_to_concurrency_limit() {
+        let _env_lock = crate::storage::lock_test_env();
+        let runtime_dir = tempfile::TempDir::new().expect("runtime tempdir");
+        let repo_dir = std::env::current_dir().expect("repo cwd");
+        let socket_path = runtime_dir.path().join("jcode.sock");
+        let _runtime = EnvGuard::set("JCODE_RUNTIME_DIR", runtime_dir.path());
+        let _socket = EnvGuard::set("JCODE_SOCKET", &socket_path);
+        let _debug = EnvGuard::set("JCODE_DEBUG_CONTROL", "1");
+
+        let provider: Arc<dyn Provider> = Arc::new(DelayedTestProvider {
+            delay: Duration::from_millis(300),
+        });
+        let server = Arc::new(Server::new(provider));
+        let mut server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move { server.run().await })
+        };
+
+        wait_for_server_socket(&socket_path, &mut server_task)
+            .await
+            .expect("server socket should be ready");
+
+        let mut watcher = RawClient::connect(&socket_path)
+            .await
+            .expect("watcher should connect");
+        watcher
+            .subscribe(&repo_dir)
+            .await
+            .expect("watcher subscribe");
+
+        let watcher_session = watcher.session_id().await.expect("watcher session id");
+        let tool = CommunicateTool::new();
+        let ctx = test_ctx(&watcher_session, &repo_dir);
+
+        tool.execute(
+            json!({
+                "action": "assign_role",
+                "target_session": watcher_session,
+                "role": "coordinator"
+            }),
+            ctx.clone(),
+        )
+        .await
+        .expect("self-promotion to coordinator should succeed");
+
+        tool.execute(
+            json!({
+                "action": "propose_plan",
+                "plan_items": [{
+                    "id": "task-1",
+                    "content": "first task",
+                    "status": "queued",
+                    "priority": "high"
+                }, {
+                    "id": "task-2",
+                    "content": "second task",
+                    "status": "queued",
+                    "priority": "high"
+                }, {
+                    "id": "task-3",
+                    "content": "third task",
+                    "status": "queued",
+                    "priority": "high"
+                }]
+            }),
+            ctx.clone(),
+        )
+        .await
+        .expect("plan proposal should succeed");
+
+        let output = tool
+            .execute(
+                json!({
+                    "action": "fill_slots",
+                    "concurrency_limit": 2,
+                    "spawn_if_needed": true
+                }),
+                ctx,
+            )
+            .await
+            .expect("fill_slots should succeed");
+
+        assert!(
+            output.output.contains("Filled 2 slot(s):"),
+            "unexpected fill_slots output: {}",
+            output.output
+        );
 
         server_task.abort();
     }

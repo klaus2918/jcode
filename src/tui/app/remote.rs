@@ -20,6 +20,7 @@ mod queue_recovery;
 mod reconnect;
 mod server_events;
 mod session_persistence;
+mod swarm_plan_core;
 mod workspace;
 
 use queue_recovery::{recover_local_interleave_to_queue, recover_stranded_soft_interrupts};

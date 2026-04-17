@@ -1,8 +1,10 @@
 use super::state::{MAX_EVENT_HISTORY, fanout_session_event};
-use super::{FileAccess, SwarmEvent, SwarmEventType, SwarmMember, SwarmState, VersionedPlan};
+use super::{
+    FileAccess, SwarmEvent, SwarmEventType, SwarmMember, SwarmState, VersionedPlan,
+};
 use super::{persist_swarm_state_for, remove_persisted_swarm_state_for};
 use crate::agent::Agent;
-use crate::plan::{PlanItem, next_runnable_item_ids, summarize_plan_graph};
+use crate::plan::{PlanItem, newly_ready_item_ids, next_runnable_item_ids, summarize_plan_graph};
 use crate::protocol::{NotificationType, ServerEvent};
 use crate::session::Session;
 use anyhow::Result;
@@ -15,8 +17,6 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock, broadcast};
-
-type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 
 fn status_age_secs(last_status_change: Instant) -> u64 {
     last_status_change.elapsed().as_secs()
@@ -105,6 +105,10 @@ pub(super) fn swarm_task_sweep_interval() -> Duration {
     ))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "task progress touch updates durable progress plus swarm persistence and coordinator-facing state in one helper"
+)]
 pub(super) async fn touch_swarm_task_progress(
     swarm_id: &str,
     task_id: &str,
@@ -356,12 +360,39 @@ pub(super) async fn broadcast_swarm_plan(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
 ) {
-    let (version, items, summary, mut participants): (u64, Vec<PlanItem>, crate::protocol::PlanGraphStatus, Vec<String>) = {
+    broadcast_swarm_plan_with_previous(
+        swarm_id,
+        reason,
+        None,
+        swarm_plans,
+        swarm_members,
+        swarms_by_id,
+    )
+    .await;
+}
+
+pub(super) async fn broadcast_swarm_plan_with_previous(
+    swarm_id: &str,
+    reason: Option<String>,
+    previous_items: Option<&[PlanItem]>,
+    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+) {
+    let (version, items, summary, mut participants): (
+        u64,
+        Vec<PlanItem>,
+        crate::protocol::PlanGraphStatus,
+        Vec<String>,
+    ) = {
         let plans = swarm_plans.read().await;
         let Some(vp) = plans.get(swarm_id) else {
             return;
         };
         let graph_summary = summarize_plan_graph(&vp.items);
+        let newly_ready_ids = previous_items
+            .map(|before| newly_ready_item_ids(before, &vp.items))
+            .unwrap_or_default();
         let mut p: Vec<String> = vp.participants.iter().cloned().collect();
         p.sort();
         (
@@ -378,6 +409,7 @@ pub(super) async fn broadcast_swarm_plan(
                 cycle_ids: graph_summary.cycle_ids,
                 unresolved_dependency_ids: graph_summary.unresolved_dependency_ids,
                 next_ready_ids: next_runnable_item_ids(&vp.items, Some(3)),
+                newly_ready_ids,
             },
             p,
         )
@@ -446,61 +478,6 @@ pub(super) async fn remove_plan_participant(
     }
 }
 
-pub(super) async fn remove_session_channel_subscriptions(
-    session_id: &str,
-    channel_subscriptions: &ChannelSubscriptions,
-    channel_subscriptions_by_session: &ChannelSubscriptions,
-) {
-    let session_subscriptions = {
-        let mut reverse = channel_subscriptions_by_session.write().await;
-        reverse.remove(session_id)
-    };
-
-    let mut subs = channel_subscriptions.write().await;
-
-    if let Some(session_subscriptions) = session_subscriptions {
-        for (swarm_id, channels) in session_subscriptions {
-            let mut remove_swarm = false;
-            if let Some(swarm_subs) = subs.get_mut(&swarm_id) {
-                for channel_name in channels {
-                    if let Some(members) = swarm_subs.get_mut(&channel_name) {
-                        members.remove(session_id);
-                        if members.is_empty() {
-                            swarm_subs.remove(&channel_name);
-                        }
-                    }
-                }
-                remove_swarm = swarm_subs.is_empty();
-            }
-            if remove_swarm {
-                subs.remove(&swarm_id);
-            }
-        }
-        return;
-    }
-
-    let swarm_ids: Vec<String> = subs.keys().cloned().collect();
-
-    for swarm_id in swarm_ids {
-        let mut remove_swarm = false;
-        if let Some(swarm_subs) = subs.get_mut(&swarm_id) {
-            let channel_names: Vec<String> = swarm_subs.keys().cloned().collect();
-            for channel_name in channel_names {
-                if let Some(members) = swarm_subs.get_mut(&channel_name) {
-                    members.remove(session_id);
-                    if members.is_empty() {
-                        swarm_subs.remove(&channel_name);
-                    }
-                }
-            }
-            remove_swarm = swarm_subs.is_empty();
-        }
-        if remove_swarm {
-            subs.remove(&swarm_id);
-        }
-    }
-}
-
 pub(super) async fn remove_session_file_touches(
     session_id: &str,
     file_touches: &Arc<RwLock<HashMap<PathBuf, Vec<FileAccess>>>>,
@@ -530,73 +507,6 @@ pub(super) async fn remove_session_file_touches(
         accesses.retain(|access| access.session_id != session_id);
         !accesses.is_empty()
     });
-}
-
-pub(super) async fn subscribe_session_to_channel(
-    session_id: &str,
-    swarm_id: &str,
-    channel: &str,
-    channel_subscriptions: &ChannelSubscriptions,
-    channel_subscriptions_by_session: &ChannelSubscriptions,
-) {
-    {
-        let mut subs = channel_subscriptions.write().await;
-        subs.entry(swarm_id.to_string())
-            .or_default()
-            .entry(channel.to_string())
-            .or_default()
-            .insert(session_id.to_string());
-    }
-
-    let mut reverse = channel_subscriptions_by_session.write().await;
-    reverse
-        .entry(session_id.to_string())
-        .or_default()
-        .entry(swarm_id.to_string())
-        .or_default()
-        .insert(channel.to_string());
-}
-
-pub(super) async fn unsubscribe_session_from_channel(
-    session_id: &str,
-    swarm_id: &str,
-    channel: &str,
-    channel_subscriptions: &ChannelSubscriptions,
-    channel_subscriptions_by_session: &ChannelSubscriptions,
-) {
-    {
-        let mut subs = channel_subscriptions.write().await;
-        let mut remove_swarm = false;
-        if let Some(swarm_subs) = subs.get_mut(swarm_id) {
-            if let Some(members) = swarm_subs.get_mut(channel) {
-                members.remove(session_id);
-                if members.is_empty() {
-                    swarm_subs.remove(channel);
-                }
-            }
-            remove_swarm = swarm_subs.is_empty();
-        }
-        if remove_swarm {
-            subs.remove(swarm_id);
-        }
-    }
-
-    let mut reverse = channel_subscriptions_by_session.write().await;
-    let mut remove_session_entry = false;
-    if let Some(session_subs) = reverse.get_mut(session_id) {
-        let mut remove_swarm_entry = false;
-        if let Some(channels) = session_subs.get_mut(swarm_id) {
-            channels.remove(channel);
-            remove_swarm_entry = channels.is_empty();
-        }
-        if remove_swarm_entry {
-            session_subs.remove(swarm_id);
-        }
-        remove_session_entry = session_subs.is_empty();
-    }
-    if remove_session_entry {
-        reverse.remove(session_id);
-    }
 }
 
 pub(super) async fn remove_session_from_swarm(
@@ -1060,8 +970,9 @@ fn parse_swarm_tasks(text: &str) -> Vec<SwarmTaskSpec> {
 #[cfg(test)]
 mod tests {
     use super::{
-        now_unix_ms, parse_swarm_tasks, refresh_swarm_task_staleness, remove_session_from_swarm,
-        summarize_plan_items, touch_swarm_task_progress, truncate_detail, update_member_status,
+        broadcast_swarm_plan_with_previous, now_unix_ms, parse_swarm_tasks,
+        refresh_swarm_task_staleness, remove_session_from_swarm, summarize_plan_items,
+        touch_swarm_task_progress, truncate_detail, update_member_status,
     };
     use crate::plan::PlanItem;
     use crate::protocol::{NotificationType, ServerEvent};
@@ -1077,6 +988,8 @@ mod tests {
             status: "pending".to_string(),
             priority: "medium".to_string(),
             id: id.to_string(),
+            subsystem: None,
+            file_scope: Vec::new(),
             blocked_by: Vec::new(),
             assigned_to: None,
         }
@@ -1141,6 +1054,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn broadcast_swarm_plan_with_previous_includes_newly_ready_ids() {
+        let swarm_plans = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".to_string(),
+            VersionedPlan {
+                items: vec![
+                    PlanItem {
+                        content: "setup".to_string(),
+                        status: "completed".to_string(),
+                        priority: "high".to_string(),
+                        id: "setup".to_string(),
+                        subsystem: None,
+                        file_scope: Vec::new(),
+                        blocked_by: Vec::new(),
+                        assigned_to: None,
+                    },
+                    PlanItem {
+                        content: "follow-up".to_string(),
+                        status: "queued".to_string(),
+                        priority: "high".to_string(),
+                        id: "follow-up".to_string(),
+                        subsystem: None,
+                        file_scope: Vec::new(),
+                        blocked_by: vec!["setup".to_string()],
+                        assigned_to: None,
+                    },
+                ],
+                version: 2,
+                participants: HashSet::from(["worker".to_string()]),
+                task_progress: HashMap::new(),
+            },
+        )])));
+        let (worker, mut worker_rx) = swarm_member("worker", "agent", false);
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([("worker".to_string(), worker)])));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".to_string(),
+            HashSet::from(["worker".to_string()]),
+        )])));
+        let previous_items = vec![
+            PlanItem {
+                content: "setup".to_string(),
+                status: "running".to_string(),
+                priority: "high".to_string(),
+                id: "setup".to_string(),
+                subsystem: None,
+                file_scope: Vec::new(),
+                blocked_by: Vec::new(),
+                assigned_to: Some("worker".to_string()),
+            },
+            PlanItem {
+                content: "follow-up".to_string(),
+                status: "queued".to_string(),
+                priority: "high".to_string(),
+                id: "follow-up".to_string(),
+                subsystem: None,
+                file_scope: Vec::new(),
+                blocked_by: vec!["setup".to_string()],
+                assigned_to: None,
+            },
+        ];
+
+        broadcast_swarm_plan_with_previous(
+            "swarm-1",
+            Some("task_completed".to_string()),
+            Some(&previous_items),
+            &swarm_plans,
+            &swarm_members,
+            &swarms_by_id,
+        )
+        .await;
+
+        match worker_rx.recv().await.expect("swarm plan event") {
+            ServerEvent::SwarmPlan {
+                reason,
+                summary: Some(summary),
+                ..
+            } => {
+                assert_eq!(reason.as_deref(), Some("task_completed"));
+                assert_eq!(summary.newly_ready_ids, vec!["follow-up".to_string()]);
+                assert_eq!(summary.next_ready_ids, vec!["follow-up".to_string()]);
+            }
+            other => panic!("expected SwarmPlan event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn remove_session_from_swarm_reassigns_to_non_headless_member() {
         let swarm_members = Arc::new(RwLock::new(HashMap::new()));
         let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
@@ -1163,6 +1161,8 @@ mod tests {
                     status: "pending".to_string(),
                     priority: "medium".to_string(),
                     id: "1".to_string(),
+                    subsystem: None,
+                    file_scope: Vec::new(),
                     blocked_by: Vec::new(),
                     assigned_to: Some("coord".to_string()),
                 }],
@@ -1422,6 +1422,8 @@ mod tests {
                     status: "running".to_string(),
                     priority: "medium".to_string(),
                     id: "task-1".to_string(),
+                    subsystem: None,
+                    file_scope: Vec::new(),
                     blocked_by: Vec::new(),
                     assigned_to: Some("worker".to_string()),
                 }],

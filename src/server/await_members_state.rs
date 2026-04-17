@@ -1,10 +1,11 @@
 use crate::protocol::{AwaitedMemberStatus, ServerEvent};
+use crate::server::durable_state::{
+    hashed_request_key, load_json_state, now_unix_ms, save_json_state, state_dir,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::sync::{RwLock, mpsc};
 
 const AWAIT_MEMBERS_DIR: &str = "jcode-await-members";
@@ -111,21 +112,6 @@ impl AwaitMembersRuntime {
     }
 }
 
-fn now_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-fn state_dir() -> PathBuf {
-    crate::storage::runtime_dir().join(AWAIT_MEMBERS_DIR)
-}
-
-fn state_path(key: &str) -> PathBuf {
-    state_dir().join(format!("{}.json", key))
-}
-
 fn is_stale(state: &PersistedAwaitMembersState) -> bool {
     let now = now_unix_ms();
     if let Some(final_response) = &state.final_response {
@@ -148,50 +134,29 @@ pub(super) fn request_key(
     let mut target = target_status.to_vec();
     target.sort();
 
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    session_id.hash(&mut hasher);
-    swarm_id.hash(&mut hasher);
-    requested.hash(&mut hasher);
-    target.hash(&mut hasher);
-    mode.unwrap_or("all").hash(&mut hasher);
-    format!(
-        "{}-{:016x}",
-        sanitize_session_id(session_id),
-        hasher.finish()
+    hashed_request_key(
+        session_id,
+        "await_members",
+        &[
+            swarm_id.to_string(),
+            requested.join("\u{1f}"),
+            target.join("\u{1f}"),
+            mode.unwrap_or("all").to_string(),
+        ],
     )
 }
 
-fn sanitize_session_id(session_id: &str) -> String {
-    session_id
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 pub(super) fn load_state(key: &str) -> Option<PersistedAwaitMembersState> {
-    let path = state_path(key);
-    let state = crate::storage::read_json::<PersistedAwaitMembersState>(&path).ok()?;
-    if is_stale(&state) {
-        let _ = std::fs::remove_file(path);
-        return None;
-    }
-    Some(state)
+    load_json_state(AWAIT_MEMBERS_DIR, key, is_stale)
 }
 
 pub(super) fn save_state(state: &PersistedAwaitMembersState) {
-    let path = state_path(&state.key);
-    if let Err(err) = crate::storage::write_json_fast(&path, state) {
-        crate::logging::warn(&format!(
-            "Failed to persist await_members state {}: {}",
-            state.key, err
-        ));
-    }
+    save_json_state(
+        AWAIT_MEMBERS_DIR,
+        &state.key,
+        state,
+        "await_members state",
+    )
 }
 
 pub(super) fn ensure_pending_state(
@@ -240,7 +205,7 @@ pub(super) fn persist_final_response(
 }
 
 pub fn pending_await_members_for_session(session_id: &str) -> Vec<PersistedAwaitMembersState> {
-    let dir = state_dir();
+    let dir = state_dir(AWAIT_MEMBERS_DIR);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };

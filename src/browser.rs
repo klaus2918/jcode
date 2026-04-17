@@ -928,28 +928,26 @@ mod tests {
         let temp = tempfile::TempDir::new().expect("create temp dir");
         crate::env::set_var("JCODE_HOME", temp.path());
 
-        let result = (|| {
-            let browser_dir = temp.path().join("browser");
-            std::fs::create_dir_all(&browser_dir).expect("create browser dir");
-            let bin = browser_dir.join("browser");
-            std::fs::write(&bin, "#!/bin/sh\nexit 2\n").expect("write fake browser binary");
-            let mut perms = std::fs::metadata(&bin)
-                .expect("stat fake browser binary")
-                .permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).expect("chmod fake browser binary");
+        let browser_dir = temp.path().join("browser");
+        std::fs::create_dir_all(&browser_dir).expect("create browser dir");
+        let bin = browser_dir.join("browser");
+        std::fs::write(&bin, "#!/bin/sh\nexit 2\n").expect("write fake browser binary");
+        let mut perms = std::fs::metadata(&bin)
+            .expect("stat fake browser binary")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin, perms).expect("chmod fake browser binary");
 
-            let start = Instant::now();
-            let session = ensure_browser_session("fast-fail-session");
-            let elapsed = start.elapsed();
+        let start = Instant::now();
+        let session = ensure_browser_session("fast-fail-session");
+        let elapsed = start.elapsed();
 
-            assert!(session.is_none());
-            assert!(
-                elapsed < Duration::from_secs(1),
-                "expected immediate failure, got {:?}",
-                elapsed
-            );
-        })();
+        assert!(session.is_none());
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "expected immediate failure, got {:?}",
+            elapsed
+        );
 
         if let Some(prev_home) = prev_home {
             crate::env::set_var("JCODE_HOME", prev_home);
@@ -957,6 +955,5 @@ mod tests {
             crate::env::remove_var("JCODE_HOME");
         }
 
-        result
     }
 }

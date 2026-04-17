@@ -1,5 +1,4 @@
 use crate::storage;
-#[path = "telemetry_state.rs"]
 mod state_support;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -2215,5 +2214,4 @@ fn show_first_run_notice() {
 }
 
 #[cfg(test)]
-#[path = "telemetry_tests.rs"]
 mod tests;

@@ -36,10 +36,10 @@ pub(super) async fn resolve_debug_session(
         return Ok((id, agent));
     }
 
-    if sessions_guard.len() == 1 {
-        if let Some((id, agent)) = sessions_guard.iter().next() {
-            return Ok((id.clone(), Arc::clone(agent)));
-        }
+    if sessions_guard.len() == 1
+        && let Some((id, agent)) = sessions_guard.iter().next()
+    {
+        return Ok((id.clone(), Arc::clone(agent)));
     }
 
     Err(anyhow::anyhow!(
