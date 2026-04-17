@@ -1080,6 +1080,14 @@ impl Tool for CommunicateTool {
                 };
 
                 match send_request(request).await {
+                    Ok(ServerEvent::CommAssignTaskResponse {
+                        task_id,
+                        target_session,
+                        ..
+                    }) => Ok(ToolOutput::new(format!(
+                        "Task '{}' assigned to {}",
+                        task_id, target_session
+                    ))),
                     Ok(response) => {
                         ensure_success(&response)?;
                         let msg = params.task_id.as_deref().map_or_else(

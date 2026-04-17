@@ -595,11 +595,6 @@ pub enum ServerEvent {
     #[serde(rename = "message_end")]
     MessageEnd,
 
-    /// Provider has finished the visible assistant message, but the turn may still be
-    /// finalizing bookkeeping such as session IDs or completion trailers.
-    #[serde(rename = "message_end")]
-    MessageEnd,
-
     /// Upstream provider info (e.g., which provider OpenRouter routed to)
     #[serde(rename = "upstream_provider")]
     UpstreamProvider { provider: String },
@@ -988,6 +983,14 @@ pub enum ServerEvent {
     /// Response to comm_plan_status request
     #[serde(rename = "comm_plan_status_response")]
     CommPlanStatusResponse { id: u64, summary: PlanGraphStatus },
+
+    /// Response to comm_assign_task request
+    #[serde(rename = "comm_assign_task_response")]
+    CommAssignTaskResponse {
+        id: u64,
+        task_id: String,
+        target_session: String,
+    },
 
     /// Response to comm_read_context request
     #[serde(rename = "comm_context_history")]

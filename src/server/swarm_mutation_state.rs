@@ -14,6 +14,10 @@ const PENDING_STATE_TTL: Duration = Duration::from_secs(30 * 60);
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum PersistedSwarmMutationResponse {
     Done,
+    AssignTask {
+        task_id: String,
+        target_session: String,
+    },
     Error {
         message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -28,6 +32,14 @@ impl PersistedSwarmMutationResponse {
     fn into_server_event(self, id: u64, session_id: &str) -> ServerEvent {
         match self {
             Self::Done => ServerEvent::Done { id },
+            Self::AssignTask {
+                task_id,
+                target_session,
+            } => ServerEvent::CommAssignTaskResponse {
+                id,
+                task_id,
+                target_session,
+            },
             Self::Error {
                 message,
                 retry_after_secs,

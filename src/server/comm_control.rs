@@ -1262,7 +1262,10 @@ pub(super) async fn handle_comm_assign_task(
     finish_swarm_mutation_request(
         swarm_mutation_runtime,
         &mutation_state,
-        PersistedSwarmMutationResponse::Done,
+        PersistedSwarmMutationResponse::AssignTask {
+            task_id: selected_task_id,
+            target_session,
+        },
     )
     .await;
 }
@@ -1908,7 +1911,18 @@ mod tests {
         .await;
 
         let response = client_rx.recv().await.expect("response");
-        assert!(matches!(response, ServerEvent::Done { id: 77 }));
+        match response {
+            ServerEvent::CommAssignTaskResponse {
+                id,
+                task_id,
+                target_session,
+            } => {
+                assert_eq!(id, 77);
+                assert_eq!(task_id, "high-ready");
+                assert_eq!(target_session, worker);
+            }
+            other => panic!("expected CommAssignTaskResponse, got {other:?}"),
+        }
 
         let plans = swarm_plans.read().await;
         let plan = plans.get(swarm_id).expect("plan exists");

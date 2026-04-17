@@ -436,6 +436,30 @@ fn test_comm_assign_task_roundtrip_without_explicit_task_id() -> Result<()> {
 }
 
 #[test]
+fn test_comm_assign_task_response_roundtrip() -> Result<()> {
+    let event = ServerEvent::CommAssignTaskResponse {
+        id: 60,
+        task_id: "task-7".to_string(),
+        target_session: "sess_worker".to_string(),
+    };
+    let json = encode_event(&event);
+    assert!(json.contains("\"type\":\"comm_assign_task_response\""));
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::CommAssignTaskResponse {
+        id,
+        task_id,
+        target_session,
+    } = decoded
+    else {
+        return Err(anyhow!("expected CommAssignTaskResponse"));
+    };
+    assert_eq!(id, 60);
+    assert_eq!(task_id, "task-7");
+    assert_eq!(target_session, "sess_worker");
+    Ok(())
+}
+
+#[test]
 fn test_comm_status_roundtrip() -> Result<()> {
     let req = Request::CommStatus {
         id: 56,
