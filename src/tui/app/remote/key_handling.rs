@@ -1476,10 +1476,9 @@ async fn handle_remote_key_internal(
                     let poke_msg = app_mod::commands::build_poke_message(&incomplete);
 
                     if app.is_processing {
-                        remote.cancel().await?;
-                        app.set_status_notice("Interrupting for poke...");
+                        app.set_status_notice("Poke queued after current turn");
                         app.push_display_message(DisplayMessage::system(format!(
-                            "👉 Interrupting and poking with {} incomplete todo{}...",
+                            "👉 Queued poke with {} incomplete todo{} for after the current turn.",
                             incomplete.len(),
                             if incomplete.len() == 1 { "" } else { "s" },
                         )));

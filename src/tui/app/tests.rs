@@ -4956,6 +4956,44 @@ fn test_poke_arms_auto_poke_until_todos_are_done() {
 }
 
 #[test]
+fn test_poke_queues_when_turn_is_in_progress() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                id: "todo-1".to_string(),
+                content: "Finish the remaining task".to_string(),
+                status: "pending".to_string(),
+                priority: "high".to_string(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+            }],
+        )
+        .expect("save todos");
+
+        app.is_processing = true;
+
+        assert!(super::commands::handle_session_command(&mut app, "/poke"));
+
+        assert!(app.auto_poke_incomplete_todos);
+        assert!(app.is_processing);
+        assert!(!app.cancel_requested);
+        assert!(!app.pending_turn);
+        assert_eq!(
+            app.status_notice(),
+            Some("Poke queued after current turn".to_string())
+        );
+        assert_eq!(app.queued_messages().len(), 1);
+        assert!(app.queued_messages()[0].contains("Please continue your work"));
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content
+                .contains("Queued poke with 1 incomplete todo for after the current turn")
+        }));
+    });
+}
+
+#[test]
 fn test_finish_turn_auto_pokes_again_when_todos_remain() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
@@ -8559,6 +8597,55 @@ fn test_remote_done_auto_pokes_again_when_todos_remain() {
         assert!(app.pending_queued_dispatch);
         assert_eq!(app.queued_messages().len(), 1);
         assert!(app.queued_messages()[0].contains("Please continue your work"));
+    });
+}
+
+#[test]
+fn test_remote_poke_queues_when_turn_is_in_progress() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                id: "todo-1".to_string(),
+                content: "Continue working".to_string(),
+                status: "pending".to_string(),
+                priority: "high".to_string(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+            }],
+        )
+        .expect("save todos");
+
+        app.is_remote = true;
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        app.current_message_id = Some(42);
+        app.input = "/poke".to_string();
+        app.cursor_pos = app.input.len();
+
+        rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+            .expect("/poke should queue behind the current turn");
+
+        assert!(app.auto_poke_incomplete_todos);
+        assert!(app.is_processing);
+        assert!(matches!(app.status, ProcessingStatus::Streaming));
+        assert_eq!(app.current_message_id, Some(42));
+        assert!(app.input().is_empty());
+        assert_eq!(
+            app.status_notice(),
+            Some("Poke queued after current turn".to_string())
+        );
+        assert_eq!(app.queued_messages().len(), 1);
+        assert!(app.queued_messages()[0].contains("Please continue your work"));
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content
+                .contains("Queued poke with 1 incomplete todo for after the current turn")
+        }));
     });
 }
 

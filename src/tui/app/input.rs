@@ -1675,6 +1675,7 @@ impl App {
             }
             "poke" => {
                 "`/poke`\nPoke the model to resume when it has stopped with incomplete todos.\n\
+                If a turn is currently running, the poke is queued and sent right after that turn finishes.\n\
                 Injects a reminder listing all pending/in-progress tasks and prompts the model to either\n\
                 finish the work, update the todo list to reflect what is done, or ask for user input if genuinely blocked."
             }

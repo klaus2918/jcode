@@ -856,13 +856,9 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         let poke_msg = build_poke_message(&incomplete);
 
         if app.is_processing {
-            app.cancel_requested = true;
-            app.interleave_message = None;
-            app.pending_soft_interrupts.clear();
-            app.pending_soft_interrupt_requests.clear();
-            app.set_status_notice("Interrupting for poke...");
+            app.set_status_notice("Poke queued after current turn");
             app.push_display_message(DisplayMessage::system(format!(
-                "👉 Interrupting and poking with {} incomplete todo{}...",
+                "👉 Queued poke with {} incomplete todo{} for after the current turn.",
                 incomplete.len(),
                 if incomplete.len() == 1 { "" } else { "s" },
             )));
