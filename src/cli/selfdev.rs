@@ -122,10 +122,12 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
                         ));
                     }
                     logging::warn(&format!(
-                        "Reload state=failed while resuming self-dev session: {}",
+                        "Reload state=failed while resuming self-dev session on {}: {}; recent_state={}",
+                        crate::server::socket_path().display(),
                         state
                             .detail
-                            .unwrap_or_else(|| "unknown reload failure".to_string())
+                            .unwrap_or_else(|| "unknown reload failure".to_string()),
+                        crate::server::reload_state_summary(std::time::Duration::from_secs(60))
                     ));
                 }
                 crate::server::ReloadPhase::SocketReady => {}

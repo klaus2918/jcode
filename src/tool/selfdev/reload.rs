@@ -237,9 +237,11 @@ impl SelfDevTool {
                     server::ReloadWaitStatus::Failed(detail) => {
                         let _ = build::rollback_pending_activation_for_session(session_id);
                         Err(anyhow::anyhow!(
-                            "Reload was acknowledged for build {}, but the replacement server failed before becoming ready: {}",
+                            "Reload was acknowledged for build {}, but the replacement server failed before becoming ready on {}: {}; recent_state={}",
                             ack.hash,
-                            detail.unwrap_or_else(|| "unknown reload failure".to_string())
+                            server::socket_path().display(),
+                            detail.unwrap_or_else(|| "unknown reload failure".to_string()),
+                            server::reload_state_summary(std::time::Duration::from_secs(60))
                         ))
                     }
                     server::ReloadWaitStatus::Idle | server::ReloadWaitStatus::Waiting { .. } => {
