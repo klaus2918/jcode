@@ -321,6 +321,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
     };
 
     let mut wrapped_lines: Vec<Line<'static>>;
+    let wrapped_plain_lines: Arc<Vec<String>>;
     let raw_plain_lines;
     let wrapped_line_map;
     let wrapped_copy_offsets;
@@ -405,10 +406,23 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
         }
 
         if is_initial_empty {
+            wrapped_plain_lines = Arc::new(wrapped_lines.iter().map(ui::line_plain_text).collect());
             raw_plain_lines = Vec::new();
             wrapped_line_map = Vec::new();
             wrapped_copy_offsets = vec![0; wrapped_lines.len()];
         } else {
+            let mut all_wrapped_plain_lines = Vec::with_capacity(
+                header_prepared.wrapped_plain_lines.len()
+                    + body_prepared.wrapped_plain_lines.len()
+                    + batch_progress_prepared.wrapped_plain_lines.len()
+                    + streaming_prepared.wrapped_plain_lines.len(),
+            );
+            all_wrapped_plain_lines.extend(header_prepared.wrapped_plain_lines.iter().cloned());
+            all_wrapped_plain_lines.extend(body_prepared.wrapped_plain_lines.iter().cloned());
+            all_wrapped_plain_lines
+                .extend(batch_progress_prepared.wrapped_plain_lines.iter().cloned());
+            all_wrapped_plain_lines.extend(streaming_prepared.wrapped_plain_lines.iter().cloned());
+
             let header_raw_len = header_prepared.raw_plain_lines.len();
             let body_raw_len = body_prepared.raw_plain_lines.len();
             let batch_raw_len = batch_progress_prepared.raw_plain_lines.len();
@@ -470,6 +484,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
             raw_plain_lines = all_raw_plain_lines;
             wrapped_line_map = all_wrapped_line_map;
             wrapped_copy_offsets = all_wrapped_copy_offsets;
+            wrapped_plain_lines = Arc::new(all_wrapped_plain_lines);
         }
 
         let header_len = wrapped_lines.len();
@@ -540,8 +555,6 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
             })
             .collect();
     }
-
-    let wrapped_plain_lines = Arc::new(wrapped_lines.iter().map(ui::line_plain_text).collect());
 
     PreparedMessages {
         wrapped_lines,
@@ -992,11 +1005,12 @@ fn prepare_body_incremental(
         });
     }
 
-    let wrapped_plain_lines = Arc::new(wrapped_lines.iter().map(ui::line_plain_text).collect());
+    let mut wrapped_plain_lines = prev.wrapped_plain_lines.as_ref().clone();
+    wrapped_plain_lines.extend(new_wrapped.wrapped_plain_lines.iter().cloned());
 
     Arc::new(PreparedMessages {
         wrapped_lines,
-        wrapped_plain_lines,
+        wrapped_plain_lines: Arc::new(wrapped_plain_lines),
         wrapped_copy_offsets: Arc::new(wrapped_copy_offsets),
         raw_plain_lines: Arc::new(raw_plain_lines),
         wrapped_line_map: Arc::new(wrapped_line_map),

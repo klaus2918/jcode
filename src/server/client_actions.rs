@@ -134,30 +134,35 @@ async fn run_scheduled_task_in_live_session_if_idle(
     true
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "notify session needs delivery state, connection state, interrupt queues, and live swarm membership"
-)]
+pub(super) struct NotifySessionContext<'a> {
+    pub sessions: &'a SessionAgents,
+    pub soft_interrupt_queues: &'a SessionInterruptQueues,
+    pub client_connections: &'a Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
+    pub swarm_members: &'a Arc<RwLock<HashMap<String, SwarmMember>>>,
+    pub client_event_tx: &'a mpsc::UnboundedSender<ServerEvent>,
+}
+
 pub(super) async fn handle_notify_session(
     id: u64,
     session_id: String,
     message: String,
-    sessions: &SessionAgents,
-    soft_interrupt_queues: &SessionInterruptQueues,
-    client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
-    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+    ctx: NotifySessionContext<'_>,
 ) {
     let target_has_client = {
-        let connections = client_connections.read().await;
+        let connections = ctx.client_connections.read().await;
         connections
             .values()
             .any(|connection| connection.session_id == session_id)
     };
 
     let ran_immediately = if target_has_client {
-        run_scheduled_task_in_live_session_if_idle(&session_id, &message, sessions, swarm_members)
-            .await
+        run_scheduled_task_in_live_session_if_idle(
+            &session_id,
+            &message,
+            ctx.sessions,
+            ctx.swarm_members,
+        )
+        .await
     } else {
         false
     };
@@ -165,11 +170,11 @@ pub(super) async fn handle_notify_session(
     let notified = if ran_immediately {
         false
     } else {
-        let members = swarm_members.read().await;
+        let members = ctx.swarm_members.read().await;
         if members.contains_key(&session_id) {
             drop(members);
             fanout_session_event(
-                swarm_members,
+                ctx.swarm_members,
                 &session_id,
                 ServerEvent::Notification {
                     from_session: "schedule".to_string(),
@@ -196,16 +201,16 @@ pub(super) async fn handle_notify_session(
             message.clone(),
             false,
             SoftInterruptSource::System,
-            soft_interrupt_queues,
-            sessions,
+            ctx.soft_interrupt_queues,
+            ctx.sessions,
         )
         .await
     };
 
     if ran_immediately || notified || queued_interrupt {
-        let _ = client_event_tx.send(ServerEvent::Done { id });
+        let _ = ctx.client_event_tx.send(ServerEvent::Done { id });
     } else {
-        let _ = client_event_tx.send(ServerEvent::Error {
+        let _ = ctx.client_event_tx.send(ServerEvent::Error {
             id,
             message: format!("Session '{}' is not currently live", session_id),
             retry_after_secs: None,
@@ -651,7 +656,9 @@ pub(super) async fn handle_split(
 
 #[cfg(test)]
 mod tests {
-    use super::{clone_split_session, handle_notify_session, handle_set_feature};
+    use super::{
+        NotifySessionContext, clone_split_session, handle_notify_session, handle_set_feature,
+    };
     use crate::agent::Agent;
     use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
     use crate::protocol::{FeatureToggle, ServerEvent};
@@ -938,11 +945,13 @@ mod tests {
             77,
             session_id.clone(),
             "[Scheduled task]\nTask: Follow up".to_string(),
-            &sessions,
-            &soft_interrupt_queues,
-            &client_connections,
-            &swarm_members,
-            &client_event_tx,
+            NotifySessionContext {
+                sessions: &sessions,
+                soft_interrupt_queues: &soft_interrupt_queues,
+                client_connections: &client_connections,
+                swarm_members: &swarm_members,
+                client_event_tx: &client_event_tx,
+            },
         )
         .await;
 
@@ -1044,11 +1053,13 @@ mod tests {
             88,
             session_id.clone(),
             "[Scheduled task]\nTask: Follow up while busy".to_string(),
-            &sessions,
-            &soft_interrupt_queues,
-            &client_connections,
-            &swarm_members,
-            &client_event_tx,
+            NotifySessionContext {
+                sessions: &sessions,
+                soft_interrupt_queues: &soft_interrupt_queues,
+                client_connections: &client_connections,
+                swarm_members: &swarm_members,
+                client_event_tx: &client_event_tx,
+            },
         )
         .await;
 

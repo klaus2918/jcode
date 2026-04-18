@@ -62,6 +62,10 @@ fn make_prepared_messages_with_content_bytes(bytes: usize, marker: &str) -> Arc<
     })
 }
 
+fn make_oversized_prepared_messages(marker: &str) -> Arc<PreparedMessages> {
+    make_prepared_messages_with_content_bytes(12 * 1024 * 1024, marker)
+}
+
 #[test]
 fn test_calculate_input_lines_empty() {
     assert_eq!(calculate_input_lines("", 80), 1);
@@ -343,6 +347,59 @@ fn test_body_cache_state_accepts_large_single_entry_within_total_budget() {
 }
 
 #[test]
+fn test_body_cache_state_retains_oversized_hot_entry() {
+    let key = BodyCacheKey {
+        width: 140,
+        diff_mode: crate::config::DiffDisplayMode::Off,
+        messages_version: 120,
+        diagram_mode: crate::config::DiagramDisplayMode::Pinned,
+        centered: false,
+    };
+    let prepared = make_oversized_prepared_messages("body-oversized-");
+
+    assert!(estimate_prepared_messages_bytes(&prepared) > BODY_CACHE_MAX_BYTES);
+
+    let mut cache = BodyCacheState::default();
+    cache.insert(key.clone(), prepared.clone(), 120);
+
+    let hit = cache
+        .get_exact(&key)
+        .expect("expected oversized body cache entry to be retained as hot entry");
+    assert!(Arc::ptr_eq(&hit, &prepared));
+    assert!(cache.entries.is_empty());
+    assert!(cache.oversized_entry.is_some());
+}
+
+#[test]
+fn test_body_cache_state_uses_oversized_hot_entry_as_incremental_base() {
+    let key = BodyCacheKey {
+        width: 140,
+        diff_mode: crate::config::DiffDisplayMode::Off,
+        messages_version: 120,
+        diagram_mode: crate::config::DiagramDisplayMode::Pinned,
+        centered: false,
+    };
+    let prepared = make_oversized_prepared_messages("body-oversized-base-");
+
+    assert!(estimate_prepared_messages_bytes(&prepared) > BODY_CACHE_MAX_BYTES);
+
+    let mut cache = BodyCacheState::default();
+    cache.insert(key.clone(), prepared.clone(), 120);
+
+    let base = cache
+        .best_incremental_base(
+            &BodyCacheKey {
+                messages_version: 121,
+                ..key.clone()
+            },
+            121,
+        )
+        .expect("expected oversized hot entry to remain eligible as incremental base");
+    assert!(Arc::ptr_eq(&base.0, &prepared));
+    assert_eq!(base.1, 120);
+}
+
+#[test]
 fn test_full_prep_cache_state_keeps_multiple_width_entries() {
     let key_a = FullPrepCacheKey {
         width: 40,
@@ -473,6 +530,35 @@ fn test_full_prep_cache_state_accepts_large_single_entry_within_total_budget() {
         .get_exact(&key)
         .expect("expected large full prep cache entry to be retained");
     assert!(Arc::ptr_eq(&hit, &prepared));
+}
+
+#[test]
+fn test_full_prep_cache_state_retains_oversized_hot_entry() {
+    let key = FullPrepCacheKey {
+        width: 140,
+        height: 42,
+        diff_mode: crate::config::DiffDisplayMode::Off,
+        messages_version: 120,
+        diagram_mode: crate::config::DiagramDisplayMode::Pinned,
+        centered: false,
+        is_processing: true,
+        streaming_text_len: 4096,
+        streaming_text_hash: 12345,
+        batch_progress_hash: 0,
+    };
+    let prepared = make_oversized_prepared_messages("full-oversized-");
+
+    assert!(estimate_prepared_messages_bytes(&prepared) > FULL_PREP_CACHE_MAX_BYTES);
+
+    let mut cache = FullPrepCacheState::default();
+    cache.insert(key.clone(), prepared.clone());
+
+    let hit = cache
+        .get_exact(&key)
+        .expect("expected oversized full prep entry to be retained as hot entry");
+    assert!(Arc::ptr_eq(&hit, &prepared));
+    assert!(cache.entries.is_empty());
+    assert!(cache.oversized_entry.is_some());
 }
 
 #[test]

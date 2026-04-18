@@ -866,6 +866,7 @@ const BODY_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 #[derive(Default)]
 struct BodyCacheState {
     entries: VecDeque<BodyCacheEntry>,
+    oversized_entry: Option<BodyCacheEntry>,
 }
 
 impl BodyCacheState {
@@ -874,11 +875,17 @@ impl BodyCacheState {
     }
 
     fn get_exact(&mut self, key: &BodyCacheKey) -> Option<Arc<PreparedMessages>> {
-        let pos = self.entries.iter().position(|entry| &entry.key == key)?;
-        let entry = self.entries.remove(pos)?;
-        let prepared = entry.prepared.clone();
-        self.entries.push_front(entry);
-        Some(prepared)
+        if let Some(pos) = self.entries.iter().position(|entry| &entry.key == key) {
+            let entry = self.entries.remove(pos)?;
+            let prepared = entry.prepared.clone();
+            self.entries.push_front(entry);
+            Some(prepared)
+        } else {
+            self.oversized_entry
+                .as_ref()
+                .filter(|entry| &entry.key == key)
+                .map(|entry| entry.prepared.clone())
+        }
     }
 
     fn best_incremental_base(
@@ -886,7 +893,8 @@ impl BodyCacheState {
         key: &BodyCacheKey,
         msg_count: usize,
     ) -> Option<(Arc<PreparedMessages>, usize)> {
-        self.entries
+        let regular = self
+            .entries
             .iter()
             .filter(|entry| {
                 entry.msg_count > 0
@@ -897,13 +905,50 @@ impl BodyCacheState {
                     && entry.key.centered == key.centered
             })
             .max_by_key(|entry| entry.msg_count)
-            .map(|entry| (entry.prepared.clone(), entry.msg_count))
+            .map(|entry| (entry.prepared.clone(), entry.msg_count));
+        let oversized = self
+            .oversized_entry
+            .as_ref()
+            .filter(|entry| {
+                entry.msg_count > 0
+                    && msg_count > entry.msg_count
+                    && entry.key.width == key.width
+                    && entry.key.diff_mode == key.diff_mode
+                    && entry.key.diagram_mode == key.diagram_mode
+                    && entry.key.centered == key.centered
+            })
+            .map(|entry| (entry.prepared.clone(), entry.msg_count));
+
+        match (regular, oversized) {
+            (Some(left), Some(right)) => {
+                if left.1 >= right.1 {
+                    Some(left)
+                } else {
+                    Some(right)
+                }
+            }
+            (Some(entry), None) | (None, Some(entry)) => Some(entry),
+            (None, None) => None,
+        }
     }
 
     fn insert(&mut self, key: BodyCacheKey, prepared: Arc<PreparedMessages>, msg_count: usize) {
         let prepared_bytes = estimate_prepared_messages_bytes(&prepared);
         if prepared_bytes > BODY_CACHE_MAX_BYTES {
+            self.oversized_entry = Some(BodyCacheEntry {
+                key,
+                prepared,
+                prepared_bytes,
+                msg_count,
+            });
             return;
+        }
+        if self
+            .oversized_entry
+            .as_ref()
+            .is_some_and(|entry| entry.key == key)
+        {
+            self.oversized_entry = None;
         }
         if let Some(pos) = self.entries.iter().position(|entry| entry.key == key) {
             self.entries.remove(pos);
@@ -957,6 +1002,7 @@ const FULL_PREP_CACHE_MAX_BYTES: usize = 24 * 1024 * 1024;
 #[derive(Default)]
 struct FullPrepCacheState {
     entries: VecDeque<FullPrepCacheEntry>,
+    oversized_entry: Option<FullPrepCacheEntry>,
 }
 
 impl FullPrepCacheState {
@@ -965,17 +1011,35 @@ impl FullPrepCacheState {
     }
 
     fn get_exact(&mut self, key: &FullPrepCacheKey) -> Option<Arc<PreparedMessages>> {
-        let pos = self.entries.iter().position(|entry| &entry.key == key)?;
-        let entry = self.entries.remove(pos)?;
-        let prepared = entry.prepared.clone();
-        self.entries.push_front(entry);
-        Some(prepared)
+        if let Some(pos) = self.entries.iter().position(|entry| &entry.key == key) {
+            let entry = self.entries.remove(pos)?;
+            let prepared = entry.prepared.clone();
+            self.entries.push_front(entry);
+            Some(prepared)
+        } else {
+            self.oversized_entry
+                .as_ref()
+                .filter(|entry| &entry.key == key)
+                .map(|entry| entry.prepared.clone())
+        }
     }
 
     fn insert(&mut self, key: FullPrepCacheKey, prepared: Arc<PreparedMessages>) {
         let prepared_bytes = estimate_prepared_messages_bytes(&prepared);
         if prepared_bytes > FULL_PREP_CACHE_MAX_BYTES {
+            self.oversized_entry = Some(FullPrepCacheEntry {
+                key,
+                prepared,
+                prepared_bytes,
+            });
             return;
+        }
+        if self
+            .oversized_entry
+            .as_ref()
+            .is_some_and(|entry| entry.key == key)
+        {
+            self.oversized_entry = None;
         }
         if let Some(pos) = self.entries.iter().position(|entry| entry.key == key) {
             self.entries.remove(pos);
