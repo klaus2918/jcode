@@ -1082,6 +1082,54 @@ fn test_subscribe_request_roundtrip_preserves_session_takeover_flags() -> Result
 }
 
 #[test]
+fn test_subscribe_request_defaults_optional_flags() -> Result<()> {
+    let json = r#"{"type":"subscribe","id":91}"#;
+    let decoded = parse_request_json(json)?;
+    let Request::Subscribe {
+        id,
+        working_dir,
+        selfdev,
+        target_session_id,
+        client_instance_id,
+        client_has_local_history,
+        allow_session_takeover,
+    } = decoded
+    else {
+        return Err(anyhow!("expected Subscribe"));
+    };
+    assert_eq!(id, 91);
+    assert_eq!(working_dir, None);
+    assert_eq!(selfdev, None);
+    assert_eq!(target_session_id, None);
+    assert_eq!(client_instance_id, None);
+    assert!(!client_has_local_history);
+    assert!(!allow_session_takeover);
+    Ok(())
+}
+
+#[test]
+fn test_resume_session_defaults_sync_flags() -> Result<()> {
+    let json = r#"{"type":"resume_session","id":92,"session_id":"sess_resume"}"#;
+    let decoded = parse_request_json(json)?;
+    let Request::ResumeSession {
+        id,
+        session_id,
+        client_instance_id,
+        client_has_local_history,
+        allow_session_takeover,
+    } = decoded
+    else {
+        return Err(anyhow!("expected ResumeSession"));
+    };
+    assert_eq!(id, 92);
+    assert_eq!(session_id, "sess_resume");
+    assert_eq!(client_instance_id, None);
+    assert!(!client_has_local_history);
+    assert!(!allow_session_takeover);
+    Ok(())
+}
+
+#[test]
 fn test_message_request_roundtrip_preserves_images_and_system_reminder() -> Result<()> {
     let req = Request::Message {
         id: 88,
