@@ -218,7 +218,14 @@ pub(super) async fn spawn_or_resume_await_members(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct CommAwaitMembersContext<'a> {
+    pub client_event_tx: &'a mpsc::UnboundedSender<ServerEvent>,
+    pub swarm_members: &'a Arc<RwLock<HashMap<String, SwarmMember>>>,
+    pub swarms_by_id: &'a Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    pub swarm_event_tx: &'a broadcast::Sender<SwarmEvent>,
+    pub await_members_runtime: &'a AwaitMembersRuntime,
+}
+
 pub(super) async fn handle_comm_await_members(
     id: u64,
     req_session_id: String,
@@ -226,14 +233,10 @@ pub(super) async fn handle_comm_await_members(
     requested_ids: Vec<String>,
     mode: Option<String>,
     timeout_secs: Option<u64>,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    swarm_event_tx: &broadcast::Sender<SwarmEvent>,
-    await_members_runtime: &AwaitMembersRuntime,
+    ctx: CommAwaitMembersContext<'_>,
 ) {
     let swarm_id = {
-        let members = swarm_members.read().await;
+        let members = ctx.swarm_members.read().await;
         members
             .get(&req_session_id)
             .and_then(|member| member.swarm_id.clone())
@@ -253,7 +256,7 @@ pub(super) async fn handle_comm_await_members(
             .as_ref()
             .and_then(|state| state.final_response.clone())
         {
-            let _ = client_event_tx.send(ServerEvent::CommAwaitMembersResponse {
+            let _ = ctx.client_event_tx.send(ServerEvent::CommAwaitMembersResponse {
                 id,
                 completed: final_response.completed,
                 members: final_response.members,
@@ -267,13 +270,13 @@ pub(super) async fn handle_comm_await_members(
             &swarm_id,
             &requested_ids,
             &target_status,
-            swarm_members,
-            swarms_by_id,
+            ctx.swarm_members,
+            ctx.swarms_by_id,
         )
         .await;
 
         if initial_statuses.is_empty() {
-            let _ = client_event_tx.send(ServerEvent::CommAwaitMembersResponse {
+            let _ = ctx.client_event_tx.send(ServerEvent::CommAwaitMembersResponse {
                 id,
                 completed: true,
                 members: vec![],
@@ -299,8 +302,8 @@ pub(super) async fn handle_comm_await_members(
             )
         });
 
-        await_members_runtime
-            .add_waiter(&key, id, client_event_tx)
+        ctx.await_members_runtime
+            .add_waiter(&key, id, ctx.client_event_tx)
             .await;
 
         if state.deadline_unix_ms
@@ -313,7 +316,7 @@ pub(super) async fn handle_comm_await_members(
             let _ =
                 persist_final_response(&state, false, initial_statuses.clone(), summary.clone());
             respond_to_waiters(
-                await_members_runtime,
+                ctx.await_members_runtime,
                 &key,
                 false,
                 initial_statuses,
@@ -323,19 +326,19 @@ pub(super) async fn handle_comm_await_members(
             return;
         }
 
-        if await_members_runtime.mark_active_if_new(&key).await {
+        if ctx.await_members_runtime.mark_active_if_new(&key).await {
             spawn_or_resume_await_members(
                 state,
                 req_session_id,
-                swarm_members.clone(),
-                swarms_by_id.clone(),
-                swarm_event_tx.clone(),
-                await_members_runtime.clone(),
+                ctx.swarm_members.clone(),
+                ctx.swarms_by_id.clone(),
+                ctx.swarm_event_tx.clone(),
+                ctx.await_members_runtime.clone(),
             )
             .await;
         }
     } else {
-        let _ = client_event_tx.send(ServerEvent::Error {
+        let _ = ctx.client_event_tx.send(ServerEvent::Error {
             id,
             message: "Not in a swarm. Use a git repository to enable swarm features.".to_string(),
             retry_after_secs: None,

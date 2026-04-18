@@ -13,7 +13,7 @@ use super::client_session::{
     handle_clear_session, handle_reload, handle_resume_session, handle_subscribe,
 };
 use super::client_state::{handle_get_history, handle_get_state};
-use super::comm_await::handle_comm_await_members;
+use super::comm_await::{CommAwaitMembersContext, handle_comm_await_members};
 use super::comm_control::{
     handle_client_debug_command, handle_client_debug_response, handle_comm_assign_next,
     handle_comm_assign_role, handle_comm_assign_task, handle_comm_task_control,
@@ -631,11 +631,13 @@ async fn handle_lightweight_control_request(
                 requested_ids,
                 mode,
                 timeout_secs,
-                &client_event_tx,
-                swarm_members,
-                swarms_by_id,
-                swarm_event_tx,
-                await_members_runtime,
+                CommAwaitMembersContext {
+                    client_event_tx: &client_event_tx,
+                    swarm_members,
+                    swarms_by_id,
+                    swarm_event_tx,
+                    await_members_runtime,
+                },
             )
             .await;
         }
@@ -2284,11 +2286,13 @@ pub(super) async fn handle_client(
                     requested_ids,
                     mode,
                     timeout_secs,
-                    &client_event_tx,
-                    &swarm_members,
-                    &swarms_by_id,
-                    &swarm_event_tx,
-                    &await_members_runtime,
+                    CommAwaitMembersContext {
+                        client_event_tx: &client_event_tx,
+                        swarm_members: &swarm_members,
+                        swarms_by_id: &swarms_by_id,
+                        swarm_event_tx: &swarm_event_tx,
+                        await_members_runtime: &await_members_runtime,
+                    },
                 )
                 .await;
             }
