@@ -921,3 +921,53 @@ fn test_protocol_enum_roundtrips_cover_wire_names() -> Result<()> {
 
     Ok(())
 }
+
+
+#[test]
+fn test_set_feature_roundtrip() -> Result<()> {
+    let req = Request::SetFeature {
+        id: 77,
+        feature: FeatureToggle::Swarm,
+        enabled: true,
+    };
+    let json = serde_json::to_string(&req)?;
+    assert!(json.contains("\"type\":\"set_feature\""));
+    let decoded = parse_request_json(&json)?;
+    let Request::SetFeature { id, feature, enabled } = decoded else {
+        return Err(anyhow!("expected SetFeature"));
+    };
+    assert_eq!(id, 77);
+    assert_eq!(feature, FeatureToggle::Swarm);
+    assert!(enabled);
+    Ok(())
+}
+
+#[test]
+fn test_message_request_roundtrip_preserves_images_and_system_reminder() -> Result<()> {
+    let req = Request::Message {
+        id: 88,
+        content: "inspect this".to_string(),
+        images: vec![
+            ("image/png".to_string(), "AAA".to_string()),
+            ("image/jpeg".to_string(), "BBB".to_string()),
+        ],
+        system_reminder: Some("be concise".to_string()),
+    };
+    let json = serde_json::to_string(&req)?;
+    let decoded = parse_request_json(&json)?;
+    let Request::Message {
+        id,
+        content,
+        images,
+        system_reminder,
+    } = decoded else {
+        return Err(anyhow!("expected Message"));
+    };
+    assert_eq!(id, 88);
+    assert_eq!(content, "inspect this");
+    assert_eq!(images.len(), 2);
+    assert_eq!(images[0].0, "image/png");
+    assert_eq!(images[1].0, "image/jpeg");
+    assert_eq!(system_reminder.as_deref(), Some("be concise"));
+    Ok(())
+}
