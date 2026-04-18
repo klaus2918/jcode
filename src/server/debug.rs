@@ -13,7 +13,7 @@ use super::debug_jobs::{DebugJob, maybe_handle_job_command};
 use super::debug_server_state::maybe_handle_server_state_command;
 use super::debug_session_admin::maybe_handle_session_admin_command;
 use super::debug_swarm_read::maybe_handle_swarm_read_command;
-use super::debug_swarm_write::maybe_handle_swarm_write_command;
+use super::debug_swarm_write::{DebugSwarmWriteContext, maybe_handle_swarm_write_command};
 use super::debug_testers::execute_tester_command;
 use super::{
     FileAccess, ServerIdentity, SharedContext, SwarmEvent, SwarmMember, VersionedPlan,
@@ -419,12 +419,14 @@ pub(super) async fn handle_debug_client(
                             Ok(output)
                         } else if let Some(output) = maybe_handle_swarm_write_command(
                             cmd,
-                            &session_id,
-                            &swarm_members,
-                            &swarms_by_id,
-                            &shared_context,
-                            &swarm_plans,
-                            &swarm_coordinators,
+                            &DebugSwarmWriteContext {
+                                session_id: &session_id,
+                                swarm_members: &swarm_members,
+                                swarms_by_id: &swarms_by_id,
+                                shared_context: &shared_context,
+                                swarm_plans: &swarm_plans,
+                                swarm_coordinators: &swarm_coordinators,
+                            },
                         )
                         .await?
                         {
