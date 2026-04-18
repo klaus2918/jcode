@@ -23,8 +23,8 @@ use super::comm_plan::{
 };
 use super::comm_session::{handle_comm_spawn, handle_comm_stop};
 use super::comm_sync::{
-    handle_comm_plan_status, handle_comm_read_context, handle_comm_resync_plan, handle_comm_status,
-    handle_comm_summary,
+    CommResyncPlanContext, handle_comm_plan_status, handle_comm_read_context,
+    handle_comm_resync_plan, handle_comm_status, handle_comm_summary,
 };
 use super::provider_control::{
     handle_cycle_model, handle_notify_auth_changed, handle_refresh_models,
@@ -474,14 +474,16 @@ async fn handle_lightweight_control_request(
             handle_comm_resync_plan(
                 id,
                 req_session_id,
-                &client_event_tx,
-                swarm_members,
-                swarms_by_id,
-                swarm_plans,
-                swarm_coordinators,
-                event_history,
-                event_counter,
-                swarm_event_tx,
+                &CommResyncPlanContext {
+                    client_event_tx: &client_event_tx,
+                    swarm_members,
+                    swarms_by_id,
+                    swarm_plans,
+                    swarm_coordinators,
+                    event_history,
+                    event_counter,
+                    swarm_event_tx,
+                },
             )
             .await;
         }
@@ -2117,14 +2119,16 @@ pub(super) async fn handle_client(
                 handle_comm_resync_plan(
                     id,
                     req_session_id,
-                    &client_event_tx,
-                    &swarm_members,
-                    &swarms_by_id,
-                    &swarm_plans,
-                    &swarm_coordinators,
-                    &event_history,
-                    &event_counter,
-                    &swarm_event_tx,
+                    &CommResyncPlanContext {
+                        client_event_tx: &client_event_tx,
+                        swarm_members: &swarm_members,
+                        swarms_by_id: &swarms_by_id,
+                        swarm_plans: &swarm_plans,
+                        swarm_coordinators: &swarm_coordinators,
+                        event_history: &event_history,
+                        event_counter: &event_counter,
+                        swarm_event_tx: &swarm_event_tx,
+                    },
                 )
                 .await;
             }
