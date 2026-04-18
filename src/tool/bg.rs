@@ -143,8 +143,19 @@ impl Tool for BgTool {
                         }
                         output.push_str(&format!("Notify: {}\n", task.notify));
                         output.push_str(&format!("Wake: {}\n", task.wake));
-                        if let Some(error) = task.error {
+                        if let Some(error) = task.error.clone() {
                             output.push_str(&format!("Error: {}\n", error));
+                        }
+
+                        if matches!(task.status, BackgroundTaskStatus::Failed) {
+                            crate::logging::warn(&format!(
+                                "[tool:bg] task {} ({}) failed in session {} exit_code={:?} error={}",
+                                task.task_id,
+                                task.tool_name,
+                                task.session_id,
+                                task.exit_code,
+                                task.error.as_deref().unwrap_or("<none>")
+                            ));
                         }
 
                         Ok(ToolOutput::new(output)
@@ -168,6 +179,10 @@ impl Tool for BgTool {
                 match output_result {
                     Some(output) => {
                         let truncated: String = if output.len() > 50000 {
+                            crate::logging::warn(&format!(
+                                "[tool:bg] truncated output for task {} at 50000 bytes",
+                                task_id
+                            ));
                             format!(
                                 "{}...\n\n(Output truncated. Use `read` tool on the output file for full content)",
                                 crate::util::truncate_str(&output, 50000)
