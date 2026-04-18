@@ -192,6 +192,7 @@ impl Tool for ReadTool {
         // Single-pass: count lines while building output
         let mut output = String::with_capacity(range.limit.min(2000) * 80);
         let mut total_lines = 0usize;
+        let mut truncated_line_count = 0usize;
         let end_exclusive = range.offset + range.limit;
         {
             use std::fmt::Write;
@@ -206,6 +207,7 @@ impl Tool for ReadTool {
                 }
                 let line_num = i + 1;
                 if line.len() > MAX_LINE_LEN {
+                    truncated_line_count += 1;
                     let _ = writeln!(
                         output,
                         "{:>5}\t{}...",
@@ -233,6 +235,19 @@ impl Tool for ReadTool {
             )),
             detail: None,
         }));
+
+        if truncated_line_count > 0 || end < total_lines {
+            crate::logging::warn(&format!(
+                "[tool:read] returned truncated output for {} in session {} (tool_call={} range={}..{} total_lines={} truncated_lines={})",
+                params.file_path,
+                ctx.session_id,
+                ctx.tool_call_id,
+                range.offset + 1,
+                end,
+                total_lines,
+                truncated_line_count
+            ));
+        }
 
         // Add metadata
         if end < total_lines {
