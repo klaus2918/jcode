@@ -14,6 +14,7 @@ Runs the standard compile checkpoints for the self-dev loop using scripts/bench_
 Options:
   --touch <path>   Source file to touch for warm edit-loop runs (default: src/server.rs)
   --runs <n>       Number of warm runs per checkpoint (default: 3)
+  --skip-cold      Skip cold checkpoints and only run warm edit-loop measurements
   --json           Print a single JSON object with all checkpoint summaries
   -h, --help       Show this help
 
@@ -28,6 +29,7 @@ USAGE
 runs=3
 touch_path="src/server.rs"
 json_output=0
+skip_cold=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -49,6 +51,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --json)
       json_output=1
+      ;;
+    --skip-cold)
+      skip_cold=1
       ;;
     -h|--help)
       usage
@@ -112,9 +117,27 @@ PY
   rm -f "$stdout_file" "$stderr_file"
 }
 
-cold_check_json=$(run_bench cold_check check --cold)
+cold_check_json=$(python3 - <<'PY' "$skip_cold"
+import json
+import sys
+skip = sys.argv[1] == "1"
+print(json.dumps({"checkpoint": "cold_check", "ok": None, "skipped": skip}))
+PY
+)
+cold_selfdev_json=$(python3 - <<'PY' "$skip_cold"
+import json
+import sys
+skip = sys.argv[1] == "1"
+print(json.dumps({"checkpoint": "cold_selfdev_build", "ok": None, "skipped": skip}))
+PY
+)
+
+if [[ $skip_cold -eq 0 ]]; then
+  cold_check_json=$(run_bench cold_check check --cold)
+  cold_selfdev_json=$(run_bench cold_selfdev_build selfdev-jcode --cold)
+fi
+
 warm_check_json=$(run_bench warm_check_edit check --runs "$runs" --touch "$touch_path")
-cold_selfdev_json=$(run_bench cold_selfdev_build selfdev-jcode --cold)
 warm_selfdev_json=$(run_bench warm_selfdev_edit selfdev-jcode --runs "$runs" --touch "$touch_path")
 
 summary_json=$(python3 - <<'PY' "$touch_path" "$runs" "$cold_check_json" "$warm_check_json" "$cold_selfdev_json" "$warm_selfdev_json"
@@ -127,10 +150,12 @@ cold_check = json.loads(sys.argv[3])
 warm_check = json.loads(sys.argv[4])
 cold_selfdev = json.loads(sys.argv[5])
 warm_selfdev = json.loads(sys.argv[6])
+skip = bool(cold_check.get("skipped") and cold_selfdev.get("skipped"))
 
 summary = {
     "touch_path": touch_path,
     "warm_runs": runs,
+    "skip_cold": skip == True,
     "checkpoints": {
         "cold_check": cold_check,
         "warm_check_edit": warm_check,
@@ -144,7 +169,7 @@ summary = {
             "cold_selfdev_build": cold_selfdev,
             "warm_selfdev_edit": warm_selfdev,
         }.items()
-        if not payload.get("ok", False)
+        if payload.get("ok") is False
     ],
 }
 print(json.dumps(summary))
@@ -162,8 +187,11 @@ summary = json.loads(sys.argv[1])
 print("selfdev compile checkpoints")
 print(f"  touch_path: {summary['touch_path']}")
 print(f"  warm_runs:  {summary['warm_runs']}")
+print(f"  skip_cold:  {summary['skip_cold']}")
 for name, payload in summary["checkpoints"].items():
-    if payload.get("ok", False):
+    if payload.get("skipped"):
+        print(f"  {name}: SKIPPED")
+    elif payload.get("ok", False):
         print(
             f"  {name}: min={payload['min_seconds']:.3f}s "
             f"median={payload['median_seconds']:.3f}s avg={payload['avg_seconds']:.3f}s "

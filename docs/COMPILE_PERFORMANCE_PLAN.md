@@ -117,6 +117,12 @@ Use it when capturing comparable before/after numbers for refactors.
   - warm touched-file `cargo check`: **9.582s**
   - warm touched-file `selfdev-jcode` build: **59.898s**
   - failed checkpoints reported cleanly: `cold_check`, `cold_selfdev_build`
+- 2026-04-18: added `--skip-cold` to `scripts/bench_selfdev_checkpoints.sh` so warm-only
+  checkpoints remain usable while cold-path cleanup is blocked locally. Verified local output on this
+  machine with `--skip-cold --touch src/tool/read.rs --runs 1`:
+  - warm touched-file `cargo check`: **9.339s**
+  - warm touched-file `selfdev-jcode` build: **18.844s**
+  - skipped checkpoints reported explicitly: `cold_check`, `cold_selfdev_build`
 
 ### Phase 3 — Workspace boundary design
 
