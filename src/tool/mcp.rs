@@ -84,14 +84,14 @@ impl Tool for McpManagementTool {
         })
     }
 
-    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: McpToolInput = serde_json::from_value(input)?;
 
         match params.action.as_str() {
             "list" => self.list_servers().await,
-            "connect" => self.connect_server(params).await,
+            "connect" => self.connect_server(params, &ctx.session_id).await,
             "disconnect" => self.disconnect_server(params).await,
-            "reload" => self.reload_config().await,
+            "reload" => self.reload_config(&ctx.session_id).await,
             _ => Ok(ToolOutput::new(format!(
                 "Unknown action: {}. Use 'list', 'connect', 'disconnect', or 'reload'.",
                 params.action
@@ -148,7 +148,7 @@ impl McpManagementTool {
         Ok(ToolOutput::new(output).with_title("MCP: Server list"))
     }
 
-    async fn connect_server(&self, params: McpToolInput) -> Result<ToolOutput> {
+    async fn connect_server(&self, params: McpToolInput, session_id: &str) -> Result<ToolOutput> {
         let server_name = params
             .server
             .ok_or_else(|| anyhow::anyhow!("'server' is required for connect action"))?;
@@ -211,10 +211,16 @@ impl McpManagementTool {
 
                 Ok(ToolOutput::new(output).with_title(format!("MCP: Connected {}", server_name)))
             }
-            Err(e) => Ok(
-                ToolOutput::new(format!("Failed to connect to '{}': {}", server_name, e))
-                    .with_title("MCP: Connection failed"),
-            ),
+            Err(e) => {
+                crate::logging::warn(&format!(
+                    "[tool:mcp] connect failed server={} session_id={} error={}",
+                    server_name, session_id, e
+                ));
+                Ok(
+                    ToolOutput::new(format!("Failed to connect to '{}': {}", server_name, e))
+                        .with_title("MCP: Connection failed"),
+                )
+            }
         }
     }
 
@@ -262,7 +268,7 @@ impl McpManagementTool {
         )
     }
 
-    async fn reload_config(&self) -> Result<ToolOutput> {
+    async fn reload_config(&self, session_id: &str) -> Result<ToolOutput> {
         // Load fresh config
         let config = McpConfig::load();
 
@@ -307,6 +313,16 @@ impl McpManagementTool {
 
         // Show failures first
         if !failures.is_empty() {
+            crate::logging::warn(&format!(
+                "[tool:mcp] reload had {} connection failure(s) in session {}: {}",
+                failures.len(),
+                session_id,
+                failures
+                    .iter()
+                    .map(|(name, error)| format!("{}={}", name, error))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
             output.push_str("## Connection Failures\n");
             for (name, error) in &failures {
                 output.push_str(&format!("  - {}: {}\n", name, error));
