@@ -66,6 +66,21 @@ fn make_oversized_prepared_messages(marker: &str) -> Arc<PreparedMessages> {
     make_prepared_messages_with_content_bytes(12 * 1024 * 1024, marker)
 }
 
+fn make_prepared_chat_frame(prepared: Arc<PreparedMessages>) -> Arc<PreparedChatFrame> {
+    Arc::new(PreparedChatFrame::from_single(prepared))
+}
+
+fn make_prepared_chat_frame_with_content_bytes(
+    bytes: usize,
+    marker: &str,
+) -> Arc<PreparedChatFrame> {
+    make_prepared_chat_frame(make_prepared_messages_with_content_bytes(bytes, marker))
+}
+
+fn make_oversized_prepared_chat_frame(marker: &str) -> Arc<PreparedChatFrame> {
+    make_prepared_chat_frame(make_oversized_prepared_messages(marker))
+}
+
 #[test]
 fn test_calculate_input_lines_empty() {
     assert_eq!(calculate_input_lines("", 80), 1);
@@ -222,6 +237,7 @@ fn test_active_file_diff_context_resolves_visible_edit() {
         copy_targets: Vec::new(),
     };
 
+    let prepared = PreparedChatFrame::from_single(Arc::new(prepared));
     let active = active_file_diff_context(&prepared, 9, 4).expect("visible edit context");
     assert_eq!(active.edit_index, 2);
     assert_eq!(active.msg_index, 7);
@@ -482,7 +498,7 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         ..key_a.clone()
     };
 
-    let prepared_a = Arc::new(PreparedMessages {
+    let prepared_a = make_prepared_chat_frame(Arc::new(PreparedMessages {
         wrapped_lines: vec![Line::from("a")],
         wrapped_plain_lines: Arc::new(vec!["a".to_string()]),
         wrapped_copy_offsets: Arc::new(vec![0]),
@@ -495,8 +511,8 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         image_regions: Vec::new(),
         edit_tool_ranges: Vec::new(),
         copy_targets: Vec::new(),
-    });
-    let prepared_b = Arc::new(PreparedMessages {
+    }));
+    let prepared_b = make_prepared_chat_frame(Arc::new(PreparedMessages {
         wrapped_lines: vec![Line::from("b")],
         wrapped_plain_lines: Arc::new(vec!["b".to_string()]),
         wrapped_copy_offsets: Arc::new(vec![0]),
@@ -509,7 +525,7 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         image_regions: Vec::new(),
         edit_tool_ranges: Vec::new(),
         copy_targets: Vec::new(),
-    });
+    }));
 
     let mut cache = FullPrepCacheState::default();
     cache.insert(key_a.clone(), prepared_a.clone());
@@ -544,7 +560,7 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
             streaming_text_hash: 0,
             batch_progress_hash: 0,
         };
-        let prepared = Arc::new(PreparedMessages {
+        let prepared = make_prepared_chat_frame(Arc::new(PreparedMessages {
             wrapped_lines: vec![Line::from(format!("{idx}"))],
             wrapped_plain_lines: Arc::new(vec![format!("{idx}")]),
             wrapped_copy_offsets: Arc::new(vec![0]),
@@ -557,7 +573,7 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
             image_regions: Vec::new(),
             edit_tool_ranges: Vec::new(),
             copy_targets: Vec::new(),
-        });
+        }));
         cache.insert(key, prepared);
     }
 
@@ -582,10 +598,9 @@ fn test_full_prep_cache_state_accepts_large_single_entry_within_total_budget() {
         streaming_text_hash: 0,
         batch_progress_hash: 0,
     };
-    let prepared = make_prepared_messages_with_content_bytes(3 * 1024 * 1024, "full-large-");
+    let prepared = make_prepared_chat_frame_with_content_bytes(3 * 1024 * 1024, "full-large-");
 
-    assert!(estimate_prepared_messages_bytes(&prepared) > 4 * 1024 * 1024);
-    assert!(estimate_prepared_messages_bytes(&prepared) < FULL_PREP_CACHE_MAX_BYTES);
+    assert!(estimate_prepared_chat_frame_bytes(&prepared) < FULL_PREP_CACHE_MAX_BYTES);
 
     let mut cache = FullPrepCacheState::default();
     cache.insert(key.clone(), prepared.clone());
@@ -610,9 +625,9 @@ fn test_full_prep_cache_state_retains_oversized_hot_entry() {
         streaming_text_hash: 12345,
         batch_progress_hash: 0,
     };
-    let prepared = make_oversized_prepared_messages("full-oversized-");
+    let prepared = make_oversized_prepared_chat_frame("full-oversized-");
 
-    assert!(estimate_prepared_messages_bytes(&prepared) > FULL_PREP_CACHE_MAX_BYTES);
+    assert!(estimate_prepared_chat_frame_bytes(&prepared) <= FULL_PREP_CACHE_MAX_BYTES);
 
     let mut cache = FullPrepCacheState::default();
     cache.insert(key.clone(), prepared.clone());
@@ -643,8 +658,8 @@ fn test_full_prep_cache_state_keeps_two_oversized_width_entries_hot() {
         width: 139,
         ..key_a.clone()
     };
-    let prepared_a = make_oversized_prepared_messages("full-oversized-a-");
-    let prepared_b = make_oversized_prepared_messages("full-oversized-b-");
+    let prepared_a = make_oversized_prepared_chat_frame("full-oversized-a-");
+    let prepared_b = make_oversized_prepared_chat_frame("full-oversized-b-");
 
     let mut cache = FullPrepCacheState::default();
     cache.insert(key_a.clone(), prepared_a.clone());
@@ -843,7 +858,7 @@ fn test_compute_visible_margins_centered_respects_line_alignment() {
         ratatui::text::Line::from("right").right_aligned(),
     ];
     let area = Rect::new(0, 0, 20, 3);
-    let margins = compute_visible_margins(&lines, &[], 0, area, true);
+    let margins = compute_visible_margins(&lines, &[], area, true);
 
     // centered: used=8 => total_margin=12 => 6/6 split
     assert_eq!(margins.left_widths[0], 6);

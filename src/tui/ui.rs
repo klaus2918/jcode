@@ -402,6 +402,196 @@ struct PreparedMessages {
     copy_targets: Vec<CopyTarget>,
 }
 
+#[derive(Clone)]
+struct PreparedSection {
+    prepared: Arc<PreparedMessages>,
+    line_start: usize,
+    raw_start: usize,
+}
+
+#[derive(Clone)]
+struct PreparedChatFrame {
+    sections: Vec<PreparedSection>,
+    total_wrapped_lines: usize,
+    total_raw_lines: usize,
+    wrapped_user_indices: Vec<usize>,
+    wrapped_user_prompt_starts: Vec<usize>,
+    wrapped_user_prompt_ends: Vec<usize>,
+    user_prompt_texts: Vec<String>,
+    image_regions: Vec<ImageRegion>,
+    edit_tool_ranges: Vec<EditToolRange>,
+    copy_targets: Vec<CopyTarget>,
+}
+
+impl PreparedChatFrame {
+    fn from_single(prepared: Arc<PreparedMessages>) -> Self {
+        Self::from_sections(vec![prepared])
+    }
+
+    fn from_sections(sections: Vec<Arc<PreparedMessages>>) -> Self {
+        let mut prepared_sections = Vec::new();
+        let mut line_start = 0usize;
+        let mut raw_start = 0usize;
+        let mut wrapped_user_indices = Vec::new();
+        let mut wrapped_user_prompt_starts = Vec::new();
+        let mut wrapped_user_prompt_ends = Vec::new();
+        let mut user_prompt_texts = Vec::new();
+        let mut image_regions = Vec::new();
+        let mut edit_tool_ranges = Vec::new();
+        let mut copy_targets = Vec::new();
+
+        for prepared in sections {
+            if prepared.wrapped_lines.is_empty()
+                && prepared.raw_plain_lines.is_empty()
+                && prepared.image_regions.is_empty()
+                && prepared.edit_tool_ranges.is_empty()
+                && prepared.copy_targets.is_empty()
+            {
+                continue;
+            }
+
+            wrapped_user_indices.extend(
+                prepared
+                    .wrapped_user_indices
+                    .iter()
+                    .map(|idx| idx + line_start),
+            );
+            wrapped_user_prompt_starts.extend(
+                prepared
+                    .wrapped_user_prompt_starts
+                    .iter()
+                    .map(|idx| idx + line_start),
+            );
+            wrapped_user_prompt_ends.extend(
+                prepared
+                    .wrapped_user_prompt_ends
+                    .iter()
+                    .map(|idx| idx + line_start),
+            );
+            user_prompt_texts.extend(prepared.user_prompt_texts.iter().cloned());
+            image_regions.extend(prepared.image_regions.iter().map(|region| ImageRegion {
+                abs_line_idx: region.abs_line_idx + line_start,
+                end_line: region.end_line + line_start,
+                hash: region.hash,
+                height: region.height,
+            }));
+            edit_tool_ranges.extend(prepared.edit_tool_ranges.iter().map(|range| EditToolRange {
+                edit_index: range.edit_index,
+                msg_index: range.msg_index,
+                file_path: range.file_path.clone(),
+                start_line: range.start_line + line_start,
+                end_line: range.end_line + line_start,
+            }));
+            copy_targets.extend(prepared.copy_targets.iter().map(|target| CopyTarget {
+                kind: target.kind.clone(),
+                content: target.content.clone(),
+                start_line: target.start_line + line_start,
+                end_line: target.end_line + line_start,
+                badge_line: target.badge_line + line_start,
+            }));
+            prepared_sections.push(PreparedSection {
+                prepared: prepared.clone(),
+                line_start,
+                raw_start,
+            });
+            line_start += prepared.wrapped_lines.len();
+            raw_start += prepared.raw_plain_lines.len();
+        }
+
+        Self {
+            sections: prepared_sections,
+            total_wrapped_lines: line_start,
+            total_raw_lines: raw_start,
+            wrapped_user_indices,
+            wrapped_user_prompt_starts,
+            wrapped_user_prompt_ends,
+            user_prompt_texts,
+            image_regions,
+            edit_tool_ranges,
+            copy_targets,
+        }
+    }
+
+    fn total_wrapped_lines(&self) -> usize {
+        self.total_wrapped_lines
+    }
+
+    fn wrapped_plain_line_count(&self) -> usize {
+        self.total_wrapped_lines
+    }
+
+    fn line_section(&self, abs_line: usize) -> Option<(&PreparedSection, usize)> {
+        self.sections.iter().find_map(|section| {
+            let local = abs_line.checked_sub(section.line_start)?;
+            (local < section.prepared.wrapped_lines.len()).then_some((section, local))
+        })
+    }
+
+    fn raw_section(&self, raw_line: usize) -> Option<(&PreparedSection, usize)> {
+        self.sections.iter().find_map(|section| {
+            let local = raw_line.checked_sub(section.raw_start)?;
+            (local < section.prepared.raw_plain_lines.len()).then_some((section, local))
+        })
+    }
+
+    fn wrapped_plain_line(&self, abs_line: usize) -> Option<String> {
+        let (section, local) = self.line_section(abs_line)?;
+        section.prepared.wrapped_plain_lines.get(local).cloned()
+    }
+
+    fn wrapped_copy_offset(&self, abs_line: usize) -> Option<usize> {
+        let (section, local) = self.line_section(abs_line)?;
+        section.prepared.wrapped_copy_offsets.get(local).copied()
+    }
+
+    fn raw_plain_line(&self, raw_line: usize) -> Option<String> {
+        let (_, local) = self.raw_section(raw_line)?;
+        self.raw_section(raw_line)?
+            .0
+            .prepared
+            .raw_plain_lines
+            .get(local)
+            .cloned()
+    }
+
+    fn wrapped_line_map(&self, abs_line: usize) -> Option<WrappedLineMap> {
+        let (section, local) = self.line_section(abs_line)?;
+        let map = section.prepared.wrapped_line_map.get(local)?;
+        Some(WrappedLineMap {
+            raw_line: map.raw_line + section.raw_start,
+            start_col: map.start_col,
+            end_col: map.end_col,
+        })
+    }
+
+    fn materialize_line_slice(&self, start: usize, end: usize) -> Vec<Line<'static>> {
+        let end = end.min(self.total_wrapped_lines);
+        if start >= end {
+            return Vec::new();
+        }
+
+        let mut lines = Vec::with_capacity(end - start);
+        for section in &self.sections {
+            let section_start = section.line_start;
+            let section_end = section_start + section.prepared.wrapped_lines.len();
+            let overlap_start = start.max(section_start);
+            let overlap_end = end.min(section_end);
+            if overlap_start >= overlap_end {
+                continue;
+            }
+            let local_start = overlap_start - section_start;
+            let local_end = overlap_end - section_start;
+            lines.extend_from_slice(&section.prepared.wrapped_lines[local_start..local_end]);
+        }
+        lines
+    }
+
+    #[cfg(test)]
+    fn materialize_all_lines(&self) -> Vec<Line<'static>> {
+        self.materialize_line_slice(0, self.total_wrapped_lines)
+    }
+}
+
 fn estimate_lines_bytes(lines: &[Line<'static>]) -> usize {
     lines
         .iter()
@@ -485,6 +675,17 @@ fn estimate_prepared_messages_bytes(prepared: &PreparedMessages) -> usize {
         + estimate_copy_targets_bytes(&prepared.copy_targets)
 }
 
+fn estimate_prepared_chat_frame_bytes(prepared: &PreparedChatFrame) -> usize {
+    prepared.sections.capacity() * std::mem::size_of::<PreparedSection>()
+        + estimate_usize_vec_bytes(&prepared.wrapped_user_indices)
+        + estimate_usize_vec_bytes(&prepared.wrapped_user_prompt_starts)
+        + estimate_usize_vec_bytes(&prepared.wrapped_user_prompt_ends)
+        + estimate_string_vec_bytes(&prepared.user_prompt_texts)
+        + estimate_image_regions_bytes(&prepared.image_regions)
+        + estimate_edit_tool_ranges_bytes(&prepared.edit_tool_ranges)
+        + estimate_copy_targets_bytes(&prepared.copy_targets)
+}
+
 fn estimate_visible_copy_targets_bytes(values: &Vec<VisibleCopyTarget>) -> usize {
     values
         .iter()
@@ -526,7 +727,7 @@ pub(crate) fn debug_memory_profile() -> serde_json::Value {
         for entry in &cache.entries {
             let ptr = Arc::as_ptr(&entry.prepared) as usize;
             if seen.insert(ptr) {
-                unique_bytes += estimate_prepared_messages_bytes(&entry.prepared);
+                unique_bytes += estimate_prepared_chat_frame_bytes(&entry.prepared);
             }
         }
         (cache.entries.len(), unique_bytes)
@@ -1062,7 +1263,7 @@ struct FullPrepCacheKey {
 #[derive(Clone)]
 struct FullPrepCacheEntry {
     key: FullPrepCacheKey,
-    prepared: Arc<PreparedMessages>,
+    prepared: Arc<PreparedChatFrame>,
     prepared_bytes: usize,
 }
 
@@ -1083,7 +1284,7 @@ impl FullPrepCacheState {
         self.entries.iter().map(|entry| entry.prepared_bytes).sum()
     }
 
-    fn get_exact(&mut self, key: &FullPrepCacheKey) -> Option<Arc<PreparedMessages>> {
+    fn get_exact(&mut self, key: &FullPrepCacheKey) -> Option<Arc<PreparedChatFrame>> {
         if let Some(pos) = self.entries.iter().position(|entry| &entry.key == key) {
             let entry = self.entries.remove(pos)?;
             let prepared = entry.prepared.clone();
@@ -1101,8 +1302,8 @@ impl FullPrepCacheState {
         }
     }
 
-    fn insert(&mut self, key: FullPrepCacheKey, prepared: Arc<PreparedMessages>) {
-        let prepared_bytes = estimate_prepared_messages_bytes(&prepared);
+    fn insert(&mut self, key: FullPrepCacheKey, prepared: Arc<PreparedChatFrame>) {
+        let prepared_bytes = estimate_prepared_chat_frame_bytes(&prepared);
         if prepared_bytes > FULL_PREP_CACHE_MAX_BYTES {
             if let Some(pos) = self
                 .oversized_entries
@@ -1243,20 +1444,89 @@ pub(crate) fn clear_test_render_state_for_tests() {
     });
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
+enum CopyViewportData {
+    Dense {
+        wrapped_plain_lines: Arc<Vec<String>>,
+        wrapped_copy_offsets: Arc<Vec<usize>>,
+        raw_plain_lines: Arc<Vec<String>>,
+        wrapped_line_map: Arc<Vec<WrappedLineMap>>,
+    },
+    ChatFrame {
+        prepared: Arc<PreparedChatFrame>,
+    },
+}
+
+#[derive(Clone)]
 struct CopyViewportSnapshot {
     pane: crate::tui::CopySelectionPane,
-    wrapped_plain_lines: Arc<Vec<String>>,
-    wrapped_copy_offsets: Arc<Vec<usize>>,
-    raw_plain_lines: Arc<Vec<String>>,
-    wrapped_line_map: Arc<Vec<WrappedLineMap>>,
+    data: CopyViewportData,
     scroll: usize,
     visible_end: usize,
     content_area: Rect,
     left_margins: Vec<u16>,
 }
 
-#[derive(Clone, Debug, Default)]
+impl CopyViewportSnapshot {
+    fn wrapped_plain_line_count(&self) -> usize {
+        match &self.data {
+            CopyViewportData::Dense {
+                wrapped_plain_lines,
+                ..
+            } => wrapped_plain_lines.len(),
+            CopyViewportData::ChatFrame { prepared } => prepared.wrapped_plain_line_count(),
+        }
+    }
+
+    fn wrapped_plain_line(&self, abs_line: usize) -> Option<String> {
+        match &self.data {
+            CopyViewportData::Dense {
+                wrapped_plain_lines,
+                ..
+            } => wrapped_plain_lines.get(abs_line).cloned(),
+            CopyViewportData::ChatFrame { prepared } => prepared.wrapped_plain_line(abs_line),
+        }
+    }
+
+    fn wrapped_copy_offset(&self, abs_line: usize) -> Option<usize> {
+        match &self.data {
+            CopyViewportData::Dense {
+                wrapped_copy_offsets,
+                ..
+            } => wrapped_copy_offsets.get(abs_line).copied(),
+            CopyViewportData::ChatFrame { prepared } => prepared.wrapped_copy_offset(abs_line),
+        }
+    }
+
+    fn raw_plain_line(&self, raw_line: usize) -> Option<String> {
+        match &self.data {
+            CopyViewportData::Dense {
+                raw_plain_lines, ..
+            } => raw_plain_lines.get(raw_line).cloned(),
+            CopyViewportData::ChatFrame { prepared } => prepared.raw_plain_line(raw_line),
+        }
+    }
+
+    fn raw_plain_line_count(&self) -> usize {
+        match &self.data {
+            CopyViewportData::Dense {
+                raw_plain_lines, ..
+            } => raw_plain_lines.len(),
+            CopyViewportData::ChatFrame { prepared } => prepared.total_raw_lines,
+        }
+    }
+
+    fn wrapped_line_map(&self, abs_line: usize) -> Option<WrappedLineMap> {
+        match &self.data {
+            CopyViewportData::Dense {
+                wrapped_line_map, ..
+            } => wrapped_line_map.get(abs_line).copied(),
+            CopyViewportData::ChatFrame { prepared } => prepared.wrapped_line_map(abs_line),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
 struct CopyViewportSnapshots {
     chat: Option<CopyViewportSnapshot>,
     side: Option<CopyViewportSnapshot>,
@@ -1343,10 +1613,12 @@ fn record_copy_pane_snapshot(
         TEST_COPY_VIEWPORT.with(|state| {
             *copy_snapshot_slot_mut(&mut state.borrow_mut(), pane) = Some(CopyViewportSnapshot {
                 pane,
-                wrapped_plain_lines,
-                wrapped_copy_offsets,
-                raw_plain_lines,
-                wrapped_line_map,
+                data: CopyViewportData::Dense {
+                    wrapped_plain_lines,
+                    wrapped_copy_offsets,
+                    raw_plain_lines,
+                    wrapped_line_map,
+                },
                 scroll,
                 visible_end,
                 content_area,
@@ -1359,15 +1631,53 @@ fn record_copy_pane_snapshot(
     if let Ok(mut state) = copy_viewport_state().lock() {
         *copy_snapshot_slot_mut(&mut state, pane) = Some(CopyViewportSnapshot {
             pane,
-            wrapped_plain_lines,
-            wrapped_copy_offsets,
-            raw_plain_lines,
-            wrapped_line_map,
+            data: CopyViewportData::Dense {
+                wrapped_plain_lines,
+                wrapped_copy_offsets,
+                raw_plain_lines,
+                wrapped_line_map,
+            },
             scroll,
             visible_end,
             content_area,
             left_margins: left_margins.to_vec(),
         });
+    }
+}
+
+fn record_copy_viewport_frame_snapshot(
+    prepared: Arc<PreparedChatFrame>,
+    scroll: usize,
+    visible_end: usize,
+    content_area: Rect,
+    left_margins: &[u16],
+) {
+    #[cfg(test)]
+    {
+        TEST_COPY_VIEWPORT.with(|state| {
+            *copy_snapshot_slot_mut(&mut state.borrow_mut(), crate::tui::CopySelectionPane::Chat) =
+                Some(CopyViewportSnapshot {
+                    pane: crate::tui::CopySelectionPane::Chat,
+                    data: CopyViewportData::ChatFrame { prepared },
+                    scroll,
+                    visible_end,
+                    content_area,
+                    left_margins: left_margins.to_vec(),
+                });
+        });
+        return;
+    }
+    #[cfg(not(test))]
+    if let Ok(mut state) = copy_viewport_state().lock() {
+        *copy_snapshot_slot_mut(&mut state, crate::tui::CopySelectionPane::Chat) =
+            Some(CopyViewportSnapshot {
+                pane: crate::tui::CopySelectionPane::Chat,
+                data: CopyViewportData::ChatFrame { prepared },
+                scroll,
+                visible_end,
+                content_area,
+                left_margins: left_margins.to_vec(),
+            });
     }
 }
 
@@ -1402,6 +1712,7 @@ pub(crate) fn record_side_pane_snapshot_precomputed(
     clippy::too_many_arguments,
     reason = "Viewport snapshot helpers carry explicit render state to avoid hidden globals in call sites"
 )]
+#[cfg(test)]
 pub(crate) fn record_copy_viewport_snapshot(
     wrapped_plain_lines: Arc<Vec<String>>,
     wrapped_copy_offsets: Arc<Vec<usize>>,
@@ -1512,23 +1823,19 @@ fn copy_point_from_snapshot(
 
     let rel_row = row.saturating_sub(area.y) as usize;
     let abs_line = snapshot.scroll.saturating_add(rel_row);
-    if abs_line >= snapshot.visible_end || abs_line >= snapshot.wrapped_plain_lines.len() {
+    if abs_line >= snapshot.visible_end || abs_line >= snapshot.wrapped_plain_line_count() {
         return None;
     }
 
     let left_margin = snapshot.left_margins.get(rel_row).copied().unwrap_or(0);
     let content_x = area.x.saturating_add(left_margin);
     let rel_col = column.saturating_sub(content_x) as usize;
-    let text = &snapshot.wrapped_plain_lines[abs_line];
-    let copy_start = snapshot
-        .wrapped_copy_offsets
-        .get(abs_line)
-        .copied()
-        .unwrap_or(0);
+    let text = snapshot.wrapped_plain_line(abs_line)?;
+    let copy_start = snapshot.wrapped_copy_offset(abs_line).unwrap_or(0);
     Some(crate::tui::CopySelectionPoint {
         pane: snapshot.pane,
         abs_line,
-        column: clamp_display_col(text, rel_col).max(copy_start),
+        column: clamp_display_col(&text, rel_col).max(copy_start),
     })
 }
 
@@ -1587,10 +1894,7 @@ pub(crate) fn side_pane_point_from_screen(
 }
 
 fn copy_pane_line_text(pane: crate::tui::CopySelectionPane, abs_line: usize) -> Option<String> {
-    copy_snapshot_for_pane(pane)?
-        .wrapped_plain_lines
-        .get(abs_line)
-        .cloned()
+    copy_snapshot_for_pane(pane)?.wrapped_plain_line(abs_line)
 }
 
 pub(crate) fn copy_viewport_line_text(abs_line: usize) -> Option<String> {
@@ -1602,7 +1906,7 @@ pub(crate) fn side_pane_line_text(abs_line: usize) -> Option<String> {
 }
 
 fn copy_pane_line_count(pane: crate::tui::CopySelectionPane) -> Option<usize> {
-    Some(copy_snapshot_for_pane(pane)?.wrapped_plain_lines.len())
+    Some(copy_snapshot_for_pane(pane)?.wrapped_plain_line_count())
 }
 
 pub(crate) fn copy_viewport_line_count() -> Option<usize> {
@@ -1629,7 +1933,7 @@ pub(crate) fn copy_pane_first_visible_point(
 ) -> Option<crate::tui::CopySelectionPoint> {
     let snapshot = copy_snapshot_for_pane(pane)?;
     if snapshot.scroll >= snapshot.visible_end
-        || snapshot.scroll >= snapshot.wrapped_plain_lines.len()
+        || snapshot.scroll >= snapshot.wrapped_plain_line_count()
     {
         return None;
     }
@@ -1652,8 +1956,8 @@ pub(crate) fn copy_selection_text(range: crate::tui::CopySelectionRange) -> Opti
             (range.end, range.start)
         };
 
-    if start.abs_line >= snapshot.wrapped_plain_lines.len()
-        || end.abs_line >= snapshot.wrapped_plain_lines.len()
+    if start.abs_line >= snapshot.wrapped_plain_line_count()
+        || end.abs_line >= snapshot.wrapped_plain_line_count()
     {
         return None;
     }
@@ -1664,20 +1968,16 @@ pub(crate) fn copy_selection_text(range: crate::tui::CopySelectionRange) -> Opti
 
     let mut out = Vec::new();
     for abs_line in start.abs_line..=end.abs_line {
-        let text = &snapshot.wrapped_plain_lines[abs_line];
-        let line_width = line_display_width(text);
-        let copy_start = snapshot
-            .wrapped_copy_offsets
-            .get(abs_line)
-            .copied()
-            .unwrap_or(0);
+        let text = snapshot.wrapped_plain_line(abs_line)?;
+        let line_width = line_display_width(&text);
+        let copy_start = snapshot.wrapped_copy_offset(abs_line).unwrap_or(0);
         let start_col = if abs_line == start.abs_line {
-            clamp_display_col(text, start.column).max(copy_start)
+            clamp_display_col(&text, start.column).max(copy_start)
         } else {
             copy_start
         };
         let end_col = if abs_line == end.abs_line {
-            clamp_display_col(text, end.column).max(copy_start)
+            clamp_display_col(&text, end.column).max(copy_start)
         } else {
             line_width
         };
@@ -1687,8 +1987,8 @@ pub(crate) fn copy_selection_text(range: crate::tui::CopySelectionRange) -> Opti
             continue;
         }
 
-        let start_byte = display_col_to_byte_offset(text, start_col);
-        let end_byte = display_col_to_byte_offset(text, end_col);
+        let start_byte = display_col_to_byte_offset(&text, start_col);
+        let end_byte = display_col_to_byte_offset(&text, end_col);
         out.push(text[start_byte..end_byte].to_string());
     }
 
@@ -1706,29 +2006,29 @@ fn copy_selection_text_from_raw_lines(
     start: crate::tui::CopySelectionPoint,
     end: crate::tui::CopySelectionPoint,
 ) -> Option<String> {
-    if snapshot.raw_plain_lines.is_empty() || snapshot.wrapped_line_map.is_empty() {
+    if snapshot.raw_plain_line_count() == 0 || snapshot.wrapped_line_map(start.abs_line).is_none() {
         return None;
     }
 
     let start = raw_selection_point(snapshot, start)?;
     let end = raw_selection_point(snapshot, end)?;
-    if start.raw_line >= snapshot.raw_plain_lines.len()
-        || end.raw_line >= snapshot.raw_plain_lines.len()
+    if start.raw_line >= snapshot.raw_plain_line_count()
+        || end.raw_line >= snapshot.raw_plain_line_count()
     {
         return None;
     }
 
     let mut out = Vec::new();
     for raw_line in start.raw_line..=end.raw_line {
-        let text = &snapshot.raw_plain_lines[raw_line];
-        let line_width = line_display_width(text);
+        let text = snapshot.raw_plain_line(raw_line)?;
+        let line_width = line_display_width(&text);
         let start_col = if raw_line == start.raw_line {
-            clamp_display_col(text, start.column)
+            clamp_display_col(&text, start.column)
         } else {
             0
         };
         let end_col = if raw_line == end.raw_line {
-            clamp_display_col(text, end.column)
+            clamp_display_col(&text, end.column)
         } else {
             line_width
         };
@@ -1738,8 +2038,8 @@ fn copy_selection_text_from_raw_lines(
             continue;
         }
 
-        let start_byte = display_col_to_byte_offset(text, start_col);
-        let end_byte = display_col_to_byte_offset(text, end_col);
+        let start_byte = display_col_to_byte_offset(&text, start_col);
+        let end_byte = display_col_to_byte_offset(&text, end_col);
         out.push(text[start_byte..end_byte].to_string());
     }
 
@@ -1750,15 +2050,13 @@ fn raw_selection_point(
     snapshot: &CopyViewportSnapshot,
     point: crate::tui::CopySelectionPoint,
 ) -> Option<RawSelectionPoint> {
-    let wrapped_text = snapshot.wrapped_plain_lines.get(point.abs_line)?;
-    let map = snapshot.wrapped_line_map.get(point.abs_line)?;
+    let wrapped_text = snapshot.wrapped_plain_line(point.abs_line)?;
+    let map = snapshot.wrapped_line_map(point.abs_line)?;
     let display_copy_start = snapshot
-        .wrapped_copy_offsets
-        .get(point.abs_line)
-        .copied()
+        .wrapped_copy_offset(point.abs_line)
         .unwrap_or(0)
         .min(wrapped_text.width());
-    let local_col = clamp_display_col(wrapped_text, point.column).max(display_copy_start);
+    let local_col = clamp_display_col(&wrapped_text, point.column).max(display_copy_start);
     let segment_width = map.end_col.saturating_sub(map.start_col);
     Some(RawSelectionPoint {
         raw_line: map.raw_line,
@@ -1797,9 +2095,9 @@ fn link_target_from_snapshot(
     point: crate::tui::CopySelectionPoint,
 ) -> Option<String> {
     let raw_point = raw_selection_point(snapshot, point)?;
-    let raw_text = snapshot.raw_plain_lines.get(raw_point.raw_line)?;
+    let raw_text = snapshot.raw_plain_line(raw_point.raw_line)?;
 
-    for mat in url_regex().find_iter(raw_text) {
+    for mat in url_regex().find_iter(&raw_text) {
         let matched = &raw_text[mat.start()..mat.end()];
         let trimmed = trim_url_candidate(matched);
         if trimmed.is_empty() {
@@ -2158,7 +2456,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         + donut_height; // status + queued + notification + inline UI + gap + input + donut
     let available_height = chat_area.height;
 
-    let initial_content_height = prepared_full_width.wrapped_lines.len().max(1) as u16;
+    let initial_content_height = prepared_full_width.total_wrapped_lines().max(1) as u16;
     let chat_scrollbar_visible = app.chat_native_scrollbar()
         && chat_area.width > 1
         && initial_content_height + fixed_height > available_height;
@@ -2186,7 +2484,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             .collect();
     }
     let prep_elapsed = prep_start.elapsed();
-    let content_height = prepared.wrapped_lines.len().max(1) as u16;
+    let content_height = prepared.total_wrapped_lines().max(1) as u16;
 
     // Use packed layout when content fits, scrolling layout otherwise
     let use_packed = content_height + fixed_height <= available_height;
@@ -2296,7 +2594,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
     record_layout_snapshot(messages_area, diagram_area, diff_pane_area, Some(chunks[6]));
 
-    let margins = draw_messages(frame, app, messages_area, &prepared, chat_scrollbar_visible);
+    let margins = draw_messages(
+        frame,
+        app,
+        messages_area,
+        prepared.clone(),
+        chat_scrollbar_visible,
+    );
 
     // Render pinned diagram if we have one
     if let (Some(diagram_info), Some(area)) = (&pinned_diagram, diagram_area) {
@@ -2342,7 +2646,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                 frame,
                 diff_area,
                 app,
-                &prepared,
+                prepared.as_ref(),
                 app.diff_pane_scroll(),
                 app.diff_pane_focus(),
             );

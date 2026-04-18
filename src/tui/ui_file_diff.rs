@@ -480,7 +480,7 @@ fn find_visible_edit_tool(
 }
 
 pub(super) fn active_file_diff_context(
-    prepared: &PreparedMessages,
+    prepared: &PreparedChatFrame,
     scroll: usize,
     visible_height: usize,
 ) -> Option<ActiveFileDiffContext> {
@@ -498,7 +498,7 @@ pub(super) fn draw_file_diff_view(
     frame: &mut Frame,
     area: Rect,
     app: &dyn TuiState,
-    prepared: &PreparedMessages,
+    prepared: &PreparedChatFrame,
     pane_scroll: usize,
     focused: bool,
 ) {
@@ -514,7 +514,9 @@ pub(super) fn draw_file_diff_view(
     let scroll = if app.auto_scroll_paused() {
         scroll_offset
     } else {
-        prepared.wrapped_lines.len().saturating_sub(visible_height)
+        prepared
+            .total_wrapped_lines()
+            .saturating_sub(visible_height)
     };
 
     let active_context = active_file_diff_context(prepared, scroll, visible_height);
