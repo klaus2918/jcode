@@ -943,6 +943,42 @@ fn test_set_feature_roundtrip() -> Result<()> {
 }
 
 #[test]
+fn test_subscribe_request_roundtrip_preserves_session_takeover_flags() -> Result<()> {
+    let req = Request::Subscribe {
+        id: 89,
+        working_dir: Some("/tmp/project".to_string()),
+        selfdev: Some(true),
+        target_session_id: Some("sess_target".to_string()),
+        client_instance_id: Some("client-123".to_string()),
+        client_has_local_history: true,
+        allow_session_takeover: true,
+    };
+    let json = serde_json::to_string(&req)?;
+    assert!(json.contains("\"type\":\"subscribe\""));
+    let decoded = parse_request_json(&json)?;
+    let Request::Subscribe {
+        id,
+        working_dir,
+        selfdev,
+        target_session_id,
+        client_instance_id,
+        client_has_local_history,
+        allow_session_takeover,
+    } = decoded
+    else {
+        return Err(anyhow!("expected Subscribe"));
+    };
+    assert_eq!(id, 89);
+    assert_eq!(working_dir.as_deref(), Some("/tmp/project"));
+    assert_eq!(selfdev, Some(true));
+    assert_eq!(target_session_id.as_deref(), Some("sess_target"));
+    assert_eq!(client_instance_id.as_deref(), Some("client-123"));
+    assert!(client_has_local_history);
+    assert!(allow_session_takeover);
+    Ok(())
+}
+
+#[test]
 fn test_message_request_roundtrip_preserves_images_and_system_reminder() -> Result<()> {
     let req = Request::Message {
         id: 88,
@@ -969,5 +1005,35 @@ fn test_message_request_roundtrip_preserves_images_and_system_reminder() -> Resu
     assert_eq!(images[0].0, "image/png");
     assert_eq!(images[1].0, "image/jpeg");
     assert_eq!(system_reminder.as_deref(), Some("be concise"));
+    Ok(())
+}
+
+#[test]
+fn test_resume_session_roundtrip_preserves_client_sync_flags() -> Result<()> {
+    let req = Request::ResumeSession {
+        id: 90,
+        session_id: "sess_resume".to_string(),
+        client_instance_id: Some("client-456".to_string()),
+        client_has_local_history: true,
+        allow_session_takeover: true,
+    };
+    let json = serde_json::to_string(&req)?;
+    assert!(json.contains("\"type\":\"resume_session\""));
+    let decoded = parse_request_json(&json)?;
+    let Request::ResumeSession {
+        id,
+        session_id,
+        client_instance_id,
+        client_has_local_history,
+        allow_session_takeover,
+    } = decoded
+    else {
+        return Err(anyhow!("expected ResumeSession"));
+    };
+    assert_eq!(id, 90);
+    assert_eq!(session_id, "sess_resume");
+    assert_eq!(client_instance_id.as_deref(), Some("client-456"));
+    assert!(client_has_local_history);
+    assert!(allow_session_takeover);
     Ok(())
 }
