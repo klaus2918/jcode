@@ -260,7 +260,9 @@ mod tests {
             _system: &str,
             _session_id: Option<&str>,
         ) -> anyhow::Result<crate::provider::EventStream> {
-            unimplemented!()
+            Err(anyhow::anyhow!(
+                "TestProvider should not be used for streaming completions in selfdev tests"
+            ))
         }
 
         fn fork(&self) -> Arc<dyn provider::Provider> {
