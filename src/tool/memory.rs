@@ -118,6 +118,8 @@ impl Tool for MemoryTool {
         use crate::memory_types::{MemoryEventKind, MemoryState};
 
         let input: MemoryInput = serde_json::from_value(input)?;
+        let action_label = input.action.clone();
+        let session_id_for_error = ctx.session_id.clone();
 
         match input.action.as_str() {
             "remember" => {
@@ -415,6 +417,13 @@ impl Tool for MemoryTool {
             }
             other => Err(anyhow::anyhow!("Unknown action: {}", other)),
         }
+        .map_err(|err| {
+            crate::logging::warn(&format!(
+                "[tool:memory] action failed action={} session_id={} error={}",
+                action_label, session_id_for_error, err
+            ));
+            err
+        })
     }
 }
 
