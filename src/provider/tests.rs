@@ -57,6 +57,7 @@ fn test_multi_provider_with_cursor() -> MultiProvider {
         anthropic: RwLock::new(None),
         openai: RwLock::new(None),
         copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
         gemini: RwLock::new(None),
         cursor: RwLock::new(Some(Arc::new(cursor::CursorCliProvider::new()))),
         openrouter: RwLock::new(None),
@@ -78,6 +79,7 @@ fn test_on_auth_changed_hot_initializes_openai_and_marks_routes_available() {
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
             gemini: RwLock::new(None),
             cursor: RwLock::new(None),
             openrouter: RwLock::new(None),
@@ -138,6 +140,7 @@ fn test_on_auth_changed_refreshes_existing_openai_provider_credentials() {
             anthropic: RwLock::new(None),
             openai: RwLock::new(Some(existing.clone())),
             copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
             gemini: RwLock::new(None),
             cursor: RwLock::new(None),
             openrouter: RwLock::new(None),
@@ -168,6 +171,7 @@ fn test_on_auth_changed_hot_initializes_anthropic_and_marks_routes_available() {
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
             gemini: RwLock::new(None),
             cursor: RwLock::new(None),
             openrouter: RwLock::new(None),
@@ -207,6 +211,7 @@ fn test_anthropic_model_routes_keep_plain_4_6_available_without_extra_usage() {
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
             gemini: RwLock::new(None),
             cursor: RwLock::new(None),
             openrouter: RwLock::new(None),
@@ -266,6 +271,7 @@ fn test_on_auth_changed_hot_initializes_openrouter_and_marks_routes_available() 
                     anthropic: RwLock::new(None),
                     openai: RwLock::new(None),
                     copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
                     gemini: RwLock::new(None),
                     cursor: RwLock::new(None),
                     openrouter: RwLock::new(None),
@@ -302,6 +308,7 @@ fn test_on_auth_changed_hot_initializes_copilot_and_marks_routes_available() {
                 anthropic: RwLock::new(None),
                 openai: RwLock::new(None),
                 copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
                 gemini: RwLock::new(None),
                 cursor: RwLock::new(None),
                 openrouter: RwLock::new(None),
@@ -318,6 +325,70 @@ fn test_on_auth_changed_hot_initializes_copilot_and_marks_routes_available() {
                 route.provider == "Copilot" && route.api_method == "copilot" && route.available
             }));
         })
+    });
+}
+
+#[test]
+fn test_startup_initializes_antigravity_when_cached_tokens_are_expired() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _enter = runtime.enter();
+
+        crate::auth::antigravity::save_tokens(&crate::auth::antigravity::AntigravityTokens {
+            access_token: "expired-access-token".to_string(),
+            refresh_token: "refresh-token".to_string(),
+            expires_at: 1,
+            email: None,
+            project_id: None,
+        })
+        .expect("save expired antigravity auth");
+
+        let auth_status = crate::auth::AuthStatus::check_fast();
+        let provider = MultiProvider::from_auth_status(auth_status);
+
+        assert!(provider.antigravity_provider().is_some());
+        assert!(provider.model_routes().iter().any(|route| {
+            route.provider == "Antigravity" && route.api_method == "antigravity" && route.available
+        }));
+    });
+}
+
+#[test]
+fn test_on_auth_changed_hot_initializes_antigravity_when_tokens_exist_but_are_expired() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _enter = runtime.enter();
+
+        crate::auth::antigravity::save_tokens(&crate::auth::antigravity::AntigravityTokens {
+            access_token: "expired-access-token".to_string(),
+            refresh_token: "refresh-token".to_string(),
+            expires_at: 1,
+            email: None,
+            project_id: None,
+        })
+        .expect("save expired antigravity auth");
+
+        let provider = MultiProvider {
+            claude: RwLock::new(None),
+            anthropic: RwLock::new(None),
+            openai: RwLock::new(None),
+            copilot_api: RwLock::new(None),
+            antigravity: RwLock::new(None),
+            gemini: RwLock::new(None),
+            cursor: RwLock::new(None),
+            openrouter: RwLock::new(None),
+            active: RwLock::new(ActiveProvider::Antigravity),
+            use_claude_cli: false,
+            startup_notices: RwLock::new(Vec::new()),
+            forced_provider: Some(ActiveProvider::Antigravity),
+        };
+
+        provider.on_auth_changed();
+
+        assert!(provider.antigravity_provider().is_some());
+        assert!(provider.model_routes().iter().any(|route| {
+            route.provider == "Antigravity" && route.api_method == "antigravity" && route.available
+        }));
     });
 }
 
@@ -340,6 +411,7 @@ fn test_on_auth_changed_hot_initializes_gemini_and_marks_routes_available() {
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
             copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
             gemini: RwLock::new(None),
             cursor: RwLock::new(None),
             openrouter: RwLock::new(None),
@@ -371,6 +443,7 @@ fn test_on_auth_changed_hot_initializes_cursor_and_marks_routes_available() {
                 anthropic: RwLock::new(None),
                 openai: RwLock::new(None),
                 copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
                 gemini: RwLock::new(None),
                 cursor: RwLock::new(None),
                 openrouter: RwLock::new(None),
@@ -780,6 +853,7 @@ fn test_set_model_rejects_cross_provider_without_creds() {
         anthropic: RwLock::new(None),
         openai: RwLock::new(None),
         copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
         gemini: RwLock::new(None),
         cursor: RwLock::new(None),
         openrouter: RwLock::new(None),
@@ -802,13 +876,13 @@ fn test_set_model_rejects_cross_provider_without_creds() {
 #[test]
 fn test_auto_default_prefers_openai_over_claude_when_both_available() {
     let active =
-        MultiProvider::auto_default_provider(true, true, false, false, false, false, false);
+        MultiProvider::auto_default_provider(true, true, false, false, false, false, false, false);
     assert_eq!(active, ActiveProvider::OpenAI);
 }
 
 #[test]
 fn test_auto_default_prefers_copilot_when_zero_premium_mode_enabled() {
-    let active = MultiProvider::auto_default_provider(true, true, true, true, true, true, true);
+    let active = MultiProvider::auto_default_provider(true, true, true, true, true, true, true, true);
     assert_eq!(active, ActiveProvider::Copilot);
 }
 
@@ -872,6 +946,7 @@ fn test_no_provider_error_mentions_tokens_and_details() {
         anthropic: RwLock::new(None),
         openai: RwLock::new(None),
         copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
         gemini: RwLock::new(None),
         cursor: RwLock::new(None),
         openrouter: RwLock::new(None),

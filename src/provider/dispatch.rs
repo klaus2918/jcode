@@ -105,6 +105,18 @@ impl MultiProvider {
                     ))
                 }
             }
+            ActiveProvider::Antigravity => {
+                let antigravity = self.antigravity_provider();
+                if let Some(antigravity) = antigravity {
+                    antigravity
+                        .complete(messages, tools, system, resume_session_id)
+                        .await
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Antigravity is not available. Run `jcode login --provider antigravity`."
+                    ))
+                }
+            }
             ActiveProvider::Gemini => {
                 let gemini = self
                     .gemini
@@ -229,6 +241,24 @@ impl MultiProvider {
                 } else {
                     Err(anyhow::anyhow!(
                         "GitHub Copilot is not available. Run `jcode login --provider copilot`."
+                    ))
+                }
+            }
+            ActiveProvider::Antigravity => {
+                let antigravity = self.antigravity_provider();
+                if let Some(antigravity) = antigravity {
+                    antigravity
+                        .complete_split(
+                            messages,
+                            tools,
+                            system_static,
+                            system_dynamic,
+                            resume_session_id,
+                        )
+                        .await
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Antigravity is not available. Run `jcode login --provider antigravity`."
                     ))
                 }
             }
