@@ -1,13 +1,10 @@
+use super::loading::session_matches_query;
 use super::*;
 
 impl SessionPicker {
     /// Check if a session matches the current search query.
     fn session_matches_search(session: &SessionInfo, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let q = query.to_lowercase();
-        session.search_index.contains(&q)
+        session_matches_query(session, query)
     }
 
     pub(super) fn session_is_claude_code(session: &SessionInfo) -> bool {
