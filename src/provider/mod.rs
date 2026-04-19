@@ -384,6 +384,7 @@ pub const ALL_OPENAI_MODELS: &[&str] = &[
 ];
 
 use self::dispatch::CompletionMode;
+use self::models::normalize_copilot_model_name;
 pub use self::models::{
     AccountModelAvailability, AccountModelAvailabilityState, AnthropicModelCatalog,
     DEFAULT_CONTEXT_LIMIT, ModelCapabilities, OpenAIModelCatalog,
@@ -404,10 +405,6 @@ pub use self::models::{
     record_provider_unavailable_for_account, refresh_openai_model_catalog_in_background,
     resolve_model_capabilities, should_refresh_anthropic_model_catalog,
     should_refresh_openai_model_catalog,
-};
-use self::models::{
-    ensure_model_allowed_for_subscription, filtered_display_models, filtered_model_routes,
-    normalize_copilot_model_name,
 };
 use self::pricing::{cheapness_for_route, openrouter_pricing_from_model_pricing};
 use self::selection::{ActiveProvider, ProviderAvailability};
@@ -821,8 +818,6 @@ impl Provider for MultiProvider {
     fn set_model(&self, model: &str) -> Result<()> {
         self.spawn_anthropic_catalog_refresh_if_needed();
         self.spawn_openai_catalog_refresh_if_needed();
-
-        ensure_model_allowed_for_subscription(model)?;
 
         // Handle explicit "copilot:" prefix from model picker
         if let Some(copilot_model) = model.strip_prefix("copilot:") {
@@ -1303,7 +1298,7 @@ impl Provider for MultiProvider {
         {
             models.extend(openrouter.available_models_display());
         }
-        filtered_display_models(models)
+        models
     }
 
     fn available_providers_for_model(&self, model: &str) -> Vec<String> {
@@ -1650,7 +1645,7 @@ impl Provider for MultiProvider {
             }
         }
 
-        filtered_model_routes(routes)
+        routes
     }
 
     async fn prefetch_models(&self) -> Result<()> {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::models::{ensure_model_allowed_for_subscription, filtered_display_models};
 
 fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
     let _guard = crate::storage::lock_test_env();
@@ -827,6 +828,39 @@ fn test_set_model_supports_explicit_antigravity_prefix() {
         provider
             .set_model("antigravity:claude-sonnet-4-6")
             .expect("explicit antigravity prefix should force Antigravity route");
+
+        assert_eq!(provider.active_provider(), ActiveProvider::Antigravity);
+        assert_eq!(provider.model(), "claude-sonnet-4-6");
+    });
+}
+
+#[test]
+fn test_subscription_runtime_mode_does_not_hide_antigravity_routes_in_multiprovider() {
+    with_clean_provider_test_env(|| {
+        crate::subscription_catalog::apply_runtime_env();
+
+        let provider = test_multi_provider_with_antigravity();
+        let routes = provider.model_routes();
+
+        assert!(routes.iter().any(|route| {
+            route.model == "claude-sonnet-4-6"
+                && route.provider == "Antigravity"
+                && route.api_method == "cli"
+        }));
+    });
+}
+
+#[test]
+fn test_subscription_runtime_mode_does_not_block_antigravity_selection_in_multiprovider() {
+    with_clean_provider_test_env(|| {
+        crate::subscription_catalog::apply_runtime_env();
+
+        let provider = test_multi_provider_with_antigravity();
+        *provider.active.write().unwrap() = ActiveProvider::OpenAI;
+
+        provider
+            .set_model("antigravity:claude-sonnet-4-6")
+            .expect("subscription runtime mode should not block direct Antigravity models");
 
         assert_eq!(provider.active_provider(), ActiveProvider::Antigravity);
         assert_eq!(provider.model(), "claude-sonnet-4-6");
