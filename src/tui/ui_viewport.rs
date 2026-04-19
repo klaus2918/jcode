@@ -213,6 +213,12 @@ pub(super) fn draw_messages(
         .collect();
 
     let mut visible_lines = prepared.materialize_line_slice(scroll, visible_end);
+    let stability_hash = super::viewport_stability_hash(
+        &visible_lines,
+        &visible_user_indices,
+        content_area.width,
+        prompt_preview_lines,
+    );
     let content_margins = compute_visible_margins(
         &visible_lines,
         &visible_user_indices,
@@ -275,6 +281,8 @@ pub(super) fn draw_messages(
         prompt_preview_lines,
         visible_user_indices.len(),
         badge_assignments.len(),
+        content_area.width,
+        stability_hash,
     );
 
     let now_ms = app.now_millis();

@@ -53,7 +53,7 @@ use serde::Serialize;
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque, hash_map::DefaultHasher};
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -1427,6 +1427,8 @@ struct FramePerfStats {
     viewport_prompt_preview_lines: u16,
     viewport_visible_user_prompts: usize,
     viewport_visible_copy_targets: usize,
+    viewport_content_width: u16,
+    viewport_stability_hash: u64,
     chat_area_width: u16,
     chat_area_height: u16,
     messages_area_width: u16,
@@ -1463,17 +1465,63 @@ struct SlowFrameSample {
     perf: FramePerfStats,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct FlickerFrameSample {
+    timestamp_ms: u64,
+    session_id: Option<String>,
+    session_name: Option<String>,
+    display_messages_version: u64,
+    diff_mode: String,
+    centered: bool,
+    is_processing: bool,
+    auto_scroll_paused: bool,
+    scroll: usize,
+    visible_end: usize,
+    visible_lines: usize,
+    total_wrapped_lines: usize,
+    prompt_preview_lines: u16,
+    messages_area_width: u16,
+    messages_area_height: u16,
+    content_width: u16,
+    chat_scrollbar_visible: bool,
+    visible_hash: u64,
+    total_ms: f64,
+    prepare_ms: f64,
+    draw_ms: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct FlickerEvent {
+    timestamp_ms: u64,
+    kind: String,
+    session_id: Option<String>,
+    session_name: Option<String>,
+    previous: FlickerFrameSample,
+    current: FlickerFrameSample,
+}
+
 #[derive(Default)]
 struct SlowFrameHistory {
     samples: VecDeque<SlowFrameSample>,
     last_log_at_ms: Option<u64>,
 }
 
+#[derive(Default)]
+struct FlickerFrameHistory {
+    samples: VecDeque<FlickerFrameSample>,
+    events: VecDeque<FlickerEvent>,
+    last_log_at_ms: Option<u64>,
+}
+
 const SLOW_FRAME_HISTORY_MAX_SAMPLES: usize = 128;
 const SLOW_FRAME_LOG_INTERVAL_MS: u64 = 1_000;
+const FLICKER_HISTORY_MAX_SAMPLES: usize = 256;
+const FLICKER_HISTORY_MAX_EVENTS: usize = 128;
+const FLICKER_LOG_INTERVAL_MS: u64 = 500;
 
 static FRAME_PERF_STATS: OnceLock<Mutex<FramePerfStats>> = OnceLock::new();
 static SLOW_FRAME_HISTORY: OnceLock<Mutex<SlowFrameHistory>> = OnceLock::new();
+static FLICKER_FRAME_HISTORY: OnceLock<Mutex<FlickerFrameHistory>> = OnceLock::new();
 
 fn frame_perf_stats() -> &'static Mutex<FramePerfStats> {
     FRAME_PERF_STATS.get_or_init(|| Mutex::new(FramePerfStats::default()))
@@ -1481,6 +1529,10 @@ fn frame_perf_stats() -> &'static Mutex<FramePerfStats> {
 
 fn slow_frame_history() -> &'static Mutex<SlowFrameHistory> {
     SLOW_FRAME_HISTORY.get_or_init(|| Mutex::new(SlowFrameHistory::default()))
+}
+
+fn flicker_frame_history() -> &'static Mutex<FlickerFrameHistory> {
+    FLICKER_FRAME_HISTORY.get_or_init(|| Mutex::new(FlickerFrameHistory::default()))
 }
 
 fn wall_clock_ms() -> u64 {
@@ -1618,6 +1670,8 @@ fn note_viewport_metrics(
     prompt_preview_lines: u16,
     visible_user_prompts: usize,
     visible_copy_targets: usize,
+    content_width: u16,
+    stability_hash: u64,
 ) {
     with_frame_perf_stats_mut(|stats| {
         stats.viewport_scroll = scroll;
@@ -1627,7 +1681,187 @@ fn note_viewport_metrics(
         stats.viewport_prompt_preview_lines = prompt_preview_lines;
         stats.viewport_visible_user_prompts = visible_user_prompts;
         stats.viewport_visible_copy_targets = visible_copy_targets;
+        stats.viewport_content_width = content_width;
+        stats.viewport_stability_hash = stability_hash;
     });
+}
+
+pub(super) fn viewport_stability_hash(
+    visible_lines: &[Line<'_>],
+    visible_user_indices: &[usize],
+    content_width: u16,
+    prompt_preview_lines: u16,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    content_width.hash(&mut hasher);
+    prompt_preview_lines.hash(&mut hasher);
+    visible_lines.len().hash(&mut hasher);
+    visible_user_indices.hash(&mut hasher);
+    for line in visible_lines {
+        line.alignment.hash(&mut hasher);
+        line_plain_text(line).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn same_flicker_state_key(a: &FlickerFrameSample, b: &FlickerFrameSample) -> bool {
+    a.session_id == b.session_id
+        && a.display_messages_version == b.display_messages_version
+        && a.diff_mode == b.diff_mode
+        && a.centered == b.centered
+        && a.is_processing == b.is_processing
+        && a.auto_scroll_paused == b.auto_scroll_paused
+        && a.scroll == b.scroll
+        && a.visible_end == b.visible_end
+        && a.visible_lines == b.visible_lines
+        && a.total_wrapped_lines == b.total_wrapped_lines
+        && a.prompt_preview_lines == b.prompt_preview_lines
+        && a.messages_area_width == b.messages_area_width
+        && a.messages_area_height == b.messages_area_height
+}
+
+fn push_flicker_event(history: &mut FlickerFrameHistory, event: FlickerEvent) {
+    history.events.push_back(event.clone());
+    while history.events.len() > FLICKER_HISTORY_MAX_EVENTS {
+        history.events.pop_front();
+    }
+
+    let severe = event.kind.contains("oscillation");
+    let should_log = severe
+        || history
+            .last_log_at_ms
+            .map(|last| event.timestamp_ms.saturating_sub(last) >= FLICKER_LOG_INTERVAL_MS)
+            .unwrap_or(true);
+    if should_log {
+        history.last_log_at_ms = Some(event.timestamp_ms);
+        if let Ok(payload) = serde_json::to_string(&event) {
+            crate::logging::warn(&format!("TUI_FLICKER_EVENT {}", payload));
+        } else {
+            crate::logging::warn(&format!(
+                "TUI_FLICKER_EVENT kind={} session={:?}",
+                event.kind, event.session_name
+            ));
+        }
+    }
+}
+
+fn maybe_record_flicker_event(history: &mut FlickerFrameHistory, current: &FlickerFrameSample) {
+    let Some(previous) = history.samples.back().cloned() else {
+        return;
+    };
+
+    let len = history.samples.len();
+    if len >= 2 {
+        let earlier = history.samples.get(len - 2).cloned();
+        if let Some(earlier) = earlier
+            && same_flicker_state_key(&earlier, current)
+            && same_flicker_state_key(&earlier, &previous)
+            && earlier.visible_hash == current.visible_hash
+            && earlier.chat_scrollbar_visible == current.chat_scrollbar_visible
+            && earlier.content_width == current.content_width
+            && (earlier.chat_scrollbar_visible != previous.chat_scrollbar_visible
+                || earlier.content_width != previous.content_width)
+        {
+            push_flicker_event(
+                history,
+                FlickerEvent {
+                    timestamp_ms: current.timestamp_ms,
+                    kind: "layout_oscillation".to_string(),
+                    session_id: current.session_id.clone(),
+                    session_name: current.session_name.clone(),
+                    previous,
+                    current: current.clone(),
+                },
+            );
+            return;
+        }
+    }
+
+    if same_flicker_state_key(&previous, current) {
+        if previous.chat_scrollbar_visible != current.chat_scrollbar_visible
+            || previous.content_width != current.content_width
+        {
+            push_flicker_event(
+                history,
+                FlickerEvent {
+                    timestamp_ms: current.timestamp_ms,
+                    kind: "layout_toggle_same_state".to_string(),
+                    session_id: current.session_id.clone(),
+                    session_name: current.session_name.clone(),
+                    previous,
+                    current: current.clone(),
+                },
+            );
+            return;
+        }
+
+        if previous.visible_hash != current.visible_hash {
+            push_flicker_event(
+                history,
+                FlickerEvent {
+                    timestamp_ms: current.timestamp_ms,
+                    kind: "visible_hash_changed_same_state".to_string(),
+                    session_id: current.session_id.clone(),
+                    session_name: current.session_name.clone(),
+                    previous,
+                    current: current.clone(),
+                },
+            );
+            return;
+        }
+    }
+}
+
+fn record_flicker_frame_sample(sample: FlickerFrameSample) {
+    let mut history = flicker_frame_history()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    maybe_record_flicker_event(&mut history, &sample);
+    history.samples.push_back(sample);
+    while history.samples.len() > FLICKER_HISTORY_MAX_SAMPLES {
+        history.samples.pop_front();
+    }
+}
+
+pub(crate) fn debug_flicker_frame_history(limit: usize) -> serde_json::Value {
+    let history = flicker_frame_history()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let take_samples = limit.max(1).min(FLICKER_HISTORY_MAX_SAMPLES);
+    let samples: Vec<FlickerFrameSample> = history
+        .samples
+        .iter()
+        .rev()
+        .take(take_samples)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let events: Vec<FlickerEvent> = history
+        .events
+        .iter()
+        .rev()
+        .take(limit.max(1).min(FLICKER_HISTORY_MAX_EVENTS))
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    serde_json::json!({
+        "buffered_samples": history.samples.len(),
+        "returned_samples": samples.len(),
+        "buffered_events": history.events.len(),
+        "returned_events": events.len(),
+        "summary": {
+            "layout_toggle_events": events.iter().filter(|event| event.kind == "layout_toggle_same_state").count(),
+            "layout_oscillation_events": events.iter().filter(|event| event.kind == "layout_oscillation").count(),
+            "visible_hash_change_events": events.iter().filter(|event| event.kind == "visible_hash_changed_same_state").count(),
+        },
+        "events": events,
+        "samples": samples,
+    })
 }
 
 fn record_slow_frame_sample(sample: SlowFrameSample) {
@@ -1709,6 +1943,16 @@ pub(crate) fn clear_slow_frame_history_for_tests() {
     history.last_log_at_ms = None;
     reset_frame_perf_stats();
     set_last_chat_scrollbar_visible(false);
+}
+
+#[cfg(test)]
+pub(crate) fn clear_flicker_frame_history_for_tests() {
+    let mut history = flicker_frame_history()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    history.samples.clear();
+    history.events.clear();
+    history.last_log_at_ms = None;
 }
 
 #[derive(Default)]
@@ -3185,9 +3429,32 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     let total_elapsed = total_start.elapsed();
     let total_ms = total_elapsed.as_secs_f64() * 1000.0;
+    let perf = frame_perf_stats_snapshot();
+    record_flicker_frame_sample(FlickerFrameSample {
+        timestamp_ms: wall_clock_ms(),
+        session_id: app.current_session_id(),
+        session_name: app.session_display_name(),
+        display_messages_version: app.display_messages_version(),
+        diff_mode: format!("{:?}", app.diff_mode()),
+        centered: app.centered_mode(),
+        is_processing: app.is_processing(),
+        auto_scroll_paused: app.auto_scroll_paused(),
+        scroll: perf.viewport_scroll,
+        visible_end: perf.viewport_visible_end,
+        visible_lines: perf.viewport_visible_lines,
+        total_wrapped_lines: perf.viewport_total_wrapped_lines,
+        prompt_preview_lines: perf.viewport_prompt_preview_lines,
+        messages_area_width: perf.messages_area_width,
+        messages_area_height: perf.messages_area_height,
+        content_width: perf.viewport_content_width,
+        chat_scrollbar_visible: perf.chat_scrollbar_visible,
+        visible_hash: perf.viewport_stability_hash,
+        total_ms,
+        prepare_ms: prep_elapsed.as_secs_f64() * 1000.0,
+        draw_ms: draw_start.elapsed().as_secs_f64() * 1000.0,
+    });
     let threshold_ms = slow_frame_threshold_ms();
     if total_ms >= threshold_ms {
-        let perf = frame_perf_stats_snapshot();
         record_slow_frame_sample(SlowFrameSample {
             timestamp_ms: wall_clock_ms(),
             threshold_ms,

@@ -180,6 +180,111 @@ fn test_slow_frame_history_retains_recent_samples() {
 }
 
 #[test]
+fn test_flicker_frame_history_detects_same_state_hash_change() {
+    clear_flicker_frame_history_for_tests();
+    record_flicker_frame_sample(FlickerFrameSample {
+        timestamp_ms: 10,
+        session_id: Some("session_test".to_string()),
+        session_name: Some("test".to_string()),
+        display_messages_version: 9,
+        diff_mode: "Off".to_string(),
+        centered: false,
+        is_processing: false,
+        auto_scroll_paused: false,
+        scroll: 100,
+        visible_end: 120,
+        visible_lines: 20,
+        total_wrapped_lines: 1000,
+        prompt_preview_lines: 0,
+        messages_area_width: 90,
+        messages_area_height: 24,
+        content_width: 89,
+        chat_scrollbar_visible: true,
+        visible_hash: 111,
+        total_ms: 5.0,
+        prepare_ms: 2.0,
+        draw_ms: 1.5,
+    });
+    record_flicker_frame_sample(FlickerFrameSample {
+        timestamp_ms: 11,
+        session_id: Some("session_test".to_string()),
+        session_name: Some("test".to_string()),
+        display_messages_version: 9,
+        diff_mode: "Off".to_string(),
+        centered: false,
+        is_processing: false,
+        auto_scroll_paused: false,
+        scroll: 100,
+        visible_end: 120,
+        visible_lines: 20,
+        total_wrapped_lines: 1000,
+        prompt_preview_lines: 0,
+        messages_area_width: 90,
+        messages_area_height: 24,
+        content_width: 89,
+        chat_scrollbar_visible: true,
+        visible_hash: 222,
+        total_ms: 5.5,
+        prepare_ms: 2.2,
+        draw_ms: 1.6,
+    });
+
+    let payload = debug_flicker_frame_history(8);
+    assert_eq!(payload["buffered_samples"], 2);
+    assert_eq!(payload["buffered_events"], 1);
+    assert_eq!(payload["summary"]["visible_hash_change_events"], 1);
+    assert_eq!(
+        payload["events"][0]["kind"],
+        "visible_hash_changed_same_state"
+    );
+}
+
+#[test]
+fn test_flicker_frame_history_detects_layout_oscillation() {
+    clear_flicker_frame_history_for_tests();
+    for (timestamp_ms, content_width, visible_hash) in
+        [(20, 89, 333_u64), (21, 88, 444), (22, 89, 333)]
+    {
+        record_flicker_frame_sample(FlickerFrameSample {
+            timestamp_ms,
+            session_id: Some("session_test".to_string()),
+            session_name: Some("test".to_string()),
+            display_messages_version: 10,
+            diff_mode: "Off".to_string(),
+            centered: false,
+            is_processing: false,
+            auto_scroll_paused: false,
+            scroll: 250,
+            visible_end: 270,
+            visible_lines: 20,
+            total_wrapped_lines: 1200,
+            prompt_preview_lines: 0,
+            messages_area_width: 90,
+            messages_area_height: 24,
+            content_width,
+            chat_scrollbar_visible: true,
+            visible_hash,
+            total_ms: 6.0,
+            prepare_ms: 2.0,
+            draw_ms: 1.0,
+        });
+    }
+
+    let payload = debug_flicker_frame_history(8);
+    assert_eq!(payload["buffered_samples"], 3);
+    assert_eq!(payload["summary"]["layout_oscillation_events"], 1);
+    let events = payload["events"]
+        .as_array()
+        .expect("events should be an array");
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "layout_oscillation"),
+        "expected at least one layout_oscillation event"
+    );
+}
+
+#[test]
 fn test_link_target_from_screen_detects_chat_url() {
     let _lock = viewport_snapshot_test_lock();
     record_test_chat_snapshot("Docs: https://example.com/docs).");
