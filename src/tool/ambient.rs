@@ -763,7 +763,7 @@ impl Tool for ScheduleTool {
                 "success_criteria": { "type": "string" },
                 "target": {
                     "type": "string",
-                    "enum": ["resume", "session", "spawn", "ambient"],
+                    "enum": ["resume", "spawn", "ambient"],
                     "description": "Delivery target. Defaults to resuming the originating session. Use 'spawn' to run in one new child session, or 'ambient' only for shared ambient work."
                 }
             }
@@ -811,7 +811,7 @@ impl Tool for ScheduleTool {
                 }
             });
 
-        let target = parse_schedule_target(params.target.as_deref(), &ctx.session_id);
+        let target = parse_schedule_target(params.target.as_deref(), &ctx.session_id)?;
         let target_summary = match &target {
             ScheduleTarget::Ambient => "ambient agent".to_string(),
             ScheduleTarget::Session { session_id } => {
@@ -885,19 +885,20 @@ fn parse_priority(s: Option<&str>) -> Priority {
     }
 }
 
-fn parse_schedule_target(s: Option<&str>, session_id: &str) -> ScheduleTarget {
-    match s {
+fn parse_schedule_target(s: Option<&str>, session_id: &str) -> Result<ScheduleTarget> {
+    Ok(match s {
         Some("ambient") => ScheduleTarget::Ambient,
         Some("spawn") => ScheduleTarget::Spawn {
             parent_session_id: session_id.to_string(),
         },
-        Some("resume") | Some("session") | None => ScheduleTarget::Session {
+        Some("resume") | None => ScheduleTarget::Session {
             session_id: session_id.to_string(),
         },
-        Some(_) => ScheduleTarget::Session {
-            session_id: session_id.to_string(),
-        },
-    }
+        Some(other) => anyhow::bail!(
+            "Invalid target '{}'. Expected one of: resume, spawn, ambient",
+            other
+        ),
+    })
 }
 
 fn nudge_schedule_runner() {
@@ -1290,7 +1291,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_tool_input_session_target() {
+    fn test_schedule_tool_input_resume_target() {
         let input = json!({
             "task": "Follow up in this chat",
             "wake_in_minutes": 10,
@@ -1331,13 +1332,13 @@ mod tests {
     #[test]
     fn test_parse_schedule_target_defaults_to_resume_originating_session() {
         assert_eq!(
-            parse_schedule_target(None, "session_123"),
+            parse_schedule_target(None, "session_123").unwrap(),
             ScheduleTarget::Session {
                 session_id: "session_123".to_string()
             }
         );
         assert_eq!(
-            parse_schedule_target(Some("resume"), "session_123"),
+            parse_schedule_target(Some("resume"), "session_123").unwrap(),
             ScheduleTarget::Session {
                 session_id: "session_123".to_string()
             }
@@ -1347,15 +1348,22 @@ mod tests {
     #[test]
     fn test_parse_schedule_target_supports_spawn_and_ambient() {
         assert_eq!(
-            parse_schedule_target(Some("spawn"), "session_123"),
+            parse_schedule_target(Some("spawn"), "session_123").unwrap(),
             ScheduleTarget::Spawn {
                 parent_session_id: "session_123".to_string()
             }
         );
         assert_eq!(
-            parse_schedule_target(Some("ambient"), "session_123"),
+            parse_schedule_target(Some("ambient"), "session_123").unwrap(),
             ScheduleTarget::Ambient
         );
+    }
+
+    #[test]
+    fn test_parse_schedule_target_rejects_removed_session_alias() {
+        let err = parse_schedule_target(Some("session"), "session_123")
+            .expect_err("removed session alias should be rejected");
+        assert!(err.to_string().contains("resume, spawn, ambient"));
     }
 
     #[tokio::test]
