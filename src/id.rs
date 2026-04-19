@@ -6,82 +6,67 @@ pub fn new_id(prefix: &str) -> String {
     format!("{}_{}_{}", prefix, ts, rand)
 }
 
-/// Server modifiers (adjectives/verbs) with their icons
-/// Servers use modifiers while sessions use nouns, so together they form phrases like "blazing fox"
+/// Server/location names with their icons.
+///
+/// Servers now use location nouns while sessions use client/entity nouns,
+/// producing names like "harbor fox" or "observatory otter".
 const SERVER_MODIFIERS: &[(&str, &str)] = &[
-    // Adjectives
-    ("blazing", "🔥"),
-    ("frozen", "❄️"),
-    ("swift", "⚡"),
-    ("dark", "🌑"),
-    ("bright", "✨"),
-    ("crystal", "💎"),
-    ("iron", "⚙️"),
-    ("wild", "🌿"),
-    ("stone", "🪨"),
-    ("silent", "🔇"),
-    ("golden", "⭐"),
-    ("ancient", "🏛️"),
-    ("stormy", "⛈️"),
-    ("misty", "🌫️"),
-    ("icy", "🧊"),
-    ("cosmic", "🌌"),
-    ("lunar", "🌙"),
-    ("solar", "☀️"),
-    ("crimson", "🔴"),
-    ("azure", "🔵"),
-    ("emerald", "💚"),
-    ("amber", "🟠"),
-    ("violet", "🟣"),
-    ("proud", "👑"),
-    ("hollow", "🕳️"),
-    // Verbs (present participle)
-    ("rising", "🌅"),
-    ("falling", "🍂"),
-    ("rushing", "🌊"),
-    ("spinning", "💫"),
-    ("blooming", "🌸"),
-    ("sleeping", "💤"),
-    ("flowing", "💧"),
-    ("drifting", "🍃"),
-    ("howling", "🌬️"),
-    ("dancing", "💃"),
-    ("dreaming", "💭"),
-    ("seeking", "🔍"),
-    ("waiting", "⏳"),
-    ("burning", "🔥"),
-    ("glowing", "✨"),
+    // Natural places
+    ("cove", "🌊"),
+    ("grove", "🌳"),
+    ("meadow", "🌾"),
+    ("marsh", "🌿"),
+    ("lake", "🏞️"),
+    ("river", "🏞️"),
+    ("creek", "💧"),
+    ("brook", "💧"),
+    ("cliff", "🏔️"),
+    ("peak", "⛰️"),
+    ("summit", "🏔️"),
+    ("forest", "🌲"),
+    ("garden", "🌷"),
+    ("island", "🏝️"),
+    ("desert", "🏜️"),
+    ("beach", "🏖️"),
+    // Built places
+    ("harbor", "⚓"),
+    ("camp", "⛺"),
+    ("forge", "🔥"),
+    ("citadel", "🏛️"),
+    ("station", "🚉"),
+    ("observatory", "🔭"),
+    ("workshop", "🛠️"),
+    ("lighthouse", "🗼"),
+    ("temple", "🏛️"),
+    ("castle", "🏰"),
+    ("bridge", "🌉"),
+    ("fountain", "⛲"),
+    ("stadium", "🏟️"),
+    ("factory", "🏭"),
+    ("pagoda", "🛕"),
+    ("hut", "🛖"),
 ];
 
-/// Session names with their icons - only words with specific emojis
+/// Session/client names with their icons.
 const SESSION_NAMES: &[(&str, &str)] = &[
-    // Animals
+    // Animals and client entities
     ("ant", "🐜"),
     ("bat", "🦇"),
     ("bee", "🐝"),
     ("cat", "🐱"),
-    ("cow", "🐄"),
     ("dog", "🐕"),
     ("fox", "🦊"),
     ("owl", "🦉"),
-    ("pig", "🐷"),
-    ("rat", "🐀"),
     ("bear", "🐻"),
-    ("bird", "🐦"),
     ("crab", "🦀"),
     ("crow", "🐦‍⬛"),
     ("deer", "🦌"),
-    ("dove", "🕊️"),
     ("duck", "🦆"),
     ("frog", "🐸"),
     ("goat", "🐐"),
-    ("hawk", "🦅"),
     ("lion", "🦁"),
     ("moth", "🦋"),
-    ("swan", "🦢"),
     ("wolf", "🐺"),
-    ("zebra", "🦓"),
-    ("eagle", "🦅"),
     ("goose", "🪿"),
     ("horse", "🐴"),
     ("koala", "🐨"),
@@ -90,7 +75,6 @@ const SESSION_NAMES: &[(&str, &str)] = &[
     ("mouse", "🐭"),
     ("otter", "🦦"),
     ("panda", "🐼"),
-    ("raven", "🐦‍⬛"),
     ("shark", "🦈"),
     ("sheep", "🐑"),
     ("sloth", "🦥"),
@@ -102,48 +86,37 @@ const SESSION_NAMES: &[(&str, &str)] = &[
     ("turtle", "🐢"),
     ("rabbit", "🐰"),
     ("parrot", "🦜"),
-    ("falcon", "🦅"),
     ("jaguar", "🐆"),
     ("lizard", "🦎"),
-    // Nature
-    ("sun", "☀️"),
-    ("moon", "🌙"),
-    ("star", "⭐"),
-    ("fire", "🔥"),
-    ("snow", "❄️"),
-    ("rain", "🌧️"),
-    ("wind", "💨"),
-    ("wave", "🌊"),
-    ("leaf", "🍃"),
-    ("tree", "🌲"),
-    ("rose", "🌹"),
-    ("pine", "🌲"),
-    ("oak", "🌳"),
-    ("fern", "🌿"),
-    ("moss", "🌱"),
-    ("cloud", "☁️"),
-    ("storm", "⛈️"),
-    ("frost", "🥶"),
-    ("coral", "🪸"),
-    ("gem", "💎"),
-    ("jade", "💚"),
-    ("pearl", "🦪"),
-    ("amber", "🟠"),
-    ("lake", "🏞️"),
-    ("river", "🏞️"),
-    ("creek", "💧"),
-    ("brook", "💧"),
-    ("rock", "🪨"),
-    ("stone", "🪨"),
-    ("cliff", "🏔️"),
-    ("peak", "⛰️"),
-    ("summit", "🏔️"),
-    ("meadow", "🌾"),
-    ("grove", "🌳"),
-    ("marsh", "🌿"),
+    ("monkey", "🐒"),
+    ("gorilla", "🦍"),
+    ("orangutan", "🦧"),
+    ("donkey", "🫏"),
+    ("camel", "🐫"),
+    ("elephant", "🐘"),
+    ("rhino", "🦏"),
+    ("hippo", "🦛"),
+    ("bison", "🦬"),
+    ("boar", "🐗"),
+    ("unicorn", "🦄"),
+    ("kangaroo", "🦘"),
+    ("hedgehog", "🦔"),
+    ("beaver", "🦫"),
+    ("skunk", "🦨"),
+    ("raccoon", "🦝"),
+    ("seal", "🦭"),
+    ("penguin", "🐧"),
+    ("flamingo", "🦩"),
+    ("peacock", "🦚"),
+    ("dolphin", "🐬"),
+    ("octopus", "🐙"),
+    ("jellyfish", "🪼"),
+    ("spider", "🕷️"),
+    ("scorpion", "🦂"),
+    ("beetle", "🪲"),
 ];
 
-/// Get an emoji icon for a session name word
+/// Get an emoji icon for a session/client name word.
 pub fn session_icon(name: &str) -> &'static str {
     SESSION_NAMES
         .iter()
@@ -152,7 +125,7 @@ pub fn session_icon(name: &str) -> &'static str {
         .unwrap_or("💫")
 }
 
-/// Get an emoji icon for a server modifier
+/// Get an emoji icon for a server/location name word.
 pub fn server_icon(name: &str) -> &'static str {
     SERVER_MODIFIERS
         .iter()
@@ -161,7 +134,7 @@ pub fn server_icon(name: &str) -> &'static str {
         .unwrap_or("🔮")
 }
 
-/// Generate a memorable server name
+/// Generate a memorable server name using a location noun.
 /// Returns (full_id, short_name) where:
 /// - full_id is the storage identifier like "server_blazing_1234567890_deadbeefcafebabe"
 /// - short_name is the memorable part like "blazing"
@@ -169,7 +142,7 @@ pub fn new_memorable_server_id() -> (String, String) {
     let ts = Utc::now().timestamp_millis();
     let rand: u64 = rand::random();
 
-    // Use the random value to pick a modifier
+    // Use the random value to pick a location noun.
     let idx = (rand as usize) % SERVER_MODIFIERS.len();
     let (word, _) = SERVER_MODIFIERS[idx];
 
