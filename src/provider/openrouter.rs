@@ -575,11 +575,14 @@ impl OpenRouterProvider {
 
         handle.spawn(async move {
             match fetch_models_from_api(client, api_base, auth, models_cache).await {
-                Ok(models) => crate::logging::info(&format!(
-                    "Refreshed OpenRouter model catalog in background ({}): {} models",
-                    context,
-                    models.len()
-                )),
+                Ok(models) => {
+                    crate::logging::info(&format!(
+                        "Refreshed OpenRouter model catalog in background ({}): {} models",
+                        context,
+                        models.len()
+                    ));
+                    crate::bus::Bus::global().publish(crate::bus::BusEvent::ModelsUpdated);
+                }
                 Err(e) => crate::logging::info(&format!(
                     "Failed to refresh OpenRouter model catalog in background ({}): {}",
                     context, e

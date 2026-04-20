@@ -64,6 +64,19 @@ pub const CURATED_MODELS: &[CuratedModel] = &[
         note: "Pinned to the Stealth upstream until a cache-capable route exists.",
     },
     CuratedModel {
+        id: "moonshotai/kimi-k2.6",
+        display_name: "Kimi K2.6",
+        aliases: &[
+            "moonshotai/kimi-k2.6",
+            "kimi-k2.6",
+            "kimi k2.6",
+            "kimi/k2.6",
+        ],
+        default_enabled: true,
+        routing_policy: UpstreamRoutingPolicy::CacheCapableOnly,
+        note: "Cache-capable upstream providers only.",
+    },
+    CuratedModel {
         id: "moonshotai/kimi-k2.5",
         display_name: "Kimi K2.5",
         aliases: &[
@@ -192,6 +205,14 @@ mod tests {
     #[test]
     fn curated_model_aliases_resolve_to_canonical_ids() {
         assert_eq!(
+            canonical_model_id("kimi/k2.6"),
+            Some("moonshotai/kimi-k2.6")
+        );
+        assert_eq!(
+            canonical_model_id("KIMI K2.6"),
+            Some("moonshotai/kimi-k2.6")
+        );
+        assert_eq!(
             canonical_model_id("kimi/k2.5"),
             Some("moonshotai/kimi-k2.5")
         );
@@ -212,6 +233,10 @@ mod tests {
 
     #[test]
     fn curated_model_lookup_ignores_openrouter_provider_pin_suffix() {
+        assert_eq!(
+            canonical_model_id("moonshotai/kimi-k2.6@Fireworks"),
+            Some("moonshotai/kimi-k2.6")
+        );
         assert_eq!(
             canonical_model_id("moonshotai/kimi-k2.5@Fireworks"),
             Some("moonshotai/kimi-k2.5")

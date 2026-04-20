@@ -824,6 +824,7 @@ impl App {
             "gpt-5.4[1m]",
             "gpt-5.4-pro",
             "claude-opus-4-7",
+            "moonshotai/kimi-k2.6",
             "moonshotai/kimi-k2.5",
         ];
 
