@@ -141,6 +141,21 @@ pub(super) async fn handle_get_history(
     Ok(())
 }
 
+fn history_reload_recovery_snapshot(
+    session_id: &str,
+    was_interrupted: Option<bool>,
+) -> Option<crate::protocol::ReloadRecoverySnapshot> {
+    let reload_ctx = crate::tool::selfdev::ReloadContext::peek_for_session(session_id)
+        .ok()
+        .flatten();
+    crate::tool::selfdev::ReloadContext::recovery_directive_for_session(
+        session_id,
+        reload_ctx.as_ref(),
+        was_interrupted.unwrap_or(false),
+        None,
+    )
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "persisted history fallback still needs session/client/server metadata for a usable bootstrap payload"
@@ -206,6 +221,7 @@ async fn send_history_from_persisted_session(
         server_icon: Some(server_icon.to_string()),
         server_has_update: Some(server_has_newer_binary()),
         was_interrupted,
+        reload_recovery: history_reload_recovery_snapshot(session_id, was_interrupted),
         connection_type: None,
         status_detail: None,
         upstream_provider: None,
@@ -412,6 +428,7 @@ pub(super) async fn send_history(
         server_icon: Some(server_icon.to_string()),
         server_has_update: Some(server_has_newer_binary()),
         was_interrupted,
+        reload_recovery: history_reload_recovery_snapshot(session_id, was_interrupted),
         connection_type,
         status_detail,
         upstream_provider,
@@ -564,7 +581,9 @@ mod tests {
             _system: &str,
             _resume_session_id: Option<&str>,
         ) -> Result<EventStream> {
-            unimplemented!("mock provider complete should not be called in client_state tests")
+            Err(anyhow::anyhow!(
+                "mock provider complete should not be called in client_state tests"
+            ))
         }
 
         fn name(&self) -> &str {

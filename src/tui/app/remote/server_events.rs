@@ -1,4 +1,5 @@
 use super::*;
+use crate::tool::selfdev::ReloadContext;
 use crate::tui::app as app_mod;
 use crate::tui::app::remote::swarm_plan_core::RemoteSwarmPlanSnapshot;
 
@@ -267,7 +268,7 @@ pub(in crate::tui::app) fn handle_server_event(
             app.current_message_id = None;
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
-            false
+            app.schedule_auto_poke_followup_if_needed()
         }
         ServerEvent::Done { id } => {
             let mut auto_poked = false;
@@ -390,6 +391,7 @@ pub(in crate::tui::app) fn handle_server_event(
             if !is_failover_prompt && !app.schedule_pending_remote_retry("⚠ Remote request failed.")
             {
                 app.clear_pending_remote_retry();
+                return app.schedule_auto_poke_followup_if_needed();
             }
             false
         }
@@ -456,6 +458,7 @@ pub(in crate::tui::app) fn handle_server_event(
             server_icon,
             server_has_update,
             was_interrupted,
+            reload_recovery,
             connection_type,
             status_detail,
             upstream_provider,
@@ -648,17 +651,21 @@ pub(in crate::tui::app) fn handle_server_event(
 
             app.maybe_show_catchup_after_history(&session_id);
 
-            if was_interrupted == Some(true) && !app.display_messages.is_empty() {
-                crate::logging::info(
-                    "Session was interrupted mid-generation, queuing continuation",
-                );
+            let reload_recovery = reload_recovery.or_else(|| {
+                ReloadContext::recovery_directive(None, was_interrupted == Some(true), "", None)
+            });
+            if let Some(reload_recovery) = reload_recovery
+                && !app.display_messages.is_empty()
+            {
+                crate::logging::info("History payload requested reload recovery continuation");
+                if let Some(notice) = reload_recovery.reconnect_notice {
+                    app.reload_info.push(notice);
+                }
                 app.push_display_message(DisplayMessage::system(
                     "Reload complete — continuing.".to_string(),
                 ));
-                app.hidden_queued_system_messages.push(
-                    "Your session was interrupted by a server reload while you were working. The session has been restored. Any tool that was running was aborted and its results may be incomplete. Continue exactly where you left off and do not ask the user what to do next."
-                        .to_string(),
-                );
+                app.hidden_queued_system_messages
+                    .push(reload_recovery.continuation_message);
             }
 
             false
@@ -683,6 +690,7 @@ pub(in crate::tui::app) fn handle_server_event(
             participants,
             reason,
             summary,
+            ..
         } => {
             let snapshot = RemoteSwarmPlanSnapshot {
                 swarm_id: swarm_id.clone(),

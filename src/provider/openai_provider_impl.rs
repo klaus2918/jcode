@@ -241,6 +241,8 @@ impl Provider for OpenAIProvider {
                     Err(OpenAIStreamFailure::FallbackToHttps(error)) => {
                         let elapsed_ms = attempt_started.elapsed().as_millis();
                         let reason = summarize_websocket_fallback_reason(&error.to_string());
+                        let fallback_reason =
+                            classify_websocket_fallback_reason(&error.to_string());
                         crate::logging::warn(&format!(
                             "WebSocket fallback after {}ms: {}",
                             elapsed_ms, error
@@ -253,11 +255,13 @@ impl Provider for OpenAIProvider {
                                 &websocket_cooldowns,
                                 &websocket_failure_streaks,
                                 &model_for_transport,
+                                fallback_reason,
                             )
                             .await;
                             crate::logging::warn(&format!(
-                                "OpenAI websocket backoff for model='{}': streak={} cooldown={}s",
+                                "OpenAI websocket backoff for model='{}': reason='{}' streak={} cooldown={}s",
                                 model_for_transport,
+                                fallback_reason.summary(),
                                 streak,
                                 cooldown.as_secs()
                             ));

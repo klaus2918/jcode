@@ -763,8 +763,8 @@ impl Tool for ScheduleTool {
                 "success_criteria": { "type": "string" },
                 "target": {
                     "type": "string",
-                    "enum": ["ambient", "session"],
-                    "description": "Target."
+                    "enum": ["resume", "spawn", "ambient"],
+                    "description": "Delivery target. Defaults to resuming the originating session. Use 'spawn' to run in one new child session, or 'ambient' only for shared ambient work."
                 }
             }
         })
@@ -811,10 +811,15 @@ impl Tool for ScheduleTool {
                 }
             });
 
-        let target = parse_schedule_target(params.target.as_deref(), &ctx.session_id);
+        let target = parse_schedule_target(params.target.as_deref(), &ctx.session_id)?;
         let target_summary = match &target {
             ScheduleTarget::Ambient => "ambient agent".to_string(),
-            ScheduleTarget::Session { session_id } => format!("session {}", session_id),
+            ScheduleTarget::Session { session_id } => {
+                format!("resume session {}", session_id)
+            }
+            ScheduleTarget::Spawn { parent_session_id } => {
+                format!("spawn one child session from {}", parent_session_id)
+            }
         };
 
         let request = ScheduleRequest {
@@ -880,13 +885,20 @@ fn parse_priority(s: Option<&str>) -> Priority {
     }
 }
 
-fn parse_schedule_target(s: Option<&str>, session_id: &str) -> ScheduleTarget {
-    match s {
-        Some("session") => ScheduleTarget::Session {
+fn parse_schedule_target(s: Option<&str>, session_id: &str) -> Result<ScheduleTarget> {
+    Ok(match s {
+        Some("ambient") => ScheduleTarget::Ambient,
+        Some("spawn") => ScheduleTarget::Spawn {
+            parent_session_id: session_id.to_string(),
+        },
+        Some("resume") | None => ScheduleTarget::Session {
             session_id: session_id.to_string(),
         },
-        _ => ScheduleTarget::Ambient,
-    }
+        Some(other) => anyhow::bail!(
+            "Invalid target '{}'. Expected one of: resume, spawn, ambient",
+            other
+        ),
+    })
 }
 
 fn nudge_schedule_runner() {
@@ -1279,15 +1291,27 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_tool_input_session_target() {
+    fn test_schedule_tool_input_resume_target() {
         let input = json!({
             "task": "Follow up in this chat",
             "wake_in_minutes": 10,
-            "target": "session"
+            "target": "resume"
         });
 
         let parsed: ScheduleToolInput = serde_json::from_value(input).unwrap();
-        assert_eq!(parsed.target.as_deref(), Some("session"));
+        assert_eq!(parsed.target.as_deref(), Some("resume"));
+    }
+
+    #[test]
+    fn test_schedule_tool_input_spawn_target() {
+        let input = json!({
+            "task": "Follow up in a new child session",
+            "wake_in_minutes": 10,
+            "target": "spawn"
+        });
+
+        let parsed: ScheduleToolInput = serde_json::from_value(input).unwrap();
+        assert_eq!(parsed.target.as_deref(), Some("spawn"));
     }
 
     #[test]
@@ -1303,6 +1327,95 @@ mod tests {
         assert!(parsed.relevant_files.is_empty());
         assert!(parsed.background.is_none());
         assert!(parsed.success_criteria.is_none());
+    }
+
+    #[test]
+    fn test_parse_schedule_target_defaults_to_resume_originating_session() {
+        assert_eq!(
+            parse_schedule_target(None, "session_123").unwrap(),
+            ScheduleTarget::Session {
+                session_id: "session_123".to_string()
+            }
+        );
+        assert_eq!(
+            parse_schedule_target(Some("resume"), "session_123").unwrap(),
+            ScheduleTarget::Session {
+                session_id: "session_123".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_schedule_target_supports_spawn_and_ambient() {
+        assert_eq!(
+            parse_schedule_target(Some("spawn"), "session_123").unwrap(),
+            ScheduleTarget::Spawn {
+                parent_session_id: "session_123".to_string()
+            }
+        );
+        assert_eq!(
+            parse_schedule_target(Some("ambient"), "session_123").unwrap(),
+            ScheduleTarget::Ambient
+        );
+    }
+
+    #[test]
+    fn test_parse_schedule_target_rejects_removed_session_alias() {
+        let err = parse_schedule_target(Some("session"), "session_123")
+            .expect_err("removed session alias should be rejected");
+        assert!(err.to_string().contains("resume, spawn, ambient"));
+    }
+
+    #[tokio::test]
+    async fn test_schedule_tool_defaults_to_resuming_originating_session() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        let tool = ScheduleTool::new();
+        let input = json!({
+            "task": "Follow up on this work",
+            "wake_in_minutes": 5
+        });
+        let ctx = ToolContext {
+            session_id: "origin_session".to_string(),
+            message_id: "msg_1".to_string(),
+            tool_call_id: "call_1".to_string(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: crate::tool::ToolExecutionMode::Direct,
+        };
+
+        let output = tool
+            .execute(input, ctx)
+            .await
+            .expect("schedule should succeed");
+        assert!(
+            output
+                .output
+                .contains("Target: resume session origin_session")
+        );
+
+        let manager = AmbientManager::new().expect("ambient manager");
+        let scheduled = manager
+            .queue()
+            .items()
+            .first()
+            .expect("scheduled item should exist");
+        assert_eq!(
+            scheduled.target,
+            ScheduleTarget::Session {
+                session_id: "origin_session".to_string()
+            }
+        );
+
+        if let Some(prev) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
     }
 
     #[test]

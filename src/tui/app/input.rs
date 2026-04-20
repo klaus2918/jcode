@@ -1629,6 +1629,9 @@ impl App {
             "observe" => {
                 "`/observe`\nToggle transient observe mode for the side panel.\n\n`/observe on`\nEnable observe mode and focus the observe page.\n\n`/observe off`\nDisable observe mode.\n\n`/observe status`\nShow whether observe mode is enabled.\n\nObserve mode shows only the latest tool call or tool result added to context, and it is not persisted to disk."
             }
+            "todos" => {
+                "`/todos`\nToggle a transient todo screen in the side panel.\n\n`/todos on`\nEnable the dedicated todo screen and focus it.\n\n`/todos off`\nDisable the dedicated todo screen.\n\n`/todos status`\nShow whether the dedicated todo screen is enabled.\n\nThis view shows only the current session's todo list and refreshes as it changes."
+            }
             "splitview" | "split-view" => {
                 "`/splitview`\nToggle a transient split view that mirrors the current chat in the side panel.\n\n`/splitview on`\nEnable split view and focus the mirrored chat page.\n\n`/splitview off`\nDisable split view.\n\n`/splitview status`\nShow whether split view is enabled.\n\nThis gives the side panel its own scroll position for the same conversation so you can read older context while keeping the main composer active."
             }
@@ -1674,7 +1677,11 @@ impl App {
                 "`/dictate`\nRun the configured external speech-to-text command and inject the transcript into jcode.\n\nConfigure `[dictation]` in `~/.jcode/config.toml`:\n- `command`: shell command that prints transcript to stdout, for example `~/.local/bin/my-whisper-script --grammar-target code`\n- `mode`: `insert|append|replace|send`\n- `key`: optional hotkey (for example `alt+;`)\n- `timeout_secs`: max wait time"
             }
             "poke" => {
-                "`/poke`\nPoke the model to resume when it has stopped with incomplete todos.\n\
+                "`/poke [on|off|status]`\nPoke the model to resume when it has stopped with incomplete todos.\n\
+                `/poke` or `/poke on` arms auto-poke and immediately pokes if work remains.\n\
+                `/poke off` disarms auto-poke and clears any queued poke follow-ups.\n\
+                `/poke status` shows whether auto-poke is currently armed.\n\
+                If a turn is currently running, the poke is queued and sent right after that turn finishes.\n\
                 Injects a reminder listing all pending/in-progress tasks and prompts the model to either\n\
                 finish the work, update the todo list to reflect what is done, or ask for user input if genuinely blocked."
             }

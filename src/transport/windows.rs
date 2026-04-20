@@ -379,3 +379,43 @@ pub fn remove_socket(path: &Path) {
 pub fn stream_pair() -> io::Result<(Stream, Stream)> {
     Stream::pair()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn pipe_name_is_stable_and_normalizes_case_and_separators() {
+        let a = path_to_pipe_name(Path::new(r"C:\Temp\Jcode\server.sock"));
+        let b = path_to_pipe_name(Path::new("c:/temp/jcode/server.sock"));
+        assert_eq!(a, b, "pipe names should be normalized consistently");
+        assert!(
+            a.starts_with(r"\\.\pipe\server-"),
+            "unexpected pipe name: {}",
+            a
+        );
+    }
+
+    #[test]
+    fn pipe_name_falls_back_when_stem_is_empty() {
+        let name = path_to_pipe_name(Path::new("..."));
+        assert!(
+            name.starts_with(r"\\.\pipe\jcode-"),
+            "unexpected pipe name: {}",
+            name
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_pair_round_trips_bytes() {
+        let (mut a, mut b) = stream_pair().expect("create stream pair");
+        a.write_all(b"ping").await.expect("write to pipe");
+        a.flush().await.expect("flush pipe");
+
+        let mut buf = [0u8; 4];
+        b.read_exact(&mut buf).await.expect("read from pipe");
+        assert_eq!(&buf, b"ping");
+    }
+}

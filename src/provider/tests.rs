@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::models::{ensure_model_allowed_for_subscription, filtered_display_models};
 
 fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
     let _guard = crate::storage::lock_test_env();
@@ -876,13 +877,31 @@ fn test_set_model_rejects_cross_provider_without_creds() {
 #[test]
 fn test_auto_default_prefers_openai_over_claude_when_both_available() {
     let active =
-        MultiProvider::auto_default_provider(true, true, false, false, false, false, false, false);
+        MultiProvider::auto_default_provider(ProviderAvailability {
+            openai: true,
+            claude: true,
+            copilot: false,
+            antigravity: false,
+            gemini: false,
+            cursor: false,
+            openrouter: false,
+            copilot_premium_zero: false,
+        });
     assert_eq!(active, ActiveProvider::OpenAI);
 }
 
 #[test]
 fn test_auto_default_prefers_copilot_when_zero_premium_mode_enabled() {
-    let active = MultiProvider::auto_default_provider(true, true, true, true, true, true, true, true);
+    let active = MultiProvider::auto_default_provider(ProviderAvailability {
+        openai: true,
+        claude: true,
+        copilot: true,
+        antigravity: true,
+        gemini: true,
+        cursor: true,
+        openrouter: true,
+        copilot_premium_zero: true,
+    });
     assert_eq!(active, ActiveProvider::Copilot);
 }
 

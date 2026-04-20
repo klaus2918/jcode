@@ -134,30 +134,35 @@ async fn run_scheduled_task_in_live_session_if_idle(
     true
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "notify session needs delivery state, connection state, interrupt queues, and live swarm membership"
-)]
+pub(super) struct NotifySessionContext<'a> {
+    pub sessions: &'a SessionAgents,
+    pub soft_interrupt_queues: &'a SessionInterruptQueues,
+    pub client_connections: &'a Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
+    pub swarm_members: &'a Arc<RwLock<HashMap<String, SwarmMember>>>,
+    pub client_event_tx: &'a mpsc::UnboundedSender<ServerEvent>,
+}
+
 pub(super) async fn handle_notify_session(
     id: u64,
     session_id: String,
     message: String,
-    sessions: &SessionAgents,
-    soft_interrupt_queues: &SessionInterruptQueues,
-    client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
-    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+    ctx: NotifySessionContext<'_>,
 ) {
     let target_has_client = {
-        let connections = client_connections.read().await;
+        let connections = ctx.client_connections.read().await;
         connections
             .values()
             .any(|connection| connection.session_id == session_id)
     };
 
     let ran_immediately = if target_has_client {
-        run_scheduled_task_in_live_session_if_idle(&session_id, &message, sessions, swarm_members)
-            .await
+        run_scheduled_task_in_live_session_if_idle(
+            &session_id,
+            &message,
+            ctx.sessions,
+            ctx.swarm_members,
+        )
+        .await
     } else {
         false
     };
@@ -165,11 +170,11 @@ pub(super) async fn handle_notify_session(
     let notified = if ran_immediately {
         false
     } else {
-        let members = swarm_members.read().await;
+        let members = ctx.swarm_members.read().await;
         if members.contains_key(&session_id) {
             drop(members);
             fanout_session_event(
-                swarm_members,
+                ctx.swarm_members,
                 &session_id,
                 ServerEvent::Notification {
                     from_session: "schedule".to_string(),
@@ -196,16 +201,16 @@ pub(super) async fn handle_notify_session(
             message.clone(),
             false,
             SoftInterruptSource::System,
-            soft_interrupt_queues,
-            sessions,
+            ctx.soft_interrupt_queues,
+            ctx.sessions,
         )
         .await
     };
 
     if ran_immediately || notified || queued_interrupt {
-        let _ = client_event_tx.send(ServerEvent::Done { id });
+        let _ = ctx.client_event_tx.send(ServerEvent::Done { id });
     } else {
-        let _ = client_event_tx.send(ServerEvent::Error {
+        let _ = ctx.client_event_tx.send(ServerEvent::Error {
             id,
             message: format!("Session '{}' is not currently live", session_id),
             retry_after_secs: None,
@@ -651,7 +656,9 @@ pub(super) async fn handle_split(
 
 #[cfg(test)]
 mod tests {
-    use super::{clone_split_session, handle_notify_session, handle_set_feature};
+    use super::{
+        NotifySessionContext, clone_split_session, handle_notify_session, handle_set_feature,
+    };
     use crate::agent::Agent;
     use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
     use crate::protocol::{FeatureToggle, ServerEvent};
@@ -690,7 +697,9 @@ mod tests {
             _system: &str,
             _resume_session_id: Option<&str>,
         ) -> Result<EventStream> {
-            unimplemented!("Mock provider")
+            Err(anyhow::anyhow!(
+                "mock provider complete should not be called in client_actions tests"
+            ))
         }
 
         fn name(&self) -> &str {
@@ -936,11 +945,13 @@ mod tests {
             77,
             session_id.clone(),
             "[Scheduled task]\nTask: Follow up".to_string(),
-            &sessions,
-            &soft_interrupt_queues,
-            &client_connections,
-            &swarm_members,
-            &client_event_tx,
+            NotifySessionContext {
+                sessions: &sessions,
+                soft_interrupt_queues: &soft_interrupt_queues,
+                client_connections: &client_connections,
+                swarm_members: &swarm_members,
+                client_event_tx: &client_event_tx,
+            },
         )
         .await;
 
@@ -1042,11 +1053,13 @@ mod tests {
             88,
             session_id.clone(),
             "[Scheduled task]\nTask: Follow up while busy".to_string(),
-            &sessions,
-            &soft_interrupt_queues,
-            &client_connections,
-            &swarm_members,
-            &client_event_tx,
+            NotifySessionContext {
+                sessions: &sessions,
+                soft_interrupt_queues: &soft_interrupt_queues,
+                client_connections: &client_connections,
+                swarm_members: &swarm_members,
+                client_event_tx: &client_event_tx,
+            },
         )
         .await;
 
@@ -1184,28 +1197,31 @@ pub(super) async fn handle_stdin_response(
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct AgentTaskContext<'a> {
+    pub(super) client_event_tx: &'a mpsc::UnboundedSender<ServerEvent>,
+    pub(super) swarm_members: &'a Arc<RwLock<HashMap<String, SwarmMember>>>,
+    pub(super) swarms_by_id: &'a Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    pub(super) event_history: &'a Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
+    pub(super) event_counter: &'a Arc<std::sync::atomic::AtomicU64>,
+    pub(super) swarm_event_tx: &'a broadcast::Sender<SwarmEvent>,
+}
+
 pub(super) async fn handle_agent_task(
     id: u64,
     task: String,
     client_session_id: &str,
     agent: &Arc<Mutex<Agent>>,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
-    event_counter: &Arc<std::sync::atomic::AtomicU64>,
-    swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    ctx: &AgentTaskContext<'_>,
 ) {
     update_member_status(
         client_session_id,
         "running",
         Some(truncate_detail(&task, 120)),
-        swarm_members,
-        swarms_by_id,
-        Some(event_history),
-        Some(event_counter),
-        Some(swarm_event_tx),
+        ctx.swarm_members,
+        ctx.swarms_by_id,
+        Some(ctx.event_history),
+        Some(ctx.event_counter),
+        Some(ctx.swarm_event_tx),
     )
     .await;
 
@@ -1214,7 +1230,7 @@ pub(super) async fn handle_agent_task(
         &task,
         vec![],
         None,
-        client_event_tx.clone(),
+        ctx.client_event_tx.clone(),
     )
     .await;
     match result {
@@ -1223,31 +1239,31 @@ pub(super) async fn handle_agent_task(
                 client_session_id,
                 "completed",
                 None,
-                swarm_members,
-                swarms_by_id,
-                Some(event_history),
-                Some(event_counter),
-                Some(swarm_event_tx),
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                Some(ctx.event_history),
+                Some(ctx.event_counter),
+                Some(ctx.swarm_event_tx),
             )
             .await;
-            let _ = client_event_tx.send(ServerEvent::Done { id });
+            let _ = ctx.client_event_tx.send(ServerEvent::Done { id });
         }
         Err(e) => {
             update_member_status(
                 client_session_id,
                 "failed",
                 Some(truncate_detail(&e.to_string(), 120)),
-                swarm_members,
-                swarms_by_id,
-                Some(event_history),
-                Some(event_counter),
-                Some(swarm_event_tx),
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                Some(ctx.event_history),
+                Some(ctx.event_counter),
+                Some(ctx.swarm_event_tx),
             )
             .await;
             let retry_after_secs = e
                 .downcast_ref::<StreamError>()
                 .and_then(|stream_error| stream_error.retry_after_secs);
-            let _ = client_event_tx.send(ServerEvent::Error {
+            let _ = ctx.client_event_tx.send(ServerEvent::Error {
                 id,
                 message: crate::util::format_error_chain(&e),
                 retry_after_secs,

@@ -1,5 +1,8 @@
 use super::{EventStream, ModelRoute, MultiProvider, NativeToolResultSender, Provider, copilot};
 use crate::message::{Message, ToolDefinition};
+use crate::provider::models::{
+    ensure_model_allowed_for_subscription, filtered_display_models, filtered_model_routes,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::{Arc, RwLock};
@@ -93,6 +96,7 @@ impl Provider for JcodeProvider {
 
     fn set_model(&self, model: &str) -> Result<()> {
         self.ensure_runtime_mode();
+        ensure_model_allowed_for_subscription(model)?;
         self.inner.set_model(model)?;
         if let Ok(mut selected_model) = self.selected_model.write() {
             *selected_model = crate::subscription_catalog::canonical_model_id(model)
@@ -108,12 +112,12 @@ impl Provider for JcodeProvider {
 
     fn available_models_display(&self) -> Vec<String> {
         self.ensure_runtime_mode();
-        self.inner.available_models_display()
+        filtered_display_models(self.inner.available_models_display())
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
         self.ensure_runtime_mode();
-        self.inner.available_models_for_switching()
+        filtered_display_models(self.inner.available_models_for_switching())
     }
 
     fn available_providers_for_model(&self, model: &str) -> Vec<String> {
@@ -130,7 +134,7 @@ impl Provider for JcodeProvider {
 
     fn model_routes(&self) -> Vec<ModelRoute> {
         self.ensure_runtime_mode();
-        self.inner.model_routes()
+        filtered_model_routes(self.inner.model_routes())
     }
 
     async fn prefetch_models(&self) -> Result<()> {

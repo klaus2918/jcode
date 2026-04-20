@@ -61,9 +61,10 @@ use self::swarm_persistence::{
     persist_swarm_state as persist_swarm_state_snapshot,
     remove_swarm_state as remove_persisted_swarm_state,
 };
+use self::util::get_shared_mcp_pool;
 use crate::agent::Agent;
 use crate::ambient_runner::AmbientRunnerHandle;
-use crate::bus::{Bus, BusEvent, FileOp};
+use crate::bus::{Bus, BusEvent};
 use crate::message::format_background_task_notification_markdown;
 use crate::protocol::{NotificationType, ServerEvent};
 use crate::provider::Provider;
@@ -73,6 +74,7 @@ use crate::runtime_memory_log::{
     ServerRuntimeMemorySample, ServerRuntimeMemoryServer, ServerRuntimeMemorySessions,
     ServerRuntimeMemoryTopSession,
 };
+use crate::tool::selfdev::ReloadContext;
 use crate::transport::Listener;
 use anyhow::Result;
 use jcode_agent_runtime::{InterruptSignal, SoftInterruptSource};
@@ -102,6 +104,23 @@ pub(super) async fn remove_persisted_swarm_state_for(swarm_id: &str, swarm_state
         return;
     }
     remove_persisted_swarm_state(swarm_id);
+}
+
+fn headless_member_should_restore(status: &str, is_headless: bool) -> bool {
+    is_headless && !matches!(status, "completed" | "done" | "failed" | "stopped")
+}
+
+fn headless_reload_continuation_message(reload_ctx: Option<ReloadContext>) -> Option<String> {
+    ReloadContext::recovery_directive(reload_ctx.as_ref(), true, "", None)
+        .map(|directive| directive.continuation_message)
+}
+
+#[derive(Default)]
+struct HeadlessRecoveryStats {
+    candidates: usize,
+    resumed: usize,
+    skipped: usize,
+    failed_to_load: usize,
 }
 
 async fn run_background_task_message_in_live_session_if_idle(
@@ -646,6 +665,255 @@ impl Server {
                 start.elapsed().as_millis()
             ));
         });
+    }
+
+    async fn recover_headless_sessions_on_startup(&self) {
+        let sessions_to_restore = {
+            let members = self.swarm_state.members.read().await;
+            members
+                .values()
+                .filter(|member| headless_member_should_restore(&member.status, member.is_headless))
+                .map(|member| member.session_id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        if sessions_to_restore.is_empty() {
+            return;
+        }
+
+        crate::logging::info(&format!(
+            "Recovering {} headless session(s) after startup: {:?}",
+            sessions_to_restore.len(),
+            sessions_to_restore
+        ));
+
+        let mcp_pool = get_shared_mcp_pool(&self.mcp_pool).await;
+        let recovery_started = Instant::now();
+        let mut stats = HeadlessRecoveryStats::default();
+        let mut swarms_to_persist = HashSet::new();
+
+        for session_id in sessions_to_restore {
+            stats.candidates += 1;
+            let session = match crate::session::Session::load(&session_id) {
+                Ok(session) => session,
+                Err(error) => {
+                    stats.failed_to_load += 1;
+                    crate::logging::warn(&format!(
+                        "Failed to load headless session {} during startup recovery: {}",
+                        session_id, error
+                    ));
+                    update_member_status(
+                        &session_id,
+                        "failed",
+                        Some(truncate_detail(&error.to_string(), 120)),
+                        &self.swarm_state.members,
+                        &self.swarm_state.swarms_by_id,
+                        Some(&self.event_history),
+                        Some(&self.event_counter),
+                        Some(&self.swarm_event_tx),
+                    )
+                    .await;
+                    if let Some(swarm_id) = {
+                        let members = self.swarm_state.members.read().await;
+                        members
+                            .get(&session_id)
+                            .and_then(|member| member.swarm_id.clone())
+                    } {
+                        persist_swarm_state_for(&swarm_id, &self.swarm_state).await;
+                    }
+                    continue;
+                }
+            };
+
+            let previous_status = session.status.clone();
+            let provider = self.provider.fork();
+            let registry = crate::tool::Registry::new(provider.clone()).await;
+            if session.is_canary {
+                registry.register_selfdev_tools().await;
+            }
+            registry
+                .register_mcp_tools(
+                    None,
+                    Some(Arc::clone(&mcp_pool)),
+                    Some("headless".to_string()),
+                )
+                .await;
+
+            let agent = Arc::new(Mutex::new(Agent::new_with_session(
+                provider, registry, session, None,
+            )));
+
+            {
+                let mut sessions = self.sessions.write().await;
+                if sessions.contains_key(&session_id) {
+                    continue;
+                }
+                sessions.insert(session_id.clone(), Arc::clone(&agent));
+            }
+
+            {
+                let agent_guard = agent.lock().await;
+                register_session_interrupt_queue(
+                    &self.soft_interrupt_queues,
+                    &session_id,
+                    agent_guard.soft_interrupt_queue(),
+                )
+                .await;
+                let mut shutdown_signals = self.shutdown_signals.write().await;
+                shutdown_signals.insert(session_id.clone(), agent_guard.graceful_shutdown_signal());
+            }
+
+            let should_resume = {
+                let agent_guard = agent.lock().await;
+                self::client_session::restored_session_was_interrupted(
+                    &session_id,
+                    &previous_status,
+                    &agent_guard,
+                )
+            };
+
+            let reload_ctx = ReloadContext::load_for_session(&session_id).ok().flatten();
+            if !should_resume {
+                ReloadContext::log_recovery_outcome(
+                    "server_startup_headless",
+                    &session_id,
+                    "skipped",
+                    "restored session was not interrupted by reload",
+                );
+                stats.skipped += 1;
+                update_member_status(
+                    &session_id,
+                    "ready",
+                    None,
+                    &self.swarm_state.members,
+                    &self.swarm_state.swarms_by_id,
+                    Some(&self.event_history),
+                    Some(&self.event_counter),
+                    Some(&self.swarm_event_tx),
+                )
+                .await;
+                if let Some(swarm_id) = {
+                    let members = self.swarm_state.members.read().await;
+                    members
+                        .get(&session_id)
+                        .and_then(|member| member.swarm_id.clone())
+                } {
+                    swarms_to_persist.insert(swarm_id);
+                }
+                continue;
+            }
+
+            let Some(reminder) = headless_reload_continuation_message(reload_ctx) else {
+                ReloadContext::log_recovery_outcome(
+                    "server_startup_headless",
+                    &session_id,
+                    "failed",
+                    "recovery directive missing for interrupted headless session",
+                );
+                continue;
+            };
+            stats.resumed += 1;
+            ReloadContext::log_recovery_outcome(
+                "server_startup_headless",
+                &session_id,
+                "resuming",
+                "restored interrupted headless session after reload",
+            );
+            let recover_swarm_members = Arc::clone(&self.swarm_state.members);
+            let recover_swarms_by_id = Arc::clone(&self.swarm_state.swarms_by_id);
+            let recover_event_history = Arc::clone(&self.event_history);
+            let recover_event_counter = Arc::clone(&self.event_counter);
+            let recover_swarm_event_tx = self.swarm_event_tx.clone();
+            let recover_swarm_state = self.swarm_state.clone();
+
+            tokio::spawn(async move {
+                update_member_status(
+                    &session_id,
+                    "running",
+                    Some("resuming after reload".to_string()),
+                    &recover_swarm_members,
+                    &recover_swarms_by_id,
+                    Some(&recover_event_history),
+                    Some(&recover_event_counter),
+                    Some(&recover_swarm_event_tx),
+                )
+                .await;
+                if let Some(swarm_id) = {
+                    let members = recover_swarm_members.read().await;
+                    members
+                        .get(&session_id)
+                        .and_then(|member| member.swarm_id.clone())
+                } {
+                    persist_swarm_state_for(&swarm_id, &recover_swarm_state).await;
+                }
+
+                let event_tx = self::state::session_event_fanout_sender(
+                    session_id.clone(),
+                    Arc::clone(&recover_swarm_members),
+                );
+                let result = self::client_lifecycle::process_message_streaming_mpsc(
+                    Arc::clone(&agent),
+                    "",
+                    vec![],
+                    Some(reminder),
+                    event_tx,
+                )
+                .await;
+
+                let (status, detail) = match result {
+                    Ok(()) => {
+                        ReloadContext::log_recovery_outcome(
+                            "server_startup_headless",
+                            &session_id,
+                            "resumed",
+                            "continuation dispatched successfully",
+                        );
+                        ("ready", None)
+                    }
+                    Err(error) => {
+                        ReloadContext::log_recovery_outcome(
+                            "server_startup_headless",
+                            &session_id,
+                            "failed",
+                            &error.to_string(),
+                        );
+                        ("failed", Some(truncate_detail(&error.to_string(), 120)))
+                    }
+                };
+                update_member_status(
+                    &session_id,
+                    status,
+                    detail,
+                    &recover_swarm_members,
+                    &recover_swarms_by_id,
+                    Some(&recover_event_history),
+                    Some(&recover_event_counter),
+                    Some(&recover_swarm_event_tx),
+                )
+                .await;
+                if let Some(swarm_id) = {
+                    let members = recover_swarm_members.read().await;
+                    members
+                        .get(&session_id)
+                        .and_then(|member| member.swarm_id.clone())
+                } {
+                    persist_swarm_state_for(&swarm_id, &recover_swarm_state).await;
+                }
+            });
+        }
+
+        for swarm_id in swarms_to_persist {
+            persist_swarm_state_for(&swarm_id, &self.swarm_state).await;
+        }
+
+        crate::logging::info(&format!(
+            "[TIMING] headless reload startup recovery: candidates={}, resumed={}, skipped={}, failed_to_load={}, total={}ms",
+            stats.candidates,
+            stats.resumed,
+            stats.skipped,
+            stats.failed_to_load,
+            recovery_started.elapsed().as_millis()
+        ));
     }
 
     fn spawn_background_tasks(&self, server_start_time: Instant) {
@@ -1271,9 +1539,10 @@ impl Server {
                         }
                     };
 
-                    // Only notify on modifications; plain reads are tracked for later context
-                    // but should not proactively alert the swarm.
-                    let is_modification = matches!(touch.op, FileOp::Write | FileOp::Edit);
+                    // Only notify on modifications, and only about prior peer modifications.
+                    // Plain reads are still tracked for later context/listing but should not
+                    // proactively alert the swarm.
+                    let is_modification = touch.op.is_modification();
                     if is_modification {
                         crate::logging::info(&format!(
                             "[file-activity] modification by {} on {}, swarm_peers: {:?}",
@@ -1458,10 +1727,8 @@ impl Server {
         crate::transport::remove_socket(&self.socket_path);
         crate::transport::remove_socket(&self.debug_socket_path);
 
-        #[allow(unused_mut)]
-        let mut main_listener = Listener::bind(&self.socket_path)?;
-        #[allow(unused_mut)]
-        let mut debug_listener = Listener::bind(&self.debug_socket_path)?;
+        let main_listener = Listener::bind(&self.socket_path)?;
+        let debug_listener = Listener::bind(&self.debug_socket_path)?;
 
         #[cfg(unix)]
         {
@@ -1495,6 +1762,7 @@ impl Server {
 
         self.spawn_registry_prewarm();
         let registry_info = self.build_registry_info();
+        self.recover_headless_sessions_on_startup().await;
         self.spawn_background_tasks(server_start_time);
 
         // Note: No default session created here - each client creates its own session

@@ -22,7 +22,9 @@ impl Provider for TestProvider {
         _system: &str,
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
-        unimplemented!("test provider")
+        Err(anyhow::anyhow!(
+            "test provider complete should not be called in startup tests"
+        ))
     }
 
     fn name(&self) -> &str {
@@ -86,8 +88,7 @@ async fn wait_for_existing_server_tolerates_delayed_listener() {
 
     let bind_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        #[allow(unused_mut)]
-        let mut listener = Listener::bind(&bind_path).expect("bind delayed listener");
+        let listener = Listener::bind(&bind_path).expect("bind delayed listener");
         tokio::time::sleep(Duration::from_millis(200)).await;
         drop(listener);
     });

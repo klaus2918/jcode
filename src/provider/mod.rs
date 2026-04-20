@@ -384,6 +384,7 @@ pub const ALL_OPENAI_MODELS: &[&str] = &[
 ];
 
 use self::dispatch::CompletionMode;
+use self::models::normalize_copilot_model_name;
 pub use self::models::{
     AccountModelAvailability, AccountModelAvailabilityState, AnthropicModelCatalog,
     DEFAULT_CONTEXT_LIMIT, ModelCapabilities, OpenAIModelCatalog,
@@ -405,12 +406,8 @@ pub use self::models::{
     resolve_model_capabilities, should_refresh_anthropic_model_catalog,
     should_refresh_openai_model_catalog,
 };
-use self::models::{
-    ensure_model_allowed_for_subscription, filtered_display_models, filtered_model_routes,
-    normalize_copilot_model_name,
-};
 use self::pricing::{cheapness_for_route, openrouter_pricing_from_model_pricing};
-use self::selection::ActiveProvider;
+use self::selection::{ActiveProvider, ProviderAvailability};
 
 /// MultiProvider wraps multiple providers and allows seamless model switching
 pub struct MultiProvider {
@@ -822,8 +819,6 @@ impl Provider for MultiProvider {
         self.spawn_anthropic_catalog_refresh_if_needed();
         self.spawn_openai_catalog_refresh_if_needed();
 
-        ensure_model_allowed_for_subscription(model)?;
-
         // Handle explicit "copilot:" prefix from model picker
         if let Some(copilot_model) = model.strip_prefix("copilot:") {
             if let Some(forced) = self.forced_provider
@@ -874,6 +869,54 @@ impl Provider for MultiProvider {
                 copilot_model
             ));
             return self.set_model(copilot_model);
+        }
+
+        if let Some(antigravity_model) = model.strip_prefix("antigravity:") {
+            if let Some(forced) = self.forced_provider
+                && forced != ActiveProvider::Antigravity
+            {
+                let antigravity_guard = self
+                    .antigravity
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if antigravity_guard.is_none() {
+                    anyhow::bail!(
+                        "Model '{}' requires Antigravity but Antigravity credentials are not configured. Run `jcode login --provider antigravity` first.",
+                        antigravity_model
+                    );
+                }
+                drop(antigravity_guard);
+                crate::logging::info(&format!(
+                    "Switching from {} to Antigravity for model '{}'",
+                    Self::provider_label(forced),
+                    antigravity_model,
+                ));
+            }
+            let antigravity_guard = self
+                .antigravity
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if antigravity_guard.is_some() {
+                *self
+                    .active
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = ActiveProvider::Antigravity;
+                if let Some(ref antigravity) = *antigravity_guard {
+                    antigravity.set_model(antigravity_model)?;
+                }
+                return Ok(());
+            }
+            drop(antigravity_guard);
+            if self.forced_provider == Some(ActiveProvider::Antigravity) {
+                return Err(anyhow::anyhow!(
+                    "Antigravity is locked by --provider but is not configured. Run `jcode login --provider antigravity`."
+                ));
+            }
+            crate::logging::info(&format!(
+                "Antigravity not available for '{}', trying other providers",
+                antigravity_model
+            ));
+            return self.set_model(antigravity_model);
         }
 
         // Handle explicit "cursor:" prefix from model picker/default config
@@ -1023,6 +1066,22 @@ impl Provider for MultiProvider {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = ActiveProvider::Gemini;
             if let Some(gemini) = gemini {
                 gemini.set_model(model)
+            } else {
+                Ok(())
+            }
+        } else if target_provider == Some("antigravity") {
+            let antigravity = self.antigravity_provider();
+            if antigravity.is_none() {
+                return Err(anyhow::anyhow!(
+                    "Antigravity credentials not available. Run `jcode login --provider antigravity` first."
+                ));
+            }
+            *self
+                .active
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = ActiveProvider::Antigravity;
+            if let Some(antigravity) = antigravity {
+                antigravity.set_model(model)
             } else {
                 Ok(())
             }
@@ -1193,6 +1252,19 @@ impl Provider for MultiProvider {
             }
         }
         {
+            let antigravity_guard = self
+                .antigravity
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(ref antigravity) = *antigravity_guard {
+                for m in antigravity.available_models_display() {
+                    if !models.contains(&m) {
+                        models.push(m);
+                    }
+                }
+            }
+        }
+        {
             let gemini_guard = self
                 .gemini
                 .read()
@@ -1226,7 +1298,7 @@ impl Provider for MultiProvider {
         {
             models.extend(openrouter.available_models_display());
         }
-        filtered_display_models(models)
+        models
     }
 
     fn available_providers_for_model(&self, model: &str) -> Vec<String> {
@@ -1425,6 +1497,13 @@ impl Provider for MultiProvider {
             }
         }
 
+        // Antigravity models
+        {
+            if let Some(antigravity) = self.antigravity_provider() {
+                routes.extend(antigravity.model_routes());
+            }
+        }
+
         // Cursor models
         {
             if let Some(cursor) = self.cursor_provider() {
@@ -1582,7 +1661,7 @@ impl Provider for MultiProvider {
             }
         }
 
-        filtered_model_routes(routes)
+        routes
     }
 
     async fn prefetch_models(&self) -> Result<()> {
@@ -2240,6 +2319,8 @@ impl Provider for MultiProvider {
         provider.spawn_openai_catalog_refresh_if_needed();
         if matches!(active, ActiveProvider::Copilot) {
             let _ = provider.set_model(&format!("copilot:{}", current_model));
+        } else if matches!(active, ActiveProvider::Antigravity) {
+            let _ = provider.set_model(&format!("antigravity:{}", current_model));
         } else if matches!(active, ActiveProvider::Cursor) {
             let _ = provider.set_model(&format!("cursor:{}", current_model));
         } else {

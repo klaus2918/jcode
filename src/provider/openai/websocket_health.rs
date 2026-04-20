@@ -9,6 +9,31 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WebsocketFallbackReason {
+    ConnectTimeout,
+    FirstResponseTimeout,
+    StreamTimeout,
+    ServerRequestedHttps,
+    ConnectFailed,
+    StreamClosedEarly,
+    WebsocketError,
+}
+
+impl WebsocketFallbackReason {
+    pub(super) fn summary(self) -> &'static str {
+        match self {
+            Self::ConnectTimeout => "connect timeout",
+            Self::FirstResponseTimeout => "first response timeout",
+            Self::StreamTimeout => "stream timeout",
+            Self::ServerRequestedHttps => "server requested https",
+            Self::ConnectFailed => "connect failed",
+            Self::StreamClosedEarly => "stream closed early",
+            Self::WebsocketError => "websocket error",
+        }
+    }
+}
+
 pub(super) fn is_websocket_fallback_notice(data: &str) -> bool {
     data.to_lowercase().contains(WEBSOCKET_FALLBACK_NOTICE)
 }
@@ -62,6 +87,59 @@ pub(super) fn websocket_next_activity_timeout_secs(
 
 pub(super) fn websocket_activity_timeout_kind(saw_api_activity: bool) -> &'static str {
     if saw_api_activity { "next" } else { "first" }
+}
+
+pub(super) fn classify_websocket_fallback_reason(error: &str) -> WebsocketFallbackReason {
+    let error = error.to_ascii_lowercase();
+    if error.contains("connect timed out") {
+        WebsocketFallbackReason::ConnectTimeout
+    } else if error.contains("did not emit api activity within")
+        || error.contains("timed out waiting for first websocket activity")
+    {
+        WebsocketFallbackReason::FirstResponseTimeout
+    } else if error.contains("timed out waiting for next websocket activity")
+        || error.contains("did not complete within")
+    {
+        WebsocketFallbackReason::StreamTimeout
+    } else if error.contains("upgrade required")
+        || error.contains("server requested fallback")
+        || error.contains(WEBSOCKET_FALLBACK_NOTICE)
+    {
+        WebsocketFallbackReason::ServerRequestedHttps
+    } else if error.contains("failed to connect websocket stream") {
+        WebsocketFallbackReason::ConnectFailed
+    } else if error.contains("ended before response.completed")
+        || error.contains("closed before response.completed")
+    {
+        WebsocketFallbackReason::StreamClosedEarly
+    } else {
+        WebsocketFallbackReason::WebsocketError
+    }
+}
+
+pub(super) fn summarize_websocket_fallback_reason(error: &str) -> &'static str {
+    classify_websocket_fallback_reason(error).summary()
+}
+
+fn websocket_cooldown_bounds_for_reason(reason: WebsocketFallbackReason) -> (u64, u64) {
+    match reason {
+        WebsocketFallbackReason::ServerRequestedHttps => (
+            WEBSOCKET_MODEL_COOLDOWN_BASE_SECS.saturating_mul(5),
+            WEBSOCKET_MODEL_COOLDOWN_MAX_SECS.saturating_mul(3),
+        ),
+        WebsocketFallbackReason::StreamTimeout => (
+            WEBSOCKET_MODEL_COOLDOWN_BASE_SECS,
+            WEBSOCKET_MODEL_COOLDOWN_MAX_SECS,
+        ),
+        WebsocketFallbackReason::ConnectTimeout
+        | WebsocketFallbackReason::FirstResponseTimeout
+        | WebsocketFallbackReason::ConnectFailed
+        | WebsocketFallbackReason::StreamClosedEarly
+        | WebsocketFallbackReason::WebsocketError => (
+            (WEBSOCKET_MODEL_COOLDOWN_BASE_SECS / 2).max(1),
+            (WEBSOCKET_MODEL_COOLDOWN_MAX_SECS / 2).max(1),
+        ),
+    }
 }
 
 pub(super) fn normalize_transport_model(model: &str) -> Option<String> {
@@ -142,9 +220,13 @@ pub(super) async fn clear_websocket_cooldown(
     guard.remove(&key);
 }
 
-pub(super) fn websocket_cooldown_for_streak(streak: u32) -> Duration {
-    let base = WEBSOCKET_MODEL_COOLDOWN_BASE_SECS as u128;
-    let max = WEBSOCKET_MODEL_COOLDOWN_MAX_SECS as u128;
+pub(super) fn websocket_cooldown_for_streak(
+    streak: u32,
+    reason: WebsocketFallbackReason,
+) -> Duration {
+    let (base, max) = websocket_cooldown_bounds_for_reason(reason);
+    let base = base as u128;
+    let max = max as u128;
     let shift = streak.saturating_sub(1).min(16);
     let scaled = base.saturating_mul(1u128 << shift);
     Duration::from_secs(scaled.min(max) as u64)
@@ -154,9 +236,10 @@ pub(super) async fn record_websocket_fallback(
     websocket_cooldowns: &Arc<RwLock<HashMap<String, Instant>>>,
     websocket_failure_streaks: &Arc<RwLock<HashMap<String, u32>>>,
     model: &str,
+    reason: WebsocketFallbackReason,
 ) -> (u32, Duration) {
     let Some(key) = normalize_transport_model(model) else {
-        return (0, Duration::from_secs(WEBSOCKET_MODEL_COOLDOWN_BASE_SECS));
+        return (0, websocket_cooldown_for_streak(1, reason));
     };
 
     let streak = {
@@ -166,7 +249,7 @@ pub(super) async fn record_websocket_fallback(
         *entry
     };
 
-    let cooldown = websocket_cooldown_for_streak(streak);
+    let cooldown = websocket_cooldown_for_streak(streak, reason);
     set_websocket_cooldown_for(websocket_cooldowns, model, cooldown).await;
     (streak, cooldown)
 }

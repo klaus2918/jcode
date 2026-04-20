@@ -253,7 +253,7 @@ pub(super) fn prepare_messages(
     app: &dyn TuiState,
     width: u16,
     height: u16,
-) -> Arc<PreparedMessages> {
+) -> Arc<PreparedChatFrame> {
     if cfg!(test) {
         return Arc::new(prepare_messages_inner(app, width, height));
     }
@@ -271,6 +271,8 @@ pub(super) fn prepare_messages(
         batch_progress_hash: active_batch_progress_hash(app),
     };
 
+    super::note_full_prep_request();
+
     {
         let cache = match full_prep_cache().lock() {
             Ok(c) => c,
@@ -281,12 +283,16 @@ pub(super) fn prepare_messages(
             }
         };
         let mut cache = cache;
-        if let Some(prepared) = cache.get_exact(&key) {
+        if let Some((prepared, kind)) = cache.get_exact_with_kind(&key) {
+            super::note_full_prep_cache_hit(kind, prepared.as_ref());
             return prepared;
         }
     }
 
+    super::note_full_prep_cache_miss();
+
     let prepared = Arc::new(prepare_messages_inner(app, width, height));
+    super::note_full_prep_built(prepared.as_ref());
 
     {
         if let Ok(mut cache) = full_prep_cache().lock() {
@@ -297,272 +303,135 @@ pub(super) fn prepare_messages(
     prepared
 }
 
-fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> PreparedMessages {
+fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> PreparedChatFrame {
     let mut all_header_lines = header::build_persistent_header(app, width);
     all_header_lines.extend(header::build_header_lines(app, width));
-    let header_prepared = wrap_lines(all_header_lines, &[], &[], &[], width);
+    let header_prepared = Arc::new(wrap_lines(all_header_lines, &[], &[], &[], width));
 
     let body_prepared = prepare_body_cached(app, width);
     let has_batch_progress = active_batch_progress(app).is_some();
     let batch_prefix_blank = has_batch_progress && !body_prepared.wrapped_lines.is_empty();
     let batch_progress_prepared = if has_batch_progress {
-        prepare_active_batch_progress(app, width, batch_prefix_blank)
+        Arc::new(prepare_active_batch_progress(
+            app,
+            width,
+            batch_prefix_blank,
+        ))
     } else {
-        empty_prepared_messages()
+        Arc::new(empty_prepared_messages())
     };
     let has_streaming = app.is_processing() && !app.streaming_text().is_empty();
     let stream_prefix_blank = has_streaming
         && (!body_prepared.wrapped_lines.is_empty()
             || !batch_progress_prepared.wrapped_lines.is_empty());
     let streaming_prepared = if has_streaming {
-        prepare_streaming_cached(app, width, stream_prefix_blank)
+        Arc::new(prepare_streaming_cached(app, width, stream_prefix_blank))
     } else {
-        empty_prepared_messages()
+        Arc::new(empty_prepared_messages())
     };
 
-    let mut wrapped_lines: Vec<Line<'static>>;
-    let raw_plain_lines;
-    let wrapped_line_map;
-    let wrapped_copy_offsets;
-    let wrapped_user_indices;
-    let wrapped_user_prompt_starts;
-    let wrapped_user_prompt_ends;
-    let user_prompt_texts;
-    let mut image_regions;
-    let edit_tool_ranges;
-    let copy_targets;
+    let is_initial_empty = app.display_messages().is_empty()
+        && !app.is_processing()
+        && app.streaming_text().is_empty();
 
-    {
-        let is_initial_empty = app.display_messages().is_empty()
-            && !app.is_processing()
-            && app.streaming_text().is_empty();
-
-        wrapped_lines = header_prepared.wrapped_lines;
-
-        if is_initial_empty {
-            let suggestions = app.suggestion_prompts();
-            let is_centered = app.centered_mode();
-            let suggestion_align = if is_centered {
-                ratatui::layout::Alignment::Center
-            } else {
-                ratatui::layout::Alignment::Left
-            };
-            if !suggestions.is_empty() {
-                wrapped_lines.push(Line::from(""));
-                for (i, (label, prompt)) in suggestions.iter().enumerate() {
-                    let is_login = prompt.starts_with('/');
-                    let pad = if is_centered { "" } else { "  " };
-                    let spans = if is_login {
-                        vec![
-                            Span::styled(
-                                format!("{}{} ", pad, label),
-                                Style::default()
-                                    .fg(rgb(138, 180, 248))
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(
-                                format!("(type {})", prompt),
-                                Style::default().fg(dim_color()),
-                            ),
-                        ]
-                    } else {
-                        vec![
-                            Span::styled(
-                                format!("{}[{}] ", pad, i + 1),
-                                Style::default().fg(rgb(138, 180, 248)),
-                            ),
-                            Span::styled(label.clone(), Style::default().fg(rgb(200, 200, 200))),
-                        ]
-                    };
-                    wrapped_lines.push(Line::from(spans).alignment(suggestion_align));
-                }
-                if suggestions.len() > 1 {
-                    wrapped_lines.push(Line::from(""));
-                    wrapped_lines.push(
-                        Line::from(Span::styled(
-                            if is_centered {
-                                "Press 1-3 or type anything to start"
-                            } else {
-                                "  Press 1-3 or type anything to start"
-                            },
-                            Style::default().fg(dim_color()),
-                        ))
-                        .alignment(suggestion_align),
-                    );
-                }
-            }
-
-            let content_height = wrapped_lines.len();
-            let input_reserve = 4;
-            let available = (height as usize).saturating_sub(input_reserve);
-            let pad_top = available.saturating_sub(content_height) / 2;
-            let mut centered = Vec::with_capacity(pad_top + content_height);
-            for _ in 0..pad_top {
-                centered.push(Line::from(""));
-            }
-            centered.extend(wrapped_lines);
-            wrapped_lines = centered;
-        }
-
-        if is_initial_empty {
-            raw_plain_lines = Vec::new();
-            wrapped_line_map = Vec::new();
-            wrapped_copy_offsets = vec![0; wrapped_lines.len()];
+    if is_initial_empty {
+        let suggestions = app.suggestion_prompts();
+        let is_centered = app.centered_mode();
+        let suggestion_align = if is_centered {
+            ratatui::layout::Alignment::Center
         } else {
-            let header_raw_len = header_prepared.raw_plain_lines.len();
-            let body_raw_len = body_prepared.raw_plain_lines.len();
-            let batch_raw_len = batch_progress_prepared.raw_plain_lines.len();
+            ratatui::layout::Alignment::Left
+        };
+        let mut wrapped_lines = header_prepared.wrapped_lines.clone();
 
-            let mut all_raw_plain_lines = Vec::with_capacity(
-                header_raw_len
-                    + body_raw_len
-                    + batch_raw_len
-                    + streaming_prepared.raw_plain_lines.len(),
-            );
-            all_raw_plain_lines.extend(header_prepared.raw_plain_lines.iter().cloned());
-            all_raw_plain_lines.extend(body_prepared.raw_plain_lines.iter().cloned());
-            all_raw_plain_lines.extend(batch_progress_prepared.raw_plain_lines.iter().cloned());
-            all_raw_plain_lines.extend(streaming_prepared.raw_plain_lines.iter().cloned());
-
-            let body_raw_offset = header_raw_len;
-            let batch_raw_offset = body_raw_offset + body_raw_len;
-            let streaming_raw_offset = batch_raw_offset + batch_raw_len;
-
-            let mut all_wrapped_line_map = Vec::with_capacity(
-                header_prepared.wrapped_line_map.len()
-                    + body_prepared.wrapped_line_map.len()
-                    + batch_progress_prepared.wrapped_line_map.len()
-                    + streaming_prepared.wrapped_line_map.len(),
-            );
-            all_wrapped_line_map.extend(header_prepared.wrapped_line_map.iter().copied());
-            all_wrapped_line_map.extend(body_prepared.wrapped_line_map.iter().map(|map| {
-                WrappedLineMap {
-                    raw_line: map.raw_line + body_raw_offset,
-                    ..*map
-                }
-            }));
-            all_wrapped_line_map.extend(batch_progress_prepared.wrapped_line_map.iter().map(
-                |map| WrappedLineMap {
-                    raw_line: map.raw_line + batch_raw_offset,
-                    ..*map
-                },
-            ));
-            all_wrapped_line_map.extend(streaming_prepared.wrapped_line_map.iter().map(|map| {
-                WrappedLineMap {
-                    raw_line: map.raw_line + streaming_raw_offset,
-                    ..*map
-                }
-            }));
-
-            let mut all_wrapped_copy_offsets = Vec::with_capacity(
-                header_prepared.wrapped_copy_offsets.len()
-                    + body_prepared.wrapped_copy_offsets.len()
-                    + batch_progress_prepared.wrapped_copy_offsets.len()
-                    + streaming_prepared.wrapped_copy_offsets.len(),
-            );
-            all_wrapped_copy_offsets.extend(header_prepared.wrapped_copy_offsets.iter().copied());
-            all_wrapped_copy_offsets.extend(body_prepared.wrapped_copy_offsets.iter().copied());
-            all_wrapped_copy_offsets
-                .extend(batch_progress_prepared.wrapped_copy_offsets.iter().copied());
-            all_wrapped_copy_offsets
-                .extend(streaming_prepared.wrapped_copy_offsets.iter().copied());
-
-            raw_plain_lines = all_raw_plain_lines;
-            wrapped_line_map = all_wrapped_line_map;
-            wrapped_copy_offsets = all_wrapped_copy_offsets;
+        if !suggestions.is_empty() {
+            wrapped_lines.push(Line::from(""));
+            for (i, (label, prompt)) in suggestions.iter().enumerate() {
+                let is_login = prompt.starts_with('/');
+                let pad = if is_centered { "" } else { "  " };
+                let spans = if is_login {
+                    vec![
+                        Span::styled(
+                            format!("{}{} ", pad, label),
+                            Style::default()
+                                .fg(rgb(138, 180, 248))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("(type {})", prompt),
+                            Style::default().fg(dim_color()),
+                        ),
+                    ]
+                } else {
+                    vec![
+                        Span::styled(
+                            format!("{}[{}] ", pad, i + 1),
+                            Style::default().fg(rgb(138, 180, 248)),
+                        ),
+                        Span::styled(label.clone(), Style::default().fg(rgb(200, 200, 200))),
+                    ]
+                };
+                wrapped_lines.push(Line::from(spans).alignment(suggestion_align));
+            }
+            if suggestions.len() > 1 {
+                wrapped_lines.push(Line::from(""));
+                wrapped_lines.push(
+                    Line::from(Span::styled(
+                        if is_centered {
+                            "Press 1-3 or type anything to start"
+                        } else {
+                            "  Press 1-3 or type anything to start"
+                        },
+                        Style::default().fg(dim_color()),
+                    ))
+                    .alignment(suggestion_align),
+                );
+            }
         }
 
-        let header_len = wrapped_lines.len();
-        let body_offset = header_len;
-        let body_len = body_prepared.wrapped_lines.len();
-        let batch_len = batch_progress_prepared.wrapped_lines.len();
-        wrapped_lines.extend_from_slice(&body_prepared.wrapped_lines);
-        wrapped_lines.extend(batch_progress_prepared.wrapped_lines);
-        wrapped_lines.extend(streaming_prepared.wrapped_lines);
-
-        wrapped_user_indices = body_prepared
-            .wrapped_user_indices
-            .iter()
-            .map(|idx| idx + body_offset)
-            .collect();
-
-        wrapped_user_prompt_starts = body_prepared
-            .wrapped_user_prompt_starts
-            .iter()
-            .map(|idx| idx + body_offset)
-            .collect();
-
-        wrapped_user_prompt_ends = body_prepared
-            .wrapped_user_prompt_ends
-            .iter()
-            .map(|idx| idx + body_offset)
-            .collect();
-
-        user_prompt_texts = body_prepared.user_prompt_texts.clone();
-
-        image_regions = Vec::with_capacity(
-            body_prepared.image_regions.len() + streaming_prepared.image_regions.len(),
-        );
-        for region in &body_prepared.image_regions {
-            image_regions.push(ImageRegion {
-                abs_line_idx: region.abs_line_idx + body_offset,
-                end_line: region.end_line + body_offset,
-                ..*region
-            });
+        let content_height = wrapped_lines.len();
+        let input_reserve = 4;
+        let available = (height as usize).saturating_sub(input_reserve);
+        let pad_top = available.saturating_sub(content_height) / 2;
+        let mut centered = Vec::with_capacity(pad_top + content_height);
+        for _ in 0..pad_top {
+            centered.push(Line::from(""));
         }
-        for mut region in streaming_prepared.image_regions {
-            region.abs_line_idx += body_offset + body_len + batch_len;
-            region.end_line += body_offset + body_len + batch_len;
-            image_regions.push(region);
-        }
-
-        edit_tool_ranges = body_prepared
-            .edit_tool_ranges
-            .iter()
-            .map(|r| EditToolRange {
-                edit_index: r.edit_index,
-                msg_index: r.msg_index,
-                file_path: r.file_path.clone(),
-                start_line: r.start_line + body_offset,
-                end_line: r.end_line + body_offset,
-            })
-            .collect();
-
-        copy_targets = body_prepared
-            .copy_targets
-            .iter()
-            .map(|target| CopyTarget {
-                kind: target.kind.clone(),
-                content: target.content.clone(),
-                start_line: target.start_line + body_offset,
-                end_line: target.end_line + body_offset,
-                badge_line: target.badge_line + body_offset,
-            })
-            .collect();
+        centered.extend(wrapped_lines);
+        let wrapped_lines = centered;
+        let wrapped_line_count = wrapped_lines.len();
+        let wrapped_plain_lines = Arc::new(wrapped_lines.iter().map(ui::line_plain_text).collect());
+        let prepared = Arc::new(PreparedMessages {
+            wrapped_lines,
+            wrapped_plain_lines,
+            wrapped_copy_offsets: Arc::new(vec![0; wrapped_line_count]),
+            raw_plain_lines: Arc::new(Vec::new()),
+            wrapped_line_map: Arc::new(Vec::new()),
+            wrapped_user_indices: Vec::new(),
+            wrapped_user_prompt_starts: Vec::new(),
+            wrapped_user_prompt_ends: Vec::new(),
+            user_prompt_texts: Vec::new(),
+            image_regions: Vec::new(),
+            edit_tool_ranges: Vec::new(),
+            copy_targets: Vec::new(),
+        });
+        return PreparedChatFrame::from_single(prepared);
     }
 
-    let wrapped_plain_lines = Arc::new(wrapped_lines.iter().map(ui::line_plain_text).collect());
-
-    PreparedMessages {
-        wrapped_lines,
-        wrapped_plain_lines,
-        wrapped_copy_offsets: Arc::new(wrapped_copy_offsets),
-        raw_plain_lines: Arc::new(raw_plain_lines),
-        wrapped_line_map: Arc::new(wrapped_line_map),
-        wrapped_user_indices,
-        wrapped_user_prompt_starts,
-        wrapped_user_prompt_ends,
-        user_prompt_texts,
-        image_regions,
-        edit_tool_ranges,
-        copy_targets,
-    }
+    PreparedChatFrame::from_sections(vec![
+        header_prepared,
+        body_prepared,
+        batch_progress_prepared,
+        streaming_prepared,
+    ])
 }
 
 fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> {
     if cfg!(test) {
         return Arc::new(prepare_body(app, width, false));
     }
+
+    super::note_body_request();
 
     let key = BodyCacheKey {
         width,
@@ -583,19 +452,25 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
     };
 
     let mut cache = cache;
-    if let Some(prepared) = cache.get_exact(&key) {
+    if let Some((prepared, kind)) = cache.get_exact_with_kind(&key) {
+        super::note_body_cache_hit(kind, prepared.as_ref());
         return prepared;
     }
 
-    let incremental_base = cache.best_incremental_base(&key, msg_count);
+    super::note_body_cache_miss();
+
+    let incremental_base = cache.take_best_incremental_base(&key, msg_count);
 
     drop(cache);
 
     let prepared = if let Some((prev, prev_count)) = incremental_base {
-        prepare_body_incremental(app, width, &prev, prev_count)
+        super::note_body_incremental_reuse(prev_count);
+        prepare_body_incremental(app, width, prev, prev_count)
     } else {
         Arc::new(prepare_body(app, width, false))
     };
+
+    super::note_body_built(prepared.as_ref());
 
     let mut cache = match body_cache().lock() {
         Ok(c) => c,
@@ -605,16 +480,16 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
     prepared
 }
 
-fn prepare_body_incremental(
+pub(super) fn prepare_body_incremental(
     app: &dyn TuiState,
     width: u16,
-    prev: &PreparedMessages,
+    mut prev: Arc<PreparedMessages>,
     prev_msg_count: usize,
 ) -> Arc<PreparedMessages> {
     let messages = app.display_messages();
     let new_messages = &messages[prev_msg_count..];
     if new_messages.is_empty() {
-        return Arc::new(prev.clone());
+        return prev;
     }
 
     let centered = app.centered_mode();
@@ -925,89 +800,89 @@ fn prepare_body_incremental(
         &new_copy_targets,
     );
 
-    let prev_len = prev.wrapped_lines.len();
-    let mut wrapped_lines = Vec::with_capacity(prev_len + new_wrapped.wrapped_lines.len());
-    wrapped_lines.extend_from_slice(&prev.wrapped_lines);
-    wrapped_lines.extend(new_wrapped.wrapped_lines);
-    let mut wrapped_copy_offsets = prev.wrapped_copy_offsets.as_ref().clone();
-    wrapped_copy_offsets.extend(new_wrapped.wrapped_copy_offsets.iter().copied());
+    let prepared = Arc::make_mut(&mut prev);
+    let prev_len = prepared.wrapped_lines.len();
+    let prev_raw_len = prepared.raw_plain_lines.len();
+    let edit_index_base = prepared.edit_tool_ranges.len();
 
-    let prev_raw_len = prev.raw_plain_lines.len();
-    let mut raw_plain_lines = prev.raw_plain_lines.as_ref().clone();
-    raw_plain_lines.extend(new_wrapped.raw_plain_lines.iter().cloned());
+    prepared.wrapped_lines.extend(new_wrapped.wrapped_lines);
+    Arc::make_mut(&mut prepared.wrapped_plain_lines)
+        .extend(new_wrapped.wrapped_plain_lines.iter().cloned());
+    Arc::make_mut(&mut prepared.wrapped_copy_offsets)
+        .extend(new_wrapped.wrapped_copy_offsets.iter().copied());
+    Arc::make_mut(&mut prepared.raw_plain_lines)
+        .extend(new_wrapped.raw_plain_lines.iter().cloned());
 
-    let mut wrapped_line_map = prev.wrapped_line_map.as_ref().clone();
-    for map in new_wrapped.wrapped_line_map.iter().copied() {
-        wrapped_line_map.push(WrappedLineMap {
-            raw_line: map.raw_line + prev_raw_len,
-            ..map
-        });
+    {
+        let wrapped_line_map = Arc::make_mut(&mut prepared.wrapped_line_map);
+        for map in new_wrapped.wrapped_line_map.iter().copied() {
+            wrapped_line_map.push(WrappedLineMap {
+                raw_line: map.raw_line + prev_raw_len,
+                ..map
+            });
+        }
     }
 
-    let mut wrapped_user_indices = prev.wrapped_user_indices.clone();
-    for idx in new_wrapped.wrapped_user_indices {
-        wrapped_user_indices.push(idx + prev_len);
-    }
+    prepared.wrapped_user_indices.extend(
+        new_wrapped
+            .wrapped_user_indices
+            .into_iter()
+            .map(|idx| idx + prev_len),
+    );
+    prepared.wrapped_user_prompt_starts.extend(
+        new_wrapped
+            .wrapped_user_prompt_starts
+            .into_iter()
+            .map(|idx| idx + prev_len),
+    );
+    prepared.wrapped_user_prompt_ends.extend(
+        new_wrapped
+            .wrapped_user_prompt_ends
+            .into_iter()
+            .map(|idx| idx + prev_len),
+    );
+    prepared
+        .user_prompt_texts
+        .extend(new_wrapped.user_prompt_texts);
+    prepared
+        .image_regions
+        .extend(
+            new_wrapped
+                .image_regions
+                .into_iter()
+                .map(|region| ImageRegion {
+                    abs_line_idx: region.abs_line_idx + prev_len,
+                    end_line: region.end_line + prev_len,
+                    ..region
+                }),
+        );
+    prepared
+        .edit_tool_ranges
+        .extend(
+            new_wrapped
+                .edit_tool_ranges
+                .into_iter()
+                .map(|r| EditToolRange {
+                    edit_index: edit_index_base + r.edit_index,
+                    msg_index: r.msg_index,
+                    file_path: r.file_path,
+                    start_line: r.start_line + prev_len,
+                    end_line: r.end_line + prev_len,
+                }),
+        );
+    prepared.copy_targets.extend(
+        new_wrapped
+            .copy_targets
+            .into_iter()
+            .map(|target| CopyTarget {
+                start_line: target.start_line + prev_len,
+                end_line: target.end_line + prev_len,
+                badge_line: target.badge_line + prev_len,
+                ..target
+            }),
+    );
 
-    let mut wrapped_user_prompt_starts = prev.wrapped_user_prompt_starts.clone();
-    for idx in new_wrapped.wrapped_user_prompt_starts {
-        wrapped_user_prompt_starts.push(idx + prev_len);
-    }
-
-    let mut wrapped_user_prompt_ends = prev.wrapped_user_prompt_ends.clone();
-    for idx in new_wrapped.wrapped_user_prompt_ends {
-        wrapped_user_prompt_ends.push(idx + prev_len);
-    }
-
-    let mut user_prompt_texts = prev.user_prompt_texts.clone();
-    user_prompt_texts.extend(new_user_prompt_texts);
-
-    let mut image_regions = prev.image_regions.clone();
-    for region in new_wrapped.image_regions {
-        image_regions.push(ImageRegion {
-            abs_line_idx: region.abs_line_idx + prev_len,
-            end_line: region.end_line + prev_len,
-            ..region
-        });
-    }
-
-    let mut edit_tool_ranges = prev.edit_tool_ranges.clone();
-    for r in new_wrapped.edit_tool_ranges {
-        edit_tool_ranges.push(EditToolRange {
-            edit_index: prev.edit_tool_ranges.len() + r.edit_index,
-            msg_index: r.msg_index,
-            file_path: r.file_path,
-            start_line: r.start_line + prev_len,
-            end_line: r.end_line + prev_len,
-        });
-    }
-
-    let mut copy_targets = prev.copy_targets.clone();
-    for target in new_wrapped.copy_targets {
-        copy_targets.push(CopyTarget {
-            start_line: target.start_line + prev_len,
-            end_line: target.end_line + prev_len,
-            badge_line: target.badge_line + prev_len,
-            ..target
-        });
-    }
-
-    let wrapped_plain_lines = Arc::new(wrapped_lines.iter().map(ui::line_plain_text).collect());
-
-    Arc::new(PreparedMessages {
-        wrapped_lines,
-        wrapped_plain_lines,
-        wrapped_copy_offsets: Arc::new(wrapped_copy_offsets),
-        raw_plain_lines: Arc::new(raw_plain_lines),
-        wrapped_line_map: Arc::new(wrapped_line_map),
-        wrapped_user_indices,
-        wrapped_user_prompt_starts,
-        wrapped_user_prompt_ends,
-        user_prompt_texts,
-        image_regions,
-        edit_tool_ranges,
-        copy_targets,
-    })
+    prev
 }
 
 fn prepare_streaming_cached(
@@ -1063,7 +938,11 @@ fn prepare_streaming_cached(
     wrap_lines(lines, &[], &[], &[], width)
 }
 
-fn prepare_body(app: &dyn TuiState, width: u16, include_streaming: bool) -> PreparedMessages {
+pub(super) fn prepare_body(
+    app: &dyn TuiState,
+    width: u16,
+    include_streaming: bool,
+) -> PreparedMessages {
     let mut lines: Vec<Line> = Vec::new();
     let mut raw_plain_lines: Vec<String> = Vec::new();
     let mut line_raw_overrides: Vec<Option<WrappedLineMap>> = Vec::new();

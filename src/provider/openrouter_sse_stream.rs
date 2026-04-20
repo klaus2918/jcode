@@ -1,5 +1,9 @@
 use super::*;
 
+fn truncated_stream_payload_context(data: &str) -> String {
+    crate::util::truncate_str(&data.trim().replace('\n', "\\n"), 240).to_string()
+}
+
 // ============================================================================
 // SSE Stream Parser
 // ============================================================================
@@ -289,7 +293,15 @@ impl OpenRouterStream {
 
             let parsed: Value = match serde_json::from_str(data) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(error) => {
+                    crate::logging::warn(&format!(
+                        "OpenRouter SSE JSON parse failed for model {}: {} payload={} ",
+                        self.model,
+                        error,
+                        truncated_stream_payload_context(data)
+                    ));
+                    continue;
+                }
             };
 
             // Extract upstream provider info (only emit once)
@@ -508,5 +520,30 @@ impl Stream for OpenRouterStream {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_next_event_ignores_malformed_json_chunks() {
+        let provider_pin = Arc::new(std::sync::Mutex::new(None));
+        let mut stream = OpenRouterStream::new(
+            futures::stream::empty(),
+            "test-model".to_string(),
+            provider_pin,
+        );
+        stream.buffer = "data: {not-json}
+
+"
+        .to_string();
+
+        let event = stream.parse_next_event();
+
+        assert!(event.is_none());
+        assert!(stream.pending.is_empty());
+        assert!(stream.current_tool_call.is_none());
     }
 }

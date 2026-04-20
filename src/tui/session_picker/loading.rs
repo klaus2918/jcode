@@ -20,6 +20,8 @@ use super::{
 
 use super::{ResumeTarget, SessionSource};
 
+const TRANSCRIPT_SEARCH_CHUNK_BYTES: usize = 64 * 1024;
+
 fn session_scan_limit() -> usize {
     std::env::var("JCODE_SESSION_PICKER_MAX_SESSIONS")
         .ok()
@@ -105,6 +107,120 @@ pub(super) fn build_search_index(
     }
 
     combined.to_lowercase()
+}
+
+pub(super) fn session_matches_query(session: &SessionInfo, query: &str) -> bool {
+    let normalized = query.trim().to_lowercase();
+    if normalized.is_empty() {
+        return true;
+    }
+
+    if session.search_index.contains(&normalized) {
+        return true;
+    }
+
+    session_transcript_contains_query(session, &normalized)
+}
+
+/// Fast in-memory matcher for interactive picker filtering.
+///
+/// This intentionally avoids transcript file I/O because it runs on every
+/// keystroke while the `/resume` overlay is open. Transcript-backed content can
+/// still become searchable after preview load because the picker refreshes the
+/// session's cached `search_index` from the loaded preview.
+pub(super) fn session_matches_picker_query(session: &SessionInfo, query: &str) -> bool {
+    let normalized = query.trim().to_lowercase();
+    normalized.is_empty() || session.search_index.contains(&normalized)
+}
+
+fn session_transcript_contains_query(session: &SessionInfo, query_lower: &str) -> bool {
+    transcript_paths_for_session(session)
+        .into_iter()
+        .any(|path| file_contains_case_insensitive_query(&path, query_lower))
+}
+
+fn transcript_paths_for_session(session: &SessionInfo) -> Vec<PathBuf> {
+    match &session.resume_target {
+        ResumeTarget::JcodeSession { session_id } => {
+            let Ok(sessions_dir) = storage::jcode_dir().map(|dir| dir.join("sessions")) else {
+                return Vec::new();
+            };
+            vec![
+                sessions_dir.join(format!("{session_id}.json")),
+                sessions_dir.join(format!("{session_id}.journal.jsonl")),
+            ]
+        }
+        ResumeTarget::ClaudeCodeSession { session_path, .. }
+        | ResumeTarget::CodexSession { session_path, .. }
+        | ResumeTarget::PiSession { session_path }
+        | ResumeTarget::OpenCodeSession { session_path, .. } => {
+            vec![PathBuf::from(session_path)]
+        }
+    }
+}
+
+fn file_contains_case_insensitive_query(path: &Path, query_lower: &str) -> bool {
+    if query_lower.is_empty() {
+        return true;
+    }
+    if !path.exists() {
+        return false;
+    }
+
+    if query_lower.is_ascii() {
+        return file_contains_ascii_case_insensitive(path, query_lower.as_bytes());
+    }
+
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|content| content.to_lowercase().contains(query_lower))
+        .unwrap_or(false)
+}
+
+fn file_contains_ascii_case_insensitive(path: &Path, needle_lower: &[u8]) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let mut reader = BufReader::new(file);
+    let overlap = needle_lower.len().saturating_sub(1);
+    let mut carry = Vec::with_capacity(overlap);
+    let mut buf = vec![0u8; TRANSCRIPT_SEARCH_CHUNK_BYTES];
+
+    loop {
+        let read = match reader.read(&mut buf) {
+            Ok(0) => return false,
+            Ok(read) => read,
+            Err(_) => return false,
+        };
+
+        let mut window = Vec::with_capacity(carry.len() + read);
+        window.extend_from_slice(&carry);
+        window.extend_from_slice(&buf[..read]);
+
+        if contains_ascii_case_insensitive_bytes(&window, needle_lower) {
+            return true;
+        }
+
+        carry.clear();
+        let keep = overlap.min(window.len());
+        carry.extend_from_slice(&window[window.len().saturating_sub(keep)..]);
+    }
+}
+
+fn contains_ascii_case_insensitive_bytes(haystack: &[u8], needle_lower: &[u8]) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if needle_lower.len() > haystack.len() {
+        return false;
+    }
+
+    haystack.windows(needle_lower.len()).any(|window| {
+        window
+            .iter()
+            .zip(needle_lower.iter())
+            .all(|(&hay, &needle)| hay.to_ascii_lowercase() == needle)
+    })
 }
 
 fn build_search_index_from_summary(
@@ -1883,6 +1999,138 @@ mod tests {
             ),
             "preview content should preserve a blank line between tool transcript and followup prose: {:?}",
             preview[0].content
+        );
+    }
+
+    #[test]
+    fn session_matches_query_searches_jcode_transcript_contents() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+
+        let mut session = Session::create_with_id(
+            "session_transcript_search".to_string(),
+            Some("/tmp/transcript-search".to_string()),
+            Some("Transcript Search".to_string()),
+        );
+        session.append_stored_message(crate::session::StoredMessage {
+            id: "msg1".to_string(),
+            role: crate::message::Role::User,
+            content: vec![crate::message::ContentBlock::Text {
+                text: "please find the zebra needle hidden in transcript text".to_string(),
+                cache_control: None,
+            }],
+            display_role: None,
+            timestamp: None,
+            tool_duration_ms: None,
+            token_usage: None,
+        });
+        session.save().expect("save session");
+
+        let sessions = load_sessions().expect("load sessions");
+        let loaded = sessions
+            .iter()
+            .find(|candidate| candidate.id == "session_transcript_search")
+            .expect("session present");
+
+        assert!(!loaded.search_index.contains("zebra needle"));
+        assert!(loaded.messages_preview.is_empty());
+        assert!(session_matches_query(loaded, "zebra needle"));
+        assert!(session_matches_query(loaded, "ZEBRA NEEDLE"));
+        assert!(!session_matches_query(loaded, "missing transcript phrase"));
+    }
+
+    #[test]
+    fn session_matches_query_searches_external_codex_transcript_contents() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+
+        let codex_dir = temp.path().join("external/.codex/sessions/2026/04/19");
+        std::fs::create_dir_all(&codex_dir).expect("create codex dir");
+
+        let transcript_path = codex_dir.join("transcript-search.jsonl");
+        std::fs::write(
+            &transcript_path,
+            concat!(
+                "{\"timestamp\":\"2026-04-19T04:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-transcript-search\",\"timestamp\":\"2026-04-19T03:59:00Z\",\"cwd\":\"/tmp/codex-search\"}}\n",
+                "{\"timestamp\":\"2026-04-19T04:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"the kiwi comet bug is only mentioned in transcript content\"}]}}\n"
+            ),
+        )
+        .expect("write codex transcript");
+
+        let sessions = load_sessions().expect("load sessions");
+        let loaded = sessions
+            .iter()
+            .find(|candidate| candidate.id == "codex:codex-transcript-search")
+            .expect("codex session present");
+
+        assert!(!loaded.search_index.contains("kiwi comet"));
+        assert!(loaded.messages_preview.is_empty());
+        assert!(session_matches_query(loaded, "kiwi comet"));
+        assert!(!session_matches_query(loaded, "dragonfruit meteor"));
+    }
+
+    #[test]
+    fn benchmark_resume_loading_reports_timings() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+
+        let sessions_dir = temp.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+
+        for idx in 0..120 {
+            let mut session = Session::create_with_id(
+                format!("session_resume_bench_{idx:03}"),
+                Some(format!("/tmp/resume-bench-{idx:03}")),
+                Some(format!("Resume Bench {idx:03}")),
+            );
+            session.append_stored_message(crate::session::StoredMessage {
+                id: format!("msg-{idx}-1"),
+                role: crate::message::Role::User,
+                content: vec![crate::message::ContentBlock::Text {
+                    text: format!(
+                        "session {idx:03} says benchmark transcript token zebra-{idx:03}"
+                    ),
+                    cache_control: None,
+                }],
+                display_role: None,
+                timestamp: None,
+                tool_duration_ms: None,
+                token_usage: None,
+            });
+            session.append_stored_message(crate::session::StoredMessage {
+                id: format!("msg-{idx}-2"),
+                role: crate::message::Role::Assistant,
+                content: vec![crate::message::ContentBlock::Text {
+                    text: "assistant reply for benchmark coverage".to_string(),
+                    cache_control: None,
+                }],
+                display_role: None,
+                timestamp: None,
+                tool_duration_ms: None,
+                token_usage: None,
+            });
+            session.save().expect("save benchmark session");
+        }
+
+        let load_start = std::time::Instant::now();
+        let sessions = load_sessions().expect("load sessions");
+        let load_elapsed = load_start.elapsed();
+
+        let group_start = std::time::Instant::now();
+        let grouped = load_sessions_grouped().expect("load grouped sessions");
+        let group_elapsed = group_start.elapsed();
+
+        assert!(sessions.len() >= 100);
+        assert!(!grouped.0.is_empty() || !grouped.1.is_empty());
+
+        eprintln!(
+            "resume bench: load_sessions={}ms load_sessions_grouped={}ms count={}",
+            load_elapsed.as_millis(),
+            group_elapsed.as_millis(),
+            sessions.len()
         );
     }
 }

@@ -1,7 +1,7 @@
 use super::client_actions::{
-    handle_agent_task, handle_compact, handle_input_shell, handle_notify_session,
-    handle_run_subagent, handle_set_feature, handle_set_subagent_model, handle_split,
-    handle_stdin_response, handle_trigger_memory_extraction,
+    AgentTaskContext, NotifySessionContext, handle_agent_task, handle_compact, handle_input_shell,
+    handle_notify_session, handle_run_subagent, handle_set_feature, handle_set_subagent_model,
+    handle_split, handle_stdin_response, handle_trigger_memory_extraction,
 };
 use super::client_comm::{
     handle_comm_channel_members, handle_comm_list, handle_comm_list_channels, handle_comm_message,
@@ -13,7 +13,7 @@ use super::client_session::{
     handle_clear_session, handle_reload, handle_resume_session, handle_subscribe,
 };
 use super::client_state::{handle_get_history, handle_get_state};
-use super::comm_await::handle_comm_await_members;
+use super::comm_await::{CommAwaitMembersContext, handle_comm_await_members};
 use super::comm_control::{
     handle_client_debug_command, handle_client_debug_response, handle_comm_assign_next,
     handle_comm_assign_role, handle_comm_assign_task, handle_comm_task_control,
@@ -23,8 +23,8 @@ use super::comm_plan::{
 };
 use super::comm_session::{handle_comm_spawn, handle_comm_stop};
 use super::comm_sync::{
-    handle_comm_plan_status, handle_comm_read_context, handle_comm_resync_plan, handle_comm_status,
-    handle_comm_summary,
+    CommResyncPlanContext, handle_comm_plan_status, handle_comm_read_context,
+    handle_comm_resync_plan, handle_comm_status, handle_comm_summary,
 };
 use super::provider_control::{
     handle_cycle_model, handle_notify_auth_changed, handle_refresh_models,
@@ -474,14 +474,16 @@ async fn handle_lightweight_control_request(
             handle_comm_resync_plan(
                 id,
                 req_session_id,
-                &client_event_tx,
-                swarm_members,
-                swarms_by_id,
-                swarm_plans,
-                swarm_coordinators,
-                event_history,
-                event_counter,
-                swarm_event_tx,
+                &CommResyncPlanContext {
+                    client_event_tx: &client_event_tx,
+                    swarm_members,
+                    swarms_by_id,
+                    swarm_plans,
+                    swarm_coordinators,
+                    event_history,
+                    event_counter,
+                    swarm_event_tx,
+                },
             )
             .await;
         }
@@ -629,11 +631,13 @@ async fn handle_lightweight_control_request(
                 requested_ids,
                 mode,
                 timeout_secs,
-                &client_event_tx,
-                swarm_members,
-                swarms_by_id,
-                swarm_event_tx,
-                await_members_runtime,
+                CommAwaitMembersContext {
+                    client_event_tx: &client_event_tx,
+                    swarm_members,
+                    swarms_by_id,
+                    swarm_event_tx,
+                    await_members_runtime,
+                },
             )
             .await;
         }
@@ -1698,12 +1702,14 @@ pub(super) async fn handle_client(
                     task,
                     &client_session_id,
                     &agent,
-                    &client_event_tx,
-                    &swarm_members,
-                    &swarms_by_id,
-                    &event_history,
-                    &event_counter,
-                    &swarm_event_tx,
+                    &AgentTaskContext {
+                        client_event_tx: &client_event_tx,
+                        swarm_members: &swarm_members,
+                        swarms_by_id: &swarms_by_id,
+                        event_history: &event_history,
+                        event_counter: &event_counter,
+                        swarm_event_tx: &swarm_event_tx,
+                    },
                 )
                 .await;
             }
@@ -1725,11 +1731,13 @@ pub(super) async fn handle_client(
                     id,
                     session_id,
                     message,
-                    &sessions,
-                    &soft_interrupt_queues,
-                    &client_connections,
-                    &swarm_members,
-                    &client_event_tx,
+                    NotifySessionContext {
+                        sessions: &sessions,
+                        soft_interrupt_queues: &soft_interrupt_queues,
+                        client_connections: &client_connections,
+                        swarm_members: &swarm_members,
+                        client_event_tx: &client_event_tx,
+                    },
                 )
                 .await;
             }
@@ -2117,14 +2125,16 @@ pub(super) async fn handle_client(
                 handle_comm_resync_plan(
                     id,
                     req_session_id,
-                    &client_event_tx,
-                    &swarm_members,
-                    &swarms_by_id,
-                    &swarm_plans,
-                    &swarm_coordinators,
-                    &event_history,
-                    &event_counter,
-                    &swarm_event_tx,
+                    &CommResyncPlanContext {
+                        client_event_tx: &client_event_tx,
+                        swarm_members: &swarm_members,
+                        swarms_by_id: &swarms_by_id,
+                        swarm_plans: &swarm_plans,
+                        swarm_coordinators: &swarm_coordinators,
+                        event_history: &event_history,
+                        event_counter: &event_counter,
+                        swarm_event_tx: &swarm_event_tx,
+                    },
                 )
                 .await;
             }
@@ -2278,11 +2288,13 @@ pub(super) async fn handle_client(
                     requested_ids,
                     mode,
                     timeout_secs,
-                    &client_event_tx,
-                    &swarm_members,
-                    &swarms_by_id,
-                    &swarm_event_tx,
-                    &await_members_runtime,
+                    CommAwaitMembersContext {
+                        client_event_tx: &client_event_tx,
+                        swarm_members: &swarm_members,
+                        swarms_by_id: &swarms_by_id,
+                        swarm_event_tx: &swarm_event_tx,
+                        await_members_runtime: &await_members_runtime,
+                    },
                 )
                 .await;
             }

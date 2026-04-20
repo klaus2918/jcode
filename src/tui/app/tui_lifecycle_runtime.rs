@@ -290,45 +290,14 @@ impl App {
                 String::new()
             };
 
-            // Check for reload info to show what triggered the reload
-            let reload_info = if let Ok(jcode_dir) = crate::storage::jcode_dir() {
-                let info_path = jcode_dir.join("reload-info");
-                if info_path.exists() {
-                    let info = std::fs::read_to_string(&info_path).ok();
-                    let _ = std::fs::remove_file(&info_path); // Clean up
-                    info
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            // Build the reload message based on what triggered it
-            // Extract build hash for the AI notification
-            let is_reload = reload_info.is_some();
-            let (message, _build_hash) = if let Some(info) = reload_info {
-                if let Some(hash) = info.strip_prefix("reload:") {
-                    let h = hash.trim().to_string();
-                    (format!("Reload complete — continuing.{}", stats), h)
-                } else if let Some(hash) = info.strip_prefix("rebuild:") {
-                    let h = hash.trim().to_string();
-                    (format!("Rebuild complete — continuing.{}", stats), h)
-                } else {
-                    (
-                        format!("Reload complete — continuing.{}", stats),
-                        "unknown".to_string(),
-                    )
-                }
-            } else {
-                (
-                    format!("Reload complete — continuing.{}", stats),
-                    "unknown".to_string(),
-                )
-            };
+            let has_reload_ctx = ReloadContext::peek_for_session(session_id)
+                .ok()
+                .flatten()
+                .is_some();
+            let message = format!("Reload complete — continuing.{}", stats);
 
             // Add success message with stats (only if there's actual content or a reload happened)
-            if total_turns > 0 || is_reload {
+            if total_turns > 0 || has_reload_ctx {
                 self.push_display_message(DisplayMessage {
                     role: "system".to_string(),
                     content: message,
@@ -341,29 +310,27 @@ impl App {
 
             // Queue an automatic message to notify the AI that reload completed
             let reload_ctx = ReloadContext::load_for_session(session_id).ok().flatten();
-            if let Some(ctx) = reload_ctx {
-                // This session initiated the reload - send the reload-specific continuation
-                let task_info = ctx
-                    .task_context
-                    .map(|t| format!("\nTask context: {}", t))
-                    .unwrap_or_default();
-                let background_task_note =
-                    super::reload_persisted_background_tasks_note(session_id);
-
-                let continuation_msg = format!(
-                    "Reload succeeded ({} → {}).{}{} Session restored with {} turns. Continue immediately from where you left off. Do not ask the user what to do next. Do not summarize the reload.",
-                    ctx.version_before,
-                    ctx.version_after,
-                    task_info,
-                    background_task_note,
-                    total_turns
-                );
+            let background_task_note = super::reload_persisted_background_tasks_note(session_id);
+            let directive = ReloadContext::recovery_directive(
+                reload_ctx.as_ref(),
+                self.was_interrupted_by_reload(),
+                &background_task_note,
+                Some(total_turns),
+            );
+            if let Some(directive) = directive {
+                let detail = if reload_ctx.is_some() {
+                    "restored initiating session after reload"
+                } else {
+                    "restored interrupted non-initiator session after reload"
+                };
 
                 crate::logging::info(&format!(
                     "Queuing reload continuation message ({} chars)",
-                    continuation_msg.len()
+                    directive.continuation_message.len()
                 ));
-                self.hidden_queued_system_messages.push(continuation_msg);
+                ReloadContext::log_recovery_outcome("local_restore", session_id, "resumed", detail);
+                self.hidden_queued_system_messages
+                    .push(directive.continuation_message);
                 // Trigger processing so the queued message gets sent to the LLM.
                 // Without this, the local event loop waits for user input since
                 // process_queued_messages only runs inside process_turn_with_input.
@@ -371,28 +338,25 @@ impl App {
                 self.status = ProcessingStatus::Sending;
                 self.processing_started = Some(Instant::now());
                 self.pending_turn = true;
-            } else if self.was_interrupted_by_reload() {
-                // This session was interrupted by another session's reload.
-                // The conversation has incomplete tool results - auto-continue.
-                crate::logging::info(
-                    "Session was interrupted by reload (not initiator), queuing continuation",
+            } else {
+                ReloadContext::log_recovery_outcome(
+                    "local_restore",
+                    session_id,
+                    "skipped",
+                    "restored session did not require reload continuation",
                 );
-                self.push_display_message(DisplayMessage::system(
-                    "Reload complete — continuing.".to_string(),
-                ));
-                self.hidden_queued_system_messages.push(
-                    "Your session was interrupted by a server reload while a tool was running. The tool was aborted and results may be incomplete. Continue exactly where you left off and do not ask the user what to do next.".to_string(),
-                );
-                self.is_processing = true;
-                self.status = ProcessingStatus::Sending;
-                self.processing_started = Some(Instant::now());
-                self.pending_turn = true;
             }
         } else {
             crate::logging::error(&format!("Failed to restore session: {}", session_id));
 
             // Check if this was a reload that failed - inject failure message if so
             if let Ok(Some(ctx)) = ReloadContext::load_for_session(session_id) {
+                ReloadContext::log_recovery_outcome(
+                    "local_restore",
+                    session_id,
+                    "failed",
+                    "reload context existed but session restore failed",
+                );
                 let task_info = ctx
                     .task_context
                     .map(|t| format!(" You were working on: {}", t))

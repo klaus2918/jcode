@@ -122,6 +122,110 @@ fn test_history_event_decodes_without_compaction_mode_for_older_servers() -> Res
 }
 
 #[test]
+fn test_history_event_roundtrip_preserves_side_panel_snapshot() -> Result<()> {
+    let event = ServerEvent::History {
+        id: 101,
+        session_id: "ses_test_456".to_string(),
+        messages: vec![HistoryMessage {
+            role: "assistant".to_string(),
+            content: "hello".to_string(),
+            tool_calls: None,
+            tool_data: None,
+        }],
+        images: Vec::new(),
+        provider_name: Some("openai".to_string()),
+        provider_model: Some("gpt-5.4".to_string()),
+        available_models: vec!["gpt-5.4".to_string()],
+        available_model_routes: Vec::new(),
+        mcp_servers: Vec::new(),
+        skills: Vec::new(),
+        total_tokens: None,
+        all_sessions: Vec::new(),
+        client_count: None,
+        is_canary: None,
+        reload_recovery: None,
+        server_version: None,
+        server_name: None,
+        server_icon: None,
+        server_has_update: None,
+        was_interrupted: None,
+        connection_type: Some("websocket".to_string()),
+        status_detail: None,
+        upstream_provider: None,
+        reasoning_effort: None,
+        service_tier: None,
+        subagent_model: None,
+        autoreview_enabled: None,
+        autojudge_enabled: None,
+        compaction_mode: crate::config::CompactionMode::Reactive,
+        activity: None,
+        side_panel: crate::side_panel::SidePanelSnapshot {
+            focused_page_id: Some("page-1".to_string()),
+            pages: vec![crate::side_panel::SidePanelPage {
+                id: "page-1".to_string(),
+                title: "Notes".to_string(),
+                file_path: "/tmp/notes.md".to_string(),
+                format: crate::side_panel::SidePanelPageFormat::Markdown,
+                source: crate::side_panel::SidePanelPageSource::Managed,
+                content: "# Notes".to_string(),
+                updated_at_ms: 42,
+            }],
+        },
+    };
+    let json = encode_event(&event);
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::History {
+        id,
+        side_panel,
+        messages,
+        provider_name,
+        provider_model,
+        ..
+    } = decoded
+    else {
+        return Err(anyhow!("expected History event"));
+    };
+    assert_eq!(id, 101);
+    assert_eq!(provider_name.as_deref(), Some("openai"));
+    assert_eq!(provider_model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(messages.len(), 1);
+    assert_eq!(side_panel.focused_page_id.as_deref(), Some("page-1"));
+    assert_eq!(side_panel.pages.len(), 1);
+    assert_eq!(side_panel.pages[0].title, "Notes");
+    assert_eq!(side_panel.pages[0].content, "# Notes");
+    Ok(())
+}
+
+#[test]
+fn test_side_panel_state_event_roundtrip() -> Result<()> {
+    let event = ServerEvent::SidePanelState {
+        snapshot: crate::side_panel::SidePanelSnapshot {
+            focused_page_id: Some("page-1".to_string()),
+            pages: vec![crate::side_panel::SidePanelPage {
+                id: "page-1".to_string(),
+                title: "Notes".to_string(),
+                file_path: "/tmp/notes.md".to_string(),
+                format: crate::side_panel::SidePanelPageFormat::Markdown,
+                source: crate::side_panel::SidePanelPageSource::Managed,
+                content: "updated".to_string(),
+                updated_at_ms: 99,
+            }],
+        },
+    };
+    let json = encode_event(&event);
+    assert!(json.contains("\"type\":\"side_panel_state\""));
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::SidePanelState { snapshot } = decoded else {
+        return Err(anyhow!("expected SidePanelState event"));
+    };
+    assert_eq!(snapshot.focused_page_id.as_deref(), Some("page-1"));
+    assert_eq!(snapshot.pages.len(), 1);
+    assert_eq!(snapshot.pages[0].title, "Notes");
+    assert_eq!(snapshot.pages[0].content, "updated");
+    Ok(())
+}
+
+#[test]
 fn test_error_event_retry_after_roundtrip() -> Result<()> {
     let event = ServerEvent::Error {
         id: 42,
@@ -875,5 +979,307 @@ fn test_input_shell_result_event_roundtrip() -> Result<()> {
     assert_eq!(result.command, "pwd");
     assert_eq!(result.cwd.as_deref(), Some("/tmp/project"));
     assert_eq!(result.exit_code, Some(0));
+    Ok(())
+}
+
+#[test]
+fn test_protocol_enum_roundtrips_cover_wire_names() -> Result<()> {
+    let transcript_modes = [
+        (TranscriptMode::Insert, "insert"),
+        (TranscriptMode::Append, "append"),
+        (TranscriptMode::Replace, "replace"),
+        (TranscriptMode::Send, "send"),
+    ];
+    for (mode, wire) in transcript_modes {
+        let json = serde_json::to_string(&mode)?;
+        assert_eq!(json, format!("\"{}\"", wire));
+        let decoded: TranscriptMode = serde_json::from_str(&json)?;
+        assert_eq!(decoded, mode);
+    }
+
+    let delivery_modes = [
+        (CommDeliveryMode::Notify, "notify"),
+        (CommDeliveryMode::Interrupt, "interrupt"),
+        (CommDeliveryMode::Wake, "wake"),
+    ];
+    for (mode, wire) in delivery_modes {
+        let json = serde_json::to_string(&mode)?;
+        assert_eq!(json, format!("\"{}\"", wire));
+        let decoded: CommDeliveryMode = serde_json::from_str(&json)?;
+        assert_eq!(decoded, mode);
+    }
+
+    let feature_toggles = [
+        (FeatureToggle::Memory, "memory"),
+        (FeatureToggle::Swarm, "swarm"),
+        (FeatureToggle::Autoreview, "autoreview"),
+        (FeatureToggle::Autojudge, "autojudge"),
+    ];
+    for (feature, wire) in feature_toggles {
+        let json = serde_json::to_string(&feature)?;
+        assert_eq!(json, format!("\"{}\"", wire));
+        let decoded: FeatureToggle = serde_json::from_str(&json)?;
+        assert_eq!(decoded, feature);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_set_feature_roundtrip() -> Result<()> {
+    let req = Request::SetFeature {
+        id: 77,
+        feature: FeatureToggle::Swarm,
+        enabled: true,
+    };
+    let json = serde_json::to_string(&req)?;
+    assert!(json.contains("\"type\":\"set_feature\""));
+    let decoded = parse_request_json(&json)?;
+    let Request::SetFeature {
+        id,
+        feature,
+        enabled,
+    } = decoded
+    else {
+        return Err(anyhow!("expected SetFeature"));
+    };
+    assert_eq!(id, 77);
+    assert_eq!(feature, FeatureToggle::Swarm);
+    assert!(enabled);
+    Ok(())
+}
+
+#[test]
+fn test_subscribe_request_roundtrip_preserves_session_takeover_flags() -> Result<()> {
+    let req = Request::Subscribe {
+        id: 89,
+        working_dir: Some("/tmp/project".to_string()),
+        selfdev: Some(true),
+        target_session_id: Some("sess_target".to_string()),
+        client_instance_id: Some("client-123".to_string()),
+        client_has_local_history: true,
+        allow_session_takeover: true,
+    };
+    let json = serde_json::to_string(&req)?;
+    assert!(json.contains("\"type\":\"subscribe\""));
+    let decoded = parse_request_json(&json)?;
+    let Request::Subscribe {
+        id,
+        working_dir,
+        selfdev,
+        target_session_id,
+        client_instance_id,
+        client_has_local_history,
+        allow_session_takeover,
+    } = decoded
+    else {
+        return Err(anyhow!("expected Subscribe"));
+    };
+    assert_eq!(id, 89);
+    assert_eq!(working_dir.as_deref(), Some("/tmp/project"));
+    assert_eq!(selfdev, Some(true));
+    assert_eq!(target_session_id.as_deref(), Some("sess_target"));
+    assert_eq!(client_instance_id.as_deref(), Some("client-123"));
+    assert!(client_has_local_history);
+    assert!(allow_session_takeover);
+    Ok(())
+}
+
+#[test]
+fn test_subscribe_request_defaults_optional_flags() -> Result<()> {
+    let json = r#"{"type":"subscribe","id":91}"#;
+    let decoded = parse_request_json(json)?;
+    let Request::Subscribe {
+        id,
+        working_dir,
+        selfdev,
+        target_session_id,
+        client_instance_id,
+        client_has_local_history,
+        allow_session_takeover,
+    } = decoded
+    else {
+        return Err(anyhow!("expected Subscribe"));
+    };
+    assert_eq!(id, 91);
+    assert_eq!(working_dir, None);
+    assert_eq!(selfdev, None);
+    assert_eq!(target_session_id, None);
+    assert_eq!(client_instance_id, None);
+    assert!(!client_has_local_history);
+    assert!(!allow_session_takeover);
+    Ok(())
+}
+
+#[test]
+fn test_resume_session_defaults_sync_flags() -> Result<()> {
+    let json = r#"{"type":"resume_session","id":92,"session_id":"sess_resume"}"#;
+    let decoded = parse_request_json(json)?;
+    let Request::ResumeSession {
+        id,
+        session_id,
+        client_instance_id,
+        client_has_local_history,
+        allow_session_takeover,
+    } = decoded
+    else {
+        return Err(anyhow!("expected ResumeSession"));
+    };
+    assert_eq!(id, 92);
+    assert_eq!(session_id, "sess_resume");
+    assert_eq!(client_instance_id, None);
+    assert!(!client_has_local_history);
+    assert!(!allow_session_takeover);
+    Ok(())
+}
+
+#[test]
+fn test_message_request_roundtrip_preserves_images_and_system_reminder() -> Result<()> {
+    let req = Request::Message {
+        id: 88,
+        content: "inspect this".to_string(),
+        images: vec![
+            ("image/png".to_string(), "AAA".to_string()),
+            ("image/jpeg".to_string(), "BBB".to_string()),
+        ],
+        system_reminder: Some("be concise".to_string()),
+    };
+    let json = serde_json::to_string(&req)?;
+    let decoded = parse_request_json(&json)?;
+    let Request::Message {
+        id,
+        content,
+        images,
+        system_reminder,
+    } = decoded
+    else {
+        return Err(anyhow!("expected Message"));
+    };
+    assert_eq!(id, 88);
+    assert_eq!(content, "inspect this");
+    assert_eq!(images.len(), 2);
+    assert_eq!(images[0].0, "image/png");
+    assert_eq!(images[1].0, "image/jpeg");
+    assert_eq!(system_reminder.as_deref(), Some("be concise"));
+    Ok(())
+}
+
+#[test]
+fn test_protocol_request_roundtrip_randomized_samples() -> Result<()> {
+    use rand::{Rng, SeedableRng};
+
+    fn sample_ascii(rng: &mut rand::rngs::StdRng, max_len: usize) -> String {
+        let len = rng.random_range(0..=max_len);
+        (0..len)
+            .map(|_| char::from(rng.random_range(b'a'..=b'z')))
+            .collect()
+    }
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0DEC0DE);
+
+    for id in 0..32u64 {
+        let content = sample_ascii(&mut rng, 24);
+        let images = if rng.random_bool(0.5) {
+            vec![("image/png".to_string(), sample_ascii(&mut rng, 12))]
+        } else {
+            Vec::new()
+        };
+        let system_reminder = if rng.random_bool(0.5) {
+            Some(sample_ascii(&mut rng, 20))
+        } else {
+            None
+        };
+        let req = Request::Message {
+            id,
+            content: content.clone(),
+            images: images.clone(),
+            system_reminder: system_reminder.clone(),
+        };
+        let decoded = parse_request_json(&serde_json::to_string(&req)?)?;
+        let Request::Message {
+            id: decoded_id,
+            content: decoded_content,
+            images: decoded_images,
+            system_reminder: decoded_system_reminder,
+        } = decoded
+        else {
+            return Err(anyhow!("expected randomized Message"));
+        };
+        assert_eq!(decoded_id, id);
+        assert_eq!(decoded_content, content);
+        assert_eq!(decoded_images, images);
+        assert_eq!(decoded_system_reminder, system_reminder);
+    }
+
+    for id in 100..132u64 {
+        let working_dir = rng
+            .random_bool(0.5)
+            .then(|| format!("/tmp/{}", sample_ascii(&mut rng, 12)));
+        let selfdev = rng.random_bool(0.5).then(|| rng.random_bool(0.5));
+        let target_session_id = rng.random_bool(0.5).then(|| format!("sess_{}", id));
+        let client_instance_id = rng.random_bool(0.5).then(|| format!("client-{}", id));
+        let client_has_local_history = rng.random_bool(0.5);
+        let allow_session_takeover = rng.random_bool(0.5);
+        let req = Request::Subscribe {
+            id,
+            working_dir: working_dir.clone(),
+            selfdev,
+            target_session_id: target_session_id.clone(),
+            client_instance_id: client_instance_id.clone(),
+            client_has_local_history,
+            allow_session_takeover,
+        };
+        let decoded = parse_request_json(&serde_json::to_string(&req)?)?;
+        let Request::Subscribe {
+            id: decoded_id,
+            working_dir: decoded_working_dir,
+            selfdev: decoded_selfdev,
+            target_session_id: decoded_target_session_id,
+            client_instance_id: decoded_client_instance_id,
+            client_has_local_history: decoded_client_has_local_history,
+            allow_session_takeover: decoded_allow_session_takeover,
+        } = decoded
+        else {
+            return Err(anyhow!("expected randomized Subscribe"));
+        };
+        assert_eq!(decoded_id, id);
+        assert_eq!(decoded_working_dir, working_dir);
+        assert_eq!(decoded_selfdev, selfdev);
+        assert_eq!(decoded_target_session_id, target_session_id);
+        assert_eq!(decoded_client_instance_id, client_instance_id);
+        assert_eq!(decoded_client_has_local_history, client_has_local_history);
+        assert_eq!(decoded_allow_session_takeover, allow_session_takeover);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_resume_session_roundtrip_preserves_client_sync_flags() -> Result<()> {
+    let req = Request::ResumeSession {
+        id: 90,
+        session_id: "sess_resume".to_string(),
+        client_instance_id: Some("client-456".to_string()),
+        client_has_local_history: true,
+        allow_session_takeover: true,
+    };
+    let json = serde_json::to_string(&req)?;
+    assert!(json.contains("\"type\":\"resume_session\""));
+    let decoded = parse_request_json(&json)?;
+    let Request::ResumeSession {
+        id,
+        session_id,
+        client_instance_id,
+        client_has_local_history,
+        allow_session_takeover,
+    } = decoded
+    else {
+        return Err(anyhow!("expected ResumeSession"));
+    };
+    assert_eq!(id, 90);
+    assert_eq!(session_id, "sess_resume");
+    assert_eq!(client_instance_id.as_deref(), Some("client-456"));
+    assert!(client_has_local_history);
+    assert!(allow_session_takeover);
     Ok(())
 }

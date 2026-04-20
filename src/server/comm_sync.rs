@@ -16,6 +16,17 @@ type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 
 type SessionFilesTouched = Arc<RwLock<HashMap<String, HashSet<PathBuf>>>>;
 
+pub(super) struct CommResyncPlanContext<'a> {
+    pub(super) client_event_tx: &'a mpsc::UnboundedSender<ServerEvent>,
+    pub(super) swarm_members: &'a Arc<RwLock<HashMap<String, SwarmMember>>>,
+    pub(super) swarms_by_id: &'a Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    pub(super) swarm_plans: &'a Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    pub(super) swarm_coordinators: &'a Arc<RwLock<HashMap<String, String>>>,
+    pub(super) event_history: &'a Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
+    pub(super) event_counter: &'a Arc<std::sync::atomic::AtomicU64>,
+    pub(super) swarm_event_tx: &'a broadcast::Sender<SwarmEvent>,
+}
+
 fn live_activity_snapshot(
     connections: &HashMap<String, ClientConnectionInfo>,
     session_id: &str,
@@ -361,21 +372,13 @@ pub(super) async fn handle_comm_plan_status(
     let _ = client_event_tx.send(ServerEvent::CommPlanStatusResponse { id, summary });
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_comm_resync_plan(
     id: u64,
     req_session_id: String,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
-    swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
-    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
-    event_counter: &Arc<std::sync::atomic::AtomicU64>,
-    swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    ctx: &CommResyncPlanContext<'_>,
 ) {
     let swarm_id = {
-        let members = swarm_members.read().await;
+        let members = ctx.swarm_members.read().await;
         members
             .get(&req_session_id)
             .and_then(|member| member.swarm_id.clone())
@@ -383,7 +386,7 @@ pub(super) async fn handle_comm_resync_plan(
 
     if let Some(swarm_id) = swarm_id {
         let plan_state = {
-            let mut plans = swarm_plans.write().await;
+            let mut plans = ctx.swarm_plans.write().await;
             plans.get_mut(&swarm_id).map(|plan| {
                 plan.participants.insert(req_session_id.clone());
                 (plan.version, plan.items.len())
@@ -391,13 +394,13 @@ pub(super) async fn handle_comm_resync_plan(
         };
         if let Some((version, item_count)) = plan_state {
             let swarm_state = SwarmState {
-                members: Arc::clone(swarm_members),
-                swarms_by_id: Arc::clone(swarms_by_id),
-                plans: Arc::clone(swarm_plans),
-                coordinators: Arc::clone(swarm_coordinators),
+                members: Arc::clone(ctx.swarm_members),
+                swarms_by_id: Arc::clone(ctx.swarms_by_id),
+                plans: Arc::clone(ctx.swarm_plans),
+                coordinators: Arc::clone(ctx.swarm_coordinators),
             };
             persist_swarm_state_for(&swarm_id, &swarm_state).await;
-            if let Some(member) = swarm_members.read().await.get(&req_session_id) {
+            if let Some(member) = ctx.swarm_members.read().await.get(&req_session_id) {
                 let _ = member.event_tx.send(ServerEvent::Notification {
                     from_session: req_session_id.clone(),
                     from_name: member.friendly_name.clone(),
@@ -414,15 +417,15 @@ pub(super) async fn handle_comm_resync_plan(
             broadcast_swarm_plan(
                 &swarm_id,
                 Some("resync".to_string()),
-                swarm_plans,
-                swarm_members,
-                swarms_by_id,
+                ctx.swarm_plans,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
             )
             .await;
             record_swarm_event(
-                event_history,
-                event_counter,
-                swarm_event_tx,
+                ctx.event_history,
+                ctx.event_counter,
+                ctx.swarm_event_tx,
                 req_session_id.clone(),
                 None,
                 Some(swarm_id.clone()),
@@ -432,16 +435,16 @@ pub(super) async fn handle_comm_resync_plan(
                 },
             )
             .await;
-            let _ = client_event_tx.send(ServerEvent::Done { id });
+            let _ = ctx.client_event_tx.send(ServerEvent::Done { id });
         } else {
-            let _ = client_event_tx.send(ServerEvent::Error {
+            let _ = ctx.client_event_tx.send(ServerEvent::Error {
                 id,
                 message: "No swarm plan exists for this swarm.".to_string(),
                 retry_after_secs: None,
             });
         }
     } else {
-        let _ = client_event_tx.send(ServerEvent::Error {
+        let _ = ctx.client_event_tx.send(ServerEvent::Error {
             id,
             message: "Not in a swarm.".to_string(),
             retry_after_secs: None,

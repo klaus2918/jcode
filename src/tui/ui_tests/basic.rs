@@ -62,6 +62,25 @@ fn make_prepared_messages_with_content_bytes(bytes: usize, marker: &str) -> Arc<
     })
 }
 
+fn make_oversized_prepared_messages(marker: &str) -> Arc<PreparedMessages> {
+    make_prepared_messages_with_content_bytes(12 * 1024 * 1024, marker)
+}
+
+fn make_prepared_chat_frame(prepared: Arc<PreparedMessages>) -> Arc<PreparedChatFrame> {
+    Arc::new(PreparedChatFrame::from_single(prepared))
+}
+
+fn make_prepared_chat_frame_with_content_bytes(
+    bytes: usize,
+    marker: &str,
+) -> Arc<PreparedChatFrame> {
+    make_prepared_chat_frame(make_prepared_messages_with_content_bytes(bytes, marker))
+}
+
+fn make_oversized_prepared_chat_frame(marker: &str) -> Arc<PreparedChatFrame> {
+    make_prepared_chat_frame(make_oversized_prepared_messages(marker))
+}
+
 #[test]
 fn test_calculate_input_lines_empty() {
     assert_eq!(calculate_input_lines("", 80), 1);
@@ -96,6 +115,173 @@ fn test_inline_ui_gap_height_only_when_inline_ui_visible() {
         ..Default::default()
     };
     assert_eq!(inline_ui_gap_height(&state_with_inline_view), 1);
+}
+
+#[test]
+fn test_slow_frame_history_retains_recent_samples() {
+    clear_slow_frame_history_for_tests();
+    record_slow_frame_sample(SlowFrameSample {
+        timestamp_ms: 1,
+        threshold_ms: 40.0,
+        session_id: Some("session_test".to_string()),
+        session_name: Some("test".to_string()),
+        status: "Idle".to_string(),
+        diff_mode: "Off".to_string(),
+        centered: false,
+        is_processing: false,
+        auto_scroll_paused: false,
+        display_messages: 10,
+        display_messages_version: 3,
+        user_messages: 5,
+        queued_messages: 0,
+        streaming_text_len: 0,
+        prepare_ms: 12.0,
+        draw_ms: 9.0,
+        total_ms: 41.0,
+        messages_ms: Some(7.0),
+        perf: FramePerfStats {
+            viewport_total_wrapped_lines: 200,
+            body_misses: 1,
+            ..Default::default()
+        },
+    });
+    record_slow_frame_sample(SlowFrameSample {
+        timestamp_ms: 2,
+        threshold_ms: 40.0,
+        session_id: Some("session_test".to_string()),
+        session_name: Some("test".to_string()),
+        status: "Streaming".to_string(),
+        diff_mode: "Off".to_string(),
+        centered: false,
+        is_processing: true,
+        auto_scroll_paused: true,
+        display_messages: 11,
+        display_messages_version: 4,
+        user_messages: 5,
+        queued_messages: 1,
+        streaming_text_len: 120,
+        prepare_ms: 20.0,
+        draw_ms: 15.0,
+        total_ms: 55.0,
+        messages_ms: Some(14.0),
+        perf: FramePerfStats {
+            viewport_total_wrapped_lines: 240,
+            body_hits: 1,
+            ..Default::default()
+        },
+    });
+
+    let payload = debug_slow_frame_history(8);
+    assert_eq!(payload["buffered_samples"], 2);
+    assert_eq!(payload["returned_samples"], 2);
+    assert_eq!(payload["summary"]["max_total_ms"], 55.0);
+    assert_eq!(payload["samples"][1]["status"], "Streaming");
+    assert_eq!(payload["samples"][0]["perf"]["body_misses"], 1);
+}
+
+#[test]
+fn test_flicker_frame_history_detects_same_state_hash_change() {
+    clear_flicker_frame_history_for_tests();
+    record_flicker_frame_sample(FlickerFrameSample {
+        timestamp_ms: 10,
+        session_id: Some("session_test".to_string()),
+        session_name: Some("test".to_string()),
+        display_messages_version: 9,
+        diff_mode: "Off".to_string(),
+        centered: false,
+        is_processing: false,
+        auto_scroll_paused: false,
+        scroll: 100,
+        visible_end: 120,
+        visible_lines: 20,
+        total_wrapped_lines: 1000,
+        prompt_preview_lines: 0,
+        messages_area_width: 90,
+        messages_area_height: 24,
+        content_width: 89,
+        chat_scrollbar_visible: true,
+        visible_hash: 111,
+        total_ms: 5.0,
+        prepare_ms: 2.0,
+        draw_ms: 1.5,
+    });
+    record_flicker_frame_sample(FlickerFrameSample {
+        timestamp_ms: 11,
+        session_id: Some("session_test".to_string()),
+        session_name: Some("test".to_string()),
+        display_messages_version: 9,
+        diff_mode: "Off".to_string(),
+        centered: false,
+        is_processing: false,
+        auto_scroll_paused: false,
+        scroll: 100,
+        visible_end: 120,
+        visible_lines: 20,
+        total_wrapped_lines: 1000,
+        prompt_preview_lines: 0,
+        messages_area_width: 90,
+        messages_area_height: 24,
+        content_width: 89,
+        chat_scrollbar_visible: true,
+        visible_hash: 222,
+        total_ms: 5.5,
+        prepare_ms: 2.2,
+        draw_ms: 1.6,
+    });
+
+    let payload = debug_flicker_frame_history(8);
+    assert_eq!(payload["buffered_samples"], 2);
+    assert_eq!(payload["buffered_events"], 1);
+    assert_eq!(payload["summary"]["visible_hash_change_events"], 1);
+    assert_eq!(
+        payload["events"][0]["kind"],
+        "visible_hash_changed_same_state"
+    );
+}
+
+#[test]
+fn test_flicker_frame_history_detects_layout_oscillation() {
+    clear_flicker_frame_history_for_tests();
+    for (timestamp_ms, content_width, visible_hash) in
+        [(20, 89, 333_u64), (21, 88, 444), (22, 89, 333)]
+    {
+        record_flicker_frame_sample(FlickerFrameSample {
+            timestamp_ms,
+            session_id: Some("session_test".to_string()),
+            session_name: Some("test".to_string()),
+            display_messages_version: 10,
+            diff_mode: "Off".to_string(),
+            centered: false,
+            is_processing: false,
+            auto_scroll_paused: false,
+            scroll: 250,
+            visible_end: 270,
+            visible_lines: 20,
+            total_wrapped_lines: 1200,
+            prompt_preview_lines: 0,
+            messages_area_width: 90,
+            messages_area_height: 24,
+            content_width,
+            chat_scrollbar_visible: true,
+            visible_hash,
+            total_ms: 6.0,
+            prepare_ms: 2.0,
+            draw_ms: 1.0,
+        });
+    }
+
+    let payload = debug_flicker_frame_history(8);
+    assert_eq!(payload["buffered_samples"], 3);
+    assert_eq!(payload["summary"]["layout_oscillation_events"], 1);
+    let events = payload["events"]
+        .as_array()
+        .expect("events should be an array");
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "layout_oscillation"),
+        "expected at least one layout_oscillation event"
+    );
 }
 
 #[test]
@@ -218,6 +404,7 @@ fn test_active_file_diff_context_resolves_visible_edit() {
         copy_targets: Vec::new(),
     };
 
+    let prepared = PreparedChatFrame::from_single(Arc::new(prepared));
     let active = active_file_diff_context(&prepared, 9, 4).expect("visible edit context");
     assert_eq!(active.edit_index, 2);
     assert_eq!(active.msg_index, 7);
@@ -343,6 +530,123 @@ fn test_body_cache_state_accepts_large_single_entry_within_total_budget() {
 }
 
 #[test]
+fn test_body_cache_state_retains_oversized_hot_entry() {
+    let key = BodyCacheKey {
+        width: 140,
+        diff_mode: crate::config::DiffDisplayMode::Off,
+        messages_version: 120,
+        diagram_mode: crate::config::DiagramDisplayMode::Pinned,
+        centered: false,
+    };
+    let prepared = make_oversized_prepared_messages("body-oversized-");
+
+    assert!(estimate_prepared_messages_bytes(&prepared) > BODY_CACHE_MAX_BYTES);
+
+    let mut cache = BodyCacheState::default();
+    cache.insert(key.clone(), prepared.clone(), 120);
+
+    let hit = cache
+        .get_exact(&key)
+        .expect("expected oversized body cache entry to be retained as hot entry");
+    assert!(Arc::ptr_eq(&hit, &prepared));
+    assert!(cache.entries.is_empty());
+    assert_eq!(cache.oversized_entries.len(), 1);
+}
+
+#[test]
+fn test_body_cache_state_keeps_two_oversized_width_entries_hot() {
+    let key_a = BodyCacheKey {
+        width: 140,
+        diff_mode: crate::config::DiffDisplayMode::Off,
+        messages_version: 120,
+        diagram_mode: crate::config::DiagramDisplayMode::Pinned,
+        centered: false,
+    };
+    let key_b = BodyCacheKey {
+        width: 139,
+        ..key_a.clone()
+    };
+    let prepared_a = make_oversized_prepared_messages("body-oversized-a-");
+    let prepared_b = make_oversized_prepared_messages("body-oversized-b-");
+
+    let mut cache = BodyCacheState::default();
+    cache.insert(key_a.clone(), prepared_a.clone(), 120);
+    cache.insert(key_b.clone(), prepared_b.clone(), 120);
+
+    let hit_a = cache
+        .get_exact(&key_a)
+        .expect("expected first oversized body width to remain hot");
+    let hit_b = cache
+        .get_exact(&key_b)
+        .expect("expected second oversized body width to remain hot");
+    assert!(Arc::ptr_eq(&hit_a, &prepared_a));
+    assert!(Arc::ptr_eq(&hit_b, &prepared_b));
+    assert_eq!(cache.oversized_entries.len(), 2);
+}
+
+#[test]
+fn test_body_cache_state_uses_oversized_hot_entry_as_incremental_base() {
+    let key = BodyCacheKey {
+        width: 140,
+        diff_mode: crate::config::DiffDisplayMode::Off,
+        messages_version: 120,
+        diagram_mode: crate::config::DiagramDisplayMode::Pinned,
+        centered: false,
+    };
+    let prepared = make_oversized_prepared_messages("body-oversized-base-");
+
+    assert!(estimate_prepared_messages_bytes(&prepared) > BODY_CACHE_MAX_BYTES);
+
+    let mut cache = BodyCacheState::default();
+    cache.insert(key.clone(), prepared.clone(), 120);
+
+    let base = cache
+        .best_incremental_base(
+            &BodyCacheKey {
+                messages_version: 121,
+                ..key.clone()
+            },
+            121,
+        )
+        .expect("expected oversized hot entry to remain eligible as incremental base");
+    assert!(Arc::ptr_eq(&base.0, &prepared));
+    assert_eq!(base.1, 120);
+}
+
+#[test]
+fn test_prepare_body_incremental_reuses_unique_prepared_arc() {
+    let width = 80;
+    let base_state = TestState {
+        display_messages: vec![
+            DisplayMessage::user("first prompt"),
+            DisplayMessage::assistant("initial answer"),
+        ],
+        messages_version: 1,
+        ..Default::default()
+    };
+    let grown_state = TestState {
+        display_messages: vec![
+            DisplayMessage::user("first prompt"),
+            DisplayMessage::assistant("initial answer"),
+            DisplayMessage::user("second prompt"),
+            DisplayMessage::assistant("follow-up answer"),
+        ],
+        messages_version: 2,
+        ..Default::default()
+    };
+
+    let prepared = Arc::new(super::prepare::prepare_body(&base_state, width, false));
+    let base_ptr = Arc::as_ptr(&prepared) as usize;
+    let incremented = super::prepare::prepare_body_incremental(&grown_state, width, prepared, 2);
+
+    assert_eq!(Arc::as_ptr(&incremented) as usize, base_ptr);
+    assert!(
+        incremented.wrapped_lines.len() >= 4,
+        "expected incremental prep to append new wrapped content"
+    );
+}
+
+#[test]
 fn test_full_prep_cache_state_keeps_multiple_width_entries() {
     let key_a = FullPrepCacheKey {
         width: 40,
@@ -361,7 +665,7 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         ..key_a.clone()
     };
 
-    let prepared_a = Arc::new(PreparedMessages {
+    let prepared_a = make_prepared_chat_frame(Arc::new(PreparedMessages {
         wrapped_lines: vec![Line::from("a")],
         wrapped_plain_lines: Arc::new(vec!["a".to_string()]),
         wrapped_copy_offsets: Arc::new(vec![0]),
@@ -374,8 +678,8 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         image_regions: Vec::new(),
         edit_tool_ranges: Vec::new(),
         copy_targets: Vec::new(),
-    });
-    let prepared_b = Arc::new(PreparedMessages {
+    }));
+    let prepared_b = make_prepared_chat_frame(Arc::new(PreparedMessages {
         wrapped_lines: vec![Line::from("b")],
         wrapped_plain_lines: Arc::new(vec!["b".to_string()]),
         wrapped_copy_offsets: Arc::new(vec![0]),
@@ -388,7 +692,7 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         image_regions: Vec::new(),
         edit_tool_ranges: Vec::new(),
         copy_targets: Vec::new(),
-    });
+    }));
 
     let mut cache = FullPrepCacheState::default();
     cache.insert(key_a.clone(), prepared_a.clone());
@@ -423,7 +727,7 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
             streaming_text_hash: 0,
             batch_progress_hash: 0,
         };
-        let prepared = Arc::new(PreparedMessages {
+        let prepared = make_prepared_chat_frame(Arc::new(PreparedMessages {
             wrapped_lines: vec![Line::from(format!("{idx}"))],
             wrapped_plain_lines: Arc::new(vec![format!("{idx}")]),
             wrapped_copy_offsets: Arc::new(vec![0]),
@@ -436,7 +740,7 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
             image_regions: Vec::new(),
             edit_tool_ranges: Vec::new(),
             copy_targets: Vec::new(),
-        });
+        }));
         cache.insert(key, prepared);
     }
 
@@ -461,10 +765,9 @@ fn test_full_prep_cache_state_accepts_large_single_entry_within_total_budget() {
         streaming_text_hash: 0,
         batch_progress_hash: 0,
     };
-    let prepared = make_prepared_messages_with_content_bytes(3 * 1024 * 1024, "full-large-");
+    let prepared = make_prepared_chat_frame_with_content_bytes(3 * 1024 * 1024, "full-large-");
 
-    assert!(estimate_prepared_messages_bytes(&prepared) > 4 * 1024 * 1024);
-    assert!(estimate_prepared_messages_bytes(&prepared) < FULL_PREP_CACHE_MAX_BYTES);
+    assert!(estimate_prepared_chat_frame_bytes(&prepared) < FULL_PREP_CACHE_MAX_BYTES);
 
     let mut cache = FullPrepCacheState::default();
     cache.insert(key.clone(), prepared.clone());
@@ -473,6 +776,71 @@ fn test_full_prep_cache_state_accepts_large_single_entry_within_total_budget() {
         .get_exact(&key)
         .expect("expected large full prep cache entry to be retained");
     assert!(Arc::ptr_eq(&hit, &prepared));
+}
+
+#[test]
+fn test_full_prep_cache_state_retains_oversized_hot_entry() {
+    let key = FullPrepCacheKey {
+        width: 140,
+        height: 42,
+        diff_mode: crate::config::DiffDisplayMode::Off,
+        messages_version: 120,
+        diagram_mode: crate::config::DiagramDisplayMode::Pinned,
+        centered: false,
+        is_processing: true,
+        streaming_text_len: 4096,
+        streaming_text_hash: 12345,
+        batch_progress_hash: 0,
+    };
+    let prepared = make_oversized_prepared_chat_frame("full-oversized-");
+
+    assert!(estimate_prepared_chat_frame_bytes(&prepared) <= FULL_PREP_CACHE_MAX_BYTES);
+
+    let mut cache = FullPrepCacheState::default();
+    cache.insert(key.clone(), prepared.clone());
+
+    let hit = cache
+        .get_exact(&key)
+        .expect("expected oversized full prep entry to be retained as hot entry");
+    assert!(Arc::ptr_eq(&hit, &prepared));
+    assert!(cache.entries.is_empty());
+    assert_eq!(cache.oversized_entries.len(), 1);
+}
+
+#[test]
+fn test_full_prep_cache_state_keeps_two_oversized_width_entries_hot() {
+    let key_a = FullPrepCacheKey {
+        width: 140,
+        height: 42,
+        diff_mode: crate::config::DiffDisplayMode::Off,
+        messages_version: 120,
+        diagram_mode: crate::config::DiagramDisplayMode::Pinned,
+        centered: false,
+        is_processing: true,
+        streaming_text_len: 4096,
+        streaming_text_hash: 12345,
+        batch_progress_hash: 0,
+    };
+    let key_b = FullPrepCacheKey {
+        width: 139,
+        ..key_a.clone()
+    };
+    let prepared_a = make_oversized_prepared_chat_frame("full-oversized-a-");
+    let prepared_b = make_oversized_prepared_chat_frame("full-oversized-b-");
+
+    let mut cache = FullPrepCacheState::default();
+    cache.insert(key_a.clone(), prepared_a.clone());
+    cache.insert(key_b.clone(), prepared_b.clone());
+
+    let hit_a = cache
+        .get_exact(&key_a)
+        .expect("expected first oversized full-prep width to remain hot");
+    let hit_b = cache
+        .get_exact(&key_b)
+        .expect("expected second oversized full-prep width to remain hot");
+    assert!(Arc::ptr_eq(&hit_a, &prepared_a));
+    assert!(Arc::ptr_eq(&hit_b, &prepared_b));
+    assert_eq!(cache.oversized_entries.len(), 2);
 }
 
 #[test]
@@ -657,7 +1025,7 @@ fn test_compute_visible_margins_centered_respects_line_alignment() {
         ratatui::text::Line::from("right").right_aligned(),
     ];
     let area = Rect::new(0, 0, 20, 3);
-    let margins = compute_visible_margins(&lines, &[], 0, area, true);
+    let margins = compute_visible_margins(&lines, &[], area, true);
 
     // centered: used=8 => total_margin=12 => 6/6 split
     assert_eq!(margins.left_widths[0], 6);

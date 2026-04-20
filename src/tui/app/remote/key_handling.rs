@@ -1228,6 +1228,10 @@ async fn handle_remote_key_internal(
                     || trimmed == "/observe on"
                     || trimmed == "/observe off"
                     || trimmed == "/observe status"
+                    || trimmed == "/todos"
+                    || trimmed == "/todos on"
+                    || trimmed == "/todos off"
+                    || trimmed == "/todos status"
                     || trimmed == "/splitview"
                     || trimmed == "/splitview on"
                     || trimmed == "/splitview off"
@@ -1461,39 +1465,73 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if trimmed == "/poke" {
-                    let incomplete = app_mod::commands::incomplete_poke_todos(app);
+                if let Some(command) = app_mod::commands::parse_poke_command(trimmed) {
+                    match command {
+                        Err(error) => app.push_display_message(DisplayMessage::error(error)),
+                        Ok(app_mod::commands::PokeCommand::Status) => {
+                            app.push_display_message(DisplayMessage::system(
+                                app_mod::commands::poke_status_message(app),
+                            ));
+                        }
+                        Ok(app_mod::commands::PokeCommand::Off) => {
+                            let cleared = app_mod::commands::clear_queued_poke_messages(app);
+                            app.auto_poke_incomplete_todos = false;
+                            app.set_status_notice("Poke: OFF");
+                            app.push_display_message(DisplayMessage::system(format!(
+                                "Auto-poke disabled.{}",
+                                if cleared == 0 {
+                                    String::new()
+                                } else {
+                                    format!(
+                                        " Cleared {} queued poke follow-up{}.",
+                                        cleared,
+                                        if cleared == 1 { "" } else { "s" }
+                                    )
+                                }
+                            )));
+                        }
+                        Ok(app_mod::commands::PokeCommand::Trigger)
+                        | Ok(app_mod::commands::PokeCommand::On) => {
+                            let incomplete = app_mod::commands::incomplete_poke_todos(app);
 
-                    if incomplete.is_empty() {
-                        app.auto_poke_incomplete_todos = false;
-                        app.push_display_message(DisplayMessage::system(
-                            "No incomplete todos found. Nothing to poke about.".to_string(),
-                        ));
-                        return Ok(());
-                    }
+                            if incomplete.is_empty() {
+                                app.auto_poke_incomplete_todos = false;
+                                app.push_display_message(DisplayMessage::system(
+                                    "No incomplete todos found. Nothing to poke about.".to_string(),
+                                ));
+                                return Ok(());
+                            }
 
-                    app.auto_poke_incomplete_todos = true;
-                    let poke_msg = app_mod::commands::build_poke_message(&incomplete);
+                            app.auto_poke_incomplete_todos = true;
+                            app.set_status_notice("Poke: ON");
 
-                    if app.is_processing {
-                        remote.cancel().await?;
-                        app.set_status_notice("Interrupting for poke...");
-                        app.push_display_message(DisplayMessage::system(format!(
-                            "👉 Interrupting and poking with {} incomplete todo{}...",
-                            incomplete.len(),
-                            if incomplete.len() == 1 { "" } else { "s" },
-                        )));
-                        app.queued_messages.push(poke_msg);
-                    } else {
-                        app.push_display_message(DisplayMessage::system(format!(
-                            "👉 Poking model with {} incomplete todo{}...",
-                            incomplete.len(),
-                            if incomplete.len() == 1 { "" } else { "s" },
-                        )));
+                            if app.is_processing {
+                                app.set_status_notice("Poke queued after current turn");
+                                app.push_display_message(DisplayMessage::system(
+                                    "👉 Queued /poke for after the current turn. Incomplete todos will be re-checked then."
+                                        .to_string(),
+                                ));
+                            } else {
+                                let poke_msg = app_mod::commands::build_poke_message(&incomplete);
+                                app.push_display_message(DisplayMessage::system(format!(
+                                    "👉 Poking model with {} incomplete todo{}...",
+                                    incomplete.len(),
+                                    if incomplete.len() == 1 { "" } else { "s" },
+                                )));
 
-                        let _ =
-                            begin_remote_send(app, remote, poke_msg, vec![], true, None, true, 0)
+                                let _ = begin_remote_send(
+                                    app,
+                                    remote,
+                                    poke_msg,
+                                    vec![],
+                                    true,
+                                    None,
+                                    true,
+                                    0,
+                                )
                                 .await;
+                            }
+                        }
                     }
                     return Ok(());
                 }

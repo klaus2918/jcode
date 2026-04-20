@@ -143,6 +143,10 @@ impl App {
                 "Show the latest tool context in the side panel",
             ),
             (
+                "/todos".into(),
+                "Show the current session todo list in the side panel",
+            ),
+            (
                 "/splitview".into(),
                 "Mirror the current chat in the side panel",
             ),
@@ -177,7 +181,10 @@ impl App {
             ),
             ("/clear".into(), "Clear conversation history"),
             ("/rewind".into(), "Rewind conversation to previous message"),
-            ("/poke".into(), "Poke model to resume with incomplete todos"),
+            (
+                "/poke".into(),
+                "Poke model to resume with incomplete todos (on/off/status)",
+            ),
             (
                 "/improve".into(),
                 "Autonomously find and implement highest-leverage improvements",
@@ -1035,6 +1042,7 @@ impl App {
                 | "/btw"
                 | "/git"
                 | "/observe"
+                | "/todos"
                 | "/splitview"
                 | "/split-view"
                 | "/model"
@@ -1057,6 +1065,7 @@ impl App {
                 | "/account openai remove"
                 | "/usage"
                 | "/subscription"
+                | "/poke"
                 | "/memory"
                 | "/goals"
                 | "/goals show"

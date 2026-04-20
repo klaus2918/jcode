@@ -1396,7 +1396,7 @@ mod tests {
     fn render_tool_message_uses_scheduled_card() {
         let msg = DisplayMessage {
             role: "tool".to_string(),
-            content: "Scheduled task 'Follow up on the scheduler test' for in 1m (id: sched_abc123)\nWorking directory: /home/jeremy/jcode\nRelevant files: src/tui/ui_messages.rs\nTarget: session session_test".to_string(),
+            content: "Scheduled task 'Follow up on the scheduler test' for in 1m (id: sched_abc123)\nWorking directory: /home/jeremy/jcode\nRelevant files: src/tui/ui_messages.rs\nTarget: resume session session_test".to_string(),
             tool_calls: Vec::new(),
             duration_secs: None,
             title: Some("scheduled: Follow up on the scheduler test".to_string()),
@@ -1406,7 +1406,7 @@ mod tests {
                 input: serde_json::json!({
                     "task": "Follow up on the scheduler test",
                     "wake_in_minutes": 1,
-                    "target": "session"
+                    "target": "resume"
                 }),
                 intent: None,
             }),
@@ -1419,7 +1419,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(plain.contains("⏰ scheduled"));
+        assert!(plain.contains(width_stable_system_title("⏰ scheduled", "scheduled")));
         assert!(plain.contains("Will run in 1m."));
         assert!(plain.contains("Follow up on the scheduler test"));
         assert!(plain.contains("session session_test"));

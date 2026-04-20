@@ -24,6 +24,8 @@ mod swarm_plan_core;
 mod workspace;
 
 use queue_recovery::{recover_local_interleave_to_queue, recover_stranded_soft_interrupts};
+// Re-export for sibling modules and tests that access reconnect state and helpers
+// through `super::remote::*` without reaching into private submodules directly.
 #[allow(unused_imports)]
 pub(super) use reconnect::{
     ConnectOutcome, PostConnectOutcome, ReloadReconnectHints, RemoteRunState, connect_with_retry,
@@ -37,6 +39,8 @@ use session_persistence::{
 };
 use workspace::{handle_workspace_command, handle_workspace_navigation_key};
 
+// Re-export the remote input dispatch helpers for sibling modules/tests that go
+// through the `remote` facade instead of private submodule paths.
 #[allow(unused_imports)]
 pub(super) use input_dispatch::{
     apply_remote_transcript_event, apply_transcript_event, begin_remote_send,
@@ -65,6 +69,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         needs_redraw = true;
     }
 
+    needs_redraw |= app.refresh_todos_view_if_needed();
     needs_redraw |= app.refresh_side_panel_linked_content_if_due();
 
     let _ = check_debug_command(app, remote).await;
@@ -341,7 +346,9 @@ mod tests {
             _system: &str,
             _resume_session_id: Option<&str>,
         ) -> Result<crate::provider::EventStream> {
-            unimplemented!("Mock provider")
+            Err(anyhow::anyhow!(
+                "Mock provider should not be used for streaming completions in remote app tests"
+            ))
         }
 
         fn name(&self) -> &str {

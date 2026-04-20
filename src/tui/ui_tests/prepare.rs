@@ -38,7 +38,7 @@ fn test_prepare_messages_live_batch_rows_do_not_soft_wrap_on_narrow_width() {
 
     let prepared = prepare::prepare_messages(&state, 34, 20);
     let rendered: Vec<String> = prepared
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .collect();
@@ -96,8 +96,8 @@ fn test_prepare_messages_centered_live_batch_rows_keep_dedicated_padding_span() 
     };
 
     let prepared = prepare::prepare_messages(&state, 120, 20);
-    let batch_rows: Vec<&Line<'static>> = prepared
-        .wrapped_lines
+    let prepared_lines = prepared.materialize_all_lines();
+    let batch_rows: Vec<&Line<'static>> = prepared_lines
         .iter()
         .filter(|line| {
             let text = extract_line_text(line);
@@ -174,7 +174,7 @@ fn test_prepare_messages_shows_live_batch_progress_in_chat_history() {
 
     let prepared = prepare::prepare_messages(&state, 100, 30);
     let rendered: Vec<String> = prepared
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .collect();
@@ -248,7 +248,7 @@ fn test_prepare_messages_places_live_batch_after_committed_assistant_text() {
 
     let prepared = prepare::prepare_messages(&state, 100, 30);
     let rendered: Vec<String> = prepared
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .collect();
@@ -309,12 +309,12 @@ fn test_prepare_messages_live_batch_spinner_advances_between_frames() {
     };
 
     let first_rendered: Vec<String> = prepare::prepare_messages(&first, 100, 20)
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .collect();
     let second_rendered: Vec<String> = prepare::prepare_messages(&second, 100, 20)
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .collect();
@@ -372,8 +372,8 @@ fn test_prepare_messages_live_batch_centered_mode_uses_left_aligned_padding() {
     };
 
     let prepared = prepare::prepare_messages(&state, 100, 20);
-    let batch_lines: Vec<&Line<'static>> = prepared
-        .wrapped_lines
+    let prepared_lines = prepared.materialize_all_lines();
+    let batch_lines: Vec<&Line<'static>> = prepared_lines
         .iter()
         .filter(|line| {
             let text = extract_line_text(line);
@@ -416,8 +416,8 @@ fn test_prepare_messages_centers_meta_footer_in_centered_mode() {
     };
 
     let prepared = prepare::prepare_messages(&state, 100, 20);
-    let footer = prepared
-        .wrapped_lines
+    let prepared_lines = prepared.materialize_all_lines();
+    let footer = prepared_lines
         .iter()
         .find(|line| extract_line_text(line).contains("↑12 ↓34"))
         .expect("missing meta footer line");
@@ -445,12 +445,12 @@ fn test_prepare_messages_recomputes_when_streaming_text_changes_same_length() {
     };
 
     let first_rendered: Vec<String> = prepare::prepare_messages(&first, 80, 20)
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .collect();
     let second_rendered: Vec<String> = prepare::prepare_messages(&second, 80, 20)
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .collect();
@@ -509,12 +509,12 @@ fn test_prepare_messages_tool_row_refreshes_after_message_version_bump() {
     };
 
     let first_rendered: Vec<String> = prepare::prepare_messages(&first, 120, 20)
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .collect();
     let refreshed_rendered: Vec<String> = prepare::prepare_messages(&refreshed, 120, 20)
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .collect();
@@ -548,8 +548,8 @@ fn test_prepare_messages_centered_streaming_uses_center_alignment_without_left_p
         };
 
     let prepared = prepare::prepare_messages(&state, 120, 20);
-    let stream_lines: Vec<&Line<'static>> = prepared
-        .wrapped_lines
+    let prepared_lines = prepared.materialize_all_lines();
+    let stream_lines: Vec<&Line<'static>> = prepared_lines
         .iter()
         .filter(|line| extract_line_text(line).contains("streaming-block"))
         .collect();
@@ -558,7 +558,7 @@ fn test_prepare_messages_centered_streaming_uses_center_alignment_without_left_p
         stream_lines.len() >= 2,
         "expected wrapped centered streaming lines: {:?}",
         prepared
-            .wrapped_lines
+            .materialize_all_lines()
             .iter()
             .map(extract_line_text)
             .collect::<Vec<_>>()
@@ -602,7 +602,7 @@ fn test_prepare_messages_centered_streaming_recenters_structured_markdown_like_f
     let finalized_prepared = prepare::prepare_messages(&finalized, 120, 20);
 
     let streaming_bullets: Vec<String> = streaming_prepared
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .filter(|line| {
@@ -610,7 +610,7 @@ fn test_prepare_messages_centered_streaming_recenters_structured_markdown_like_f
         })
         .collect();
     let finalized_bullets: Vec<String> = finalized_prepared
-        .wrapped_lines
+        .materialize_all_lines()
         .iter()
         .map(extract_line_text)
         .filter(|line| {

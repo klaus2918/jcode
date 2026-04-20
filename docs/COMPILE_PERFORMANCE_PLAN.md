@@ -73,6 +73,14 @@ even if they cannot reach the same fast path.
 
 ### Phase 2 — Measurement and repeatability
 
+Standard self-dev checkpoints now live behind `scripts/bench_selfdev_checkpoints.sh`, which runs:
+- cold `cargo check`
+- warm touched-file `cargo check`
+- cold self-dev `jcode` build
+- warm touched-file self-dev `jcode` build
+
+Use it when capturing comparable before/after numbers for refactors.
+
 - Add documented commands for cold/warm `check` and `build` timing.
 - Prefer touched-file timings (for example `scripts/bench_compile.sh check --touch src/server.rs`) over no-op hot-cache reruns when judging ROI.
 - Track timing deltas after each structural phase.
@@ -92,6 +100,82 @@ even if they cannot reach the same fast path.
   `scripts/dev_cargo.sh build --release -p jcode --bin jcode --quiet` to about **16.0s** for
   `scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode --quiet`, while keeping the
   normal release/distribution profile unchanged.
+- 2026-04-18: added `scripts/bench_selfdev_checkpoints.sh` to standardize cold/warm self-dev
+  checkpoints. First local checkpoint attempt on this machine surfaced two environment blockers:
+  - cold checkpoints failed because `cargo clean` could not remove part of `target/release`
+    (`Permission denied` on a fingerprint timestamp file)
+  - warm `selfdev-jcode` touched-file measurement on `src/tool/read.rs` failed because the
+    `sccache`-wrapped rustc process terminated with signal 15 during the `jcode` crate build
+  - warm touched-file `cargo check` on `src/tool/read.rs` completed in **93.115s** then **9.430s**,
+    which is useful as a rough upper/lower bound but not yet stable enough to treat as an
+    authoritative checkpoint
+  - follow-up required: fix the `target/release` permission issue, rerun cold checkpoints, and
+    rerun warm self-dev measurements until they are stable enough to compare against future waves
+- 2026-04-18: updated `scripts/bench_selfdev_checkpoints.sh` to keep running after individual
+  checkpoint failures and report them in JSON/text output instead of aborting early. Verified local
+  output on this machine with `--touch src/tool/read.rs --runs 1`:
+  - warm touched-file `cargo check`: **9.582s**
+  - warm touched-file `selfdev-jcode` build: **59.898s**
+  - failed checkpoints reported cleanly: `cold_check`, `cold_selfdev_build`
+- 2026-04-18: added `--skip-cold` to `scripts/bench_selfdev_checkpoints.sh` so warm-only
+  checkpoints remain usable while cold-path cleanup is blocked locally. Verified local output on this
+  machine with `--skip-cold --touch src/tool/read.rs --runs 1`:
+  - warm touched-file `cargo check`: **9.339s**
+  - warm touched-file `selfdev-jcode` build: **18.844s**
+  - skipped checkpoints reported explicitly: `cold_check`, `cold_selfdev_build`
+- 2026-04-18: additional warm-only checkpoint on a broader shared edit target with
+  `--skip-cold --touch src/server.rs --runs 1`:
+  - warm touched-file `cargo check`: **8.711s**
+  - warm touched-file `selfdev-jcode` build: **18.969s**
+- 2026-04-18: additional warm-only checkpoint on a heavy tool-path file with
+  `--skip-cold --touch src/tool/communicate.rs --runs 1`:
+  - warm touched-file `cargo check`: **8.496s**
+  - warm touched-file `selfdev-jcode` build: **21.400s**
+- 2026-04-18: additional warm-only checkpoint on a provider-heavy file with
+  `--skip-cold --touch src/provider/openai.rs --runs 1`:
+  - warm touched-file `cargo check`: **8.750s**
+  - warm touched-file `selfdev-jcode` build: **21.386s**
+- 2026-04-18: additional warm-only checkpoint on the shared provider module with
+  `--skip-cold --touch src/provider/mod.rs --runs 1`:
+  - warm touched-file `cargo check`: **9.772s**
+  - warm touched-file `selfdev-jcode` build: **17.917s**
+- 2026-04-18: additional warm-only checkpoint on the agent entry module with
+  `--skip-cold --touch src/agent.rs --runs 1`:
+  - warm touched-file `cargo check`: **7.318s**
+  - warm touched-file `selfdev-jcode` build: **30.928s**
+- 2026-04-18: additional warm-only checkpoint on the memory tool with
+  `--skip-cold --touch src/tool/memory.rs --runs 1`:
+  - warm touched-file `cargo check`: **7.787s**
+  - warm touched-file `selfdev-jcode` build: **12.798s**
+- 2026-04-18: additional warm-only checkpoint on session search with
+  `--skip-cold --touch src/tool/session_search.rs --runs 1`:
+  - warm touched-file `cargo check`: **7.009s**
+  - warm touched-file `selfdev-jcode` build: **12.874s**
+- 2026-04-18: additional warm-only checkpoint on the browser tool with
+  `--skip-cold --touch src/tool/browser.rs --runs 1`:
+  - warm touched-file `cargo check`: **13.693s**
+  - warm touched-file `selfdev-jcode` build: **18.874s**
+
+Warm-only touched-file checkpoints captured so far on this machine:
+
+| Touched file | Warm `cargo check` | Warm `selfdev-jcode` build |
+| --- | ---: | ---: |
+| `src/tool/session_search.rs` | 7.009s | 12.874s |
+| `src/agent.rs` | 7.318s | 30.928s |
+| `src/tool/memory.rs` | 7.787s | 12.798s |
+| `src/tool/communicate.rs` | 8.496s | 21.400s |
+| `src/server.rs` | 8.711s | 18.969s |
+| `src/provider/openai.rs` | 8.750s | 21.386s |
+| `src/tool/read.rs` | 9.339s | 18.844s |
+| `src/provider/mod.rs` | 9.772s | 17.917s |
+| `src/tool/browser.rs` | 13.693s | 18.874s |
+
+Observed spread from these warm-only checkpoints:
+- warm touched-file `cargo check`: **7.009s to 13.693s**
+- warm touched-file `selfdev-jcode` build: **12.798s to 30.928s**
+- fastest measured warm self-dev rebuilds so far are on smaller tool-path edits
+- `src/agent.rs` currently stands out as the most expensive warm self-dev rebuild in this sample set
+- `src/tool/browser.rs` currently stands out as the slowest warm `cargo check` in this sample set
 
 ### Phase 3 — Workspace boundary design
 
@@ -334,6 +418,7 @@ scripts/bench_compile.sh check --runs 3 --touch src/tool/read.rs
 scripts/bench_compile.sh release-jcode --runs 3
 scripts/bench_compile.sh selfdev-jcode --runs 3
 scripts/bench_compile.sh build -- --package jcode --bin test_api
+scripts/bench_selfdev_checkpoints.sh --touch src/server.rs --runs 3
 ```
 
 `bench_compile.sh` now supports:
@@ -342,6 +427,9 @@ scripts/bench_compile.sh build -- --package jcode --bin test_api
 - `--touch <path>` to simulate a local edit before each timed run
 - `--json` for scriptable output
 - `-- <extra cargo args>` to narrow the measured target/package/bin/features
+
+`bench_selfdev_checkpoints.sh` builds on that foundation to produce a single standard
+self-dev checkpoint bundle for cold/warm check + build comparisons.
 
 ## Stop Conditions
 

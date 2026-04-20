@@ -567,3 +567,143 @@ pub async fn wait_for_reload_ack(
         )
     })?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_runtime_dir(path: &std::path::Path) -> Self {
+            let key = "JCODE_RUNTIME_DIR";
+            let old = std::env::var_os(key);
+            crate::env::set_var(key, path);
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(old) = &self.old {
+                crate::env::set_var(self.key, old);
+            } else {
+                crate::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn inspect_reload_wait_status_returns_failed_with_marker_detail() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::set_runtime_dir(temp.path());
+
+        write_reload_state(
+            "req-test",
+            "hash-test",
+            ReloadPhase::Failed,
+            Some("reload failed for test".to_string()),
+        );
+
+        let status = inspect_reload_wait_status(
+            &temp.path().join("jcode.sock"),
+            Duration::from_secs(5),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            ReloadWaitStatus::Failed(Some("reload failed for test".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn inspect_reload_wait_status_returns_ready_for_socket_ready_marker() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::set_runtime_dir(temp.path());
+
+        write_reload_state(
+            "req-ready",
+            "hash-ready",
+            ReloadPhase::SocketReady,
+            Some("ready for handoff".to_string()),
+        );
+
+        let status = inspect_reload_wait_status(
+            &temp.path().join("jcode.sock"),
+            Duration::from_secs(5),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, ReloadWaitStatus::Ready);
+    }
+    #[tokio::test]
+    async fn wait_for_reload_ack_returns_matching_ack() {
+        let request_id = crate::id::new_id("reload-test");
+        let ack = ReloadAck {
+            hash: "hash-test".to_string(),
+            request_id: request_id.clone(),
+        };
+        let (tx, _) = reload_ack();
+        let _ = tx.send(Some(ack.clone()));
+
+        let received = wait_for_reload_ack(&request_id, Duration::from_millis(50))
+            .await
+            .expect("ack should be received");
+
+        assert_eq!(received.request_id, ack.request_id);
+        assert_eq!(received.hash, ack.hash);
+    }
+
+    #[tokio::test]
+    async fn wait_for_reload_ack_handles_repeated_unique_requests() {
+        let (tx, _) = reload_ack();
+
+        for _ in 0..5 {
+            let request_id = crate::id::new_id("reload-repeat");
+            let ack = ReloadAck {
+                hash: format!("hash-{}", request_id),
+                request_id: request_id.clone(),
+            };
+            let _ = tx.send(Some(ack.clone()));
+
+            let received = wait_for_reload_ack(&request_id, Duration::from_millis(50))
+                .await
+                .expect("ack should be received for repeated request");
+
+            assert_eq!(received.request_id, ack.request_id);
+            assert_eq!(received.hash, ack.hash);
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn inspect_reload_wait_status_handles_repeated_ready_markers() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::set_runtime_dir(temp.path());
+        let socket_path = temp.path().join("jcode.sock");
+
+        for idx in 0..5 {
+            write_reload_state(
+                &format!("req-{idx}"),
+                &format!("hash-{idx}"),
+                ReloadPhase::SocketReady,
+                Some(format!("ready-{idx}")),
+            );
+
+            let status =
+                inspect_reload_wait_status(&socket_path, Duration::from_secs(5), None).await;
+            assert_eq!(status, ReloadWaitStatus::Ready);
+        }
+    }
+}

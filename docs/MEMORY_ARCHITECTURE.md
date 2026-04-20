@@ -7,6 +7,8 @@ Local embeddings + lightweight sidecar (GPT-5.3 Codex Spark) are implemented and
 
 ## Overview
 
+See also: [Memory Regression Budget](./MEMORY_BUDGET.md) for the current measurable guardrails and review expectations.
+
 A multi-layered memory system for cross-session learning that mimics how human memory works - relevant memories "pop up" when triggered by context rather than requiring explicit recall.
 
 **Key Design Decisions:**

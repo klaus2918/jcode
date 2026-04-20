@@ -60,8 +60,10 @@ impl Tool for SkillTool {
         })
     }
 
-    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: SkillInput = serde_json::from_value(input)?;
+        let action_label = params.action.clone();
+        let name_label = params.name.clone().unwrap_or_else(|| "<none>".to_string());
 
         match params.action.as_str() {
             "load" => self.load_skill(params.name).await,
@@ -74,6 +76,13 @@ impl Tool for SkillTool {
                 params.action
             ))),
         }
+        .map_err(|err| {
+            crate::logging::warn(&format!(
+                "[tool:skill_manage] action failed action={} skill={} session_id={} error={}",
+                action_label, name_label, ctx.session_id, err
+            ));
+            err
+        })
     }
 }
 
@@ -163,10 +172,16 @@ impl SkillTool {
                 name
             ))
             .with_title("Skills: Not found")),
-            Err(e) => Ok(
-                ToolOutput::new(format!("Failed to reload skill '{}': {}", name, e))
-                    .with_title("Skills: Reload failed"),
-            ),
+            Err(e) => {
+                crate::logging::warn(&format!(
+                    "[tool:skill_manage] reload failed skill={} error={}",
+                    name, e
+                ));
+                Ok(
+                    ToolOutput::new(format!("Failed to reload skill '{}': {}", name, e))
+                        .with_title("Skills: Reload failed"),
+                )
+            }
         }
     }
 
@@ -184,8 +199,14 @@ impl SkillTool {
 
                 Ok(ToolOutput::new(output).with_title(format!("Skills: Reloaded {}", count)))
             }
-            Err(e) => Ok(ToolOutput::new(format!("Failed to reload skills: {}", e))
-                .with_title("Skills: Reload failed")),
+            Err(e) => {
+                crate::logging::warn(&format!(
+                    "[tool:skill_manage] reload_all failed error={}",
+                    e
+                ));
+                Ok(ToolOutput::new(format!("Failed to reload skills: {}", e))
+                    .with_title("Skills: Reload failed"))
+            }
         }
     }
 

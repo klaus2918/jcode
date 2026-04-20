@@ -78,40 +78,34 @@ fn highlight_line_selection(
 
 pub(super) fn compute_visible_margins(
     lines: &[Line],
-    user_line_indices: &[usize],
-    scroll: usize,
+    visible_user_indices: &[usize],
     area: Rect,
     centered: bool,
 ) -> info_widget::Margins {
     let visible_height = area.height as usize;
-    let visible_end = scroll + visible_height;
-    let visible_user_start = lower_bound(user_line_indices, scroll);
-    let visible_user_end = lower_bound(user_line_indices, visible_end);
-    let visible_user_indices = &user_line_indices[visible_user_start..visible_user_end];
     let mut visible_user_cursor = 0usize;
 
     let mut right_widths = Vec::with_capacity(visible_height);
     let mut left_widths = Vec::with_capacity(visible_height);
 
     for row in 0..visible_height {
-        let line_idx = scroll + row;
         while visible_user_cursor < visible_user_indices.len()
-            && visible_user_indices[visible_user_cursor] < line_idx
+            && visible_user_indices[visible_user_cursor] < row
         {
             visible_user_cursor += 1;
         }
         let is_user_line = visible_user_cursor < visible_user_indices.len()
-            && visible_user_indices[visible_user_cursor] == line_idx;
+            && visible_user_indices[visible_user_cursor] == row;
 
-        if line_idx < lines.len() {
-            let mut used = lines[line_idx].width().min(area.width as usize) as u16;
+        if row < lines.len() {
+            let mut used = lines[row].width().min(area.width as usize) as u16;
             if is_user_line && area.width > 0 {
                 used = used.saturating_add(1).min(area.width);
             }
 
             if centered {
                 let total_margin = area.width.saturating_sub(used);
-                let effective_alignment = lines[line_idx].alignment.unwrap_or(Alignment::Center);
+                let effective_alignment = lines[row].alignment.unwrap_or(Alignment::Center);
                 let (left_margin, right_margin) = match effective_alignment {
                     Alignment::Left => (0, total_margin),
                     Alignment::Center => {
@@ -148,7 +142,7 @@ pub(super) fn draw_messages(
     frame: &mut Frame,
     app: &dyn TuiState,
     area: Rect,
-    prepared: &PreparedMessages,
+    prepared: Arc<PreparedChatFrame>,
     show_native_scrollbar: bool,
 ) -> info_widget::Margins {
     let (render_area, scrollbar_area) =
@@ -160,13 +154,12 @@ pub(super) fn draw_messages(
         width: render_area.width.saturating_sub(left_inset),
         height: render_area.height,
     };
-    let wrapped_lines = &prepared.wrapped_lines;
     let wrapped_user_indices = &prepared.wrapped_user_indices;
     let wrapped_user_prompt_starts = &prepared.wrapped_user_prompt_starts;
     let wrapped_user_prompt_ends = &prepared.wrapped_user_prompt_ends;
     let user_prompt_texts = &prepared.user_prompt_texts;
 
-    let total_lines = wrapped_lines.len();
+    let total_lines = prepared.total_wrapped_lines();
     let viewport_height = render_area.height as usize;
     let max_scroll = compute_max_scroll_with_prompt_preview(
         total_lines,
@@ -205,15 +198,30 @@ pub(super) fn draw_messages(
     let visible_height = content_area.height as usize;
 
     let active_file_context = if app.diff_mode().is_file() {
-        active_file_diff_context(prepared, scroll, visible_height)
+        active_file_diff_context(prepared.as_ref(), scroll, visible_height)
     } else {
         None
     };
 
+    let visible_end = (scroll + visible_height).min(total_lines);
+    let visible_user_start = lower_bound(wrapped_user_indices, scroll);
+    let visible_user_end = lower_bound(wrapped_user_indices, visible_end);
+    let visible_user_indices: Vec<usize> = wrapped_user_indices
+        [visible_user_start..visible_user_end]
+        .iter()
+        .map(|idx| idx.saturating_sub(scroll))
+        .collect();
+
+    let mut visible_lines = prepared.materialize_line_slice(scroll, visible_end);
+    let stability_hash = super::viewport_stability_hash(
+        &visible_lines,
+        &visible_user_indices,
+        content_area.width,
+        prompt_preview_lines,
+    );
     let content_margins = compute_visible_margins(
-        wrapped_lines,
-        wrapped_user_indices,
-        scroll,
+        &visible_lines,
+        &visible_user_indices,
         content_area,
         app.centered_mode(),
     );
@@ -235,15 +243,11 @@ pub(super) fn draw_messages(
         margins.left_widths.push(0);
     }
 
-    let visible_end = (scroll + visible_height).min(wrapped_lines.len());
     let copy_badge_ui = app.copy_badge_ui();
     let copy_badge_now = std::time::Instant::now();
 
-    record_copy_viewport_snapshot(
-        prepared.wrapped_plain_lines.clone(),
-        prepared.wrapped_copy_offsets.clone(),
-        prepared.raw_plain_lines.clone(),
-        prepared.wrapped_line_map.clone(),
+    record_copy_viewport_frame_snapshot(
+        prepared.clone(),
         scroll,
         visible_end,
         content_area,
@@ -269,6 +273,17 @@ pub(super) fn draw_messages(
         badge_assignments.push((target.badge_line, key));
     }
     set_visible_copy_targets(visible_copy_targets);
+    super::note_viewport_metrics(
+        scroll,
+        visible_end,
+        visible_lines.len(),
+        total_lines,
+        prompt_preview_lines,
+        visible_user_indices.len(),
+        badge_assignments.len(),
+        content_area.width,
+        stability_hash,
+    );
 
     let now_ms = app.now_millis();
     let policy = crate::perf::tui_policy();
@@ -287,14 +302,6 @@ pub(super) fn draw_messages(
         None
     };
 
-    let visible_user_start = lower_bound(wrapped_user_indices, scroll);
-    let visible_user_end = lower_bound(wrapped_user_indices, visible_end);
-
-    let mut visible_lines = if scroll < visible_end {
-        wrapped_lines[scroll..visible_end].to_vec()
-    } else {
-        Vec::new()
-    };
     if visible_lines.len() < visible_height {
         visible_lines.extend(std::iter::repeat_n(
             Line::from(""),
@@ -433,11 +440,7 @@ pub(super) fn draw_messages(
         {
             let rel_idx = abs_idx.saturating_sub(scroll);
             if let Some(line) = visible_lines.get_mut(rel_idx) {
-                let copy_start = prepared
-                    .wrapped_copy_offsets
-                    .get(abs_idx)
-                    .copied()
-                    .unwrap_or(0);
+                let copy_start = prepared.wrapped_copy_offset(abs_idx).unwrap_or(0);
                 let start_col = if abs_idx == start.abs_line {
                     start.column.max(copy_start)
                 } else {

@@ -520,6 +520,101 @@ fn create_auth_refresh_test_app() -> App {
 }
 
 #[derive(Clone)]
+struct AntigravityMockProvider {
+    model: StdArc<StdMutex<String>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for AntigravityMockProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[crate::message::ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        unimplemented!("AntigravityMockProvider")
+    }
+
+    fn name(&self) -> &str {
+        "Antigravity"
+    }
+
+    fn model(&self) -> String {
+        self.model.lock().unwrap().clone()
+    }
+
+    fn set_model(&self, model: &str) -> Result<()> {
+        let resolved = model
+            .strip_prefix("antigravity:")
+            .unwrap_or(model)
+            .to_string();
+        *self.model.lock().unwrap() = resolved;
+        Ok(())
+    }
+
+    fn model_routes(&self) -> Vec<crate::provider::ModelRoute> {
+        vec![
+            crate::provider::ModelRoute {
+                model: "claude-sonnet-4-6".to_string(),
+                provider: "Antigravity".to_string(),
+                api_method: "cli".to_string(),
+                available: true,
+                detail: "cached catalog".to_string(),
+                cheapness: None,
+            },
+            crate::provider::ModelRoute {
+                model: "gpt-oss-120b-medium".to_string(),
+                provider: "Antigravity".to_string(),
+                api_method: "cli".to_string(),
+                available: true,
+                detail: "cached catalog".to_string(),
+                cheapness: None,
+            },
+        ]
+    }
+
+    fn available_models_display(&self) -> Vec<String> {
+        vec![
+            "claude-sonnet-4-6".to_string(),
+            "gpt-oss-120b-medium".to_string(),
+        ]
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+fn create_antigravity_picker_test_app() -> App {
+    ensure_test_jcode_home_if_unset();
+    clear_persisted_test_ui_state();
+    crate::tui::ui::clear_test_render_state_for_tests();
+
+    let provider: Arc<dyn Provider> = Arc::new(AntigravityMockProvider {
+        model: StdArc::new(StdMutex::new("default".to_string())),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+    let mut app = App::new(provider, registry);
+    app.queue_mode = false;
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app
+}
+
+fn render_model_picker_text(app: &mut App, width: u16, height: u16) -> String {
+    let _render_lock = scroll_render_test_lock();
+    if app.display_messages.is_empty() {
+        app.display_messages = vec![DisplayMessage::system("seed render state")];
+        app.bump_display_messages_version();
+    }
+    app.open_model_picker();
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    render_and_snap(app, &mut terminal)
+}
+
+#[derive(Clone)]
 struct FailingModelSwitchProvider;
 
 #[async_trait::async_trait]
@@ -4688,6 +4783,94 @@ fn test_login_completed_surfaces_new_provider_models_in_local_model_picker() {
 }
 
 #[test]
+fn test_local_model_picker_surfaces_antigravity_models_from_multiprovider() {
+    let mut app = create_antigravity_picker_test_app();
+    app.open_model_picker();
+
+    let picker = app
+        .inline_interactive_state
+        .as_ref()
+        .expect("model picker should be open");
+
+    let antigravity_entry = picker
+        .entries
+        .iter()
+        .find(|entry| entry.name == "claude-sonnet-4-6")
+        .expect("antigravity model should be shown after login");
+
+    assert!(antigravity_entry.options.iter().any(|route| {
+        route.provider == "Antigravity" && route.api_method == "cli" && route.available
+    }));
+}
+
+#[test]
+fn test_local_antigravity_model_picker_selection_preserves_antigravity_provider() {
+    let mut app = create_antigravity_picker_test_app();
+    app.open_model_picker();
+
+    let picker = app
+        .inline_interactive_state
+        .as_ref()
+        .expect("model picker should be open");
+
+    let model_idx = picker
+        .entries
+        .iter()
+        .position(|entry| entry.name == "claude-sonnet-4-6")
+        .expect("antigravity model should be in picker");
+    let filtered_pos = picker
+        .filtered
+        .iter()
+        .position(|&i| i == model_idx)
+        .expect("antigravity model should be in filtered list");
+
+    app.inline_interactive_state.as_mut().unwrap().selected = filtered_pos;
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+        .unwrap();
+
+    assert_eq!(app.provider.name(), "Antigravity");
+    assert_eq!(app.provider.model(), "claude-sonnet-4-6");
+    assert!(app.inline_interactive_state.is_none());
+}
+
+#[test]
+fn test_local_model_picker_render_shows_antigravity_models_exactly_as_user_sees_them() {
+    let mut app = create_antigravity_picker_test_app();
+    let text = render_model_picker_text(&mut app, 90, 12);
+
+    assert!(
+        text.contains("ITEM") && text.contains("PROVIDER") && text.contains("ACT"),
+        "rendered /model view should include picker columns, got:
+{}",
+        text
+    );
+    assert!(
+        text.contains("claude-sonnet-4-6"),
+        "rendered /model view should show the Antigravity Claude row, got:
+{}",
+        text
+    );
+    assert!(
+        text.contains("gpt-oss-120b-medium"),
+        "rendered /model view should show the Antigravity GPT row, got:
+{}",
+        text
+    );
+    assert!(
+        text.contains("Antigravity"),
+        "rendered /model view should show the Antigravity provider column, got:
+{}",
+        text
+    );
+    assert!(
+        text.contains("cli"),
+        "rendered /model view should show the route transport column, got:
+{}",
+        text
+    );
+}
+
+#[test]
 fn test_login_picker_preview_stays_open_and_updates_filter() {
     let mut app = create_test_app();
 
@@ -4818,6 +5001,159 @@ fn test_poke_arms_auto_poke_until_todos_are_done() {
                 .iter()
                 .any(|msg| msg.content.contains("Poking model with 1 incomplete todo"))
         );
+    });
+}
+
+#[test]
+fn test_poke_status_reports_current_state() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                id: "todo-1".to_string(),
+                content: "Finish the remaining task".to_string(),
+                status: "pending".to_string(),
+                priority: "high".to_string(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+            }],
+        )
+        .expect("save todos");
+
+        assert!(super::commands::handle_session_command(
+            &mut app,
+            "/poke status"
+        ));
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content
+                .contains("Auto-poke: **OFF**. 1 incomplete todo.")
+        }));
+
+        app.auto_poke_incomplete_todos = true;
+        app.is_processing = true;
+        app.queued_messages
+            .push(super::commands::build_poke_message(
+                &super::commands::incomplete_poke_todos(&app),
+            ));
+
+        assert!(super::commands::handle_session_command(
+            &mut app,
+            "/poke status"
+        ));
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content
+                .contains("Auto-poke: **ON**. 1 incomplete todo.")
+                && msg.content.contains("A follow-up poke is queued.")
+                && msg.content.contains("A turn is currently running.")
+        }));
+    });
+}
+
+#[test]
+fn test_poke_off_disarms_and_clears_queued_followup() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                id: "todo-1".to_string(),
+                content: "Keep going".to_string(),
+                status: "pending".to_string(),
+                priority: "high".to_string(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+            }],
+        )
+        .expect("save todos");
+
+        app.auto_poke_incomplete_todos = true;
+        app.pending_queued_dispatch = true;
+        app.queued_messages
+            .push(super::commands::build_poke_message(
+                &super::commands::incomplete_poke_todos(&app),
+            ));
+
+        assert!(super::commands::handle_session_command(
+            &mut app,
+            "/poke off"
+        ));
+
+        assert!(!app.auto_poke_incomplete_todos);
+        assert!(!app.pending_queued_dispatch);
+        assert!(app.queued_messages().is_empty());
+        assert_eq!(app.status_notice(), Some("Poke: OFF".to_string()));
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content.contains("Auto-poke disabled.")
+                && msg.content.contains("Cleared 1 queued poke follow-up")
+        }));
+    });
+}
+
+#[test]
+fn test_poke_queues_when_turn_is_in_progress() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                id: "todo-1".to_string(),
+                content: "Finish the remaining task".to_string(),
+                status: "pending".to_string(),
+                priority: "high".to_string(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+            }],
+        )
+        .expect("save todos");
+
+        app.is_processing = true;
+
+        assert!(super::commands::handle_session_command(&mut app, "/poke"));
+
+        assert!(app.auto_poke_incomplete_todos);
+        assert!(app.is_processing);
+        assert!(!app.cancel_requested);
+        assert!(!app.pending_turn);
+        assert_eq!(
+            app.status_notice(),
+            Some("Poke queued after current turn".to_string())
+        );
+        assert!(app.queued_messages().is_empty());
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content
+                .contains("Queued /poke for after the current turn")
+        }));
+
+        crate::todo::save_todos(
+            &app.session.id,
+            &[
+                crate::todo::TodoItem {
+                    id: "todo-1".to_string(),
+                    content: "Finish the remaining task".to_string(),
+                    status: "pending".to_string(),
+                    priority: "high".to_string(),
+                    blocked_by: Vec::new(),
+                    assigned_to: None,
+                },
+                crate::todo::TodoItem {
+                    id: "todo-2".to_string(),
+                    content: "Pick up the newly discovered task".to_string(),
+                    status: "pending".to_string(),
+                    priority: "medium".to_string(),
+                    blocked_by: Vec::new(),
+                    assigned_to: None,
+                },
+            ],
+        )
+        .expect("save updated todos");
+
+        super::local::finish_turn(&mut app);
+
+        assert!(app.pending_queued_dispatch);
+        assert_eq!(app.queued_messages().len(), 1);
+        assert!(app.queued_messages()[0].contains("Your todo list has 2 incomplete items"));
+        assert!(app.queued_messages()[0].contains("Pick up the newly discovered task"));
     });
 }
 
@@ -7384,6 +7720,7 @@ fn test_initial_history_bootstrap_preserves_restored_interleave_state() {
                 server_icon: None,
                 server_has_update: None,
                 was_interrupted: None,
+                reload_recovery: None,
                 connection_type: Some("websocket".to_string()),
                 status_detail: None,
                 upstream_provider: None,
@@ -7472,6 +7809,7 @@ fn test_initial_history_bootstrap_skips_resubmit_when_prompt_already_in_history(
                 server_icon: None,
                 server_has_update: None,
                 was_interrupted: Some(true),
+                reload_recovery: None,
                 connection_type: Some("websocket".to_string()),
                 status_detail: None,
                 upstream_provider: None,
@@ -7734,6 +8072,7 @@ fn test_handle_server_event_history_clears_connection_type_on_session_change_whe
             all_sessions: vec![],
             client_count: None,
             is_canary: None,
+            reload_recovery: None,
             server_version: None,
             server_name: None,
             server_icon: None,
@@ -7784,6 +8123,7 @@ fn test_handle_server_event_history_preserves_connection_type_for_same_session_w
             all_sessions: vec![],
             client_count: None,
             is_canary: None,
+            reload_recovery: None,
             server_version: None,
             server_name: None,
             server_icon: None,
@@ -7842,6 +8182,7 @@ fn test_handle_server_event_history_session_change_clears_pending_interleaves() 
             server_icon: None,
             server_has_update: None,
             was_interrupted: None,
+            reload_recovery: None,
             connection_type: None,
             status_detail: None,
             upstream_provider: None,
@@ -7921,7 +8262,7 @@ fn test_handle_post_connect_marker_without_reload_context_does_not_queue_selfdev
 }
 
 #[test]
-fn test_handle_post_connect_dispatches_hidden_reload_followup_immediately() {
+fn test_handle_post_connect_defers_reload_followup_to_server_history_payload() {
     let _guard = crate::storage::lock_test_env();
     let temp_home = tempfile::TempDir::new().expect("create temp home");
     let prev_home = std::env::var_os("JCODE_HOME");
@@ -7963,25 +8304,11 @@ fn test_handle_post_connect_dispatches_hidden_reload_followup_immediately() {
 
     assert!(matches!(outcome, super::remote::PostConnectOutcome::Ready));
     assert!(app.hidden_queued_system_messages.is_empty());
-    assert!(
-        app.is_processing,
-        "hidden reload continuation should dispatch immediately"
-    );
-    assert!(matches!(app.status, ProcessingStatus::Sending));
-    assert!(app.current_message_id.is_some());
-
-    let pending = app
-        .rate_limit_pending_message
-        .as_ref()
-        .expect("expected pending remote message for dispatched continuation");
-    assert!(pending.is_system);
-    assert_eq!(pending.content, "");
-    let reminder = pending
-        .system_reminder
-        .as_ref()
-        .expect("expected hidden system reminder");
-    assert!(reminder.contains("Reload succeeded (old-build → new-build)"));
-    assert!(reminder.contains("Continue immediately from where you left off"));
+    assert!(!app.is_processing);
+    assert!(matches!(app.status, ProcessingStatus::Idle));
+    assert!(app.current_message_id.is_none());
+    assert!(app.rate_limit_pending_message.is_none());
+    assert!(app.reload_info.is_empty());
 
     cleanup_reload_context_file(session_id);
     if let Some(prev_home) = prev_home {
@@ -8425,6 +8752,182 @@ fn test_remote_done_auto_pokes_again_when_todos_remain() {
         assert!(app.pending_queued_dispatch);
         assert_eq!(app.queued_messages().len(), 1);
         assert!(app.queued_messages()[0].contains("Please continue your work"));
+    });
+}
+
+#[test]
+fn test_remote_poke_status_and_off_update_state() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                id: "todo-1".to_string(),
+                content: "Continue working".to_string(),
+                status: "pending".to_string(),
+                priority: "high".to_string(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+            }],
+        )
+        .expect("save todos");
+
+        app.is_remote = true;
+        app.auto_poke_incomplete_todos = true;
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        app.current_message_id = Some(42);
+        app.pending_queued_dispatch = true;
+        app.queued_messages
+            .push(super::commands::build_poke_message(
+                &super::commands::incomplete_poke_todos(&app),
+            ));
+
+        app.input = "/poke status".to_string();
+        app.cursor_pos = app.input.len();
+        rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+            .expect("/poke status should succeed remotely");
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content
+                .contains("Auto-poke: **ON**. 1 incomplete todo.")
+                && msg.content.contains("A follow-up poke is queued.")
+                && msg.content.contains("A turn is currently running.")
+        }));
+
+        app.input = "/poke off".to_string();
+        app.cursor_pos = app.input.len();
+        rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+            .expect("/poke off should succeed remotely");
+
+        assert!(!app.auto_poke_incomplete_todos);
+        assert!(!app.pending_queued_dispatch);
+        assert!(app.queued_messages().is_empty());
+        assert_eq!(app.status_notice(), Some("Poke: OFF".to_string()));
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content.contains("Auto-poke disabled.")
+                && msg.content.contains("Cleared 1 queued poke follow-up")
+        }));
+    });
+}
+
+#[test]
+fn test_remote_poke_queues_when_turn_is_in_progress() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                id: "todo-1".to_string(),
+                content: "Continue working".to_string(),
+                status: "pending".to_string(),
+                priority: "high".to_string(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+            }],
+        )
+        .expect("save todos");
+
+        app.is_remote = true;
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        app.current_message_id = Some(42);
+        app.input = "/poke".to_string();
+        app.cursor_pos = app.input.len();
+
+        rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+            .expect("/poke should queue behind the current turn");
+
+        assert!(app.auto_poke_incomplete_todos);
+        assert!(app.is_processing);
+        assert!(matches!(app.status, ProcessingStatus::Streaming));
+        assert_eq!(app.current_message_id, Some(42));
+        assert!(app.input().is_empty());
+        assert_eq!(
+            app.status_notice(),
+            Some("Poke queued after current turn".to_string())
+        );
+        assert!(app.queued_messages().is_empty());
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content
+                .contains("Queued /poke for after the current turn")
+        }));
+
+        crate::todo::save_todos(
+            &app.session.id,
+            &[
+                crate::todo::TodoItem {
+                    id: "todo-1".to_string(),
+                    content: "Continue working".to_string(),
+                    status: "pending".to_string(),
+                    priority: "high".to_string(),
+                    blocked_by: Vec::new(),
+                    assigned_to: None,
+                },
+                crate::todo::TodoItem {
+                    id: "todo-2".to_string(),
+                    content: "Handle the newly discovered follow-up".to_string(),
+                    status: "pending".to_string(),
+                    priority: "medium".to_string(),
+                    blocked_by: Vec::new(),
+                    assigned_to: None,
+                },
+            ],
+        )
+        .expect("save updated todos");
+
+        let needs_redraw =
+            app.handle_server_event(crate::protocol::ServerEvent::Done { id: 42 }, &mut remote);
+
+        assert!(needs_redraw);
+        assert!(app.pending_queued_dispatch);
+        assert_eq!(app.queued_messages().len(), 1);
+        assert!(app.queued_messages()[0].contains("Your todo list has 2 incomplete items"));
+        assert!(app.queued_messages()[0].contains("Handle the newly discovered follow-up"));
+    });
+}
+
+#[test]
+fn test_remote_interrupted_auto_poke_requeues_after_deferred_poke() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                id: "todo-1".to_string(),
+                content: "Resume after interrupt".to_string(),
+                status: "pending".to_string(),
+                priority: "high".to_string(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+            }],
+        )
+        .expect("save todos");
+
+        app.is_remote = true;
+        app.auto_poke_incomplete_todos = true;
+        app.is_processing = true;
+        app.status = ProcessingStatus::Streaming;
+        app.current_message_id = Some(42);
+
+        let needs_redraw =
+            app.handle_server_event(crate::protocol::ServerEvent::Interrupted, &mut remote);
+
+        assert!(needs_redraw);
+        assert!(app.pending_queued_dispatch);
+        assert_eq!(app.queued_messages().len(), 1);
+        assert!(app.queued_messages()[0].contains("Resume after interrupt"));
     });
 }
 
@@ -9406,6 +9909,7 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
             server_icon: None,
             server_has_update: None,
             was_interrupted: Some(true),
+            reload_recovery: None,
             connection_type: Some("websocket".to_string()),
             status_detail: None,
             upstream_provider: None,
@@ -9435,6 +9939,66 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
             .iter()
             .any(|m| m.role == "system" && m.content == "Reload complete — continuing.")
     );
+}
+
+#[test]
+fn test_handle_server_event_history_uses_server_owned_reload_recovery_directive() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::History {
+            id: 1,
+            session_id: "ses_server_owned_reload".to_string(),
+            messages: vec![crate::protocol::HistoryMessage {
+                role: "assistant".to_string(),
+                content: "Reconnect me from server history".to_string(),
+                tool_calls: None,
+                tool_data: None,
+            }],
+            images: vec![],
+            provider_name: Some("claude".to_string()),
+            provider_model: Some("claude-sonnet-4-20250514".to_string()),
+            subagent_model: None,
+            autoreview_enabled: None,
+            autojudge_enabled: None,
+            available_models: vec![],
+            available_model_routes: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            total_tokens: None,
+            all_sessions: vec![],
+            client_count: None,
+            is_canary: None,
+            server_version: None,
+            server_name: None,
+            server_icon: None,
+            server_has_update: None,
+            was_interrupted: None,
+            reload_recovery: Some(crate::protocol::ReloadRecoverySnapshot {
+                reconnect_notice: Some("Reloaded with build srv1234".to_string()),
+                continuation_message: "Server-owned reload continuation".to_string(),
+            }),
+            connection_type: Some("websocket".to_string()),
+            status_detail: None,
+            upstream_provider: None,
+            reasoning_effort: None,
+            service_tier: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
+        },
+        &mut remote,
+    );
+
+    assert_eq!(app.hidden_queued_system_messages.len(), 1);
+    assert_eq!(
+        app.hidden_queued_system_messages[0],
+        "Server-owned reload continuation"
+    );
+    assert!(app.reload_info.iter().any(|line| line.contains("srv1234")));
 }
 
 #[test]
@@ -9473,6 +10037,7 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
             server_icon: None,
             server_has_update: None,
             was_interrupted: None,
+            reload_recovery: None,
             connection_type: Some("https/sse".to_string()),
             status_detail: None,
             upstream_provider: None,
@@ -9504,7 +10069,7 @@ fn test_finalize_reload_reconnect_marker_only_does_not_queue_selfdev_continuatio
         &mut app,
         Some("ses_test_marker_only"),
         remote::ReloadReconnectHints {
-            has_reload_ctx_for_session: false,
+            reload_ctx_for_session: None,
             has_client_reload_marker: true,
         },
         false,
@@ -9578,7 +10143,7 @@ fn test_finalize_reload_reconnect_mentions_persisted_background_task() {
         &mut app,
         Some(session_id.as_str()),
         remote::ReloadReconnectHints {
-            has_reload_ctx_for_session: true,
+            reload_ctx_for_session: Some(reload_ctx.clone()),
             has_client_reload_marker: false,
         },
         false,
@@ -9593,6 +10158,114 @@ fn test_finalize_reload_reconnect_mentions_persisted_background_task() {
 
     cleanup_background_task_files(&info.task_id);
     cleanup_reload_context_file(&session_id);
+}
+
+#[test]
+fn test_finalize_reload_reconnect_is_session_scoped_across_reconnect_order() {
+    let _guard = crate::storage::lock_test_env();
+    let mut app_a = create_test_app();
+    let mut app_b = create_test_app();
+    let session_a = crate::id::new_id("ses_reload_a");
+    let session_b = crate::id::new_id("ses_reload_b");
+
+    let ctx_a = crate::tool::selfdev::ReloadContext {
+        task_context: Some("resume session A".to_string()),
+        version_before: "old-a".to_string(),
+        version_after: "new-a".to_string(),
+        session_id: session_a.clone(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    let ctx_b = crate::tool::selfdev::ReloadContext {
+        task_context: Some("resume session B".to_string()),
+        version_before: "old-b".to_string(),
+        version_after: "new-b".to_string(),
+        session_id: session_b.clone(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    ctx_a.save().expect("save reload context a");
+    ctx_b.save().expect("save reload context b");
+
+    remote::finalize_reload_reconnect(
+        &mut app_b,
+        Some(session_b.as_str()),
+        remote::ReloadReconnectHints {
+            reload_ctx_for_session: Some(ctx_b.clone()),
+            has_client_reload_marker: false,
+        },
+        false,
+    );
+
+    assert_eq!(app_b.hidden_queued_system_messages.len(), 1);
+    assert!(app_b.hidden_queued_system_messages[0].contains("new-b"));
+    assert!(
+        crate::tool::selfdev::ReloadContext::peek_for_session(&session_a)
+            .expect("peek session a")
+            .is_some(),
+        "session A context should remain available after session B reconnects first"
+    );
+    assert!(
+        crate::tool::selfdev::ReloadContext::peek_for_session(&session_b)
+            .expect("peek session b")
+            .is_none(),
+        "session B context should be consumed by its own reconnect"
+    );
+
+    remote::finalize_reload_reconnect(
+        &mut app_a,
+        Some(session_a.as_str()),
+        remote::ReloadReconnectHints {
+            reload_ctx_for_session: Some(ctx_a.clone()),
+            has_client_reload_marker: false,
+        },
+        false,
+    );
+
+    assert_eq!(app_a.hidden_queued_system_messages.len(), 1);
+    assert!(app_a.hidden_queued_system_messages[0].contains("new-a"));
+    assert!(
+        crate::tool::selfdev::ReloadContext::peek_for_session(&session_a)
+            .expect("peek session a after consume")
+            .is_none(),
+        "session A context should be consumed only by session A reconnect"
+    );
+}
+
+#[test]
+fn test_finalize_reload_reconnect_supports_repeated_reload_cycles_for_same_session() {
+    let _guard = crate::storage::lock_test_env();
+    let session_id = crate::id::new_id("ses_reload_loop");
+
+    for cycle in 0..3 {
+        let mut app = create_test_app();
+        let version_after = format!("loop-build-{}", cycle);
+        let reload_ctx = crate::tool::selfdev::ReloadContext {
+            task_context: Some(format!("reload loop cycle {}", cycle)),
+            version_before: format!("loop-prev-{}", cycle),
+            version_after: version_after.clone(),
+            session_id: session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+        reload_ctx.save().expect("save loop reload context");
+
+        remote::finalize_reload_reconnect(
+            &mut app,
+            Some(session_id.as_str()),
+            remote::ReloadReconnectHints {
+                reload_ctx_for_session: Some(reload_ctx.clone()),
+                has_client_reload_marker: false,
+            },
+            false,
+        );
+
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+        assert!(app.hidden_queued_system_messages[0].contains(&version_after));
+        assert!(
+            crate::tool::selfdev::ReloadContext::peek_for_session(&session_id)
+                .expect("peek loop reload context")
+                .is_none(),
+            "reload context should be consumed each cycle"
+        );
+    }
 }
 
 #[test]
@@ -9639,6 +10312,7 @@ fn test_handle_server_event_history_restores_side_panel_snapshot() {
             server_icon: None,
             server_has_update: None,
             was_interrupted: None,
+            reload_recovery: None,
             connection_type: Some("websocket".to_string()),
             status_detail: None,
             upstream_provider: None,
@@ -9693,6 +10367,7 @@ fn test_handle_server_event_history_restores_active_resume_processing_state() {
             server_icon: None,
             server_has_update: None,
             was_interrupted: None,
+            reload_recovery: None,
             connection_type: Some("websocket".to_string()),
             status_detail: None,
             upstream_provider: None,
@@ -9887,6 +10562,7 @@ fn test_metadata_only_history_preserves_fast_restored_startup_state() {
             server_icon: None,
             server_has_update: None,
             was_interrupted: None,
+            reload_recovery: None,
             connection_type: Some("https".to_string()),
             status_detail: None,
             upstream_provider: None,
@@ -9956,6 +10632,7 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
             all_sessions: vec![],
             client_count: None,
             is_canary: None,
+            reload_recovery: None,
             server_version: None,
             server_name: None,
             server_icon: None,

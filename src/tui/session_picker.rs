@@ -24,9 +24,9 @@ mod loading;
 mod navigation;
 mod render;
 
-use loading::{build_messages_preview, crashed_sessions_from_all_sessions};
 #[cfg(test)]
-use loading::{build_search_index, collect_recent_session_stems};
+use loading::collect_recent_session_stems;
+use loading::{build_messages_preview, build_search_index, crashed_sessions_from_all_sessions};
 pub use loading::{load_servers, load_sessions, load_sessions_grouped};
 
 /// Session info for display
@@ -333,6 +333,10 @@ pub struct SessionPicker {
     /// Sessions explicitly selected for multi-resume / multi-catchup.
     selected_session_ids: HashSet<String>,
     last_mouse_scroll: Option<std::time::Instant>,
+    /// Normalized query from the most recent search pass.
+    cached_search_query: String,
+    /// Session refs that matched the cached search query.
+    cached_search_refs: Vec<SessionRef>,
 }
 
 impl SessionPicker {
@@ -367,6 +371,8 @@ impl SessionPicker {
             focus: PaneFocus::Sessions,
             selected_session_ids: HashSet::new(),
             last_mouse_scroll: None,
+            cached_search_query: String::new(),
+            cached_search_refs: Vec::new(),
         };
         picker.rebuild_items();
         picker
@@ -491,6 +497,8 @@ impl SessionPicker {
             focus: PaneFocus::Sessions,
             selected_session_ids: HashSet::new(),
             last_mouse_scroll: None,
+            cached_search_query: String::new(),
+            cached_search_refs: Vec::new(),
         };
         picker.rebuild_items();
         picker
@@ -693,6 +701,14 @@ impl SessionPicker {
         };
 
         if let Some(s) = self.session_by_ref_mut(session_ref) {
+            s.search_index = build_search_index(
+                &s.id,
+                &s.short_name,
+                &s.title,
+                s.working_dir.as_deref(),
+                s.save_label.as_deref(),
+                &preview,
+            );
             s.messages_preview = preview;
         }
     }
@@ -1874,6 +1890,111 @@ mod tests {
         picker.search_query = "not-in-preview".to_string();
         picker.rebuild_items();
         assert!(picker.visible_sessions.is_empty());
+    }
+
+    #[test]
+    fn test_loading_preview_refreshes_search_index_for_picker_filtering() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let previous_home = std::env::var("JCODE_HOME").ok();
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        let mut session = Session::create_with_id(
+            "session_preview_search".to_string(),
+            Some("/tmp/preview-search".to_string()),
+            Some("Preview Search".to_string()),
+        );
+        session.append_stored_message(crate::session::StoredMessage {
+            id: "msg1".to_string(),
+            role: crate::message::Role::User,
+            content: vec![crate::message::ContentBlock::Text {
+                text: "needle hidden outside the initial picker summary".to_string(),
+                cache_control: None,
+            }],
+            display_role: None,
+            timestamp: None,
+            tool_duration_ms: None,
+            token_usage: None,
+        });
+        session.save().expect("save session");
+
+        let sessions = load_sessions().expect("load sessions");
+        let mut picker = SessionPicker::new(sessions);
+
+        let selected_before = picker.selected_session().expect("selected session");
+        assert!(!selected_before.search_index.contains("needle hidden"));
+
+        picker.ensure_selected_preview_loaded();
+
+        let selected_after = picker
+            .selected_session()
+            .expect("selected session after preview");
+        assert!(selected_after.search_index.contains("needle hidden"));
+
+        picker.search_query = "needle hidden".to_string();
+        picker.rebuild_items();
+        assert_eq!(picker.visible_sessions.len(), 1);
+
+        if let Some(previous_home) = previous_home {
+            crate::env::set_var("JCODE_HOME", previous_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+    }
+
+    #[test]
+    fn benchmark_resume_search_reports_incremental_timings() {
+        let sessions = (0..500)
+            .map(|idx| {
+                let mut session = make_session(
+                    &format!("session_bench_{idx:03}"),
+                    &format!("bench-{idx:03}"),
+                    false,
+                    SessionStatus::Closed,
+                );
+                session.messages_preview = vec![PreviewMessage {
+                    role: "user".to_string(),
+                    content: format!(
+                        "benchmark transcript content alpha beta zebra-token-{idx:03}"
+                    ),
+                    tool_calls: Vec::new(),
+                    tool_data: None,
+                    timestamp: None,
+                }];
+                session.search_index = build_search_index(
+                    &session.id,
+                    &session.short_name,
+                    &session.title,
+                    session.working_dir.as_deref(),
+                    None,
+                    &session.messages_preview,
+                );
+                session
+            })
+            .collect::<Vec<_>>();
+
+        let mut picker = SessionPicker::new(sessions);
+
+        let first_start = std::time::Instant::now();
+        picker.search_query = "z".to_string();
+        picker.rebuild_items();
+        let first_ms = first_start.elapsed().as_secs_f64() * 1000.0;
+
+        let second_start = std::time::Instant::now();
+        picker.search_query = "ze".to_string();
+        picker.rebuild_items();
+        let second_ms = second_start.elapsed().as_secs_f64() * 1000.0;
+
+        let third_start = std::time::Instant::now();
+        picker.search_query = "zebra-token-499".to_string();
+        picker.rebuild_items();
+        let third_ms = third_start.elapsed().as_secs_f64() * 1000.0;
+
+        assert_eq!(picker.visible_sessions.len(), 1);
+        eprintln!(
+            "resume search bench: first_char={:.3}ms second_char={:.3}ms full_query={:.3}ms sessions=500",
+            first_ms, second_ms, third_ms
+        );
     }
 
     #[test]

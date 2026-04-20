@@ -51,8 +51,11 @@ const WEBSOCKET_PERSISTENT_IDLE_RECONNECT_SECS: u64 = 90;
 /// before reuse so we can proactively detect half-closed connections.
 const WEBSOCKET_PERSISTENT_HEALTHCHECK_IDLE_SECS: u64 = 15;
 const WEBSOCKET_PERSISTENT_HEALTHCHECK_TIMEOUT_MS: u64 = 1500;
-const WEBSOCKET_MODEL_COOLDOWN_BASE_SECS: u64 = 600;
-const WEBSOCKET_MODEL_COOLDOWN_MAX_SECS: u64 = 3600;
+/// Base websocket cooldown after a fallback in auto mode.
+/// Keep this short so one flaky attempt does not pin the TUI to HTTPS for a long time.
+const WEBSOCKET_MODEL_COOLDOWN_BASE_SECS: u64 = 60;
+/// Maximum websocket cooldown after repeated fallback streaks.
+const WEBSOCKET_MODEL_COOLDOWN_MAX_SECS: u64 = 600;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 32_768;
 static FALLBACK_TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(1);
 static RECOVERED_TEXT_WRAPPED_TOOL_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -314,34 +317,6 @@ fn format_status_duration(duration: Duration) -> String {
         format!("{}m {}s", mins, rem_secs)
     } else {
         format!("{}s", secs)
-    }
-}
-
-fn summarize_websocket_fallback_reason(error: &str) -> &'static str {
-    let error = error.to_ascii_lowercase();
-    if error.contains("connect timed out") {
-        "connect timeout"
-    } else if error.contains("did not emit api activity within")
-        || error.contains("timed out waiting for first websocket activity")
-    {
-        "first response timeout"
-    } else if error.contains("timed out waiting for next websocket activity")
-        || error.contains("did not complete within")
-    {
-        "stream timeout"
-    } else if error.contains("upgrade required")
-        || error.contains("server requested fallback")
-        || error.contains(WEBSOCKET_FALLBACK_NOTICE)
-    {
-        "server requested https"
-    } else if error.contains("failed to connect websocket stream") {
-        "connect failed"
-    } else if error.contains("ended before response.completed")
-        || error.contains("closed before response.completed")
-    {
-        "stream closed early"
-    } else {
-        "websocket error"
     }
 }
 
@@ -861,14 +836,14 @@ mod websocket_health;
 
 #[cfg(test)]
 use self::websocket_health::{
-    clear_websocket_cooldown, normalize_transport_model, set_websocket_cooldown,
-    websocket_cooldown_for_streak, websocket_remaining_timeout_secs,
+    WebsocketFallbackReason, clear_websocket_cooldown, normalize_transport_model,
+    set_websocket_cooldown, websocket_cooldown_for_streak, websocket_remaining_timeout_secs,
 };
 use self::websocket_health::{
-    is_stream_activity_event, is_websocket_activity_payload, is_websocket_fallback_notice,
-    is_websocket_first_activity_payload, record_websocket_fallback, record_websocket_success,
-    websocket_activity_timeout_kind, websocket_cooldown_remaining,
-    websocket_next_activity_timeout_secs,
+    classify_websocket_fallback_reason, is_stream_activity_event, is_websocket_activity_payload,
+    is_websocket_fallback_notice, is_websocket_first_activity_payload, record_websocket_fallback,
+    record_websocket_success, summarize_websocket_fallback_reason, websocket_activity_timeout_kind,
+    websocket_cooldown_remaining, websocket_next_activity_timeout_secs,
 };
 
 #[cfg(test)]
@@ -1690,7 +1665,13 @@ mod tests {
         let streaks = Arc::new(RwLock::new(HashMap::new()));
         let model = "gpt-5.4";
 
-        let (streak, cooldown) = record_websocket_fallback(&cooldowns, &streaks, model).await;
+        let (streak, cooldown) = record_websocket_fallback(
+            &cooldowns,
+            &streaks,
+            model,
+            WebsocketFallbackReason::StreamTimeout,
+        )
+        .await;
         assert_eq!(streak, 1);
         assert_eq!(
             cooldown,
@@ -1741,20 +1722,36 @@ mod tests {
     #[test]
     fn test_websocket_cooldown_for_streak_scales_and_caps() {
         assert_eq!(
-            websocket_cooldown_for_streak(1),
+            websocket_cooldown_for_streak(1, WebsocketFallbackReason::StreamTimeout),
             Duration::from_secs(WEBSOCKET_MODEL_COOLDOWN_BASE_SECS)
         );
         assert_eq!(
-            websocket_cooldown_for_streak(2),
+            websocket_cooldown_for_streak(2, WebsocketFallbackReason::StreamTimeout),
             Duration::from_secs(WEBSOCKET_MODEL_COOLDOWN_BASE_SECS * 2)
         );
         assert_eq!(
-            websocket_cooldown_for_streak(3),
+            websocket_cooldown_for_streak(3, WebsocketFallbackReason::StreamTimeout),
             Duration::from_secs(WEBSOCKET_MODEL_COOLDOWN_BASE_SECS * 4)
         );
         assert_eq!(
-            websocket_cooldown_for_streak(32),
+            websocket_cooldown_for_streak(32, WebsocketFallbackReason::StreamTimeout),
             Duration::from_secs(WEBSOCKET_MODEL_COOLDOWN_MAX_SECS)
+        );
+    }
+
+    #[test]
+    fn test_websocket_cooldown_for_reason_adjusts_by_failure_type() {
+        assert_eq!(
+            websocket_cooldown_for_streak(1, WebsocketFallbackReason::ConnectTimeout),
+            Duration::from_secs((WEBSOCKET_MODEL_COOLDOWN_BASE_SECS / 2).max(1))
+        );
+        assert_eq!(
+            websocket_cooldown_for_streak(1, WebsocketFallbackReason::ServerRequestedHttps),
+            Duration::from_secs(WEBSOCKET_MODEL_COOLDOWN_BASE_SECS * 5)
+        );
+        assert_eq!(
+            websocket_cooldown_for_streak(32, WebsocketFallbackReason::ServerRequestedHttps),
+            Duration::from_secs(WEBSOCKET_MODEL_COOLDOWN_MAX_SECS * 3)
         );
     }
 
@@ -1764,7 +1761,13 @@ mod tests {
         let streaks = Arc::new(RwLock::new(HashMap::new()));
         let model = "gpt-5.3-codex-spark";
 
-        let (streak1, cooldown1) = record_websocket_fallback(&cooldowns, &streaks, model).await;
+        let (streak1, cooldown1) = record_websocket_fallback(
+            &cooldowns,
+            &streaks,
+            model,
+            WebsocketFallbackReason::StreamTimeout,
+        )
+        .await;
         assert_eq!(streak1, 1);
         assert_eq!(
             cooldown1,
@@ -1775,7 +1778,13 @@ mod tests {
             .expect("cooldown should be set");
         assert!(remaining1 <= cooldown1);
 
-        let (streak2, cooldown2) = record_websocket_fallback(&cooldowns, &streaks, model).await;
+        let (streak2, cooldown2) = record_websocket_fallback(
+            &cooldowns,
+            &streaks,
+            model,
+            WebsocketFallbackReason::StreamTimeout,
+        )
+        .await;
         assert_eq!(streak2, 2);
         assert_eq!(
             cooldown2,
@@ -1969,7 +1978,13 @@ mod tests {
         let streaks = Arc::new(RwLock::new(HashMap::new()));
         let canonical = "gpt-5.4";
 
-        record_websocket_fallback(&cooldowns, &streaks, canonical).await;
+        record_websocket_fallback(
+            &cooldowns,
+            &streaks,
+            canonical,
+            WebsocketFallbackReason::StreamTimeout,
+        )
+        .await;
         assert!(
             websocket_cooldown_remaining(&cooldowns, canonical)
                 .await

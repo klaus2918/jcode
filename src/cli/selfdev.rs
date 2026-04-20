@@ -23,8 +23,10 @@ async fn wait_for_reloading_server() -> bool {
         crate::server::ReloadWaitStatus::Ready => true,
         crate::server::ReloadWaitStatus::Failed(detail) => {
             logging::warn(&format!(
-                "Reload handoff failed while resuming self-dev session: {}",
-                detail.unwrap_or_else(|| "unknown reload failure".to_string())
+                "Reload handoff failed while resuming self-dev session on {}: {}; recent_state={}",
+                crate::server::socket_path().display(),
+                detail.unwrap_or_else(|| "unknown reload failure".to_string()),
+                crate::server::reload_state_summary(std::time::Duration::from_secs(60))
             ));
             false
         }
@@ -120,10 +122,12 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
                         ));
                     }
                     logging::warn(&format!(
-                        "Reload state=failed while resuming self-dev session: {}",
+                        "Reload state=failed while resuming self-dev session on {}: {}; recent_state={}",
+                        crate::server::socket_path().display(),
                         state
                             .detail
-                            .unwrap_or_else(|| "unknown reload failure".to_string())
+                            .unwrap_or_else(|| "unknown reload failure".to_string()),
+                        crate::server::reload_state_summary(std::time::Duration::from_secs(60))
                     ));
                 }
                 crate::server::ReloadPhase::SocketReady => {}
@@ -260,7 +264,9 @@ mod tests {
             _system: &str,
             _session_id: Option<&str>,
         ) -> anyhow::Result<crate::provider::EventStream> {
-            unimplemented!()
+            Err(anyhow::anyhow!(
+                "TestProvider should not be used for streaming completions in selfdev tests"
+            ))
         }
 
         fn fork(&self) -> Arc<dyn provider::Provider> {

@@ -49,10 +49,11 @@ use super::{DisplayMessage, ProcessingStatus, TuiState, is_unexpected_cache_miss
 use crate::message::ToolCall;
 use ratatui::{prelude::*, widgets::Paragraph};
 use regex::Regex;
+use serde::Serialize;
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque, hash_map::DefaultHasher};
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -130,7 +131,10 @@ pub(crate) use messages::{
     render_assistant_message, render_background_task_message, render_swarm_message,
     render_system_message, render_tool_message,
 };
-pub use pinned_ui::SidePanelDebugStats;
+pub use pinned_ui::{
+    SidePanelDebugStats, SidePanelMermaidProbe, SidePanelMermaidProbeRect,
+    debug_probe_side_panel_mermaid,
+};
 pub(crate) use pinned_ui::{
     clear_side_panel_render_caches, prewarm_focused_side_panel, reset_side_panel_debug_stats,
     side_panel_debug_stats,
@@ -149,6 +153,9 @@ use viewport::draw_messages;
 /// Scroll handlers use this to clamp scroll_offset and prevent overshoot.
 #[cfg(not(test))]
 static LAST_MAX_SCROLL: AtomicUsize = AtomicUsize::new(0);
+/// Whether the chat viewport used a native scrollbar in the most recent frame.
+#[cfg(not(test))]
+static LAST_CHAT_SCROLLBAR_VISIBLE: AtomicUsize = AtomicUsize::new(0);
 /// Number of recovered panics while rendering the frame.
 static DRAW_PANIC_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Total line count in the pinned diff/content pane (set during render).
@@ -165,6 +172,7 @@ static LAST_USER_PROMPT_POSITIONS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new()
 #[cfg(test)]
 thread_local! {
     static TEST_LAST_MAX_SCROLL: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_CHAT_SCROLLBAR_VISIBLE: Cell<bool> = const { Cell::new(false) };
     static TEST_PINNED_PANE_TOTAL_LINES: Cell<usize> = const { Cell::new(0) };
     static TEST_LAST_DIFF_PANE_EFFECTIVE_SCROLL: Cell<usize> = const { Cell::new(0) };
     static TEST_LAST_USER_PROMPT_POSITIONS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
@@ -184,6 +192,29 @@ pub fn last_max_scroll() -> usize {
     #[cfg(not(test))]
     {
         LAST_MAX_SCROLL.load(Ordering::Relaxed)
+    }
+}
+
+fn set_last_chat_scrollbar_visible(visible: bool) {
+    #[cfg(test)]
+    {
+        TEST_LAST_CHAT_SCROLLBAR_VISIBLE.with(|state| state.set(visible));
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        LAST_CHAT_SCROLLBAR_VISIBLE.store(usize::from(visible), Ordering::Relaxed);
+    }
+}
+
+fn last_chat_scrollbar_visible() -> bool {
+    #[cfg(test)]
+    {
+        return TEST_LAST_CHAT_SCROLLBAR_VISIBLE.with(Cell::get);
+    }
+    #[cfg(not(test))]
+    {
+        LAST_CHAT_SCROLLBAR_VISIBLE.load(Ordering::Relaxed) != 0
     }
 }
 
@@ -402,6 +433,196 @@ struct PreparedMessages {
     copy_targets: Vec<CopyTarget>,
 }
 
+#[derive(Clone)]
+struct PreparedSection {
+    prepared: Arc<PreparedMessages>,
+    line_start: usize,
+    raw_start: usize,
+}
+
+#[derive(Clone)]
+struct PreparedChatFrame {
+    sections: Vec<PreparedSection>,
+    total_wrapped_lines: usize,
+    total_raw_lines: usize,
+    wrapped_user_indices: Vec<usize>,
+    wrapped_user_prompt_starts: Vec<usize>,
+    wrapped_user_prompt_ends: Vec<usize>,
+    user_prompt_texts: Vec<String>,
+    image_regions: Vec<ImageRegion>,
+    edit_tool_ranges: Vec<EditToolRange>,
+    copy_targets: Vec<CopyTarget>,
+}
+
+impl PreparedChatFrame {
+    fn from_single(prepared: Arc<PreparedMessages>) -> Self {
+        Self::from_sections(vec![prepared])
+    }
+
+    fn from_sections(sections: Vec<Arc<PreparedMessages>>) -> Self {
+        let mut prepared_sections = Vec::new();
+        let mut line_start = 0usize;
+        let mut raw_start = 0usize;
+        let mut wrapped_user_indices = Vec::new();
+        let mut wrapped_user_prompt_starts = Vec::new();
+        let mut wrapped_user_prompt_ends = Vec::new();
+        let mut user_prompt_texts = Vec::new();
+        let mut image_regions = Vec::new();
+        let mut edit_tool_ranges = Vec::new();
+        let mut copy_targets = Vec::new();
+
+        for prepared in sections {
+            if prepared.wrapped_lines.is_empty()
+                && prepared.raw_plain_lines.is_empty()
+                && prepared.image_regions.is_empty()
+                && prepared.edit_tool_ranges.is_empty()
+                && prepared.copy_targets.is_empty()
+            {
+                continue;
+            }
+
+            wrapped_user_indices.extend(
+                prepared
+                    .wrapped_user_indices
+                    .iter()
+                    .map(|idx| idx + line_start),
+            );
+            wrapped_user_prompt_starts.extend(
+                prepared
+                    .wrapped_user_prompt_starts
+                    .iter()
+                    .map(|idx| idx + line_start),
+            );
+            wrapped_user_prompt_ends.extend(
+                prepared
+                    .wrapped_user_prompt_ends
+                    .iter()
+                    .map(|idx| idx + line_start),
+            );
+            user_prompt_texts.extend(prepared.user_prompt_texts.iter().cloned());
+            image_regions.extend(prepared.image_regions.iter().map(|region| ImageRegion {
+                abs_line_idx: region.abs_line_idx + line_start,
+                end_line: region.end_line + line_start,
+                hash: region.hash,
+                height: region.height,
+            }));
+            edit_tool_ranges.extend(prepared.edit_tool_ranges.iter().map(|range| EditToolRange {
+                edit_index: range.edit_index,
+                msg_index: range.msg_index,
+                file_path: range.file_path.clone(),
+                start_line: range.start_line + line_start,
+                end_line: range.end_line + line_start,
+            }));
+            copy_targets.extend(prepared.copy_targets.iter().map(|target| CopyTarget {
+                kind: target.kind.clone(),
+                content: target.content.clone(),
+                start_line: target.start_line + line_start,
+                end_line: target.end_line + line_start,
+                badge_line: target.badge_line + line_start,
+            }));
+            prepared_sections.push(PreparedSection {
+                prepared: prepared.clone(),
+                line_start,
+                raw_start,
+            });
+            line_start += prepared.wrapped_lines.len();
+            raw_start += prepared.raw_plain_lines.len();
+        }
+
+        Self {
+            sections: prepared_sections,
+            total_wrapped_lines: line_start,
+            total_raw_lines: raw_start,
+            wrapped_user_indices,
+            wrapped_user_prompt_starts,
+            wrapped_user_prompt_ends,
+            user_prompt_texts,
+            image_regions,
+            edit_tool_ranges,
+            copy_targets,
+        }
+    }
+
+    fn total_wrapped_lines(&self) -> usize {
+        self.total_wrapped_lines
+    }
+
+    fn wrapped_plain_line_count(&self) -> usize {
+        self.total_wrapped_lines
+    }
+
+    fn line_section(&self, abs_line: usize) -> Option<(&PreparedSection, usize)> {
+        self.sections.iter().find_map(|section| {
+            let local = abs_line.checked_sub(section.line_start)?;
+            (local < section.prepared.wrapped_lines.len()).then_some((section, local))
+        })
+    }
+
+    fn raw_section(&self, raw_line: usize) -> Option<(&PreparedSection, usize)> {
+        self.sections.iter().find_map(|section| {
+            let local = raw_line.checked_sub(section.raw_start)?;
+            (local < section.prepared.raw_plain_lines.len()).then_some((section, local))
+        })
+    }
+
+    fn wrapped_plain_line(&self, abs_line: usize) -> Option<String> {
+        let (section, local) = self.line_section(abs_line)?;
+        section.prepared.wrapped_plain_lines.get(local).cloned()
+    }
+
+    fn wrapped_copy_offset(&self, abs_line: usize) -> Option<usize> {
+        let (section, local) = self.line_section(abs_line)?;
+        section.prepared.wrapped_copy_offsets.get(local).copied()
+    }
+
+    fn raw_plain_line(&self, raw_line: usize) -> Option<String> {
+        let (_, local) = self.raw_section(raw_line)?;
+        self.raw_section(raw_line)?
+            .0
+            .prepared
+            .raw_plain_lines
+            .get(local)
+            .cloned()
+    }
+
+    fn wrapped_line_map(&self, abs_line: usize) -> Option<WrappedLineMap> {
+        let (section, local) = self.line_section(abs_line)?;
+        let map = section.prepared.wrapped_line_map.get(local)?;
+        Some(WrappedLineMap {
+            raw_line: map.raw_line + section.raw_start,
+            start_col: map.start_col,
+            end_col: map.end_col,
+        })
+    }
+
+    fn materialize_line_slice(&self, start: usize, end: usize) -> Vec<Line<'static>> {
+        let end = end.min(self.total_wrapped_lines);
+        if start >= end {
+            return Vec::new();
+        }
+
+        let mut lines = Vec::with_capacity(end - start);
+        for section in &self.sections {
+            let section_start = section.line_start;
+            let section_end = section_start + section.prepared.wrapped_lines.len();
+            let overlap_start = start.max(section_start);
+            let overlap_end = end.min(section_end);
+            if overlap_start >= overlap_end {
+                continue;
+            }
+            let local_start = overlap_start - section_start;
+            let local_end = overlap_end - section_start;
+            lines.extend_from_slice(&section.prepared.wrapped_lines[local_start..local_end]);
+        }
+        lines
+    }
+
+    #[cfg(test)]
+    fn materialize_all_lines(&self) -> Vec<Line<'static>> {
+        self.materialize_line_slice(0, self.total_wrapped_lines)
+    }
+}
+
 fn estimate_lines_bytes(lines: &[Line<'static>]) -> usize {
     lines
         .iter()
@@ -485,6 +706,17 @@ fn estimate_prepared_messages_bytes(prepared: &PreparedMessages) -> usize {
         + estimate_copy_targets_bytes(&prepared.copy_targets)
 }
 
+fn estimate_prepared_chat_frame_bytes(prepared: &PreparedChatFrame) -> usize {
+    prepared.sections.capacity() * std::mem::size_of::<PreparedSection>()
+        + estimate_usize_vec_bytes(&prepared.wrapped_user_indices)
+        + estimate_usize_vec_bytes(&prepared.wrapped_user_prompt_starts)
+        + estimate_usize_vec_bytes(&prepared.wrapped_user_prompt_ends)
+        + estimate_string_vec_bytes(&prepared.user_prompt_texts)
+        + estimate_image_regions_bytes(&prepared.image_regions)
+        + estimate_edit_tool_ranges_bytes(&prepared.edit_tool_ranges)
+        + estimate_copy_targets_bytes(&prepared.copy_targets)
+}
+
 fn estimate_visible_copy_targets_bytes(values: &Vec<VisibleCopyTarget>) -> usize {
     values
         .iter()
@@ -526,7 +758,7 @@ pub(crate) fn debug_memory_profile() -> serde_json::Value {
         for entry in &cache.entries {
             let ptr = Arc::as_ptr(&entry.prepared) as usize;
             if seen.insert(ptr) {
-                unique_bytes += estimate_prepared_messages_bytes(&entry.prepared);
+                unique_bytes += estimate_prepared_chat_frame_bytes(&entry.prepared);
             }
         }
         (cache.entries.len(), unique_bytes)
@@ -862,10 +1094,12 @@ const BODY_CACHE_MAX_ENTRIES: usize = 8;
 // Keep enough room for a single large transcript snapshot so long sessions do not
 // fall off a hard per-entry cache cliff and get rebuilt every frame.
 const BODY_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
+const BODY_OVERSIZED_CACHE_MAX_ENTRIES: usize = 2;
 
 #[derive(Default)]
 struct BodyCacheState {
     entries: VecDeque<BodyCacheEntry>,
+    oversized_entries: VecDeque<BodyCacheEntry>,
 }
 
 impl BodyCacheState {
@@ -873,20 +1107,40 @@ impl BodyCacheState {
         self.entries.iter().map(|entry| entry.prepared_bytes).sum()
     }
 
-    fn get_exact(&mut self, key: &BodyCacheKey) -> Option<Arc<PreparedMessages>> {
-        let pos = self.entries.iter().position(|entry| &entry.key == key)?;
-        let entry = self.entries.remove(pos)?;
-        let prepared = entry.prepared.clone();
-        self.entries.push_front(entry);
-        Some(prepared)
+    fn get_exact_with_kind(
+        &mut self,
+        key: &BodyCacheKey,
+    ) -> Option<(Arc<PreparedMessages>, CacheEntryKind)> {
+        if let Some(pos) = self.entries.iter().position(|entry| &entry.key == key) {
+            let entry = self.entries.remove(pos)?;
+            let prepared = entry.prepared.clone();
+            self.entries.push_front(entry);
+            Some((prepared, CacheEntryKind::Regular))
+        } else {
+            let pos = self
+                .oversized_entries
+                .iter()
+                .position(|entry| &entry.key == key)?;
+            let entry = self.oversized_entries.remove(pos)?;
+            let prepared = entry.prepared.clone();
+            self.oversized_entries.push_front(entry);
+            Some((prepared, CacheEntryKind::Oversized))
+        }
     }
 
+    #[cfg(test)]
+    fn get_exact(&mut self, key: &BodyCacheKey) -> Option<Arc<PreparedMessages>> {
+        self.get_exact_with_kind(key).map(|(prepared, _)| prepared)
+    }
+
+    #[cfg(test)]
     fn best_incremental_base(
         &self,
         key: &BodyCacheKey,
         msg_count: usize,
     ) -> Option<(Arc<PreparedMessages>, usize)> {
-        self.entries
+        let regular = self
+            .entries
             .iter()
             .filter(|entry| {
                 entry.msg_count > 0
@@ -897,13 +1151,116 @@ impl BodyCacheState {
                     && entry.key.centered == key.centered
             })
             .max_by_key(|entry| entry.msg_count)
-            .map(|entry| (entry.prepared.clone(), entry.msg_count))
+            .map(|entry| (entry.prepared.clone(), entry.msg_count));
+        let oversized = self
+            .oversized_entries
+            .iter()
+            .filter(|entry| {
+                entry.msg_count > 0
+                    && msg_count > entry.msg_count
+                    && entry.key.width == key.width
+                    && entry.key.diff_mode == key.diff_mode
+                    && entry.key.diagram_mode == key.diagram_mode
+                    && entry.key.centered == key.centered
+            })
+            .max_by_key(|entry| entry.msg_count)
+            .map(|entry| (entry.prepared.clone(), entry.msg_count));
+
+        match (regular, oversized) {
+            (Some(left), Some(right)) => {
+                if left.1 >= right.1 {
+                    Some(left)
+                } else {
+                    Some(right)
+                }
+            }
+            (Some(entry), None) | (None, Some(entry)) => Some(entry),
+            (None, None) => None,
+        }
+    }
+
+    fn take_best_incremental_base(
+        &mut self,
+        key: &BodyCacheKey,
+        msg_count: usize,
+    ) -> Option<(Arc<PreparedMessages>, usize)> {
+        let regular = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry.msg_count > 0
+                    && msg_count > entry.msg_count
+                    && entry.key.width == key.width
+                    && entry.key.diff_mode == key.diff_mode
+                    && entry.key.diagram_mode == key.diagram_mode
+                    && entry.key.centered == key.centered
+            })
+            .max_by_key(|(_, entry)| entry.msg_count)
+            .map(|(idx, entry)| (false, idx, entry.msg_count));
+        let oversized = self
+            .oversized_entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry.msg_count > 0
+                    && msg_count > entry.msg_count
+                    && entry.key.width == key.width
+                    && entry.key.diff_mode == key.diff_mode
+                    && entry.key.diagram_mode == key.diagram_mode
+                    && entry.key.centered == key.centered
+            })
+            .max_by_key(|(_, entry)| entry.msg_count)
+            .map(|(idx, entry)| (true, idx, entry.msg_count));
+
+        let chosen = match (regular, oversized) {
+            (Some(left), Some(right)) => {
+                if left.2 >= right.2 {
+                    left
+                } else {
+                    right
+                }
+            }
+            (Some(entry), None) | (None, Some(entry)) => entry,
+            (None, None) => return None,
+        };
+
+        let (is_oversized, idx, msg_count) = chosen;
+        let entry = if is_oversized {
+            self.oversized_entries.remove(idx)?
+        } else {
+            self.entries.remove(idx)?
+        };
+        Some((entry.prepared, msg_count))
     }
 
     fn insert(&mut self, key: BodyCacheKey, prepared: Arc<PreparedMessages>, msg_count: usize) {
         let prepared_bytes = estimate_prepared_messages_bytes(&prepared);
         if prepared_bytes > BODY_CACHE_MAX_BYTES {
+            if let Some(pos) = self
+                .oversized_entries
+                .iter()
+                .position(|entry| entry.key == key)
+            {
+                self.oversized_entries.remove(pos);
+            }
+            self.oversized_entries.push_front(BodyCacheEntry {
+                key,
+                prepared,
+                prepared_bytes,
+                msg_count,
+            });
+            while self.oversized_entries.len() > BODY_OVERSIZED_CACHE_MAX_ENTRIES {
+                self.oversized_entries.pop_back();
+            }
             return;
+        }
+        if let Some(pos) = self
+            .oversized_entries
+            .iter()
+            .position(|entry| entry.key == key)
+        {
+            self.oversized_entries.remove(pos);
         }
         if let Some(pos) = self.entries.iter().position(|entry| entry.key == key) {
             self.entries.remove(pos);
@@ -945,7 +1302,7 @@ struct FullPrepCacheKey {
 #[derive(Clone)]
 struct FullPrepCacheEntry {
     key: FullPrepCacheKey,
-    prepared: Arc<PreparedMessages>,
+    prepared: Arc<PreparedChatFrame>,
     prepared_bytes: usize,
 }
 
@@ -953,10 +1310,18 @@ const FULL_PREP_CACHE_MAX_ENTRIES: usize = 4;
 // Full prepared frames duplicate some body data, so give them enough headroom to
 // retain the active large transcript instead of forcing full recomposition.
 const FULL_PREP_CACHE_MAX_BYTES: usize = 24 * 1024 * 1024;
+const FULL_PREP_OVERSIZED_CACHE_MAX_ENTRIES: usize = 2;
 
 #[derive(Default)]
 struct FullPrepCacheState {
     entries: VecDeque<FullPrepCacheEntry>,
+    oversized_entries: VecDeque<FullPrepCacheEntry>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+enum CacheEntryKind {
+    Regular,
+    Oversized,
 }
 
 impl FullPrepCacheState {
@@ -964,18 +1329,58 @@ impl FullPrepCacheState {
         self.entries.iter().map(|entry| entry.prepared_bytes).sum()
     }
 
-    fn get_exact(&mut self, key: &FullPrepCacheKey) -> Option<Arc<PreparedMessages>> {
-        let pos = self.entries.iter().position(|entry| &entry.key == key)?;
-        let entry = self.entries.remove(pos)?;
-        let prepared = entry.prepared.clone();
-        self.entries.push_front(entry);
-        Some(prepared)
+    fn get_exact_with_kind(
+        &mut self,
+        key: &FullPrepCacheKey,
+    ) -> Option<(Arc<PreparedChatFrame>, CacheEntryKind)> {
+        if let Some(pos) = self.entries.iter().position(|entry| &entry.key == key) {
+            let entry = self.entries.remove(pos)?;
+            let prepared = entry.prepared.clone();
+            self.entries.push_front(entry);
+            Some((prepared, CacheEntryKind::Regular))
+        } else {
+            let pos = self
+                .oversized_entries
+                .iter()
+                .position(|entry| &entry.key == key)?;
+            let entry = self.oversized_entries.remove(pos)?;
+            let prepared = entry.prepared.clone();
+            self.oversized_entries.push_front(entry);
+            Some((prepared, CacheEntryKind::Oversized))
+        }
     }
 
-    fn insert(&mut self, key: FullPrepCacheKey, prepared: Arc<PreparedMessages>) {
-        let prepared_bytes = estimate_prepared_messages_bytes(&prepared);
+    #[cfg(test)]
+    fn get_exact(&mut self, key: &FullPrepCacheKey) -> Option<Arc<PreparedChatFrame>> {
+        self.get_exact_with_kind(key).map(|(prepared, _)| prepared)
+    }
+
+    fn insert(&mut self, key: FullPrepCacheKey, prepared: Arc<PreparedChatFrame>) {
+        let prepared_bytes = estimate_prepared_chat_frame_bytes(&prepared);
         if prepared_bytes > FULL_PREP_CACHE_MAX_BYTES {
+            if let Some(pos) = self
+                .oversized_entries
+                .iter()
+                .position(|entry| entry.key == key)
+            {
+                self.oversized_entries.remove(pos);
+            }
+            self.oversized_entries.push_front(FullPrepCacheEntry {
+                key,
+                prepared,
+                prepared_bytes,
+            });
+            while self.oversized_entries.len() > FULL_PREP_OVERSIZED_CACHE_MAX_ENTRIES {
+                self.oversized_entries.pop_back();
+            }
             return;
+        }
+        if let Some(pos) = self
+            .oversized_entries
+            .iter()
+            .position(|entry| entry.key == key)
+        {
+            self.oversized_entries.remove(pos);
         }
         if let Some(pos) = self.entries.iter().position(|entry| entry.key == key) {
             self.entries.remove(pos);
@@ -997,6 +1402,560 @@ static FULL_PREP_CACHE: OnceLock<Mutex<FullPrepCacheState>> = OnceLock::new();
 
 fn full_prep_cache() -> &'static Mutex<FullPrepCacheState> {
     FULL_PREP_CACHE.get_or_init(|| Mutex::new(FullPrepCacheState::default()))
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct FramePerfStats {
+    full_prep_requests: usize,
+    full_prep_hits: usize,
+    full_prep_oversized_hits: usize,
+    full_prep_misses: usize,
+    full_prep_last_prepared_bytes: usize,
+    full_prep_last_total_wrapped_lines: usize,
+    full_prep_last_section_count: usize,
+    body_requests: usize,
+    body_hits: usize,
+    body_oversized_hits: usize,
+    body_misses: usize,
+    body_incremental_reuses: usize,
+    body_last_incremental_base_messages: Option<usize>,
+    body_last_prepared_bytes: usize,
+    body_last_wrapped_lines: usize,
+    body_last_copy_targets: usize,
+    body_last_image_regions: usize,
+    viewport_scroll: usize,
+    viewport_visible_end: usize,
+    viewport_visible_lines: usize,
+    viewport_total_wrapped_lines: usize,
+    viewport_prompt_preview_lines: u16,
+    viewport_visible_user_prompts: usize,
+    viewport_visible_copy_targets: usize,
+    viewport_content_width: u16,
+    viewport_stability_hash: u64,
+    chat_area_width: u16,
+    chat_area_height: u16,
+    messages_area_width: u16,
+    messages_area_height: u16,
+    content_height: usize,
+    initial_content_height: usize,
+    chat_scrollbar_visible: bool,
+    use_packed_layout: bool,
+    has_side_panel_content: bool,
+    has_pinned_content: bool,
+    has_file_diff_edits: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SlowFrameSample {
+    timestamp_ms: u64,
+    threshold_ms: f64,
+    session_id: Option<String>,
+    session_name: Option<String>,
+    status: String,
+    diff_mode: String,
+    centered: bool,
+    is_processing: bool,
+    auto_scroll_paused: bool,
+    display_messages: usize,
+    display_messages_version: u64,
+    user_messages: usize,
+    queued_messages: usize,
+    streaming_text_len: usize,
+    prepare_ms: f64,
+    draw_ms: f64,
+    total_ms: f64,
+    messages_ms: Option<f64>,
+    perf: FramePerfStats,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct FlickerFrameSample {
+    timestamp_ms: u64,
+    session_id: Option<String>,
+    session_name: Option<String>,
+    display_messages_version: u64,
+    diff_mode: String,
+    centered: bool,
+    is_processing: bool,
+    auto_scroll_paused: bool,
+    scroll: usize,
+    visible_end: usize,
+    visible_lines: usize,
+    total_wrapped_lines: usize,
+    prompt_preview_lines: u16,
+    messages_area_width: u16,
+    messages_area_height: u16,
+    content_width: u16,
+    chat_scrollbar_visible: bool,
+    visible_hash: u64,
+    total_ms: f64,
+    prepare_ms: f64,
+    draw_ms: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct FlickerEvent {
+    timestamp_ms: u64,
+    kind: String,
+    session_id: Option<String>,
+    session_name: Option<String>,
+    previous: FlickerFrameSample,
+    current: FlickerFrameSample,
+}
+
+#[derive(Default)]
+struct SlowFrameHistory {
+    samples: VecDeque<SlowFrameSample>,
+    last_log_at_ms: Option<u64>,
+}
+
+#[derive(Default)]
+struct FlickerFrameHistory {
+    samples: VecDeque<FlickerFrameSample>,
+    events: VecDeque<FlickerEvent>,
+    last_log_at_ms: Option<u64>,
+}
+
+const SLOW_FRAME_HISTORY_MAX_SAMPLES: usize = 128;
+const SLOW_FRAME_LOG_INTERVAL_MS: u64 = 1_000;
+const FLICKER_HISTORY_MAX_SAMPLES: usize = 256;
+const FLICKER_HISTORY_MAX_EVENTS: usize = 128;
+const FLICKER_LOG_INTERVAL_MS: u64 = 500;
+
+static FRAME_PERF_STATS: OnceLock<Mutex<FramePerfStats>> = OnceLock::new();
+static SLOW_FRAME_HISTORY: OnceLock<Mutex<SlowFrameHistory>> = OnceLock::new();
+static FLICKER_FRAME_HISTORY: OnceLock<Mutex<FlickerFrameHistory>> = OnceLock::new();
+
+fn frame_perf_stats() -> &'static Mutex<FramePerfStats> {
+    FRAME_PERF_STATS.get_or_init(|| Mutex::new(FramePerfStats::default()))
+}
+
+fn slow_frame_history() -> &'static Mutex<SlowFrameHistory> {
+    SLOW_FRAME_HISTORY.get_or_init(|| Mutex::new(SlowFrameHistory::default()))
+}
+
+fn flicker_frame_history() -> &'static Mutex<FlickerFrameHistory> {
+    FLICKER_FRAME_HISTORY.get_or_init(|| Mutex::new(FlickerFrameHistory::default()))
+}
+
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn slow_frame_threshold_ms() -> f64 {
+    static THRESHOLD_MS: OnceLock<f64> = OnceLock::new();
+    *THRESHOLD_MS.get_or_init(|| {
+        std::env::var("JCODE_TUI_SLOW_FRAME_MS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(40.0)
+    })
+}
+
+fn with_frame_perf_stats_mut(f: impl FnOnce(&mut FramePerfStats)) {
+    let mut stats = frame_perf_stats()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(&mut stats);
+}
+
+fn reset_frame_perf_stats() {
+    with_frame_perf_stats_mut(|stats| *stats = FramePerfStats::default());
+}
+
+fn frame_perf_stats_snapshot() -> FramePerfStats {
+    frame_perf_stats()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+fn note_full_prep_request() {
+    with_frame_perf_stats_mut(|stats| stats.full_prep_requests += 1);
+}
+
+fn note_full_prep_cache_hit(kind: CacheEntryKind, prepared: &PreparedChatFrame) {
+    with_frame_perf_stats_mut(|stats| {
+        stats.full_prep_hits += 1;
+        if matches!(kind, CacheEntryKind::Oversized) {
+            stats.full_prep_oversized_hits += 1;
+        }
+        stats.full_prep_last_prepared_bytes = estimate_prepared_chat_frame_bytes(prepared);
+        stats.full_prep_last_total_wrapped_lines = prepared.total_wrapped_lines();
+        stats.full_prep_last_section_count = prepared.sections.len();
+    });
+}
+
+fn note_full_prep_cache_miss() {
+    with_frame_perf_stats_mut(|stats| stats.full_prep_misses += 1);
+}
+
+fn note_full_prep_built(prepared: &PreparedChatFrame) {
+    with_frame_perf_stats_mut(|stats| {
+        stats.full_prep_last_prepared_bytes = estimate_prepared_chat_frame_bytes(prepared);
+        stats.full_prep_last_total_wrapped_lines = prepared.total_wrapped_lines();
+        stats.full_prep_last_section_count = prepared.sections.len();
+    });
+}
+
+fn note_body_request() {
+    with_frame_perf_stats_mut(|stats| stats.body_requests += 1);
+}
+
+fn note_body_cache_hit(kind: CacheEntryKind, prepared: &PreparedMessages) {
+    with_frame_perf_stats_mut(|stats| {
+        stats.body_hits += 1;
+        if matches!(kind, CacheEntryKind::Oversized) {
+            stats.body_oversized_hits += 1;
+        }
+        stats.body_last_prepared_bytes = estimate_prepared_messages_bytes(prepared);
+        stats.body_last_wrapped_lines = prepared.wrapped_lines.len();
+        stats.body_last_copy_targets = prepared.copy_targets.len();
+        stats.body_last_image_regions = prepared.image_regions.len();
+    });
+}
+
+fn note_body_cache_miss() {
+    with_frame_perf_stats_mut(|stats| stats.body_misses += 1);
+}
+
+fn note_body_incremental_reuse(base_messages: usize) {
+    with_frame_perf_stats_mut(|stats| {
+        stats.body_incremental_reuses += 1;
+        stats.body_last_incremental_base_messages = Some(base_messages);
+    });
+}
+
+fn note_body_built(prepared: &PreparedMessages) {
+    with_frame_perf_stats_mut(|stats| {
+        stats.body_last_prepared_bytes = estimate_prepared_messages_bytes(prepared);
+        stats.body_last_wrapped_lines = prepared.wrapped_lines.len();
+        stats.body_last_copy_targets = prepared.copy_targets.len();
+        stats.body_last_image_regions = prepared.image_regions.len();
+    });
+}
+
+fn note_chat_layout(
+    chat_area: Rect,
+    messages_area: Rect,
+    initial_content_height: usize,
+    content_height: usize,
+    chat_scrollbar_visible: bool,
+    use_packed_layout: bool,
+    has_side_panel_content: bool,
+    has_pinned_content: bool,
+    has_file_diff_edits: bool,
+) {
+    with_frame_perf_stats_mut(|stats| {
+        stats.chat_area_width = chat_area.width;
+        stats.chat_area_height = chat_area.height;
+        stats.messages_area_width = messages_area.width;
+        stats.messages_area_height = messages_area.height;
+        stats.initial_content_height = initial_content_height;
+        stats.content_height = content_height;
+        stats.chat_scrollbar_visible = chat_scrollbar_visible;
+        stats.use_packed_layout = use_packed_layout;
+        stats.has_side_panel_content = has_side_panel_content;
+        stats.has_pinned_content = has_pinned_content;
+        stats.has_file_diff_edits = has_file_diff_edits;
+    });
+}
+
+fn note_viewport_metrics(
+    scroll: usize,
+    visible_end: usize,
+    visible_lines: usize,
+    total_wrapped_lines: usize,
+    prompt_preview_lines: u16,
+    visible_user_prompts: usize,
+    visible_copy_targets: usize,
+    content_width: u16,
+    stability_hash: u64,
+) {
+    with_frame_perf_stats_mut(|stats| {
+        stats.viewport_scroll = scroll;
+        stats.viewport_visible_end = visible_end;
+        stats.viewport_visible_lines = visible_lines;
+        stats.viewport_total_wrapped_lines = total_wrapped_lines;
+        stats.viewport_prompt_preview_lines = prompt_preview_lines;
+        stats.viewport_visible_user_prompts = visible_user_prompts;
+        stats.viewport_visible_copy_targets = visible_copy_targets;
+        stats.viewport_content_width = content_width;
+        stats.viewport_stability_hash = stability_hash;
+    });
+}
+
+pub(super) fn viewport_stability_hash(
+    visible_lines: &[Line<'_>],
+    visible_user_indices: &[usize],
+    content_width: u16,
+    prompt_preview_lines: u16,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    content_width.hash(&mut hasher);
+    prompt_preview_lines.hash(&mut hasher);
+    visible_lines.len().hash(&mut hasher);
+    visible_user_indices.hash(&mut hasher);
+    for line in visible_lines {
+        line.alignment.hash(&mut hasher);
+        line_plain_text(line).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn same_flicker_state_key(a: &FlickerFrameSample, b: &FlickerFrameSample) -> bool {
+    a.session_id == b.session_id
+        && a.display_messages_version == b.display_messages_version
+        && a.diff_mode == b.diff_mode
+        && a.centered == b.centered
+        && a.is_processing == b.is_processing
+        && a.auto_scroll_paused == b.auto_scroll_paused
+        && a.scroll == b.scroll
+        && a.visible_end == b.visible_end
+        && a.visible_lines == b.visible_lines
+        && a.total_wrapped_lines == b.total_wrapped_lines
+        && a.prompt_preview_lines == b.prompt_preview_lines
+        && a.messages_area_width == b.messages_area_width
+        && a.messages_area_height == b.messages_area_height
+}
+
+fn push_flicker_event(history: &mut FlickerFrameHistory, event: FlickerEvent) {
+    history.events.push_back(event.clone());
+    while history.events.len() > FLICKER_HISTORY_MAX_EVENTS {
+        history.events.pop_front();
+    }
+
+    let severe = event.kind.contains("oscillation");
+    let should_log = severe
+        || history
+            .last_log_at_ms
+            .map(|last| event.timestamp_ms.saturating_sub(last) >= FLICKER_LOG_INTERVAL_MS)
+            .unwrap_or(true);
+    if should_log {
+        history.last_log_at_ms = Some(event.timestamp_ms);
+        if let Ok(payload) = serde_json::to_string(&event) {
+            crate::logging::warn(&format!("TUI_FLICKER_EVENT {}", payload));
+        } else {
+            crate::logging::warn(&format!(
+                "TUI_FLICKER_EVENT kind={} session={:?}",
+                event.kind, event.session_name
+            ));
+        }
+    }
+}
+
+fn maybe_record_flicker_event(history: &mut FlickerFrameHistory, current: &FlickerFrameSample) {
+    let Some(previous) = history.samples.back().cloned() else {
+        return;
+    };
+
+    let len = history.samples.len();
+    if len >= 2 {
+        let earlier = history.samples.get(len - 2).cloned();
+        if let Some(earlier) = earlier
+            && same_flicker_state_key(&earlier, current)
+            && same_flicker_state_key(&earlier, &previous)
+            && earlier.visible_hash == current.visible_hash
+            && earlier.chat_scrollbar_visible == current.chat_scrollbar_visible
+            && earlier.content_width == current.content_width
+            && (earlier.chat_scrollbar_visible != previous.chat_scrollbar_visible
+                || earlier.content_width != previous.content_width)
+        {
+            push_flicker_event(
+                history,
+                FlickerEvent {
+                    timestamp_ms: current.timestamp_ms,
+                    kind: "layout_oscillation".to_string(),
+                    session_id: current.session_id.clone(),
+                    session_name: current.session_name.clone(),
+                    previous,
+                    current: current.clone(),
+                },
+            );
+            return;
+        }
+    }
+
+    if same_flicker_state_key(&previous, current) {
+        if previous.chat_scrollbar_visible != current.chat_scrollbar_visible
+            || previous.content_width != current.content_width
+        {
+            push_flicker_event(
+                history,
+                FlickerEvent {
+                    timestamp_ms: current.timestamp_ms,
+                    kind: "layout_toggle_same_state".to_string(),
+                    session_id: current.session_id.clone(),
+                    session_name: current.session_name.clone(),
+                    previous,
+                    current: current.clone(),
+                },
+            );
+            return;
+        }
+
+        if previous.visible_hash != current.visible_hash {
+            push_flicker_event(
+                history,
+                FlickerEvent {
+                    timestamp_ms: current.timestamp_ms,
+                    kind: "visible_hash_changed_same_state".to_string(),
+                    session_id: current.session_id.clone(),
+                    session_name: current.session_name.clone(),
+                    previous,
+                    current: current.clone(),
+                },
+            );
+            return;
+        }
+    }
+}
+
+fn record_flicker_frame_sample(sample: FlickerFrameSample) {
+    let mut history = flicker_frame_history()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    maybe_record_flicker_event(&mut history, &sample);
+    history.samples.push_back(sample);
+    while history.samples.len() > FLICKER_HISTORY_MAX_SAMPLES {
+        history.samples.pop_front();
+    }
+}
+
+pub(crate) fn debug_flicker_frame_history(limit: usize) -> serde_json::Value {
+    let history = flicker_frame_history()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let take_samples = limit.max(1).min(FLICKER_HISTORY_MAX_SAMPLES);
+    let samples: Vec<FlickerFrameSample> = history
+        .samples
+        .iter()
+        .rev()
+        .take(take_samples)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let events: Vec<FlickerEvent> = history
+        .events
+        .iter()
+        .rev()
+        .take(limit.max(1).min(FLICKER_HISTORY_MAX_EVENTS))
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    serde_json::json!({
+        "buffered_samples": history.samples.len(),
+        "returned_samples": samples.len(),
+        "buffered_events": history.events.len(),
+        "returned_events": events.len(),
+        "summary": {
+            "layout_toggle_events": events.iter().filter(|event| event.kind == "layout_toggle_same_state").count(),
+            "layout_oscillation_events": events.iter().filter(|event| event.kind == "layout_oscillation").count(),
+            "visible_hash_change_events": events.iter().filter(|event| event.kind == "visible_hash_changed_same_state").count(),
+        },
+        "events": events,
+        "samples": samples,
+    })
+}
+
+fn record_slow_frame_sample(sample: SlowFrameSample) {
+    let mut history = slow_frame_history()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    history.samples.push_back(sample.clone());
+    while history.samples.len() > SLOW_FRAME_HISTORY_MAX_SAMPLES {
+        history.samples.pop_front();
+    }
+
+    let severe = sample.total_ms >= sample.threshold_ms * 2.0;
+    let should_log = severe
+        || history
+            .last_log_at_ms
+            .map(|last| sample.timestamp_ms.saturating_sub(last) >= SLOW_FRAME_LOG_INTERVAL_MS)
+            .unwrap_or(true);
+    if should_log {
+        history.last_log_at_ms = Some(sample.timestamp_ms);
+        if let Ok(payload) = serde_json::to_string(&sample) {
+            crate::logging::warn(&format!("TUI_SLOW_FRAME {}", payload));
+        } else {
+            crate::logging::warn(&format!(
+                "TUI_SLOW_FRAME total_ms={:.2} prepare_ms={:.2} draw_ms={:.2}",
+                sample.total_ms, sample.prepare_ms, sample.draw_ms
+            ));
+        }
+    }
+}
+
+pub(crate) fn debug_slow_frame_history(limit: usize) -> serde_json::Value {
+    let history = slow_frame_history()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let take = limit.max(1).min(SLOW_FRAME_HISTORY_MAX_SAMPLES);
+    let samples: Vec<SlowFrameSample> = history
+        .samples
+        .iter()
+        .rev()
+        .take(take)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    let max_total_ms = samples
+        .iter()
+        .map(|sample| sample.total_ms)
+        .fold(0.0, f64::max);
+    let max_prepare_ms = samples
+        .iter()
+        .map(|sample| sample.prepare_ms)
+        .fold(0.0, f64::max);
+    let max_draw_ms = samples
+        .iter()
+        .map(|sample| sample.draw_ms)
+        .fold(0.0, f64::max);
+
+    serde_json::json!({
+        "threshold_ms": slow_frame_threshold_ms(),
+        "buffered_samples": history.samples.len(),
+        "returned_samples": samples.len(),
+        "summary": {
+            "max_total_ms": max_total_ms,
+            "max_prepare_ms": max_prepare_ms,
+            "max_draw_ms": max_draw_ms,
+        },
+        "samples": samples,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn clear_slow_frame_history_for_tests() {
+    let mut history = slow_frame_history()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    history.samples.clear();
+    history.last_log_at_ms = None;
+    reset_frame_perf_stats();
+    set_last_chat_scrollbar_visible(false);
+}
+
+#[cfg(test)]
+pub(crate) fn clear_flicker_frame_history_for_tests() {
+    let mut history = flicker_frame_history()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    history.samples.clear();
+    history.events.clear();
+    history.last_log_at_ms = None;
 }
 
 #[derive(Default)]
@@ -1092,20 +2051,89 @@ pub(crate) fn clear_test_render_state_for_tests() {
     });
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
+enum CopyViewportData {
+    Dense {
+        wrapped_plain_lines: Arc<Vec<String>>,
+        wrapped_copy_offsets: Arc<Vec<usize>>,
+        raw_plain_lines: Arc<Vec<String>>,
+        wrapped_line_map: Arc<Vec<WrappedLineMap>>,
+    },
+    ChatFrame {
+        prepared: Arc<PreparedChatFrame>,
+    },
+}
+
+#[derive(Clone)]
 struct CopyViewportSnapshot {
     pane: crate::tui::CopySelectionPane,
-    wrapped_plain_lines: Arc<Vec<String>>,
-    wrapped_copy_offsets: Arc<Vec<usize>>,
-    raw_plain_lines: Arc<Vec<String>>,
-    wrapped_line_map: Arc<Vec<WrappedLineMap>>,
+    data: CopyViewportData,
     scroll: usize,
     visible_end: usize,
     content_area: Rect,
     left_margins: Vec<u16>,
 }
 
-#[derive(Clone, Debug, Default)]
+impl CopyViewportSnapshot {
+    fn wrapped_plain_line_count(&self) -> usize {
+        match &self.data {
+            CopyViewportData::Dense {
+                wrapped_plain_lines,
+                ..
+            } => wrapped_plain_lines.len(),
+            CopyViewportData::ChatFrame { prepared } => prepared.wrapped_plain_line_count(),
+        }
+    }
+
+    fn wrapped_plain_line(&self, abs_line: usize) -> Option<String> {
+        match &self.data {
+            CopyViewportData::Dense {
+                wrapped_plain_lines,
+                ..
+            } => wrapped_plain_lines.get(abs_line).cloned(),
+            CopyViewportData::ChatFrame { prepared } => prepared.wrapped_plain_line(abs_line),
+        }
+    }
+
+    fn wrapped_copy_offset(&self, abs_line: usize) -> Option<usize> {
+        match &self.data {
+            CopyViewportData::Dense {
+                wrapped_copy_offsets,
+                ..
+            } => wrapped_copy_offsets.get(abs_line).copied(),
+            CopyViewportData::ChatFrame { prepared } => prepared.wrapped_copy_offset(abs_line),
+        }
+    }
+
+    fn raw_plain_line(&self, raw_line: usize) -> Option<String> {
+        match &self.data {
+            CopyViewportData::Dense {
+                raw_plain_lines, ..
+            } => raw_plain_lines.get(raw_line).cloned(),
+            CopyViewportData::ChatFrame { prepared } => prepared.raw_plain_line(raw_line),
+        }
+    }
+
+    fn raw_plain_line_count(&self) -> usize {
+        match &self.data {
+            CopyViewportData::Dense {
+                raw_plain_lines, ..
+            } => raw_plain_lines.len(),
+            CopyViewportData::ChatFrame { prepared } => prepared.total_raw_lines,
+        }
+    }
+
+    fn wrapped_line_map(&self, abs_line: usize) -> Option<WrappedLineMap> {
+        match &self.data {
+            CopyViewportData::Dense {
+                wrapped_line_map, ..
+            } => wrapped_line_map.get(abs_line).copied(),
+            CopyViewportData::ChatFrame { prepared } => prepared.wrapped_line_map(abs_line),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
 struct CopyViewportSnapshots {
     chat: Option<CopyViewportSnapshot>,
     side: Option<CopyViewportSnapshot>,
@@ -1192,10 +2220,12 @@ fn record_copy_pane_snapshot(
         TEST_COPY_VIEWPORT.with(|state| {
             *copy_snapshot_slot_mut(&mut state.borrow_mut(), pane) = Some(CopyViewportSnapshot {
                 pane,
-                wrapped_plain_lines,
-                wrapped_copy_offsets,
-                raw_plain_lines,
-                wrapped_line_map,
+                data: CopyViewportData::Dense {
+                    wrapped_plain_lines,
+                    wrapped_copy_offsets,
+                    raw_plain_lines,
+                    wrapped_line_map,
+                },
                 scroll,
                 visible_end,
                 content_area,
@@ -1208,15 +2238,53 @@ fn record_copy_pane_snapshot(
     if let Ok(mut state) = copy_viewport_state().lock() {
         *copy_snapshot_slot_mut(&mut state, pane) = Some(CopyViewportSnapshot {
             pane,
-            wrapped_plain_lines,
-            wrapped_copy_offsets,
-            raw_plain_lines,
-            wrapped_line_map,
+            data: CopyViewportData::Dense {
+                wrapped_plain_lines,
+                wrapped_copy_offsets,
+                raw_plain_lines,
+                wrapped_line_map,
+            },
             scroll,
             visible_end,
             content_area,
             left_margins: left_margins.to_vec(),
         });
+    }
+}
+
+fn record_copy_viewport_frame_snapshot(
+    prepared: Arc<PreparedChatFrame>,
+    scroll: usize,
+    visible_end: usize,
+    content_area: Rect,
+    left_margins: &[u16],
+) {
+    #[cfg(test)]
+    {
+        TEST_COPY_VIEWPORT.with(|state| {
+            *copy_snapshot_slot_mut(&mut state.borrow_mut(), crate::tui::CopySelectionPane::Chat) =
+                Some(CopyViewportSnapshot {
+                    pane: crate::tui::CopySelectionPane::Chat,
+                    data: CopyViewportData::ChatFrame { prepared },
+                    scroll,
+                    visible_end,
+                    content_area,
+                    left_margins: left_margins.to_vec(),
+                });
+        });
+        return;
+    }
+    #[cfg(not(test))]
+    if let Ok(mut state) = copy_viewport_state().lock() {
+        *copy_snapshot_slot_mut(&mut state, crate::tui::CopySelectionPane::Chat) =
+            Some(CopyViewportSnapshot {
+                pane: crate::tui::CopySelectionPane::Chat,
+                data: CopyViewportData::ChatFrame { prepared },
+                scroll,
+                visible_end,
+                content_area,
+                left_margins: left_margins.to_vec(),
+            });
     }
 }
 
@@ -1251,6 +2319,7 @@ pub(crate) fn record_side_pane_snapshot_precomputed(
     clippy::too_many_arguments,
     reason = "Viewport snapshot helpers carry explicit render state to avoid hidden globals in call sites"
 )]
+#[cfg(test)]
 pub(crate) fn record_copy_viewport_snapshot(
     wrapped_plain_lines: Arc<Vec<String>>,
     wrapped_copy_offsets: Arc<Vec<usize>>,
@@ -1361,23 +2430,19 @@ fn copy_point_from_snapshot(
 
     let rel_row = row.saturating_sub(area.y) as usize;
     let abs_line = snapshot.scroll.saturating_add(rel_row);
-    if abs_line >= snapshot.visible_end || abs_line >= snapshot.wrapped_plain_lines.len() {
+    if abs_line >= snapshot.visible_end || abs_line >= snapshot.wrapped_plain_line_count() {
         return None;
     }
 
     let left_margin = snapshot.left_margins.get(rel_row).copied().unwrap_or(0);
     let content_x = area.x.saturating_add(left_margin);
     let rel_col = column.saturating_sub(content_x) as usize;
-    let text = &snapshot.wrapped_plain_lines[abs_line];
-    let copy_start = snapshot
-        .wrapped_copy_offsets
-        .get(abs_line)
-        .copied()
-        .unwrap_or(0);
+    let text = snapshot.wrapped_plain_line(abs_line)?;
+    let copy_start = snapshot.wrapped_copy_offset(abs_line).unwrap_or(0);
     Some(crate::tui::CopySelectionPoint {
         pane: snapshot.pane,
         abs_line,
-        column: clamp_display_col(text, rel_col).max(copy_start),
+        column: clamp_display_col(&text, rel_col).max(copy_start),
     })
 }
 
@@ -1436,10 +2501,7 @@ pub(crate) fn side_pane_point_from_screen(
 }
 
 fn copy_pane_line_text(pane: crate::tui::CopySelectionPane, abs_line: usize) -> Option<String> {
-    copy_snapshot_for_pane(pane)?
-        .wrapped_plain_lines
-        .get(abs_line)
-        .cloned()
+    copy_snapshot_for_pane(pane)?.wrapped_plain_line(abs_line)
 }
 
 pub(crate) fn copy_viewport_line_text(abs_line: usize) -> Option<String> {
@@ -1451,7 +2513,7 @@ pub(crate) fn side_pane_line_text(abs_line: usize) -> Option<String> {
 }
 
 fn copy_pane_line_count(pane: crate::tui::CopySelectionPane) -> Option<usize> {
-    Some(copy_snapshot_for_pane(pane)?.wrapped_plain_lines.len())
+    Some(copy_snapshot_for_pane(pane)?.wrapped_plain_line_count())
 }
 
 pub(crate) fn copy_viewport_line_count() -> Option<usize> {
@@ -1478,7 +2540,7 @@ pub(crate) fn copy_pane_first_visible_point(
 ) -> Option<crate::tui::CopySelectionPoint> {
     let snapshot = copy_snapshot_for_pane(pane)?;
     if snapshot.scroll >= snapshot.visible_end
-        || snapshot.scroll >= snapshot.wrapped_plain_lines.len()
+        || snapshot.scroll >= snapshot.wrapped_plain_line_count()
     {
         return None;
     }
@@ -1501,8 +2563,8 @@ pub(crate) fn copy_selection_text(range: crate::tui::CopySelectionRange) -> Opti
             (range.end, range.start)
         };
 
-    if start.abs_line >= snapshot.wrapped_plain_lines.len()
-        || end.abs_line >= snapshot.wrapped_plain_lines.len()
+    if start.abs_line >= snapshot.wrapped_plain_line_count()
+        || end.abs_line >= snapshot.wrapped_plain_line_count()
     {
         return None;
     }
@@ -1513,20 +2575,16 @@ pub(crate) fn copy_selection_text(range: crate::tui::CopySelectionRange) -> Opti
 
     let mut out = Vec::new();
     for abs_line in start.abs_line..=end.abs_line {
-        let text = &snapshot.wrapped_plain_lines[abs_line];
-        let line_width = line_display_width(text);
-        let copy_start = snapshot
-            .wrapped_copy_offsets
-            .get(abs_line)
-            .copied()
-            .unwrap_or(0);
+        let text = snapshot.wrapped_plain_line(abs_line)?;
+        let line_width = line_display_width(&text);
+        let copy_start = snapshot.wrapped_copy_offset(abs_line).unwrap_or(0);
         let start_col = if abs_line == start.abs_line {
-            clamp_display_col(text, start.column).max(copy_start)
+            clamp_display_col(&text, start.column).max(copy_start)
         } else {
             copy_start
         };
         let end_col = if abs_line == end.abs_line {
-            clamp_display_col(text, end.column).max(copy_start)
+            clamp_display_col(&text, end.column).max(copy_start)
         } else {
             line_width
         };
@@ -1536,8 +2594,8 @@ pub(crate) fn copy_selection_text(range: crate::tui::CopySelectionRange) -> Opti
             continue;
         }
 
-        let start_byte = display_col_to_byte_offset(text, start_col);
-        let end_byte = display_col_to_byte_offset(text, end_col);
+        let start_byte = display_col_to_byte_offset(&text, start_col);
+        let end_byte = display_col_to_byte_offset(&text, end_col);
         out.push(text[start_byte..end_byte].to_string());
     }
 
@@ -1555,29 +2613,29 @@ fn copy_selection_text_from_raw_lines(
     start: crate::tui::CopySelectionPoint,
     end: crate::tui::CopySelectionPoint,
 ) -> Option<String> {
-    if snapshot.raw_plain_lines.is_empty() || snapshot.wrapped_line_map.is_empty() {
+    if snapshot.raw_plain_line_count() == 0 || snapshot.wrapped_line_map(start.abs_line).is_none() {
         return None;
     }
 
     let start = raw_selection_point(snapshot, start)?;
     let end = raw_selection_point(snapshot, end)?;
-    if start.raw_line >= snapshot.raw_plain_lines.len()
-        || end.raw_line >= snapshot.raw_plain_lines.len()
+    if start.raw_line >= snapshot.raw_plain_line_count()
+        || end.raw_line >= snapshot.raw_plain_line_count()
     {
         return None;
     }
 
     let mut out = Vec::new();
     for raw_line in start.raw_line..=end.raw_line {
-        let text = &snapshot.raw_plain_lines[raw_line];
-        let line_width = line_display_width(text);
+        let text = snapshot.raw_plain_line(raw_line)?;
+        let line_width = line_display_width(&text);
         let start_col = if raw_line == start.raw_line {
-            clamp_display_col(text, start.column)
+            clamp_display_col(&text, start.column)
         } else {
             0
         };
         let end_col = if raw_line == end.raw_line {
-            clamp_display_col(text, end.column)
+            clamp_display_col(&text, end.column)
         } else {
             line_width
         };
@@ -1587,8 +2645,8 @@ fn copy_selection_text_from_raw_lines(
             continue;
         }
 
-        let start_byte = display_col_to_byte_offset(text, start_col);
-        let end_byte = display_col_to_byte_offset(text, end_col);
+        let start_byte = display_col_to_byte_offset(&text, start_col);
+        let end_byte = display_col_to_byte_offset(&text, end_col);
         out.push(text[start_byte..end_byte].to_string());
     }
 
@@ -1599,15 +2657,13 @@ fn raw_selection_point(
     snapshot: &CopyViewportSnapshot,
     point: crate::tui::CopySelectionPoint,
 ) -> Option<RawSelectionPoint> {
-    let wrapped_text = snapshot.wrapped_plain_lines.get(point.abs_line)?;
-    let map = snapshot.wrapped_line_map.get(point.abs_line)?;
+    let wrapped_text = snapshot.wrapped_plain_line(point.abs_line)?;
+    let map = snapshot.wrapped_line_map(point.abs_line)?;
     let display_copy_start = snapshot
-        .wrapped_copy_offsets
-        .get(point.abs_line)
-        .copied()
+        .wrapped_copy_offset(point.abs_line)
         .unwrap_or(0)
         .min(wrapped_text.width());
-    let local_col = clamp_display_col(wrapped_text, point.column).max(display_copy_start);
+    let local_col = clamp_display_col(&wrapped_text, point.column).max(display_copy_start);
     let segment_width = map.end_col.saturating_sub(map.start_col);
     Some(RawSelectionPoint {
         raw_line: map.raw_line,
@@ -1646,9 +2702,9 @@ fn link_target_from_snapshot(
     point: crate::tui::CopySelectionPoint,
 ) -> Option<String> {
     let raw_point = raw_selection_point(snapshot, point)?;
-    let raw_text = snapshot.raw_plain_lines.get(raw_point.raw_line)?;
+    let raw_text = snapshot.raw_plain_line(raw_point.raw_line)?;
 
-    for mat in url_regex().find_iter(raw_text) {
+    for mat in url_regex().find_iter(&raw_text) {
         let matched = &raw_text[mat.start()..mat.end()];
         let trimmed = trim_url_candidate(matched);
         if trimmed.is_empty() {
@@ -1760,6 +2816,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+
+    reset_frame_perf_stats();
 
     clear_copy_viewport_snapshot();
 
@@ -1990,11 +3048,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
     let prep_start = Instant::now();
     let chat_left_inset = left_aligned_content_inset(chat_area.width, app.centered_mode());
-    let prepared_full_width = prepare::prepare_messages(
-        app,
-        chat_area.width.saturating_sub(chat_left_inset),
-        chat_area.height,
-    );
+    let predicted_scrollbar_visible =
+        app.chat_native_scrollbar() && chat_area.width > 1 && last_chat_scrollbar_visible();
+    let initial_prepare_width = chat_area
+        .width
+        .saturating_sub(chat_left_inset)
+        .saturating_sub(if predicted_scrollbar_visible { 1 } else { 0 });
+    let prepared_initial = prepare::prepare_messages(app, initial_prepare_width, chat_area.height);
     let show_donut = super::idle_donut_active(app);
     let donut_height: u16 = if show_donut { 14 } else { 0 };
     let notification_height: u16 = if app.has_notification() { 1 } else { 0 };
@@ -2007,11 +3067,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         + donut_height; // status + queued + notification + inline UI + gap + input + donut
     let available_height = chat_area.height;
 
-    let initial_content_height = prepared_full_width.wrapped_lines.len().max(1) as u16;
+    let initial_content_height = prepared_initial.total_wrapped_lines().max(1) as u16;
     let chat_scrollbar_visible = app.chat_native_scrollbar()
         && chat_area.width > 1
         && initial_content_height + fixed_height > available_height;
-    let prepared = if chat_scrollbar_visible {
+    let prepared = if chat_scrollbar_visible == predicted_scrollbar_visible {
+        prepared_initial
+    } else if chat_scrollbar_visible {
         prepare::prepare_messages(
             app,
             chat_area
@@ -2021,8 +3083,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             chat_area.height,
         )
     } else {
-        prepared_full_width
+        prepare::prepare_messages(
+            app,
+            chat_area.width.saturating_sub(chat_left_inset),
+            chat_area.height,
+        )
     };
+    set_last_chat_scrollbar_visible(chat_scrollbar_visible);
     if let Some(ref mut capture) = debug_capture {
         capture.image_regions = prepared
             .image_regions
@@ -2035,7 +3102,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             .collect();
     }
     let prep_elapsed = prep_start.elapsed();
-    let content_height = prepared.wrapped_lines.len().max(1) as u16;
+    let content_height = prepared.total_wrapped_lines().max(1) as u16;
 
     // Use packed layout when content fits, scrolling layout otherwise
     let use_packed = content_height + fixed_height <= available_height;
@@ -2138,6 +3205,17 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     // Messages area is chunks[0] within the chat column (already excludes diagram).
     let messages_area = chunks[0];
+    note_chat_layout(
+        chat_area,
+        messages_area,
+        initial_content_height as usize,
+        content_height as usize,
+        chat_scrollbar_visible,
+        use_packed,
+        has_side_panel_content,
+        has_pinned_content,
+        has_file_diff_edits,
+    );
 
     if let Some(ref mut capture) = debug_capture {
         capture.layout.messages_area = Some(messages_area.into());
@@ -2145,7 +3223,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
     record_layout_snapshot(messages_area, diagram_area, diff_pane_area, Some(chunks[6]));
 
-    let margins = draw_messages(frame, app, messages_area, &prepared, chat_scrollbar_visible);
+    let margins = draw_messages(
+        frame,
+        app,
+        messages_area,
+        prepared.clone(),
+        chat_scrollbar_visible,
+    );
 
     // Render pinned diagram if we have one
     if let (Some(diagram_info), Some(area)) = (&pinned_diagram, diagram_area) {
@@ -2191,7 +3275,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                 frame,
                 diff_area,
                 app,
-                &prepared,
+                prepared.as_ref(),
                 app.diff_pane_scroll(),
                 app.diff_pane_focus(),
             );
@@ -2344,6 +3428,57 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     if profile_enabled() {
         let total_draw = draw_start.elapsed();
         record_profile(prep_elapsed, total_draw, total_start.elapsed());
+    }
+
+    let total_elapsed = total_start.elapsed();
+    let total_ms = total_elapsed.as_secs_f64() * 1000.0;
+    let perf = frame_perf_stats_snapshot();
+    record_flicker_frame_sample(FlickerFrameSample {
+        timestamp_ms: wall_clock_ms(),
+        session_id: app.current_session_id(),
+        session_name: app.session_display_name(),
+        display_messages_version: app.display_messages_version(),
+        diff_mode: format!("{:?}", app.diff_mode()),
+        centered: app.centered_mode(),
+        is_processing: app.is_processing(),
+        auto_scroll_paused: app.auto_scroll_paused(),
+        scroll: perf.viewport_scroll,
+        visible_end: perf.viewport_visible_end,
+        visible_lines: perf.viewport_visible_lines,
+        total_wrapped_lines: perf.viewport_total_wrapped_lines,
+        prompt_preview_lines: perf.viewport_prompt_preview_lines,
+        messages_area_width: perf.messages_area_width,
+        messages_area_height: perf.messages_area_height,
+        content_width: perf.viewport_content_width,
+        chat_scrollbar_visible: perf.chat_scrollbar_visible,
+        visible_hash: perf.viewport_stability_hash,
+        total_ms,
+        prepare_ms: prep_elapsed.as_secs_f64() * 1000.0,
+        draw_ms: draw_start.elapsed().as_secs_f64() * 1000.0,
+    });
+    let threshold_ms = slow_frame_threshold_ms();
+    if total_ms >= threshold_ms {
+        record_slow_frame_sample(SlowFrameSample {
+            timestamp_ms: wall_clock_ms(),
+            threshold_ms,
+            session_id: app.current_session_id(),
+            session_name: app.session_display_name(),
+            status: format!("{:?}", app.status()),
+            diff_mode: format!("{:?}", app.diff_mode()),
+            centered: app.centered_mode(),
+            is_processing: app.is_processing(),
+            auto_scroll_paused: app.auto_scroll_paused(),
+            display_messages: app.display_messages().len(),
+            display_messages_version: app.display_messages_version(),
+            user_messages: app.display_user_message_count(),
+            queued_messages: app.queued_messages().len(),
+            streaming_text_len: app.streaming_text().len(),
+            prepare_ms: prep_elapsed.as_secs_f64() * 1000.0,
+            draw_ms: draw_start.elapsed().as_secs_f64() * 1000.0,
+            total_ms,
+            messages_ms: Some(messages_draw.as_secs_f64() * 1000.0),
+            perf,
+        });
     }
 }
 

@@ -67,6 +67,7 @@ mod state_ui_maintenance;
 mod state_ui_messages;
 mod state_ui_runtime;
 mod state_ui_storage;
+mod todos_view;
 mod tui_lifecycle;
 mod tui_lifecycle_runtime;
 mod tui_state;
@@ -191,51 +192,7 @@ pub struct DisplayMessage {
 }
 
 pub(super) fn reload_persisted_background_tasks_note(session_id: &str) -> String {
-    let mut notes = String::new();
-
-    let tasks =
-        crate::background::global().persisted_detached_running_tasks_for_session(session_id);
-    if !tasks.is_empty() {
-        let task_list = tasks
-            .iter()
-            .map(|task| format!("{} ({})", task.task_id, task.tool_name))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        notes.push_str(&format!(
-            "\nPersisted background task(s) for this session are still running: {}. Do not rerun those commands. Check them first with the `bg` tool (`bg action=\"list\"`, `bg action=\"status\" task_id=...`, or `bg action=\"output\" task_id=...`).",
-            task_list
-        ));
-    }
-
-    let pending_awaits = crate::server::pending_await_members_for_session(session_id);
-    if !pending_awaits.is_empty() {
-        let await_list = pending_awaits
-            .iter()
-            .map(|state| {
-                let watch = if state.requested_ids.is_empty() {
-                    "entire swarm".to_string()
-                } else {
-                    state.requested_ids.join(", ")
-                };
-                let remaining_secs = state.remaining_timeout().as_secs();
-                format!(
-                    "{} -> [{}], {}s remaining",
-                    watch,
-                    state.target_status.join(", "),
-                    remaining_secs
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-
-        notes.push_str(&format!(
-            "\nPersisted `communicate await_members` wait(s) are still pending: {}. If you still need those coordination points after reload, rerun the same `communicate` call with action `await_members` to resume them with the remaining timeout instead of starting over.",
-            await_list
-        ));
-    }
-
-    notes
+    crate::tool::selfdev::persisted_background_tasks_note(session_id)
 }
 
 #[derive(Clone, Default)]
@@ -633,6 +590,10 @@ pub struct App {
     split_view_updated_at_ms: u64,
     split_view_rendered_display_version: u64,
     split_view_rendered_streaming_hash: u64,
+    todos_view_enabled: bool,
+    todos_view_markdown: String,
+    todos_view_updated_at_ms: u64,
+    todos_view_rendered_hash: u64,
     last_side_panel_refresh: Option<Instant>,
     // Most recently persisted focus target for dictation routing.
     last_client_focus_recorded_at: Option<Instant>,

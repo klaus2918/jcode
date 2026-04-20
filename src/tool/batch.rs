@@ -264,6 +264,7 @@ impl Tool for BatchTool {
         let mut output = String::new();
         let mut success_count = 0;
         let mut error_count = 0;
+        let mut failed_tools = Vec::new();
 
         for (i, tool_name, result) in results {
             output.push_str(&format!("--- [{}] {} ---\n", i + 1, tool_name));
@@ -280,10 +281,22 @@ impl Tool for BatchTool {
                 }
                 Err(e) => {
                     error_count += 1;
+                    failed_tools.push(tool_name.clone());
                     output.push_str(&format!("Error: {}", e));
                 }
             }
             output.push_str("\n\n");
+        }
+
+        if error_count > 0 {
+            crate::logging::warn(&format!(
+                "[tool:batch] {} of {} subcalls failed for {} in session {}: {}",
+                error_count,
+                num_tools,
+                ctx.tool_call_id,
+                ctx.session_id,
+                failed_tools.join(", ")
+            ));
         }
 
         output.push_str(&format!(

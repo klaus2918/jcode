@@ -131,6 +131,8 @@ CLIENT COMMANDS (client: prefix):
   client:markdown:memory   - Markdown highlight cache memory estimate
   client:memory            - Aggregate client memory profile
   client:memory-history    - Recent client process memory samples
+  client:flicker-frames [n] - Recent frame-stability / flicker records
+  client:slow-frames [n]  - Recent slow-frame records
   client:overlay:on/off    - Toggle overlay boxes
   client:input             - Get current input buffer
   client:set_input:<text>  - Set input buffer

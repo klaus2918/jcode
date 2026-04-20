@@ -2,6 +2,10 @@ use super::{
     FALLBACK_TOOL_CALL_COUNTER, NORMALIZED_NULL_TOOL_ARGUMENTS, RECOVERED_TEXT_WRAPPED_TOOL_CALLS,
     extract_error_with_retry, is_websocket_fallback_notice,
 };
+
+fn truncated_stream_payload_context(data: &str) -> String {
+    crate::util::truncate_str(&data.trim().replace("\n", "\\n"), 240).to_string()
+}
 use crate::message::StreamEvent;
 use anyhow::Result;
 use bytes::Bytes;
@@ -225,7 +229,14 @@ pub(super) fn parse_openai_response_event(
 
     let event: ResponseSseEvent = match serde_json::from_str(data) {
         Ok(parsed) => parsed,
-        Err(_) => return None,
+        Err(error) => {
+            crate::logging::warn(&format!(
+                "OpenAI SSE JSON parse failed: {} payload={}",
+                error,
+                truncated_stream_payload_context(data)
+            ));
+            return None;
+        }
     };
 
     match event.kind.as_str() {
@@ -616,5 +627,39 @@ impl Stream for OpenAIResponsesStream {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_text_wrapped_tool_call_rejects_non_object_json() {
+        let text = "prefix to=functions.read [1,2,3]";
+        let parsed = parse_text_wrapped_tool_call(text);
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn parse_openai_response_event_ignores_malformed_json_chunks() {
+        let mut saw_text_delta = false;
+        let mut streaming_tool_calls = HashMap::new();
+        let mut completed_tool_items = HashSet::new();
+        let mut pending = VecDeque::new();
+
+        let event = parse_openai_response_event(
+            "{not-json}",
+            &mut saw_text_delta,
+            &mut streaming_tool_calls,
+            &mut completed_tool_items,
+            &mut pending,
+        );
+
+        assert!(event.is_none());
+        assert!(!saw_text_delta);
+        assert!(streaming_tool_calls.is_empty());
+        assert!(completed_tool_items.is_empty());
+        assert!(pending.is_empty());
     }
 }

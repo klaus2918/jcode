@@ -271,7 +271,7 @@ async fn resolve_assignment_target_session(
         let plans = swarm_plans.read().await;
         plans
             .get(swarm_id)
-            .map(|plan| compute_assignment_loads(plan))
+            .map(compute_assignment_loads)
             .unwrap_or_default()
     };
 
@@ -1953,7 +1953,7 @@ mod tests {
     use crate::plan::PlanItem;
     use crate::protocol::ServerEvent;
     use crate::provider::{EventStream, Provider};
-    use crate::server::comm_await::handle_comm_await_members;
+    use crate::server::comm_await::{CommAwaitMembersContext, handle_comm_await_members};
     use crate::server::{
         AwaitMembersRuntime, SwarmEvent, SwarmEventType, SwarmMember, SwarmMutationRuntime,
         VersionedPlan,
@@ -2786,11 +2786,13 @@ mod tests {
             vec![],
             None,
             Some(2),
-            &client_tx,
-            &swarm_members,
-            &swarms_by_id,
-            &swarm_event_tx,
-            &await_runtime,
+            CommAwaitMembersContext {
+                client_event_tx: &client_tx,
+                swarm_members: &swarm_members,
+                swarms_by_id: &swarms_by_id,
+                swarm_event_tx: &swarm_event_tx,
+                await_members_runtime: &await_runtime,
+            },
         )
         .await;
 
@@ -2891,11 +2893,13 @@ mod tests {
             vec![],
             None,
             Some(60),
-            &client_tx,
-            &swarm_members,
-            &swarms_by_id,
-            &swarm_event_tx,
-            &await_runtime,
+            CommAwaitMembersContext {
+                client_event_tx: &client_tx,
+                swarm_members: &swarm_members,
+                swarms_by_id: &swarms_by_id,
+                swarm_event_tx: &swarm_event_tx,
+                await_members_runtime: &await_runtime,
+            },
         )
         .await;
 
@@ -2945,11 +2949,13 @@ mod tests {
             vec![],
             Some("any".to_string()),
             Some(60),
-            &client_tx,
-            &swarm_members,
-            &swarms_by_id,
-            &swarm_event_tx,
-            &await_runtime,
+            CommAwaitMembersContext {
+                client_event_tx: &client_tx,
+                swarm_members: &swarm_members,
+                swarms_by_id: &swarms_by_id,
+                swarm_event_tx: &swarm_event_tx,
+                await_members_runtime: &await_runtime,
+            },
         )
         .await;
 
@@ -3045,11 +3051,13 @@ mod tests {
             vec![],
             None,
             Some(60),
-            &client_tx,
-            &swarm_members,
-            &swarms_by_id,
-            &swarm_event_tx,
-            &await_runtime,
+            CommAwaitMembersContext {
+                client_event_tx: &client_tx,
+                swarm_members: &swarm_members,
+                swarms_by_id: &swarms_by_id,
+                swarm_event_tx: &swarm_event_tx,
+                await_members_runtime: &await_runtime,
+            },
         )
         .await;
 
@@ -3136,11 +3144,13 @@ mod tests {
             vec![],
             None,
             Some(60),
-            &client_tx,
-            &swarm_members,
-            &swarms_by_id,
-            &swarm_event_tx,
-            &await_runtime,
+            CommAwaitMembersContext {
+                client_event_tx: &client_tx,
+                swarm_members: &swarm_members,
+                swarms_by_id: &swarms_by_id,
+                swarm_event_tx: &swarm_event_tx,
+                await_members_runtime: &await_runtime,
+            },
         )
         .await;
 
