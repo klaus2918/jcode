@@ -290,6 +290,7 @@ fn make_provider() -> OpenRouterProvider {
         send_openrouter_headers: true,
         models_cache: Arc::new(RwLock::new(ModelsCache::default())),
         model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
+        endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
         provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
         provider_pin: Arc::new(Mutex::new(None)),
         endpoints_cache: Arc::new(RwLock::new(HashMap::new())),

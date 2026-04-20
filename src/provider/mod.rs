@@ -97,16 +97,8 @@ pub fn summarize_model_catalog_refresh(
             .map(|route| {
                 let estimated_cost = route.estimated_reference_cost_micros();
                 (
-                    (
-                        route.model,
-                        route.provider,
-                        route.api_method,
-                    ),
-                    (
-                        route.available,
-                        route.detail,
-                        estimated_cost,
-                    ),
+                    (route.model, route.provider, route.api_method),
+                    (route.available, route.detail, estimated_cost),
                 )
             })
             .collect();
@@ -116,16 +108,8 @@ pub fn summarize_model_catalog_refresh(
             .map(|route| {
                 let estimated_cost = route.estimated_reference_cost_micros();
                 (
-                    (
-                        route.model,
-                        route.provider,
-                        route.api_method,
-                    ),
-                    (
-                        route.available,
-                        route.detail,
-                        estimated_cost,
-                    ),
+                    (route.model, route.provider, route.api_method),
+                    (route.available, route.detail, estimated_cost),
                 )
             })
             .collect();
@@ -142,7 +126,11 @@ pub fn summarize_model_catalog_refresh(
         .count();
     let routes_changed = after_route_map
         .iter()
-        .filter(|(key, value)| before_route_map.get(*key).is_some_and(|before| before != *value))
+        .filter(|(key, value)| {
+            before_route_map
+                .get(*key)
+                .is_some_and(|before| before != *value)
+        })
         .count();
 
     ModelCatalogRefreshSummary {

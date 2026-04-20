@@ -27,6 +27,11 @@ pub(super) fn cleanup_reload_context_file(session_id: &str) {
 // Mock provider for testing
 struct MockProvider;
 
+#[derive(Clone)]
+struct RefreshSummaryProvider {
+    summary: crate::provider::ModelCatalogRefreshSummary,
+}
+
 #[async_trait::async_trait]
 impl Provider for MockProvider {
     async fn complete(
@@ -48,12 +53,51 @@ impl Provider for MockProvider {
     }
 }
 
+#[async_trait::async_trait]
+impl Provider for RefreshSummaryProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[crate::message::ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        unimplemented!("RefreshSummaryProvider")
+    }
+
+    fn name(&self) -> &str {
+        "refresh-summary"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+
+    async fn refresh_model_catalog(&self) -> Result<crate::provider::ModelCatalogRefreshSummary> {
+        Ok(self.summary.clone())
+    }
+}
+
 fn create_test_app() -> App {
     ensure_test_jcode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::tui::ui::clear_test_render_state_for_tests();
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+    let mut app = App::new(provider, registry);
+    app.queue_mode = false;
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app
+}
+
+fn create_refresh_summary_test_app(summary: crate::provider::ModelCatalogRefreshSummary) -> App {
+    ensure_test_jcode_home_if_unset();
+    clear_persisted_test_ui_state();
+    crate::tui::ui::clear_test_render_state_for_tests();
+
+    let provider: Arc<dyn Provider> = Arc::new(RefreshSummaryProvider { summary });
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new(provider, registry);
@@ -5979,6 +6023,100 @@ fn test_handle_server_event_available_models_updated_replaces_remote_model_catal
     assert_eq!(app.remote_model_options[0].model, "new-model");
     assert_eq!(app.remote_model_options[0].provider, "OpenAI");
     assert!(app.remote_model_options[0].available);
+}
+
+#[test]
+fn test_refresh_model_list_command_shows_summary_and_status_notice() {
+    let mut app = create_refresh_summary_test_app(crate::provider::ModelCatalogRefreshSummary {
+        model_count_before: 12,
+        model_count_after: 15,
+        models_added: 3,
+        models_removed: 0,
+        route_count_before: 20,
+        route_count_after: 29,
+        routes_added: 9,
+        routes_removed: 0,
+        routes_changed: 2,
+    });
+
+    assert!(super::model_context::handle_model_command(
+        &mut app,
+        "/refresh-model-list"
+    ));
+
+    assert_eq!(
+        app.status_notice(),
+        Some("Model list refreshed: +3 models, +9 routes, ~2 changed".to_string())
+    );
+
+    let last = app.display_messages.last().expect("display message");
+    assert_eq!(last.role, "system");
+    assert!(last.content.contains("**Model List Refresh Complete**"));
+    assert!(last.content.contains("Models: 12 → 15  (+3 / -0)"));
+    assert!(last.content.contains("Routes: 20 → 29  (+9 / -0 / ~2)"));
+}
+
+#[test]
+fn test_remote_available_models_updated_after_refresh_shows_summary_and_updates_catalog() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.pending_remote_model_refresh_snapshot = Some((
+        vec!["old-model".to_string()],
+        vec![crate::provider::ModelRoute {
+            model: "old-model".to_string(),
+            provider: "OpenAI".to_string(),
+            api_method: "responses".to_string(),
+            available: true,
+            detail: "old detail".to_string(),
+            cheapness: None,
+        }],
+    ));
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::AvailableModelsUpdated {
+            available_models: vec!["old-model".to_string(), "new-model".to_string()],
+            available_model_routes: vec![
+                crate::provider::ModelRoute {
+                    model: "old-model".to_string(),
+                    provider: "OpenAI".to_string(),
+                    api_method: "responses".to_string(),
+                    available: true,
+                    detail: "new detail".to_string(),
+                    cheapness: None,
+                },
+                crate::provider::ModelRoute {
+                    model: "new-model".to_string(),
+                    provider: "OpenRouter".to_string(),
+                    api_method: "chat".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    cheapness: None,
+                },
+            ],
+        },
+        &mut remote,
+    );
+
+    assert_eq!(
+        app.status_notice(),
+        Some("Model list refreshed: +1 models, +1 routes, ~1 changed".to_string())
+    );
+    assert_eq!(
+        app.remote_available_entries,
+        vec!["old-model".to_string(), "new-model".to_string()]
+    );
+    assert_eq!(app.remote_model_options.len(), 2);
+    assert!(app.pending_remote_model_refresh_snapshot.is_none());
+
+    let last = app.display_messages.last().expect("display message");
+    assert_eq!(last.role, "system");
+    assert!(last.content.contains("**Model List Refresh Complete**"));
+    assert!(last.content.contains("Models: 1 → 2  (+1 / -0)"));
+    assert!(last.content.contains("Routes: 1 → 2  (+1 / -0 / ~1)"));
 }
 
 #[test]

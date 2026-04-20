@@ -877,9 +877,9 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
 
         match result {
             Ok(summary) => {
-                app.push_display_message(DisplayMessage::system(
-                    format_model_refresh_summary(&summary),
-                ));
+                app.push_display_message(DisplayMessage::system(format_model_refresh_summary(
+                    &summary,
+                )));
                 app.set_status_notice(format!(
                     "Model list refreshed: +{} models, +{} routes, ~{} changed",
                     summary.models_added, summary.routes_added, summary.routes_changed
@@ -1176,10 +1176,7 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
 pub(super) fn is_refresh_model_list_command(trimmed: &str) -> bool {
     matches!(
         trimmed,
-        "/refresh-model-list"
-            | "/refresh-models"
-            | "/refresh models"
-            | "/refresh model list"
+        "/refresh-model-list" | "/refresh-models" | "/refresh models" | "/refresh model list"
     )
 }
 

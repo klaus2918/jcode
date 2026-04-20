@@ -905,7 +905,11 @@ impl OpenRouterProvider {
             self.maybe_schedule_endpoint_refresh(model, None, "provider autocomplete cache miss");
             providers = known_providers();
         } else if let Some((_, age)) = load_endpoints_disk_cache_public(model) {
-            self.maybe_schedule_endpoint_refresh(model, Some(age), "provider autocomplete stale cache");
+            self.maybe_schedule_endpoint_refresh(
+                model,
+                Some(age),
+                "provider autocomplete stale cache",
+            );
         }
 
         providers.sort();
@@ -922,7 +926,11 @@ impl OpenRouterProvider {
         // Try endpoints disk cache first (has pricing, uptime, cache info)
         if let Some(endpoints) = load_endpoints_disk_cache(model) {
             if let Some((_, age)) = load_endpoints_disk_cache_public(model) {
-                self.maybe_schedule_endpoint_refresh(model, Some(age), "provider details stale cache");
+                self.maybe_schedule_endpoint_refresh(
+                    model,
+                    Some(age),
+                    "provider details stale cache",
+                );
             }
             return endpoints
                 .iter()

@@ -721,11 +721,12 @@ impl Provider for OpenRouterProvider {
         if self.supports_provider_features {
             let mut targets = Vec::new();
             let mut seen = HashSet::new();
-            let push_target = |targets: &mut Vec<String>, seen: &mut HashSet<String>, model: String| {
-                if !model.trim().is_empty() && seen.insert(model.clone()) {
-                    targets.push(model);
-                }
-            };
+            let push_target =
+                |targets: &mut Vec<String>, seen: &mut HashSet<String>, model: String| {
+                    if !model.trim().is_empty() && seen.insert(model.clone()) {
+                        targets.push(model);
+                    }
+                };
 
             push_target(&mut targets, &mut seen, self.model());
 
