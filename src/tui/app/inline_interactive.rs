@@ -1021,7 +1021,11 @@ impl App {
                     api_method: "openrouter".to_string(),
                     available: auth.openrouter != crate::auth::AuthState::NotConfigured,
                     detail: auto_detail,
-                    cheapness: None,
+                    cheapness: crate::provider::pricing::cheapness_for_route(
+                        model,
+                        "auto",
+                        "openrouter",
+                    ),
                 });
                 if let Some((endpoints, age)) = cached {
                     let age_str = if age < 3600 {
@@ -1032,13 +1036,28 @@ impl App {
                         format!("{}d ago", age / 86400)
                     };
                     for ep in &endpoints {
+                        let mut detail = ep.detail_string();
+                        if !age_str.is_empty() && !detail.is_empty() {
+                            detail = format!("{}, {}", detail, age_str);
+                        } else if !age_str.is_empty() {
+                            detail = age_str.clone();
+                        }
                         routes.push(crate::provider::ModelRoute {
                             model: model.clone(),
                             provider: ep.provider_name.clone(),
                             api_method: "openrouter".to_string(),
                             available: auth.openrouter != crate::auth::AuthState::NotConfigured,
-                            detail: format!("{} ({})", ep.detail_string(), age_str),
-                            cheapness: None,
+                            detail,
+                            cheapness:
+                                crate::provider::pricing::openrouter_pricing_from_model_pricing(
+                                    &ep.pricing,
+                                    crate::provider::RouteCostSource::OpenRouterEndpoint,
+                                    crate::provider::RouteCostConfidence::High,
+                                    Some(format!(
+                                        "OpenRouter endpoint pricing for {}",
+                                        ep.provider_name
+                                    )),
+                                ),
                         });
                     }
                 }
@@ -1058,7 +1077,11 @@ impl App {
                     api_method: "claude-oauth".to_string(),
                     available,
                     detail,
-                    cheapness: None,
+                    cheapness: crate::provider::pricing::cheapness_for_route(
+                        model,
+                        "Anthropic",
+                        "claude-oauth",
+                    ),
                 });
                 added_any = true;
             }
@@ -1094,7 +1117,11 @@ impl App {
                     api_method: "openai-oauth".to_string(),
                     available,
                     detail,
-                    cheapness: None,
+                    cheapness: crate::provider::pricing::cheapness_for_route(
+                        model,
+                        "OpenAI",
+                        "openai-oauth",
+                    ),
                 });
                 added_any = true;
             }
@@ -1112,7 +1139,16 @@ impl App {
                                 api_method: "openrouter".to_string(),
                                 available: true,
                                 detail: ep.detail_string(),
-                                cheapness: None,
+                                cheapness:
+                                    crate::provider::pricing::openrouter_pricing_from_model_pricing(
+                                        &ep.pricing,
+                                        crate::provider::RouteCostSource::OpenRouterEndpoint,
+                                        crate::provider::RouteCostConfidence::High,
+                                        Some(format!(
+                                            "OpenRouter endpoint pricing for {}",
+                                            ep.provider_name
+                                        )),
+                                    ),
                             });
                         }
                         added_any = true;
@@ -1124,7 +1160,13 @@ impl App {
                             api_method: "openrouter".to_string(),
                             available: true,
                             detail: String::new(),
-                            cheapness: None,
+                            cheapness: openrouter_catalog_model.as_deref().and_then(|or_model| {
+                                crate::provider::pricing::cheapness_for_route(
+                                    or_model,
+                                    "Anthropic",
+                                    "openrouter",
+                                )
+                            }),
                         });
                         added_any = true;
                     }
@@ -1135,7 +1177,13 @@ impl App {
                             api_method: "openrouter".to_string(),
                             available: true,
                             detail: String::new(),
-                            cheapness: None,
+                            cheapness: openrouter_catalog_model.as_deref().and_then(|or_model| {
+                                crate::provider::pricing::cheapness_for_route(
+                                    or_model,
+                                    "OpenAI",
+                                    "openrouter",
+                                )
+                            }),
                         });
                         added_any = true;
                     }
@@ -1151,7 +1199,9 @@ impl App {
                     available: auth.copilot == crate::auth::AuthState::Available
                         || Self::remote_model_is_server_copilot_only(model),
                     detail: String::new(),
-                    cheapness: None,
+                    cheapness: crate::provider::pricing::cheapness_for_route(
+                        model, "Copilot", "copilot",
+                    ),
                 });
                 added_any = true;
             }
