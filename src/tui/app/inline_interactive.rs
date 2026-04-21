@@ -1000,8 +1000,17 @@ impl App {
         let auth = crate::auth::AuthStatus::check_fast();
         let mut routes = Vec::new();
         for model in &self.remote_available_entries {
+            if !crate::provider::is_listable_model_name(model) {
+                continue;
+            }
+
+            let openrouter_catalog_model = crate::provider::openrouter_catalog_model_id(model);
+            let openrouter_cached = openrouter_catalog_model
+                .as_deref()
+                .and_then(crate::provider::openrouter::load_endpoints_disk_cache_public);
+
             if model.contains('/') {
-                let cached = crate::provider::openrouter::load_endpoints_disk_cache_public(model);
+                let cached = openrouter_cached;
                 let auto_detail = cached
                     .as_ref()
                     .and_then(|(eps, _)| eps.first().map(|ep| format!("→ {}", ep.provider_name)))
@@ -1088,6 +1097,50 @@ impl App {
                     cheapness: None,
                 });
                 added_any = true;
+            }
+
+            if auth.openrouter != crate::auth::AuthState::NotConfigured {
+                match (
+                    crate::provider::provider_for_model(model),
+                    openrouter_cached.as_ref(),
+                ) {
+                    (_, Some((endpoints, _age))) => {
+                        for ep in endpoints {
+                            routes.push(crate::provider::ModelRoute {
+                                model: model.clone(),
+                                provider: ep.provider_name.clone(),
+                                api_method: "openrouter".to_string(),
+                                available: true,
+                                detail: ep.detail_string(),
+                                cheapness: None,
+                            });
+                        }
+                        added_any = true;
+                    }
+                    (Some("claude"), None) => {
+                        routes.push(crate::provider::ModelRoute {
+                            model: model.clone(),
+                            provider: "Anthropic".to_string(),
+                            api_method: "openrouter".to_string(),
+                            available: true,
+                            detail: String::new(),
+                            cheapness: None,
+                        });
+                        added_any = true;
+                    }
+                    (Some("openai"), None) => {
+                        routes.push(crate::provider::ModelRoute {
+                            model: model.clone(),
+                            provider: "OpenAI".to_string(),
+                            api_method: "openrouter".to_string(),
+                            available: true,
+                            detail: String::new(),
+                            cheapness: None,
+                        });
+                        added_any = true;
+                    }
+                    _ => {}
+                }
             }
 
             if Self::remote_model_should_offer_copilot_route(model) && !model.contains("[1m]") {

@@ -4730,6 +4730,34 @@ fn test_model_command_provider_suggestions_include_auto_for_normalized_bare_open
 }
 
 #[test]
+fn test_remote_fallback_provider_suggestions_normalize_bare_openai_openrouter_routes() {
+    with_temp_jcode_home(|| {
+        let prev_api_key = std::env::var_os("OPENROUTER_API_KEY");
+        crate::env::set_var("OPENROUTER_API_KEY", "test-openrouter-key");
+        crate::auth::AuthStatus::invalidate_cache();
+
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_provider_model = Some("gpt-5.4".to_string());
+        app.remote_available_entries = vec!["gpt-5.4".to_string()];
+        app.remote_model_options.clear();
+
+        let suggestions = app.get_suggestions_for("/model gpt-5.4@");
+        let commands: Vec<&str> = suggestions.iter().map(|(cmd, _)| cmd.as_str()).collect();
+
+        assert!(commands.contains(&"/model openai/gpt-5.4@auto"));
+        assert!(commands.contains(&"/model openai/gpt-5.4@OpenAI"));
+
+        if let Some(prev_api_key) = prev_api_key {
+            crate::env::set_var("OPENROUTER_API_KEY", prev_api_key);
+        } else {
+            crate::env::remove_var("OPENROUTER_API_KEY");
+        }
+        crate::auth::AuthStatus::invalidate_cache();
+    });
+}
+
+#[test]
 fn test_login_command_suggestions_follow_provider_catalog() {
     let app = create_test_app();
     let suggestions = app.get_suggestions_for("/login ");
