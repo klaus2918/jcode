@@ -157,7 +157,7 @@ impl App {
                     "remote_total_tokens_json_bytes": remote_total_tokens_json_bytes,
                 },
                 "skills": {
-                    "available_count": self.skills.list().len(),
+                    "available_count": self.current_skills_snapshot().list().len(),
                 },
                 "mcp": mcp,
             },

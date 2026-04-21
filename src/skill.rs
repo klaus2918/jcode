@@ -27,7 +27,7 @@ struct SkillFrontmatter {
 }
 
 /// Registry of available skills
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SkillRegistry {
     skills: HashMap<String, Skill>,
 }

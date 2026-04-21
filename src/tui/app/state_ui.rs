@@ -675,7 +675,12 @@ impl App {
                 .iter()
                 .map(|(name, _)| name.clone())
                 .collect(),
-            skills: self.skills.list().iter().map(|s| s.name.clone()).collect(),
+            skills: self
+                .current_skills_snapshot()
+                .list()
+                .iter()
+                .map(|s| s.name.clone())
+                .collect(),
             session_id: self.provider_session_id.clone(),
             input_tokens: self.streaming_input_tokens,
             output_tokens: self.streaming_output_tokens,

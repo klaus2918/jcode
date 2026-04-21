@@ -380,7 +380,11 @@ impl crate::tui::TuiState for App {
         if self.is_remote && !self.remote_skills.is_empty() {
             self.remote_skills.clone()
         } else {
-            self.skills.list().iter().map(|s| s.name.clone()).collect()
+            self.current_skills_snapshot()
+                .list()
+                .iter()
+                .map(|s| s.name.clone())
+                .collect()
         }
     }
 

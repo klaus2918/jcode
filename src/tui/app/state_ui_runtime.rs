@@ -2,6 +2,14 @@ use super::*;
 use crate::tui::{is_unexpected_cache_miss, ui};
 
 impl App {
+    pub(super) fn current_skills_snapshot(&self) -> std::sync::Arc<crate::skill::SkillRegistry> {
+        self.registry
+            .skills()
+            .try_read()
+            .map(|skills| std::sync::Arc::new(skills.clone()))
+            .unwrap_or_else(|_| self.skills.clone())
+    }
+
     pub fn cursor_pos(&self) -> usize {
         self.cursor_pos
     }
@@ -22,8 +30,9 @@ impl App {
         self.active_skill.as_deref()
     }
 
-    pub fn available_skills(&self) -> Vec<&str> {
-        self.skills.list().iter().map(|s| s.name.as_str()).collect()
+    pub fn available_skills(&self) -> Vec<String> {
+        let skills = self.current_skills_snapshot();
+        skills.list().iter().map(|s| s.name.clone()).collect()
     }
 
     pub fn queued_count(&self) -> usize {

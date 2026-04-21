@@ -476,7 +476,8 @@ impl Agent {
         println!("Type your message, or 'quit' to exit.");
 
         // Show available skills
-        let skill_list = self.skills.list();
+        let skills = self.current_skills_snapshot();
+        let skill_list = skills.list();
         if !skill_list.is_empty() {
             println!(
                 "Available skills: {}",
@@ -513,7 +514,7 @@ impl Agent {
 
             // Check for skill invocation
             if let Some(skill_name) = SkillRegistry::parse_invocation(input) {
-                if let Some(skill) = self.skills.get(skill_name) {
+                if let Some(skill) = skills.get(skill_name) {
                     println!("Activating skill: {}", skill.name);
                     println!("{}\n", skill.description);
                     self.active_skill = Some(skill_name.to_string());
@@ -522,7 +523,7 @@ impl Agent {
                     println!("Unknown skill: /{}", skill_name);
                     println!(
                         "Available: {}",
-                        self.skills
+                        skills
                             .list()
                             .iter()
                             .map(|s| format!("/{}", s.name))

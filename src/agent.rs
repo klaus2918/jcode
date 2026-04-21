@@ -171,8 +171,16 @@ impl Agent {
         }
     }
 
+    fn current_skills_snapshot(&self) -> Arc<SkillRegistry> {
+        self.registry
+            .skills()
+            .try_read()
+            .map(|skills| Arc::new(skills.clone()))
+            .unwrap_or_else(|_| self.skills.clone())
+    }
+
     pub fn available_skill_names(&self) -> Vec<String> {
-        self.skills
+        self.current_skills_snapshot()
             .list()
             .iter()
             .map(|skill| skill.name.clone())

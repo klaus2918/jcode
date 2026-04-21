@@ -1841,7 +1841,8 @@ impl App {
 
         // Check for skill invocation
         if let Some(skill_name) = SkillRegistry::parse_invocation(&input) {
-            if let Some(skill) = self.skills.get(skill_name) {
+            let skills = self.current_skills_snapshot();
+            if let Some(skill) = skills.get(skill_name) {
                 self.active_skill = Some(skill_name.to_string());
                 self.push_display_message(DisplayMessage {
                     role: "system".to_string(),

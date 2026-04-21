@@ -263,7 +263,8 @@ impl App {
             commands.push(("/server-reload".into(), "Force reload server binary"));
         }
 
-        for skill in self.skills.list() {
+        let skills = self.current_skills_snapshot();
+        for skill in skills.list() {
             commands.push((format!("/{}", skill.name), "Activate skill"));
         }
 

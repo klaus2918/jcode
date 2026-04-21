@@ -1049,12 +1049,12 @@ impl App {
             };
         }
 
+        let skills = self.current_skills_snapshot();
         let skill_prompt = self
             .active_skill
             .as_ref()
-            .and_then(|name| self.skills.get(name).map(|s| s.get_prompt().to_string()));
-        let available_skills: Vec<crate::prompt::SkillInfo> = self
-            .skills
+            .and_then(|name| skills.get(name).map(|s| s.get_prompt().to_string()));
+        let available_skills: Vec<crate::prompt::SkillInfo> = skills
             .list()
             .iter()
             .map(|s| crate::prompt::SkillInfo {

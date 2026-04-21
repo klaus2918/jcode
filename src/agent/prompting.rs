@@ -77,14 +77,14 @@ impl Agent {
             };
         }
 
-        let skill_prompt = self.active_skill.as_ref().and_then(|name| {
-            self.skills
-                .get(name)
-                .map(|skill| skill.get_prompt().to_string())
-        });
+        let skills = self.current_skills_snapshot();
+        let skill_prompt = self
+            .active_skill
+            .as_ref()
+            .and_then(|name| skills.get(name).map(|skill| skill.get_prompt().to_string()));
 
         let available_skills: Vec<crate::prompt::SkillInfo> = self
-            .skills
+            .current_skills_snapshot()
             .list()
             .iter()
             .map(|skill| crate::prompt::SkillInfo {
