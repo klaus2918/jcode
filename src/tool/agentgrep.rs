@@ -2,6 +2,7 @@ use super::{Tool, ToolContext, ToolOutput};
 use crate::message::{ContentBlock, ToolCall};
 use crate::session::Session;
 use crate::storage;
+use crate::{logging, util};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -227,13 +228,16 @@ impl Tool for AgentGrepTool {
 
         let context_path = maybe_write_context_json(&params, &ctx)?;
         let args = build_agentgrep_args(&params, &ctx, context_path.as_deref())?;
+        let rendered_args = render_agentgrep_args(&args);
         let mut command = Command::new(&binary);
         command.args(&args);
         if let Some(ref dir) = ctx.working_dir {
             command.current_dir(dir);
         }
 
+        let started_at = std::time::Instant::now();
         let output = command.output().await?;
+        let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
@@ -245,11 +249,30 @@ impl Tool for AgentGrepTool {
             } else {
                 format!("{}\n\n{}", stdout, stderr)
             };
-            return Err(anyhow::anyhow!(
-                "agentgrep {} failed with exit code {:?}: {}",
+            logging::warn(&format!(
+                "agentgrep failure mode={} elapsed_ms={} binary={} args={} stderr={}",
                 params.mode,
+                elapsed_ms,
+                binary.display(),
+                rendered_args,
+                util::truncate_str(detail.trim(), 600)
+            ));
+            return Err(anyhow::anyhow!(
+                "agentgrep {} failed after {}ms with exit code {:?}: {}",
+                params.mode,
+                elapsed_ms,
                 output.status.code(),
                 detail.trim()
+            ));
+        }
+
+        if elapsed_ms >= 2_000 {
+            logging::warn(&format!(
+                "agentgrep slow mode={} elapsed_ms={} binary={} args={}",
+                params.mode,
+                elapsed_ms,
+                binary.display(),
+                rendered_args
             ));
         }
 
@@ -1438,7 +1461,7 @@ fn push_common_flags(args: &mut Vec<OsString>, params: &AgentGrepInput, ctx: &To
         args.push(OsString::from("--type"));
         args.push(OsString::from(file_type));
     }
-    if let Some(glob) = params.glob.as_deref() {
+    if let Some(glob) = normalized_agentgrep_glob(params.glob.as_deref()) {
         args.push(OsString::from("--glob"));
         args.push(OsString::from(glob));
     }
@@ -1450,6 +1473,30 @@ fn push_common_flags(args: &mut Vec<OsString>, params: &AgentGrepInput, ctx: &To
 
 fn resolve_path_arg(ctx: &ToolContext, path: &str) -> PathBuf {
     ctx.resolve_path(Path::new(path))
+}
+
+fn normalized_agentgrep_glob(glob: Option<&str>) -> Option<&str> {
+    let glob = glob?.trim();
+    if glob.is_empty() {
+        return None;
+    }
+
+    if is_match_all_glob(glob) {
+        return None;
+    }
+
+    Some(glob)
+}
+
+fn is_match_all_glob(glob: &str) -> bool {
+    matches!(glob, "*" | "**" | "**/*" | "./*" | "./**" | "./**/*")
+}
+
+fn render_agentgrep_args(args: &[OsString]) -> String {
+    args.iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn resolve_agentgrep_binary(override_path: Option<&Path>) -> Option<PathBuf> {

@@ -70,6 +70,39 @@ fn build_args_for_grep_includes_scope_flags() {
 }
 
 #[test]
+fn build_args_for_grep_drops_match_all_glob() {
+    let ctx = test_ctx(Path::new("/tmp/root"));
+    let params = AgentGrepInput {
+        mode: "grep".to_string(),
+        query: Some("agentgrep".to_string()),
+        file: None,
+        terms: None,
+        regex: Some(false),
+        path: Some(".".to_string()),
+        glob: Some("**/*".to_string()),
+        file_type: Some("rs".to_string()),
+        hidden: None,
+        no_ignore: None,
+        max_files: None,
+        max_regions: None,
+        full_region: None,
+        debug_plan: None,
+        debug_score: None,
+        paths_only: None,
+    };
+
+    let args = build_agentgrep_args(&params, &ctx, None).unwrap();
+    let rendered: Vec<String> = args
+        .iter()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect();
+    assert_eq!(
+        rendered,
+        vec!["grep", "--type", "rs", "--path", "/tmp/root/.", "agentgrep"]
+    );
+}
+
+#[test]
 fn build_args_for_smart_uses_terms() {
     let ctx = test_ctx(Path::new("/workspace"));
     let params = AgentGrepInput {
