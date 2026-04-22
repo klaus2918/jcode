@@ -207,17 +207,6 @@ fn set_last_chat_scrollbar_visible(visible: bool) {
     }
 }
 
-fn last_chat_scrollbar_visible() -> bool {
-    #[cfg(test)]
-    {
-        return TEST_LAST_CHAT_SCROLLBAR_VISIBLE.with(Cell::get);
-    }
-    #[cfg(not(test))]
-    {
-        LAST_CHAT_SCROLLBAR_VISIBLE.load(Ordering::Relaxed) != 0
-    }
-}
-
 /// Get the total line count from the pinned diff/content pane (set during render).
 pub fn pinned_pane_total_lines() -> usize {
     #[cfg(test)]
@@ -1737,6 +1726,17 @@ fn same_flicker_state_key(a: &FlickerFrameSample, b: &FlickerFrameSample) -> boo
         && a.messages_area_height == b.messages_area_height
 }
 
+fn same_flicker_context_key(a: &FlickerFrameSample, b: &FlickerFrameSample) -> bool {
+    a.session_id == b.session_id
+        && a.display_messages_version == b.display_messages_version
+        && a.diff_mode == b.diff_mode
+        && a.centered == b.centered
+        && a.is_processing == b.is_processing
+        && a.auto_scroll_paused == b.auto_scroll_paused
+        && a.messages_area_width == b.messages_area_width
+        && a.messages_area_height == b.messages_area_height
+}
+
 fn push_flicker_event(history: &mut FlickerFrameHistory, event: FlickerEvent) {
     history.events.push_back(event.clone());
     while history.events.len() > FLICKER_HISTORY_MAX_EVENTS {
@@ -1794,6 +1794,33 @@ fn maybe_record_flicker_event(history: &mut FlickerFrameHistory, current: &Flick
         }
     }
 
+    if len >= 2 {
+        let earlier = history.samples.get(len - 2).cloned();
+        if let Some(earlier) = earlier
+            && same_flicker_context_key(&earlier, current)
+            && same_flicker_context_key(&earlier, &previous)
+            && earlier.visible_hash == current.visible_hash
+            && earlier.content_width == current.content_width
+            && earlier.chat_scrollbar_visible == current.chat_scrollbar_visible
+            && (previous.visible_hash != current.visible_hash
+                || previous.content_width != current.content_width
+                || previous.chat_scrollbar_visible != current.chat_scrollbar_visible)
+        {
+            push_flicker_event(
+                history,
+                FlickerEvent {
+                    timestamp_ms: current.timestamp_ms,
+                    kind: "layout_feedback_oscillation".to_string(),
+                    session_id: current.session_id.clone(),
+                    session_name: current.session_name.clone(),
+                    previous,
+                    current: current.clone(),
+                },
+            );
+            return;
+        }
+    }
+
     if same_flicker_state_key(&previous, current) {
         if previous.chat_scrollbar_visible != current.chat_scrollbar_visible
             || previous.content_width != current.content_width
@@ -1840,6 +1867,70 @@ fn record_flicker_frame_sample(sample: FlickerFrameSample) {
     }
 }
 
+fn finalize_frame_metrics(
+    app: &dyn TuiState,
+    total_start: Instant,
+    prep_elapsed: Duration,
+    draw_elapsed: Duration,
+    messages_ms: Option<f64>,
+) {
+    if profile_enabled() {
+        record_profile(prep_elapsed, draw_elapsed, total_start.elapsed());
+    }
+
+    let total_elapsed = total_start.elapsed();
+    let total_ms = total_elapsed.as_secs_f64() * 1000.0;
+    let perf = frame_perf_stats_snapshot();
+    record_flicker_frame_sample(FlickerFrameSample {
+        timestamp_ms: wall_clock_ms(),
+        session_id: app.current_session_id(),
+        session_name: app.session_display_name(),
+        display_messages_version: app.display_messages_version(),
+        diff_mode: format!("{:?}", app.diff_mode()),
+        centered: app.centered_mode(),
+        is_processing: app.is_processing(),
+        auto_scroll_paused: app.auto_scroll_paused(),
+        scroll: perf.viewport_scroll,
+        visible_end: perf.viewport_visible_end,
+        visible_lines: perf.viewport_visible_lines,
+        total_wrapped_lines: perf.viewport_total_wrapped_lines,
+        prompt_preview_lines: perf.viewport_prompt_preview_lines,
+        messages_area_width: perf.messages_area_width,
+        messages_area_height: perf.messages_area_height,
+        content_width: perf.viewport_content_width,
+        chat_scrollbar_visible: perf.chat_scrollbar_visible,
+        visible_hash: perf.viewport_stability_hash,
+        total_ms,
+        prepare_ms: prep_elapsed.as_secs_f64() * 1000.0,
+        draw_ms: draw_elapsed.as_secs_f64() * 1000.0,
+    });
+
+    let threshold_ms = slow_frame_threshold_ms();
+    if total_ms >= threshold_ms {
+        record_slow_frame_sample(SlowFrameSample {
+            timestamp_ms: wall_clock_ms(),
+            threshold_ms,
+            session_id: app.current_session_id(),
+            session_name: app.session_display_name(),
+            status: format!("{:?}", app.status()),
+            diff_mode: format!("{:?}", app.diff_mode()),
+            centered: app.centered_mode(),
+            is_processing: app.is_processing(),
+            auto_scroll_paused: app.auto_scroll_paused(),
+            display_messages: app.display_messages().len(),
+            display_messages_version: app.display_messages_version(),
+            user_messages: app.display_user_message_count(),
+            queued_messages: app.queued_messages().len(),
+            streaming_text_len: app.streaming_text().len(),
+            prepare_ms: prep_elapsed.as_secs_f64() * 1000.0,
+            draw_ms: draw_elapsed.as_secs_f64() * 1000.0,
+            total_ms,
+            messages_ms,
+            perf,
+        });
+    }
+}
+
 pub(crate) fn debug_flicker_frame_history(limit: usize) -> serde_json::Value {
     let history = flicker_frame_history()
         .lock()
@@ -1874,6 +1965,7 @@ pub(crate) fn debug_flicker_frame_history(limit: usize) -> serde_json::Value {
         "summary": {
             "layout_toggle_events": events.iter().filter(|event| event.kind == "layout_toggle_same_state").count(),
             "layout_oscillation_events": events.iter().filter(|event| event.kind == "layout_oscillation").count(),
+            "layout_feedback_oscillation_events": events.iter().filter(|event| event.kind == "layout_feedback_oscillation").count(),
             "visible_hash_change_events": events.iter().filter(|event| event.kind == "visible_hash_changed_same_state").count(),
         },
         "events": events,
@@ -1885,6 +1977,7 @@ fn flicker_event_label(kind: &str) -> &str {
     match kind {
         "layout_toggle_same_state" => "layout toggle",
         "layout_oscillation" => "layout oscillation",
+        "layout_feedback_oscillation" => "layout feedback oscillation",
         "visible_hash_changed_same_state" => "same-state redraw",
         _ => kind,
     }
@@ -2030,6 +2123,7 @@ pub(crate) fn clear_flicker_frame_history_for_tests() {
     history.samples.clear();
     history.events.clear();
     history.last_log_at_ms = None;
+    set_last_chat_scrollbar_visible(false);
 }
 
 #[derive(Default)]
@@ -2891,6 +2985,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
+    let total_start = Instant::now();
     reset_frame_perf_stats();
 
     clear_copy_viewport_snapshot();
@@ -2905,29 +3000,64 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     if let Some(scroll) = app.changelog_scroll() {
         overlays::draw_changelog_overlay(frame, area, scroll);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
         return;
     }
 
     if let Some(scroll) = app.help_scroll() {
         overlays::draw_help_overlay(frame, area, scroll, app);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
         return;
     }
 
     if let Some(picker_cell) = app.session_picker_overlay() {
         let mut picker = picker_cell.borrow_mut();
         picker.render(frame);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
         return;
     }
 
     if let Some(picker_cell) = app.login_picker_overlay() {
         let picker = picker_cell.borrow();
         picker.render(frame);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
         return;
     }
 
     if let Some(picker_cell) = app.account_picker_overlay() {
         let picker = picker_cell.borrow();
         picker.render(frame);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
         return;
     }
 
@@ -3116,19 +3246,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let inline_ui_gap_height: u16 = if inline_block_height > 0 { 1 } else { 0 };
     let input_height = base_input_height + hint_line_height;
 
-    let total_start = Instant::now();
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("prepare_messages".to_string());
     }
     let prep_start = Instant::now();
     let chat_left_inset = left_aligned_content_inset(chat_area.width, app.centered_mode());
-    let predicted_scrollbar_visible =
-        app.chat_native_scrollbar() && chat_area.width > 1 && last_chat_scrollbar_visible();
-    let initial_prepare_width = chat_area
-        .width
-        .saturating_sub(chat_left_inset)
-        .saturating_sub(if predicted_scrollbar_visible { 1 } else { 0 });
-    let prepared_initial = prepare::prepare_messages(app, initial_prepare_width, chat_area.height);
+    let wide_prepare_width = chat_area.width.saturating_sub(chat_left_inset);
+    let prepared_wide = prepare::prepare_messages(app, wide_prepare_width, chat_area.height);
     let show_donut = super::idle_donut_active(app);
     let donut_height: u16 = if show_donut { 14 } else { 0 };
     let notification_height: u16 = if app.has_notification() { 1 } else { 0 };
@@ -3141,27 +3265,26 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         + donut_height; // status + queued + notification + inline UI + gap + input + donut
     let available_height = chat_area.height;
 
-    let initial_content_height = prepared_initial.total_wrapped_lines().max(1) as u16;
-    let chat_scrollbar_visible = app.chat_native_scrollbar()
+    let initial_content_height = prepared_wide.total_wrapped_lines().max(1) as u16;
+    let wide_overflows = app.chat_native_scrollbar()
         && chat_area.width > 1
         && initial_content_height + fixed_height > available_height;
-    let prepared = if chat_scrollbar_visible == predicted_scrollbar_visible {
-        prepared_initial
-    } else if chat_scrollbar_visible {
-        prepare::prepare_messages(
-            app,
-            chat_area
-                .width
-                .saturating_sub(chat_left_inset)
-                .saturating_sub(1),
-            chat_area.height,
-        )
+    let (prepared, chat_scrollbar_visible) = if !wide_overflows {
+        (prepared_wide, false)
     } else {
-        prepare::prepare_messages(
-            app,
-            chat_area.width.saturating_sub(chat_left_inset),
-            chat_area.height,
-        )
+        let narrow_prepare_width = wide_prepare_width.saturating_sub(1);
+        let prepared_narrow =
+            prepare::prepare_messages(app, narrow_prepare_width, chat_area.height);
+        let narrow_content_height = prepared_narrow.total_wrapped_lines().max(1) as u16;
+        let narrow_overflows = narrow_content_height + fixed_height > available_height;
+        if narrow_overflows {
+            (prepared_narrow, true)
+        } else {
+            // Reserving a scrollbar column changed the wrapped content enough to make it fit.
+            // Prefer the wide layout without the native scrollbar so the UI does not oscillate
+            // between two self-contradictory states across consecutive frames.
+            (prepared_wide, false)
+        }
     };
     set_last_chat_scrollbar_visible(chat_scrollbar_visible);
     if let Some(ref mut capture) = debug_capture {
@@ -3499,61 +3622,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         visual_debug::record_frame(capture.build());
     }
 
-    if profile_enabled() {
-        let total_draw = draw_start.elapsed();
-        record_profile(prep_elapsed, total_draw, total_start.elapsed());
-    }
-
-    let total_elapsed = total_start.elapsed();
-    let total_ms = total_elapsed.as_secs_f64() * 1000.0;
-    let perf = frame_perf_stats_snapshot();
-    record_flicker_frame_sample(FlickerFrameSample {
-        timestamp_ms: wall_clock_ms(),
-        session_id: app.current_session_id(),
-        session_name: app.session_display_name(),
-        display_messages_version: app.display_messages_version(),
-        diff_mode: format!("{:?}", app.diff_mode()),
-        centered: app.centered_mode(),
-        is_processing: app.is_processing(),
-        auto_scroll_paused: app.auto_scroll_paused(),
-        scroll: perf.viewport_scroll,
-        visible_end: perf.viewport_visible_end,
-        visible_lines: perf.viewport_visible_lines,
-        total_wrapped_lines: perf.viewport_total_wrapped_lines,
-        prompt_preview_lines: perf.viewport_prompt_preview_lines,
-        messages_area_width: perf.messages_area_width,
-        messages_area_height: perf.messages_area_height,
-        content_width: perf.viewport_content_width,
-        chat_scrollbar_visible: perf.chat_scrollbar_visible,
-        visible_hash: perf.viewport_stability_hash,
-        total_ms,
-        prepare_ms: prep_elapsed.as_secs_f64() * 1000.0,
-        draw_ms: draw_start.elapsed().as_secs_f64() * 1000.0,
-    });
-    let threshold_ms = slow_frame_threshold_ms();
-    if total_ms >= threshold_ms {
-        record_slow_frame_sample(SlowFrameSample {
-            timestamp_ms: wall_clock_ms(),
-            threshold_ms,
-            session_id: app.current_session_id(),
-            session_name: app.session_display_name(),
-            status: format!("{:?}", app.status()),
-            diff_mode: format!("{:?}", app.diff_mode()),
-            centered: app.centered_mode(),
-            is_processing: app.is_processing(),
-            auto_scroll_paused: app.auto_scroll_paused(),
-            display_messages: app.display_messages().len(),
-            display_messages_version: app.display_messages_version(),
-            user_messages: app.display_user_message_count(),
-            queued_messages: app.queued_messages().len(),
-            streaming_text_len: app.streaming_text().len(),
-            prepare_ms: prep_elapsed.as_secs_f64() * 1000.0,
-            draw_ms: draw_start.elapsed().as_secs_f64() * 1000.0,
-            total_ms,
-            messages_ms: Some(messages_draw.as_secs_f64() * 1000.0),
-            perf,
-        });
-    }
+    finalize_frame_metrics(
+        app,
+        total_start,
+        prep_elapsed,
+        draw_start.elapsed(),
+        Some(messages_draw.as_secs_f64() * 1000.0),
+    );
 }
 
 pub(crate) fn split_native_scrollbar_area(area: Rect, enabled: bool) -> (Rect, Option<Rect>) {

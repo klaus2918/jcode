@@ -8,6 +8,34 @@ use crate::auth::{AuthState, AuthStatus};
 use crate::tui::color_support::rgb;
 use crate::tui::connection_type_icon;
 use ratatui::prelude::*;
+#[cfg(test)]
+use std::sync::OnceLock;
+
+#[cfg(test)]
+fn unseen_changelog_entries_override() -> &'static std::sync::Mutex<Option<Vec<String>>> {
+    static OVERRIDE: OnceLock<std::sync::Mutex<Option<Vec<String>>>> = OnceLock::new();
+    OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn unseen_changelog_entries() -> Vec<String> {
+    #[cfg(test)]
+    {
+        if let Ok(guard) = unseen_changelog_entries_override().lock()
+            && let Some(entries) = guard.clone()
+        {
+            return entries;
+        }
+    }
+    get_unseen_changelog_entries().clone()
+}
+
+#[cfg(test)]
+pub(crate) fn set_unseen_changelog_entries_override_for_tests(entries: Option<Vec<String>>) {
+    let mut guard = unseen_changelog_entries_override()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = entries;
+}
 
 pub(crate) fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
@@ -539,7 +567,7 @@ pub(crate) fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'st
         );
     }
 
-    let new_entries = get_unseen_changelog_entries();
+    let new_entries = unseen_changelog_entries();
     if !new_entries.is_empty() && w > 20 {
         const MAX_LINES: usize = 8;
         let available_width = w.saturating_sub(2);

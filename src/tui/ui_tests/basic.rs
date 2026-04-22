@@ -179,6 +179,113 @@ fn test_slow_frame_history_retains_recent_samples() {
     assert_eq!(payload["samples"][0]["perf"]["body_misses"], 1);
 }
 
+fn buffer_to_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+    let buf = terminal.backend().buffer();
+    let width = buf.area.width as usize;
+    let height = buf.area.height as usize;
+    let mut lines = Vec::with_capacity(height);
+    for y in 0..height {
+        let mut line = String::with_capacity(width);
+        for x in 0..width {
+            line.push_str(buf[(x as u16, y as u16)].symbol());
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+#[test]
+fn test_changelog_overlay_repeated_renders_are_stable() {
+    let _lock = viewport_snapshot_test_lock();
+    let state = TestState {
+        changelog_scroll: Some(0),
+        chat_native_scrollbar: true,
+        ..Default::default()
+    };
+    let sizes = [
+        (24_u16, 10_u16),
+        (28, 12),
+        (32, 14),
+        (36, 16),
+        (40, 18),
+        (48, 20),
+        (60, 20),
+        (72, 24),
+    ];
+
+    for (width, height) in sizes {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+        let mut frames = Vec::new();
+        clear_flicker_frame_history_for_tests();
+        for _ in 0..3 {
+            terminal
+                .draw(|frame| crate::tui::ui::draw(frame, &state))
+                .expect("overlay draw should succeed");
+            frames.push(buffer_to_text(&terminal));
+        }
+        assert!(
+            frames.windows(2).all(|pair| pair[0] == pair[1]),
+            "expected stable changelog overlay renders at {width}x{height}, got differing frames: {frames:#?}"
+        );
+
+        let payload = debug_flicker_frame_history(8);
+        assert_eq!(
+            payload["buffered_samples"], 3,
+            "expected overlay frames to be recorded for flicker diagnostics at {width}x{height}"
+        );
+    }
+}
+
+#[test]
+fn test_updates_header_repeated_renders_stay_stable_near_scrollbar_threshold() {
+    let _lock = viewport_snapshot_test_lock();
+    super::header::set_unseen_changelog_entries_override_for_tests(Some(vec![
+        "Update one".to_string(),
+        "Update two".to_string(),
+        "Update three".to_string(),
+        "Update four".to_string(),
+        "Update five".to_string(),
+    ]));
+
+    let state = TestState {
+        display_messages: vec![DisplayMessage::assistant("ok")],
+        messages_version: 1,
+        chat_native_scrollbar: true,
+        ..Default::default()
+    };
+
+    let mut unstable = Vec::new();
+    for width in 22_u16..=28 {
+        for height in 10_u16..=18 {
+            let backend = ratatui::backend::TestBackend::new(width, height);
+            let mut terminal =
+                ratatui::Terminal::new(backend).expect("failed to create test terminal");
+            let mut frames = Vec::new();
+            clear_flicker_frame_history_for_tests();
+            for _ in 0..4 {
+                terminal
+                    .draw(|frame| crate::tui::ui::draw(frame, &state))
+                    .expect("header draw should succeed");
+                frames.push(buffer_to_text(&terminal));
+            }
+            if frames.windows(2).any(|pair| pair[0] != pair[1]) {
+                unstable.push((width, height, frames));
+            }
+        }
+    }
+
+    super::header::set_unseen_changelog_entries_override_for_tests(None);
+
+    assert!(
+        unstable.is_empty(),
+        "expected updates header to render stably near scrollbar threshold, found unstable sizes: {unstable:#?}"
+    );
+}
+
 #[test]
 fn test_flicker_frame_history_detects_same_state_hash_change() {
     clear_flicker_frame_history_for_tests();
@@ -281,6 +388,97 @@ fn test_flicker_frame_history_detects_layout_oscillation() {
             .iter()
             .any(|event| event["kind"] == "layout_oscillation"),
         "expected at least one layout_oscillation event"
+    );
+}
+
+#[test]
+fn test_flicker_frame_history_detects_layout_feedback_oscillation() {
+    clear_flicker_frame_history_for_tests();
+    for sample in [
+        FlickerFrameSample {
+            timestamp_ms: 30,
+            session_id: Some("session_test".to_string()),
+            session_name: Some("test".to_string()),
+            display_messages_version: 11,
+            diff_mode: "Off".to_string(),
+            centered: false,
+            is_processing: false,
+            auto_scroll_paused: false,
+            scroll: 0,
+            visible_end: 10,
+            visible_lines: 10,
+            total_wrapped_lines: 10,
+            prompt_preview_lines: 0,
+            messages_area_width: 22,
+            messages_area_height: 12,
+            content_width: 21,
+            chat_scrollbar_visible: false,
+            visible_hash: 111,
+            total_ms: 4.0,
+            prepare_ms: 1.0,
+            draw_ms: 1.0,
+        },
+        FlickerFrameSample {
+            timestamp_ms: 31,
+            session_id: Some("session_test".to_string()),
+            session_name: Some("test".to_string()),
+            display_messages_version: 11,
+            diff_mode: "Off".to_string(),
+            centered: false,
+            is_processing: false,
+            auto_scroll_paused: false,
+            scroll: 7,
+            visible_end: 17,
+            visible_lines: 10,
+            total_wrapped_lines: 17,
+            prompt_preview_lines: 1,
+            messages_area_width: 22,
+            messages_area_height: 12,
+            content_width: 20,
+            chat_scrollbar_visible: true,
+            visible_hash: 222,
+            total_ms: 4.2,
+            prepare_ms: 1.1,
+            draw_ms: 1.0,
+        },
+        FlickerFrameSample {
+            timestamp_ms: 32,
+            session_id: Some("session_test".to_string()),
+            session_name: Some("test".to_string()),
+            display_messages_version: 11,
+            diff_mode: "Off".to_string(),
+            centered: false,
+            is_processing: false,
+            auto_scroll_paused: false,
+            scroll: 0,
+            visible_end: 10,
+            visible_lines: 10,
+            total_wrapped_lines: 10,
+            prompt_preview_lines: 0,
+            messages_area_width: 22,
+            messages_area_height: 12,
+            content_width: 21,
+            chat_scrollbar_visible: false,
+            visible_hash: 111,
+            total_ms: 4.1,
+            prepare_ms: 1.0,
+            draw_ms: 1.0,
+        },
+    ] {
+        record_flicker_frame_sample(sample);
+    }
+
+    let payload = debug_flicker_frame_history(8);
+    assert_eq!(payload["buffered_samples"], 3);
+    assert_eq!(payload["summary"]["layout_feedback_oscillation_events"], 1);
+    let events = payload["events"]
+        .as_array()
+        .expect("events should be an array");
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "layout_feedback_oscillation"),
+        "expected at least one layout_feedback_oscillation event"
     );
 }
 

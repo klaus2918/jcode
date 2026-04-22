@@ -130,6 +130,9 @@ struct TestState {
     remote_startup_phase_active: bool,
     inline_view_state: Option<crate::tui::InlineViewState>,
     inline_interactive_state: Option<crate::tui::InlineInteractiveState>,
+    changelog_scroll: Option<usize>,
+    help_scroll: Option<usize>,
+    chat_native_scrollbar: bool,
 }
 
 impl crate::tui::TuiState for TestState {
@@ -374,10 +377,10 @@ impl crate::tui::TuiState for TestState {
         self.inline_view_state.as_ref()
     }
     fn changelog_scroll(&self) -> Option<usize> {
-        None
+        self.changelog_scroll
     }
     fn help_scroll(&self) -> Option<usize> {
-        None
+        self.help_scroll
     }
     fn session_picker_overlay(&self) -> Option<&std::cell::RefCell<session_picker::SessionPicker>> {
         None
@@ -422,7 +425,7 @@ impl crate::tui::TuiState for TestState {
         None
     }
     fn chat_native_scrollbar(&self) -> bool {
-        false
+        self.chat_native_scrollbar
     }
     fn side_panel_native_scrollbar(&self) -> bool {
         false
