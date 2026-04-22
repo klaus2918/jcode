@@ -509,7 +509,7 @@ impl App {
         }
 
         self.push_display_message(DisplayMessage::system(format!(
-            "👉 Todos remain. Auto-poking again with {} incomplete todo{}...",
+            "👉 Todos remain. Auto-poking again with {} incomplete todo{}... You can turn poke off with `/poke off`.",
             incomplete.len(),
             if incomplete.len() == 1 { "" } else { "s" },
         )));
@@ -721,6 +721,10 @@ pub(super) fn handle_alt_key(app: &mut App, code: KeyCode) -> bool {
                 "Info widget: OFF"
             };
             app.set_status_notice(status);
+            true
+        }
+        KeyCode::Char('p') => {
+            super::commands::toggle_auto_poke_hotkey_local(app);
             true
         }
         KeyCode::Char('v') => {
@@ -1689,6 +1693,7 @@ impl App {
             }
             "poke" => {
                 "`/poke [on|off|status]`\nPoke the model to resume when it has stopped with incomplete todos.\n\
+                Auto-poke now starts enabled by default, and `Alt+P` toggles it on/off.\n\
                 `/poke` or `/poke on` arms auto-poke and immediately pokes if work remains.\n\
                 `/poke off` disarms auto-poke and clears any queued poke follow-ups.\n\
                 `/poke status` shows whether auto-poke is currently armed.\n\

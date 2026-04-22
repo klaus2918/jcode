@@ -5237,11 +5237,10 @@ fn test_poke_arms_auto_poke_until_todos_are_done() {
 
         assert!(app.auto_poke_incomplete_todos);
         assert!(app.pending_turn);
-        assert!(
-            app.display_messages()
-                .iter()
-                .any(|msg| msg.content.contains("Poking model with 1 incomplete todo"))
-        );
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content.contains("Poking model with 1 incomplete todo")
+                && msg.content.contains("/poke off")
+        }));
     });
 }
 
@@ -5268,7 +5267,7 @@ fn test_poke_status_reports_current_state() {
         ));
         assert!(app.display_messages().iter().any(|msg| {
             msg.content
-                .contains("Auto-poke: **OFF**. 1 incomplete todo.")
+                .contains("Auto-poke: **ON**. 1 incomplete todo.")
         }));
 
         app.auto_poke_incomplete_todos = true;
@@ -5395,6 +5394,7 @@ fn test_poke_queues_when_turn_is_in_progress() {
         assert_eq!(app.queued_messages().len(), 1);
         assert!(app.queued_messages()[0].contains("Your todo list has 2 incomplete items"));
         assert!(app.queued_messages()[0].contains("Pick up the newly discovered task"));
+        assert!(app.queued_messages()[0].contains("/poke off"));
     });
 }
 
@@ -6823,6 +6823,34 @@ fn test_ctrl_tab_toggles_queue_mode() {
     app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL)
         .unwrap();
     assert!(!app.queue_mode);
+}
+
+#[test]
+fn test_auto_poke_starts_enabled_by_default() {
+    let app = create_test_app();
+
+    assert!(app.auto_poke_incomplete_todos);
+}
+
+#[test]
+fn test_alt_p_toggles_auto_poke_locally() {
+    let mut app = create_test_app();
+
+    assert!(app.auto_poke_incomplete_todos);
+
+    app.handle_key(KeyCode::Char('p'), KeyModifiers::ALT)
+        .unwrap();
+    assert!(!app.auto_poke_incomplete_todos);
+    assert_eq!(app.status_notice(), Some("Poke: OFF".to_string()));
+
+    app.handle_key(KeyCode::Char('p'), KeyModifiers::ALT)
+        .unwrap();
+    assert!(app.auto_poke_incomplete_todos);
+    assert_eq!(app.status_notice(), Some("Poke: ON".to_string()));
+    assert!(app.display_messages().iter().any(|msg| {
+        msg.content
+            .contains("Auto-poke enabled. No incomplete todos found right now.")
+    }));
 }
 
 #[test]
@@ -9342,6 +9370,34 @@ fn test_remote_poke_queues_when_turn_is_in_progress() {
         assert_eq!(app.queued_messages().len(), 1);
         assert!(app.queued_messages()[0].contains("Your todo list has 2 incomplete items"));
         assert!(app.queued_messages()[0].contains("Handle the newly discovered follow-up"));
+        assert!(app.queued_messages()[0].contains("/poke off"));
+    });
+}
+
+#[test]
+fn test_remote_alt_p_toggles_auto_poke() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.is_remote = true;
+        assert!(app.auto_poke_incomplete_todos);
+
+        rt.block_on(app.handle_remote_key(KeyCode::Char('p'), KeyModifiers::ALT, &mut remote))
+            .expect("Alt+P should disable poke remotely");
+        assert!(!app.auto_poke_incomplete_todos);
+        assert_eq!(app.status_notice(), Some("Poke: OFF".to_string()));
+
+        rt.block_on(app.handle_remote_key(KeyCode::Char('p'), KeyModifiers::ALT, &mut remote))
+            .expect("Alt+P should enable poke remotely");
+        assert!(app.auto_poke_incomplete_todos);
+        assert_eq!(app.status_notice(), Some("Poke: ON".to_string()));
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content
+                .contains("Auto-poke enabled. No incomplete todos found right now.")
+        }));
     });
 }
 

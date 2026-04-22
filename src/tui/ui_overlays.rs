@@ -384,6 +384,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     ));
     lines.push(key_entry("Alt+Y", "Toggle chat selection/copy mode"));
     lines.push(key_entry("Alt+S", "Toggle typing scroll lock"));
+    lines.push(key_entry("Alt+P", "Toggle auto-poke for incomplete todos"));
     lines.push(key_entry("Alt+Left / Right", "Cycle reasoning effort"));
     if let Some(label) = app.dictation_key_label() {
         lines.push(key_entry(&label, "Run configured dictation"));

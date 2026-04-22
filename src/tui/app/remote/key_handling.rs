@@ -162,6 +162,41 @@ async fn handle_remote_key_internal(
         app.toggle_side_panel();
         return Ok(());
     }
+    if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('p')) {
+        if app.auto_poke_incomplete_todos {
+            let cleared = app_mod::commands::disable_auto_poke(app);
+            app.set_status_notice("Poke: OFF");
+            app.push_display_message(DisplayMessage::system(
+                app_mod::commands::poke_disabled_message(cleared),
+            ));
+        } else {
+            match app_mod::commands::activate_auto_poke(app) {
+                app_mod::commands::PokeActivation::EnabledNoIncomplete => {
+                    app.push_display_message(DisplayMessage::system(
+                        app_mod::commands::poke_enabled_without_incomplete_message(),
+                    ));
+                }
+                app_mod::commands::PokeActivation::Queued => {
+                    app.push_display_message(DisplayMessage::system(
+                        app_mod::commands::poke_queued_display_message(),
+                    ));
+                }
+                app_mod::commands::PokeActivation::SendNow {
+                    incomplete_count,
+                    poke_msg,
+                } => {
+                    app.push_display_message(DisplayMessage::system(
+                        app_mod::commands::poke_triggered_display_message(incomplete_count),
+                    ));
+
+                    let _ =
+                        begin_remote_send(app, remote, poke_msg, vec![], true, None, true, 0).await;
+                    app.visible_turn_started = Some(Instant::now());
+                }
+            }
+        }
+        return Ok(());
+    }
     if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('t')) {
         app.toggle_diagram_pane_position();
         return Ok(());
@@ -1495,60 +1530,47 @@ async fn handle_remote_key_internal(
                         Ok(app_mod::commands::PokeCommand::Off) => {
                             let cleared = app_mod::commands::disable_auto_poke(app);
                             app.set_status_notice("Poke: OFF");
-                            app.push_display_message(DisplayMessage::system(format!(
-                                "Auto-poke disabled.{}",
-                                if cleared == 0 {
-                                    String::new()
-                                } else {
-                                    format!(
-                                        " Cleared {} queued poke follow-up{}.",
-                                        cleared,
-                                        if cleared == 1 { "" } else { "s" }
-                                    )
-                                }
-                            )));
+                            app.push_display_message(DisplayMessage::system(
+                                app_mod::commands::poke_disabled_message(cleared),
+                            ));
                         }
                         Ok(app_mod::commands::PokeCommand::Trigger)
                         | Ok(app_mod::commands::PokeCommand::On) => {
-                            let incomplete = app_mod::commands::incomplete_poke_todos(app);
-
-                            if incomplete.is_empty() {
-                                app.auto_poke_incomplete_todos = false;
-                                app.push_display_message(DisplayMessage::system(
-                                    "No incomplete todos found. Nothing to poke about.".to_string(),
-                                ));
-                                return Ok(());
-                            }
-
-                            app.auto_poke_incomplete_todos = true;
-                            app.set_status_notice("Poke: ON");
-
-                            if app.is_processing {
-                                app.set_status_notice("Poke queued after current turn");
-                                app.push_display_message(DisplayMessage::system(
-                                    "👉 Queued /poke for after the current turn. Incomplete todos will be re-checked then."
-                                        .to_string(),
-                                ));
-                            } else {
-                                let poke_msg = app_mod::commands::build_poke_message(&incomplete);
-                                app.push_display_message(DisplayMessage::system(format!(
-                                    "👉 Poking model with {} incomplete todo{}...",
-                                    incomplete.len(),
-                                    if incomplete.len() == 1 { "" } else { "s" },
-                                )));
-
-                                let _ = begin_remote_send(
-                                    app,
-                                    remote,
+                            match app_mod::commands::activate_auto_poke(app) {
+                                app_mod::commands::PokeActivation::EnabledNoIncomplete => {
+                                    app.push_display_message(DisplayMessage::system(
+                                        app_mod::commands::poke_enabled_without_incomplete_message(
+                                        ),
+                                    ));
+                                }
+                                app_mod::commands::PokeActivation::Queued => {
+                                    app.push_display_message(DisplayMessage::system(
+                                        app_mod::commands::poke_queued_display_message(),
+                                    ));
+                                }
+                                app_mod::commands::PokeActivation::SendNow {
+                                    incomplete_count,
                                     poke_msg,
-                                    vec![],
-                                    true,
-                                    None,
-                                    true,
-                                    0,
-                                )
-                                .await;
-                                app.visible_turn_started = Some(Instant::now());
+                                } => {
+                                    app.push_display_message(DisplayMessage::system(
+                                        app_mod::commands::poke_triggered_display_message(
+                                            incomplete_count,
+                                        ),
+                                    ));
+
+                                    let _ = begin_remote_send(
+                                        app,
+                                        remote,
+                                        poke_msg,
+                                        vec![],
+                                        true,
+                                        None,
+                                        true,
+                                        0,
+                                    )
+                                    .await;
+                                    app.visible_turn_started = Some(Instant::now());
+                                }
                             }
                         }
                     }
