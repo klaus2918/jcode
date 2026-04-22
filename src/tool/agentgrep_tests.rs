@@ -133,7 +133,9 @@ fn build_smart_args_falls_back_to_query_terms() {
     let ctx = test_ctx(Path::new("/workspace"));
     let params = AgentGrepInput {
         mode: "smart".to_string(),
-        query: Some("subject:auth_status relation:rendered path:src/tui state:current".to_string()),
+        query: Some(
+            "subject:auth_status relation:rendered path:src/tui support:current".to_string(),
+        ),
         file: None,
         terms: None,
         regex: None,
@@ -157,7 +159,7 @@ fn build_smart_args_falls_back_to_query_terms() {
             "subject:auth_status",
             "relation:rendered",
             "path:src/tui",
-            "state:current"
+            "support:current"
         ]
     );
 }
