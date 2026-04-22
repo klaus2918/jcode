@@ -922,6 +922,53 @@ fn test_kitty_viewport_state_reuses_transmit_for_scroll_only_updates() {
 }
 
 #[test]
+fn test_kitty_viewport_state_rebuilds_when_font_size_changes() {
+    let _lock = mermaid_render_test_lock();
+    clear_cache().ok();
+    if let Ok(mut debug) = MERMAID_DEBUG.lock() {
+        debug.stats = MermaidDebugStats::default();
+    }
+
+    let hash = 0x00fa_ce00_dead_beef;
+    let path = PathBuf::from("/tmp/test-kitty-font-size.png");
+    let source = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        640,
+        480,
+        image::Rgba([80, 140, 220, 255]),
+    ));
+
+    let (id_small, cols_small, rows_small) =
+        ensure_kitty_viewport_state(hash, &path, &source, 100, (8, 16)).expect("font 8x16");
+    let rebuilds_small = MERMAID_DEBUG
+        .lock()
+        .unwrap()
+        .stats
+        .viewport_protocol_rebuilds;
+
+    let (id_large, cols_large, rows_large) =
+        ensure_kitty_viewport_state(hash, &path, &source, 100, (16, 32)).expect("font 16x32");
+    let rebuilds_large = MERMAID_DEBUG
+        .lock()
+        .unwrap()
+        .stats
+        .viewport_protocol_rebuilds;
+
+    assert_eq!(
+        id_small, id_large,
+        "font-size changes should reuse kitty image id"
+    );
+    assert!(
+        cols_large < cols_small,
+        "larger font should reduce column span"
+    );
+    assert!(
+        rows_large < rows_small,
+        "larger font should reduce row span"
+    );
+    assert_eq!(rebuilds_large, rebuilds_small + 1);
+}
+
+#[test]
 fn test_kitty_viewport_state_rebuilds_when_zoom_changes() {
     let _lock = mermaid_render_test_lock();
     clear_cache().ok();

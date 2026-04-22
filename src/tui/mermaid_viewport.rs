@@ -106,6 +106,7 @@ pub(super) fn ensure_kitty_viewport_state(
     if let Some(state) = cache.get_mut(hash)
         && state.source_path == source_path
         && state.zoom_percent == zoom_percent
+        && state.font_size == font_size
     {
         return Some((state.unique_id, state.full_cols, state.full_rows));
     }
@@ -126,6 +127,7 @@ pub(super) fn ensure_kitty_viewport_state(
         KittyViewportState {
             source_path: source_path.to_path_buf(),
             zoom_percent,
+            font_size,
             unique_id,
             full_cols,
             full_rows,

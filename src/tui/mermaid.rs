@@ -302,6 +302,7 @@ struct SourceImageCache {
 struct KittyViewportState {
     source_path: PathBuf,
     zoom_percent: u8,
+    font_size: (u16, u16),
     unique_id: u32,
     full_cols: u16,
     full_rows: u16,
