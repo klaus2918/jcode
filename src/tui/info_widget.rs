@@ -254,6 +254,8 @@ pub struct BackgroundInfo {
     pub running_count: usize,
     /// Names of running tasks (e.g., "bash", "task")
     pub running_tasks: Vec<String>,
+    /// Compact summary of the most recent task progress
+    pub progress_summary: Option<String>,
     /// Memory agent status
     pub memory_agent_active: bool,
     /// Memory agent turn count

@@ -671,6 +671,7 @@ fn background_widget_and_compact_share_summary_format() {
     let info = BackgroundInfo {
         running_count: 2,
         running_tasks: vec!["bash".to_string(), "cargo".to_string()],
+        progress_summary: Some("bash 42% Building".to_string()),
         memory_agent_active: true,
         memory_agent_turns: 4,
     };
@@ -688,6 +689,10 @@ fn background_widget_and_compact_share_summary_format() {
     assert_eq!(widget_text, compact_text);
     assert!(widget_text.contains("mem:4"), "got: {widget_text}");
     assert!(widget_text.contains("bg:bash,cargo"), "got: {widget_text}");
+    assert!(
+        widget_text.contains("bash 42% Building"),
+        "got: {widget_text}"
+    );
 }
 
 #[test]

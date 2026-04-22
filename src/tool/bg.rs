@@ -97,10 +97,10 @@ impl Tool for BgTool {
 
                 let mut output = String::from("Background Tasks:\n\n");
                 output.push_str(&format!(
-                    "{:<12} {:<10} {:<12} {:<10} {}\n",
-                    "TASK_ID", "TOOL", "STATUS", "DURATION", "SESSION"
+                    "{:<12} {:<10} {:<12} {:<10} {:<28} {}\n",
+                    "TASK_ID", "TOOL", "STATUS", "DURATION", "PROGRESS", "SESSION"
                 ));
-                output.push_str(&"-".repeat(60));
+                output.push_str(&"-".repeat(92));
                 output.push('\n');
 
                 for task in tasks {
@@ -114,12 +114,18 @@ impl Tool for BgTool {
                         BackgroundTaskStatus::Superseded => "superseded",
                         BackgroundTaskStatus::Failed => "failed",
                     };
+                    let progress = task
+                        .progress
+                        .as_ref()
+                        .map(|progress| crate::background::format_progress_display(progress, 10))
+                        .unwrap_or_else(|| "-".to_string());
                     output.push_str(&format!(
-                        "{:<12} {:<10} {:<12} {:<10} {}\n",
+                        "{:<12} {:<10} {:<12} {:<10} {:<28} {}\n",
                         task.task_id,
                         task.tool_name,
                         status,
                         duration,
+                        crate::util::truncate_str(&progress, 28),
                         &task.session_id[..8.min(task.session_id.len())]
                     ));
                 }
@@ -163,6 +169,14 @@ impl Tool for BgTool {
                         if let Some(exit_code) = task.exit_code {
                             output.push_str(&format!("Exit code: {}\n", exit_code));
                         }
+                        if let Some(progress) = task.progress.as_ref() {
+                            output.push_str(&format!(
+                                "Progress: {}\n",
+                                crate::background::format_progress_display(progress, 18)
+                            ));
+                            output
+                                .push_str(&format!("Progress updated: {}\n", progress.updated_at));
+                        }
                         output.push_str(&format!("Notify: {}\n", task.notify));
                         output.push_str(&format!("Wake: {}\n", task.wake));
                         if let Some(error) = task.error.clone() {
@@ -186,6 +200,7 @@ impl Tool for BgTool {
                                 "task_id": task.task_id,
                                 "status": status_str,
                                 "exit_code": task.exit_code,
+                                "progress": task.progress,
                             })))
                     }
                     None => Err(anyhow::anyhow!("Task not found: {}", task_id)),

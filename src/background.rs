@@ -3,7 +3,10 @@
 //! Allows tools to run in the background and notify the agent when complete.
 //! Uses file-based storage for crash resilience + event channel for real-time notifications.
 
-use crate::bus::{BackgroundTaskCompleted, BackgroundTaskStatus, Bus, BusEvent};
+use crate::bus::{
+    BackgroundTaskCompleted, BackgroundTaskProgress, BackgroundTaskProgressEvent,
+    BackgroundTaskProgressKind, BackgroundTaskProgressSource, BackgroundTaskStatus, Bus, BusEvent,
+};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -43,6 +46,8 @@ pub struct TaskStatusFile {
     pub notify: bool,
     #[serde(default)]
     pub wake: bool,
+    #[serde(default)]
+    pub progress: Option<BackgroundTaskProgress>,
 }
 
 fn default_true() -> bool {
@@ -51,6 +56,65 @@ fn default_true() -> bool {
 
 fn normalize_delivery(notify: bool, wake: bool) -> (bool, bool) {
     (notify || wake, wake)
+}
+
+pub fn format_progress_summary(progress: &BackgroundTaskProgress) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(percent) = progress.percent {
+        parts.push(format!("{:.0}%", percent));
+    } else if let (Some(current), Some(total)) = (progress.current, progress.total) {
+        let mut counts = format!("{}/{}", current, total);
+        if let Some(unit) = progress.unit.as_deref() {
+            counts.push(' ');
+            counts.push_str(unit);
+        }
+        parts.push(counts);
+    } else if let Some(unit) = progress.unit.as_deref() {
+        parts.push(unit.to_string());
+    }
+
+    if let Some(message) = progress.message.as_deref() {
+        parts.push(message.to_string());
+    }
+
+    if parts.is_empty() {
+        match progress.kind {
+            BackgroundTaskProgressKind::Determinate => "progress reported".to_string(),
+            BackgroundTaskProgressKind::Indeterminate => "working".to_string(),
+        }
+    } else {
+        parts.join(" · ")
+    }
+}
+
+pub fn render_progress_bar(progress: &BackgroundTaskProgress, width: usize) -> Option<String> {
+    let percent = progress.percent?;
+    let width = width.max(4);
+    let filled = ((percent / 100.0) * width as f32).round() as usize;
+    let filled = filled.min(width);
+    Some(format!(
+        "[{}{}]",
+        "#".repeat(filled),
+        "-".repeat(width.saturating_sub(filled))
+    ))
+}
+
+fn progress_source_label(source: &BackgroundTaskProgressSource) -> &'static str {
+    match source {
+        BackgroundTaskProgressSource::Reported => "reported",
+        BackgroundTaskProgressSource::ParsedOutput => "parsed",
+        BackgroundTaskProgressSource::Heuristic => "estimated",
+    }
+}
+
+pub fn format_progress_display(progress: &BackgroundTaskProgress, width: usize) -> String {
+    let summary = format_progress_summary(progress);
+    let source = progress_source_label(&progress.source);
+    match render_progress_bar(progress, width) {
+        Some(bar) => format!("{} {} ({})", bar, summary, source),
+        None => format!("{} ({})", summary, source),
+    }
 }
 
 /// Information returned when a background task is started
@@ -68,6 +132,7 @@ struct RunningTask {
     session_id: String,
     status_path: PathBuf,
     started_at: Instant,
+    started_at_rfc3339: String,
     delivery_flags: watch::Sender<(bool, bool)>,
     handle: JoinHandle<Result<TaskResult>>,
 }
@@ -292,6 +357,7 @@ impl BackgroundTaskManager {
             detached: true,
             notify,
             wake,
+            progress: None,
         };
         self.write_status_file(&info.status_file, &status).await;
     }
@@ -331,6 +397,7 @@ impl BackgroundTaskManager {
         let task_id = Self::generate_task_id();
         let output_path = self.output_dir.join(format!("{}.output", task_id));
         let status_path = self.output_dir.join(format!("{}.status.json", task_id));
+        let started_at_rfc3339 = chrono::Utc::now().to_rfc3339();
 
         // Write initial status file
         let initial_status = TaskStatusFile {
@@ -340,13 +407,14 @@ impl BackgroundTaskManager {
             status: BackgroundTaskStatus::Running,
             exit_code: None,
             error: None,
-            started_at: chrono::Utc::now().to_rfc3339(),
+            started_at: started_at_rfc3339.clone(),
             completed_at: None,
             duration_secs: None,
             pid: None,
             detached: false,
             notify,
             wake,
+            progress: None,
         };
         if let Ok(json) = serde_json::to_string_pretty(&initial_status) {
             let _ = std::fs::write(&status_path, json);
@@ -358,6 +426,7 @@ impl BackgroundTaskManager {
         let tool_name_owned = tool_name.to_string();
         let session_id_owned = session_id.to_string();
         let started_at = Instant::now();
+        let started_at_rfc3339_for_task = started_at_rfc3339.clone();
         let (delivery_flags_tx, delivery_flags_rx) = watch::channel((notify, wake));
 
         // Spawn the background task
@@ -380,6 +449,11 @@ impl BackgroundTaskManager {
             };
 
             let (notify_flag, wake_flag) = *delivery_flags_rx.borrow();
+            let prior_progress = tokio::fs::read_to_string(&status_path_clone)
+                .await
+                .ok()
+                .and_then(|content| serde_json::from_str::<TaskStatusFile>(&content).ok())
+                .and_then(|status| status.progress);
 
             // Update status file
             let final_status = TaskStatusFile {
@@ -389,13 +463,14 @@ impl BackgroundTaskManager {
                 status: status.clone(),
                 exit_code,
                 error: error.clone(),
-                started_at: chrono::Utc::now().to_rfc3339(), // Not accurate but close enough
+                started_at: started_at_rfc3339_for_task,
                 completed_at: Some(chrono::Utc::now().to_rfc3339()),
                 duration_secs: Some(duration_secs),
                 pid: None,
                 detached: false,
                 notify: notify_flag,
                 wake: wake_flag,
+                progress: prior_progress,
             };
             if let Ok(json) = serde_json::to_string_pretty(&final_status) {
                 let _ = tokio::fs::write(&status_path_clone, json).await;
@@ -437,6 +512,7 @@ impl BackgroundTaskManager {
             session_id: session_id.to_string(),
             status_path: status_path.clone(),
             started_at,
+            started_at_rfc3339,
             delivery_flags: delivery_flags_tx,
             handle,
         };
@@ -481,6 +557,7 @@ impl BackgroundTaskManager {
             detached: false,
             notify: true,
             wake: false,
+            progress: None,
         };
         if let Ok(json) = serde_json::to_string_pretty(&initial_status) {
             let _ = std::fs::write(&status_path, json);
@@ -492,6 +569,7 @@ impl BackgroundTaskManager {
         let tool_name_owned = tool_name.to_string();
         let session_id_owned = session_id.to_string();
         let started_at = Instant::now();
+        let started_at_rfc3339 = initial_status.started_at.clone();
         let (delivery_flags_tx, delivery_flags_rx) = watch::channel((true, false));
 
         let wrapper_handle = tokio::spawn(async move {
@@ -524,6 +602,11 @@ impl BackgroundTaskManager {
             }
 
             let (notify_flag, wake_flag) = *delivery_flags_rx.borrow();
+            let prior_progress = tokio::fs::read_to_string(&status_path_clone)
+                .await
+                .ok()
+                .and_then(|content| serde_json::from_str::<TaskStatusFile>(&content).ok())
+                .and_then(|status| status.progress);
 
             let final_status = TaskStatusFile {
                 task_id: task_id_clone.clone(),
@@ -532,13 +615,14 @@ impl BackgroundTaskManager {
                 status: status.clone(),
                 exit_code,
                 error: error.clone(),
-                started_at: chrono::Utc::now().to_rfc3339(),
+                started_at: started_at_rfc3339,
                 completed_at: Some(chrono::Utc::now().to_rfc3339()),
                 duration_secs: Some(duration_secs),
                 pid: None,
                 detached: false,
                 notify: notify_flag,
                 wake: wake_flag,
+                progress: prior_progress,
             };
             if let Ok(json) = serde_json::to_string_pretty(&final_status) {
                 let _ = tokio::fs::write(&status_path_clone, json).await;
@@ -576,6 +660,7 @@ impl BackgroundTaskManager {
             session_id: session_id.to_string(),
             status_path: status_path.clone(),
             started_at,
+            started_at_rfc3339: initial_status.started_at.clone(),
             delivery_flags: delivery_flags_tx,
             handle: wrapper_handle,
         };
@@ -638,6 +723,33 @@ impl BackgroundTaskManager {
         fs::read_to_string(&output_path).await.ok()
     }
 
+    /// Update progress for an existing background task.
+    pub async fn update_progress(
+        &self,
+        task_id: &str,
+        progress: BackgroundTaskProgress,
+    ) -> Result<Option<TaskStatusFile>> {
+        let status_path = self.status_path_for(task_id);
+        let Some(mut status) = self.read_status_file(&status_path).await else {
+            return Ok(None);
+        };
+
+        let progress = progress.normalize();
+        status.progress = Some(progress.clone());
+        self.write_status_file(&status_path, &status).await;
+
+        Bus::global().publish(BusEvent::BackgroundTaskProgress(
+            BackgroundTaskProgressEvent {
+                task_id: status.task_id.clone(),
+                tool_name: status.tool_name.clone(),
+                session_id: status.session_id.clone(),
+                progress,
+            },
+        ));
+
+        Ok(Some(status))
+    }
+
     /// Update delivery behavior for an existing background task.
     ///
     /// This supports retroactively enabling notify/wake after the task was already started.
@@ -678,13 +790,14 @@ impl BackgroundTaskManager {
                 status: BackgroundTaskStatus::Failed,
                 exit_code: None,
                 error: Some("Cancelled by user".to_string()),
-                started_at: chrono::Utc::now().to_rfc3339(),
+                started_at: task.started_at_rfc3339,
                 completed_at: Some(chrono::Utc::now().to_rfc3339()),
                 duration_secs: Some(task.started_at.elapsed().as_secs_f64()),
                 pid: None,
                 detached: false,
                 notify: notify_flag,
                 wake: wake_flag,
+                progress: None,
             };
             if let Ok(json) = serde_json::to_string_pretty(&final_status) {
                 let _ = fs::write(&task.status_path, json).await;
@@ -757,15 +870,42 @@ impl BackgroundTaskManager {
 
     /// Best-effort synchronous snapshot of currently running tasks.
     /// This avoids async calls in render paths.
-    pub fn running_snapshot(&self) -> (usize, Vec<String>) {
+    pub fn running_snapshot(&self) -> (usize, Vec<String>, Option<String>) {
         let Ok(tasks) = self.tasks.try_read() else {
-            return (0, Vec::new());
+            return (0, Vec::new(), None);
         };
 
         let mut names: Vec<String> = tasks.values().map(|t| t.tool_name.clone()).collect();
         names.sort();
         names.dedup();
-        (tasks.len(), names)
+
+        let mut latest_progress: Option<(String, String)> = None;
+        for task in tasks.values() {
+            let progress = std::fs::read_to_string(&task.status_path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<TaskStatusFile>(&content).ok())
+                .and_then(|status| status.progress)
+                .map(|progress| format_progress_summary(&progress));
+            if let Some(progress) = progress {
+                let candidate = (
+                    task.task_id.clone(),
+                    format!("{} {}", task.tool_name, progress),
+                );
+                if latest_progress
+                    .as_ref()
+                    .map(|(task_id, _)| candidate.0 > *task_id)
+                    .unwrap_or(true)
+                {
+                    latest_progress = Some(candidate);
+                }
+            }
+        }
+
+        (
+            tasks.len(),
+            names,
+            latest_progress.map(|(_, summary)| summary),
+        )
     }
 
     /// Best-effort synchronous lookup of detached tasks that are still running
@@ -834,6 +974,7 @@ pub fn global() -> &'static BackgroundTaskManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::BusEvent;
     use tempfile::tempdir;
     use tokio::time::{Duration, sleep};
 
@@ -881,5 +1022,61 @@ mod tests {
         }
 
         panic!("background task did not complete in time");
+    }
+
+    #[tokio::test]
+    async fn update_progress_persists_status_and_emits_bus_event() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+
+        let info = manager
+            .spawn_with_notify(
+                "bash",
+                "session-progress",
+                false,
+                false,
+                |_output_path| async move {
+                    sleep(Duration::from_millis(50)).await;
+                    Ok(TaskResult::completed(Some(0)))
+                },
+            )
+            .await;
+
+        let progress = BackgroundTaskProgress {
+            kind: BackgroundTaskProgressKind::Determinate,
+            percent: Some(42.0),
+            message: Some("Running checks".to_string()),
+            current: Some(21),
+            total: Some(50),
+            unit: Some("tests".to_string()),
+            eta_seconds: Some(8),
+            updated_at: Utc::now().to_rfc3339(),
+            source: BackgroundTaskProgressSource::Reported,
+        };
+
+        let mut bus_rx = Bus::global().subscribe();
+        let updated = manager
+            .update_progress(&info.task_id, progress.clone())
+            .await
+            .expect("update progress should succeed")
+            .expect("task should exist");
+
+        assert_eq!(updated.progress, Some(progress.clone().normalize()));
+
+        for _ in 0..20 {
+            let event = tokio::time::timeout(Duration::from_millis(200), bus_rx.recv())
+                .await
+                .expect("timed out waiting for progress event")
+                .expect("bus should stay open");
+            if let BusEvent::BackgroundTaskProgress(event) = event {
+                if event.task_id == info.task_id {
+                    assert_eq!(event.session_id, "session-progress");
+                    assert_eq!(event.progress, progress.normalize());
+                    return;
+                }
+            }
+        }
+
+        panic!("progress event for task {} not received", info.task_id);
     }
 }

@@ -158,6 +158,9 @@ fn background_summary(info: &BackgroundInfo) -> Option<String> {
                 parts.push(format!("bg:{}", task_str));
             }
         }
+        if let Some(progress) = info.progress_summary.as_deref() {
+            parts.push(format!("{}", truncate_smart(progress, 18)));
+        }
     }
 
     if parts.is_empty() {

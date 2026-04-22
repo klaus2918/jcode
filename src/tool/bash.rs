@@ -1,5 +1,8 @@
 use super::{StdinInputRequest, Tool, ToolContext, ToolOutput};
 use crate::background::TaskResult;
+use crate::bus::{
+    BackgroundTaskProgress, BackgroundTaskProgressKind, BackgroundTaskProgressSource,
+};
 use crate::stdin_detect::{self, StdinState};
 use crate::util::truncate_str;
 use anyhow::Result;
@@ -8,6 +11,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fs::OpenOptions;
+use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -18,6 +22,87 @@ const MAX_OUTPUT_LEN: usize = 30000;
 const DEFAULT_TIMEOUT_MS: u64 = 120000;
 const STDIN_POLL_INTERVAL_MS: u64 = 500;
 const STDIN_INITIAL_DELAY_MS: u64 = 300;
+const PROGRESS_MARKER_PREFIX: &str = "JCODE_PROGRESS ";
+
+#[derive(Deserialize)]
+struct ProgressMarker {
+    #[serde(default)]
+    percent: Option<f32>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    current: Option<u64>,
+    #[serde(default)]
+    total: Option<u64>,
+    #[serde(default)]
+    unit: Option<String>,
+    #[serde(default)]
+    eta_seconds: Option<u64>,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+fn task_id_from_output_path(path: &Path) -> Option<&str> {
+    path.file_stem()?.to_str()
+}
+
+fn parse_progress_kind(kind: Option<&str>) -> BackgroundTaskProgressKind {
+    match kind {
+        Some("indeterminate") => BackgroundTaskProgressKind::Indeterminate,
+        _ => BackgroundTaskProgressKind::Determinate,
+    }
+}
+
+fn parse_progress_marker(line: &str) -> Option<BackgroundTaskProgress> {
+    let payload = line.trim().strip_prefix(PROGRESS_MARKER_PREFIX)?.trim();
+    let marker: ProgressMarker = serde_json::from_str(payload).ok()?;
+    let kind = if marker.percent.is_some()
+        || matches!((marker.current, marker.total), (_, Some(total)) if total > 0)
+    {
+        BackgroundTaskProgressKind::Determinate
+    } else {
+        parse_progress_kind(marker.kind.as_deref())
+    };
+
+    Some(
+        BackgroundTaskProgress {
+            kind,
+            percent: marker.percent,
+            message: marker.message,
+            current: marker.current,
+            total: marker.total,
+            unit: marker.unit,
+            eta_seconds: marker.eta_seconds,
+            updated_at: Utc::now().to_rfc3339(),
+            source: BackgroundTaskProgressSource::Reported,
+        }
+        .normalize(),
+    )
+}
+
+async fn handle_background_output_line(
+    output_path: &Path,
+    file: &mut tokio::fs::File,
+    raw_line: &str,
+    stderr: bool,
+) {
+    if let Some(progress) = parse_progress_marker(raw_line) {
+        if let Some(task_id) = task_id_from_output_path(output_path) {
+            let _ = crate::background::global()
+                .update_progress(task_id, progress)
+                .await;
+        }
+        return;
+    }
+
+    let rendered = if stderr {
+        format!("[stderr] {}\n", raw_line)
+    } else {
+        format!("{}\n", raw_line)
+    };
+    file.write_all(rendered.as_bytes()).await.ok();
+    file.flush().await.ok();
+}
 
 fn build_shell_command(cmd_str: &str) -> TokioCommand {
     #[cfg(windows)]
@@ -524,9 +609,7 @@ impl BashTool {
                             }, if !stdout_done => {
                                 match line {
                                     Ok(Some(line)) => {
-                                        let line_with_newline = format!("{}\n", line);
-                                        file.write_all(line_with_newline.as_bytes()).await.ok();
-                                        file.flush().await.ok();
+                                        handle_background_output_line(&output_path, &mut file, &line, false).await;
                                     }
                                     _ => { stdout_done = true; }
                                 }
@@ -539,9 +622,7 @@ impl BashTool {
                             }, if !stderr_done => {
                                 match line {
                                     Ok(Some(line)) => {
-                                        let line_with_newline = format!("[stderr] {}\n", line);
-                                        file.write_all(line_with_newline.as_bytes()).await.ok();
-                                        file.flush().await.ok();
+                                        handle_background_output_line(&output_path, &mut file, &line, true).await;
                                     }
                                     _ => { stderr_done = true; }
                                 }
@@ -853,6 +934,80 @@ mod tests {
             result.output.contains("stderr_msg"),
             "stderr should be captured: {}",
             result.output
+        );
+    }
+
+    #[test]
+    fn test_parse_progress_marker_handles_percent_payloads() {
+        let progress = parse_progress_marker(
+            r#"JCODE_PROGRESS {"percent":25,"message":"Downloading dependencies"}"#,
+        )
+        .expect("marker should parse");
+
+        assert_eq!(progress.percent, Some(25.0));
+        assert_eq!(
+            progress.message.as_deref(),
+            Some("Downloading dependencies")
+        );
+        assert_eq!(progress.kind, BackgroundTaskProgressKind::Determinate);
+        assert_eq!(progress.source, BackgroundTaskProgressSource::Reported);
+    }
+
+    #[tokio::test]
+    async fn test_background_command_progress_marker_updates_status_and_stays_out_of_output() {
+        let tool = BashTool::new();
+        let ctx = make_ctx(None);
+
+        let result = tool
+            .execute(
+                json!({
+                    "command": "printf '%s\n' 'JCODE_PROGRESS {\"current\":3,\"total\":10,\"unit\":\"steps\",\"message\":\"Building\"}'; sleep 0.1; echo done",
+                    "run_in_background": true,
+                    "notify": false,
+                    "wake": false,
+                }),
+                ctx,
+            )
+            .await
+            .expect("background command should start");
+
+        let metadata = result.metadata.expect("expected metadata");
+        let task_id = metadata["task_id"]
+            .as_str()
+            .expect("task id should be present")
+            .to_string();
+
+        let mut saw_progress = false;
+        for _ in 0..50 {
+            let status = crate::background::global()
+                .status(&task_id)
+                .await
+                .expect("status should exist");
+            if let Some(progress) = status.progress {
+                saw_progress = true;
+                assert_eq!(progress.current, Some(3));
+                assert_eq!(progress.total, Some(10));
+                assert_eq!(progress.unit.as_deref(), Some("steps"));
+                assert_eq!(progress.message.as_deref(), Some("Building"));
+                assert_eq!(progress.percent, Some(30.0));
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            saw_progress,
+            "expected progress to be recorded for {task_id}"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let output = crate::background::global()
+            .output(&task_id)
+            .await
+            .expect("output should exist");
+        assert!(output.contains("done"), "output was: {output}");
+        assert!(
+            !output.contains("JCODE_PROGRESS"),
+            "progress marker should be hidden from output: {output}"
         );
     }
 }

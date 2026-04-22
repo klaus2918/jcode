@@ -937,12 +937,13 @@ impl crate::tui::TuiState for App {
 
             // Get running background tasks count
             let bg_manager = crate::background::global();
-            let (running_count, running_tasks) = bg_manager.running_snapshot();
+            let (running_count, running_tasks, progress_summary) = bg_manager.running_snapshot();
 
             if memory_agent_active || running_count > 0 {
                 Some(crate::tui::info_widget::BackgroundInfo {
                     running_count,
                     running_tasks,
+                    progress_summary,
                     memory_agent_active,
                     memory_agent_turns: memory_stats.turns_processed,
                 })
