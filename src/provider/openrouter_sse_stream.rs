@@ -171,16 +171,8 @@ async fn stream_response(
 }
 
 fn is_retryable_error(error_str: &str) -> bool {
-    error_str.contains("connection reset")
-        || error_str.contains("connection reset by peer")
-        || error_str.contains("connection refused")
-        || error_str.contains("broken pipe")
-        || error_str.contains("timed out")
-        || error_str.contains("timeout")
-        || error_str.contains("error decoding")
+    crate::provider::is_transient_transport_error(error_str)
         || error_str.contains("stream error")
-        || error_str.contains("error reading")
-        || error_str.contains("unexpected eof")
         || error_str.contains("eof")
         || error_str.contains("5")
             && (error_str.contains("50")

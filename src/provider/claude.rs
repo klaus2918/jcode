@@ -1057,18 +1057,7 @@ async fn run_claude_cli(
 
 /// Check if an error is transient and should be retried
 fn is_retryable_error(error_str: &str) -> bool {
-    // Network/connection errors
-    error_str.contains("connection reset")
-        || error_str.contains("connection closed")
-        || error_str.contains("connection refused")
-        || error_str.contains("broken pipe")
-        || error_str.contains("timed out")
-        || error_str.contains("timeout")
-        // Stream/decode errors
-        || error_str.contains("error decoding")
-        || error_str.contains("error reading")
-        || error_str.contains("unexpected eof")
-        || error_str.contains("incomplete message")
+    crate::provider::is_transient_transport_error(error_str)
         // Claude CLI specific errors
         || error_str.contains("processtransport")
         || error_str.contains("not ready for writing")
