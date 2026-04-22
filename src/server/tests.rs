@@ -3,7 +3,10 @@ use super::{
     persist_swarm_state_snapshot,
 };
 use crate::agent::Agent;
-use crate::bus::{BackgroundTaskCompleted, BackgroundTaskStatus};
+use crate::bus::{
+    BackgroundTaskCompleted, BackgroundTaskProgress, BackgroundTaskProgressEvent,
+    BackgroundTaskProgressKind, BackgroundTaskProgressSource, BackgroundTaskStatus,
+};
 use crate::message::{Message, Role, StreamEvent, ToolDefinition};
 use crate::protocol::{NotificationType, ServerEvent};
 use crate::provider::{EventStream, Provider};
@@ -283,6 +286,59 @@ async fn background_task_notify_without_wake_does_not_queue_soft_interrupt() {
         pending.is_empty(),
         "notify-only delivery should not wake the session"
     );
+}
+
+#[tokio::test]
+async fn background_task_progress_notifies_attached_clients() {
+    let provider: Arc<dyn Provider> = Arc::new(StreamingMockProvider::default());
+    let agent = test_agent(provider).await;
+    let session_id = agent.lock().await.session_id().to_string();
+    let (member_event_tx, mut member_event_rx) = mpsc::unbounded_channel();
+    let swarm_members = Arc::new(RwLock::new(HashMap::from([(
+        session_id.clone(),
+        attached_swarm_member(&session_id, member_event_tx),
+    )])));
+    let task = BackgroundTaskProgressEvent {
+        task_id: "bgprogress".to_string(),
+        tool_name: "bash".to_string(),
+        session_id: session_id.clone(),
+        progress: BackgroundTaskProgress {
+            kind: BackgroundTaskProgressKind::Determinate,
+            percent: Some(42.0),
+            message: Some("Running tests".to_string()),
+            current: Some(21),
+            total: Some(50),
+            unit: Some("tests".to_string()),
+            eta_seconds: None,
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            source: BackgroundTaskProgressSource::Reported,
+        },
+    };
+
+    super::dispatch_background_task_progress(&task, &swarm_members).await;
+
+    let notification = timeout(Duration::from_secs(2), member_event_rx.recv())
+        .await
+        .expect("background task progress notification should arrive promptly")
+        .expect("member stream should stay open");
+    match notification {
+        ServerEvent::Notification {
+            notification_type,
+            message,
+            ..
+        } => {
+            match notification_type {
+                NotificationType::Message { scope, channel } => {
+                    assert_eq!(scope.as_deref(), Some("background_task"));
+                    assert!(channel.is_none());
+                }
+                other => panic!("unexpected notification type: {other:?}"),
+            }
+            assert!(message.contains("**Background task progress** `bgprogress`"));
+            assert!(message.contains("42%"), "message was: {message}");
+        }
+        other => panic!("expected notification, got {other:?}"),
+    }
 }
 
 #[tokio::test]

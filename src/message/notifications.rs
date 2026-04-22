@@ -116,6 +116,15 @@ pub fn format_background_task_notification_markdown(task: &BackgroundTaskComplet
     message
 }
 
+pub fn format_background_task_progress_markdown(task: &BackgroundTaskProgressEvent) -> String {
+    format!(
+        "**Background task progress** `{}` · `{}` · {}",
+        task.task_id,
+        task.tool_name,
+        crate::background::format_progress_display(&task.progress, 12)
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedBackgroundTaskNotification {
     pub task_id: String,

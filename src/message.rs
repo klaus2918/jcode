@@ -1,4 +1,4 @@
-use crate::bus::{BackgroundTaskCompleted, BackgroundTaskStatus};
+use crate::bus::{BackgroundTaskCompleted, BackgroundTaskProgressEvent, BackgroundTaskStatus};
 use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -9,8 +9,9 @@ mod notifications;
 
 pub use notifications::{
     InputShellResult, ParsedBackgroundTaskNotification, background_task_status_notice,
-    format_background_task_notification_markdown, format_input_shell_result_markdown,
-    input_shell_status_notice, parse_background_task_notification_markdown,
+    format_background_task_notification_markdown, format_background_task_progress_markdown,
+    format_input_shell_result_markdown, input_shell_status_notice,
+    parse_background_task_notification_markdown,
 };
 
 fn compile_static_regex(pattern: &str) -> Option<Regex> {

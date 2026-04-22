@@ -2,8 +2,9 @@
 
 use super::*;
 use crate::bus::{
-    BackgroundTaskCompleted, BackgroundTaskStatus, BusEvent, ClientMaintenanceAction,
-    InputShellCompleted, SessionUpdateStatus,
+    BackgroundTaskCompleted, BackgroundTaskProgress, BackgroundTaskProgressEvent,
+    BackgroundTaskProgressKind, BackgroundTaskProgressSource, BackgroundTaskStatus, BusEvent,
+    ClientMaintenanceAction, InputShellCompleted, SessionUpdateStatus,
 };
 use crate::tui::TuiState;
 use ratatui::backend::Backend;
@@ -7376,6 +7377,34 @@ fn test_handle_background_task_completed_with_wake_starts_pending_turn() {
 }
 
 #[test]
+fn test_handle_background_task_progress_updates_status_notice() {
+    let mut app = create_test_app();
+    let event = BusEvent::BackgroundTaskProgress(BackgroundTaskProgressEvent {
+        task_id: "bgprogress".to_string(),
+        tool_name: "bash".to_string(),
+        session_id: app.session.id.clone(),
+        progress: BackgroundTaskProgress {
+            kind: BackgroundTaskProgressKind::Determinate,
+            percent: Some(42.0),
+            message: Some("Running tests".to_string()),
+            current: Some(21),
+            total: Some(50),
+            unit: Some("tests".to_string()),
+            eta_seconds: None,
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            source: BackgroundTaskProgressSource::Reported,
+        },
+    });
+
+    super::local::handle_bus_event(&mut app, Ok(event));
+
+    assert_eq!(
+        app.status_notice(),
+        Some("Background task · bash · 42% · Running tests".to_string())
+    );
+}
+
+#[test]
 fn test_handle_server_event_input_shell_result_renders_markdown_blocks() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -12369,8 +12398,8 @@ fn create_tool_error_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend
     (app, terminal)
 }
 
-fn create_tool_failed_output_copy_test_app(
-) -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
+fn create_tool_failed_output_copy_test_app()
+-> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
     let mut app = create_test_app();
     app.display_messages = vec![
         DisplayMessage::user("Run the command"),

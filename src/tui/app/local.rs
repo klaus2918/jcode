@@ -1,5 +1,8 @@
 use super::{App, DisplayMessage, ProcessingStatus, is_context_limit_error};
-use crate::bus::{BackgroundTaskCompleted, BusEvent, InputShellCompleted, ManualToolCompleted};
+use crate::bus::{
+    BackgroundTaskCompleted, BackgroundTaskProgressEvent, BusEvent, InputShellCompleted,
+    ManualToolCompleted,
+};
 use crate::message::{
     ContentBlock, Message, Role, background_task_status_notice,
     format_background_task_notification_markdown,
@@ -105,6 +108,10 @@ pub(super) fn handle_bus_event(
     match bus_event {
         Ok(BusEvent::BackgroundTaskCompleted(task)) => {
             handle_background_task_completed(app, task);
+            true
+        }
+        Ok(BusEvent::BackgroundTaskProgress(progress)) => {
+            handle_background_task_progress(app, progress);
             true
         }
         Ok(BusEvent::InputShellCompleted(shell)) => {
@@ -293,6 +300,18 @@ fn handle_background_task_completed(app: &mut App, task: BackgroundTaskCompleted
             app.visible_turn_started = Some(std::time::Instant::now());
         }
     }
+}
+
+fn handle_background_task_progress(app: &mut App, event: BackgroundTaskProgressEvent) {
+    if event.session_id != app.session.id {
+        return;
+    }
+
+    app.set_status_notice(format!(
+        "Background task · {} · {}",
+        event.tool_name,
+        crate::background::format_progress_summary(&event.progress)
+    ));
 }
 
 fn handle_input_shell_completed(app: &mut App, shell: InputShellCompleted) {

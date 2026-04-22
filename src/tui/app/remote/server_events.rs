@@ -980,9 +980,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 } if scope == "background_task"
             );
 
-            if background_task_scope
-                && crate::message::parse_background_task_notification_markdown(&message).is_some()
-            {
+            if background_task_scope {
                 let presentation =
                     present_swarm_notification(&sender, &notification_type, &message);
                 app.push_display_message(DisplayMessage::background_task(message.clone()));

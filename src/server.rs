@@ -65,7 +65,9 @@ use self::util::get_shared_mcp_pool;
 use crate::agent::Agent;
 use crate::ambient_runner::AmbientRunnerHandle;
 use crate::bus::{Bus, BusEvent};
-use crate::message::format_background_task_notification_markdown;
+use crate::message::{
+    format_background_task_notification_markdown, format_background_task_progress_markdown,
+};
 use crate::protocol::{NotificationType, ServerEvent};
 use crate::provider::Provider;
 use crate::runtime_memory_log::{
@@ -237,6 +239,34 @@ async fn dispatch_background_task_completion(
     {
         crate::logging::warn(&format!(
             "Failed to deliver background task completion to session {}",
+            task.session_id
+        ));
+    }
+}
+
+async fn dispatch_background_task_progress(
+    task: &crate::bus::BackgroundTaskProgressEvent,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+) {
+    let notification = format_background_task_progress_markdown(task);
+    if fanout_session_event(
+        swarm_members,
+        &task.session_id,
+        ServerEvent::Notification {
+            from_session: "background_task".to_string(),
+            from_name: Some("background task".to_string()),
+            notification_type: NotificationType::Message {
+                scope: Some("background_task".to_string()),
+                channel: None,
+            },
+            message: notification,
+        },
+    )
+    .await
+        == 0
+    {
+        crate::logging::warn(&format!(
+            "Failed to notify attached clients for background task progress on session {}",
             task.session_id
         ));
     }
@@ -1688,6 +1718,9 @@ impl Server {
                         &swarm_members,
                     )
                     .await;
+                }
+                Ok(BusEvent::BackgroundTaskProgress(task)) => {
+                    dispatch_background_task_progress(&task, &swarm_members).await;
                 }
                 // Session todos are private. Swarm plans are updated via explicit
                 // communication actions (comm_propose_plan / comm_approve_plan), not

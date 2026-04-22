@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -23,6 +24,24 @@ const DEFAULT_TIMEOUT_MS: u64 = 120000;
 const STDIN_POLL_INTERVAL_MS: u64 = 500;
 const STDIN_INITIAL_DELAY_MS: u64 = 300;
 const PROGRESS_MARKER_PREFIX: &str = "JCODE_PROGRESS ";
+
+fn progress_ratio_regex() -> &'static regex::Regex {
+    static REGEX: OnceLock<regex::Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)\b(?P<current>\d{1,6})\s*/\s*(?P<total>\d{1,6})\b(?:\s*(?P<unit>tests?|steps?|files?|items?|cases?|tasks?|targets?|chunks?|batches?|examples?))?",
+        )
+        .expect("valid progress ratio regex")
+    })
+}
+
+fn progress_percent_regex() -> &'static regex::Regex {
+    static REGEX: OnceLock<regex::Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        regex::Regex::new(r"(?i)\b(?P<percent>100|[1-9]?\d)\s*%")
+            .expect("valid progress percent regex")
+    })
+}
 
 #[derive(Deserialize)]
 struct ProgressMarker {
@@ -80,13 +99,106 @@ fn parse_progress_marker(line: &str) -> Option<BackgroundTaskProgress> {
     )
 }
 
+fn progress_message_from_line(line: &str, matched_fragment: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case(matched_fragment.trim()) {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn parse_heuristic_progress(line: &str) -> Option<BackgroundTaskProgress> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(captures) = progress_ratio_regex().captures(trimmed) {
+        let current = captures.name("current")?.as_str().parse::<u64>().ok()?;
+        let total = captures.name("total")?.as_str().parse::<u64>().ok()?;
+        if total >= 2 && current <= total {
+            let matched = captures.get(0)?.as_str();
+            return Some(
+                BackgroundTaskProgress {
+                    kind: BackgroundTaskProgressKind::Determinate,
+                    percent: None,
+                    message: progress_message_from_line(trimmed, matched),
+                    current: Some(current),
+                    total: Some(total),
+                    unit: captures
+                        .name("unit")
+                        .map(|unit| unit.as_str().to_ascii_lowercase()),
+                    eta_seconds: None,
+                    updated_at: Utc::now().to_rfc3339(),
+                    source: BackgroundTaskProgressSource::ParsedOutput,
+                }
+                .normalize(),
+            );
+        }
+    }
+
+    if let Some(captures) = progress_percent_regex().captures(trimmed) {
+        let percent = captures.name("percent")?.as_str().parse::<f32>().ok()?;
+        let matched = captures.get(0)?.as_str();
+        return Some(
+            BackgroundTaskProgress {
+                kind: BackgroundTaskProgressKind::Determinate,
+                percent: Some(percent),
+                message: progress_message_from_line(trimmed, matched),
+                current: None,
+                total: None,
+                unit: None,
+                eta_seconds: None,
+                updated_at: Utc::now().to_rfc3339(),
+                source: BackgroundTaskProgressSource::ParsedOutput,
+            }
+            .normalize(),
+        );
+    }
+
+    const PHASE_PREFIXES: &[&str] = &[
+        "Compiling ",
+        "Downloading ",
+        "Running ",
+        "Building ",
+        "Linking ",
+        "Resolving ",
+        "Fetching ",
+        "Installing ",
+    ];
+    if PHASE_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+    {
+        return Some(
+            BackgroundTaskProgress {
+                kind: BackgroundTaskProgressKind::Indeterminate,
+                percent: None,
+                message: Some(trimmed.to_string()),
+                current: None,
+                total: None,
+                unit: None,
+                eta_seconds: None,
+                updated_at: Utc::now().to_rfc3339(),
+                source: BackgroundTaskProgressSource::ParsedOutput,
+            }
+            .normalize(),
+        );
+    }
+
+    None
+}
+
 async fn handle_background_output_line(
     output_path: &Path,
     file: &mut tokio::fs::File,
     raw_line: &str,
     stderr: bool,
 ) {
-    if let Some(progress) = parse_progress_marker(raw_line) {
+    if let Some(progress) =
+        parse_progress_marker(raw_line).or_else(|| parse_heuristic_progress(raw_line))
+    {
         if let Some(task_id) = task_id_from_output_path(output_path) {
             let _ = crate::background::global()
                 .update_progress(task_id, progress)
@@ -953,6 +1065,42 @@ mod tests {
         assert_eq!(progress.source, BackgroundTaskProgressSource::Reported);
     }
 
+    #[test]
+    fn test_parse_heuristic_progress_handles_ratio_output() {
+        let progress = parse_heuristic_progress("Running test 3/10 tests")
+            .expect("heuristic ratio progress should parse");
+
+        assert_eq!(progress.current, Some(3));
+        assert_eq!(progress.total, Some(10));
+        assert_eq!(progress.percent, Some(30.0));
+        assert_eq!(progress.unit.as_deref(), Some("tests"));
+        assert_eq!(progress.source, BackgroundTaskProgressSource::ParsedOutput);
+    }
+
+    #[test]
+    fn test_parse_heuristic_progress_handles_percent_output() {
+        let progress = parse_heuristic_progress("download progress 42% complete")
+            .expect("heuristic percent progress should parse");
+
+        assert_eq!(progress.percent, Some(42.0));
+        assert_eq!(progress.source, BackgroundTaskProgressSource::ParsedOutput);
+        assert_eq!(
+            progress.message.as_deref(),
+            Some("download progress 42% complete")
+        );
+    }
+
+    #[test]
+    fn test_parse_heuristic_progress_handles_phase_output() {
+        let progress = parse_heuristic_progress("Compiling jcode v0.10.2")
+            .expect("phase progress should parse");
+
+        assert_eq!(progress.kind, BackgroundTaskProgressKind::Indeterminate);
+        assert_eq!(progress.percent, None);
+        assert_eq!(progress.message.as_deref(), Some("Compiling jcode v0.10.2"));
+        assert_eq!(progress.source, BackgroundTaskProgressSource::ParsedOutput);
+    }
+
     #[tokio::test]
     async fn test_background_command_progress_marker_updates_status_and_stays_out_of_output() {
         let tool = BashTool::new();
@@ -1008,6 +1156,54 @@ mod tests {
         assert!(
             !output.contains("JCODE_PROGRESS"),
             "progress marker should be hidden from output: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_background_command_ratio_output_updates_progress() {
+        let tool = BashTool::new();
+        let ctx = make_ctx(None);
+
+        let result = tool
+            .execute(
+                json!({
+                    "command": "printf '%s\n' 'Running test 4/8 tests'; sleep 0.1; echo done",
+                    "run_in_background": true,
+                    "notify": false,
+                    "wake": false,
+                }),
+                ctx,
+            )
+            .await
+            .expect("background command should start");
+
+        let metadata = result.metadata.expect("expected metadata");
+        let task_id = metadata["task_id"]
+            .as_str()
+            .expect("task id should be present")
+            .to_string();
+
+        let mut saw_progress = false;
+        for _ in 0..50 {
+            let status = crate::background::global()
+                .status(&task_id)
+                .await
+                .expect("status should exist");
+            if let Some(progress) = status.progress {
+                saw_progress = true;
+                assert_eq!(progress.current, Some(4));
+                assert_eq!(progress.total, Some(8));
+                assert_eq!(progress.percent, Some(50.0));
+                assert_eq!(progress.unit.as_deref(), Some("tests"));
+                assert_eq!(progress.source, BackgroundTaskProgressSource::ParsedOutput);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        assert!(
+            saw_progress,
+            "expected heuristic progress to be recorded for {task_id}"
         );
     }
 }
