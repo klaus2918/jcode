@@ -271,17 +271,22 @@ fn execute_linked_agentgrep(
     ctx: &ToolContext,
     context_json_path: Option<&Path>,
 ) -> Result<ToolOutput> {
+    let exact_file = exact_search_file_path(ctx, params.path.as_deref());
     match params.mode.as_str() {
         "grep" => {
             let args = build_grep_args(params, ctx)?;
             let root = resolve_search_root(ctx, args.path.as_deref());
-            let result = run_grep(&root, &args).map_err(anyhow::Error::msg)?;
+            let result = filter_grep_result_to_exact_file(
+                run_grep(&root, &args).map_err(anyhow::Error::msg)?,
+                exact_file.as_deref(),
+            );
             Ok(ToolOutput::new(render_grep_output(&result, &args)).with_title("agentgrep grep"))
         }
         "find" => {
             let args = build_find_args(params, ctx)?;
             let root = resolve_search_root(ctx, args.path.as_deref());
-            let result = run_find(&root, &args);
+            let result =
+                filter_find_result_to_exact_file(run_find(&root, &args), exact_file.as_deref());
             Ok(ToolOutput::new(render_find_output(&result, &args)).with_title("agentgrep find"))
         }
         "outline" => {
@@ -293,7 +298,10 @@ fn execute_linked_agentgrep(
         "trace" | "smart" => {
             let (args, query) = build_smart_args_and_query(params, ctx, context_json_path)?;
             let root = resolve_search_root(ctx, args.path.as_deref());
-            let result = run_smart(&root, &query, &args).map_err(anyhow::Error::msg)?;
+            let result = filter_smart_result_to_exact_file(
+                run_smart(&root, &query, &args).map_err(anyhow::Error::msg)?,
+                exact_file.as_deref(),
+            );
             Ok(ToolOutput::new(render_smart_output(&result, &args))
                 .with_title(format!("agentgrep {}", params.mode)))
         }
@@ -306,6 +314,58 @@ fn execute_linked_agentgrep(
 
 fn resolve_path_arg(ctx: &ToolContext, path: &str) -> PathBuf {
     ctx.resolve_path(Path::new(path))
+}
+
+fn exact_search_file_path(ctx: &ToolContext, path: Option<&str>) -> Option<String> {
+    let path = path?;
+    let resolved = resolve_path_arg(ctx, path);
+    if !resolved.is_file() {
+        return None;
+    }
+    resolved
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+fn filter_grep_result_to_exact_file(
+    mut result: GrepResult,
+    exact_file: Option<&str>,
+) -> GrepResult {
+    let Some(exact_file) = exact_file else {
+        return result;
+    };
+
+    result.files.retain(|file| file.path == exact_file);
+    result.total_files = result.files.len();
+    result.total_matches = result.files.iter().map(|file| file.matches.len()).sum();
+    result
+}
+
+fn filter_find_result_to_exact_file(
+    mut result: FindResult,
+    exact_file: Option<&str>,
+) -> FindResult {
+    let Some(exact_file) = exact_file else {
+        return result;
+    };
+
+    result.files.retain(|file| file.path == exact_file);
+    result
+}
+
+fn filter_smart_result_to_exact_file(
+    mut result: SmartResult,
+    exact_file: Option<&str>,
+) -> SmartResult {
+    let Some(exact_file) = exact_file else {
+        return result;
+    };
+
+    result.files.retain(|file| file.path == exact_file);
+    result.summary.total_files = result.files.len();
+    result.summary.total_regions = result.files.iter().map(|file| file.regions.len()).sum();
+    result.summary.best_file = result.files.first().map(|file| file.path.clone());
+    result
 }
 
 fn normalized_agentgrep_glob(glob: Option<&str>) -> Option<&str> {

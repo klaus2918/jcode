@@ -86,6 +86,40 @@ fn build_grep_args_drops_match_all_glob() {
 }
 
 #[test]
+fn build_grep_args_scopes_file_path_to_parent_and_exact_glob() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(temp.path().join("src")).expect("mkdir");
+    fs::write(temp.path().join("src/app.rs"), "fn auth_status() {}\n").expect("write file");
+
+    let ctx = test_ctx(temp.path());
+    let params = AgentGrepInput {
+        mode: "grep".to_string(),
+        query: Some("auth_status".to_string()),
+        file: None,
+        terms: None,
+        regex: Some(false),
+        path: Some("src/app.rs".to_string()),
+        glob: Some("**/*.rs".to_string()),
+        file_type: Some("rs".to_string()),
+        hidden: None,
+        no_ignore: None,
+        max_files: None,
+        max_regions: None,
+        full_region: None,
+        debug_plan: None,
+        debug_score: None,
+        paths_only: None,
+    };
+
+    let args = build_grep_args(&params, &ctx).unwrap();
+    assert_eq!(
+        args.path.as_deref(),
+        Some(temp.path().join("src").to_string_lossy().as_ref())
+    );
+    assert_eq!(args.glob.as_deref(), Some("app.rs"));
+}
+
+#[test]
 fn build_smart_args_uses_terms() {
     let ctx = test_ctx(Path::new("/workspace"));
     let params = AgentGrepInput {
@@ -278,6 +312,41 @@ async fn execute_runs_linked_grep() {
     assert!(output.output.contains("query: auth_status"));
     assert!(output.output.contains("src/app.rs"));
     assert!(output.output.contains("@ 1 pub fn auth_status() {}"));
+}
+
+#[tokio::test]
+async fn execute_runs_linked_grep_when_path_points_to_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(temp.path().join("src")).expect("mkdir");
+    fs::write(
+        temp.path().join("src/app.rs"),
+        "pub fn auth_status() {}\nfn render_status_bar() {}\n",
+    )
+    .expect("write target file");
+    fs::write(
+        temp.path().join("src/other.rs"),
+        "pub fn auth_status() {}\nfn render_other() {}\n",
+    )
+    .expect("write sibling file");
+
+    let tool = AgentGrepTool::new();
+    let ctx = test_ctx(temp.path());
+    let output = tool
+        .execute(
+            json!({
+                "mode": "grep",
+                "query": "auth_status",
+                "path": "src/app.rs",
+                "glob": "**/*.rs",
+                "type": "rs"
+            }),
+            ctx,
+        )
+        .await
+        .expect("tool output for exact-file path");
+    assert!(output.output.contains("app.rs"));
+    assert!(!output.output.contains("src/other.rs"));
+    assert!(!output.output.contains("other.rs"));
 }
 
 #[tokio::test]

@@ -1,10 +1,50 @@
 use super::*;
 
+struct ResolvedSearchScope {
+    root: Option<String>,
+    glob: Option<String>,
+}
+
+fn resolved_search_scope(
+    ctx: &ToolContext,
+    path: Option<&str>,
+    glob: Option<&str>,
+) -> ResolvedSearchScope {
+    let Some(path) = path else {
+        return ResolvedSearchScope {
+            root: None,
+            glob: normalized_agentgrep_glob_owned(glob),
+        };
+    };
+
+    let resolved = resolve_path_arg(ctx, path);
+    if resolved.is_file() {
+        let root = resolved
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .display()
+            .to_string();
+        let glob = resolved
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        return ResolvedSearchScope {
+            root: Some(root),
+            glob,
+        };
+    }
+
+    ResolvedSearchScope {
+        root: Some(resolved.display().to_string()),
+        glob: normalized_agentgrep_glob_owned(glob),
+    }
+}
+
 pub(super) fn build_grep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Result<GrepArgs> {
     let query = params
         .query
         .clone()
         .ok_or_else(|| anyhow::anyhow!("agentgrep grep requires 'query'"))?;
+    let scope = resolved_search_scope(ctx, params.path.as_deref(), params.glob.as_deref());
     Ok(GrepArgs {
         query,
         regex: params.regex.unwrap_or(false),
@@ -13,8 +53,8 @@ pub(super) fn build_grep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Res
         paths_only: params.paths_only.unwrap_or(false),
         hidden: params.hidden.unwrap_or(false),
         no_ignore: params.no_ignore.unwrap_or(false),
-        path: resolved_root_string(ctx, params.path.as_deref()),
-        glob: normalized_agentgrep_glob_owned(params.glob.as_deref()),
+        path: scope.root,
+        glob: scope.glob,
     })
 }
 
@@ -23,6 +63,7 @@ pub(super) fn build_find_args(params: &AgentGrepInput, ctx: &ToolContext) -> Res
         .query
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("agentgrep find requires 'query'"))?;
+    let scope = resolved_search_scope(ctx, params.path.as_deref(), params.glob.as_deref());
     Ok(FindArgs {
         query_parts: query.split_whitespace().map(ToOwned::to_owned).collect(),
         file_type: params.file_type.clone(),
@@ -32,8 +73,8 @@ pub(super) fn build_find_args(params: &AgentGrepInput, ctx: &ToolContext) -> Res
         max_files: params.max_files.unwrap_or(10),
         hidden: params.hidden.unwrap_or(false),
         no_ignore: params.no_ignore.unwrap_or(false),
-        path: resolved_root_string(ctx, params.path.as_deref()),
-        glob: normalized_agentgrep_glob_owned(params.glob.as_deref()),
+        path: scope.root,
+        glob: scope.glob,
     })
 }
 
@@ -64,6 +105,7 @@ pub(super) fn build_smart_args_and_query(
             err
         )
     })?;
+    let scope = resolved_search_scope(ctx, params.path.as_deref(), params.glob.as_deref());
 
     let args = SmartArgs {
         terms,
@@ -74,9 +116,9 @@ pub(super) fn build_smart_args_and_query(
         debug_plan: params.debug_plan.unwrap_or(false),
         debug_score: params.debug_score.unwrap_or(false),
         paths_only: params.paths_only.unwrap_or(false),
-        path: resolved_root_string(ctx, params.path.as_deref()),
+        path: scope.root,
         file_type: params.file_type.clone(),
-        glob: normalized_agentgrep_glob_owned(params.glob.as_deref()),
+        glob: scope.glob,
         hidden: params.hidden.unwrap_or(false),
         no_ignore: params.no_ignore.unwrap_or(false),
         context_json: context_json_path.map(|path| path.display().to_string()),
