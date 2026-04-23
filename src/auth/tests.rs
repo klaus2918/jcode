@@ -198,14 +198,17 @@ fn auth_status_check_returns_valid_struct() {
 #[test]
 fn openrouter_like_status_is_provider_specific() {
     let _lock = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    let prev_home = std::env::var_os("JCODE_HOME");
     let prev_chutes = std::env::var_os("CHUTES_API_KEY");
     let prev_opencode = std::env::var_os("OPENCODE_API_KEY");
 
+    crate::env::set_var("JCODE_HOME", temp.path());
     crate::env::set_var("CHUTES_API_KEY", "chutes-test-key");
     crate::env::remove_var("OPENCODE_API_KEY");
     AuthStatus::invalidate_cache();
 
-    let status = AuthStatus::check();
+    let status = AuthStatus::check_fast();
     assert_eq!(
         status.state_for_provider(crate::provider_catalog::CHUTES_LOGIN_PROVIDER),
         AuthState::Available
@@ -219,6 +222,7 @@ fn openrouter_like_status_is_provider_specific() {
         "API key (`CHUTES_API_KEY`)".to_string()
     );
 
+    restore_env_var("JCODE_HOME", prev_home);
     restore_env_var("CHUTES_API_KEY", prev_chutes);
     restore_env_var("OPENCODE_API_KEY", prev_opencode);
     AuthStatus::invalidate_cache();
