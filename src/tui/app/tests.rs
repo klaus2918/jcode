@@ -4501,6 +4501,7 @@ fn configure_test_remote_models_with_openai_recommendations(app: &mut App) {
     app.remote_provider_model = Some("gpt-5.2".to_string());
     app.remote_available_entries = vec![
         "gpt-5.2".to_string(),
+        "gpt-5.5".to_string(),
         "gpt-5.4".to_string(),
         "gpt-5.4-pro".to_string(),
         "gpt-5.3-codex-spark".to_string(),
@@ -6516,6 +6517,11 @@ fn test_model_picker_preserves_recommendation_priority_order() {
 
     assert_eq!(model_names.first().copied(), Some("gpt-5.2"));
 
+    let gpt55 = picker
+        .entries
+        .iter()
+        .position(|model| model.name == "gpt-5.5")
+        .expect("gpt-5.5 should be present");
     let gpt54 = picker
         .entries
         .iter()
@@ -6542,6 +6548,11 @@ fn test_model_picker_preserves_recommendation_priority_order() {
         .position(|model| model.name == "gpt-5.3-codex")
         .expect("gpt-5.3-codex should be present");
 
+    assert!(
+        gpt55 < gpt54,
+        "gpt-5.5 should rank ahead of gpt-5.4, got {:?}",
+        model_names
+    );
     assert!(
         gpt54 < gpt54_pro,
         "gpt-5.4 should rank ahead of gpt-5.4-pro, got {:?}",
