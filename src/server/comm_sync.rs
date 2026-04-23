@@ -157,10 +157,10 @@ pub(super) async fn handle_comm_summary(
             tool_calls,
         });
     } else {
-        let _ = client_event_tx.send(ServerEvent::Error {
+        let _ = client_event_tx.send(ServerEvent::CommSummaryResponse {
             id,
-            message: format!("Unknown session '{target_session}'"),
-            retry_after_secs: None,
+            session_id: target_session,
+            tool_calls: Vec::new(),
         });
     }
 }
