@@ -118,8 +118,13 @@ pub(super) async fn cleanup_client_connection(
             match lock_result {
                 Ok(mut agent) => {
                     match disposition {
-                        DisconnectDisposition::Closed | DisconnectDisposition::Reloading => {
+                        DisconnectDisposition::Closed => {
                             agent.mark_closed();
+                        }
+                        DisconnectDisposition::Reloading => {
+                            agent.mark_crashed(Some(
+                                "Server reload interrupted processing".to_string(),
+                            ));
                         }
                         DisconnectDisposition::Crashed => {
                             agent.mark_crashed(Some(

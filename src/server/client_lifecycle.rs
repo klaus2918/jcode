@@ -52,12 +52,20 @@ use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+const RELOAD_STARTING_GUARD_MAX_AGE: Duration = Duration::from_secs(30);
+
+fn server_reload_starting() -> bool {
+    matches!(
+        crate::server::recent_reload_state(RELOAD_STARTING_GUARD_MAX_AGE),
+        Some(state) if state.phase == crate::server::ReloadPhase::Starting
+    )
+}
 
 fn is_lightweight_control_request(request: &Request) -> bool {
     matches!(
@@ -2367,6 +2375,15 @@ async fn start_processing_message(
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
 ) {
+    if server_reload_starting() {
+        crate::logging::info(&format!(
+            "Rejecting new message for session {} because server reload is starting",
+            client_session_id
+        ));
+        let _ = client_event_tx.send(ServerEvent::Reloading { new_socket: None });
+        return;
+    }
+
     if *client_is_processing {
         let _ = client_event_tx.send(ServerEvent::Error {
             id,
@@ -2605,6 +2622,40 @@ mod tests {
     #[test]
     fn ping_request_is_lightweight_control_request() {
         assert!(is_lightweight_control_request(&Request::Ping { id: 1 }));
+    }
+
+    #[test]
+    fn server_reload_starting_is_true_only_for_recent_starting_marker() {
+        let _guard = crate::storage::lock_test_env();
+        let runtime = tempfile::TempDir::new().expect("runtime dir");
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+        crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+        crate::server::clear_reload_marker();
+
+        assert!(!server_reload_starting());
+
+        crate::server::write_reload_state(
+            "reload-lifecycle-test",
+            "test-hash",
+            crate::server::ReloadPhase::Starting,
+            Some("session_test_reload".to_string()),
+        );
+        assert!(server_reload_starting());
+
+        crate::server::write_reload_state(
+            "reload-lifecycle-test",
+            "test-hash",
+            crate::server::ReloadPhase::SocketReady,
+            Some("session_test_reload".to_string()),
+        );
+        assert!(!server_reload_starting());
+
+        crate::server::clear_reload_marker();
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_DIR");
+        }
     }
 
     #[tokio::test]

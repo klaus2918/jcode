@@ -118,6 +118,89 @@ fn restored_closed_session_with_reload_marker_still_counts_as_interrupted() {
 }
 
 #[test]
+fn restored_closed_session_with_pending_user_message_during_reload_should_count_as_interrupted()
+-> Result<()> {
+    let _guard = crate::storage::lock_test_env();
+    let runtime = tempfile::TempDir::new().map_err(|e| anyhow!(e))?;
+    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+    crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+    crate::server::write_reload_state(
+        "reload-pending-user",
+        "test-hash",
+        crate::server::ReloadPhase::Starting,
+        Some("session_test_reload".to_string()),
+    );
+
+    let agent = test_agent(vec![crate::session::StoredMessage {
+        id: "msg_pending_reload".to_string(),
+        role: crate::message::Role::User,
+        content: vec![ContentBlock::Text {
+            text: "continue this after reload".to_string(),
+            cache_control: None,
+        }],
+        display_role: None,
+        timestamp: None,
+        tool_duration_ms: None,
+        token_usage: None,
+    }]);
+
+    let interrupted = restored_session_was_interrupted(
+        "session_test_reload",
+        &crate::session::SessionStatus::Closed,
+        &agent,
+    );
+
+    crate::server::clear_reload_marker();
+    if let Some(prev_runtime) = prev_runtime {
+        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+    } else {
+        crate::env::remove_var("JCODE_RUNTIME_DIR");
+    }
+
+    assert!(
+        interrupted,
+        "a session closed by reload cleanup while processing should be auto-resumed"
+    );
+    Ok(())
+}
+
+#[test]
+fn restored_closed_session_with_pending_user_message_without_reload_marker_is_not_interrupted() {
+    let _guard = crate::storage::lock_test_env();
+    let runtime = tempfile::TempDir::new().expect("runtime dir");
+    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+    crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+    crate::server::clear_reload_marker();
+
+    let agent = test_agent(vec![crate::session::StoredMessage {
+        id: "msg_pending_normal_close".to_string(),
+        role: crate::message::Role::User,
+        content: vec![ContentBlock::Text {
+            text: "normal pending user text".to_string(),
+            cache_control: None,
+        }],
+        display_role: None,
+        timestamp: None,
+        tool_duration_ms: None,
+        token_usage: None,
+    }]);
+
+    let interrupted = restored_session_was_interrupted(
+        "session_test_reload",
+        &crate::session::SessionStatus::Closed,
+        &agent,
+    );
+
+    if let Some(prev_runtime) = prev_runtime {
+        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+    } else {
+        crate::env::remove_var("JCODE_RUNTIME_DIR");
+    }
+
+    assert!(!interrupted);
+}
+
+#[test]
 fn restored_closed_session_without_reload_marker_is_not_interrupted() {
     let agent = test_agent(vec![crate::session::StoredMessage {
         id: "msg_6".to_string(),

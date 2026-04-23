@@ -21,11 +21,12 @@ use jcode_agent_runtime::InterruptSignal;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
+const RELOAD_RESTORE_MARKER_MAX_AGE: Duration = Duration::from_secs(60);
 
 pub(super) fn session_was_interrupted_by_reload(agent: &Agent) -> bool {
     let messages = agent.messages();
@@ -60,6 +61,10 @@ pub(super) fn restored_session_was_interrupted(
         .map(|role| *role == crate::message::Role::User)
         .unwrap_or(false);
     let last_is_reload_interrupted = session_was_interrupted_by_reload(agent);
+    let closed_pending_user_during_reload =
+        matches!(previous_status, crate::session::SessionStatus::Closed)
+            && last_is_user
+            && crate::server::reload_marker_active(RELOAD_RESTORE_MARKER_MAX_AGE);
 
     if last_is_user && matches!(previous_status, crate::session::SessionStatus::Active) {
         crate::logging::info(&format!(
@@ -75,11 +80,19 @@ pub(super) fn restored_session_was_interrupted(
         ));
     }
 
+    if closed_pending_user_during_reload {
+        crate::logging::info(&format!(
+            "Session {} was Closed with a pending user message during a recent reload - treating as interrupted",
+            session_id
+        ));
+    }
+
     matches!(
         previous_status,
         crate::session::SessionStatus::Crashed { .. }
     ) || (matches!(previous_status, crate::session::SessionStatus::Active) && last_is_user)
         || last_is_reload_interrupted
+        || closed_pending_user_during_reload
 }
 
 fn mark_remote_reload_started(request_id: &str) {
