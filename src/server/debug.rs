@@ -82,6 +82,67 @@ impl ClientDebugState {
         }
         None
     }
+
+    pub(super) fn sender_for_id(
+        &self,
+        client_id: &str,
+    ) -> Option<mpsc::UnboundedSender<(u64, String)>> {
+        self.clients.get(client_id).cloned()
+    }
+}
+
+async fn resolve_client_debug_sender(
+    requested_session: Option<&str>,
+    client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
+    client_debug_state: &Arc<RwLock<ClientDebugState>>,
+) -> Result<(String, mpsc::UnboundedSender<(u64, String)>)> {
+    if let Some(session_id) = requested_session.filter(|value| !value.trim().is_empty()) {
+        let active_debug_id = client_debug_state.read().await.active_id.clone();
+        let target_debug_id = {
+            let connections = client_connections.read().await;
+            connections
+                .values()
+                .filter(|info| info.session_id == session_id)
+                .filter_map(|info| {
+                    info.debug_client_id.as_ref().map(|debug_client_id| {
+                        let is_active =
+                            active_debug_id.as_deref() == Some(debug_client_id.as_str());
+                        (debug_client_id.clone(), info.last_seen, is_active)
+                    })
+                })
+                .max_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(&right.2)))
+                .map(|(debug_client_id, _, _)| debug_client_id)
+        };
+
+        let Some(debug_client_id) = target_debug_id else {
+            anyhow::bail!(
+                "Session '{}' does not have a connected TUI client for client: debug commands",
+                session_id
+            );
+        };
+
+        let sender = client_debug_state
+            .read()
+            .await
+            .sender_for_id(&debug_client_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Session '{}' debug client '{}' is not currently available",
+                    session_id,
+                    debug_client_id
+                )
+            })?;
+
+        return Ok((debug_client_id, sender));
+    }
+
+    let (client_id, sender) = {
+        let mut debug_state = client_debug_state.write().await;
+        debug_state
+            .active_sender()
+            .ok_or_else(|| anyhow::anyhow!("No TUI client connected"))?
+    };
+    Ok((client_id, sender))
 }
 
 async fn resolve_transcript_target_session(
@@ -311,14 +372,15 @@ pub(super) async fn handle_debug_client(
                         let mut attempts = 0usize;
 
                         loop {
-                            let (client_id, tx) = {
-                                let mut debug_state = client_debug_state.write().await;
-                                match debug_state.active_sender() {
-                                    Some(active) => active,
-                                    None => {
-                                        break Err(anyhow::anyhow!("No TUI client connected"));
-                                    }
-                                }
+                            let (client_id, tx) = match resolve_client_debug_sender(
+                                requested_session.as_deref(),
+                                &client_connections,
+                                &client_debug_state,
+                            )
+                            .await
+                            {
+                                Ok(target) => target,
+                                Err(err) => break Err(err),
                             };
 
                             if tx.send((id, cmd.to_string())).is_ok() {
@@ -346,7 +408,10 @@ pub(super) async fn handle_debug_client(
                                 let mut debug_state = client_debug_state.write().await;
                                 debug_state.unregister(&client_id);
                                 attempts += 1;
-                                if debug_state.clients.is_empty() || attempts > 8 {
+                                if requested_session.is_some()
+                                    || debug_state.clients.is_empty()
+                                    || attempts > 8
+                                {
                                     break Err(anyhow::anyhow!("No TUI client connected"));
                                 }
                             }
@@ -596,7 +661,10 @@ mod tests {
 
 #[cfg(test)]
 mod transcript_routing_tests {
-    use super::{ClientConnectionInfo, ClientDebugState, resolve_transcript_target_session};
+    use super::{
+        ClientConnectionInfo, ClientDebugState, resolve_client_debug_sender,
+        resolve_transcript_target_session,
+    };
     use crate::protocol::ServerEvent;
     use crate::server::SwarmMember;
     use std::collections::HashMap;
@@ -936,6 +1004,103 @@ mod transcript_routing_tests {
         .expect("resolve transcript target from focused session");
 
         assert_eq!(resolved, swan);
+    }
+
+    #[tokio::test]
+    async fn resolve_client_debug_sender_uses_requested_session() {
+        let (tx_target, _rx_target) = mpsc::unbounded_channel();
+        let (tx_other, _rx_other) = mpsc::unbounded_channel();
+
+        let client_debug_state = Arc::new(RwLock::new(ClientDebugState::default()));
+        {
+            let mut state = client_debug_state.write().await;
+            state.register("debug-target".to_string(), tx_target.clone());
+            state.register("debug-other".to_string(), tx_other.clone());
+            state.active_id = Some("debug-other".to_string());
+        }
+
+        let now = Instant::now();
+        let client_connections = Arc::new(RwLock::new(HashMap::from([
+            (
+                "target".to_string(),
+                connection("session-target", "debug-target", now),
+            ),
+            (
+                "other".to_string(),
+                connection("session-other", "debug-other", now),
+            ),
+        ])));
+
+        let (client_id, _sender) = resolve_client_debug_sender(
+            Some("session-target"),
+            &client_connections,
+            &client_debug_state,
+        )
+        .await
+        .expect("requested session should resolve");
+
+        assert_eq!(client_id, "debug-target");
+    }
+
+    #[tokio::test]
+    async fn resolve_client_debug_sender_prefers_most_recent_requested_session_connection() {
+        let (tx_old, _rx_old) = mpsc::unbounded_channel();
+        let (tx_new, _rx_new) = mpsc::unbounded_channel();
+
+        let client_debug_state = Arc::new(RwLock::new(ClientDebugState::default()));
+        {
+            let mut state = client_debug_state.write().await;
+            state.register("debug-old".to_string(), tx_old.clone());
+            state.register("debug-new".to_string(), tx_new.clone());
+        }
+
+        let now = Instant::now();
+        let client_connections = Arc::new(RwLock::new(HashMap::from([
+            (
+                "old".to_string(),
+                connection(
+                    "session-target",
+                    "debug-old",
+                    now - std::time::Duration::from_secs(30),
+                ),
+            ),
+            (
+                "new".to_string(),
+                connection("session-target", "debug-new", now),
+            ),
+        ])));
+
+        let (client_id, _sender) = resolve_client_debug_sender(
+            Some("session-target"),
+            &client_connections,
+            &client_debug_state,
+        )
+        .await
+        .expect("most recent session client should resolve");
+
+        assert_eq!(client_id, "debug-new");
+    }
+
+    #[tokio::test]
+    async fn resolve_client_debug_sender_without_request_uses_active_client() {
+        let (tx_a, _rx_a) = mpsc::unbounded_channel();
+        let (tx_b, _rx_b) = mpsc::unbounded_channel();
+
+        let client_debug_state = Arc::new(RwLock::new(ClientDebugState::default()));
+        {
+            let mut state = client_debug_state.write().await;
+            state.register("debug-a".to_string(), tx_a.clone());
+            state.register("debug-b".to_string(), tx_b.clone());
+        }
+
+        let client_connections = Arc::new(RwLock::new(HashMap::new()));
+
+        let (client_id, _sender) =
+            resolve_client_debug_sender(None, &client_connections, &client_debug_state)
+                .await
+                .expect("active client should resolve");
+
+        assert_eq!(client_id, "debug-b");
     }
 }
 

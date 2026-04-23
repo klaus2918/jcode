@@ -11,7 +11,16 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+fn next_debug_request_id() -> u64 {
+    static NEXT_ID: OnceLock<AtomicU64> = OnceLock::new();
+    NEXT_ID
+        .get_or_init(|| AtomicU64::new(1))
+        .fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Debug, Deserialize)]
 struct DebugSocketInput {
@@ -120,7 +129,7 @@ async fn execute_debug_command(
 
     // Build request
     let request = Request::DebugCommand {
-        id: 1,
+        id: next_debug_request_id(),
         command: command.to_string(),
         session_id,
     };
