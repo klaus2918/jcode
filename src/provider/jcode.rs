@@ -16,7 +16,7 @@ impl JcodeProvider {
     pub fn new() -> Self {
         crate::subscription_catalog::apply_runtime_env();
         Self::apply_runtime_profile();
-        let inner = MultiProvider::new();
+        let inner = MultiProvider::new_fast();
         let default_model = crate::subscription_catalog::default_model().id.to_string();
         let _ = inner.set_model(&default_model);
         Self {
