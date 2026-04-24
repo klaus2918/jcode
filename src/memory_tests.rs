@@ -457,6 +457,32 @@ fn prompt_memories_scoped_keeps_only_most_recent_entries() {
 }
 
 #[test]
+fn goal_memory_upsert_skips_embedding_generation() {
+    with_temp_home(|_home| {
+        let manager = MemoryManager::new().with_project_dir("/tmp/jcode-goal-memory");
+
+        let mut entry = MemoryEntry::new(
+            MemoryCategory::Custom("goal".to_string()),
+            "Goal: Ship mobile MVP\nStatus: active\nScope: project",
+        );
+        entry.id = "goal:ship-mobile-mvp".to_string();
+
+        manager
+            .upsert_project_memory(entry)
+            .expect("upsert goal memory");
+
+        let graph = manager.load_project_graph().expect("load graph");
+        let saved = graph
+            .get_memory("goal:ship-mobile-mvp")
+            .expect("saved goal memory");
+        assert!(
+            saved.embedding.is_none(),
+            "goal memory mirrors should not synchronously load/generate embeddings"
+        );
+    });
+}
+
+#[test]
 fn scoped_retrieval_respects_project_vs_global() {
     with_temp_home(|_home| {
         let manager = MemoryManager::new().with_project_dir("/tmp/jcode-scope-test");

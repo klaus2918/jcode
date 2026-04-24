@@ -1065,7 +1065,10 @@ impl MemoryManager {
         mut entry: MemoryEntry,
     ) -> String {
         let id = entry.id.clone();
-        entry.ensure_embedding();
+        let should_generate_embedding = Self::should_generate_embedding_for_entry(&entry);
+        if should_generate_embedding {
+            entry.ensure_embedding();
+        }
 
         let Some(existing_snapshot) = graph.get_memory(&id).cloned() else {
             return graph.add_memory(entry);
@@ -1093,13 +1096,19 @@ impl MemoryManager {
             existing.active = entry.active;
             existing.superseded_by = entry.superseded_by;
             existing.confidence = entry.confidence;
-            if content_changed {
+            if content_changed && should_generate_embedding {
                 existing.embedding = None;
                 existing.ensure_embedding();
+            } else if content_changed {
+                existing.embedding = None;
             }
         }
 
         id
+    }
+
+    fn should_generate_embedding_for_entry(entry: &MemoryEntry) -> bool {
+        !matches!(&entry.category, MemoryCategory::Custom(category) if category == "goal")
     }
 
     fn find_duplicate_in_graph(
