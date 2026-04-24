@@ -431,6 +431,15 @@ impl App {
                                         if let Some(mut tool) = current_tool.take() {
                                             tool.input = serde_json::from_str(&current_tool_input)
                                                 .unwrap_or(serde_json::Value::Null);
+                                            tool.refresh_intent_from_input();
+                                            if let Some(streaming_tool) = self
+                                                .streaming_tool_calls
+                                                .iter_mut()
+                                                .find(|tc| tc.id == tool.id)
+                                            {
+                                                streaming_tool.input = tool.input.clone();
+                                                streaming_tool.intent = tool.intent.clone();
+                                            }
                                             self.broadcast_debug(crate::tui::backend::DebugEvent::ToolExec {
                                                 id: tool.id.clone(),
                                                 name: tool.name.clone(),

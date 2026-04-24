@@ -230,6 +230,7 @@ impl Agent {
                                 serde_json::from_str::<serde_json::Value>(&current_tool_input)
                                     .unwrap_or(serde_json::Value::Null);
                             tool.input = tool_input.clone();
+                            tool.intent = ToolCall::intent_from_input(&tool_input);
 
                             if trace {
                                 if current_tool_input.trim().is_empty() {

@@ -931,12 +931,6 @@ pub(super) fn get_tool_summary_with_budget(
 ) -> String {
     let bounded = |preferred: usize| max_width.unwrap_or(preferred);
 
-    if let Some(intent) = tool.intent.as_deref().filter(|value| !value.is_empty()) {
-        return max_width
-            .map(|width| truncate_middle_display(intent, width))
-            .unwrap_or_else(|| intent.to_string());
-    }
-
     match canonical_tool_name(&tool.name) {
         "bash" => tool
             .input
@@ -1313,6 +1307,27 @@ pub(super) fn get_tool_summary_with_budget(
                 .unwrap_or("?");
             action.to_string()
         }
+        "side_panel" => {
+            let action = tool
+                .input
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let target = tool
+                .input
+                .get("title")
+                .or_else(|| tool.input.get("page_id"))
+                .or_else(|| tool.input.get("file_path"))
+                .and_then(|v| v.as_str());
+            if let Some(target) = target {
+                let target = max_width
+                    .map(|w| truncate_middle_display(target, w.saturating_sub(action.len() + 1)))
+                    .unwrap_or_else(|| target.to_string());
+                format!("{} {}", action, target).trim().to_string()
+            } else {
+                action.to_string()
+            }
+        }
         "swarm" => summarize_swarm_tool_action(tool, &bounded),
         "session_search" => tool
             .input
@@ -1440,12 +1455,27 @@ pub(super) fn render_batch_subcall_line(
         });
     let summary_budget = max_width.map(|w| w.saturating_sub(reserved));
     let summary = get_tool_summary_with_budget(tool, bash_max_chars, summary_budget);
+    let intent = tool
+        .intent
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     let mut spans = vec![
         Span::styled(format!("    {} ", icon), Style::default().fg(icon_color)),
         Span::styled(display_name, Style::default().fg(tool_color())),
     ];
-    if !summary.is_empty() {
+    if let Some(intent) = intent {
+        spans.push(Span::styled(" · ", Style::default().fg(dim_color())));
+        spans.push(Span::styled(
+            intent.to_string(),
+            Style::default().fg(tool_color()),
+        ));
+        if !summary.is_empty() && summary != intent {
+            spans.push(Span::styled(" · ", Style::default().fg(dim_color())));
+            spans.push(Span::styled(summary, Style::default().fg(dim_color())));
+        }
+    } else if !summary.is_empty() {
         spans.push(Span::styled(
             format!(" {}", summary),
             Style::default().fg(dim_color()),

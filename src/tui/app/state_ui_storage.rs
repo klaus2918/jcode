@@ -193,7 +193,7 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
                                 name: crate::tui::ui::tools_ui::resolve_display_tool_name(raw_name)
                                     .to_string(),
                                 input: params.clone(),
-                                intent: None,
+                                intent: crate::message::ToolCall::intent_from_input(&params),
                             };
                             let summary = crate::tui::ui::tools_ui::get_tool_summary(&sub_tool);
                             let compacted = compact_tool_input_for_display(raw_name, &params);
@@ -229,10 +229,6 @@ pub(crate) fn compact_display_message_tool_data(message: &mut DisplayMessage) {
     let Some(tool) = message.tool_data.as_mut() else {
         return;
     };
-    let summary = crate::tui::ui::tools_ui::get_tool_summary(tool);
-    if !summary.is_empty() {
-        tool.intent = Some(summary);
-    }
     tool.input = compact_tool_input_for_display(tool.name.as_str(), &tool.input);
 }
 

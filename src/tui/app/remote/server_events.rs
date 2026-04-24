@@ -98,10 +98,11 @@ pub(in crate::tui::app) fn handle_server_event(
                 id: id.clone(),
                 name: name.clone(),
                 input: parsed_input.clone(),
-                intent: None,
+                intent: ToolCall::intent_from_input(&parsed_input),
             };
             if let Some(tc) = app.streaming_tool_calls.iter_mut().find(|tc| tc.id == id) {
                 tc.input = parsed_input;
+                tc.refresh_intent_from_input();
             }
             remote.handle_tool_exec(&id, &name);
             app.observe_tool_call(&tool_call);
@@ -125,18 +126,17 @@ pub(in crate::tui::app) fn handle_server_event(
             } else {
                 display_output
             };
-            let tool_input = app
+            let existing_tool_call = app
                 .streaming_tool_calls
                 .iter()
                 .find(|tc| tc.id == id)
-                .map(|tc| tc.input.clone())
-                .unwrap_or(serde_json::Value::Null);
-            let tool_call = ToolCall {
-                id,
-                name,
-                input: tool_input,
+                .cloned();
+            let tool_call = existing_tool_call.unwrap_or_else(|| ToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                input: serde_json::Value::Null,
                 intent: None,
-            };
+            });
             app.commit_pending_streaming_assistant_message();
             crate::tui::mermaid::clear_streaming_preview_diagram();
             let is_batch = tool_call.name == "batch";

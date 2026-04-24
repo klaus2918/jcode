@@ -88,11 +88,12 @@ impl Agent {
             "[agent] Recovered text-wrapped tool call for '{}' ({}, total={})",
             tool_name, call_id, recovered_total
         ));
+        let intent = ToolCall::intent_from_input(&arguments);
         tool_calls.push(ToolCall {
             id: call_id,
             name: tool_name,
             input: arguments,
-            intent: None,
+            intent,
         });
 
         true

@@ -1100,6 +1100,17 @@ pub(crate) fn render_tool_message(
         .saturating_sub(token_suffix_width)
         .saturating_sub(edit_suffix_width);
 
+    let intent = tc
+        .intent
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let intent_reserved_width = intent
+        .map(|intent| UnicodeWidthStr::width(intent).saturating_add(3))
+        .unwrap_or(0)
+        .min(reserved_summary_width.saturating_sub(8));
+    let technical_summary_width = reserved_summary_width.saturating_sub(intent_reserved_width);
+
     let summary = if tc.name == "subagent" {
         msg.title
             .as_deref()
@@ -1107,21 +1118,36 @@ pub(crate) fn render_tool_message(
             .map(|title| {
                 super::line_plain_text(&super::truncate_line_with_ellipsis_to_width(
                     &Line::from(title.to_string()),
-                    reserved_summary_width,
+                    technical_summary_width,
                 ))
             })
             .unwrap_or_else(|| {
-                tools_ui::get_tool_summary_with_budget(tc, 50, Some(reserved_summary_width))
+                tools_ui::get_tool_summary_with_budget(tc, 50, Some(technical_summary_width))
             })
     } else {
-        tools_ui::get_tool_summary_with_budget(tc, 50, Some(reserved_summary_width))
+        tools_ui::get_tool_summary_with_budget(tc, 50, Some(technical_summary_width))
     };
 
     let mut tool_line = vec![
         Span::styled(format!("  {} ", icon), Style::default().fg(icon_color)),
         Span::styled(display_name, Style::default().fg(tool_color())),
-        Span::styled(format!(" {}", summary), Style::default().fg(dim_color())),
     ];
+    if let Some(intent) = intent {
+        tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
+        tool_line.push(Span::styled(
+            intent.to_string(),
+            Style::default().fg(tool_color()),
+        ));
+        if !summary.is_empty() && summary != intent {
+            tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
+            tool_line.push(Span::styled(summary, Style::default().fg(dim_color())));
+        }
+    } else if !summary.is_empty() {
+        tool_line.push(Span::styled(
+            format!(" {}", summary),
+            Style::default().fg(dim_color()),
+        ));
+    }
     if is_edit_tool {
         tool_line.push(Span::styled(" (", Style::default().fg(dim_color())));
         tool_line.push(Span::styled(
@@ -1864,6 +1890,36 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("subagent Verify subagent model (general · gpt-5.4)"));
+    }
+
+    #[test]
+    fn render_tool_message_shows_intent_and_technical_preview_on_one_line() {
+        let msg = DisplayMessage {
+            role: "tool".to_string(),
+            content: "ok".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: Some(crate::message::ToolCall {
+                id: "call_intent".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({
+                    "command": "cargo test -p jcode render_background_task --lib",
+                    "intent": "Verify compact progress card"
+                }),
+                intent: Some("Verify compact progress card".to_string()),
+            }),
+        };
+
+        let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+        let rendered = extract_line_text(&lines[0]);
+
+        assert!(rendered.contains("bash · Verify compact progress card · $ cargo test"));
+        assert_eq!(
+            lines.len(),
+            1,
+            "intent should not add vertical space: {rendered}"
+        );
     }
 
     #[test]

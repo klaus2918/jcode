@@ -298,6 +298,7 @@ impl Agent {
                                 serde_json::from_str::<serde_json::Value>(&current_tool_input)
                                     .unwrap_or(serde_json::Value::Null);
                             tool.input = tool_input;
+                            tool.refresh_intent_from_input();
 
                             let _ = event_tx.send(ServerEvent::ToolExec {
                                 id: tool.id.clone(),

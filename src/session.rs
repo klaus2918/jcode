@@ -2156,7 +2156,7 @@ pub fn render_messages_and_images(session: &Session) -> (Vec<RenderedMessage>, V
                         id: id.clone(),
                         name: name.clone(),
                         input: input.clone(),
-                        intent: None,
+                        intent: ToolCall::intent_from_input(input),
                     };
                     tool_map.insert(id.clone(), tool_call);
                     tool_calls.push(name.clone());

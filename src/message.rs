@@ -578,6 +578,21 @@ pub struct ToolCall {
     pub intent: Option<String>,
 }
 
+impl ToolCall {
+    pub fn intent_from_input(input: &serde_json::Value) -> Option<String> {
+        input
+            .get("intent")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|intent| !intent.is_empty())
+            .map(ToString::to_string)
+    }
+
+    pub fn refresh_intent_from_input(&mut self) {
+        self.intent = Self::intent_from_input(&self.input);
+    }
+}
+
 /// Connection phase for status bar transparency
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionPhase {
@@ -686,6 +701,22 @@ mod tests {
         assert_eq!(
             sanitize_tool_id("call_1234567890_9876543210"),
             "call_1234567890_9876543210"
+        );
+    }
+
+    #[test]
+    fn tool_call_intent_from_input_trims_optional_intent() {
+        let input = serde_json::json!({
+            "intent": "  Verify compact rendering  ",
+            "command": "cargo test"
+        });
+        assert_eq!(
+            ToolCall::intent_from_input(&input).as_deref(),
+            Some("Verify compact rendering")
+        );
+        assert_eq!(
+            ToolCall::intent_from_input(&serde_json::json!({"intent": "  "})),
+            None
         );
     }
 

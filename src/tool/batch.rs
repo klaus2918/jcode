@@ -46,7 +46,7 @@ fn ordered_batch_subcalls(
                 id: format!("batch-{}-{}", i + 1, tool_name),
                 name: tool_name.clone(),
                 input: parameters.clone(),
-                intent: None,
+                intent: ToolCall::intent_from_input(parameters),
             });
             let state = if running.contains_key(i) {
                 BatchSubcallState::Running
@@ -203,7 +203,7 @@ impl Tool for BatchTool {
                         id: format!("batch-{}-{}", i + 1, tool_name),
                         name: tool_name.clone(),
                         input: parameters.clone(),
-                        intent: None,
+                        intent: ToolCall::intent_from_input(parameters),
                     },
                 )
             })

@@ -48,6 +48,11 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use tokio::sync::RwLock;
 
+const TOOL_INTENT_DESCRIPTION: &str = concat!(
+    "Short natural-language label explaining why this tool call is being made. ",
+    "Used for compact UI display; omit when the action is already self-explanatory."
+);
+
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     pub output: String,
@@ -115,6 +120,34 @@ pub struct StdinInputRequest {
     pub response_tx: tokio::sync::oneshot::Sender<String>,
 }
 
+fn schema_with_common_intent(mut schema: Value) -> Value {
+    let Some(object) = schema.as_object_mut() else {
+        return schema;
+    };
+    if object.get("type") != Some(&Value::String("object".to_string())) {
+        return schema;
+    }
+
+    let properties = object
+        .entry("properties".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Some(properties) = properties.as_object_mut() else {
+        return schema;
+    };
+
+    properties.entry("intent".to_string()).or_insert_with(|| {
+        let mut intent = serde_json::Map::new();
+        intent.insert("type".to_string(), Value::String("string".to_string()));
+        intent.insert(
+            "description".to_string(),
+            Value::String(TOOL_INTENT_DESCRIPTION.to_string()),
+        );
+        Value::Object(intent)
+    });
+
+    schema
+}
+
 #[derive(Clone)]
 pub struct ToolContext {
     pub session_id: String,
@@ -176,7 +209,7 @@ pub trait Tool: Send + Sync {
         ToolDefinition {
             name: self.name().to_string(),
             description: self.description().to_string(),
-            input_schema: self.parameters_schema(),
+            input_schema: schema_with_common_intent(self.parameters_schema()),
         }
     }
 }
@@ -839,6 +872,25 @@ mod tests {
         assert_eq!(
             names, sorted_names,
             "Tool definitions should be sorted alphabetically"
+        );
+    }
+
+    #[test]
+    fn common_intent_is_added_to_tool_definitions() {
+        let schema = schema_with_common_intent(serde_json::json!({
+            "type": "object",
+            "required": ["command"],
+            "properties": {
+                "command": {"type": "string"}
+            }
+        }));
+
+        assert_eq!(schema["properties"]["intent"]["type"], "string");
+        assert!(
+            schema["properties"]["intent"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("why this tool call")
         );
     }
 
