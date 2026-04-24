@@ -884,6 +884,7 @@ fn test_fallback_sequence_includes_all_providers() {
             ActiveProvider::Copilot,
             ActiveProvider::Claude,
             ActiveProvider::OpenAI,
+            ActiveProvider::Antigravity,
             ActiveProvider::Gemini,
             ActiveProvider::Cursor,
             ActiveProvider::OpenRouter,
@@ -895,6 +896,7 @@ fn test_fallback_sequence_includes_all_providers() {
             ActiveProvider::Gemini,
             ActiveProvider::Claude,
             ActiveProvider::OpenAI,
+            ActiveProvider::Antigravity,
             ActiveProvider::Copilot,
             ActiveProvider::Cursor,
             ActiveProvider::OpenRouter,
@@ -907,6 +909,7 @@ fn test_fallback_sequence_includes_all_providers() {
             ActiveProvider::Claude,
             ActiveProvider::OpenAI,
             ActiveProvider::Copilot,
+            ActiveProvider::Antigravity,
             ActiveProvider::Gemini,
             ActiveProvider::Cursor,
         ]

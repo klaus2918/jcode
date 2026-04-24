@@ -1629,6 +1629,10 @@ impl Provider for MultiProvider {
     }
 
     fn on_auth_changed(&self) {
+        // Auth just changed, so discard any stale full/fast snapshots before
+        // using cheap local probes to hot-initialize newly configured providers.
+        crate::auth::AuthStatus::invalidate_cache();
+
         if self.use_claude_cli {
             if self.claude_provider().is_none() && crate::auth::claude::load_credentials().is_ok() {
                 crate::logging::info("Hot-initialized Claude CLI provider after auth change");
@@ -1683,7 +1687,7 @@ impl Provider for MultiProvider {
 
         let already_has = self.copilot_provider().is_some();
         if !already_has {
-            let status = crate::auth::AuthStatus::check();
+            let status = crate::auth::AuthStatus::check_fast();
             if status.copilot_has_api_token {
                 match copilot::CopilotApiProvider::new() {
                     Ok(p) => {
@@ -1731,7 +1735,7 @@ impl Provider for MultiProvider {
         let already_has_cursor = self.cursor_provider().is_some();
         if !already_has_cursor
             && matches!(
-                crate::auth::AuthStatus::check().cursor,
+                crate::auth::AuthStatus::check_fast().cursor,
                 crate::auth::AuthState::Available
             )
         {

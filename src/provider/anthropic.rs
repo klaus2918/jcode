@@ -952,7 +952,8 @@ impl Provider for AnthropicProvider {
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
-        crate::provider::cached_anthropic_model_ids().unwrap_or_else(|| vec![self.model()])
+        crate::provider::cached_anthropic_model_ids()
+            .unwrap_or_else(crate::provider::known_anthropic_model_ids)
     }
 
     fn available_models_display(&self) -> Vec<String> {
