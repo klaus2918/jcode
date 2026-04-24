@@ -2593,6 +2593,35 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+    struct IsolatedRuntimeDir {
+        _prev_runtime: Option<std::ffi::OsString>,
+        _temp: tempfile::TempDir,
+    }
+
+    impl IsolatedRuntimeDir {
+        fn new() -> Self {
+            let temp = tempfile::TempDir::new().expect("runtime dir");
+            let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+            crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+            crate::server::clear_reload_marker();
+            Self {
+                _prev_runtime: prev_runtime,
+                _temp: temp,
+            }
+        }
+    }
+
+    impl Drop for IsolatedRuntimeDir {
+        fn drop(&mut self) {
+            crate::server::clear_reload_marker();
+            if let Some(prev_runtime) = self._prev_runtime.take() {
+                crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+            } else {
+                crate::env::remove_var("JCODE_RUNTIME_DIR");
+            }
+        }
+    }
+
     struct PanicOnForkProvider {
         forked: Arc<AtomicBool>,
     }
@@ -2627,10 +2656,7 @@ mod tests {
     #[test]
     fn server_reload_starting_is_true_only_for_recent_starting_marker() {
         let _guard = crate::storage::lock_test_env();
-        let runtime = tempfile::TempDir::new().expect("runtime dir");
-        let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
-        crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
-        crate::server::clear_reload_marker();
+        let _runtime = IsolatedRuntimeDir::new();
 
         assert!(!server_reload_starting());
 
@@ -2649,13 +2675,83 @@ mod tests {
             Some("session_test_reload".to_string()),
         );
         assert!(!server_reload_starting());
+    }
 
-        crate::server::clear_reload_marker();
-        if let Some(prev_runtime) = prev_runtime {
-            crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
-        } else {
-            crate::env::remove_var("JCODE_RUNTIME_DIR");
-        }
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn reload_starting_rejects_new_turn_without_spawning_processing_task() {
+        let _guard = crate::storage::lock_test_env();
+        let _runtime = IsolatedRuntimeDir::new();
+        crate::server::write_reload_state(
+            "reload-lifecycle-starting",
+            "test-hash",
+            crate::server::ReloadPhase::Starting,
+            Some("session_guard".to_string()),
+        );
+
+        let forked = Arc::new(AtomicBool::new(false));
+        let provider: Arc<dyn Provider> = Arc::new(PanicOnForkProvider {
+            forked: Arc::clone(&forked),
+        });
+        let registry = Registry::new(Arc::clone(&provider)).await;
+        let mut session =
+            crate::session::Session::create_with_id("session_guard".to_string(), None, None);
+        session.model = Some("panic-on-fork".to_string());
+        let agent = Arc::new(Mutex::new(Agent::new_with_session(
+            provider, registry, session, None,
+        )));
+
+        let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
+        let (processing_done_tx, mut processing_done_rx) = mpsc::unbounded_channel();
+        let mut client_is_processing = false;
+        let mut processing_message_id = None;
+        let mut processing_session_id = None;
+        let mut processing_task = None;
+        let swarm_members = Arc::new(RwLock::new(HashMap::new()));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::new()));
+        let event_history = Arc::new(RwLock::new(std::collections::VecDeque::new()));
+        let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (swarm_event_tx, _) = broadcast::channel(8);
+
+        start_processing_message(
+            42,
+            "do not start during reload".to_string(),
+            Vec::new(),
+            None,
+            "session_guard",
+            &mut client_is_processing,
+            &mut processing_message_id,
+            &mut processing_session_id,
+            &mut processing_task,
+            &agent,
+            &client_event_tx,
+            &processing_done_tx,
+            &swarm_members,
+            &swarms_by_id,
+            &event_history,
+            &event_counter,
+            &swarm_event_tx,
+        )
+        .await;
+
+        let event = client_event_rx
+            .recv()
+            .await
+            .expect("reload event should be sent to client");
+        assert!(matches!(event, ServerEvent::Reloading { new_socket: None }));
+        assert!(
+            client_event_rx.try_recv().is_err(),
+            "reload guard should only emit the reload notification"
+        );
+        assert!(!client_is_processing);
+        assert_eq!(processing_message_id, None);
+        assert_eq!(processing_session_id, None);
+        assert!(processing_task.is_none());
+        assert!(processing_done_rx.try_recv().is_err());
+        assert!(
+            !forked.load(Ordering::SeqCst),
+            "rejecting during reload should not fork or invoke provider work"
+        );
     }
 
     #[tokio::test]

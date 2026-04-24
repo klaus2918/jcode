@@ -165,6 +165,53 @@ fn restored_closed_session_with_pending_user_message_during_reload_should_count_
 }
 
 #[test]
+fn restored_closed_session_with_pending_user_message_during_socket_ready_handoff_counts_as_interrupted()
+-> Result<()> {
+    let _guard = crate::storage::lock_test_env();
+    let runtime = tempfile::TempDir::new().map_err(|e| anyhow!(e))?;
+    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+    crate::env::set_var("JCODE_RUNTIME_DIR", runtime.path());
+    crate::server::write_reload_state(
+        "reload-pending-user-ready",
+        "test-hash",
+        crate::server::ReloadPhase::SocketReady,
+        Some("session_test_reload".to_string()),
+    );
+
+    let agent = test_agent(vec![crate::session::StoredMessage {
+        id: "msg_pending_reload_ready".to_string(),
+        role: crate::message::Role::User,
+        content: vec![ContentBlock::Text {
+            text: "continue this after socket-ready handoff".to_string(),
+            cache_control: None,
+        }],
+        display_role: None,
+        timestamp: None,
+        tool_duration_ms: None,
+        token_usage: None,
+    }]);
+
+    let interrupted = restored_session_was_interrupted(
+        "session_test_reload",
+        &crate::session::SessionStatus::Closed,
+        &agent,
+    );
+
+    crate::server::clear_reload_marker();
+    if let Some(prev_runtime) = prev_runtime {
+        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+    } else {
+        crate::env::remove_var("JCODE_RUNTIME_DIR");
+    }
+
+    assert!(
+        interrupted,
+        "a pending user turn closed during socket-ready handoff should still be auto-resumed"
+    );
+    Ok(())
+}
+
+#[test]
 fn restored_closed_session_with_pending_user_message_without_reload_marker_is_not_interrupted() {
     let _guard = crate::storage::lock_test_env();
     let runtime = tempfile::TempDir::new().expect("runtime dir");

@@ -631,10 +631,15 @@ pub(in crate::tui::app) async fn handle_post_connect<B: ratatui::backend::Backen
             .map(|(resume_id, remote_id)| resume_id == remote_id)
             .unwrap_or(false)
         && !app.display_messages.is_empty();
+    let reload_ctx_available = hints.reload_ctx_for_session.is_some();
+    let history_already_loaded = remote.has_loaded_history();
 
-    if same_session_reload_fast_path || hints.has_client_reload_marker {
+    if same_session_reload_fast_path
+        || hints.has_client_reload_marker
+        || (reload_ctx_available && history_already_loaded)
+    {
         finalize_reload_reconnect(app, session_to_resume, hints, state.reconnect_attempts > 0);
-    } else if hints.reload_ctx_for_session.is_some() {
+    } else if reload_ctx_available {
         ReloadContext::log_recovery_outcome(
             "tui_reconnect",
             session_to_resume.unwrap_or("unknown"),
