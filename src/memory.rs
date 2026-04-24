@@ -973,7 +973,9 @@ impl MemoryManager {
 
     pub fn remember_project(&self, entry: MemoryEntry) -> Result<String> {
         let mut entry = entry;
-        entry.ensure_embedding();
+        if self.should_generate_embedding_for_entry(&entry) {
+            entry.ensure_embedding();
+        }
 
         let mut graph = self.load_project_graph()?;
 
@@ -1006,7 +1008,9 @@ impl MemoryManager {
 
     pub fn remember_global(&self, entry: MemoryEntry) -> Result<String> {
         let mut entry = entry;
-        entry.ensure_embedding();
+        if self.should_generate_embedding_for_entry(&entry) {
+            entry.ensure_embedding();
+        }
 
         let mut graph = self.load_global_graph()?;
 
@@ -1045,7 +1049,7 @@ impl MemoryManager {
     /// content and tags.
     pub fn upsert_project_memory(&self, entry: MemoryEntry) -> Result<String> {
         let mut graph = self.load_project_graph()?;
-        let id = Self::upsert_memory_in_graph(&mut graph, entry);
+        let id = self.upsert_memory_in_graph(&mut graph, entry);
         self.save_project_graph(&graph)?;
         Ok(id)
     }
@@ -1055,17 +1059,18 @@ impl MemoryManager {
     /// content and tags.
     pub fn upsert_global_memory(&self, entry: MemoryEntry) -> Result<String> {
         let mut graph = self.load_global_graph()?;
-        let id = Self::upsert_memory_in_graph(&mut graph, entry);
+        let id = self.upsert_memory_in_graph(&mut graph, entry);
         self.save_global_graph(&graph)?;
         Ok(id)
     }
 
     fn upsert_memory_in_graph(
+        &self,
         graph: &mut crate::memory_graph::MemoryGraph,
         mut entry: MemoryEntry,
     ) -> String {
         let id = entry.id.clone();
-        let should_generate_embedding = Self::should_generate_embedding_for_entry(&entry);
+        let should_generate_embedding = self.should_generate_embedding_for_entry(&entry);
         if should_generate_embedding {
             entry.ensure_embedding();
         }
@@ -1107,7 +1112,16 @@ impl MemoryManager {
         id
     }
 
-    fn should_generate_embedding_for_entry(entry: &MemoryEntry) -> bool {
+    fn should_generate_embedding_for_entry(&self, entry: &MemoryEntry) -> bool {
+        if self.test_mode {
+            return false;
+        }
+
+        #[cfg(test)]
+        if std::env::var_os("JCODE_TEST_ALLOW_MEMORY_EMBEDDINGS").is_none() {
+            return false;
+        }
+
         !matches!(&entry.category, MemoryCategory::Custom(category) if category == "goal")
     }
 
