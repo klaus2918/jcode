@@ -126,6 +126,10 @@ pub(super) fn handle_bus_event(
             app.handle_usage_report(results);
             true
         }
+        Ok(BusEvent::UsageReportProgress(progress)) => {
+            app.handle_usage_report_progress(progress);
+            true
+        }
         Ok(BusEvent::LoginCompleted(login)) => {
             app.handle_login_completed(login);
             true

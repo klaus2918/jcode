@@ -1856,18 +1856,18 @@ fn test_usage_report_shows_no_connected_providers_when_results_empty() {
     let mut app = create_test_app();
     app.handle_usage_report(Vec::new());
 
-    let msg = app
-        .display_messages()
-        .last()
-        .expect("missing /usage response");
-    assert_eq!(msg.role, "system");
-    assert!(msg.content.contains("## Usage"));
-    assert!(
-        msg.content
-            .contains("No providers with OAuth credentials found")
+    assert!(app.display_messages().is_empty());
+    let overlay = app.usage_overlay.as_ref().expect("missing usage overlay");
+    assert_eq!(
+        overlay.borrow().selected_item_title(),
+        Some("No connected providers")
     );
-    assert!(msg.content.contains("/login claude"));
-    assert!(msg.content.contains("/login openai"));
+    assert!(
+        overlay
+            .borrow()
+            .selected_item_detail_text()
+            .contains("/login claude")
+    );
 }
 
 #[test]
@@ -1877,8 +1877,8 @@ fn test_usage_command_requests_usage_report_with_inline_view() {
     assert!(super::commands::handle_usage_command(&mut app, "/usage"));
 
     assert!(app.inline_interactive_state.is_none());
-    assert!(app.usage_overlay.is_none());
-    assert!(app.inline_view_state.is_some());
+    assert!(app.usage_overlay.is_some());
+    assert!(app.inline_view_state.is_none());
     assert!(app.usage_report_refreshing);
 }
 
@@ -1890,8 +1890,8 @@ fn test_usage_submit_input_requests_usage_report_with_inline_view() {
     app.submit_input();
 
     assert!(app.inline_interactive_state.is_none());
-    assert!(app.usage_overlay.is_none());
-    assert!(app.inline_view_state.is_some());
+    assert!(app.usage_overlay.is_some());
+    assert!(app.inline_view_state.is_none());
     assert!(app.display_messages().is_empty());
     assert!(app.usage_report_refreshing);
 }
@@ -1923,14 +1923,14 @@ fn test_usage_enter_requests_report_with_inline_view() {
         .expect("submit /usage");
 
     assert!(app.inline_interactive_state.is_none());
-    assert!(app.usage_overlay.is_none());
-    assert!(app.inline_view_state.is_some());
+    assert!(app.usage_overlay.is_some());
+    assert!(app.inline_view_state.is_none());
     assert_eq!(app.input(), "");
     assert!(app.usage_report_refreshing);
 }
 
 #[test]
-fn test_usage_report_pushes_system_message() {
+fn test_usage_report_updates_custom_overlay_without_system_message() {
     let mut app = create_test_app();
     app.usage_report_refreshing = true;
     app.handle_usage_report(vec![crate::usage::ProviderUsage {
@@ -1947,16 +1947,43 @@ fn test_usage_report_pushes_system_message() {
 
     assert!(!app.usage_report_refreshing);
     assert!(app.inline_view_state.is_none());
-    let msg = app
-        .display_messages()
-        .last()
-        .expect("missing usage report message");
-    assert_eq!(msg.role, "system");
-    assert!(msg.content.contains("## Usage"));
-    assert!(msg.content.contains("### OpenAI (ChatGPT)"));
-    assert!(msg.content.contains("**5h**"));
-    assert!(msg.content.contains("82%"));
-    assert!(msg.content.contains("plan: pro"));
+    assert!(app.display_messages().is_empty());
+    let overlay = app.usage_overlay.as_ref().expect("missing usage overlay");
+    let overlay = overlay.borrow();
+    assert_eq!(overlay.selected_item_title(), Some("OpenAI (ChatGPT)"));
+    let detail = overlay.selected_item_detail_text();
+    assert!(detail.contains("5h"));
+    assert!(detail.contains("82%"));
+    assert!(detail.contains("plan: pro"));
+}
+
+#[test]
+fn test_usage_progress_updates_overlay_incrementally() {
+    let mut app = create_test_app();
+    app.open_usage_inline_loading();
+
+    app.handle_usage_report_progress(crate::usage::ProviderUsageProgress {
+        results: vec![crate::usage::ProviderUsage {
+            provider_name: "Anthropic (Claude)".to_string(),
+            limits: vec![crate::usage::UsageLimit {
+                name: "5-hour window".to_string(),
+                usage_percent: 41.0,
+                resets_at: None,
+            }],
+            extra_info: Vec::new(),
+            hard_limit_reached: false,
+            error: None,
+        }],
+        completed: 1,
+        total: 2,
+        done: false,
+        from_cache: false,
+    });
+
+    assert!(app.usage_report_refreshing);
+    let overlay = app.usage_overlay.as_ref().expect("missing usage overlay");
+    let detail = overlay.borrow().selected_item_detail_text();
+    assert!(detail.contains("5-hour window") || detail.contains("Completed 1/2"));
 }
 
 #[test]

@@ -316,6 +316,8 @@ pub enum BusEvent {
     BackgroundTaskProgress(BackgroundTaskProgressEvent),
     /// Usage report fetched from providers
     UsageReport(Vec<crate::usage::ProviderUsage>),
+    /// Progressive usage report update while providers are still loading
+    UsageReportProgress(crate::usage::ProviderUsageProgress),
     /// OAuth/login flow completed in the background
     LoginCompleted(LoginCompleted),
     /// Local `!cmd` shell command completed from the input line

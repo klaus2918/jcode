@@ -674,7 +674,6 @@ impl App {
 
     pub(super) fn handle_usage_report(&mut self, results: Vec<crate::usage::ProviderUsage>) {
         self.usage_report_refreshing = false;
-        self.usage_overlay = None;
         self.inline_view_state = None;
         if self
             .inline_interactive_state
@@ -685,61 +684,64 @@ impl App {
             self.inline_interactive_state = None;
         }
 
+        let overlay = crate::tui::usage_overlay::UsageOverlay::from_provider_reports(
+            &results,
+            false,
+            results.len(),
+            results.len(),
+            false,
+        );
+        self.replace_usage_overlay(overlay);
         if results.is_empty() {
-            self.push_display_message(DisplayMessage::system(
-                "## Usage\n\nNo providers with OAuth credentials found.\n\nUse `/login claude` or `/login openai` to connect a provider, then run `/usage` again."
-                    .to_string(),
-            ));
             self.set_status_notice("Usage → no connected providers");
-            return;
+        } else {
+            self.set_status_notice("Usage → updated");
+        }
+    }
+
+    pub(super) fn handle_usage_report_progress(
+        &mut self,
+        progress: crate::usage::ProviderUsageProgress,
+    ) {
+        self.usage_report_refreshing = !progress.done;
+        self.inline_view_state = None;
+        if self
+            .inline_interactive_state
+            .as_ref()
+            .map(|picker| picker.kind == crate::tui::PickerKind::Usage)
+            .unwrap_or(false)
+        {
+            self.inline_interactive_state = None;
         }
 
-        let mut output = String::from("## Usage\n\n");
+        let overlay = crate::tui::usage_overlay::UsageOverlay::from_progress(&progress);
+        self.replace_usage_overlay(overlay);
 
-        for (i, provider) in results.iter().enumerate() {
-            if i > 0 {
-                output.push_str("---\n\n");
+        if progress.done {
+            if progress.results.is_empty() {
+                self.set_status_notice("Usage → no connected providers");
+            } else {
+                self.set_status_notice("Usage → updated");
             }
-
-            output.push_str(&format!("### {}\n\n", provider.provider_name));
-
-            if let Some(err) = &provider.error {
-                output.push_str(&format!("⚠ {}\n", err));
-                if i + 1 < results.len() {
-                    output.push('\n');
-                }
-                continue;
-            }
-
-            if provider.limits.is_empty() && provider.extra_info.is_empty() {
-                output.push_str("No usage data available.\n\n");
-                continue;
-            }
-
-            for limit in &provider.limits {
-                let reset_info = limit
-                    .resets_at
-                    .as_deref()
-                    .map(crate::usage::format_reset_time)
-                    .map(|relative| format!(" (resets in {})", relative))
-                    .unwrap_or_default();
-                output.push_str(&format!(
-                    "- **{}**: {}{}\n",
-                    limit.name,
-                    crate::usage::format_usage_bar(limit.usage_percent, 15),
-                    reset_info
-                ));
-            }
-
-            for (key, value) in &provider.extra_info {
-                output.push_str(&format!("- {}: {}\n", key, value));
-            }
-
-            output.push('\n');
+        } else if progress.from_cache && progress.total == 0 {
+            self.set_status_notice("Usage → showing cached data, refreshing");
+        } else if progress.total > 0 {
+            self.set_status_notice(format!(
+                "Usage → refreshing {}/{}",
+                progress.completed.min(progress.total),
+                progress.total
+            ));
+        } else {
+            self.set_status_notice("Usage → refreshing");
         }
+    }
 
-        self.push_display_message(DisplayMessage::system(output));
-        self.set_status_notice("Usage → updated");
+    fn replace_usage_overlay(&mut self, overlay: crate::tui::usage_overlay::UsageOverlay) {
+        if let Some(existing) = self.usage_overlay.as_ref() {
+            existing.borrow_mut().replace_preserving_view(overlay);
+        } else {
+            self.usage_overlay = Some(std::cell::RefCell::new(overlay));
+        }
     }
 
     pub(super) fn run_fix_command(&mut self) {

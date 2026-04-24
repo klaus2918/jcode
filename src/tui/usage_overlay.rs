@@ -151,6 +151,94 @@ impl UsageOverlay {
         )
     }
 
+    pub fn from_progress(progress: &crate::usage::ProviderUsageProgress) -> Self {
+        Self::from_provider_reports(
+            &progress.results,
+            !progress.done,
+            progress.completed,
+            progress.total,
+            progress.from_cache,
+        )
+    }
+
+    pub fn from_provider_reports(
+        reports: &[crate::usage::ProviderUsage],
+        refreshing: bool,
+        completed: usize,
+        total: usize,
+        from_cache: bool,
+    ) -> Self {
+        let mut items: Vec<UsageOverlayItem> = reports.iter().map(provider_item).collect();
+
+        if refreshing {
+            let subtitle = if total > 0 {
+                format!("Refreshing providers ({}/{})", completed.min(total), total)
+            } else if from_cache {
+                "Showing cached usage while refreshing providers".to_string()
+            } else {
+                "Fetching usage limits from connected providers".to_string()
+            };
+            items.push(UsageOverlayItem::new(
+                "refreshing",
+                "Refreshing usage",
+                subtitle,
+                UsageOverlayStatus::Loading,
+                vec![
+                    "## Live refresh".to_string(),
+                    if from_cache {
+                        "• Cached results are visible immediately.".to_string()
+                    } else {
+                        "• Waiting for provider responses.".to_string()
+                    },
+                    if total > 0 {
+                        format!(
+                            "• Completed {}/{} provider checks.",
+                            completed.min(total),
+                            total
+                        )
+                    } else {
+                        "• Discovering connected providers.".to_string()
+                    },
+                    "• This panel updates as each provider returns.".to_string(),
+                ],
+            ));
+        } else if items.is_empty() {
+            items.push(UsageOverlayItem::new(
+                "no-providers",
+                "No connected providers",
+                "Connect Claude or OpenAI OAuth to show usage limits",
+                UsageOverlayStatus::Info,
+                vec![
+                    "## No usage sources found".to_string(),
+                    "• No providers with OAuth credentials were found.".to_string(),
+                    "• Use `/login claude` or `/login openai` to connect a provider.".to_string(),
+                    "• Then run `/usage` again.".to_string(),
+                ],
+            ));
+        }
+
+        let mut summary = UsageOverlaySummary {
+            provider_count: reports.len(),
+            session_visible: false,
+            ..UsageOverlaySummary::default()
+        };
+        for report in reports {
+            match provider_status(report) {
+                UsageOverlayStatus::Warning => summary.warning_count += 1,
+                UsageOverlayStatus::Critical => summary.critical_count += 1,
+                UsageOverlayStatus::Error => summary.error_count += 1,
+                _ => {}
+            }
+        }
+
+        let title = if refreshing {
+            " Usage · refreshing "
+        } else {
+            " Usage "
+        };
+        Self::new(title, items, summary)
+    }
+
     pub fn debug_memory_profile(&self) -> serde_json::Value {
         let items_estimate_bytes: usize = self.items.iter().map(estimate_item_bytes).sum();
         let filtered_estimate_bytes = self.filtered.capacity() * std::mem::size_of::<usize>();
@@ -190,6 +278,21 @@ impl UsageOverlay {
 
     pub fn selected_item_title(&self) -> Option<&str> {
         self.selected_item().map(|item| item.title.as_str())
+    }
+
+    pub fn replace_preserving_view(&mut self, mut next: Self) {
+        let selected_id = self.selected_item().map(|item| item.id.clone());
+        next.filter = self.filter.clone();
+        next.apply_filter();
+        if let Some(selected_id) = selected_id
+            && let Some(selected) = next
+                .filtered
+                .iter()
+                .position(|item_idx| next.items[*item_idx].id == selected_id)
+        {
+            next.selected = selected;
+        }
+        *self = next;
     }
 
     pub fn selected_item_detail_text(&self) -> String {
@@ -548,6 +651,136 @@ fn metric_span(label: &'static str, value: usize, color: Color) -> Span<'static>
         format!("{} {}", label, value),
         Style::default().fg(color).bold(),
     )
+}
+
+fn provider_item(report: &crate::usage::ProviderUsage) -> UsageOverlayItem {
+    let status = provider_status(report);
+    let subtitle = provider_subtitle(report);
+    UsageOverlayItem::new(
+        report.provider_name.clone(),
+        report.provider_name.clone(),
+        subtitle,
+        status,
+        provider_detail_lines(report),
+    )
+}
+
+fn provider_status(report: &crate::usage::ProviderUsage) -> UsageOverlayStatus {
+    if report.error.is_some() {
+        return UsageOverlayStatus::Error;
+    }
+    if report.hard_limit_reached {
+        return UsageOverlayStatus::Critical;
+    }
+    let max_percent = report
+        .limits
+        .iter()
+        .map(|limit| limit.usage_percent)
+        .fold(0.0_f32, f32::max);
+    if max_percent >= 90.0 {
+        UsageOverlayStatus::Critical
+    } else if max_percent >= 70.0 {
+        UsageOverlayStatus::Warning
+    } else if report.limits.is_empty() && report.extra_info.is_empty() {
+        UsageOverlayStatus::Info
+    } else {
+        UsageOverlayStatus::Good
+    }
+}
+
+fn provider_subtitle(report: &crate::usage::ProviderUsage) -> String {
+    if let Some(error) = &report.error {
+        return truncate_with_ellipsis(error, 72);
+    }
+    if report.hard_limit_reached {
+        return "Hard limit reached".to_string();
+    }
+    let mut parts = Vec::new();
+    if let Some(limit) = report
+        .limits
+        .iter()
+        .max_by(|a, b| a.usage_percent.total_cmp(&b.usage_percent))
+    {
+        let mut part = format!(
+            "{} {:.0}% used",
+            limit.name,
+            limit.usage_percent.clamp(0.0, 999.0)
+        );
+        if let Some(reset) = limit.resets_at.as_deref() {
+            part.push_str(&format!(
+                " · resets in {}",
+                crate::usage::format_reset_time(reset)
+            ));
+        }
+        parts.push(part);
+    }
+    if let Some((key, value)) = report.extra_info.first() {
+        parts.push(format!("{}: {}", key, value));
+    }
+    if parts.is_empty() {
+        "No usage data available".to_string()
+    } else {
+        truncate_with_ellipsis(&parts.join(" · "), 96)
+    }
+}
+
+fn provider_detail_lines(report: &crate::usage::ProviderUsage) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push("## Status".to_string());
+    if let Some(error) = &report.error {
+        lines.push(format!("• Error: {}", error));
+        lines.push("".to_string());
+        lines.push("## Next steps".to_string());
+        lines.push(
+            "• Re-run `/usage` to retry after credentials or network issues are fixed.".to_string(),
+        );
+        if report.provider_name.to_lowercase().contains("openai") {
+            lines.push("• Use `/login openai` if the token needs refreshing.".to_string());
+        } else if report.provider_name.to_lowercase().contains("anthropic")
+            || report.provider_name.to_lowercase().contains("claude")
+        {
+            lines.push("• Use `/login claude` if the token needs refreshing.".to_string());
+        }
+        return lines;
+    }
+
+    lines.push(format!("• {}", provider_status(report).label()));
+    if report.hard_limit_reached {
+        lines.push("• Hard limit reached.".to_string());
+    }
+
+    if !report.limits.is_empty() {
+        lines.push("".to_string());
+        lines.push("## Limits".to_string());
+        for limit in &report.limits {
+            let reset = limit
+                .resets_at
+                .as_deref()
+                .map(crate::usage::format_reset_time)
+                .map(|value| format!(" · resets in {}", value))
+                .unwrap_or_default();
+            lines.push(format!(
+                "• {}  {}{}",
+                limit.name,
+                crate::usage::format_usage_bar(limit.usage_percent, 18),
+                reset
+            ));
+        }
+    }
+
+    if !report.extra_info.is_empty() {
+        lines.push("".to_string());
+        lines.push("## Details".to_string());
+        for (key, value) in &report.extra_info {
+            lines.push(format!("• {}: {}", key, value));
+        }
+    }
+
+    if report.limits.is_empty() && report.extra_info.is_empty() {
+        lines.push("• No usage data available from this provider.".to_string());
+    }
+
+    lines
 }
 
 fn truncate_with_ellipsis(input: &str, width: usize) -> String {

@@ -178,6 +178,15 @@ pub struct UsageLimit {
     pub resets_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ProviderUsageProgress {
+    pub results: Vec<ProviderUsage>,
+    pub completed: usize,
+    pub total: usize,
+    pub done: bool,
+    pub from_cache: bool,
+}
+
 /// Normalized OpenAI/Codex usage window info used by the TUI widget.
 #[derive(Debug, Clone, Default)]
 pub struct OpenAIUsageWindow {
@@ -668,9 +677,25 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
 /// Returns a list of ProviderUsage, one per provider that has credentials.
 /// Results are cached for 2 minutes to avoid hitting rate limits.
 pub async fn fetch_all_provider_usage() -> Vec<ProviderUsage> {
+    fetch_all_provider_usage_progressive(|_| {}).await
+}
+
+/// Fetch usage from all connected providers and report incremental progress as
+/// each provider/account finishes. Cached data is emitted immediately when
+/// available so the UI can show useful stale/fresh context while live refreshes
+/// are still in flight.
+pub async fn fetch_all_provider_usage_progressive<F>(mut on_update: F) -> Vec<ProviderUsage>
+where
+    F: FnMut(ProviderUsageProgress) + Send,
+{
     let cache = PROVIDER_USAGE_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
 
     let now = Instant::now();
+    let cached_results = if let Ok(map) = cache.lock() {
+        map.values().map(|(_, r)| r.clone()).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let all_fresh = if let Ok(map) = cache.lock() {
         !map.is_empty()
             && map
@@ -680,26 +705,60 @@ pub async fn fetch_all_provider_usage() -> Vec<ProviderUsage> {
         false
     };
 
-    if all_fresh && let Ok(map) = cache.lock() {
-        return map.values().map(|(_, r)| r.clone()).collect();
+    if all_fresh {
+        on_update(ProviderUsageProgress {
+            completed: cached_results.len(),
+            total: cached_results.len(),
+            done: true,
+            from_cache: true,
+            results: cached_results.clone(),
+        });
+        return cached_results;
     }
 
-    let mut results = Vec::new();
-
-    let (anthropic_results, openai_results, openrouter, copilot) = tokio::join!(
-        fetch_all_anthropic_usage_reports(),
-        fetch_all_openai_usage_reports(),
-        fetch_openrouter_usage_report(),
-        fetch_copilot_usage_report(),
-    );
-
-    results.extend(anthropic_results);
-    results.extend(openai_results);
-    if let Some(r) = openrouter {
-        results.push(r);
+    let mut results = cached_results.clone();
+    if !cached_results.is_empty() {
+        on_update(ProviderUsageProgress {
+            results: cached_results,
+            completed: 0,
+            total: 0,
+            done: false,
+            from_cache: true,
+        });
     }
-    if let Some(r) = copilot {
-        results.push(r);
+
+    let mut tasks = tokio::task::JoinSet::<Option<ProviderUsage>>::new();
+    let total = enqueue_provider_usage_tasks(&mut tasks);
+
+    if total == 0 {
+        sync_cached_usage_from_reports(&results).await;
+        if let Ok(mut map) = cache.lock() {
+            map.clear();
+        }
+        on_update(ProviderUsageProgress {
+            results: results.clone(),
+            completed: 0,
+            total: 0,
+            done: true,
+            from_cache: false,
+        });
+        return results;
+    }
+
+    let mut completed = 0usize;
+    while let Some(joined) = tasks.join_next().await {
+        completed += 1;
+        if let Ok(Some(report)) = joined {
+            upsert_provider_usage(&mut results, report);
+        }
+
+        on_update(ProviderUsageProgress {
+            results: results.clone(),
+            completed,
+            total,
+            done: false,
+            from_cache: false,
+        });
     }
 
     sync_cached_usage_from_reports(&results).await;
@@ -712,7 +771,165 @@ pub async fn fetch_all_provider_usage() -> Vec<ProviderUsage> {
         }
     }
 
+    on_update(ProviderUsageProgress {
+        results: results.clone(),
+        completed: total,
+        total,
+        done: true,
+        from_cache: false,
+    });
+
     results
+}
+
+fn upsert_provider_usage(results: &mut Vec<ProviderUsage>, report: ProviderUsage) {
+    if let Some(existing) = results
+        .iter_mut()
+        .find(|existing| existing.provider_name == report.provider_name)
+    {
+        *existing = report;
+    } else {
+        results.push(report);
+    }
+}
+
+fn enqueue_provider_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<ProviderUsage>>) -> usize {
+    let mut total = 0usize;
+
+    total += enqueue_anthropic_usage_tasks(tasks);
+    total += enqueue_openai_usage_tasks(tasks);
+
+    if openrouter_api_key().is_some() {
+        tasks.spawn(async { fetch_openrouter_usage_report().await });
+        total += 1;
+    }
+
+    if auth::copilot::has_copilot_credentials() {
+        tasks.spawn(async { fetch_copilot_usage_report().await });
+        total += 1;
+    }
+
+    total
+}
+
+fn enqueue_anthropic_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<ProviderUsage>>) -> usize {
+    let accounts = match auth::claude::list_accounts() {
+        Ok(a) if !a.is_empty() => a,
+        _ => match auth::claude::load_credentials() {
+            Ok(creds) if !creds.access_token.is_empty() => {
+                tasks.spawn(async move {
+                    Some(
+                        fetch_anthropic_usage_for_token(
+                            "Anthropic (Claude)".to_string(),
+                            creds.access_token,
+                            creds.refresh_token,
+                            "default".to_string(),
+                            creds.expires_at,
+                        )
+                        .await,
+                    )
+                });
+                return 1;
+            }
+            _ => return 0,
+        },
+    };
+
+    let active_label = auth::claude::active_account_label();
+    let account_count = accounts.len();
+    for account in accounts {
+        let label = if account_count > 1 {
+            let active_marker = if active_label.as_deref() == Some(&account.label) {
+                " ✦"
+            } else {
+                ""
+            };
+            let email_suffix = account
+                .email
+                .as_deref()
+                .map(mask_email)
+                .map(|m| format!(" ({})", m))
+                .unwrap_or_default();
+            format!(
+                "Anthropic - {}{}{}",
+                account.label, email_suffix, active_marker
+            )
+        } else {
+            let email_suffix = account
+                .email
+                .as_deref()
+                .map(mask_email)
+                .map(|m| format!(" ({})", m))
+                .unwrap_or_default();
+            format!("Anthropic (Claude){}", email_suffix)
+        };
+
+        tasks.spawn(async move {
+            Some(
+                fetch_anthropic_usage_for_token(
+                    label,
+                    account.access,
+                    account.refresh,
+                    account.label,
+                    account.expires,
+                )
+                .await,
+            )
+        });
+    }
+
+    account_count
+}
+
+fn enqueue_openai_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<ProviderUsage>>) -> usize {
+    let accounts = auth::codex::list_accounts().unwrap_or_default();
+    if !accounts.is_empty() {
+        let active_label = auth::codex::active_account_label();
+        let account_count = accounts.len();
+        for account in accounts {
+            let display_name = openai_provider_display_name(
+                &account.label,
+                account.email.as_deref(),
+                account_count,
+                active_label.as_deref() == Some(&account.label),
+            );
+            let account_label = account.label;
+            let creds = auth::codex::CodexCredentials {
+                access_token: account.access_token,
+                refresh_token: account.refresh_token,
+                id_token: account.id_token,
+                account_id: account.account_id,
+                expires_at: account.expires_at,
+            };
+            tasks.spawn(async move {
+                Some(
+                    fetch_openai_usage_for_account(display_name, creds, Some(&account_label)).await,
+                )
+            });
+        }
+        return account_count;
+    }
+
+    let creds = match auth::codex::load_credentials() {
+        Ok(creds) => creds,
+        Err(_) => return 0,
+    };
+    let is_chatgpt = !creds.refresh_token.is_empty() || creds.id_token.is_some();
+    if !is_chatgpt || creds.access_token.is_empty() {
+        return 0;
+    }
+
+    tasks.spawn(async move {
+        Some(
+            fetch_openai_usage_for_account(
+                openai_provider_display_name("default", None, 1, true),
+                creds,
+                None,
+            )
+            .await,
+        )
+    });
+    1
 }
 
 async fn sync_cached_usage_from_reports(results: &[ProviderUsage]) {
@@ -972,74 +1189,6 @@ fn anthropic_snapshot_from_usage(
     }
 }
 
-async fn fetch_all_anthropic_usage_reports() -> Vec<ProviderUsage> {
-    let accounts = match auth::claude::list_accounts() {
-        Ok(a) if !a.is_empty() => a,
-        _ => match auth::claude::load_credentials() {
-            Ok(creds) if !creds.access_token.is_empty() => {
-                return vec![
-                    fetch_anthropic_usage_for_token(
-                        "Anthropic (Claude)".to_string(),
-                        creds.access_token.clone(),
-                        creds.refresh_token.clone(),
-                        "default".to_string(),
-                        creds.expires_at,
-                    )
-                    .await,
-                ];
-            }
-            _ => return Vec::new(),
-        },
-    };
-
-    let active_label = auth::claude::active_account_label();
-    let mut futures = Vec::new();
-    for account in &accounts {
-        let label = if accounts.len() > 1 {
-            let active_marker = if active_label.as_deref() == Some(&account.label) {
-                " ✦"
-            } else {
-                ""
-            };
-            let email_suffix = account
-                .email
-                .as_deref()
-                .map(mask_email)
-                .map(|m| format!(" ({})", m))
-                .unwrap_or_default();
-            format!(
-                "Anthropic - {}{}{}",
-                account.label, email_suffix, active_marker
-            )
-        } else {
-            let email_suffix = account
-                .email
-                .as_deref()
-                .map(mask_email)
-                .map(|m| format!(" ({})", m))
-                .unwrap_or_default();
-            format!("Anthropic (Claude){}", email_suffix)
-        };
-        let access = account.access.clone();
-        let refresh = account.refresh.clone();
-        let account_label = account.label.clone();
-        let expires = account.expires;
-        futures.push(fetch_anthropic_usage_for_token(
-            label,
-            access,
-            refresh,
-            account_label,
-            expires,
-        ));
-    }
-
-    let mut results = Vec::new();
-    for fut in futures {
-        results.push(fut.await);
-    }
-    results
-}
-
 async fn fetch_anthropic_usage_for_token(
     display_name: String,
     access_token: String,
@@ -1284,20 +1433,7 @@ async fn fetch_openai_usage_for_account(
 }
 
 async fn fetch_openrouter_usage_report() -> Option<ProviderUsage> {
-    let api_key = std::env::var("OPENROUTER_API_KEY")
-        .ok()
-        .or_else(|| {
-            let config_path = crate::storage::app_config_dir()
-                .ok()?
-                .join("openrouter.env");
-            crate::storage::harden_secret_file_permissions(&config_path);
-            let content = std::fs::read_to_string(config_path).ok()?;
-            content
-                .lines()
-                .find_map(|line| line.strip_prefix("OPENROUTER_API_KEY="))
-                .map(|k| k.trim().to_string())
-        })
-        .filter(|k| !k.is_empty())?;
+    let api_key = openrouter_api_key()?;
 
     let client = crate::provider::shared_http_client();
 
@@ -1401,6 +1537,23 @@ async fn fetch_openrouter_usage_report() -> Option<ProviderUsage> {
         hard_limit_reached: false,
         error: None,
     })
+}
+
+fn openrouter_api_key() -> Option<String> {
+    std::env::var("OPENROUTER_API_KEY")
+        .ok()
+        .or_else(|| {
+            let config_path = crate::storage::app_config_dir()
+                .ok()?
+                .join("openrouter.env");
+            crate::storage::harden_secret_file_permissions(&config_path);
+            let content = std::fs::read_to_string(config_path).ok()?;
+            content
+                .lines()
+                .find_map(|line| line.strip_prefix("OPENROUTER_API_KEY="))
+                .map(|k| k.trim().to_string())
+        })
+        .filter(|k| !k.is_empty())
 }
 
 async fn fetch_copilot_usage_report() -> Option<ProviderUsage> {
