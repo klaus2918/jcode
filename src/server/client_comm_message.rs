@@ -45,7 +45,7 @@ async fn resolve_dm_target_session(
     }
 
     let members = swarm_members.read().await;
-    let mut matches: Vec<String> = swarm_session_ids
+    let mut matches: Vec<(String, String)> = swarm_session_ids
         .iter()
         .filter_map(|session_id| {
             let member = members.get(session_id)?;
@@ -53,21 +53,29 @@ async fn resolve_dm_target_session(
                 .friendly_name
                 .as_deref()
                 .filter(|friendly_name| *friendly_name == target)
-                .map(|_| session_id.clone())
+                .map(|friendly_name| (session_id.clone(), friendly_name.to_string()))
         })
         .collect();
-    matches.sort();
-    matches.dedup();
+    matches.sort_by(|(left_session, _), (right_session, _)| left_session.cmp(right_session));
+    matches.dedup_by(|(left_session, _), (right_session, _)| left_session == right_session);
     match matches.len() {
-        1 => Ok(matches.remove(0)),
+        1 => Ok(matches.remove(0).0),
         0 => Err(anyhow::anyhow!(
             "Unknown target '{}' - use an exact session_id or a unique friendly name within the swarm.",
             target
         )),
-        _ => Err(anyhow::anyhow!(
-            "Ambiguous friendly name '{}' - use an exact session_id instead.",
-            target
-        )),
+        _ => {
+            let match_list = matches
+                .iter()
+                .map(|(session_id, friendly_name)| format!("{} [{}]", friendly_name, session_id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(anyhow::anyhow!(
+                "Friendly name '{}' is ambiguous in swarm. Use an exact session id instead. Matches: {}",
+                target,
+                match_list
+            ))
+        }
     }
 }
 

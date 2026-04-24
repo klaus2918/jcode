@@ -478,10 +478,14 @@ mod tests {
         let providers = tui_login_providers();
         assert_eq!(
             resolve_login_selection("1", &providers).map(|provider| provider.id),
+            Some("auto-import")
+        );
+        assert_eq!(
+            resolve_login_selection("2", &providers).map(|provider| provider.id),
             Some("claude")
         );
         assert_eq!(
-            resolve_login_selection("14", &providers).map(|provider| provider.id),
+            resolve_login_selection("15", &providers).map(|provider| provider.id),
             Some("cursor")
         );
         assert_eq!(
@@ -495,27 +499,31 @@ mod tests {
     fn matrix_cli_login_selection_preserves_existing_order() {
         let providers = cli_login_providers();
         assert_eq!(
-            resolve_login_selection("3", &providers).map(|provider| provider.id),
-            Some("jcode")
+            resolve_login_selection("1", &providers).map(|provider| provider.id),
+            Some("auto-import")
         );
         assert_eq!(
             resolve_login_selection("4", &providers).map(|provider| provider.id),
-            Some("copilot")
+            Some("jcode")
         );
         assert_eq!(
             resolve_login_selection("5", &providers).map(|provider| provider.id),
-            Some("openrouter")
+            Some("copilot")
         );
         assert_eq!(
             resolve_login_selection("6", &providers).map(|provider| provider.id),
+            Some("openrouter")
+        );
+        assert_eq!(
+            resolve_login_selection("7", &providers).map(|provider| provider.id),
             Some("azure")
         );
         assert_eq!(
-            resolve_login_selection("16", &providers).map(|provider| provider.id),
+            resolve_login_selection("17", &providers).map(|provider| provider.id),
             Some("gemini")
         );
         assert_eq!(
-            resolve_login_selection("17", &providers).map(|provider| provider.id),
+            resolve_login_selection("18", &providers).map(|provider| provider.id),
             Some("google")
         );
     }
