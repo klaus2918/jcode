@@ -743,6 +743,16 @@ pub(super) async fn handle_resume_session(
     {
         let old_session_id = client_session_id.clone();
 
+        let conflicting_live_client = {
+            let connections = client_connections.read().await;
+            connections
+                .values()
+                .find(|info| {
+                    info.client_id != client_connection_id && info.session_id == session_id
+                })
+                .cloned()
+        };
+
         cleanup_detached_source_session_if_unused(
             &old_session_id,
             client_connection_id,
@@ -761,6 +771,56 @@ pub(super) async fn handle_resume_session(
             swarm_coordinators,
         )
         .await;
+
+        if let Some(conflict) = conflicting_live_client {
+            let incoming_instance_id = incoming_client_instance_id.as_deref();
+            let existing_instance_id = conflict.client_instance_id.as_deref();
+            let distinct_client_instances = incoming_instance_id
+                .zip(existing_instance_id)
+                .map(|(incoming, existing)| incoming != existing)
+                .unwrap_or(false);
+            let can_take_over_live_session =
+                allow_session_takeover && client_has_local_history && !distinct_client_instances;
+
+            if can_take_over_live_session {
+                let (disconnect_tx, debug_client_id, transferred_processing, transferred_tool_name) = {
+                    let mut connections = client_connections.write().await;
+                    let removed = connections.remove(&conflict.client_id);
+                    if let Some(info) = removed {
+                        (
+                            Some(info.disconnect_tx),
+                            info.debug_client_id,
+                            info.is_processing,
+                            info.current_tool_name,
+                        )
+                    } else {
+                        (
+                            None,
+                            conflict.debug_client_id,
+                            conflict.is_processing,
+                            conflict.current_tool_name,
+                        )
+                    }
+                };
+
+                {
+                    let mut connections = client_connections.write().await;
+                    if let Some(info) = connections.get_mut(client_connection_id) {
+                        info.is_processing = transferred_processing;
+                        info.current_tool_name = transferred_tool_name;
+                    }
+                }
+
+                if let Some(debug_client_id) = debug_client_id.as_deref() {
+                    let mut debug_state = client_debug_state.write().await;
+                    debug_state.unregister(debug_client_id);
+                }
+
+                if let Some(disconnect_tx) = disconnect_tx {
+                    let _ = disconnect_tx.send(());
+                }
+            }
+        }
 
         {
             let mut connections = client_connections.write().await;
