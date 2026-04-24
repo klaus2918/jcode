@@ -777,26 +777,64 @@ pub(crate) fn render_background_task_message(
     lines
 }
 
-fn render_progress_bar_line(
-    percent: f32,
+fn progress_summary_without_leading_percent(summary: &str) -> &str {
+    if let Some((first, rest)) = summary.split_once(" · ") {
+        let first = first.trim();
+        if first
+            .strip_suffix('%')
+            .and_then(|value| value.parse::<f32>().ok())
+            .is_some()
+        {
+            return rest.trim();
+        }
+    }
+    summary.trim()
+}
+
+fn render_compact_progress_line(
+    progress: &ParsedBackgroundTaskProgressNotification,
     inner_width: usize,
     filled_style: Style,
     empty_style: Style,
     label_style: Style,
+    text_style: Style,
 ) -> Line<'static> {
+    let Some(percent) = progress.percent else {
+        return super::truncate_line_with_ellipsis_to_width(
+            &Line::from(Span::styled(progress.summary.clone(), text_style)),
+            inner_width,
+        );
+    };
+
     let percent = percent.clamp(0.0, 100.0);
-    let label = format!(" {:>3}%", percent.round() as u32);
-    let label_width = label.width();
-    let bar_width = inner_width.saturating_sub(label_width).max(1);
+    let label = format!("{:>3}%", percent.round() as u32);
+    let separator = " · ";
+    let summary = progress_summary_without_leading_percent(&progress.summary);
+    let fixed_width = 1 + label.width() + separator.width();
+    let bar_width = if inner_width >= 56 {
+        18
+    } else if inner_width >= 40 {
+        14
+    } else if inner_width >= 28 {
+        10
+    } else {
+        6
+    }
+    .min(inner_width.saturating_sub(fixed_width).max(1));
     let filled = ((percent / 100.0) * bar_width as f32).round() as usize;
     let filled = filled.min(bar_width);
     let empty = bar_width.saturating_sub(filled);
 
-    Line::from(vec![
+    let line = Line::from(vec![
         Span::styled("█".repeat(filled), filled_style),
         Span::styled("░".repeat(empty), empty_style),
+        Span::styled(" ", label_style),
         Span::styled(label, label_style),
-    ])
+        Span::styled(separator, label_style),
+        Span::styled(summary.to_string(), text_style),
+    ]);
+
+    super::truncate_line_with_ellipsis_to_width(&line, inner_width)
 }
 
 fn render_background_task_progress_message(
@@ -818,35 +856,16 @@ fn render_background_task_progress_message(
     }
     .max(16);
     let inner_width = max_box_width.saturating_sub(4).max(1);
-    let title = format!(
-        "◌ bg {} progress · {}",
-        progress.tool_name, progress.task_id
-    );
+    let title = format!("◌ bg {} · {}", progress.tool_name, progress.task_id);
 
-    let mut box_content: Vec<Line<'static>> = Vec::new();
-    if let Some(percent) = progress.percent {
-        box_content.push(render_progress_bar_line(
-            percent,
-            inner_width,
-            filled_style,
-            empty_style,
-            label_style,
-        ));
-        box_content.push(Line::from(""));
-    }
-
-    box_content.push(Line::from(Span::styled("Latest update", label_style)));
-    for chunk in split_by_display_width(&progress.summary, inner_width) {
-        box_content.push(Line::from(Span::styled(chunk, text_style)));
-    }
-
-    if let Some(source) = progress.source.as_deref() {
-        box_content.push(Line::from(""));
-        box_content.push(Line::from(Span::styled(
-            format!("Source: {source}"),
-            label_style,
-        )));
-    }
+    let box_content = vec![render_compact_progress_line(
+        progress,
+        inner_width,
+        filled_style,
+        empty_style,
+        label_style,
+        text_style,
+    )];
 
     let mut lines = render_rounded_box(&title, box_content, max_box_width, border_style);
     if centered {
@@ -1467,13 +1486,18 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(plain.contains("◌ bg bash progress · bg123"));
+        assert!(plain.contains("◌ bg bash · bg123"));
         assert!(plain.contains("█"));
         assert!(plain.contains("░"));
         assert!(plain.contains("42%"));
-        assert!(plain.contains("Latest update"));
         assert!(plain.contains("Running tests"));
-        assert!(plain.contains("Source: reported"));
+        assert_eq!(
+            plain.matches('│').count(),
+            2,
+            "expected one compact body row:\n{plain}"
+        );
+        assert!(!plain.contains("Latest update"));
+        assert!(!plain.contains("Source: reported"));
         assert!(!plain.contains("**Background task progress**"));
     }
 
