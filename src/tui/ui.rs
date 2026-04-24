@@ -1600,6 +1600,29 @@ fn slow_frame_threshold_ms() -> f64 {
     })
 }
 
+fn flicker_detection_enabled() -> bool {
+    #[cfg(test)]
+    {
+        true
+    }
+
+    #[cfg(not(test))]
+    {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            std::env::var("JCODE_TUI_FLICKER_DETECTION")
+                .ok()
+                .map(|raw| {
+                    matches!(
+                        raw.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )
+                })
+                .unwrap_or(false)
+        })
+    }
+}
+
 fn with_frame_perf_stats_mut(f: impl FnOnce(&mut FramePerfStats)) {
     let mut stats = frame_perf_stats()
         .lock()
@@ -1936,6 +1959,10 @@ fn maybe_record_flicker_event(history: &mut FlickerFrameHistory, current: &Flick
 }
 
 fn record_flicker_frame_sample(sample: FlickerFrameSample) {
+    if !flicker_detection_enabled() {
+        return;
+    }
+
     let mut history = flicker_frame_history()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2039,6 +2066,7 @@ pub(crate) fn debug_flicker_frame_history(limit: usize) -> serde_json::Value {
         .collect();
 
     serde_json::json!({
+        "enabled": flicker_detection_enabled(),
         "buffered_samples": history.samples.len(),
         "returned_samples": samples.len(),
         "buffered_events": history.events.len(),
@@ -2079,6 +2107,10 @@ fn abbreviate_flicker_log_path(path: &std::path::Path) -> String {
 }
 
 pub(crate) fn recent_flicker_ui_notice() -> Option<FlickerUiNotice> {
+    if !flicker_detection_enabled() {
+        return None;
+    }
+
     let history = flicker_frame_history()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
