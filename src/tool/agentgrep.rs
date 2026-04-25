@@ -40,6 +40,7 @@ use self::render::{
 
 #[derive(Debug, Deserialize)]
 struct AgentGrepInput {
+    #[serde(default = "default_agentgrep_mode")]
     mode: String,
     #[serde(default)]
     query: Option<String>,
@@ -71,6 +72,10 @@ struct AgentGrepInput {
     debug_score: Option<bool>,
     #[serde(default)]
     paths_only: Option<bool>,
+}
+
+fn default_agentgrep_mode() -> String {
+    "grep".to_string()
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -170,57 +175,58 @@ impl Tool for AgentGrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search code."
+        "Search code and file names. Defaults to grep mode when mode is omitted."
     }
 
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["mode"],
             "properties": {
                 "mode": {
                     "type": "string",
                     "enum": ["grep", "find", "outline", "trace"],
-                    "description": "Mode."
+                    "description": "Optional search mode. Defaults to grep. Use grep for normal code/text search, find for file-name/path search, outline to summarize one file, and trace for DSL-based relationship search."
                 },
                 "query": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Search query. Required for grep. For find, provide query terms to rank matching file paths, or omit query when path, glob, or type already narrows the file list. Grep treats query as literal text unless regex=true."
                 },
                 "file": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Single file to inspect. Required for outline. For grep/find of a single file, path may also point directly to the file."
                 },
                 "terms": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Terms."
+                    "description": "Trace DSL terms, for example [\"subject:auth_status\", \"relation:rendered\", \"support:ui\"]. Do not use this for normal grep/find searches; use query instead."
                 },
                 "regex": {
                     "type": "boolean",
-                    "description": "Regex."
+                    "description": "When true in grep mode, interpret query as a regular expression. Defaults to false, which is safer for literal searches."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Root path."
+                    "description": "Directory or file to search, relative to the workspace unless absolute. If this is a file, agentgrep searches only that file. Omit to search the workspace."
                 },
                 "glob": {
                     "type": "string",
-                    "description": "Glob."
+                    "description": "Optional file glob filter such as **/*.rs. Do not set glob to **/* just to search everything; omit it instead."
                 },
                 "type": {
                     "type": "string",
-                    "description": "File type."
+                    "description": "Optional ripgrep file type filter, such as rs, py, js, ts, or md."
                 },
                 "max_files": {
                     "type": "integer",
-                    "description": "Max files."
+                    "description": "Maximum number of files to return for find/trace-style modes."
                 },
                 "max_regions": {
                     "type": "integer",
-                    "description": "Max regions."
+                    "description": "Maximum number of matching regions to return."
                 },
                 "paths_only": {
                     "type": "boolean",
-                    "description": "Paths only."
+                    "description": "Return only matching paths instead of match excerpts where supported."
                 }
             }
         })

@@ -59,10 +59,16 @@ pub(super) fn build_grep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Res
 }
 
 pub(super) fn build_find_args(params: &AgentGrepInput, ctx: &ToolContext) -> Result<FindArgs> {
-    let query = params
-        .query
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("agentgrep find requires 'query'"))?;
+    let query = params.query.as_deref().unwrap_or_default();
+    if query.trim().is_empty()
+        && params.path.as_deref().is_none_or(str::is_empty)
+        && normalized_agentgrep_glob(params.glob.as_deref()).is_none()
+        && params.file_type.as_deref().is_none_or(str::is_empty)
+    {
+        return Err(anyhow::anyhow!(
+            "agentgrep find requires 'query' unless path, glob, or type narrows the search"
+        ));
+    }
     let scope = resolved_search_scope(ctx, params.path.as_deref(), params.glob.as_deref());
     Ok(FindArgs {
         query_parts: query.split_whitespace().map(ToOwned::to_owned).collect(),

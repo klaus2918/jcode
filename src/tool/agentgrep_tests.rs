@@ -120,6 +120,65 @@ fn build_grep_args_scopes_file_path_to_parent_and_exact_glob() {
 }
 
 #[test]
+fn build_find_args_allows_glob_only_search() {
+    let ctx = test_ctx(Path::new("/tmp/root"));
+    let params = AgentGrepInput {
+        mode: "find".to_string(),
+        query: None,
+        file: None,
+        terms: None,
+        regex: None,
+        path: Some(".".to_string()),
+        glob: Some("**/*release*".to_string()),
+        file_type: None,
+        hidden: None,
+        no_ignore: None,
+        max_files: Some(25),
+        max_regions: None,
+        full_region: None,
+        debug_plan: None,
+        debug_score: None,
+        paths_only: Some(true),
+    };
+
+    let args = build_find_args(&params, &ctx).expect("glob-only find should be valid");
+    assert!(args.query_parts.is_empty());
+    assert_eq!(args.path.as_deref(), Some("/tmp/root/."));
+    assert_eq!(args.glob.as_deref(), Some("**/*release*"));
+    assert_eq!(args.max_files, 25);
+    assert!(args.paths_only);
+}
+
+#[test]
+fn build_find_args_still_rejects_unscoped_empty_query() {
+    let ctx = test_ctx(Path::new("/tmp/root"));
+    let params = AgentGrepInput {
+        mode: "find".to_string(),
+        query: None,
+        file: None,
+        terms: None,
+        regex: None,
+        path: None,
+        glob: None,
+        file_type: None,
+        hidden: None,
+        no_ignore: None,
+        max_files: None,
+        max_regions: None,
+        full_region: None,
+        debug_plan: None,
+        debug_score: None,
+        paths_only: None,
+    };
+
+    let error = build_find_args(&params, &ctx).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "agentgrep find requires 'query' unless path, glob, or type narrows the search"
+    );
+}
+
+#[test]
 fn build_smart_args_uses_terms() {
     let ctx = test_ctx(Path::new("/workspace"));
     let params = AgentGrepInput {
@@ -232,10 +291,15 @@ fn schema_only_advertises_common_public_fields() {
     let props = schema["properties"]
         .as_object()
         .expect("agentgrep schema should have properties");
+    let required = schema["required"].as_array().cloned().unwrap_or_default();
     let mode_enum = props["mode"]["enum"]
         .as_array()
         .expect("agentgrep mode should expose enum values");
 
+    assert!(
+        !required.contains(&json!("mode")),
+        "agentgrep mode should be optional because omitted mode defaults to grep"
+    );
     assert!(props.contains_key("mode"));
     assert!(props.contains_key("query"));
     assert!(props.contains_key("file"));
@@ -261,6 +325,18 @@ fn schema_only_advertises_common_public_fields() {
     assert!(!props.contains_key("full_region"));
     assert!(!props.contains_key("debug_plan"));
     assert!(!props.contains_key("debug_score"));
+}
+
+#[test]
+fn input_defaults_missing_mode_to_grep() {
+    let params: AgentGrepInput = serde_json::from_value(json!({
+        "query": "auth_status",
+        "path": "src"
+    }))
+    .expect("agentgrep input without mode should deserialize");
+
+    assert_eq!(params.mode, "grep");
+    assert_eq!(params.query.as_deref(), Some("auth_status"));
 }
 
 #[test]
@@ -312,6 +388,23 @@ async fn execute_runs_linked_grep() {
     assert!(output.output.contains("query: auth_status"));
     assert!(output.output.contains("src/app.rs"));
     assert!(output.output.contains("@ 1 pub fn auth_status() {}"));
+}
+
+#[tokio::test]
+async fn execute_runs_linked_grep_when_mode_is_omitted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(temp.path().join("src")).expect("mkdir");
+    fs::write(temp.path().join("src/app.rs"), "pub fn auth_status() {}\n").expect("write file");
+
+    let tool = AgentGrepTool::new();
+    let ctx = test_ctx(temp.path());
+    let output = tool
+        .execute(json!({"query": "auth_status", "path": "src"}), ctx)
+        .await
+        .expect("tool output");
+
+    assert!(output.output.contains("query: auth_status"));
+    assert!(output.output.contains("app.rs"));
 }
 
 #[tokio::test]
