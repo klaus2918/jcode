@@ -560,7 +560,8 @@ impl SelfDevTool {
         }
 
         output.push_str(&format!(
-            "\n\nUse `bg action=\"status\" task_id=\"{}\"` to check progress, or `selfdev status` to inspect the build queue.\nAfter it finishes, use `selfdev reload` when you want to restart onto the new binary.",
+            "\n\nUse `bg action=\"wait\" task_id=\"{}\"` to wait for completion/checkpoints, `bg action=\"status\" task_id=\"{}\"` to check progress immediately, or `selfdev status` to inspect the build queue.\nAfter it finishes, use `selfdev reload` when you want to restart onto the new binary.",
+            info.task_id,
             info.task_id
         ));
 

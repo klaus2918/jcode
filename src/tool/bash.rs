@@ -762,7 +762,7 @@ impl BashTool {
                     )
                     .await;
                 let output = format!(
-                    "Command continued in background due to reload.\n\nTask ID: {}\nOutput file: {}\nStatus file: {}\n\nUse `bg` with action=\"status\" and task_id=\"{}\" after reload.",
+                    "Command continued in background due to reload.\n\nTask ID: {}\nOutput file: {}\nStatus file: {}\n\nUse `bg` with action=\"wait\" and task_id=\"{}\" after reload to wait for completion or the next progress checkpoint.",
                     info.task_id,
                     info.output_file.display(),
                     info.status_file.display(),
@@ -942,13 +942,15 @@ impl BashTool {
              Output file: {}\n\
              Status file: {}\n\n\
              {}\n\
-             To check progress: use the `bg` tool with action=\"status\" and task_id=\"{}\"\n\
+             To wait for completion/checkpoints: use the `bg` tool with action=\"wait\" and task_id=\"{}\"\n\
+             To check progress immediately: use the `bg` tool with action=\"status\" and task_id=\"{}\"\n\
              To see output: use the `read` tool on the output file, or `bg` with action=\"output\"",
             info.task_id,
             display_name,
             info.output_file.display(),
             info.status_file.display(),
             notify_msg,
+            info.task_id,
             info.task_id,
         );
 

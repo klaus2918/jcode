@@ -895,7 +895,8 @@ impl Agent {
 
                     let bg_msg = format!(
                         "Tool '{}' was moved to background by the user (task_id: {}). \
-                         Use the `bg` tool with action 'status' or 'output' to check on it.",
+                         Use the `bg` tool with action 'wait' to wait for completion/checkpoints, \
+                         or action 'status'/'output' to inspect it.",
                         tc.name, bg_info.task_id
                     );
 

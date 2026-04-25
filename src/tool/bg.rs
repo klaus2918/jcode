@@ -9,6 +9,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::time::Duration;
 
 fn default_watch_notify() -> bool {
     true
@@ -17,6 +18,13 @@ fn default_watch_notify() -> bool {
 fn default_watch_wake() -> bool {
     true
 }
+
+fn default_wait_return_on_progress() -> bool {
+    true
+}
+
+const DEFAULT_WAIT_SECONDS: u64 = 60;
+const MAX_WAIT_SECONDS: u64 = 60 * 60;
 
 pub struct BgTool;
 
@@ -28,9 +36,9 @@ impl BgTool {
 
 #[derive(Deserialize)]
 struct BgInput {
-    /// Action to perform: "list", "status", "output", "cancel", "cleanup", "watch"
+    /// Action to perform: "list", "status", "output", "cancel", "cleanup", "watch", "wait"
     action: String,
-    /// Task ID (required for status, output, cancel, watch)
+    /// Task ID (required for status, output, cancel, watch, wait)
     #[serde(default)]
     task_id: Option<String>,
     /// Max age in hours for cleanup (default: 24)
@@ -42,6 +50,65 @@ struct BgInput {
     /// Whether to wake on completion when using watch (default: true)
     #[serde(default = "default_watch_wake")]
     wake: bool,
+    /// Max seconds to block when using wait (default: 60, capped at 3600)
+    #[serde(default)]
+    max_wait_seconds: Option<u64>,
+    /// Whether wait should return on progress/checkpoint events (default: true)
+    #[serde(default = "default_wait_return_on_progress")]
+    return_on_progress: bool,
+}
+
+fn status_label(status: &BackgroundTaskStatus) -> &'static str {
+    match status {
+        BackgroundTaskStatus::Running => "running",
+        BackgroundTaskStatus::Completed => "completed",
+        BackgroundTaskStatus::Superseded => "superseded",
+        BackgroundTaskStatus::Failed => "failed",
+    }
+}
+
+fn format_task_details(task: &background::TaskStatusFile) -> String {
+    let mut output = format!(
+        "Task: {}\n\
+         Name: {}\n\
+         Tool: {}\n\
+         Status: {}\n\
+         Session: {}\n\
+         Started: {}\n",
+        task.task_id,
+        crate::message::background_task_display_label(
+            &task.tool_name,
+            task.display_name.as_deref()
+        ),
+        task.tool_name,
+        status_label(&task.status),
+        task.session_id,
+        task.started_at,
+    );
+
+    if let Some(completed) = task.completed_at.as_ref() {
+        output.push_str(&format!("Completed: {}\n", completed));
+    }
+    if let Some(duration) = task.duration_secs {
+        output.push_str(&format!("Duration: {:.2}s\n", duration));
+    }
+    if let Some(exit_code) = task.exit_code {
+        output.push_str(&format!("Exit code: {}\n", exit_code));
+    }
+    if let Some(progress) = task.progress.as_ref() {
+        output.push_str(&format!(
+            "Progress: {}\n",
+            crate::background::format_progress_display(progress, 18)
+        ));
+        output.push_str(&format!("Progress updated: {}\n", progress.updated_at));
+    }
+    output.push_str(&format!("Notify: {}\n", task.notify));
+    output.push_str(&format!("Wake: {}\n", task.wake));
+    if let Some(error) = task.error.as_ref() {
+        output.push_str(&format!("Error: {}\n", error));
+    }
+
+    output
 }
 
 #[async_trait]
@@ -61,7 +128,7 @@ impl Tool for BgTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "status", "output", "cancel", "cleanup", "watch"],
+                    "enum": ["list", "status", "output", "cancel", "cleanup", "watch", "wait"],
                     "description": "Action."
                 },
                 "task_id": {
@@ -79,6 +146,14 @@ impl Tool for BgTool {
                 "wake": {
                     "type": "boolean",
                     "description": "When using action='watch', whether to wake on completion. Defaults to true."
+                },
+                "max_wait_seconds": {
+                    "type": "integer",
+                    "description": "When using action='wait', maximum seconds to block before returning so the agent can check in. Defaults to 60, capped at 3600. Use 0 for an immediate check."
+                },
+                "return_on_progress": {
+                    "type": "boolean",
+                    "description": "When using action='wait', return as soon as the task emits a progress/checkpoint event instead of only completion or timeout. Defaults to true."
                 }
             }
         })
@@ -145,53 +220,8 @@ impl Tool for BgTool {
 
                 match manager.status(&task_id).await {
                     Some(task) => {
-                        let status_str = match task.status {
-                            BackgroundTaskStatus::Running => "running",
-                            BackgroundTaskStatus::Completed => "completed",
-                            BackgroundTaskStatus::Superseded => "superseded",
-                            BackgroundTaskStatus::Failed => "failed",
-                        };
-
-                        let mut output = format!(
-                            "Task: {}\n\
-                             Name: {}\n\
-                             Tool: {}\n\
-                             Status: {}\n\
-                             Session: {}\n\
-                             Started: {}\n",
-                            task.task_id,
-                            crate::message::background_task_display_label(
-                                &task.tool_name,
-                                task.display_name.as_deref(),
-                            ),
-                            task.tool_name,
-                            status_str,
-                            task.session_id,
-                            task.started_at,
-                        );
-
-                        if let Some(completed) = task.completed_at {
-                            output.push_str(&format!("Completed: {}\n", completed));
-                        }
-                        if let Some(duration) = task.duration_secs {
-                            output.push_str(&format!("Duration: {:.2}s\n", duration));
-                        }
-                        if let Some(exit_code) = task.exit_code {
-                            output.push_str(&format!("Exit code: {}\n", exit_code));
-                        }
-                        if let Some(progress) = task.progress.as_ref() {
-                            output.push_str(&format!(
-                                "Progress: {}\n",
-                                crate::background::format_progress_display(progress, 18)
-                            ));
-                            output
-                                .push_str(&format!("Progress updated: {}\n", progress.updated_at));
-                        }
-                        output.push_str(&format!("Notify: {}\n", task.notify));
-                        output.push_str(&format!("Wake: {}\n", task.wake));
-                        if let Some(error) = task.error.clone() {
-                            output.push_str(&format!("Error: {}\n", error));
-                        }
+                        let status_str = status_label(&task.status);
+                        let output = format_task_details(&task);
 
                         if matches!(task.status, BackgroundTaskStatus::Failed) {
                             crate::logging::warn(&format!(
@@ -282,12 +312,7 @@ impl Tool for BgTool {
                     .await?
                 {
                     Some(task) => {
-                        let status_str = match task.status {
-                            BackgroundTaskStatus::Running => "running",
-                            BackgroundTaskStatus::Completed => "completed",
-                            BackgroundTaskStatus::Superseded => "superseded",
-                            BackgroundTaskStatus::Failed => "failed",
-                        };
+                        let status_str = status_label(&task.status);
                         Ok(ToolOutput::new(format!(
                             "Updated background task delivery for {}.\nStatus: {}\nNotify: {}\nWake: {}",
                             task_id, status_str, task.notify, task.wake
@@ -304,8 +329,78 @@ impl Tool for BgTool {
                 }
             }
 
+            "wait" => {
+                let task_id = params
+                    .task_id
+                    .ok_or_else(|| anyhow::anyhow!("task_id is required for wait action"))?;
+                let requested_wait = params.max_wait_seconds.unwrap_or(DEFAULT_WAIT_SECONDS);
+                let capped_wait = requested_wait.min(MAX_WAIT_SECONDS);
+
+                match manager
+                    .wait(
+                        &task_id,
+                        Duration::from_secs(capped_wait),
+                        params.return_on_progress,
+                    )
+                    .await
+                {
+                    Some(wait_result) => {
+                        let task = wait_result.task;
+                        let status_str = status_label(&task.status);
+                        let reason = wait_result.reason;
+                        let reason_str = match reason {
+                            background::BackgroundTaskWaitReason::AlreadyFinished => {
+                                "already_finished"
+                            }
+                            background::BackgroundTaskWaitReason::Finished => "finished",
+                            background::BackgroundTaskWaitReason::Progress => "progress",
+                            background::BackgroundTaskWaitReason::Timeout => "timeout",
+                        };
+                        let mut output = match reason {
+                            background::BackgroundTaskWaitReason::AlreadyFinished => {
+                                "Background task was already finished.\n\n".to_string()
+                            }
+                            background::BackgroundTaskWaitReason::Finished => {
+                                "Background task finished.\n\n".to_string()
+                            }
+                            background::BackgroundTaskWaitReason::Progress => {
+                                "Background task emitted a progress/checkpoint event.\n\n"
+                                    .to_string()
+                            }
+                            background::BackgroundTaskWaitReason::Timeout => format!(
+                                "No terminal event before max wait of {}s. Check again with `bg action=\"wait\" task_id=\"{}\"` or inspect status/output.\n\n",
+                                capped_wait, task_id
+                            ),
+                        };
+                        output.push_str(&format_task_details(&task));
+                        if requested_wait > MAX_WAIT_SECONDS {
+                            output.push_str(&format!(
+                                "Requested wait was capped from {}s to {}s.\n",
+                                requested_wait, MAX_WAIT_SECONDS
+                            ));
+                        }
+
+                        Ok(ToolOutput::new(output)
+                            .with_title(format!("bg wait {}", task_id))
+                            .with_metadata(json!({
+                                "task_id": task.task_id,
+                                "display_name": task.display_name,
+                                "status": status_str,
+                                "wait_reason": reason_str,
+                                "timed_out": matches!(reason, background::BackgroundTaskWaitReason::Timeout),
+                                "max_wait_seconds": capped_wait,
+                                "return_on_progress": params.return_on_progress,
+                                "exit_code": task.exit_code,
+                                "progress": task.progress,
+                                "progress_event": wait_result.progress_event,
+                            })))
+                    }
+                    None => Err(anyhow::anyhow!("Task not found: {}", task_id)),
+                }
+            }
+
             _ => Err(anyhow::anyhow!(
-                "Unknown action: {}. Valid actions: list, status, output, cancel, cleanup, watch",
+                "Unknown action: {}. Valid actions: list, status, output, cancel, cleanup, watch, wait",
                 params.action
             )),
         }

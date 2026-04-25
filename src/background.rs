@@ -18,6 +18,7 @@ use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
+use tokio::time::{Duration, Instant as TokioInstant, MissedTickBehavior};
 
 /// Directory for background task output files
 fn task_dir() -> PathBuf {
@@ -144,6 +145,23 @@ pub struct BackgroundTaskInfo {
     pub task_id: String,
     pub output_file: PathBuf,
     pub status_file: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundTaskWaitReason {
+    AlreadyFinished,
+    Finished,
+    Progress,
+    Timeout,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackgroundTaskWaitResult {
+    pub reason: BackgroundTaskWaitReason,
+    pub task: TaskStatusFile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_event: Option<BackgroundTaskProgressEvent>,
 }
 
 /// Internal tracking for a running task
@@ -759,6 +777,132 @@ impl BackgroundTaskManager {
         fs::read_to_string(&output_path).await.ok()
     }
 
+    /// Wait for a task to finish, emit progress, or reach the caller's maximum wait.
+    ///
+    /// This combines bus-driven wakeups with a light periodic status reconciliation so
+    /// detached tasks, missed broadcast messages, or crash/reload edges still return no
+    /// later than `max_wait` and can notice completion without active polling by the agent.
+    pub async fn wait(
+        &self,
+        task_id: &str,
+        max_wait: Duration,
+        return_on_progress: bool,
+    ) -> Option<BackgroundTaskWaitResult> {
+        let mut bus_rx = Bus::global().subscribe();
+        let initial = self.status(task_id).await?;
+        if initial.status != BackgroundTaskStatus::Running {
+            return Some(BackgroundTaskWaitResult {
+                reason: BackgroundTaskWaitReason::AlreadyFinished,
+                task: initial,
+                progress_event: None,
+            });
+        }
+        if max_wait.is_zero() {
+            return Some(BackgroundTaskWaitResult {
+                reason: BackgroundTaskWaitReason::Timeout,
+                task: initial,
+                progress_event: None,
+            });
+        }
+
+        let mut last_progress = initial.progress.clone();
+        let deadline = TokioInstant::now() + max_wait;
+        let timeout = tokio::time::sleep_until(deadline);
+        tokio::pin!(timeout);
+        let mut poll = tokio::time::interval(Duration::from_secs(1));
+        poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = &mut timeout => {
+                    let task = self.status(task_id).await?;
+                    let reason = if task.status == BackgroundTaskStatus::Running {
+                        BackgroundTaskWaitReason::Timeout
+                    } else {
+                        BackgroundTaskWaitReason::Finished
+                    };
+                    return Some(BackgroundTaskWaitResult {
+                        reason,
+                        task,
+                        progress_event: None,
+                    });
+                }
+                _ = poll.tick() => {
+                    let task = self.status(task_id).await?;
+                    if task.status != BackgroundTaskStatus::Running {
+                        return Some(BackgroundTaskWaitResult {
+                            reason: BackgroundTaskWaitReason::Finished,
+                            task,
+                            progress_event: None,
+                        });
+                    }
+                    if return_on_progress && task.progress != last_progress {
+                        return Some(BackgroundTaskWaitResult {
+                            reason: BackgroundTaskWaitReason::Progress,
+                            progress_event: None,
+                            task,
+                        });
+                    }
+                    last_progress = task.progress.clone();
+                }
+                event = bus_rx.recv() => {
+                    match event {
+                        Ok(BusEvent::BackgroundTaskCompleted(event)) if event.task_id == task_id => {
+                            let task = self.status(task_id).await?;
+                            return Some(BackgroundTaskWaitResult {
+                                reason: BackgroundTaskWaitReason::Finished,
+                                task,
+                                progress_event: None,
+                            });
+                        }
+                        Ok(BusEvent::BackgroundTaskProgress(event)) if event.task_id == task_id => {
+                            if return_on_progress {
+                                let task = self.status(task_id).await?;
+                                return Some(BackgroundTaskWaitResult {
+                                    reason: BackgroundTaskWaitReason::Progress,
+                                    task,
+                                    progress_event: Some(event),
+                                });
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            let task = self.status(task_id).await?;
+                            if task.status != BackgroundTaskStatus::Running {
+                                return Some(BackgroundTaskWaitResult {
+                                    reason: BackgroundTaskWaitReason::Finished,
+                                    task,
+                                    progress_event: None,
+                                });
+                            }
+                            if return_on_progress && task.progress != last_progress {
+                                return Some(BackgroundTaskWaitResult {
+                                    reason: BackgroundTaskWaitReason::Progress,
+                                    progress_event: None,
+                                    task,
+                                });
+                            }
+                            last_progress = task.progress.clone();
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            let task = self.status(task_id).await?;
+                            let reason = if task.status == BackgroundTaskStatus::Running {
+                                BackgroundTaskWaitReason::Timeout
+                            } else {
+                                BackgroundTaskWaitReason::Finished
+                            };
+                            return Some(BackgroundTaskWaitResult {
+                                reason,
+                                task,
+                                progress_event: None,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
     /// Update progress for an existing background task.
     pub async fn update_progress(
         &self,
@@ -1132,5 +1276,114 @@ mod tests {
         }
 
         panic!("progress event for task {} not received", info.task_id);
+    }
+
+    #[tokio::test]
+    async fn wait_returns_when_task_finishes() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+
+        let info = manager
+            .spawn_with_notify(
+                "bash",
+                None,
+                "session-wait-finish",
+                false,
+                false,
+                |output_path| async move {
+                    sleep(Duration::from_millis(25)).await;
+                    tokio::fs::write(&output_path, "done")
+                        .await
+                        .expect("write output");
+                    Ok(TaskResult::completed(Some(0)))
+                },
+            )
+            .await;
+
+        let wait_result = manager
+            .wait(&info.task_id, Duration::from_secs(2), true)
+            .await
+            .expect("task should exist");
+
+        assert_eq!(wait_result.reason, BackgroundTaskWaitReason::Finished);
+        assert_eq!(wait_result.task.status, BackgroundTaskStatus::Completed);
+        assert_eq!(wait_result.task.exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn wait_returns_on_progress_checkpoint() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+
+        let info = manager
+            .spawn_with_notify(
+                "bash",
+                None,
+                "session-wait-progress",
+                false,
+                false,
+                |_output_path| async move {
+                    sleep(Duration::from_secs(2)).await;
+                    Ok(TaskResult::completed(Some(0)))
+                },
+            )
+            .await;
+
+        let progress = BackgroundTaskProgress {
+            kind: BackgroundTaskProgressKind::Determinate,
+            percent: Some(25.0),
+            message: Some("checkpoint".to_string()),
+            current: Some(1),
+            total: Some(4),
+            unit: Some("steps".to_string()),
+            eta_seconds: Some(3),
+            updated_at: Utc::now().to_rfc3339(),
+            source: BackgroundTaskProgressSource::Reported,
+        };
+
+        let waiter = manager.wait(&info.task_id, Duration::from_secs(2), true);
+        let updater = async {
+            sleep(Duration::from_millis(25)).await;
+            manager
+                .update_progress(&info.task_id, progress.clone())
+                .await
+                .expect("progress update should succeed")
+                .expect("task should exist");
+        };
+        let (wait_result, _) = tokio::join!(waiter, updater);
+        let wait_result = wait_result.expect("task should exist");
+
+        assert_eq!(wait_result.reason, BackgroundTaskWaitReason::Progress);
+        assert_eq!(wait_result.task.status, BackgroundTaskStatus::Running);
+        assert_eq!(wait_result.task.progress, Some(progress.normalize()));
+        assert!(wait_result.progress_event.is_some());
+    }
+
+    #[tokio::test]
+    async fn wait_returns_on_timeout() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+
+        let info = manager
+            .spawn_with_notify(
+                "bash",
+                None,
+                "session-wait-timeout",
+                false,
+                false,
+                |_output_path| async move {
+                    sleep(Duration::from_millis(250)).await;
+                    Ok(TaskResult::completed(Some(0)))
+                },
+            )
+            .await;
+
+        let wait_result = manager
+            .wait(&info.task_id, Duration::from_millis(25), true)
+            .await
+            .expect("task should exist");
+
+        assert_eq!(wait_result.reason, BackgroundTaskWaitReason::Timeout);
+        assert_eq!(wait_result.task.status, BackgroundTaskStatus::Running);
     }
 }
