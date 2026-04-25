@@ -17,6 +17,7 @@ The goal is to make the desktop client a first-class Jcode surface without forki
 
 See also:
 
+- [`DESKTOP_SUPERAPP_WORKSPACE.md`](./DESKTOP_SUPERAPP_WORKSPACE.md)
 - [`DESKTOP_CODEBASE_ARCHITECTURE.md`](./DESKTOP_CODEBASE_ARCHITECTURE.md)
 - [`CLIENT_CORE_PRESENTATION_SPLIT_PLAN.md`](./CLIENT_CORE_PRESENTATION_SPLIT_PLAN.md)
 - [`MULTI_SESSION_CLIENT_ARCHITECTURE.md`](./MULTI_SESSION_CLIENT_ARCHITECTURE.md)
@@ -56,7 +57,16 @@ Recommended initial stack:
 
 Jcode Desktop should not start as a full IDE and should not look like a conventional chatbot.
 
-The differentiated product is an **agent operating console** for local development:
+The differentiated product is a **keyboard-driven, Niri-like agent workspace superapp** for local development. The first-class object is not a chat window, but a workspace containing many navigable surfaces:
+
+- agent sessions
+- activity/task views
+- diffs and changed files
+- browser surfaces later
+- editor/file surfaces later
+- settings/debug/tool surfaces
+
+The app should help users:
 
 - supervise autonomous coding work
 - inspect tool activity
@@ -64,7 +74,7 @@ The differentiated product is an **agent operating console** for local developme
 - review changed files
 - respond to permission prompts
 - resume and coordinate sessions
-- eventually manage multiple agent surfaces spatially
+- navigate many related surfaces spatially
 
 The desktop client should complement the TUI/CLI, not replace it.
 
