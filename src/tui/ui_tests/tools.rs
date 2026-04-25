@@ -252,7 +252,7 @@ Completed: 2 succeeded, 1 failed"
     assert!(
         rendered
             .iter()
-            .any(|line| line.contains("✗ agentgrep missing mode")),
+            .any(|line| line.contains("✗ agentgrep invalid input: missing mode")),
         "failed subcall should be attributed to agentgrep: {rendered:?}"
     );
     assert!(
@@ -266,6 +266,49 @@ Completed: 2 succeeded, 1 failed"
             .iter()
             .any(|line| line.contains("✓ grep 'TODO' in src")),
         "successful grep subcall should still be visible: {rendered:?}"
+    );
+}
+
+#[test]
+fn test_render_tool_message_batch_all_failed_marks_all_children_failed() {
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "--- [1] agentgrep ---\nError: missing field `mode`\n\n--- [2] agentgrep ---\nError: missing field `mode`\n\n--- [3] agentgrep ---\nError: missing field `mode`\n\nCompleted: 0 succeeded, 3 failed"
+            .to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_batch_all_failed".to_string(),
+            name: "batch".to_string(),
+            input: serde_json::json!({
+                "tool_calls": [
+                    {"tool": "agentgrep"},
+                    {"tool": "agentgrep"},
+                    {"tool": "agentgrep"}
+                ]
+            }),
+            intent: None,
+        }),
+    };
+
+    let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+    let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
+
+    assert!(
+        rendered[0].contains("✗ batch 3/3 failed"),
+        "rendered={rendered:?}"
+    );
+    let failed_children = rendered
+        .iter()
+        .filter(|line| line.contains("✗ agentgrep invalid input: missing mode"))
+        .count();
+    assert_eq!(failed_children, 3, "rendered={rendered:?}");
+    assert!(
+        !rendered
+            .iter()
+            .any(|line| line.contains("✓ agentgrep") || line.contains("agentgrep missing mode")),
+        "rendered={rendered:?}"
     );
 }
 
@@ -311,7 +354,7 @@ fn test_render_tool_message_batch_includes_start_end_read_details() {
 
     assert_eq!(rendered.len(), 2, "rendered={rendered:?}");
     assert!(
-        rendered[0].contains("✓ batch 1 calls"),
+        rendered[0].contains("✓ batch 1 call"),
         "rendered={rendered:?}"
     );
     assert!(

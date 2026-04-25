@@ -1,6 +1,7 @@
 //! Background task management tool
 //!
-//! Allows the agent to list, check status, get output, and cancel background tasks.
+//! Allows the agent to list, wait on, inspect, read output from, and manage
+//! background tasks.
 
 use super::{Tool, ToolContext, ToolOutput};
 use crate::background;
@@ -9,7 +10,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 fn default_watch_notify() -> bool {
     true
@@ -25,6 +27,9 @@ fn default_wait_return_on_progress() -> bool {
 
 const DEFAULT_WAIT_SECONDS: u64 = 60;
 const MAX_WAIT_SECONDS: u64 = 60 * 60;
+const DEFAULT_TAIL_LINES: usize = 80;
+const DEFAULT_WAIT_PREVIEW_LINES: usize = 40;
+const MAX_OUTPUT_BYTES: usize = 50_000;
 
 pub struct BgTool;
 
@@ -36,18 +41,33 @@ impl BgTool {
 
 #[derive(Deserialize)]
 struct BgInput {
-    /// Action to perform: "list", "status", "output", "cancel", "cleanup", "watch", "wait"
+    /// Action to perform: list, status, output, tail, cancel, cleanup, watch, delivery, subscribe, wait
     action: String,
-    /// Task ID (required for status, output, cancel, watch, wait)
+    /// Task ID (for single-task actions)
     #[serde(default)]
     task_id: Option<String>,
+    /// Task IDs (for multi-task wait/status/output where supported)
+    #[serde(default)]
+    task_ids: Vec<String>,
+    /// Use the latest matching task when task_id is omitted
+    #[serde(default)]
+    latest: bool,
+    /// Restrict implicit selection/listing to this session. Defaults to false for list and true for implicit selection.
+    #[serde(default)]
+    session_only: Option<bool>,
+    /// Status filter, either a string or array of strings: running/completed/failed/superseded/terminal/all
+    #[serde(default)]
+    status_filter: Option<Value>,
     /// Max age in hours for cleanup (default: 24)
     #[serde(default)]
     max_age_hours: Option<u64>,
-    /// Whether to notify on completion when using watch (default: true)
+    /// Dry-run cleanup without deleting files
+    #[serde(default)]
+    dry_run: bool,
+    /// Whether to notify on completion when using watch/delivery (default: true)
     #[serde(default = "default_watch_notify")]
     notify: bool,
-    /// Whether to wake on completion when using watch (default: true)
+    /// Whether to wake on completion when using watch/delivery (default: true)
     #[serde(default = "default_watch_wake")]
     wake: bool,
     /// Max seconds to block when using wait (default: 60, capped at 3600)
@@ -56,6 +76,21 @@ struct BgInput {
     /// Whether wait should return on progress/checkpoint events (default: true)
     #[serde(default = "default_wait_return_on_progress")]
     return_on_progress: bool,
+    /// Multi-task wait mode: any, all, first_failure
+    #[serde(default)]
+    wait_mode: Option<String>,
+    /// Tail only the last N lines for output/tail and wait previews
+    #[serde(default)]
+    tail_lines: Option<usize>,
+    /// Alias for tail_lines
+    #[serde(default)]
+    lines: Option<usize>,
+    /// Include an output preview when wait returns; failed tasks preview by default
+    #[serde(default)]
+    include_output_preview: Option<bool>,
+    /// Optional grace period for detached cancellation before SIGKILL
+    #[serde(default)]
+    graceful_timeout_ms: Option<u64>,
 }
 
 fn status_label(status: &BackgroundTaskStatus) -> &'static str {
@@ -65,6 +100,94 @@ fn status_label(status: &BackgroundTaskStatus) -> &'static str {
         BackgroundTaskStatus::Superseded => "superseded",
         BackgroundTaskStatus::Failed => "failed",
     }
+}
+
+fn is_terminal(status: &BackgroundTaskStatus) -> bool {
+    !matches!(status, BackgroundTaskStatus::Running)
+}
+
+fn is_success(status: &BackgroundTaskStatus, exit_code: Option<i32>) -> Option<bool> {
+    match status {
+        BackgroundTaskStatus::Running => None,
+        BackgroundTaskStatus::Completed => Some(exit_code.unwrap_or(0) == 0),
+        BackgroundTaskStatus::Superseded => Some(true),
+        BackgroundTaskStatus::Failed => Some(false),
+    }
+}
+
+fn parse_status_filter(value: Option<&Value>) -> HashSet<&'static str> {
+    let mut set = HashSet::new();
+    let Some(value) = value else {
+        return set;
+    };
+
+    let mut add = |raw: &str| match raw.to_ascii_lowercase().as_str() {
+        "running" => {
+            set.insert("running");
+        }
+        "completed" | "success" | "succeeded" => {
+            set.insert("completed");
+        }
+        "failed" | "failure" | "error" => {
+            set.insert("failed");
+        }
+        "superseded" => {
+            set.insert("superseded");
+        }
+        "terminal" | "finished" | "done" => {
+            set.insert("completed");
+            set.insert("failed");
+            set.insert("superseded");
+        }
+        "all" | "any" => {}
+        _ => {}
+    };
+
+    match value {
+        Value::String(s) => add(s),
+        Value::Array(items) => {
+            for item in items {
+                if let Some(s) = item.as_str() {
+                    add(s);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    set
+}
+
+fn task_matches_filter(task: &background::TaskStatusFile, filter: &HashSet<&str>) -> bool {
+    filter.is_empty() || filter.contains(status_label(&task.status))
+}
+
+fn task_metadata(
+    manager: &background::BackgroundTaskManager,
+    task: &background::TaskStatusFile,
+) -> Value {
+    json!({
+        "task_id": task.task_id,
+        "display_name": task.display_name,
+        "tool_name": task.tool_name,
+        "status": status_label(&task.status),
+        "is_terminal": is_terminal(&task.status),
+        "is_success": is_success(&task.status, task.exit_code),
+        "exit_code": task.exit_code,
+        "error": task.error,
+        "session_id": task.session_id,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "duration_secs": task.duration_secs,
+        "notify": task.notify,
+        "wake": task.wake,
+        "pid": task.pid,
+        "detached": task.detached,
+        "progress": task.progress,
+        "event_history": task.event_history,
+        "output_file": manager.output_path_for(&task.task_id).to_string_lossy(),
+        "status_file": manager.status_path_for(&task.task_id).to_string_lossy(),
+    })
 }
 
 fn format_task_details(task: &background::TaskStatusFile) -> String {
@@ -108,7 +231,179 @@ fn format_task_details(task: &background::TaskStatusFile) -> String {
         output.push_str(&format!("Error: {}\n", error));
     }
 
+    if !task.event_history.is_empty() {
+        output.push_str("Recent events:\n");
+        let start = task.event_history.len().saturating_sub(5);
+        for event in &task.event_history[start..] {
+            let message = event
+                .message
+                .as_deref()
+                .filter(|message| !message.is_empty())
+                .map(|message| format!(" · {}", crate::util::truncate_str(message, 80)))
+                .unwrap_or_default();
+            output.push_str(&format!(
+                "- {:?} · {}{}\n",
+                event.kind, event.timestamp, message
+            ));
+        }
+    }
+
     output
+}
+
+fn tail_lines(output: &str, lines: usize) -> String {
+    if lines == 0 {
+        return String::new();
+    }
+    let collected: Vec<&str> = output.lines().rev().take(lines).collect();
+    collected.into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
+fn output_preview(output: &str, tail: Option<usize>) -> (String, bool) {
+    if let Some(lines) = tail {
+        let tailed = tail_lines(output, lines);
+        let truncated = tailed.len() < output.len();
+        return (tailed, truncated);
+    }
+
+    if output.len() > MAX_OUTPUT_BYTES {
+        (
+            format!(
+                "{}...\n\n(Output truncated. Use `read` tool on the output file for full content, or `bg action=\"tail\"` for recent lines.)",
+                crate::util::truncate_str(output, MAX_OUTPUT_BYTES)
+            ),
+            true,
+        )
+    } else {
+        (output.to_string(), false)
+    }
+}
+
+fn wait_reason_label(reason: background::BackgroundTaskWaitReason) -> &'static str {
+    match reason {
+        background::BackgroundTaskWaitReason::AlreadyFinished => "already_finished",
+        background::BackgroundTaskWaitReason::Finished => "finished",
+        background::BackgroundTaskWaitReason::Progress => "progress",
+        background::BackgroundTaskWaitReason::Checkpoint => "checkpoint",
+        background::BackgroundTaskWaitReason::Timeout => "timeout",
+    }
+}
+
+async fn filtered_tasks(
+    manager: &background::BackgroundTaskManager,
+    ctx: &ToolContext,
+    params: &BgInput,
+    default_session_only: bool,
+) -> Vec<background::TaskStatusFile> {
+    let mut tasks = manager.list().await;
+    let session_only = params.session_only.unwrap_or(default_session_only);
+    let filter = parse_status_filter(params.status_filter.as_ref());
+    tasks.retain(|task| {
+        (!session_only || task.session_id == ctx.session_id) && task_matches_filter(task, &filter)
+    });
+    tasks
+}
+
+async fn resolve_task_ids(
+    manager: &background::BackgroundTaskManager,
+    ctx: &ToolContext,
+    params: &BgInput,
+    action: &str,
+    allow_multiple: bool,
+) -> Result<Vec<String>> {
+    if !params.task_ids.is_empty() {
+        if !allow_multiple && params.task_ids.len() > 1 {
+            return Err(anyhow::anyhow!(
+                "action '{}' accepts only one task_id; got {} task_ids",
+                action,
+                params.task_ids.len()
+            ));
+        }
+        return Ok(params.task_ids.clone());
+    }
+    if let Some(task_id) = params.task_id.clone() {
+        return Ok(vec![task_id]);
+    }
+
+    let mut tasks = filtered_tasks(manager, ctx, params, true).await;
+    if params.latest {
+        return tasks
+            .first()
+            .map(|task| vec![task.task_id.clone()])
+            .ok_or_else(|| anyhow::anyhow!("No matching background tasks found for latest=true"));
+    }
+
+    tasks.retain(|task| task.status == BackgroundTaskStatus::Running);
+    match tasks.as_slice() {
+        [task] => Ok(vec![task.task_id.clone()]),
+        [] => Err(anyhow::anyhow!(
+            "task_id is required for {} action unless exactly one matching running task exists in this session. Try `bg action=\"list\" status_filter=\"running\" session_only=true` or pass latest=true.",
+            action
+        )),
+        _ => Err(anyhow::anyhow!(
+            "Multiple matching running tasks found; pass task_id, task_ids, or latest=true. Matching task IDs: {}",
+            tasks
+                .iter()
+                .map(|task| task.task_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+async fn wait_many_polling(
+    manager: &background::BackgroundTaskManager,
+    task_ids: &[String],
+    max_wait: Duration,
+    return_on_progress: bool,
+    mode: &str,
+) -> Result<(String, Vec<background::TaskStatusFile>)> {
+    let deadline = Instant::now() + max_wait;
+    let mut last_progress = std::collections::HashMap::new();
+    for task_id in task_ids {
+        if let Some(task) = manager.status(task_id).await {
+            last_progress.insert(task_id.clone(), task.progress.clone());
+        }
+    }
+
+    loop {
+        let mut tasks = Vec::new();
+        for task_id in task_ids {
+            if let Some(task) = manager.status(task_id).await {
+                tasks.push(task);
+            }
+        }
+
+        if mode == "first_failure"
+            && tasks
+                .iter()
+                .any(|task| matches!(task.status, BackgroundTaskStatus::Failed))
+        {
+            return Ok(("first_failure".to_string(), tasks));
+        }
+        if mode == "all" && tasks.iter().all(|task| is_terminal(&task.status)) {
+            return Ok(("all_finished".to_string(), tasks));
+        }
+        if mode != "all" && tasks.iter().any(|task| is_terminal(&task.status)) {
+            return Ok(("any_finished".to_string(), tasks));
+        }
+        if return_on_progress {
+            for task in &tasks {
+                let previous = last_progress.get(&task.task_id).cloned().unwrap_or(None);
+                if task.progress != previous {
+                    return Ok(("progress".to_string(), tasks));
+                }
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Ok(("timeout".to_string(), tasks));
+        }
+        for task in &tasks {
+            last_progress.insert(task.task_id.clone(), task.progress.clone());
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 #[async_trait]
@@ -118,7 +413,7 @@ impl Tool for BgTool {
     }
 
     fn description(&self) -> &str {
-        "Manage background tasks."
+        "Manage background tasks. Prefer action='wait' over polling or sleeping. Use action='tail' or output with tail_lines for logs, action='delivery' to change notify/wake behavior, and JCODE_CHECKPOINT/JCODE_PROGRESS from background commands for reliable wakeups."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -128,46 +423,45 @@ impl Tool for BgTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "status", "output", "cancel", "cleanup", "watch", "wait"],
-                    "description": "Action."
+                    "enum": ["list", "status", "output", "tail", "cancel", "cleanup", "watch", "delivery", "subscribe", "wait"],
+                    "description": "Action. Prefer wait for blocking until completion/checkpoints; watch is a compatibility alias for delivery."
                 },
-                "task_id": {
-                    "type": "string",
-                    "description": "Task ID."
+                "task_id": { "type": "string", "description": "Task ID." },
+                "task_ids": { "type": "array", "items": {"type":"string"}, "description": "Task IDs for multi-task wait/status." },
+                "latest": { "type": "boolean", "description": "Use latest matching task when task_id is omitted." },
+                "session_only": { "type": "boolean", "description": "Restrict list/implicit selection to current session." },
+                "status_filter": {
+                    "anyOf": [
+                        { "type": "string" },
+                        { "type": "array", "items": { "type": "string" } }
+                    ],
+                    "description": "Status filter string or array: running, completed, failed, superseded, terminal, all."
                 },
-                "max_age_hours": {
-                    "type": "integer",
-                    "description": "Cleanup age in hours."
-                },
-                "notify": {
-                    "type": "boolean",
-                    "description": "When using action='watch', whether to notify on completion. Defaults to true."
-                },
-                "wake": {
-                    "type": "boolean",
-                    "description": "When using action='watch', whether to wake on completion. Defaults to true."
-                },
-                "max_wait_seconds": {
-                    "type": "integer",
-                    "description": "When using action='wait', maximum seconds to block before returning so the agent can check in. Defaults to 60, capped at 3600. Use 0 for an immediate check."
-                },
-                "return_on_progress": {
-                    "type": "boolean",
-                    "description": "When using action='wait', return as soon as the task emits a progress/checkpoint event instead of only completion or timeout. Defaults to true."
-                }
+                "max_age_hours": { "type": "integer", "description": "Cleanup age in hours." },
+                "dry_run": { "type": "boolean", "description": "For cleanup, report what would be removed without deleting." },
+                "notify": { "type": "boolean", "description": "When using delivery/watch/subscribe, whether to notify on completion. Defaults to true." },
+                "wake": { "type": "boolean", "description": "When using delivery/watch/subscribe, whether to wake on completion. Defaults to true." },
+                "max_wait_seconds": { "type": "integer", "description": "When using wait, maximum seconds to block before returning. Defaults to 60, capped at 3600. Use 0 for an immediate check." },
+                "return_on_progress": { "type": "boolean", "description": "When using wait, return as soon as the task emits a progress/checkpoint event instead of only completion or timeout. Defaults to true." },
+                "wait_mode": { "type": "string", "enum": ["any", "all", "first_failure"], "description": "For multi-task wait, return on any completion, all completions, or first failure. Defaults to any." },
+                "tail_lines": { "type": "integer", "description": "Return only the last N output lines for output/tail/wait preview." },
+                "lines": { "type": "integer", "description": "Alias for tail_lines." },
+                "include_output_preview": { "type": "boolean", "description": "When wait returns, include a recent output preview. Failed tasks include a preview by default." },
+                "graceful_timeout_ms": { "type": "integer", "description": "For cancel, grace period for detached process termination before force kill." }
             }
         })
     }
 
-    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: BgInput = serde_json::from_value(input)?;
         let manager = background::global();
 
         match params.action.as_str() {
             "list" => {
-                let tasks: Vec<background::TaskStatusFile> = manager.list().await;
+                let tasks = filtered_tasks(manager, &ctx, &params, false).await;
                 if tasks.is_empty() {
-                    return Ok(ToolOutput::new("No background tasks found.").with_title("bg list"));
+                    return Ok(ToolOutput::new("No matching background tasks found.")
+                        .with_title("bg list"));
                 }
 
                 let mut output = String::from("Background Tasks:\n\n");
@@ -178,17 +472,11 @@ impl Tool for BgTool {
                 output.push_str(&"-".repeat(121));
                 output.push('\n');
 
-                for task in tasks {
+                for task in &tasks {
                     let duration = task
                         .duration_secs
                         .map(|d| format!("{:.1}s", d))
                         .unwrap_or_else(|| "running".to_string());
-                    let status = match task.status {
-                        BackgroundTaskStatus::Running => "running",
-                        BackgroundTaskStatus::Completed => "completed",
-                        BackgroundTaskStatus::Superseded => "superseded",
-                        BackgroundTaskStatus::Failed => "failed",
-                    };
                     let progress = task
                         .progress
                         .as_ref()
@@ -203,88 +491,92 @@ impl Tool for BgTool {
                         task.task_id,
                         crate::util::truncate_str(&display_name, 28),
                         task.tool_name,
-                        status,
+                        status_label(&task.status),
                         duration,
                         crate::util::truncate_str(&progress, 28),
                         &task.session_id[..8.min(task.session_id.len())]
                     ));
                 }
 
-                Ok(ToolOutput::new(output).with_title("bg list"))
+                Ok(ToolOutput::new(output).with_title("bg list").with_metadata(json!({
+                    "tasks": tasks.iter().map(|task| task_metadata(manager, task)).collect::<Vec<_>>(),
+                    "count": tasks.len(),
+                })))
             }
 
             "status" => {
-                let task_id = params
-                    .task_id
-                    .ok_or_else(|| anyhow::anyhow!("task_id is required for status action"))?;
-
-                match manager.status(&task_id).await {
-                    Some(task) => {
-                        let status_str = status_label(&task.status);
-                        let output = format_task_details(&task);
-
-                        if matches!(task.status, BackgroundTaskStatus::Failed) {
-                            crate::logging::warn(&format!(
-                                "[tool:bg] task {} ({}) failed in session {} exit_code={:?} error={}",
-                                task.task_id,
-                                task.tool_name,
-                                task.session_id,
-                                task.exit_code,
-                                task.error.as_deref().unwrap_or("<none>")
-                            ));
-                        }
-
-                        Ok(ToolOutput::new(output)
-                            .with_title(format!("bg status {}", task_id))
-                            .with_metadata(json!({
-                                "task_id": task.task_id,
-                                "display_name": task.display_name,
-                                "status": status_str,
-                                "exit_code": task.exit_code,
-                                "progress": task.progress,
-                            })))
+                let task_ids = resolve_task_ids(manager, &ctx, &params, "status", true).await?;
+                let mut tasks = Vec::new();
+                let mut output = String::new();
+                for task_id in task_ids {
+                    let task = manager
+                        .status(&task_id)
+                        .await
+                        .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+                    if !output.is_empty() {
+                        output.push_str("\n---\n");
                     }
-                    None => Err(anyhow::anyhow!("Task not found: {}", task_id)),
+                    output.push_str(&format_task_details(&task));
+                    if matches!(task.status, BackgroundTaskStatus::Failed) {
+                        crate::logging::warn(&format!(
+                            "[tool:bg] task {} ({}) failed in session {} exit_code={:?} error={}",
+                            task.task_id,
+                            task.tool_name,
+                            task.session_id,
+                            task.exit_code,
+                            task.error.as_deref().unwrap_or("<none>")
+                        ));
+                    }
+                    tasks.push(task);
                 }
+                Ok(ToolOutput::new(output).with_title("bg status").with_metadata(json!({
+                    "tasks": tasks.iter().map(|task| task_metadata(manager, task)).collect::<Vec<_>>(),
+                    "task": tasks.first().map(|task| task_metadata(manager, task)),
+                })))
             }
 
-            "output" => {
-                let task_id = params
-                    .task_id
-                    .ok_or_else(|| anyhow::anyhow!("task_id is required for output action"))?;
-
-                let output_result: Option<String> = manager.output(&task_id).await;
-                match output_result {
-                    Some(output) => {
-                        let truncated: String = if output.len() > 50000 {
-                            crate::logging::warn(&format!(
-                                "[tool:bg] truncated output for task {} at 50000 bytes",
-                                task_id
-                            ));
-                            format!(
-                                "{}...\n\n(Output truncated. Use `read` tool on the output file for full content)",
-                                crate::util::truncate_str(&output, 50000)
-                            )
-                        } else {
-                            output
-                        };
-                        Ok(ToolOutput::new(truncated).with_title(format!("bg output {}", task_id)))
-                    }
-                    None => Err(anyhow::anyhow!(
+            "output" | "tail" => {
+                let task_id = resolve_task_ids(manager, &ctx, &params, "output", false)
+                    .await?
+                    .remove(0);
+                let tail = if params.action == "tail" {
+                    Some(
+                        params
+                            .tail_lines
+                            .or(params.lines)
+                            .unwrap_or(DEFAULT_TAIL_LINES),
+                    )
+                } else {
+                    params.tail_lines.or(params.lines)
+                };
+                let output = manager.output(&task_id).await.ok_or_else(|| {
+                    anyhow::anyhow!(
                         "Output not found for task: {}. Task may not exist or output file was deleted.",
                         task_id
-                    )),
-                }
+                    )
+                })?;
+                let (rendered, truncated) = output_preview(&output, tail);
+                let status = manager.status(&task_id).await;
+                Ok(ToolOutput::new(rendered)
+                    .with_title(format!("bg {} {}", params.action, task_id))
+                    .with_metadata(json!({
+                        "task_id": task_id,
+                        "task": status.as_ref().map(|task| task_metadata(manager, task)),
+                        "tail_lines": tail,
+                        "truncated": truncated,
+                        "output_bytes": output.len(),
+                    })))
             }
 
             "cancel" => {
-                let task_id = params
-                    .task_id
-                    .ok_or_else(|| anyhow::anyhow!("task_id is required for cancel action"))?;
-
-                match manager.cancel(&task_id).await? {
+                let task_id = resolve_task_ids(manager, &ctx, &params, "cancel", false)
+                    .await?
+                    .remove(0);
+                let grace = Duration::from_millis(params.graceful_timeout_ms.unwrap_or(400));
+                match manager.cancel_with_grace(&task_id, grace).await? {
                     true => Ok(ToolOutput::new(format!("Task {} cancelled.", task_id))
-                        .with_title(format!("bg cancel {}", task_id))),
+                        .with_title(format!("bg cancel {}", task_id))
+                        .with_metadata(json!({"task_id": task_id, "cancelled": true, "graceful_timeout_ms": grace.as_millis()}))),
                     false => Err(anyhow::anyhow!(
                         "Task {} not found or already completed.",
                         task_id
@@ -294,68 +586,107 @@ impl Tool for BgTool {
 
             "cleanup" => {
                 let max_age = params.max_age_hours.unwrap_or(24);
-                let removed = manager.cleanup(max_age).await?;
+                let filter = parse_status_filter(params.status_filter.as_ref());
+                let result = manager
+                    .cleanup_filtered(max_age, &filter, params.dry_run)
+                    .await?;
                 Ok(ToolOutput::new(format!(
-                    "Cleaned up {} old task files (older than {} hours).",
-                    removed, max_age
+                    "{} {} old task files (older than {} hours). Skipped {} running task file(s).",
+                    if params.dry_run {
+                        "Would remove"
+                    } else {
+                        "Removed"
+                    },
+                    result.removed_files,
+                    max_age,
+                    result.skipped_running_files
                 ))
-                .with_title("bg cleanup"))
+                .with_title("bg cleanup")
+                .with_metadata(json!({
+                    "removed_files": result.removed_files,
+                    "matched_files": result.matched_files,
+                    "skipped_running_files": result.skipped_running_files,
+                    "dry_run": params.dry_run,
+                    "max_age_hours": max_age,
+                })))
             }
 
-            "watch" => {
-                let task_id = params
-                    .task_id
-                    .ok_or_else(|| anyhow::anyhow!("task_id is required for watch action"))?;
-
-                match manager
-                    .update_delivery(&task_id, params.notify, params.wake)
+            "watch" | "delivery" | "subscribe" => {
+                let task_id = resolve_task_ids(manager, &ctx, &params, "delivery", false)
                     .await?
-                {
-                    Some(task) => {
-                        let status_str = status_label(&task.status);
-                        Ok(ToolOutput::new(format!(
-                            "Updated background task delivery for {}.\nStatus: {}\nNotify: {}\nWake: {}",
-                            task_id, status_str, task.notify, task.wake
-                        ))
-                        .with_title(format!("bg watch {}", task_id))
-                        .with_metadata(json!({
-                            "task_id": task.task_id,
-                            "status": status_str,
-                            "notify": task.notify,
-                            "wake": task.wake,
-                        })))
-                    }
+                    .remove(0);
+                match manager.update_delivery(&task_id, params.notify, params.wake).await? {
+                    Some(task) => Ok(ToolOutput::new(format!(
+                        "Updated background task delivery for {}.\nStatus: {}\nNotify: {}\nWake: {}",
+                        task_id,
+                        status_label(&task.status),
+                        task.notify,
+                        task.wake
+                    ))
+                    .with_title(format!("bg delivery {}", task_id))
+                    .with_metadata(json!({
+                        "task_id": task.task_id,
+                        "task": task_metadata(manager, &task),
+                        "status": status_label(&task.status),
+                        "notify": task.notify,
+                        "wake": task.wake,
+                    }))),
                     None => Err(anyhow::anyhow!("Task not found: {}", task_id)),
                 }
             }
 
             "wait" => {
-                let task_id = params
-                    .task_id
-                    .ok_or_else(|| anyhow::anyhow!("task_id is required for wait action"))?;
+                let task_ids = resolve_task_ids(manager, &ctx, &params, "wait", true).await?;
                 let requested_wait = params.max_wait_seconds.unwrap_or(DEFAULT_WAIT_SECONDS);
                 let capped_wait = requested_wait.min(MAX_WAIT_SECONDS);
+                let wait_duration = Duration::from_secs(capped_wait);
 
-                match manager
-                    .wait(
-                        &task_id,
-                        Duration::from_secs(capped_wait),
+                if task_ids.len() > 1 {
+                    let mode = params.wait_mode.as_deref().unwrap_or("any");
+                    let mode = if matches!(mode, "all" | "first_failure") {
+                        mode
+                    } else {
+                        "any"
+                    };
+                    let (reason, tasks) = wait_many_polling(
+                        manager,
+                        &task_ids,
+                        wait_duration,
                         params.return_on_progress,
+                        mode,
                     )
+                    .await?;
+                    let mut output =
+                        format!("Multi-task wait returned: {}\nMode: {}\n\n", reason, mode);
+                    for task in &tasks {
+                        output.push_str(&format!(
+                            "- {} · {} · {}\n",
+                            task.task_id,
+                            crate::message::background_task_display_label(
+                                &task.tool_name,
+                                task.display_name.as_deref()
+                            ),
+                            status_label(&task.status)
+                        ));
+                    }
+                    return Ok(ToolOutput::new(output).with_title("bg wait multiple").with_metadata(json!({
+                        "wait_reason": reason,
+                        "wait_mode": mode,
+                        "timed_out": reason == "timeout",
+                        "max_wait_seconds": capped_wait,
+                        "tasks": tasks.iter().map(|task| task_metadata(manager, task)).collect::<Vec<_>>(),
+                    })));
+                }
+
+                let task_id = task_ids.into_iter().next().expect("one task id");
+                match manager
+                    .wait(&task_id, wait_duration, params.return_on_progress)
                     .await
                 {
                     Some(wait_result) => {
                         let task = wait_result.task;
-                        let status_str = status_label(&task.status);
                         let reason = wait_result.reason;
-                        let reason_str = match reason {
-                            background::BackgroundTaskWaitReason::AlreadyFinished => {
-                                "already_finished"
-                            }
-                            background::BackgroundTaskWaitReason::Finished => "finished",
-                            background::BackgroundTaskWaitReason::Progress => "progress",
-                            background::BackgroundTaskWaitReason::Timeout => "timeout",
-                        };
+                        let reason_str = wait_reason_label(reason);
                         let mut output = match reason {
                             background::BackgroundTaskWaitReason::AlreadyFinished => {
                                 "Background task was already finished.\n\n".to_string()
@@ -364,8 +695,10 @@ impl Tool for BgTool {
                                 "Background task finished.\n\n".to_string()
                             }
                             background::BackgroundTaskWaitReason::Progress => {
-                                "Background task emitted a progress/checkpoint event.\n\n"
-                                    .to_string()
+                                "Background task emitted a progress event.\n\n".to_string()
+                            }
+                            background::BackgroundTaskWaitReason::Checkpoint => {
+                                "Background task emitted a checkpoint event.\n\n".to_string()
                             }
                             background::BackgroundTaskWaitReason::Timeout => format!(
                                 "No terminal event before max wait of {}s. Check again with `bg action=\"wait\" task_id=\"{}\"` or inspect status/output.\n\n",
@@ -380,12 +713,43 @@ impl Tool for BgTool {
                             ));
                         }
 
+                        let include_preview = params.include_output_preview.unwrap_or_else(|| {
+                            matches!(task.status, BackgroundTaskStatus::Failed)
+                                || matches!(reason, background::BackgroundTaskWaitReason::Finished)
+                        });
+                        let mut preview_meta = Value::Null;
+                        if include_preview {
+                            if let Some(full_output) = manager.output(&task.task_id).await {
+                                let tail = Some(
+                                    params
+                                        .tail_lines
+                                        .or(params.lines)
+                                        .unwrap_or(DEFAULT_WAIT_PREVIEW_LINES),
+                                );
+                                let (preview, truncated) = output_preview(&full_output, tail);
+                                if !preview.trim().is_empty() {
+                                    output.push_str("\nOutput preview:\n```text\n");
+                                    output.push_str(&preview);
+                                    if !preview.ends_with('\n') {
+                                        output.push('\n');
+                                    }
+                                    output.push_str("```\n");
+                                }
+                                preview_meta = json!({
+                                    "tail_lines": tail,
+                                    "truncated": truncated,
+                                    "output_bytes": full_output.len(),
+                                });
+                            }
+                        }
+
                         Ok(ToolOutput::new(output)
                             .with_title(format!("bg wait {}", task_id))
                             .with_metadata(json!({
                                 "task_id": task.task_id,
+                                "task": task_metadata(manager, &task),
                                 "display_name": task.display_name,
-                                "status": status_str,
+                                "status": status_label(&task.status),
                                 "wait_reason": reason_str,
                                 "timed_out": matches!(reason, background::BackgroundTaskWaitReason::Timeout),
                                 "max_wait_seconds": capped_wait,
@@ -393,6 +757,8 @@ impl Tool for BgTool {
                                 "exit_code": task.exit_code,
                                 "progress": task.progress,
                                 "progress_event": wait_result.progress_event,
+                                "event_record": wait_result.event_record,
+                                "output_preview": preview_meta,
                             })))
                     }
                     None => Err(anyhow::anyhow!("Task not found: {}", task_id)),
@@ -400,9 +766,26 @@ impl Tool for BgTool {
             }
 
             _ => Err(anyhow::anyhow!(
-                "Unknown action: {}. Valid actions: list, status, output, cancel, cleanup, watch, wait",
+                "Unknown action: {}. Valid actions: list, status, output, tail, cancel, cleanup, watch, delivery, subscribe, wait",
                 params.action
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_filter_schema_any_of_branches_have_types() {
+        let schema = BgTool::new().parameters_schema();
+        let branches = schema["properties"]["status_filter"]["anyOf"]
+            .as_array()
+            .expect("status_filter should define anyOf branches");
+
+        assert_eq!(branches[0]["type"], json!("string"));
+        assert_eq!(branches[1]["type"], json!("array"));
+        assert_eq!(branches[1]["items"]["type"], json!("string"));
     }
 }

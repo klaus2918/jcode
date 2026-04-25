@@ -61,13 +61,72 @@ fn parse_nonzero_exit_code_line(line: &str) -> bool {
     false
 }
 
+fn normalize_backticked_identifier(text: &str) -> String {
+    text.replace('`', "").trim().to_string()
+}
+
+pub(super) fn concise_tool_error_summary(content: &str) -> Option<String> {
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let detail = line
+            .strip_prefix("Error:")
+            .or_else(|| line.strip_prefix("error:"))
+            .or_else(|| line.strip_prefix("Failed:"))
+            .map(str::trim);
+        if let Some(detail) = detail {
+            if let Some(field) = detail.strip_prefix("missing field ") {
+                return Some(format!(
+                    "invalid input: missing {}",
+                    normalize_backticked_identifier(field)
+                ));
+            }
+            if detail.starts_with("invalid type") || detail.starts_with("unknown variant") {
+                return Some(format!("invalid input: {}", detail));
+            }
+            if detail.contains("source metadata") && detail.contains("was for") {
+                return Some("build source changed before reload".to_string());
+            }
+            if detail.starts_with("Refusing to publish") {
+                return Some("reload refused: rebuild against current source".to_string());
+            }
+            return Some(format!("error: {}", truncate_middle_display(detail, 80)));
+        }
+
+        if line.contains("Compile terminated by signal") {
+            return Some(line.to_string());
+        }
+        if let Some(rest) = line.strip_prefix("Exit code:") {
+            if let Ok(code) = rest.trim().parse::<i32>()
+                && code != 0
+            {
+                return Some(format!("exit {}", code));
+            }
+        }
+        if let Some(rest) = line.strip_prefix("--- Command finished with exit code:") {
+            let code = rest.trim().trim_end_matches('-').trim();
+            if code != "0" && !code.is_empty() {
+                return Some(format!("exit {}", code));
+            }
+        }
+    }
+
+    None
+}
+
 pub(crate) fn tool_output_looks_failed(content: &str) -> bool {
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return false;
     }
     let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("error:") || lower.starts_with("failed:") {
+    if concise_tool_error_summary(trimmed).is_some()
+        || lower.starts_with("error:")
+        || lower.starts_with("failed:")
+    {
         return true;
     }
 
@@ -168,9 +227,7 @@ fn finalize_batch_section(raw: &str) -> BatchSubResult {
         content.clear();
     }
 
-    let errored = content.lines().any(|line| {
-        line.starts_with("Error:") || line.starts_with("error:") || line.starts_with("Failed:")
-    });
+    let errored = tool_output_looks_failed(&content);
 
     BatchSubResult { errored, content }
 }
@@ -1128,7 +1185,7 @@ pub(super) fn get_tool_summary_with_budget(
         }
         "agentgrep" => {
             let Some(mode) = tool.input.get("mode").and_then(|v| v.as_str()) else {
-                return "missing mode".to_string();
+                return "grep".to_string();
             };
             match mode {
                 "grep" | "find" => {
@@ -1542,7 +1599,9 @@ pub(super) fn render_batch_subcall_line(
             UnicodeWidthStr::width(format!(" · {label}").as_str())
         });
     let summary_budget = max_width.map(|w| w.saturating_sub(reserved));
-    let summary = get_tool_summary_with_budget(tool, bash_max_chars, summary_budget);
+    let summary = output_content
+        .and_then(concise_tool_error_summary)
+        .unwrap_or_else(|| get_tool_summary_with_budget(tool, bash_max_chars, summary_budget));
 
     let mut spans = vec![
         Span::styled(format!("    {} ", icon), Style::default().fg(icon_color)),

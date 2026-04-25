@@ -1007,6 +1007,28 @@ mod tests {
                     errors.push(format!("{path}: array schema missing items"));
                 }
 
+                for keyword in ["anyOf", "oneOf", "allOf"] {
+                    let Some(branches) = map.get(keyword) else {
+                        continue;
+                    };
+                    let Some(branches) = branches.as_array() else {
+                        errors.push(format!("{path}.{keyword}: must be an array"));
+                        continue;
+                    };
+                    for (idx, branch) in branches.iter().enumerate() {
+                        let branch_path = format!("{path}.{keyword}[{idx}]");
+                        match branch {
+                            Value::Object(branch_map) => {
+                                if !branch_map.contains_key("type") {
+                                    errors.push(format!("{branch_path}: schema missing type"));
+                                }
+                            }
+                            _ => errors
+                                .push(format!("{branch_path}: schema branch must be an object")),
+                        }
+                    }
+                }
+
                 for (key, value) in map {
                     collect_schema_errors(value, &format!("{path}.{key}"), errors);
                 }
@@ -1039,6 +1061,31 @@ mod tests {
             errors.is_empty(),
             "tool definitions must not expose invalid schemas:\n{}",
             errors.join("\n")
+        );
+    }
+
+    #[test]
+    fn test_schema_validator_rejects_any_of_branches_without_type() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "status_filter": {
+                    "anyOf": [
+                        { "enum": ["running", "completed"] },
+                        { "type": "array", "items": { "type": "string" } }
+                    ]
+                }
+            }
+        });
+
+        let mut errors = Vec::new();
+        collect_schema_errors(&schema, "tool `test`", &mut errors);
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("status_filter.anyOf[0]: schema missing type")),
+            "expected missing type error, got: {errors:?}"
         );
     }
 

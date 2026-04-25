@@ -24,9 +24,10 @@ const DEFAULT_TIMEOUT_MS: u64 = 120000;
 const STDIN_POLL_INTERVAL_MS: u64 = 500;
 const STDIN_INITIAL_DELAY_MS: u64 = 300;
 const PROGRESS_MARKER_PREFIX: &str = "JCODE_PROGRESS ";
-const BACKGROUND_PROGRESS_GUIDANCE: &str = "For long-running background commands, prefer scripts or commands that periodically print progress updates. Best format: print lines starting with `JCODE_PROGRESS ` followed by JSON like {\"percent\":42,\"message\":\"Running\"} or {\"current\":120,\"total\":1000,\"unit\":\"batches\",\"message\":\"Epoch 2/5\",\"eta_seconds\":30}. Supported JSON fields are `percent`, `message`, `current`, `total`, `unit`, `eta_seconds`, and optional `kind`=`indeterminate`. Generic fallback output that can be parsed includes `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or phase lines like `Compiling ...`, `Downloading ...`, `Running ...`, and `Building ...`. If you are writing the script yourself, add these progress lines explicitly.";
-const BASH_TOOL_DESCRIPTION: &str = "Run a bash command. For long-running background commands, prefer scripts that emit progress lines. Print `JCODE_PROGRESS {json}` lines for reliable progress reporting, or at least output parseable progress like `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or `Running ...`.";
-const WINDOWS_SHELL_TOOL_DESCRIPTION: &str = "Run a shell command. For long-running background commands, prefer scripts that emit progress lines. Print `JCODE_PROGRESS {json}` lines for reliable progress reporting, or at least output parseable progress like `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or `Running ...`.";
+const CHECKPOINT_MARKER_PREFIX: &str = "JCODE_CHECKPOINT ";
+const BACKGROUND_PROGRESS_GUIDANCE: &str = "For long-running background commands, prefer scripts or commands that periodically print progress updates. Best format: print lines starting with `JCODE_PROGRESS ` followed by JSON like {\"percent\":42,\"message\":\"Running\"} or {\"current\":120,\"total\":1000,\"unit\":\"batches\",\"message\":\"Epoch 2/5\",\"eta_seconds\":30}. Supported JSON fields are `percent`, `message`, `current`, `total`, `unit`, `eta_seconds`, and optional `kind`=`indeterminate` or `kind`=`checkpoint`. For milestone-style wakeups, print `JCODE_CHECKPOINT {\"message\":\"Unit tests passed\"}`. Generic fallback output that can be parsed includes `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or phase lines like `Compiling ...`, `Downloading ...`, `Running ...`, and `Building ...`. If you are writing the script yourself, add these progress/checkpoint lines explicitly.";
+const BASH_TOOL_DESCRIPTION: &str = "Run a bash command. For long-running background commands, prefer scripts that emit progress/checkpoint lines. Print `JCODE_PROGRESS {json}` or `JCODE_CHECKPOINT {json}` lines for reliable reporting, or at least output parseable progress like `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or `Running ...`.";
+const WINDOWS_SHELL_TOOL_DESCRIPTION: &str = "Run a shell command. For long-running background commands, prefer scripts that emit progress/checkpoint lines. Print `JCODE_PROGRESS {json}` or `JCODE_CHECKPOINT {json}` lines for reliable reporting, or at least output parseable progress like `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or `Running ...`.";
 
 fn progress_ratio_regex() -> &'static regex::Regex {
     static REGEX: OnceLock<regex::Regex> = OnceLock::new();
@@ -82,6 +83,8 @@ struct ProgressMarker {
     eta_seconds: Option<u64>,
     #[serde(default)]
     kind: Option<String>,
+    #[serde(default)]
+    checkpoint: Option<bool>,
 }
 
 fn task_id_from_output_path(path: &Path) -> Option<&str> {
@@ -136,9 +139,11 @@ fn summarize_background_command(description: Option<&str>, command: &str) -> Str
     truncate_str(&label, 28).to_string()
 }
 
-fn parse_progress_marker(line: &str) -> Option<BackgroundTaskProgress> {
+fn parse_progress_marker_with_checkpoint(line: &str) -> Option<(BackgroundTaskProgress, bool)> {
     let payload = line.trim().strip_prefix(PROGRESS_MARKER_PREFIX)?.trim();
     let marker: ProgressMarker = serde_json::from_str(payload).ok()?;
+    let is_checkpoint =
+        marker.checkpoint.unwrap_or(false) || matches!(marker.kind.as_deref(), Some("checkpoint"));
     let kind = if marker.percent.is_some()
         || matches!((marker.current, marker.total), (_, Some(total)) if total > 0)
     {
@@ -147,9 +152,44 @@ fn parse_progress_marker(line: &str) -> Option<BackgroundTaskProgress> {
         parse_progress_kind(marker.kind.as_deref())
     };
 
-    Some(
+    Some((
         BackgroundTaskProgress {
             kind,
+            percent: marker.percent,
+            message: marker.message,
+            current: marker.current,
+            total: marker.total,
+            unit: marker.unit,
+            eta_seconds: marker.eta_seconds,
+            updated_at: Utc::now().to_rfc3339(),
+            source: BackgroundTaskProgressSource::Reported,
+        }
+        .normalize(),
+        is_checkpoint,
+    ))
+}
+
+#[cfg(test)]
+fn parse_progress_marker(line: &str) -> Option<BackgroundTaskProgress> {
+    parse_progress_marker_with_checkpoint(line).map(|(progress, _)| progress)
+}
+
+fn parse_checkpoint_marker(line: &str) -> Option<BackgroundTaskProgress> {
+    let payload = line.trim().strip_prefix(CHECKPOINT_MARKER_PREFIX)?.trim();
+    let marker: ProgressMarker = serde_json::from_str(payload).unwrap_or_else(|_| ProgressMarker {
+        percent: None,
+        message: Some(payload.to_string()),
+        current: None,
+        total: None,
+        unit: None,
+        eta_seconds: None,
+        kind: Some("checkpoint".to_string()),
+        checkpoint: Some(true),
+    });
+
+    Some(
+        BackgroundTaskProgress {
+            kind: BackgroundTaskProgressKind::Indeterminate,
             percent: marker.percent,
             message: marker.message,
             current: marker.current,
@@ -317,9 +357,28 @@ async fn handle_background_output_line(
     raw_line: &str,
     stderr: bool,
 ) {
-    if let Some(progress) =
-        parse_progress_marker(raw_line).or_else(|| parse_heuristic_progress(raw_line))
-    {
+    if let Some(progress) = parse_checkpoint_marker(raw_line) {
+        if let Some(task_id) = task_id_from_output_path(output_path) {
+            let _ = crate::background::global()
+                .update_checkpoint(task_id, progress)
+                .await;
+        }
+        return;
+    }
+
+    if let Some((progress, is_checkpoint)) = parse_progress_marker_with_checkpoint(raw_line) {
+        if let Some(task_id) = task_id_from_output_path(output_path) {
+            let manager = crate::background::global();
+            let _ = if is_checkpoint {
+                manager.update_checkpoint(task_id, progress).await
+            } else {
+                manager.update_progress(task_id, progress).await
+            };
+        }
+        return;
+    }
+
+    if let Some(progress) = parse_heuristic_progress(raw_line) {
         if let Some(task_id) = task_id_from_output_path(output_path) {
             let _ = crate::background::global()
                 .update_progress(task_id, progress)

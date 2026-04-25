@@ -11133,6 +11133,28 @@ fn test_finalize_reload_reconnect_marker_only_does_not_queue_selfdev_continuatio
 }
 
 #[test]
+fn test_same_session_fast_path_allowed_for_non_reload_reconnect() {
+    assert!(remote::should_use_same_session_fast_path(
+        true,
+        Some("ses_same"),
+        Some("ses_same"),
+        true,
+        false,
+    ));
+}
+
+#[test]
+fn test_same_session_fast_path_disabled_when_reload_needs_server_history() {
+    assert!(!remote::should_use_same_session_fast_path(
+        true,
+        Some("ses_same"),
+        Some("ses_same"),
+        true,
+        true,
+    ));
+}
+
+#[test]
 fn test_reload_persisted_background_tasks_note_mentions_running_task() {
     let session_id = crate::id::new_id("ses_bg_note");
     let manager = crate::background::global();

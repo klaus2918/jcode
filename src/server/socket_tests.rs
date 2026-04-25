@@ -276,6 +276,28 @@ async fn inspect_reload_wait_status_keeps_waiting_while_starting_marker_is_activ
 }
 
 #[tokio::test]
+async fn wait_for_reload_handoff_event_returns_promptly_when_no_event_arrives() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+    crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+
+    let socket_path = temp.path().join("missing.sock");
+    let started = std::time::Instant::now();
+    crate::server::wait_for_reload_handoff_event(Some(std::process::id()), &socket_path).await;
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "reload handoff event wait should be a bounded edge wait, not an indefinite block"
+    );
+
+    if let Some(prev_runtime) = prev_runtime {
+        crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+    } else {
+        crate::env::remove_var("JCODE_RUNTIME_DIR");
+    }
+}
+
+#[tokio::test]
 async fn inspect_reload_wait_status_reports_idle_without_marker_or_listener() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::tempdir().expect("tempdir");

@@ -26,6 +26,33 @@ fn task_dir() -> PathBuf {
 }
 
 const EXIT_MARKER_PREFIX: &str = "--- Command finished with exit code: ";
+const MAX_EVENT_HISTORY: usize = 50;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundTaskEventKind {
+    Progress,
+    Checkpoint,
+    Completed,
+    Failed,
+    Superseded,
+    Cancelled,
+    DeliveryUpdated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackgroundTaskEventRecord {
+    pub kind: BackgroundTaskEventKind,
+    pub timestamp: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<BackgroundTaskStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<BackgroundTaskProgress>,
+}
 
 /// Status file format (written to disk)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +78,8 @@ pub struct TaskStatusFile {
     pub wake: bool,
     #[serde(default)]
     pub progress: Option<BackgroundTaskProgress>,
+    #[serde(default)]
+    pub event_history: Vec<BackgroundTaskEventRecord>,
 }
 
 fn default_true() -> bool {
@@ -59,6 +88,65 @@ fn default_true() -> bool {
 
 fn normalize_delivery(notify: bool, wake: bool) -> (bool, bool) {
     (notify || wake, wake)
+}
+
+fn push_task_event(status: &mut TaskStatusFile, event: BackgroundTaskEventRecord) {
+    status.event_history.push(event);
+    let overflow = status.event_history.len().saturating_sub(MAX_EVENT_HISTORY);
+    if overflow > 0 {
+        status.event_history.drain(0..overflow);
+    }
+}
+
+fn progress_event_record(
+    kind: BackgroundTaskEventKind,
+    progress: BackgroundTaskProgress,
+) -> BackgroundTaskEventRecord {
+    BackgroundTaskEventRecord {
+        kind,
+        timestamp: Utc::now().to_rfc3339(),
+        message: progress.message.clone(),
+        status: Some(BackgroundTaskStatus::Running),
+        exit_code: None,
+        progress: Some(progress),
+    }
+}
+
+fn terminal_event_kind(
+    status: &BackgroundTaskStatus,
+    error: Option<&str>,
+) -> BackgroundTaskEventKind {
+    match status {
+        BackgroundTaskStatus::Completed => BackgroundTaskEventKind::Completed,
+        BackgroundTaskStatus::Superseded => BackgroundTaskEventKind::Superseded,
+        BackgroundTaskStatus::Failed if error == Some("Cancelled by user") => {
+            BackgroundTaskEventKind::Cancelled
+        }
+        BackgroundTaskStatus::Failed => BackgroundTaskEventKind::Failed,
+        BackgroundTaskStatus::Running => BackgroundTaskEventKind::Progress,
+    }
+}
+
+fn terminal_event_record(
+    status: BackgroundTaskStatus,
+    exit_code: Option<i32>,
+    error: Option<&str>,
+) -> BackgroundTaskEventRecord {
+    BackgroundTaskEventRecord {
+        kind: terminal_event_kind(&status, error),
+        timestamp: Utc::now().to_rfc3339(),
+        message: error.map(ToString::to_string),
+        status: Some(status),
+        exit_code,
+        progress: None,
+    }
+}
+
+fn progress_wait_reason(event: Option<&BackgroundTaskEventRecord>) -> BackgroundTaskWaitReason {
+    match event.map(|event| &event.kind) {
+        Some(BackgroundTaskEventKind::Checkpoint) => BackgroundTaskWaitReason::Checkpoint,
+        _ => BackgroundTaskWaitReason::Progress,
+    }
 }
 
 pub fn format_progress_summary(progress: &BackgroundTaskProgress) -> String {
@@ -153,6 +241,7 @@ pub enum BackgroundTaskWaitReason {
     AlreadyFinished,
     Finished,
     Progress,
+    Checkpoint,
     Timeout,
 }
 
@@ -162,6 +251,15 @@ pub struct BackgroundTaskWaitResult {
     pub task: TaskStatusFile,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress_event: Option<BackgroundTaskProgressEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_record: Option<BackgroundTaskEventRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackgroundCleanupResult {
+    pub matched_files: usize,
+    pub removed_files: usize,
+    pub skipped_running_files: usize,
 }
 
 /// Internal tracking for a running task
@@ -254,11 +352,11 @@ impl BackgroundTaskManager {
         )
     }
 
-    fn output_path_for(&self, task_id: &str) -> PathBuf {
+    pub fn output_path_for(&self, task_id: &str) -> PathBuf {
         self.output_dir.join(format!("{}.output", task_id))
     }
 
-    fn status_path_for(&self, task_id: &str) -> PathBuf {
+    pub fn status_path_for(&self, task_id: &str) -> PathBuf {
         self.output_dir.join(format!("{}.status.json", task_id))
     }
 
@@ -333,6 +431,10 @@ impl BackgroundTaskManager {
         status.completed_at = Some(completed_at.to_rfc3339());
         status.duration_secs = duration_secs;
         status.pid = Some(pid);
+        push_task_event(
+            &mut status,
+            terminal_event_record(final_status.clone(), exit_code, final_error.as_deref()),
+        );
 
         self.write_status_file(status_path, &status).await;
 
@@ -401,6 +503,7 @@ impl BackgroundTaskManager {
             notify,
             wake,
             progress: None,
+            event_history: Vec::new(),
         };
         self.write_status_file(&info.status_file, &status).await;
     }
@@ -460,6 +563,7 @@ impl BackgroundTaskManager {
             notify,
             wake,
             progress: None,
+            event_history: Vec::new(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&initial_status) {
             let _ = std::fs::write(&status_path, json);
@@ -495,14 +599,19 @@ impl BackgroundTaskManager {
             };
 
             let (notify_flag, wake_flag) = *delivery_flags_rx.borrow();
-            let prior_progress = tokio::fs::read_to_string(&status_path_clone)
+            let prior_status = tokio::fs::read_to_string(&status_path_clone)
                 .await
                 .ok()
-                .and_then(|content| serde_json::from_str::<TaskStatusFile>(&content).ok())
-                .and_then(|status| status.progress);
+                .and_then(|content| serde_json::from_str::<TaskStatusFile>(&content).ok());
+            let prior_progress = prior_status
+                .as_ref()
+                .and_then(|status| status.progress.clone());
+            let prior_event_history = prior_status
+                .map(|status| status.event_history)
+                .unwrap_or_default();
 
             // Update status file
-            let final_status = TaskStatusFile {
+            let mut final_status = TaskStatusFile {
                 task_id: task_id_clone.clone(),
                 tool_name: tool_name_owned.clone(),
                 display_name: display_name_owned.clone(),
@@ -518,7 +627,12 @@ impl BackgroundTaskManager {
                 notify: notify_flag,
                 wake: wake_flag,
                 progress: prior_progress,
+                event_history: prior_event_history,
             };
+            push_task_event(
+                &mut final_status,
+                terminal_event_record(status.clone(), exit_code, error.as_deref()),
+            );
             if let Ok(json) = serde_json::to_string_pretty(&final_status) {
                 let _ = tokio::fs::write(&status_path_clone, json).await;
             }
@@ -608,6 +722,7 @@ impl BackgroundTaskManager {
             notify: true,
             wake: false,
             progress: None,
+            event_history: Vec::new(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&initial_status) {
             let _ = std::fs::write(&status_path, json);
@@ -653,13 +768,18 @@ impl BackgroundTaskManager {
             }
 
             let (notify_flag, wake_flag) = *delivery_flags_rx.borrow();
-            let prior_progress = tokio::fs::read_to_string(&status_path_clone)
+            let prior_status = tokio::fs::read_to_string(&status_path_clone)
                 .await
                 .ok()
-                .and_then(|content| serde_json::from_str::<TaskStatusFile>(&content).ok())
-                .and_then(|status| status.progress);
+                .and_then(|content| serde_json::from_str::<TaskStatusFile>(&content).ok());
+            let prior_progress = prior_status
+                .as_ref()
+                .and_then(|status| status.progress.clone());
+            let prior_event_history = prior_status
+                .map(|status| status.event_history)
+                .unwrap_or_default();
 
-            let final_status = TaskStatusFile {
+            let mut final_status = TaskStatusFile {
                 task_id: task_id_clone.clone(),
                 tool_name: tool_name_owned.clone(),
                 display_name: display_name_owned.clone(),
@@ -675,7 +795,12 @@ impl BackgroundTaskManager {
                 notify: notify_flag,
                 wake: wake_flag,
                 progress: prior_progress,
+                event_history: prior_event_history,
             };
+            push_task_event(
+                &mut final_status,
+                terminal_event_record(status.clone(), exit_code, error.as_deref()),
+            );
             if let Ok(json) = serde_json::to_string_pretty(&final_status) {
                 let _ = tokio::fs::write(&status_path_clone, json).await;
             }
@@ -795,6 +920,7 @@ impl BackgroundTaskManager {
                 reason: BackgroundTaskWaitReason::AlreadyFinished,
                 task: initial,
                 progress_event: None,
+                event_record: None,
             });
         }
         if max_wait.is_zero() {
@@ -802,6 +928,7 @@ impl BackgroundTaskManager {
                 reason: BackgroundTaskWaitReason::Timeout,
                 task: initial,
                 progress_event: None,
+                event_record: None,
             });
         }
 
@@ -825,6 +952,7 @@ impl BackgroundTaskManager {
                         reason,
                         task,
                         progress_event: None,
+                        event_record: None,
                     });
                 }
                 _ = poll.tick() => {
@@ -834,13 +962,16 @@ impl BackgroundTaskManager {
                             reason: BackgroundTaskWaitReason::Finished,
                             task,
                             progress_event: None,
+                            event_record: None,
                         });
                     }
                     if return_on_progress && task.progress != last_progress {
+                        let event_record = task.event_history.last().cloned();
                         return Some(BackgroundTaskWaitResult {
-                            reason: BackgroundTaskWaitReason::Progress,
+                            reason: progress_wait_reason(event_record.as_ref()),
                             progress_event: None,
                             task,
+                            event_record,
                         });
                     }
                     last_progress = task.progress.clone();
@@ -853,15 +984,18 @@ impl BackgroundTaskManager {
                                 reason: BackgroundTaskWaitReason::Finished,
                                 task,
                                 progress_event: None,
+                                event_record: None,
                             });
                         }
                         Ok(BusEvent::BackgroundTaskProgress(event)) if event.task_id == task_id => {
                             if return_on_progress {
                                 let task = self.status(task_id).await?;
+                                let event_record = task.event_history.last().cloned();
                                 return Some(BackgroundTaskWaitResult {
-                                    reason: BackgroundTaskWaitReason::Progress,
+                                    reason: progress_wait_reason(event_record.as_ref()),
                                     task,
                                     progress_event: Some(event),
+                                    event_record,
                                 });
                             }
                         }
@@ -872,13 +1006,16 @@ impl BackgroundTaskManager {
                                     reason: BackgroundTaskWaitReason::Finished,
                                     task,
                                     progress_event: None,
+                                    event_record: None,
                                 });
                             }
                             if return_on_progress && task.progress != last_progress {
+                                let event_record = task.event_history.last().cloned();
                                 return Some(BackgroundTaskWaitResult {
-                                    reason: BackgroundTaskWaitReason::Progress,
+                                    reason: progress_wait_reason(event_record.as_ref()),
                                     progress_event: None,
                                     task,
+                                    event_record,
                                 });
                             }
                             last_progress = task.progress.clone();
@@ -894,6 +1031,7 @@ impl BackgroundTaskManager {
                                 reason,
                                 task,
                                 progress_event: None,
+                                event_record: None,
                             });
                         }
                         _ => {}
@@ -908,6 +1046,26 @@ impl BackgroundTaskManager {
         &self,
         task_id: &str,
         progress: BackgroundTaskProgress,
+    ) -> Result<Option<TaskStatusFile>> {
+        self.update_progress_with_event_kind(task_id, progress, BackgroundTaskEventKind::Progress)
+            .await
+    }
+
+    /// Record an explicit checkpoint for an existing background task.
+    pub async fn update_checkpoint(
+        &self,
+        task_id: &str,
+        progress: BackgroundTaskProgress,
+    ) -> Result<Option<TaskStatusFile>> {
+        self.update_progress_with_event_kind(task_id, progress, BackgroundTaskEventKind::Checkpoint)
+            .await
+    }
+
+    async fn update_progress_with_event_kind(
+        &self,
+        task_id: &str,
+        progress: BackgroundTaskProgress,
+        event_kind: BackgroundTaskEventKind,
     ) -> Result<Option<TaskStatusFile>> {
         let status_path = self.status_path_for(task_id);
         let Some(mut status) = self.read_status_file(&status_path).await else {
@@ -933,6 +1091,10 @@ impl BackgroundTaskManager {
         }
 
         status.progress = Some(progress.clone());
+        push_task_event(
+            &mut status,
+            progress_event_record(event_kind, progress.clone()),
+        );
         self.write_status_file(&status_path, &status).await;
 
         Bus::global().publish(BusEvent::BackgroundTaskProgress(
@@ -964,6 +1126,20 @@ impl BackgroundTaskManager {
         };
         status.notify = notify;
         status.wake = wake;
+        let event_status = status.status.clone();
+        let event_exit_code = status.exit_code;
+        let event_progress = status.progress.clone();
+        push_task_event(
+            &mut status,
+            BackgroundTaskEventRecord {
+                kind: BackgroundTaskEventKind::DeliveryUpdated,
+                timestamp: Utc::now().to_rfc3339(),
+                message: Some(format!("notify={}, wake={}", notify, wake)),
+                status: Some(event_status),
+                exit_code: event_exit_code,
+                progress: event_progress,
+            },
+        );
         self.write_status_file(&status_path, &status).await;
 
         if let Some(task) = self.tasks.read().await.get(task_id) {
@@ -975,13 +1151,24 @@ impl BackgroundTaskManager {
 
     /// Cancel a running task
     pub async fn cancel(&self, task_id: &str) -> Result<bool> {
+        self.cancel_with_grace(task_id, std::time::Duration::from_millis(400))
+            .await
+    }
+
+    /// Cancel a running task, allowing detached processes a configurable grace period
+    /// between TERM and KILL on Unix.
+    pub async fn cancel_with_grace(
+        &self,
+        task_id: &str,
+        graceful_timeout: std::time::Duration,
+    ) -> Result<bool> {
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.remove(task_id) {
             task.handle.abort();
 
             // Update status file
             let (notify_flag, wake_flag) = *task.delivery_flags.borrow();
-            let final_status = TaskStatusFile {
+            let mut final_status = TaskStatusFile {
                 task_id: task.task_id,
                 tool_name: task.tool_name,
                 display_name: task.display_name,
@@ -997,7 +1184,15 @@ impl BackgroundTaskManager {
                 notify: notify_flag,
                 wake: wake_flag,
                 progress: None,
+                event_history: Vec::new(),
             };
+            let event_status = final_status.status.clone();
+            let event_exit_code = final_status.exit_code;
+            let event_error = final_status.error.clone();
+            push_task_event(
+                &mut final_status,
+                terminal_event_record(event_status, event_exit_code, event_error.as_deref()),
+            );
             if let Ok(json) = serde_json::to_string_pretty(&final_status) {
                 let _ = fs::write(&task.status_path, json).await;
             }
@@ -1024,7 +1219,7 @@ impl BackgroundTaskManager {
             #[cfg(unix)]
             {
                 let _ = crate::platform::signal_detached_process_group(pid, libc::SIGTERM);
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                tokio::time::sleep(graceful_timeout).await;
                 if crate::platform::is_process_running(pid) {
                     let _ = crate::platform::signal_detached_process_group(pid, libc::SIGKILL);
                 }
@@ -1040,6 +1235,13 @@ impl BackgroundTaskManager {
             status.error = Some("Cancelled by user".to_string());
             status.completed_at = Some(completed_at.to_rfc3339());
             status.duration_secs = Self::status_duration_secs(&status.started_at, completed_at);
+            let event_status = status.status.clone();
+            let event_exit_code = status.exit_code;
+            let event_error = status.error.clone();
+            push_task_event(
+                &mut status,
+                terminal_event_record(event_status, event_exit_code, event_error.as_deref()),
+            );
             self.write_status_file(&status_path, &status).await;
             Ok(true)
         }
@@ -1047,24 +1249,80 @@ impl BackgroundTaskManager {
 
     /// Clean up old task files (older than specified hours)
     pub async fn cleanup(&self, max_age_hours: u64) -> Result<usize> {
-        let mut removed = 0;
+        Ok(self
+            .cleanup_filtered(max_age_hours, &std::collections::HashSet::new(), false)
+            .await?
+            .removed_files)
+    }
+
+    /// Clean up old task files, skipping running tasks and optionally filtering by status.
+    pub async fn cleanup_filtered(
+        &self,
+        max_age_hours: u64,
+        status_filter: &std::collections::HashSet<&str>,
+        dry_run: bool,
+    ) -> Result<BackgroundCleanupResult> {
+        let mut result = BackgroundCleanupResult {
+            matched_files: 0,
+            removed_files: 0,
+            skipped_running_files: 0,
+        };
         let cutoff =
             std::time::SystemTime::now() - std::time::Duration::from_secs(max_age_hours * 3600);
 
         if let Ok(mut entries) = fs::read_dir(&self.output_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
-                if let Ok(metadata) = fs::metadata(&path).await
-                    && let Ok(modified) = metadata.modified()
-                    && modified < cutoff
+                let Ok(metadata) = fs::metadata(&path).await else {
+                    continue;
+                };
+                let Ok(modified) = metadata.modified() else {
+                    continue;
+                };
+                if modified >= cutoff {
+                    continue;
+                }
+
+                let mut associated_status = None;
+                if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                    associated_status = self.read_status_file(&path).await;
+                } else if path.extension().and_then(|ext| ext.to_str()) == Some("output")
+                    && let Some(task_id) = path.file_stem().and_then(|stem| stem.to_str())
                 {
+                    associated_status = self.status(task_id).await;
+                }
+
+                if let Some(status) = associated_status.as_ref() {
+                    if status.status == BackgroundTaskStatus::Running {
+                        result.skipped_running_files += 1;
+                        continue;
+                    }
+                    let status_label = match status.status {
+                        BackgroundTaskStatus::Running => "running",
+                        BackgroundTaskStatus::Completed => "completed",
+                        BackgroundTaskStatus::Superseded => "superseded",
+                        BackgroundTaskStatus::Failed => "failed",
+                    };
+                    if !status_filter.is_empty() && !status_filter.contains(status_label) {
+                        continue;
+                    }
+                } else if !status_filter.is_empty() {
+                    continue;
+                }
+
+                result.matched_files += 1;
+                if !dry_run {
                     let _ = fs::remove_file(&path).await;
-                    removed += 1;
+                    result.removed_files += 1;
                 }
             }
         }
 
-        Ok(removed)
+        if dry_run {
+            result.removed_files = result.matched_files;
+        }
+
+        Ok(result)
     }
 
     /// Best-effort synchronous snapshot of currently running tasks.

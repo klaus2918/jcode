@@ -1010,6 +1010,31 @@ mod tests {
     }
 
     #[test]
+    fn format_background_task_notification_markdown_highlights_failure_reason() {
+        let rendered = format_background_task_notification_markdown(&BackgroundTaskCompleted {
+            task_id: "build123".to_string(),
+            tool_name: "selfdev-build".to_string(),
+            display_name: Some("Build jcode".to_string()),
+            session_id: "session".to_string(),
+            status: BackgroundTaskStatus::Failed,
+            exit_code: Some(101),
+            output_preview: "[stderr]    Compiling jcode\nsccache: Compile terminated by signal 15\n[stderr] error: could not compile `jcode` (lib)".to_string(),
+            output_file: std::path::PathBuf::from("/tmp/output.log"),
+            duration_secs: 62.5,
+            notify: true,
+            wake: false,
+        });
+
+        assert!(rendered.contains("_Failure:_ sccache: Compile terminated by signal 15"));
+        let parsed = parse_background_task_notification_markdown(&rendered)
+            .expect("failure notification should parse");
+        assert_eq!(
+            parsed.failure_summary.as_deref(),
+            Some("sccache: Compile terminated by signal 15")
+        );
+    }
+
+    #[test]
     fn format_background_task_notification_markdown_renders_superseded_status() {
         let rendered = format_background_task_notification_markdown(&BackgroundTaskCompleted {
             task_id: "abc123".to_string(),
@@ -1184,6 +1209,7 @@ mod tests {
         assert_eq!(parsed.status, "✓ completed");
         assert_eq!(parsed.duration, "7.1s");
         assert_eq!(parsed.exit_label, "exit 0");
+        assert_eq!(parsed.failure_summary, None);
         assert_eq!(
             parsed.preview.as_deref(),
             Some("[stderr] first line\n[stdout] second line")

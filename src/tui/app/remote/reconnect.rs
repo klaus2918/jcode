@@ -188,6 +188,22 @@ pub(in crate::tui::app) fn reload_handoff_active(state: &RemoteRunState) -> bool
     state.server_reload_in_progress || super::session_persistence::reload_marker_active()
 }
 
+pub(in crate::tui::app) fn should_use_same_session_fast_path(
+    reconnected_after_disconnect: bool,
+    session_to_resume: Option<&str>,
+    remote_session_id: Option<&str>,
+    has_display_messages: bool,
+    reload_reconnect_needs_server_history: bool,
+) -> bool {
+    reconnected_after_disconnect
+        && !reload_reconnect_needs_server_history
+        && session_to_resume
+            .zip(remote_session_id)
+            .map(|(resume_id, remote_id)| resume_id == remote_id)
+            .unwrap_or(false)
+        && has_display_messages
+}
+
 async fn wait_for_reload_handoff_before_reconnect(
     app: &mut App,
     terminal: &mut DefaultTerminal,
@@ -625,14 +641,28 @@ pub(in crate::tui::app) async fn handle_post_connect<B: ratatui::backend::Backen
         )));
     }
 
-    let same_session_reload_fast_path = state.reconnect_attempts > 0
-        && session_to_resume
-            .zip(app.remote_session_id.as_deref())
-            .map(|(resume_id, remote_id)| resume_id == remote_id)
-            .unwrap_or(false)
-        && !app.display_messages.is_empty();
     let reload_ctx_available = hints.reload_ctx_for_session.is_some();
     let history_already_loaded = remote.has_loaded_history();
+    let reload_reconnect_needs_server_history = state.server_reload_in_progress
+        && !reload_ctx_available
+        && !hints.has_client_reload_marker
+        && !history_already_loaded;
+    let same_session_reload_fast_path = should_use_same_session_fast_path(
+        state.reconnect_attempts > 0,
+        session_to_resume,
+        app.remote_session_id.as_deref(),
+        !app.display_messages.is_empty(),
+        reload_reconnect_needs_server_history,
+    );
+
+    if reload_reconnect_needs_server_history {
+        ReloadContext::log_recovery_outcome(
+            "tui_reconnect",
+            session_to_resume.unwrap_or("unknown"),
+            "deferred",
+            "reload reconnect without local reload context; waiting for server history payload to determine continuation",
+        );
+    }
 
     if same_session_reload_fast_path
         || hints.has_client_reload_marker

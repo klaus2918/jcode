@@ -796,6 +796,18 @@ pub(crate) fn render_background_task_message(
         Span::styled(parsed.duration.clone(), label_style),
     ])];
 
+    if let Some(failure_summary) = parsed
+        .failure_summary
+        .as_deref()
+        .filter(|summary| !summary.is_empty())
+    {
+        box_content.push(Line::from(""));
+        box_content.push(Line::from(Span::styled("Failure", label_style)));
+        for chunk in split_by_display_width(failure_summary, inner_width) {
+            box_content.push(Line::from(Span::styled(chunk, status_style)));
+        }
+    }
+
     box_content.push(Line::from(""));
 
     match parsed.preview.as_deref() {
@@ -920,7 +932,7 @@ fn render_background_task_progress_message(
     );
     let title = format!("◌ bg {} · {}", task_label, progress.task_id);
 
-    let box_content = vec![render_compact_progress_line(
+    let mut box_content = vec![render_compact_progress_line(
         progress,
         inner_width,
         filled_style,
@@ -928,6 +940,14 @@ fn render_background_task_progress_message(
         label_style,
         text_style,
     )];
+    let hint = format!(
+        "Latest status: bg action=\"status\" task_id=\"{}\"",
+        progress.task_id
+    );
+    box_content.push(super::truncate_line_with_ellipsis_to_width(
+        &Line::from(Span::styled(hint, label_style)),
+        inner_width,
+    ));
 
     let mut lines = render_rounded_box(&title, box_content, max_box_width, border_style);
     if centered {
@@ -1189,10 +1209,18 @@ pub(crate) fn render_tool_message(
 
     let summary = if let Some(counts) = batch_counts {
         if counts.failed > 0 {
-            format!("{}/{} succeeded", counts.succeeded, counts.total())
+            if counts.succeeded == 0 {
+                format!("{}/{} failed", counts.failed, counts.total())
+            } else {
+                format!("{}/{} succeeded", counts.succeeded, counts.total())
+            }
+        } else if counts.total() == 1 {
+            "1 call".to_string()
         } else {
             format!("{} calls", counts.total())
         }
+    } else if let Some(error_summary) = tools_ui::concise_tool_error_summary(&msg.content) {
+        error_summary
     } else if tc.name == "subagent" {
         msg.title
             .as_deref()
@@ -1278,7 +1306,11 @@ pub(crate) fn render_tool_message(
             };
 
             let sub_result = sub_results.get(&(i + 1));
-            let sub_errored = sub_result.map(|result| result.errored).unwrap_or(false);
+            let sub_errored = sub_result.map(|result| result.errored).unwrap_or_else(|| {
+                batch_counts.is_some_and(|counts| {
+                    counts.failed > 0 && counts.succeeded == 0 && counts.total() == calls.len()
+                })
+            });
             let (sub_icon, sub_icon_color) = if sub_errored {
                 ("✗", rgb(220, 100, 100))
             } else {
@@ -1599,10 +1631,11 @@ mod tests {
         assert!(plain.contains("░"));
         assert!(plain.contains("42%"));
         assert!(plain.contains("Running tests"));
+        assert!(plain.contains("Latest status: bg action=\"status\" task_id=\"bg123\""));
         assert_eq!(
             plain.matches('│').count(),
-            2,
-            "expected one compact body row:\n{plain}"
+            4,
+            "expected compact progress row plus status hint:\n{plain}"
         );
         assert!(!plain.contains("Latest update"));
         assert!(!plain.contains("Source: reported"));

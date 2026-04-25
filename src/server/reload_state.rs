@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
+const RELOAD_HANDOFF_EVENT_POLL_MS: i32 = 100;
+
 pub fn reload_marker_path() -> PathBuf {
     crate::storage::runtime_dir().join("jcode.reload")
 }
@@ -364,12 +366,18 @@ fn wait_for_reload_handoff_event_blocking(
         };
 
         loop {
-            let ready = libc::poll(&mut poll_fd, 1, -1);
+            let ready = libc::poll(&mut poll_fd, 1, RELOAD_HANDOFF_EVENT_POLL_MS);
             if ready > 0 && (poll_fd.revents & libc::POLLIN) != 0 {
                 let mut buf = [0u8; 512];
                 let _ = libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len());
                 crate::logging::info(
                     "wait_for_reload_handoff_event_blocking: observed filesystem/process event",
+                );
+                break;
+            }
+            if ready == 0 {
+                crate::logging::info(
+                    "wait_for_reload_handoff_event_blocking: timed poll elapsed; rechecking reload state",
                 );
                 break;
             }

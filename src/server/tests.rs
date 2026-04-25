@@ -1,11 +1,12 @@
 use super::{
-    Server, SessionInterruptQueues, SwarmMember, dispatch_background_task_completion,
-    persist_swarm_state_snapshot,
+    FileAccess, Server, SessionInterruptQueues, SwarmMember, dispatch_background_task_completion,
+    file_activity_scope_label, persist_swarm_state_snapshot,
 };
 use crate::agent::Agent;
 use crate::bus::{
     BackgroundTaskCompleted, BackgroundTaskProgress, BackgroundTaskProgressEvent,
-    BackgroundTaskProgressKind, BackgroundTaskProgressSource, BackgroundTaskStatus,
+    BackgroundTaskProgressKind, BackgroundTaskProgressSource, BackgroundTaskStatus, FileOp,
+    FileTouch,
 };
 use crate::message::{Message, Role, StreamEvent, ToolDefinition};
 use crate::protocol::{NotificationType, ServerEvent};
@@ -29,6 +30,46 @@ struct EnvGuard {
 struct ScopedEnvVar {
     key: &'static str,
     prev: Option<OsString>,
+}
+
+fn file_access_with_summary(summary: Option<&str>) -> FileAccess {
+    FileAccess {
+        session_id: "session-peer".to_string(),
+        op: FileOp::Edit,
+        timestamp: Instant::now(),
+        absolute_time: std::time::SystemTime::now(),
+        summary: summary.map(str::to_string),
+        detail: None,
+    }
+}
+
+fn file_touch_with_summary(summary: Option<&str>) -> FileTouch {
+    FileTouch {
+        session_id: "session-current".to_string(),
+        path: std::path::PathBuf::from("src/lib.rs"),
+        op: FileOp::Edit,
+        summary: summary.map(str::to_string),
+        detail: None,
+    }
+}
+
+#[test]
+fn file_activity_scope_label_classifies_overlap() {
+    let previous = file_access_with_summary(Some("edited lines 10-20"));
+    let current = file_touch_with_summary(Some("edited lines 18-25"));
+    assert_eq!(
+        file_activity_scope_label(&previous, &current),
+        "overlapping lines"
+    );
+
+    let current = file_touch_with_summary(Some("edited lines 30-40"));
+    assert_eq!(
+        file_activity_scope_label(&previous, &current),
+        "same file, non-overlapping lines"
+    );
+
+    let current = file_touch_with_summary(None);
+    assert_eq!(file_activity_scope_label(&previous, &current), "same file");
 }
 
 impl Drop for EnvGuard {

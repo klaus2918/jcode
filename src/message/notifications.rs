@@ -144,6 +144,40 @@ fn parse_background_task_header_label(label: &str) -> (String, Option<String>) {
     (label.trim().to_string(), None)
 }
 
+fn strip_stream_prefix(line: &str) -> &str {
+    line.trim()
+        .strip_prefix("[stderr] ")
+        .or_else(|| line.trim().strip_prefix("[stdout] "))
+        .unwrap_or_else(|| line.trim())
+}
+
+fn background_task_failure_summary(preview: &str) -> Option<String> {
+    let normalized = preview.replace("\r\n", "\n").replace('\r', "\n");
+    let mut fallback: Option<String> = None;
+
+    for raw_line in normalized.lines() {
+        let line = strip_stream_prefix(raw_line);
+        if line.is_empty() {
+            continue;
+        }
+        if line.contains("Compile terminated by signal")
+            || line.contains("Source tree drift detected")
+            || line.contains("source metadata")
+        {
+            return Some(line.to_string());
+        }
+        if fallback.is_none()
+            && (line.starts_with("error:")
+                || line.starts_with("Error:")
+                || line.starts_with("Failed:"))
+        {
+            fallback = Some(line.to_string());
+        }
+    }
+
+    fallback
+}
+
 pub fn format_background_task_notification_markdown(task: &BackgroundTaskCompleted) -> String {
     let exit_code = task
         .exit_code
@@ -158,6 +192,15 @@ pub fn format_background_task_notification_markdown(task: &BackgroundTaskComplet
         task.duration_secs,
         exit_code,
     );
+
+    if matches!(task.status, BackgroundTaskStatus::Failed)
+        && let Some(summary) = background_task_failure_summary(&task.output_preview)
+    {
+        message.push_str(&format!(
+            "\n\n_Failure:_ {}",
+            sanitize_fenced_block(&summary)
+        ));
+    }
 
     if let Some(preview) = normalize_background_task_preview(&task.output_preview) {
         message.push_str(&format!("\n\n```text\n{}\n```", preview));
@@ -299,6 +342,7 @@ pub struct ParsedBackgroundTaskNotification {
     pub status: String,
     pub duration: String,
     pub exit_label: String,
+    pub failure_summary: Option<String>,
     pub preview: Option<String>,
     pub full_output_command: String,
 }
@@ -327,6 +371,7 @@ pub fn parse_background_task_notification_markdown(
     let (tool_name, display_name) = parse_background_task_header_label(&captures["label"]);
 
     let mut preview: Option<String> = None;
+    let mut failure_summary: Option<String> = None;
     let mut full_output_command: Option<String> = None;
 
     for section in sections {
@@ -337,6 +382,11 @@ pub fn parse_background_task_notification_markdown(
 
         if let Some(captures) = full_output_re.captures(trimmed) {
             full_output_command = Some(captures["command"].to_string());
+            continue;
+        }
+
+        if let Some(summary) = trimmed.strip_prefix("_Failure:_ ") {
+            failure_summary = Some(summary.to_string());
             continue;
         }
 
@@ -360,6 +410,7 @@ pub fn parse_background_task_notification_markdown(
         status: captures["status"].to_string(),
         duration: captures["duration"].to_string(),
         exit_label: captures["exit_label"].to_string(),
+        failure_summary,
         preview,
         full_output_command: full_output_command?,
     })
