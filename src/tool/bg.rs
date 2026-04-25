@@ -48,10 +48,10 @@ struct BgInput {
     task_id: Option<String>,
     /// Task IDs (for multi-task wait/status/output where supported)
     #[serde(default)]
-    task_ids: Vec<String>,
+    task_ids: Option<Vec<String>>,
     /// Use the latest matching task when task_id is omitted
     #[serde(default)]
-    latest: bool,
+    latest: Option<bool>,
     /// Restrict implicit selection/listing to this session. Defaults to false for list and true for implicit selection.
     #[serde(default)]
     session_only: Option<bool>,
@@ -63,19 +63,19 @@ struct BgInput {
     max_age_hours: Option<u64>,
     /// Dry-run cleanup without deleting files
     #[serde(default)]
-    dry_run: bool,
+    dry_run: Option<bool>,
     /// Whether to notify on completion when using watch/delivery (default: true)
-    #[serde(default = "default_watch_notify")]
-    notify: bool,
+    #[serde(default)]
+    notify: Option<bool>,
     /// Whether to wake on completion when using watch/delivery (default: true)
-    #[serde(default = "default_watch_wake")]
-    wake: bool,
+    #[serde(default)]
+    wake: Option<bool>,
     /// Max seconds to block when using wait (default: 60, capped at 3600)
     #[serde(default)]
     max_wait_seconds: Option<u64>,
     /// Whether wait should return on progress/checkpoint events (default: true)
-    #[serde(default = "default_wait_return_on_progress")]
-    return_on_progress: bool,
+    #[serde(default)]
+    return_on_progress: Option<bool>,
     /// Multi-task wait mode: any, all, first_failure
     #[serde(default)]
     wait_mode: Option<String>,
@@ -311,22 +311,23 @@ async fn resolve_task_ids(
     action: &str,
     allow_multiple: bool,
 ) -> Result<Vec<String>> {
-    if !params.task_ids.is_empty() {
-        if !allow_multiple && params.task_ids.len() > 1 {
+    let task_ids = params.task_ids.as_deref().unwrap_or(&[]);
+    if !task_ids.is_empty() {
+        if !allow_multiple && task_ids.len() > 1 {
             return Err(anyhow::anyhow!(
                 "action '{}' accepts only one task_id; got {} task_ids",
                 action,
-                params.task_ids.len()
+                task_ids.len()
             ));
         }
-        return Ok(params.task_ids.clone());
+        return Ok(task_ids.to_vec());
     }
     if let Some(task_id) = params.task_id.clone() {
         return Ok(vec![task_id]);
     }
 
     let mut tasks = filtered_tasks(manager, ctx, params, true).await;
-    if params.latest {
+    if params.latest.unwrap_or(false) {
         return tasks
             .first()
             .map(|task| vec![task.task_id.clone()])
@@ -587,16 +588,11 @@ impl Tool for BgTool {
             "cleanup" => {
                 let max_age = params.max_age_hours.unwrap_or(24);
                 let filter = parse_status_filter(params.status_filter.as_ref());
-                let result = manager
-                    .cleanup_filtered(max_age, &filter, params.dry_run)
-                    .await?;
+                let dry_run = params.dry_run.unwrap_or(false);
+                let result = manager.cleanup_filtered(max_age, &filter, dry_run).await?;
                 Ok(ToolOutput::new(format!(
                     "{} {} old task files (older than {} hours). Skipped {} running task file(s).",
-                    if params.dry_run {
-                        "Would remove"
-                    } else {
-                        "Removed"
-                    },
+                    if dry_run { "Would remove" } else { "Removed" },
                     result.removed_files,
                     max_age,
                     result.skipped_running_files
@@ -606,7 +602,7 @@ impl Tool for BgTool {
                     "removed_files": result.removed_files,
                     "matched_files": result.matched_files,
                     "skipped_running_files": result.skipped_running_files,
-                    "dry_run": params.dry_run,
+                    "dry_run": dry_run,
                     "max_age_hours": max_age,
                 })))
             }
@@ -615,7 +611,9 @@ impl Tool for BgTool {
                 let task_id = resolve_task_ids(manager, &ctx, &params, "delivery", false)
                     .await?
                     .remove(0);
-                match manager.update_delivery(&task_id, params.notify, params.wake).await? {
+                let notify = params.notify.unwrap_or_else(default_watch_notify);
+                let wake = params.wake.unwrap_or_else(default_watch_wake);
+                match manager.update_delivery(&task_id, notify, wake).await? {
                     Some(task) => Ok(ToolOutput::new(format!(
                         "Updated background task delivery for {}.\nStatus: {}\nNotify: {}\nWake: {}",
                         task_id,
@@ -652,7 +650,9 @@ impl Tool for BgTool {
                         manager,
                         &task_ids,
                         wait_duration,
-                        params.return_on_progress,
+                        params
+                            .return_on_progress
+                            .unwrap_or_else(default_wait_return_on_progress),
                         mode,
                     )
                     .await?;
@@ -680,7 +680,13 @@ impl Tool for BgTool {
 
                 let task_id = task_ids.into_iter().next().expect("one task id");
                 match manager
-                    .wait(&task_id, wait_duration, params.return_on_progress)
+                    .wait(
+                        &task_id,
+                        wait_duration,
+                        params
+                            .return_on_progress
+                            .unwrap_or_else(default_wait_return_on_progress),
+                    )
                     .await
                 {
                     Some(wait_result) => {
@@ -753,7 +759,7 @@ impl Tool for BgTool {
                                 "wait_reason": reason_str,
                                 "timed_out": matches!(reason, background::BackgroundTaskWaitReason::Timeout),
                                 "max_wait_seconds": capped_wait,
-                                "return_on_progress": params.return_on_progress,
+                                "return_on_progress": params.return_on_progress.unwrap_or_else(default_wait_return_on_progress),
                                 "exit_code": task.exit_code,
                                 "progress": task.progress,
                                 "progress_event": wait_result.progress_event,
