@@ -206,7 +206,7 @@ Generated from `docs/CODE_QUALITY_AUDIT_2026-04-18.md`. This section enumerates 
 
 - [x] Split test hotspot `src/tui/app/tests.rs` (was 13615 LOC; split into focused `src/tui/app/tests/*.rs` includes)
 - [ ] Split test hotspot `src/server/client_session_tests/resume.rs` (1263 LOC)
-- [ ] Split test hotspot `src/provider/tests.rs` (1252 LOC)
+- [x] Split test hotspot `src/provider/tests.rs` (was 1252 LOC; split into focused `src/provider/tests/*.rs` includes)
 - [ ] Split test hotspot `src/cli/auth_test.rs` (1226 LOC)
 
 ### Long-function backlog outside already-oversized files
