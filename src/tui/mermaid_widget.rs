@@ -1,4 +1,5 @@
 use super::*;
+use crate::tui::panic_util::panic_payload_to_string;
 
 /// Border width for mermaid diagrams (left bar + space)
 pub(super) const BORDER_WIDTH: u16 = 2;
@@ -40,16 +41,6 @@ pub(super) fn draw_left_border(buf: &mut Buffer, area: Rect) {
             let spacer_x = clamped.x.saturating_add(1);
             set_cell_if_visible(buf, spacer_x, row, ' ', None);
         }
-    }
-}
-
-fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic payload".to_string()
     }
 }
 
