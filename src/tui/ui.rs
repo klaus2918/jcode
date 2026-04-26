@@ -2424,8 +2424,11 @@ struct CopyViewportSnapshots {
 
 #[cfg(not(test))]
 static LAST_COPY_VIEWPORT: OnceLock<Mutex<CopyViewportSnapshots>> = OnceLock::new();
+#[path = "ui/display_width.rs"]
+mod display_width;
 #[path = "ui/url.rs"]
 mod url_regex_support;
+use self::display_width::{clamp_display_col, display_col_to_byte_offset, line_display_width};
 use self::url_regex_support::link_target_for_display_column;
 
 #[cfg(not(test))]
@@ -2666,30 +2669,6 @@ pub(crate) fn record_side_pane_snapshot(
         content_area,
         visible_left_margins,
     );
-}
-
-fn line_display_width(text: &str) -> usize {
-    unicode_width::UnicodeWidthStr::width(text)
-}
-
-fn display_col_to_byte_offset(text: &str, display_col: usize) -> usize {
-    let mut width = 0usize;
-    for (idx, ch) in text.char_indices() {
-        if width >= display_col {
-            return idx;
-        }
-        let next_width =
-            width.saturating_add(unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0));
-        if next_width > display_col {
-            return idx;
-        }
-        width = next_width;
-    }
-    text.len()
-}
-
-fn clamp_display_col(text: &str, display_col: usize) -> usize {
-    display_col.min(line_display_width(text))
 }
 
 fn copy_point_from_snapshot(
