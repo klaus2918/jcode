@@ -231,3 +231,6 @@ See also [`MOBILE_SWIFT_AUDIT.md`](MOBILE_SWIFT_AUDIT.md) for the extraction pla
 For the day-to-day agent workflow, including scenario loading, semantic node
 inspection, interaction commands, assertions, and failure debugging, see
 [`MOBILE_SIMULATOR_WORKFLOW.md`](MOBILE_SIMULATOR_WORKFLOW.md).
+
+For the plan to ship the same Rust core inside a thin native iOS shell, see
+[`MOBILE_IOS_HOST_INTEGRATION.md`](MOBILE_IOS_HOST_INTEGRATION.md).

@@ -5,6 +5,7 @@ This audit records what the current Swift prototype owns and where each concern 
 Related docs:
 
 - [`MOBILE_AGENT_SIMULATOR.md`](MOBILE_AGENT_SIMULATOR.md)
+- [`MOBILE_IOS_HOST_INTEGRATION.md`](MOBILE_IOS_HOST_INTEGRATION.md)
 - [`IOS_CLIENT.md`](IOS_CLIENT.md)
 - [`../ios/SIMULATOR_FOUNDATION.md`](../ios/SIMULATOR_FOUNDATION.md)
 

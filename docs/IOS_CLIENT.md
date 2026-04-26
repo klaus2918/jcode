@@ -13,6 +13,9 @@ state, protocol handling, semantic UI, and simulator automation should move into
 Rust so that agents can iterate on the app on Linux without MacBook, Xcode,
 Apple iOS Simulator, or a physical iPhone.
 
+See [`MOBILE_IOS_HOST_INTEGRATION.md`](MOBILE_IOS_HOST_INTEGRATION.md) for the
+planned bridge from the Rust mobile core into a thin native iOS host.
+
 ---
 
 ## Architecture
