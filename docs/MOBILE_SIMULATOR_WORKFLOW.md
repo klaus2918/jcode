@@ -192,16 +192,21 @@ Current scenarios:
 - `onboarding`
 - `pairing_ready`
 - `connected_chat`
-
-Future scenarios should be deterministic and named for the product behavior being tested, for example:
-
 - `pairing_invalid_code`
 - `server_unreachable`
+- `connected_empty_chat`
 - `chat_streaming`
 - `tool_approval_required`
 - `tool_failed`
 - `network_reconnect`
 - `offline_queued_message`
+- `long_running_task`
+
+Future scenarios should be deterministic and named for the product behavior being tested, for example:
+
+- `push_tool_approval_opened`
+- `stdin_request_pending`
+- `model_switch_failed`
 
 ## Agent guidelines
 

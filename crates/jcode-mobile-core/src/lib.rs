@@ -153,6 +153,100 @@ impl SimulatorState {
                     is_processing: false,
                 }
             }
+            ScenarioName::PairingInvalidCode => Self {
+                pairing: PairingForm {
+                    host: "devbox.tailnet.ts.net".to_string(),
+                    port: "7643".to_string(),
+                    pair_code: "000000".to_string(),
+                    device_name: "jcode simulator".to_string(),
+                },
+                status_message: None,
+                error_message: Some("Invalid or expired pairing code.".to_string()),
+                ..Self::for_scenario(ScenarioName::Onboarding)
+            },
+            ScenarioName::ServerUnreachable => Self {
+                pairing: PairingForm {
+                    host: "offline.tailnet.ts.net".to_string(),
+                    port: "7643".to_string(),
+                    pair_code: "123456".to_string(),
+                    device_name: "jcode simulator".to_string(),
+                },
+                status_message: None,
+                error_message: Some(
+                    "Server unreachable. Confirm host/port and gateway status.".to_string(),
+                ),
+                ..Self::for_scenario(ScenarioName::Onboarding)
+            },
+            ScenarioName::ConnectedEmptyChat => {
+                let mut state = Self::for_scenario(ScenarioName::ConnectedChat);
+                state.messages.clear();
+                state.status_message = Some("Connected to simulated empty chat.".to_string());
+                state
+            }
+            ScenarioName::ChatStreaming => {
+                let mut state = Self::for_scenario(ScenarioName::ConnectedChat);
+                state.messages.push(ChatMessage {
+                    id: "msg-user-streaming".to_string(),
+                    role: MessageRole::User,
+                    text: "Run the mobile simulator smoke test.".to_string(),
+                });
+                state.messages.push(ChatMessage {
+                    id: "msg-assistant-streaming".to_string(),
+                    role: MessageRole::Assistant,
+                    text: "Running the Linux-native simulator".to_string(),
+                });
+                state.status_message = Some("Assistant response is streaming.".to_string());
+                state.is_processing = true;
+                state
+            }
+            ScenarioName::ToolApprovalRequired => {
+                let mut state = Self::for_scenario(ScenarioName::ConnectedChat);
+                state.messages.push(ChatMessage {
+                    id: "msg-tool-approval".to_string(),
+                    role: MessageRole::System,
+                    text: "Tool approval required: bash: cargo test -p jcode-mobile-core."
+                        .to_string(),
+                });
+                state.status_message = Some("Waiting for simulated tool approval.".to_string());
+                state.is_processing = true;
+                state
+            }
+            ScenarioName::ToolFailed => {
+                let mut state = Self::for_scenario(ScenarioName::ConnectedChat);
+                state.messages.push(ChatMessage {
+                    id: "msg-tool-failed".to_string(),
+                    role: MessageRole::System,
+                    text: "Simulated tool failed: exit status 1.".to_string(),
+                });
+                state.error_message = Some("Last simulated tool failed.".to_string());
+                state
+            }
+            ScenarioName::NetworkReconnect => {
+                let mut state = Self::for_scenario(ScenarioName::ConnectedChat);
+                state.connection_state = ConnectionState::Connecting;
+                state.status_message =
+                    Some("Reconnecting to simulated jcode server...".to_string());
+                state
+            }
+            ScenarioName::OfflineQueuedMessage => {
+                let mut state = Self::for_scenario(ScenarioName::ConnectedChat);
+                state.connection_state = ConnectionState::Disconnected;
+                state.draft_message = "Queued while offline".to_string();
+                state.status_message =
+                    Some("Message queued until simulated reconnect.".to_string());
+                state
+            }
+            ScenarioName::LongRunningTask => {
+                let mut state = Self::for_scenario(ScenarioName::ConnectedChat);
+                state.messages.push(ChatMessage {
+                    id: "msg-long-running".to_string(),
+                    role: MessageRole::Assistant,
+                    text: "Long-running simulated task is still in progress.".to_string(),
+                });
+                state.status_message = Some("Long-running simulated task in progress.".to_string());
+                state.is_processing = true;
+                state
+            }
         }
     }
 }
@@ -163,14 +257,47 @@ pub enum ScenarioName {
     Onboarding,
     PairingReady,
     ConnectedChat,
+    PairingInvalidCode,
+    ServerUnreachable,
+    ConnectedEmptyChat,
+    ChatStreaming,
+    ToolApprovalRequired,
+    ToolFailed,
+    NetworkReconnect,
+    OfflineQueuedMessage,
+    LongRunningTask,
 }
 
 impl ScenarioName {
+    pub const ALL: &'static [Self] = &[
+        Self::Onboarding,
+        Self::PairingReady,
+        Self::ConnectedChat,
+        Self::PairingInvalidCode,
+        Self::ServerUnreachable,
+        Self::ConnectedEmptyChat,
+        Self::ChatStreaming,
+        Self::ToolApprovalRequired,
+        Self::ToolFailed,
+        Self::NetworkReconnect,
+        Self::OfflineQueuedMessage,
+        Self::LongRunningTask,
+    ];
+
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "onboarding" => Some(Self::Onboarding),
             "pairing_ready" => Some(Self::PairingReady),
             "connected_chat" => Some(Self::ConnectedChat),
+            "pairing_invalid_code" => Some(Self::PairingInvalidCode),
+            "server_unreachable" => Some(Self::ServerUnreachable),
+            "connected_empty_chat" => Some(Self::ConnectedEmptyChat),
+            "chat_streaming" => Some(Self::ChatStreaming),
+            "tool_approval_required" => Some(Self::ToolApprovalRequired),
+            "tool_failed" => Some(Self::ToolFailed),
+            "network_reconnect" => Some(Self::NetworkReconnect),
+            "offline_queued_message" => Some(Self::OfflineQueuedMessage),
+            "long_running_task" => Some(Self::LongRunningTask),
             _ => None,
         }
     }
@@ -180,6 +307,15 @@ impl ScenarioName {
             Self::Onboarding => "onboarding",
             Self::PairingReady => "pairing_ready",
             Self::ConnectedChat => "connected_chat",
+            Self::PairingInvalidCode => "pairing_invalid_code",
+            Self::ServerUnreachable => "server_unreachable",
+            Self::ConnectedEmptyChat => "connected_empty_chat",
+            Self::ChatStreaming => "chat_streaming",
+            Self::ToolApprovalRequired => "tool_approval_required",
+            Self::ToolFailed => "tool_failed",
+            Self::NetworkReconnect => "network_reconnect",
+            Self::OfflineQueuedMessage => "offline_queued_message",
+            Self::LongRunningTask => "long_running_task",
         }
     }
 }
@@ -916,5 +1052,32 @@ mod tests {
                 .supported_actions
                 .contains(&UiNodeAction::TypeText)
         );
+    }
+
+    #[test]
+    fn all_scenarios_parse_round_trip() {
+        for scenario in ScenarioName::ALL {
+            assert_eq!(ScenarioName::parse(scenario.as_str()), Some(*scenario));
+        }
+    }
+
+    #[test]
+    fn scenario_fixtures_cover_error_processing_and_offline_states() {
+        let invalid = SimulatorState::for_scenario(ScenarioName::PairingInvalidCode);
+        assert!(
+            invalid
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Invalid")
+        );
+
+        let streaming = SimulatorState::for_scenario(ScenarioName::ChatStreaming);
+        assert!(streaming.is_processing);
+        assert_eq!(streaming.screen, Screen::Chat);
+
+        let offline = SimulatorState::for_scenario(ScenarioName::OfflineQueuedMessage);
+        assert_eq!(offline.connection_state, ConnectionState::Disconnected);
+        assert!(offline.draft_message.contains("Queued"));
     }
 }

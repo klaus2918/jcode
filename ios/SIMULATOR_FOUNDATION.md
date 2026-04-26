@@ -92,6 +92,15 @@ Supported baseline scenarios:
 - `onboarding`
 - `pairing_ready`
 - `connected_chat`
+- `pairing_invalid_code`
+- `server_unreachable`
+- `connected_empty_chat`
+- `chat_streaming`
+- `tool_approval_required`
+- `tool_failed`
+- `network_reconnect`
+- `offline_queued_message`
+- `long_running_task`
 
 ## CLI usage
 
