@@ -538,7 +538,7 @@ pub(super) fn prepare_body_incremental(
 
     let mut prompt_num = messages[..prev_msg_count]
         .iter()
-        .filter(|m| m.role == "user")
+        .filter(|m| m.effective_role() == "user")
         .count();
 
     let mut new_lines: Vec<Line> = Vec::new();
@@ -553,13 +553,14 @@ pub(super) fn prepare_body_incremental(
     let body_has_content = !prev.wrapped_lines.is_empty();
 
     for (new_msg_offset, msg) in new_messages.iter().enumerate() {
-        if (body_has_content || !new_lines.is_empty()) && msg.role != "tool" && msg.role != "meta" {
+        let role = msg.effective_role();
+        if (body_has_content || !new_lines.is_empty()) && role != "tool" && role != "meta" {
             new_lines.push(Line::from(""));
             new_line_raw_overrides.push(None);
             new_line_copy_offsets.push(0);
         }
 
-        match msg.role.as_str() {
+        match role {
             "user" => {
                 prompt_num += 1;
                 new_user_line_indices.push(new_lines.len());
@@ -981,14 +982,15 @@ pub(super) fn prepare_body(
     let pending_count = input_ui::pending_prompt_count(app);
 
     for (msg_idx, msg) in app.display_messages().iter().enumerate() {
-        let align = default_message_alignment(msg.role.as_str(), centered);
-        if !lines.is_empty() && msg.role != "tool" && msg.role != "meta" && msg.role != "swarm" {
+        let role = msg.effective_role();
+        let align = default_message_alignment(role, centered);
+        if !lines.is_empty() && role != "tool" && role != "meta" && role != "swarm" {
             lines.push(Line::from(""));
             line_raw_overrides.push(None);
             line_copy_offsets.push(0);
         }
 
-        match msg.role.as_str() {
+        match role {
             "user" => {
                 prompt_num += 1;
                 user_line_indices.push(lines.len());

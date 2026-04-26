@@ -10475,6 +10475,38 @@ fn test_handle_server_event_notification_background_task_scope_uses_card_renderi
 }
 
 #[test]
+fn test_background_task_markdown_renders_card_even_if_role_was_lost() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.set_centered(true);
+
+    app.push_display_message(DisplayMessage::user(
+        "**Background task** `594967sj63` · `Run jcode library tests afte` (`bash`) · ✗ failed · 1.0s · exit 124\n\n```text\n\n--- Command timed out after 1000ms ---\n```\n\n_Full output:_ `bg action=\"output\" task_id=\"594967sj63\"`",
+    ));
+
+    let backend = ratatui::backend::TestBackend::new(80, 16);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    let text = render_and_snap(&app, &mut terminal);
+
+    assert!(
+        text.contains("╭") && text.contains("╰"),
+        "expected inferred background-task card rendering, got:\n{}",
+        text
+    );
+    assert!(
+        text.contains("✗ bg Run jcode library tests afte failed · 594967sj63"),
+        "expected background-task card title, got:\n{}",
+        text
+    );
+    assert!(
+        !text.contains("**Background task**"),
+        "raw markdown should not be shown when the background-task role is inferred:\n{}",
+        text
+    );
+    assert_eq!(app.display_user_message_count(), 0);
+}
+
+#[test]
 fn test_handle_remote_disconnect_flushes_streaming_text_and_sets_reconnect_state() {
     let mut app = create_test_app();
     app.is_processing = true;

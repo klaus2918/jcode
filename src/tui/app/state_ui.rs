@@ -29,7 +29,7 @@ impl App {
         self.display_user_message_count = self
             .display_messages
             .iter()
-            .filter(|message| message.role == "user")
+            .filter(|message| message.effective_role() == "user")
             .count();
         self.display_edit_tool_message_count = self
             .display_messages

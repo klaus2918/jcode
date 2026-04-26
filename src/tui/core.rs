@@ -51,6 +51,23 @@ pub fn char_index_to_byte_offset(s: &str, char_index: usize) -> usize {
 // ========== DisplayMessage Helpers ==========
 
 impl DisplayMessage {
+    /// Return the role that should be used for rendering.
+    ///
+    /// Background-task notifications are persisted/injected through a few older
+    /// paths that can lose the dedicated `background_task` display role and come
+    /// back as plain `user`/`system` markdown. Detect the canonical notification
+    /// shape so those messages still render as the rounded background-task card.
+    pub(crate) fn effective_role(&self) -> &str {
+        if self.role != "background_task"
+            && self.role != "tool"
+            && is_background_task_notification_content(&self.content)
+        {
+            "background_task"
+        } else {
+            self.role.as_str()
+        }
+    }
+
     /// Create an error message
     pub fn error(content: impl Into<String>) -> Self {
         Self {
@@ -199,6 +216,11 @@ impl DisplayMessage {
         self.title = Some(title.into());
         self
     }
+}
+
+fn is_background_task_notification_content(content: &str) -> bool {
+    crate::message::parse_background_task_notification_markdown(content).is_some()
+        || crate::message::parse_background_task_progress_notification_markdown(content).is_some()
 }
 
 #[cfg(test)]
