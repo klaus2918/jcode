@@ -440,27 +440,27 @@ mod tests {
     use tempfile::TempDir;
 
     #[cfg(unix)]
-    async fn wait_for_socket(path: &Path) {
+    async fn wait_for_socket(path: &Path) -> Result<()> {
         for _ in 0..100 {
             if path.exists() {
-                return;
+                return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        panic!("socket did not appear: {}", path.display());
+        Err(anyhow!("socket did not appear: {}", path.display()))
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn automation_round_trip_over_socket() {
-        let dir = TempDir::new().expect("tempdir");
+    async fn automation_round_trip_over_socket() -> Result<()> {
+        let dir = TempDir::new()?;
         let socket = dir.path().join("sim.sock");
         let server_socket = socket.clone();
         let server =
             tokio::spawn(async move { run_server(&server_socket, ScenarioName::Onboarding).await });
-        wait_for_socket(&socket).await;
+        wait_for_socket(&socket).await?;
 
-        let status = request_status(&socket).await.expect("status");
+        let status = request_status(&socket).await?;
         assert_eq!(status.screen, "onboarding");
 
         let _ = send_request(
@@ -476,8 +476,7 @@ mod tests {
                 }),
             },
         )
-        .await
-        .expect("set host");
+        .await?;
 
         let dispatch = send_request(
             &socket,
@@ -487,8 +486,7 @@ mod tests {
                 params: json!({"scenario": "connected_chat"}),
             },
         )
-        .await
-        .expect("load scenario");
+        .await?;
         assert!(dispatch.ok);
 
         let tree = send_request(
@@ -499,9 +497,8 @@ mod tests {
                 params: Value::Null,
             },
         )
-        .await
-        .expect("tree");
-        let tree_json = serde_json::to_string(&tree.result).expect("tree json");
+        .await?;
+        let tree_json = serde_json::to_string(&tree.result)?;
         assert!(tree_json.contains("chat.send"));
 
         let assert_screen = send_request(
@@ -512,8 +509,7 @@ mod tests {
                 params: json!({"screen": "chat"}),
             },
         )
-        .await
-        .expect("assert screen");
+        .await?;
         assert!(assert_screen.ok);
 
         let find_node = send_request(
@@ -524,8 +520,7 @@ mod tests {
                 params: json!({"node_id": "chat.send"}),
             },
         )
-        .await
-        .expect("find node");
+        .await?;
         assert!(find_node.ok);
 
         let assert_node = send_request(
@@ -536,8 +531,7 @@ mod tests {
                 params: json!({"node_id": "chat.send", "enabled": true, "role": "button"}),
             },
         )
-        .await
-        .expect("assert node");
+        .await?;
         assert!(assert_node.ok);
 
         let assert_text = send_request(
@@ -548,8 +542,7 @@ mod tests {
                 params: json!({"contains": "Connected to simulated jcode server."}),
             },
         )
-        .await
-        .expect("assert text");
+        .await?;
         assert!(assert_text.ok);
 
         let assert_no_error = send_request(
@@ -560,8 +553,7 @@ mod tests {
                 params: Value::Null,
             },
         )
-        .await
-        .expect("assert no error");
+        .await?;
         assert!(assert_no_error.ok);
 
         let _ = send_request(
@@ -572,9 +564,9 @@ mod tests {
                 params: Value::Null,
             },
         )
-        .await
-        .expect("shutdown");
+        .await?;
 
-        server.await.expect("join").expect("server exit");
+        server.await??;
+        Ok(())
     }
 }
