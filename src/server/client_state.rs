@@ -906,8 +906,14 @@ mod tests {
             Some(session_id.to_string()),
         );
 
-        let snapshot = super::history_reload_recovery_snapshot(session_id, None)
-            .expect("pending user turn during reload should get recovery directive");
+        let snapshot = super::history_reload_recovery_snapshot(session_id, None);
+        assert!(
+            snapshot.is_some(),
+            "pending user turn during reload should get recovery directive"
+        );
+        let Some(snapshot) = snapshot else {
+            return Ok(());
+        };
 
         assert!(
             snapshot
