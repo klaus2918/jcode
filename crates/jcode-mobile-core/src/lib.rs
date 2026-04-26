@@ -255,6 +255,23 @@ pub enum UiNodeRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiNodeAction {
+    Tap,
+    SetText,
+    TypeText,
+    Scroll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiNode {
     pub id: String,
     pub role: UiNodeRole,
@@ -262,6 +279,11 @@ pub struct UiNode {
     pub value: Option<String>,
     pub visible: bool,
     pub enabled: bool,
+    pub focused: bool,
+    pub accessibility_label: Option<String>,
+    pub accessibility_value: Option<String>,
+    pub supported_actions: Vec<UiNodeAction>,
+    pub bounds: Option<UiRect>,
     pub children: Vec<UiNode>,
 }
 
@@ -577,6 +599,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
             value: Some(status.clone()),
             visible: true,
             enabled: true,
+            focused: false,
+            accessibility_label: None,
+            accessibility_value: None,
+            supported_actions: Vec::new(),
+            bounds: None,
             children: Vec::new(),
         });
     }
@@ -589,6 +616,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
             value: Some(error.clone()),
             visible: true,
             enabled: true,
+            focused: false,
+            accessibility_label: None,
+            accessibility_value: None,
+            supported_actions: Vec::new(),
+            bounds: None,
             children: Vec::new(),
         });
     }
@@ -603,6 +635,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
                     value: Some(state.pairing.host.clone()),
                     visible: true,
                     enabled: state.connection_state != ConnectionState::Connecting,
+                    focused: false,
+                    accessibility_label: None,
+                    accessibility_value: None,
+                    supported_actions: Vec::new(),
+                    bounds: None,
                     children: Vec::new(),
                 },
                 UiNode {
@@ -612,6 +649,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
                     value: Some(state.pairing.port.clone()),
                     visible: true,
                     enabled: state.connection_state != ConnectionState::Connecting,
+                    focused: false,
+                    accessibility_label: None,
+                    accessibility_value: None,
+                    supported_actions: Vec::new(),
+                    bounds: None,
                     children: Vec::new(),
                 },
                 UiNode {
@@ -621,6 +663,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
                     value: Some(state.pairing.pair_code.clone()),
                     visible: true,
                     enabled: state.connection_state != ConnectionState::Connecting,
+                    focused: false,
+                    accessibility_label: None,
+                    accessibility_value: None,
+                    supported_actions: Vec::new(),
+                    bounds: None,
                     children: Vec::new(),
                 },
                 UiNode {
@@ -630,6 +677,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
                     value: Some(state.pairing.device_name.clone()),
                     visible: true,
                     enabled: state.connection_state != ConnectionState::Connecting,
+                    focused: false,
+                    accessibility_label: None,
+                    accessibility_value: None,
+                    supported_actions: Vec::new(),
+                    bounds: None,
                     children: Vec::new(),
                 },
                 UiNode {
@@ -639,6 +691,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
                     value: None,
                     visible: true,
                     enabled: state.connection_state != ConnectionState::Connecting,
+                    focused: false,
+                    accessibility_label: None,
+                    accessibility_value: None,
+                    supported_actions: Vec::new(),
+                    bounds: None,
                     children: Vec::new(),
                 },
             ]);
@@ -655,6 +712,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
                     value: Some(message.text.clone()),
                     visible: true,
                     enabled: true,
+                    focused: false,
+                    accessibility_label: None,
+                    accessibility_value: None,
+                    supported_actions: Vec::new(),
+                    bounds: None,
                     children: Vec::new(),
                 })
                 .collect();
@@ -665,6 +727,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
                 value: None,
                 visible: true,
                 enabled: true,
+                focused: false,
+                accessibility_label: None,
+                accessibility_value: None,
+                supported_actions: Vec::new(),
+                bounds: None,
                 children: message_children,
             });
             children.push(UiNode {
@@ -674,6 +741,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
                 value: Some(state.draft_message.clone()),
                 visible: true,
                 enabled: true,
+                focused: false,
+                accessibility_label: None,
+                accessibility_value: None,
+                supported_actions: Vec::new(),
+                bounds: None,
                 children: Vec::new(),
             });
             children.push(UiNode {
@@ -683,6 +755,11 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
                 value: None,
                 visible: true,
                 enabled: state.connection_state == ConnectionState::Connected,
+                focused: false,
+                accessibility_label: None,
+                accessibility_value: None,
+                supported_actions: Vec::new(),
+                bounds: None,
                 children: Vec::new(),
             });
             children.push(UiNode {
@@ -692,12 +769,17 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
                 value: None,
                 visible: true,
                 enabled: state.is_processing,
+                focused: false,
+                accessibility_label: None,
+                accessibility_value: None,
+                supported_actions: Vec::new(),
+                bounds: None,
                 children: Vec::new(),
             });
         }
     }
 
-    UiTree {
+    with_agent_metadata(UiTree {
         screen: state.screen,
         root: UiNode {
             id: "root".to_string(),
@@ -706,8 +788,40 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
             value: None,
             visible: true,
             enabled: true,
+            focused: false,
+            accessibility_label: None,
+            accessibility_value: None,
+            supported_actions: Vec::new(),
+            bounds: None,
             children,
         },
+    })
+}
+
+fn with_agent_metadata(mut tree: UiTree) -> UiTree {
+    annotate_node_for_agents(&mut tree.root);
+    tree
+}
+
+fn annotate_node_for_agents(node: &mut UiNode) {
+    if node.accessibility_label.is_none() {
+        node.accessibility_label = Some(node.label.clone());
+    }
+    if node.accessibility_value.is_none() {
+        node.accessibility_value = node.value.clone();
+    }
+
+    node.supported_actions = match node.role {
+        UiNodeRole::TextInput | UiNodeRole::Composer if node.enabled => {
+            vec![UiNodeAction::SetText, UiNodeAction::TypeText]
+        }
+        UiNodeRole::Button if node.enabled => vec![UiNodeAction::Tap],
+        UiNodeRole::MessageList if node.enabled => vec![UiNodeAction::Scroll],
+        _ => Vec::new(),
+    };
+
+    for child in &mut node.children {
+        annotate_node_for_agents(child);
     }
 }
 
@@ -764,6 +878,37 @@ mod tests {
                 .children
                 .iter()
                 .any(|node| node.id == "pair.submit")
+        );
+    }
+
+    #[test]
+    fn semantic_tree_exposes_agent_metadata() {
+        let store = SimulatorStore::default();
+        let tree = store.semantic_tree();
+
+        let pair_submit = tree
+            .root
+            .children
+            .iter()
+            .find(|node| node.id == "pair.submit")
+            .expect("pair submit node");
+        assert_eq!(
+            pair_submit.accessibility_label.as_deref(),
+            Some("Pair & Connect")
+        );
+        assert!(pair_submit.supported_actions.contains(&UiNodeAction::Tap));
+
+        let pair_host = tree
+            .root
+            .children
+            .iter()
+            .find(|node| node.id == "pair.host")
+            .expect("pair host node");
+        assert!(pair_host.supported_actions.contains(&UiNodeAction::SetText));
+        assert!(
+            pair_host
+                .supported_actions
+                .contains(&UiNodeAction::TypeText)
         );
     }
 }
