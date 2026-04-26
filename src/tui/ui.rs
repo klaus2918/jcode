@@ -2241,21 +2241,6 @@ pub(crate) fn clear_flicker_frame_history_for_tests() {
     set_last_chat_scrollbar_visible(false);
 }
 
-#[derive(Default)]
-struct RenderProfile {
-    frames: u64,
-    total: Duration,
-    prepare: Duration,
-    draw: Duration,
-    last_log: Option<Instant>,
-}
-
-static PROFILE_STATE: OnceLock<Mutex<RenderProfile>> = OnceLock::new();
-
-fn profile_state() -> &'static Mutex<RenderProfile> {
-    PROFILE_STATE.get_or_init(|| Mutex::new(RenderProfile::default()))
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct LayoutSnapshot {
     pub messages_area: Rect,
@@ -2426,9 +2411,12 @@ struct CopyViewportSnapshots {
 static LAST_COPY_VIEWPORT: OnceLock<Mutex<CopyViewportSnapshots>> = OnceLock::new();
 #[path = "ui/display_width.rs"]
 mod display_width;
+#[path = "ui/profile.rs"]
+mod profile;
 #[path = "ui/url.rs"]
 mod url_regex_support;
 use self::display_width::{clamp_display_col, display_col_slice, line_display_width};
+use self::profile::{profile_enabled, record_profile};
 use self::url_regex_support::link_target_for_display_column;
 
 #[cfg(not(test))]
@@ -2940,43 +2928,6 @@ pub(crate) fn link_target_from_screen(column: u16, row: u16) -> Option<String> {
     let point = copy_point_from_screen(column, row)?;
     let snapshot = copy_snapshot_for_pane(point.pane)?;
     link_target_from_snapshot(&snapshot, point)
-}
-
-fn profile_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("JCODE_TUI_PROFILE").is_ok())
-}
-
-fn record_profile(prepare: Duration, draw: Duration, total: Duration) {
-    let mut state = match profile_state().lock() {
-        Ok(s) => s,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    state.frames += 1;
-    state.prepare += prepare;
-    state.draw += draw;
-    state.total += total;
-
-    let now = Instant::now();
-    let should_log = match state.last_log {
-        Some(last) => now.duration_since(last) >= Duration::from_secs(1),
-        None => true,
-    };
-    if should_log && state.frames > 0 {
-        let frames = state.frames as f64;
-        let avg_prepare = state.prepare.as_secs_f64() * 1000.0 / frames;
-        let avg_draw = state.draw.as_secs_f64() * 1000.0 / frames;
-        let avg_total = state.total.as_secs_f64() * 1000.0 / frames;
-        crate::logging::info(&format!(
-            "TUI perf: {:.1} fps | prepare {:.2}ms | draw {:.2}ms | total {:.2}ms",
-            frames, avg_prepare, avg_draw, avg_total
-        ));
-        state.frames = 0;
-        state.prepare = Duration::from_secs(0);
-        state.draw = Duration::from_secs(0);
-        state.total = Duration::from_secs(0);
-        state.last_log = Some(now);
-    }
 }
 
 pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
