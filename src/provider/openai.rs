@@ -684,11 +684,16 @@ impl OpenAIProvider {
         prompt_cache_retention: Option<&str>,
         native_compaction_threshold: Option<usize>,
     ) -> Value {
+        let mut tools = api_tools.to_vec();
+        if is_chatgpt_mode {
+            tools.push(serde_json::json!({ "type": "image_generation" }));
+        }
+
         let mut request = serde_json::json!({
             "model": model_id,
             "instructions": instructions,
             "input": input,
-            "tools": api_tools,
+            "tools": tools,
             "tool_choice": "auto",
             "parallel_tool_calls": false,
             "stream": true,

@@ -2,6 +2,7 @@ use super::{
     FALLBACK_TOOL_CALL_COUNTER, NORMALIZED_NULL_TOOL_ARGUMENTS, RECOVERED_TEXT_WRAPPED_TOOL_CALLS,
     extract_error_with_retry, is_websocket_fallback_notice,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
 fn truncated_stream_payload_context(data: &str) -> String {
     crate::util::truncate_str(&data.trim().replace("\n", "\\n"), 240).to_string()
@@ -16,6 +17,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::task::{Context as TaskContext, Poll};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(super) fn parse_text_wrapped_tool_call(text: &str) -> Option<(String, String, String, String)> {
     let marker = "to=functions.";
@@ -473,6 +475,11 @@ pub(super) fn handle_openai_output_item(
             pending.push_back(StreamEvent::ToolUseEnd);
             return pending.pop_front();
         }
+        "image_generation_call" => {
+            if let Some(event) = handle_openai_image_generation_item(&item) {
+                return Some(event);
+            }
+        }
         "message" => {
             if *saw_text_delta {
                 return None;
@@ -515,6 +522,75 @@ pub(super) fn handle_openai_output_item(
     }
 
     None
+}
+
+fn handle_openai_image_generation_item(item: &Value) -> Option<StreamEvent> {
+    let result_b64 = item.get("result")?.as_str()?;
+    if result_b64.is_empty() {
+        return None;
+    }
+
+    let image_bytes = match BASE64_STANDARD.decode(result_b64) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            crate::logging::warn(&format!(
+                "OpenAI image_generation_call returned invalid base64: {}",
+                err
+            ));
+            return Some(StreamEvent::TextDelta(
+                "\n[Generated image received, but Jcode could not decode it.]\n".to_string(),
+            ));
+        }
+    };
+
+    let output_format = item
+        .get("output_format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("png");
+    let extension = match output_format {
+        "jpeg" | "jpg" => "jpg",
+        "webp" => "webp",
+        _ => "png",
+    };
+    let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("image");
+    let safe_id: String = item_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-')
+        .take(80)
+        .collect();
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let dir = std::env::current_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(".jcode")
+        .join("generated-images");
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        crate::logging::warn(&format!(
+            "Failed to create OpenAI generated image directory: {}",
+            err
+        ));
+        return Some(StreamEvent::TextDelta(format!(
+            "\n[Generated image received ({} bytes), but Jcode could not save it.]\n",
+            image_bytes.len()
+        )));
+    }
+
+    let filename = format!("{}-{}.{}", timestamp_ms, safe_id, extension);
+    let path = dir.join(filename);
+    if let Err(err) = std::fs::write(&path, image_bytes) {
+        crate::logging::warn(&format!("Failed to save OpenAI generated image: {}", err));
+        return Some(StreamEvent::TextDelta(
+            "\n[Generated image received, but Jcode could not save it.]\n".to_string(),
+        ));
+    }
+
+    Some(StreamEvent::TextDelta(format!(
+        "\n![Generated image]({})\n\nGenerated image saved to `{}`.\n",
+        path.display(),
+        path.display()
+    )))
 }
 
 pub(super) struct OpenAIResponsesStream {
