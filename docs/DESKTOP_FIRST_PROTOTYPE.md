@@ -38,7 +38,7 @@ Start by proving the absolute foundation:
 ## What Phase 0 must prove
 
 1. A native window opens on Linux.
-2. The window enters fullscreen or borderless fullscreen mode.
+2. The app supports fullscreen or borderless fullscreen mode via `--fullscreen`.
 3. The app creates a GPU surface.
 4. The app clears the surface to white.
 5. The app handles resize/scale-factor changes without crashing.

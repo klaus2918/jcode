@@ -1,10 +1,13 @@
 use anyhow::{Context, Result};
 use wgpu::{CompositeAlphaMode, PresentMode, SurfaceError, TextureUsages};
-use winit::dpi::PhysicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Fullscreen, Window, WindowBuilder};
+
+const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
+const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 1.0,
@@ -18,11 +21,21 @@ fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
+    let fullscreen = std::env::args().any(|arg| arg == "--fullscreen");
     let event_loop = EventLoop::new().context("failed to create event loop")?;
+    let mut window_builder = WindowBuilder::new()
+        .with_title("Jcode Desktop")
+        .with_inner_size(LogicalSize::new(
+            DEFAULT_WINDOW_WIDTH,
+            DEFAULT_WINDOW_HEIGHT,
+        ));
+
+    if fullscreen {
+        window_builder = window_builder.with_fullscreen(Some(Fullscreen::Borderless(None)));
+    }
+
     let window: &'static Window = Box::leak(Box::new(
-        WindowBuilder::new()
-            .with_title("Jcode Desktop")
-            .with_fullscreen(Some(Fullscreen::Borderless(None)))
+        window_builder
             .build(&event_loop)
             .context("failed to create desktop window")?,
     ));
