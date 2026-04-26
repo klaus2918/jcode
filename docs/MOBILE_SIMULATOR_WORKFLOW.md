@@ -128,7 +128,13 @@ cargo run -p jcode-mobile-sim -- assert-no-error
 
 ## End-to-end current vertical slice
 
-This is the current no-Mac/no-iPhone happy path:
+For a reusable smoke test, run:
+
+```bash
+scripts/mobile_simulator_smoke.sh
+```
+
+This is the current no-Mac/no-iPhone happy path expanded inline:
 
 ```bash
 cargo run -p jcode-mobile-sim -- start --scenario pairing_ready
