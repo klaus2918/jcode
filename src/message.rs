@@ -691,6 +691,7 @@ pub enum StreamEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{Result, anyhow};
 
     #[test]
     fn sanitize_tool_id_alphanumeric_passthrough() {
@@ -844,18 +845,16 @@ mod tests {
     }
 
     #[test]
-    fn format_timestamp_is_stable_utc_rfc3339() {
-        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:13.250Z")
-            .unwrap()
-            .with_timezone(&Utc);
+    fn format_timestamp_is_stable_utc_rfc3339() -> Result<()> {
+        let ts =
+            chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:13.250Z")?.with_timezone(&Utc);
         assert_eq!(Message::format_timestamp(&ts), "2025-03-15T02:24:13.250Z");
+        Ok(())
     }
 
     #[test]
-    fn with_timestamps_prepends_utc_prefix_to_user_text() {
-        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:03Z")
-            .unwrap()
-            .with_timezone(&Utc);
+    fn with_timestamps_prepends_utc_prefix_to_user_text() -> Result<()> {
+        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:03Z")?.with_timezone(&Utc);
         let stamped = Message::with_timestamps(&[Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -865,19 +864,19 @@ mod tests {
             timestamp: Some(ts),
             tool_duration_ms: None,
         }]);
-        match &stamped[0].content[0] {
-            ContentBlock::Text { text, .. } => {
-                assert_eq!(text, "[2025-03-15T02:24:03.000Z] hello");
-            }
-            other => panic!("expected text block, got {other:?}"),
-        }
+        let ContentBlock::Text { text, .. } = &stamped[0].content[0] else {
+            return Err(anyhow!(
+                "expected text block, got {:?}",
+                stamped[0].content[0]
+            ));
+        };
+        assert_eq!(text, "[2025-03-15T02:24:03.000Z] hello");
+        Ok(())
     }
 
     #[test]
-    fn with_timestamps_adds_tool_timing_header_with_duration() {
-        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:13Z")
-            .unwrap()
-            .with_timezone(&Utc);
+    fn with_timestamps_adds_tool_timing_header_with_duration() -> Result<()> {
+        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:13Z")?.with_timezone(&Utc);
         let stamped = Message::with_timestamps(&[Message {
             role: Role::User,
             content: vec![ContentBlock::ToolResult {
@@ -888,22 +887,22 @@ mod tests {
             timestamp: Some(ts),
             tool_duration_ms: Some(3_200),
         }]);
-        match &stamped[0].content[0] {
-            ContentBlock::ToolResult { content, .. } => {
-                assert_eq!(
-                    content,
-                    "[tool timing: start=2025-03-15T02:24:09.800Z finish=2025-03-15T02:24:13.000Z duration=3.2s] ok"
-                );
-            }
-            other => panic!("expected tool result block, got {other:?}"),
-        }
+        let ContentBlock::ToolResult { content, .. } = &stamped[0].content[0] else {
+            return Err(anyhow!(
+                "expected tool result block, got {:?}",
+                stamped[0].content[0]
+            ));
+        };
+        assert_eq!(
+            content,
+            "[tool timing: start=2025-03-15T02:24:09.800Z finish=2025-03-15T02:24:13.000Z duration=3.2s] ok"
+        );
+        Ok(())
     }
 
     #[test]
-    fn with_timestamps_skips_internal_system_reminders() {
-        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:13Z")
-            .unwrap()
-            .with_timezone(&Utc);
+    fn with_timestamps_skips_internal_system_reminders() -> Result<()> {
+        let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:13Z")?.with_timezone(&Utc);
         let original = Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -914,12 +913,14 @@ mod tests {
             tool_duration_ms: None,
         };
         let stamped = Message::with_timestamps(std::slice::from_ref(&original));
-        match &stamped[0].content[0] {
-            ContentBlock::Text { text, .. } => {
-                assert_eq!(text, "<system-reminder>\ninternal\n</system-reminder>");
-            }
-            other => panic!("expected text block, got {other:?}"),
-        }
+        let ContentBlock::Text { text, .. } = &stamped[0].content[0] else {
+            return Err(anyhow!(
+                "expected text block, got {:?}",
+                stamped[0].content[0]
+            ));
+        };
+        assert_eq!(text, "<system-reminder>\ninternal\n</system-reminder>");
+        Ok(())
     }
 
     #[test]
@@ -1010,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn format_background_task_notification_markdown_highlights_failure_reason() {
+    fn format_background_task_notification_markdown_highlights_failure_reason() -> Result<()> {
         let rendered = format_background_task_notification_markdown(&BackgroundTaskCompleted {
             task_id: "build123".to_string(),
             tool_name: "selfdev-build".to_string(),
@@ -1027,11 +1028,12 @@ mod tests {
 
         assert!(rendered.contains("_Failure:_ sccache: Compile terminated by signal 15"));
         let parsed = parse_background_task_notification_markdown(&rendered)
-            .expect("failure notification should parse");
+            .ok_or_else(|| anyhow!("failure notification should parse"))?;
         assert_eq!(
             parsed.failure_summary.as_deref(),
             Some("sccache: Compile terminated by signal 15")
         );
+        Ok(())
     }
 
     #[test]
@@ -1081,7 +1083,7 @@ mod tests {
     }
 
     #[test]
-    fn background_task_notifications_include_display_name_when_available() {
+    fn background_task_notifications_include_display_name_when_available() -> Result<()> {
         let rendered = format_background_task_notification_markdown(&BackgroundTaskCompleted {
             task_id: "abc123".to_string(),
             tool_name: "bash".to_string(),
@@ -1100,16 +1102,17 @@ mod tests {
             "**Background task** `abc123` · `Run integration tests` (`bash`) · ✓ completed"
         ));
         let parsed = parse_background_task_notification_markdown(&rendered)
-            .expect("named background task notification should parse");
+            .ok_or_else(|| anyhow!("named background task notification should parse"))?;
         assert_eq!(parsed.tool_name, "bash");
         assert_eq!(
             parsed.display_name.as_deref(),
             Some("Run integration tests")
         );
+        Ok(())
     }
 
     #[test]
-    fn background_task_progress_notifications_include_display_name_when_available() {
+    fn background_task_progress_notifications_include_display_name_when_available() -> Result<()> {
         let rendered = format_background_task_progress_markdown(&BackgroundTaskProgressEvent {
             task_id: "bgprogress".to_string(),
             tool_name: "bash".to_string(),
@@ -1132,21 +1135,22 @@ mod tests {
             "**Background task progress** `bgprogress` · `Run integration tests` (`bash`)\n\n"
         ));
         let parsed = parse_background_task_progress_notification_markdown(&rendered)
-            .expect("named progress notification should parse");
+            .ok_or_else(|| anyhow!("named progress notification should parse"))?;
         assert_eq!(parsed.tool_name, "bash");
         assert_eq!(
             parsed.display_name.as_deref(),
             Some("Run integration tests")
         );
         assert_eq!(parsed.summary, "42% · Running tests");
+        Ok(())
     }
 
     #[test]
-    fn parse_background_task_progress_notification_extracts_card_fields() {
+    fn parse_background_task_progress_notification_extracts_card_fields() -> Result<()> {
         let parsed = parse_background_task_progress_notification_markdown(
             "**Background task progress** `bgprogress` · `bash`\n\n[#####-------] 42% · Running tests (reported)",
         )
-        .expect("progress notification should parse");
+        .ok_or_else(|| anyhow!("progress notification should parse"))?;
 
         assert_eq!(parsed.task_id, "bgprogress");
         assert_eq!(parsed.tool_name, "bash");
@@ -1154,14 +1158,15 @@ mod tests {
         assert_eq!(parsed.summary, "42% · Running tests");
         assert_eq!(parsed.source.as_deref(), Some("reported"));
         assert_eq!(parsed.percent, Some(42.0));
+        Ok(())
     }
 
     #[test]
-    fn parse_background_task_progress_notification_supports_legacy_inline_layout() {
+    fn parse_background_task_progress_notification_supports_legacy_inline_layout() -> Result<()> {
         let parsed = parse_background_task_progress_notification_markdown(
             "**Background task progress** `bgprogress` · `bash` · Release run in_progress: - 7/8 jobs completed (reported)",
         )
-        .expect("legacy progress notification should parse");
+        .ok_or_else(|| anyhow!("legacy progress notification should parse"))?;
 
         assert_eq!(parsed.task_id, "bgprogress");
         assert_eq!(parsed.tool_name, "bash");
@@ -1172,6 +1177,7 @@ mod tests {
         );
         assert_eq!(parsed.source.as_deref(), Some("reported"));
         assert_eq!(parsed.percent, None);
+        Ok(())
     }
 
     #[test]
@@ -1186,7 +1192,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_background_task_notification_markdown_extracts_fields() {
+    fn parse_background_task_notification_markdown_extracts_fields() -> Result<()> {
         let rendered = format_background_task_notification_markdown(&BackgroundTaskCompleted {
             task_id: "abc123".to_string(),
             tool_name: "bash".to_string(),
@@ -1202,7 +1208,7 @@ mod tests {
         });
 
         let parsed = parse_background_task_notification_markdown(&rendered)
-            .expect("background task notification should parse");
+            .ok_or_else(|| anyhow!("background task notification should parse"))?;
         assert_eq!(parsed.task_id, "abc123");
         assert_eq!(parsed.tool_name, "bash");
         assert_eq!(parsed.display_name, None);
@@ -1218,5 +1224,6 @@ mod tests {
             parsed.full_output_command,
             "bg action=\"output\" task_id=\"abc123\""
         );
+        Ok(())
     }
 }

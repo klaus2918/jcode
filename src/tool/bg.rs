@@ -137,7 +137,7 @@ fn resolve_action(params: &BgInput) -> Result<String> {
     }
 
     Err(anyhow::anyhow!(
-        "Missing required bg action. Use one of: list, status, output, tail, cancel, cleanup, delivery, subscribe, wait. For example: bg action="wait"."
+        "Missing required bg action. Use one of: list, status, output, tail, cancel, cleanup, delivery, subscribe, wait. For example: bg action=\"wait\"."
     ))
 }
 
@@ -727,7 +727,11 @@ impl Tool for BgTool {
                     })));
                 }
 
-                let task_id = task_ids.into_iter().next().expect("one task id");
+                let Some(task_id) = task_ids.into_iter().next() else {
+                    return Err(anyhow::anyhow!(
+                        "Missing task_id; provide a task_id or use latest=true"
+                    ));
+                };
                 match manager
                     .wait(
                         &task_id,
@@ -768,34 +772,34 @@ impl Tool for BgTool {
                             ));
                         }
 
-                        let include_preview = params.include_output_preview.unwrap_or_else(|| {
+                        let include_preview = params.include_output_preview.unwrap_or({
                             matches!(task.status, BackgroundTaskStatus::Failed)
                                 || matches!(reason, background::BackgroundTaskWaitReason::Finished)
                         });
                         let mut preview_meta = Value::Null;
-                        if include_preview {
-                            if let Some(full_output) = manager.output(&task.task_id).await {
-                                let tail = Some(
-                                    params
-                                        .tail_lines
-                                        .or(params.lines)
-                                        .unwrap_or(DEFAULT_WAIT_PREVIEW_LINES),
-                                );
-                                let (preview, truncated) = output_preview(&full_output, tail);
-                                if !preview.trim().is_empty() {
-                                    output.push_str("\nOutput preview:\n```text\n");
-                                    output.push_str(&preview);
-                                    if !preview.ends_with('\n') {
-                                        output.push('\n');
-                                    }
-                                    output.push_str("```\n");
+                        if include_preview
+                            && let Some(full_output) = manager.output(&task.task_id).await
+                        {
+                            let tail = Some(
+                                params
+                                    .tail_lines
+                                    .or(params.lines)
+                                    .unwrap_or(DEFAULT_WAIT_PREVIEW_LINES),
+                            );
+                            let (preview, truncated) = output_preview(&full_output, tail);
+                            if !preview.trim().is_empty() {
+                                output.push_str("\nOutput preview:\n```text\n");
+                                output.push_str(&preview);
+                                if !preview.ends_with('\n') {
+                                    output.push('\n');
                                 }
-                                preview_meta = json!({
-                                    "tail_lines": tail,
-                                    "truncated": truncated,
-                                    "output_bytes": full_output.len(),
-                                });
+                                output.push_str("```\n");
                             }
+                            preview_meta = json!({
+                                "tail_lines": tail,
+                                "truncated": truncated,
+                                "output_bytes": full_output.len(),
+                            });
                         }
 
                         Ok(ToolOutput::new(output)
@@ -831,41 +835,43 @@ impl Tool for BgTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{Result, anyhow};
 
     #[test]
-    fn status_filter_schema_any_of_branches_have_types() {
+    fn status_filter_schema_any_of_branches_have_types() -> Result<()> {
         let schema = BgTool::new().parameters_schema();
         let branches = schema["properties"]["status_filter"]["anyOf"]
             .as_array()
-            .expect("status_filter should define anyOf branches");
+            .ok_or_else(|| anyhow!("status_filter should define anyOf branches"))?;
 
         assert_eq!(branches[0]["type"], json!("string"));
         assert_eq!(branches[1]["type"], json!("array"));
         assert_eq!(branches[1]["items"]["type"], json!("string"));
+        Ok(())
     }
 
     #[test]
-    fn resolve_action_infers_wait_from_intent_only_call() {
+    fn resolve_action_infers_wait_from_intent_only_call() -> Result<()> {
         let params: BgInput = serde_json::from_value(json!({
             "intent": "Wait for library tests",
             "latest": true
-        }))
-        .expect("intent-only bg input should deserialize");
+        }))?;
 
-        assert_eq!(resolve_action(&params).expect("action should be inferred"), "wait");
+        assert_eq!(resolve_action(&params)?, "wait");
+        Ok(())
     }
 
     #[test]
-    fn resolve_action_reports_clear_error_when_missing_and_not_inferable() {
+    fn resolve_action_reports_clear_error_when_missing_and_not_inferable() -> Result<()> {
         let params: BgInput = serde_json::from_value(json!({
             "intent": "Background task",
-        }))
-        .expect("intent-only bg input should deserialize");
+        }))?;
 
         let err = resolve_action(&params).expect_err("action should be required");
         assert!(
             err.to_string().contains("Missing required bg action"),
             "err={err:?}"
         );
+        Ok(())
     }
 }

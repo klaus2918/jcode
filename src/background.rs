@@ -1429,12 +1429,13 @@ pub fn global() -> &'static BackgroundTaskManager {
 mod tests {
     use super::*;
     use crate::bus::BusEvent;
+    use anyhow::anyhow;
     use tempfile::tempdir;
     use tokio::time::{Duration, sleep};
 
     #[tokio::test]
-    async fn update_delivery_applies_to_running_task_completion() {
-        let tmp = tempdir().expect("tempdir");
+    async fn update_delivery_applies_to_running_task_completion() -> Result<()> {
+        let tmp = tempdir()?;
         let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
 
         let info = manager
@@ -1446,9 +1447,7 @@ mod tests {
                 false,
                 |output_path| async move {
                     sleep(Duration::from_millis(25)).await;
-                    tokio::fs::write(&output_path, "hello")
-                        .await
-                        .expect("write output");
+                    tokio::fs::write(&output_path, "hello").await?;
                     Ok(TaskResult::completed(Some(0)))
                 },
             )
@@ -1457,8 +1456,8 @@ mod tests {
         let updated = manager
             .update_delivery(&info.task_id, true, true)
             .await
-            .expect("update delivery should succeed")
-            .expect("task should exist");
+            .map_err(|err| anyhow!("update delivery should succeed: {err}"))?
+            .ok_or_else(|| anyhow!("task should exist"))?;
         assert!(updated.notify);
         assert!(updated.wake);
 
@@ -1466,22 +1465,22 @@ mod tests {
             let status = manager
                 .status(&info.task_id)
                 .await
-                .expect("status should exist");
+                .ok_or_else(|| anyhow!("status should exist"))?;
             if status.status != BackgroundTaskStatus::Running {
                 assert!(status.notify);
                 assert!(status.wake);
                 assert_eq!(status.status, BackgroundTaskStatus::Completed);
-                return;
+                return Ok(());
             }
             sleep(Duration::from_millis(10)).await;
         }
 
-        panic!("background task did not complete in time");
+        Err(anyhow!("background task did not complete in time"))
     }
 
     #[tokio::test]
-    async fn update_progress_persists_status_and_emits_bus_event() {
-        let tmp = tempdir().expect("tempdir");
+    async fn update_progress_persists_status_and_emits_bus_event() -> Result<()> {
+        let tmp = tempdir()?;
         let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
 
         let info = manager
@@ -1514,31 +1513,34 @@ mod tests {
         let updated = manager
             .update_progress(&info.task_id, progress.clone())
             .await
-            .expect("update progress should succeed")
-            .expect("task should exist");
+            .map_err(|err| anyhow!("update progress should succeed: {err}"))?
+            .ok_or_else(|| anyhow!("task should exist"))?;
 
         assert_eq!(updated.progress, Some(progress.clone().normalize()));
 
         for _ in 0..20 {
             let event = tokio::time::timeout(Duration::from_millis(200), bus_rx.recv())
                 .await
-                .expect("timed out waiting for progress event")
-                .expect("bus should stay open");
+                .map_err(|err| anyhow!("timed out waiting for progress event: {err}"))?
+                .map_err(|err| anyhow!("bus should stay open: {err}"))?;
             if let BusEvent::BackgroundTaskProgress(event) = event
                 && event.task_id == info.task_id
             {
                 assert_eq!(event.session_id, "session-progress");
                 assert_eq!(event.progress, progress.normalize());
-                return;
+                return Ok(());
             }
         }
 
-        panic!("progress event for task {} not received", info.task_id);
+        Err(anyhow!(
+            "progress event for task {} not received",
+            info.task_id
+        ))
     }
 
     #[tokio::test]
-    async fn wait_returns_when_task_finishes() {
-        let tmp = tempdir().expect("tempdir");
+    async fn wait_returns_when_task_finishes() -> Result<()> {
+        let tmp = tempdir()?;
         let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
 
         let info = manager
@@ -1550,9 +1552,7 @@ mod tests {
                 false,
                 |output_path| async move {
                     sleep(Duration::from_millis(25)).await;
-                    tokio::fs::write(&output_path, "done")
-                        .await
-                        .expect("write output");
+                    tokio::fs::write(&output_path, "done").await?;
                     Ok(TaskResult::completed(Some(0)))
                 },
             )
@@ -1561,16 +1561,17 @@ mod tests {
         let wait_result = manager
             .wait(&info.task_id, Duration::from_secs(2), true)
             .await
-            .expect("task should exist");
+            .ok_or_else(|| anyhow!("task should exist"))?;
 
         assert_eq!(wait_result.reason, BackgroundTaskWaitReason::Finished);
         assert_eq!(wait_result.task.status, BackgroundTaskStatus::Completed);
         assert_eq!(wait_result.task.exit_code, Some(0));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn wait_returns_on_progress_checkpoint() {
-        let tmp = tempdir().expect("tempdir");
+    async fn wait_returns_on_progress_checkpoint() -> Result<()> {
+        let tmp = tempdir()?;
         let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
 
         let info = manager
@@ -1605,21 +1606,24 @@ mod tests {
             manager
                 .update_progress(&info.task_id, progress.clone())
                 .await
-                .expect("progress update should succeed")
-                .expect("task should exist");
+                .map_err(|err| anyhow!("progress update should succeed: {err}"))?
+                .ok_or_else(|| anyhow!("task should exist"))?;
+            Result::<()>::Ok(())
         };
-        let (wait_result, _) = tokio::join!(waiter, updater);
-        let wait_result = wait_result.expect("task should exist");
+        let (wait_result, updater_result) = tokio::join!(waiter, updater);
+        updater_result?;
+        let wait_result = wait_result.ok_or_else(|| anyhow!("task should exist"))?;
 
         assert_eq!(wait_result.reason, BackgroundTaskWaitReason::Progress);
         assert_eq!(wait_result.task.status, BackgroundTaskStatus::Running);
         assert_eq!(wait_result.task.progress, Some(progress.normalize()));
         assert!(wait_result.progress_event.is_some());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn wait_returns_on_timeout() {
-        let tmp = tempdir().expect("tempdir");
+    async fn wait_returns_on_timeout() -> Result<()> {
+        let tmp = tempdir()?;
         let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
 
         let info = manager
@@ -1639,9 +1643,10 @@ mod tests {
         let wait_result = manager
             .wait(&info.task_id, Duration::from_millis(25), true)
             .await
-            .expect("task should exist");
+            .ok_or_else(|| anyhow!("task should exist"))?;
 
         assert_eq!(wait_result.reason, BackgroundTaskWaitReason::Timeout);
         assert_eq!(wait_result.task.status, BackgroundTaskStatus::Running);
+        Ok(())
     }
 }

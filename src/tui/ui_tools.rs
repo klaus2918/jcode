@@ -124,12 +124,11 @@ pub(super) fn concise_tool_error_summary(content: &str) -> Option<String> {
         if line.contains("Compile terminated by signal") {
             return Some(line.to_string());
         }
-        if let Some(rest) = line.strip_prefix("Exit code:") {
-            if let Ok(code) = rest.trim().parse::<i32>()
-                && code != 0
-            {
-                return Some(format!("exit {}", code));
-            }
+        if let Some(rest) = line.strip_prefix("Exit code:")
+            && let Ok(code) = rest.trim().parse::<i32>()
+            && code != 0
+        {
+            return Some(format!("exit {}", code));
         }
         if let Some(rest) = line.strip_prefix("--- Command finished with exit code:") {
             let code = rest.trim().trim_end_matches('-').trim();
