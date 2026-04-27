@@ -49,6 +49,7 @@ pub enum KeyInput {
     Backspace,
     SpawnPanel,
     HotkeyHelp,
+    RefreshSessions,
     SetPanelSize(PanelSizePreset),
     Character(String),
     Other,
@@ -222,7 +223,7 @@ impl Workspace {
 
         match self.mode {
             InputMode::Navigation => format!(
-                "Jcode Desktop · {mode}{zoom} · workspace {workspace} · panel {panel_size} · {focused} · h/l columns · j/k workspaces · Ctrl+1-4 panel size · Ctrl+; new · Ctrl+? help · z zoom · i insert · Esc quit"
+                "Jcode Desktop · {mode}{zoom} · workspace {workspace} · panel {panel_size} · {focused} · h/l columns · j/k workspaces · Ctrl+1-4 panel size · Ctrl+R refresh · Ctrl+; new · Ctrl+? help · z zoom · i insert · Esc quit"
             ),
             InputMode::Insert => {
                 format!(
@@ -237,6 +238,28 @@ impl Workspace {
             InputMode::Navigation => self.handle_navigation_key(key),
             InputMode::Insert => self.handle_insert_key(key),
         }
+    }
+
+    pub fn replace_session_cards(&mut self, cards: Vec<SessionCard>) {
+        let previous_mode = self.mode;
+        let previous_panel_size = self.panel_size;
+        let previous_session_id = self
+            .focused_surface()
+            .and_then(|surface| surface.session_id.clone());
+
+        let mut replacement = Self::from_session_cards(cards);
+        replacement.mode = previous_mode;
+        replacement.panel_size = previous_panel_size;
+        if let Some(previous_session_id) = previous_session_id
+            && let Some(surface) = replacement
+                .surfaces
+                .iter()
+                .find(|surface| surface.session_id.as_deref() == Some(previous_session_id.as_str()))
+        {
+            replacement.focused_id = surface.id;
+        }
+
+        *self = replacement;
     }
 
     pub fn focused_surface(&self) -> Option<&Surface> {
@@ -259,6 +282,7 @@ impl Workspace {
                 self.open_hotkey_help();
                 return KeyOutcome::Redraw;
             }
+            KeyInput::RefreshSessions => return KeyOutcome::Redraw,
             KeyInput::SetPanelSize(size) => {
                 self.panel_size = size;
                 return KeyOutcome::Redraw;
@@ -314,6 +338,7 @@ impl Workspace {
                 self.open_hotkey_help();
                 KeyOutcome::Redraw
             }
+            KeyInput::RefreshSessions => KeyOutcome::Redraw,
             KeyInput::SetPanelSize(size) => {
                 self.panel_size = size;
                 KeyOutcome::Redraw
@@ -522,6 +547,7 @@ impl Workspace {
             "j k focus workspaces".to_string(),
             "ctrl 1 2 3 4 panel width".to_string(),
             "ctrl semicolon new panel".to_string(),
+            "ctrl r refresh sessions".to_string(),
             "ctrl slash help".to_string(),
         ];
         self.surfaces.push(help);
@@ -776,6 +802,36 @@ mod tests {
         assert_eq!(workspace.preferred_panel_screen_fraction(), 1.00);
     }
 
+    #[test]
+    fn session_cards_create_real_session_surfaces() {
+        let workspace = Workspace::from_session_cards(vec![session_card("a", "alpha")]);
+
+        assert_eq!(workspace.surfaces.len(), 1);
+        assert_eq!(workspace.surfaces[0].title, "alpha");
+        assert_eq!(workspace.surfaces[0].session_id.as_deref(), Some("a"));
+        assert_eq!(workspace.surfaces[0].body_lines.len(), 2);
+    }
+
+    #[test]
+    fn replacing_session_cards_preserves_focus_when_possible() {
+        let mut workspace = Workspace::from_session_cards(vec![
+            session_card("a", "alpha"),
+            session_card("b", "bravo"),
+        ]);
+        workspace.focused_id = 2;
+        workspace.handle_key(KeyInput::SetPanelSize(PanelSizePreset::Half));
+
+        workspace.replace_session_cards(vec![session_card("b", "bravo refreshed")]);
+
+        assert_eq!(
+            workspace
+                .focused_surface()
+                .map(|surface| surface.title.as_str()),
+            Some("bravo refreshed")
+        );
+        assert_eq!(workspace.preferred_panel_screen_fraction(), 0.50);
+    }
+
     fn assert_unique_positions(workspace: &Workspace) {
         let positions: HashSet<(i32, i32)> = workspace
             .surfaces
@@ -783,5 +839,14 @@ mod tests {
             .map(|surface| (surface.lane, surface.column))
             .collect();
         assert_eq!(positions.len(), workspace.surfaces.len());
+    }
+
+    fn session_card(id: &str, title: &str) -> SessionCard {
+        SessionCard {
+            session_id: id.to_string(),
+            title: title.to_string(),
+            subtitle: "active · model".to_string(),
+            detail: "1 msgs · workspace".to_string(),
+        }
     }
 }

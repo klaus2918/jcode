@@ -124,13 +124,7 @@ async fn run() -> Result<()> {
             .context("failed to create desktop window")?,
     ));
 
-    let session_cards = match session_data::load_recent_session_cards() {
-        Ok(cards) => cards,
-        Err(error) => {
-            eprintln!("jcode-desktop: failed to load session metadata: {error:#}");
-            Vec::new()
-        }
-    };
+    let session_cards = load_session_cards_for_desktop();
     let mut workspace = Workspace::from_session_cards(session_cards);
     window.set_title(&workspace.status_title());
     let mut canvas = Canvas::new(window).await?;
@@ -156,7 +150,15 @@ async fn run() -> Result<()> {
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed =>
                 {
-                    match workspace.handle_key(to_key_input(&event.logical_key, modifiers)) {
+                    let key_input = to_key_input(&event.logical_key, modifiers);
+                    if key_input == KeyInput::RefreshSessions {
+                        workspace.replace_session_cards(load_session_cards_for_desktop());
+                        window.set_title(&workspace.status_title());
+                        window.request_redraw();
+                        return;
+                    }
+
+                    match workspace.handle_key(key_input) {
                         KeyOutcome::Exit => target.exit(),
                         KeyOutcome::Redraw => {
                             window.set_title(&workspace.status_title());
@@ -198,6 +200,16 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+fn load_session_cards_for_desktop() -> Vec<workspace::SessionCard> {
+    match session_data::load_recent_session_cards() {
+        Ok(cards) => cards,
+        Err(error) => {
+            eprintln!("jcode-desktop: failed to load session metadata: {error:#}");
+            Vec::new()
+        }
+    }
+}
+
 fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
     match key {
         Key::Named(NamedKey::Escape) => KeyInput::Escape,
@@ -206,6 +218,9 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         Key::Character(text) if modifiers.control_key() && text == ";" => KeyInput::SpawnPanel,
         Key::Character(text) if modifiers.control_key() && (text == "?" || text == "/") => {
             KeyInput::HotkeyHelp
+        }
+        Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("r") => {
+            KeyInput::RefreshSessions
         }
         Key::Character(text) if modifiers.control_key() && text == "1" => {
             KeyInput::SetPanelSize(PanelSizePreset::Quarter)
