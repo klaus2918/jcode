@@ -176,9 +176,9 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
     let system_msg = app
         .display_messages()
         .iter()
-        .find(|m| m.role == "system" && m.content == "Reload complete — continuing.")
+        .find(|m| m.role == "system" && m.content.starts_with("Reload complete — continuing"))
         .expect("should have a short reload continuation message");
-    assert_eq!(system_msg.content, "Reload complete — continuing.");
+    assert!(system_msg.content.starts_with("Reload complete — continuing"));
 
     assert!(app.queued_messages().is_empty());
     assert_eq!(app.hidden_queued_system_messages.len(), 1);
@@ -186,7 +186,7 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
     assert!(
         app.display_messages()
             .iter()
-            .any(|m| m.role == "system" && m.content == "Reload complete — continuing.")
+            .any(|m| m.role == "system" && m.content.starts_with("Reload complete — continuing"))
     );
 }
 
@@ -309,6 +309,67 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
 }
 
 #[test]
+fn test_handle_server_event_history_after_reload_reports_no_continuation_needed() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    app.pending_reload_reconnect_status = Some(PendingReloadReconnectStatus::AwaitingHistory {
+        session_id: Some("ses_reload_done".to_string()),
+    });
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::History {
+            id: 1,
+            session_id: "ses_reload_done".to_string(),
+            messages: vec![crate::protocol::HistoryMessage {
+                role: "assistant".to_string(),
+                content: "Finished before reload".to_string(),
+                tool_calls: None,
+                tool_data: None,
+            }],
+            images: vec![],
+            provider_name: Some("claude".to_string()),
+            provider_model: Some("claude-sonnet-4-20250514".to_string()),
+            subagent_model: None,
+            autoreview_enabled: None,
+            autojudge_enabled: None,
+            available_models: vec![],
+            available_model_routes: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            total_tokens: None,
+            all_sessions: vec![],
+            client_count: None,
+            is_canary: None,
+            server_version: None,
+            server_name: None,
+            server_icon: None,
+            server_has_update: None,
+            was_interrupted: Some(false),
+            reload_recovery: None,
+            connection_type: Some("websocket".to_string()),
+            status_detail: None,
+            upstream_provider: None,
+            reasoning_effort: None,
+            service_tier: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
+        },
+        &mut remote,
+    );
+
+    assert!(app.hidden_queued_system_messages.is_empty());
+    assert!(app.pending_reload_reconnect_status.is_none());
+    assert!(app.display_messages().iter().any(|m| {
+        m.role == "system"
+            && m.content.contains("no continuation needed")
+            && m.content.contains("previous response had already finished")
+    }));
+}
+
+#[test]
 fn test_finalize_reload_reconnect_marker_only_does_not_queue_selfdev_continuation() {
     let mut app = create_test_app();
     app.reload_info
@@ -329,7 +390,7 @@ fn test_finalize_reload_reconnect_marker_only_does_not_queue_selfdev_continuatio
     assert!(
         !app.display_messages()
             .iter()
-            .any(|m| m.role == "system" && m.content == "Reload complete — continuing.")
+            .any(|m| m.role == "system" && m.content.starts_with("Reload complete — continuing"))
     );
 }
 

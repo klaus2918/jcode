@@ -157,7 +157,7 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
     assert!(
         app.display_messages()
             .iter()
-            .any(|m| m.role == "system" && m.content == "Reload complete — continuing.")
+            .any(|m| m.role == "system" && m.content.starts_with("Reload complete — continuing"))
     );
 }
 

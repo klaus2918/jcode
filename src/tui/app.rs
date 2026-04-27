@@ -144,6 +144,11 @@ pub(super) struct RemoteResumeActivity {
     pub current_tool_name: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PendingReloadReconnectStatus {
+    AwaitingHistory { session_id: Option<String> },
+}
+
 const MEMORY_INJECTION_SUPPRESSION_SECS: u64 = 90;
 
 /// Current processing status
@@ -387,6 +392,8 @@ pub struct App {
     stream_message_ended: bool,
     // Server-reported processing snapshot captured from resume/history before live events arrive.
     remote_resume_activity: Option<RemoteResumeActivity>,
+    // Reload reconnect is waiting for server history before deciding whether to continue.
+    pending_reload_reconnect_status: Option<PendingReloadReconnectStatus>,
     // Accurate TPS tracking: only counts actual token streaming time, not tool execution
     /// Set when first TextDelta arrives in a streaming response
     streaming_tps_start: Option<Instant>,

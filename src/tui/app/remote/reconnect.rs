@@ -3,6 +3,7 @@ use super::{
     process_remote_followups,
 };
 use crate::tool::selfdev::ReloadContext;
+use crate::tui::app::PendingReloadReconnectStatus;
 use crate::tui::backend::{RemoteConnection, RemoteDisconnectReason};
 use anyhow::Result;
 use crossterm::event::EventStream;
@@ -656,6 +657,13 @@ pub(in crate::tui::app) async fn handle_post_connect<B: ratatui::backend::Backen
     );
 
     if reload_reconnect_needs_server_history {
+        app.pending_reload_reconnect_status = Some(PendingReloadReconnectStatus::AwaitingHistory {
+            session_id: session_to_resume.map(str::to_string),
+        });
+        app.push_display_message(DisplayMessage::system(
+            "Reload complete — checking restored history to decide whether continuation is needed."
+                .to_string(),
+        ));
         ReloadContext::log_recovery_outcome(
             "tui_reconnect",
             session_to_resume.unwrap_or("unknown"),
@@ -772,6 +780,7 @@ pub(in crate::tui::app) fn finalize_reload_reconnect(
         hints.has_client_reload_marker
     ));
     if should_queue_reload_continuation {
+        app.pending_reload_reconnect_status = None;
         let reload_ctx = session_to_resume.and_then(|sid| {
             let result = ReloadContext::load_for_session(sid);
             crate::logging::info(&format!(
@@ -820,7 +829,9 @@ pub(in crate::tui::app) fn finalize_reload_reconnect(
                 "resumed",
                 "queued initiator continuation after reconnect",
             );
-            app.push_display_message(DisplayMessage::system("Reload complete — continuing."));
+            app.push_display_message(DisplayMessage::system(
+                "Reload complete — continuing because reload recovery was pending.",
+            ));
             app.hidden_queued_system_messages
                 .push(directive.continuation_message);
         } else {
@@ -836,6 +847,7 @@ pub(in crate::tui::app) fn finalize_reload_reconnect(
         }
         app.reload_info.clear();
     } else if hints.has_client_reload_marker {
+        app.pending_reload_reconnect_status = None;
         ReloadContext::log_recovery_outcome(
             "tui_reconnect",
             session_to_resume.unwrap_or("unknown"),
@@ -845,6 +857,10 @@ pub(in crate::tui::app) fn finalize_reload_reconnect(
         if !reconnected_after_disconnect && !app.reload_info.is_empty() {
             app.push_display_message(DisplayMessage::system(app.reload_info.join("\n")));
         }
+        app.push_display_message(DisplayMessage::system(
+            "Reload complete — no continuation queued because no recovery context was pending."
+                .to_string(),
+        ));
         app.reload_info.clear();
     }
 }

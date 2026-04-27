@@ -702,21 +702,58 @@ pub(in crate::tui::app) fn handle_server_event(
 
             app.maybe_show_catchup_after_history(&session_id);
 
+            let should_consume_pending_reload_status = match app
+                .pending_reload_reconnect_status
+                .as_ref()
+            {
+                Some(PendingReloadReconnectStatus::AwaitingHistory {
+                    session_id: Some(expected),
+                }) => expected == &session_id,
+                Some(PendingReloadReconnectStatus::AwaitingHistory { session_id: None }) => true,
+                _ => false,
+            };
+            let pending_reload_reconnect_status = if should_consume_pending_reload_status {
+                app.pending_reload_reconnect_status.take()
+            } else {
+                None
+            };
+
             let reload_recovery = reload_recovery.or_else(|| {
                 ReloadContext::recovery_directive(None, was_interrupted == Some(true), "", None)
             });
             if let Some(reload_recovery) = reload_recovery
                 && !app.display_messages.is_empty()
             {
-                crate::logging::info("History payload requested reload recovery continuation");
+                crate::logging::info(&format!(
+                    "History payload requested reload recovery continuation: session={} was_interrupted={:?}",
+                    session_id, was_interrupted
+                ));
                 if let Some(notice) = reload_recovery.reconnect_notice {
                     app.reload_info.push(notice);
                 }
                 app.push_display_message(DisplayMessage::system(
-                    "Reload complete — continuing.".to_string(),
+                    "Reload complete — continuing because a recovery directive was pending."
+                        .to_string(),
                 ));
                 app.hidden_queued_system_messages
                     .push(reload_recovery.continuation_message);
+            } else if pending_reload_reconnect_status.is_some() {
+                let message = match was_interrupted {
+                    Some(false) => {
+                        "Reload complete — no continuation needed because the previous response had already finished."
+                    }
+                    Some(true) => {
+                        "Reload complete — no continuation queued because no recovery directive was available for the interrupted turn."
+                    }
+                    None => {
+                        "Reload complete — no continuation needed because the server did not report an interrupted turn."
+                    }
+                };
+                crate::logging::info(&format!(
+                    "History payload completed reload reconnect without continuation: session={} was_interrupted={:?}",
+                    session_id, was_interrupted
+                ));
+                app.push_display_message(DisplayMessage::system(message.to_string()));
             }
 
             false
