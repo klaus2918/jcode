@@ -37,6 +37,7 @@ const WORKSPACE_NUMBER_DIGIT_HEIGHT: f32 = 14.0;
 const WORKSPACE_NUMBER_DIGIT_GAP: f32 = 4.0;
 const WORKSPACE_NUMBER_STROKE: f32 = 2.0;
 const VIEWPORT_ANIMATION_DURATION: Duration = Duration::from_millis(150);
+const FOCUS_PULSE_DURATION: Duration = Duration::from_millis(180);
 const VIEWPORT_ANIMATION_EPSILON: f32 = 0.5;
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -214,6 +215,7 @@ struct Canvas<'window> {
     render_pipeline: wgpu::RenderPipeline,
     size: PhysicalSize<u32>,
     viewport_animation: AnimatedViewport,
+    focus_pulse: FocusPulse,
     needs_initial_frame: bool,
 }
 
@@ -326,6 +328,7 @@ impl<'window> Canvas<'window> {
             render_pipeline,
             size,
             viewport_animation: AnimatedViewport::default(),
+            focus_pulse: FocusPulse::default(),
             needs_initial_frame: true,
         })
     }
@@ -356,10 +359,13 @@ impl<'window> Canvas<'window> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("jcode-desktop-render-workspace"),
             });
+        let now = Instant::now();
         let target_layout = workspace_render_layout(workspace, self.size, monitor_size);
-        let render_layout = self.viewport_animation.frame(target_layout, Instant::now());
-        let animation_active = self.viewport_animation.is_animating();
-        let vertices = build_vertices(workspace, self.size, render_layout);
+        let render_layout = self.viewport_animation.frame(target_layout, now);
+        let focus_pulse = self.focus_pulse.frame(workspace.focused_id, now);
+        let animation_active =
+            self.viewport_animation.is_animating() || self.focus_pulse.is_animating();
+        let vertices = build_vertices(workspace, self.size, render_layout, focus_pulse);
         let vertex_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -524,6 +530,44 @@ impl AnimatedViewport {
     }
 }
 
+#[derive(Default)]
+struct FocusPulse {
+    last_focused_id: Option<u64>,
+    started_at: Option<Instant>,
+}
+
+impl FocusPulse {
+    fn frame(&mut self, focused_id: u64, now: Instant) -> f32 {
+        match self.last_focused_id {
+            None => {
+                self.last_focused_id = Some(focused_id);
+                return 0.0;
+            }
+            Some(last_focused_id) if last_focused_id != focused_id => {
+                self.last_focused_id = Some(focused_id);
+                self.started_at = Some(now);
+            }
+            Some(_) => {}
+        }
+
+        let Some(started_at) = self.started_at else {
+            return 0.0;
+        };
+        let progress =
+            ((now - started_at).as_secs_f32() / FOCUS_PULSE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+        if progress >= 1.0 {
+            self.started_at = None;
+            return 0.0;
+        }
+
+        1.0 - ease_out_cubic(progress)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.started_at.is_some()
+    }
+}
+
 fn has_layout_target_changed(previous: f32, next: f32) -> bool {
     (previous - next).abs() > VIEWPORT_ANIMATION_EPSILON
 }
@@ -540,6 +584,7 @@ fn build_vertices(
     workspace: &Workspace,
     size: PhysicalSize<u32>,
     render_layout: WorkspaceRenderLayout,
+    focus_pulse: f32,
 ) -> Vec<Vertex> {
     let width = size.width as f32;
     let height = size.height as f32;
@@ -598,7 +643,14 @@ fn build_vertices(
                 width: (width - OUTER_PADDING * 2.0).max(1.0),
                 height: (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0),
             };
-            push_surface(&mut vertices, rect, surface.color_index, true, size);
+            push_surface(
+                &mut vertices,
+                rect,
+                surface.color_index,
+                true,
+                focus_pulse,
+                size,
+            );
         }
         return vertices;
     }
@@ -622,11 +674,14 @@ fn build_vertices(
             width: column_width,
             height: workspace_height,
         };
+        let focused = workspace.is_focused(surface.id);
+        let surface_pulse = if focused { focus_pulse } else { 0.0 };
         push_surface(
             &mut vertices,
             rect,
             surface.color_index,
-            workspace.is_focused(surface.id),
+            focused,
+            surface_pulse,
             size,
         );
     }
@@ -1060,6 +1115,7 @@ fn push_surface(
     rect: Rect,
     _color_index: usize,
     focused: bool,
+    focus_pulse: f32,
     size: PhysicalSize<u32>,
 ) {
     let border = if focused {
@@ -1072,8 +1128,24 @@ fn push_surface(
         FOCUSED_BORDER_WIDTH
     } else {
         UNFOCUSED_BORDER_WIDTH
-    };
+    } + focus_pulse * 2.5;
     push_panel_outline(vertices, rect, stroke_width, border, size);
+
+    if focus_pulse > 0.0 {
+        let pulse_rect = inset_rect(rect, -3.0 * focus_pulse);
+        push_panel_outline(
+            vertices,
+            pulse_rect,
+            1.0,
+            with_alpha(FOCUS_RING_COLOR, 0.32 * focus_pulse),
+            size,
+        );
+    }
+}
+
+fn with_alpha(mut color: [f32; 4], alpha: f32) -> [f32; 4] {
+    color[3] = alpha.clamp(0.0, 1.0);
+    color
 }
 
 fn push_panel_outline(
@@ -1469,5 +1541,26 @@ mod tests {
         assert_eq!(final_frame.scroll_offset, 600.0);
         assert_eq!(final_frame.vertical_scroll_offset, 800.0);
         assert!(!animation.is_animating());
+    }
+
+    #[test]
+    fn focus_pulse_runs_when_focused_surface_changes() {
+        let mut pulse = FocusPulse::default();
+        let now = Instant::now();
+
+        assert_eq!(pulse.frame(1, now), 0.0);
+        assert!(!pulse.is_animating());
+
+        let start = pulse.frame(2, now);
+        assert!(start > 0.0);
+        assert!(pulse.is_animating());
+
+        let middle = pulse.frame(2, now + FOCUS_PULSE_DURATION / 2);
+        assert!(middle > 0.0);
+        assert!(middle < start);
+
+        let end = pulse.frame(2, now + FOCUS_PULSE_DURATION);
+        assert_eq!(end, 0.0);
+        assert!(!pulse.is_animating());
     }
 }
