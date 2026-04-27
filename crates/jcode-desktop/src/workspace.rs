@@ -12,6 +12,8 @@ pub enum Direction {
     Right,
 }
 
+const EMPTY_WORKSPACE_MARGIN: i32 = 2;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PanelSizePreset {
     Quarter,
@@ -68,6 +70,12 @@ pub struct Surface {
     pub lane: i32,
     pub column: i32,
     pub color_index: usize,
+}
+
+impl Surface {
+    fn is_placeholder_workspace(&self) -> bool {
+        self.title == format!("workspace {}", self.lane)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -307,10 +315,34 @@ impl Workspace {
             Direction::Down => current_lane + 1,
             Direction::Left | Direction::Right => return false,
         };
+        if !self.is_lane_navigable(target_lane) {
+            return false;
+        }
         let target_id = self.ensure_workspace_surface(target_lane, current_column);
         self.focused_id = target_id;
         self.zoomed = false;
         true
+    }
+
+    fn is_lane_navigable(&self, lane: i32) -> bool {
+        let (min_occupied_lane, max_occupied_lane) = self.occupied_lane_bounds();
+        lane >= min_occupied_lane - EMPTY_WORKSPACE_MARGIN
+            && lane <= max_occupied_lane + EMPTY_WORKSPACE_MARGIN
+    }
+
+    fn occupied_lane_bounds(&self) -> (i32, i32) {
+        self.surfaces
+            .iter()
+            .filter(|surface| !surface.is_placeholder_workspace())
+            .map(|surface| surface.lane)
+            .fold(None::<(i32, i32)>, |bounds, lane| match bounds {
+                Some((min_lane, max_lane)) => Some((min_lane.min(lane), max_lane.max(lane))),
+                None => Some((lane, lane)),
+            })
+            .unwrap_or_else(|| {
+                let current = self.current_workspace();
+                (current, current)
+            })
     }
 
     fn column_neighbor_id(&self, direction: Direction) -> Option<u64> {
@@ -534,6 +566,40 @@ mod tests {
         assert_eq!(workspace.current_workspace(), 2);
         assert!(workspace.surfaces.iter().any(|surface| surface.lane == 2));
         assert_unique_positions(&workspace);
+    }
+
+    #[test]
+    fn workspace_navigation_stops_two_empty_lanes_beyond_occupied_lanes() {
+        let mut workspace = Workspace::fake();
+        assert_eq!(workspace.occupied_lane_bounds(), (-1, 1));
+
+        for expected_lane in [1, 2, 3] {
+            assert_eq!(
+                workspace.handle_key(KeyInput::Character("j".to_string())),
+                KeyOutcome::Redraw
+            );
+            assert_eq!(workspace.current_workspace(), expected_lane);
+        }
+        assert_eq!(
+            workspace.handle_key(KeyInput::Character("j".to_string())),
+            KeyOutcome::None
+        );
+        assert_eq!(workspace.current_workspace(), 3);
+        assert!(!workspace.surfaces.iter().any(|surface| surface.lane == 4));
+
+        for expected_lane in [2, 1, 0, -1, -2, -3] {
+            assert_eq!(
+                workspace.handle_key(KeyInput::Character("k".to_string())),
+                KeyOutcome::Redraw
+            );
+            assert_eq!(workspace.current_workspace(), expected_lane);
+        }
+        assert_eq!(
+            workspace.handle_key(KeyInput::Character("k".to_string())),
+            KeyOutcome::None
+        );
+        assert_eq!(workspace.current_workspace(), -3);
+        assert!(!workspace.surfaces.iter().any(|surface| surface.lane == -4));
     }
 
     #[test]
