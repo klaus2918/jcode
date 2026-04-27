@@ -596,7 +596,7 @@ impl Default for ProviderConfig {
         Self {
             default_model: None,
             default_provider: None,
-            openai_reasoning_effort: Some("high".to_string()),
+            openai_reasoning_effort: Some("low".to_string()),
             openai_transport: None,
             openai_service_tier: None,
             openai_native_compaction_mode: "auto".to_string(),
