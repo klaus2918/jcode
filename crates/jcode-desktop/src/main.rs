@@ -28,23 +28,14 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-const SURFACE_COLORS: [[f32; 4]; 8] = [
-    [0.875, 0.925, 1.000, 1.0],
-    [0.900, 0.965, 0.925, 1.0],
-    [0.980, 0.925, 0.985, 1.0],
-    [1.000, 0.950, 0.875, 1.0],
-    [0.930, 0.930, 0.980, 1.0],
-    [0.900, 0.965, 0.965, 1.0],
-    [0.985, 0.930, 0.930, 1.0],
-    [0.930, 0.970, 0.900, 1.0],
-];
-
-const BACKGROUND_TOP_LEFT: [f32; 4] = [0.933, 0.957, 1.000, 1.0];
-const BACKGROUND_TOP_RIGHT: [f32; 4] = [0.969, 0.949, 1.000, 1.0];
-const BACKGROUND_BOTTOM_RIGHT: [f32; 4] = [0.953, 0.980, 0.969, 1.0];
-const BACKGROUND_BOTTOM_LEFT: [f32; 4] = [0.961, 0.973, 0.984, 1.0];
+const BACKGROUND_TOP_LEFT: [f32; 4] = [0.902, 0.937, 1.000, 1.0];
+const BACKGROUND_TOP_RIGHT: [f32; 4] = [0.957, 0.925, 1.000, 1.0];
+const BACKGROUND_BOTTOM_RIGHT: [f32; 4] = [0.918, 0.984, 0.953, 1.0];
+const BACKGROUND_BOTTOM_LEFT: [f32; 4] = [0.953, 0.965, 0.984, 1.0];
+const GLASS_PANEL_FILL: [f32; 4] = [1.000, 1.000, 1.000, 0.48];
+const GLASS_PANEL_HEADER: [f32; 4] = [1.000, 1.000, 1.000, 0.30];
 const FOCUS_RING_COLOR: [f32; 4] = [0.420, 0.447, 0.502, 1.0];
-const UNFOCUSED_BORDER_COLOR: [f32; 4] = [0.730, 0.760, 0.815, 0.72];
+const UNFOCUSED_BORDER_COLOR: [f32; 4] = [0.730, 0.760, 0.815, 0.56];
 const NAV_STATUS_COLOR: [f32; 4] = [0.184, 0.204, 0.251, 1.0];
 const INSERT_STATUS_COLOR: [f32; 4] = [0.310, 0.435, 0.376, 1.0];
 
@@ -460,12 +451,10 @@ fn build_vertices(workspace: &Workspace, size: PhysicalSize<u32>) -> Vec<Vertex>
 fn push_surface(
     vertices: &mut Vec<Vertex>,
     rect: Rect,
-    color_index: usize,
+    _color_index: usize,
     focused: bool,
     size: PhysicalSize<u32>,
 ) {
-    let fill = SURFACE_COLORS[color_index % SURFACE_COLORS.len()];
-    let header = darken(fill, 0.86);
     let border = if focused {
         FOCUS_RING_COLOR
     } else {
@@ -479,7 +468,7 @@ fn push_surface(
         UNFOCUSED_BORDER_WIDTH
     };
     let inner = inset_rect(rect, inset);
-    push_rect(vertices, inner, fill, size);
+    push_rect(vertices, inner, GLASS_PANEL_FILL, size);
     push_rect(
         vertices,
         Rect {
@@ -488,7 +477,7 @@ fn push_surface(
             width: inner.width,
             height: HEADER_HEIGHT.min(inner.height),
         },
-        header,
+        GLASS_PANEL_HEADER,
         size,
     );
 }
@@ -500,15 +489,6 @@ fn inset_rect(rect: Rect, amount: f32) -> Rect {
         width: (rect.width - amount * 2.0).max(1.0),
         height: (rect.height - amount * 2.0).max(1.0),
     }
-}
-
-fn darken(color: [f32; 4], factor: f32) -> [f32; 4] {
-    [
-        color[0] * factor,
-        color[1] * factor,
-        color[2] * factor,
-        color[3],
-    ]
 }
 
 fn push_rect(vertices: &mut Vec<Vertex>, rect: Rect, color: [f32; 4], size: PhysicalSize<u32>) {
