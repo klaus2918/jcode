@@ -894,13 +894,26 @@ fn handle_back_command(app: &mut App, trimmed: &str) -> bool {
 }
 
 fn git_command_repo_dir(app: &App) -> Result<PathBuf, String> {
-    if app.is_remote {
-        return Err("`/git` is currently only available in a local jcode TUI session.".to_string());
+    if let Some(path) = active_working_dir(app) {
+        if path.is_dir() {
+            return Ok(path);
+        }
+
+        return Err(format!(
+            "Unable to run `/git`: session working directory `{}` is not accessible from this jcode client.",
+            path.display()
+        ));
     }
 
-    active_working_dir(app)
-        .or_else(|| std::env::current_dir().ok())
-        .ok_or_else(|| "Unable to determine a working directory for `/git`.".to_string())
+    if app.is_remote {
+        return Err(
+            "Unable to run `/git`: the remote session does not have a working directory."
+                .to_string(),
+        );
+    }
+
+    std::env::current_dir()
+        .map_err(|_| "Unable to determine a working directory for `/git`.".to_string())
 }
 
 fn run_git_command(repo_dir: &std::path::Path, args: &[&str]) -> Result<String, String> {

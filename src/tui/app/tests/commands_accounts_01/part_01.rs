@@ -475,6 +475,30 @@ fn test_git_command_shows_repo_status_for_working_directory() {
 }
 
 #[test]
+fn test_git_command_works_in_remote_mode_with_accessible_working_directory() {
+    let repo = create_real_git_repo_fixture();
+    std::fs::write(repo.path().join("tracked.txt"), "after\n").expect("update tracked file");
+
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_session_id = Some("ses_remote_git".to_string());
+    app.session.working_dir = Some(repo.path().display().to_string());
+    app.input = "/git".to_string();
+    app.submit_input();
+
+    let msg = app.display_messages().last().expect("missing git response");
+    assert_eq!(msg.role, "system");
+    assert!(msg.content.contains("`/git`"));
+    assert!(msg.content.contains("```text"));
+    assert!(msg.content.contains("## "));
+    assert!(msg.content.contains("tracked.txt"));
+    assert!(
+        !msg.content
+            .contains("currently only available in a local jcode TUI session")
+    );
+}
+
+#[test]
 fn test_observe_command_enables_transient_page_without_persisting() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
