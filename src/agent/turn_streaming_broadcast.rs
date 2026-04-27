@@ -331,6 +331,21 @@ impl Agent {
                         });
                         sdk_tool_results.insert(tool_use_id, (content, is_error));
                     }
+                    StreamEvent::GeneratedImage {
+                        id,
+                        path,
+                        metadata_path,
+                        output_format,
+                        revised_prompt,
+                    } => {
+                        let _ = event_tx.send(ServerEvent::GeneratedImage {
+                            id,
+                            path,
+                            metadata_path,
+                            output_format,
+                            revised_prompt,
+                        });
+                    }
                     StreamEvent::TokenUsage {
                         input_tokens,
                         output_tokens,

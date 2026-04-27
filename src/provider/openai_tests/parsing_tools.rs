@@ -216,6 +216,80 @@ fn test_parse_openai_response_output_item_done_emits_native_compaction() {
 }
 
 #[test]
+fn test_parse_openai_response_image_generation_saves_metadata_and_emits_event() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let original_dir = std::env::current_dir().expect("current dir");
+    let temp = tempfile::Builder::new()
+        .prefix("jcode-openai-image-test-")
+        .tempdir()
+        .expect("tempdir");
+    std::env::set_current_dir(temp.path()).expect("set temp cwd");
+
+    let mut saw_text_delta = false;
+    let mut streaming_tool_calls = HashMap::new();
+    let mut completed_tool_items = HashSet::new();
+    let mut pending = VecDeque::new();
+    let data = r#"{
+        "type":"response.output_item.done",
+        "item":{
+            "id":"ig_test_123",
+            "type":"image_generation_call",
+            "status":"completed",
+            "output_format":"png",
+            "revised_prompt":"A polished robot painter prompt",
+            "result":"AQID"
+        }
+    }"#;
+
+    let event = parse_openai_response_event(
+        data,
+        &mut saw_text_delta,
+        &mut streaming_tool_calls,
+        &mut completed_tool_items,
+        &mut pending,
+    )
+    .expect("expected generated image event");
+
+    let (image_path, metadata_path) = match event {
+        StreamEvent::GeneratedImage {
+            id,
+            path,
+            metadata_path,
+            output_format,
+            revised_prompt,
+        } => {
+            assert_eq!(id, "ig_test_123");
+            assert_eq!(output_format, "png");
+            assert_eq!(revised_prompt.as_deref(), Some("A polished robot painter prompt"));
+            (path, metadata_path.expect("metadata path"))
+        }
+        other => panic!("expected GeneratedImage, got {:?}", other),
+    };
+
+    assert!(std::path::Path::new(&image_path).exists());
+    assert!(std::path::Path::new(&metadata_path).exists());
+    match pending.pop_front() {
+        Some(StreamEvent::TextDelta(markdown)) => {
+            assert!(markdown.contains("![Generated image]"));
+            assert!(markdown.contains("Metadata saved"));
+        }
+        other => panic!("expected generated image markdown TextDelta, got {:?}", other),
+    }
+
+    let metadata: Value = serde_json::from_slice(
+        &std::fs::read(&metadata_path).expect("read generated image metadata"),
+    )
+    .expect("metadata json");
+    assert_eq!(metadata["schema_version"], serde_json::json!(1));
+    assert_eq!(metadata["provider"], serde_json::json!("openai"));
+    assert_eq!(metadata["native_tool"], serde_json::json!("image_generation"));
+    assert_eq!(metadata["revised_prompt"], serde_json::json!("A polished robot painter prompt"));
+    assert!(metadata["response_item"].get("result").is_none());
+
+    std::env::set_current_dir(original_dir).expect("restore cwd");
+}
+
+#[test]
 fn test_build_tools_sets_strict_true() {
     let defs = vec![ToolDefinition {
         name: "bash".to_string(),

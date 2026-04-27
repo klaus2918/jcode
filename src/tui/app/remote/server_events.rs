@@ -21,6 +21,7 @@ pub(in crate::tui::app) fn handle_server_event(
             | ServerEvent::ToolInput { .. }
             | ServerEvent::ToolExec { .. }
             | ServerEvent::ToolDone { .. }
+            | ServerEvent::GeneratedImage { .. }
             | ServerEvent::BatchProgress { .. }
             | ServerEvent::TokenUsage { .. }
             | ServerEvent::ConnectionType { .. }
@@ -153,6 +154,44 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.batch_progress = None;
             }
             app.streaming_tool_calls.clear();
+            app.status = ProcessingStatus::Streaming;
+            true
+        }
+        ServerEvent::GeneratedImage {
+            id,
+            path,
+            metadata_path,
+            output_format,
+            revised_prompt,
+        } => {
+            app.pause_streaming_tps(false);
+            app.commit_pending_streaming_assistant_message();
+            let input = crate::message::generated_image_tool_input(
+                &path,
+                metadata_path.as_deref(),
+                &output_format,
+                revised_prompt.as_deref(),
+            );
+            let tool_call = ToolCall {
+                id,
+                name: crate::message::GENERATED_IMAGE_TOOL_NAME.to_string(),
+                input,
+                intent: Some("OpenAI native image generation".to_string()),
+            };
+            let summary = crate::message::generated_image_summary(
+                &path,
+                metadata_path.as_deref(),
+                &output_format,
+                revised_prompt.as_deref(),
+            );
+            app.push_display_message(DisplayMessage {
+                role: "tool".to_string(),
+                content: summary,
+                tool_calls: vec![],
+                duration_secs: None,
+                title: Some("Generated image".to_string()),
+                tool_data: Some(tool_call),
+            });
             app.status = ProcessingStatus::Streaming;
             true
         }

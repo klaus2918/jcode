@@ -272,6 +272,36 @@ impl Agent {
                         }
                         sdk_tool_results.insert(tool_use_id, (content, is_error));
                     }
+                    StreamEvent::GeneratedImage {
+                        id,
+                        path,
+                        metadata_path,
+                        output_format,
+                        revised_prompt,
+                    } => {
+                        if trace {
+                            eprintln!(
+                                "[trace] generated_image id={} format={} path={} metadata={}",
+                                id,
+                                output_format,
+                                path,
+                                metadata_path.as_deref().unwrap_or("none")
+                            );
+                        }
+                        if print_output {
+                            let summary = crate::message::generated_image_summary(
+                                &path,
+                                metadata_path.as_deref(),
+                                &output_format,
+                                revised_prompt.as_deref(),
+                            );
+                            eprintln!(
+                                "\n[{}] {}",
+                                crate::message::GENERATED_IMAGE_TOOL_NAME,
+                                summary
+                            );
+                        }
+                    }
                     StreamEvent::TokenUsage {
                         input_tokens,
                         output_tokens,

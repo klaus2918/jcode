@@ -476,7 +476,7 @@ pub(super) fn handle_openai_output_item(
             return pending.pop_front();
         }
         "image_generation_call" => {
-            if let Some(event) = handle_openai_image_generation_item(&item) {
+            if let Some(event) = handle_openai_image_generation_item(&item, pending) {
                 return Some(event);
             }
         }
@@ -524,7 +524,10 @@ pub(super) fn handle_openai_output_item(
     None
 }
 
-fn handle_openai_image_generation_item(item: &Value) -> Option<StreamEvent> {
+fn handle_openai_image_generation_item(
+    item: &Value,
+    pending: &mut VecDeque<StreamEvent>,
+) -> Option<StreamEvent> {
     let result_b64 = item.get("result")?.as_str()?;
     if result_b64.is_empty() {
         return None;
@@ -558,6 +561,11 @@ fn handle_openai_image_generation_item(item: &Value) -> Option<StreamEvent> {
         .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-')
         .take(80)
         .collect();
+    let safe_id = if safe_id.is_empty() {
+        "image".to_string()
+    } else {
+        safe_id
+    };
     let timestamp_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
@@ -586,11 +594,59 @@ fn handle_openai_image_generation_item(item: &Value) -> Option<StreamEvent> {
         ));
     }
 
-    Some(StreamEvent::TextDelta(format!(
-        "\n![Generated image]({})\n\nGenerated image saved to `{}`.\n",
+    let metadata_path = path.with_extension("json");
+    let mut response_item = item.clone();
+    if let Some(object) = response_item.as_object_mut() {
+        object.remove("result");
+    }
+    let revised_prompt = item
+        .get("revised_prompt")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let metadata = serde_json::json!({
+        "schema_version": 1,
+        "provider": "openai",
+        "native_tool": "image_generation",
+        "id": item_id,
+        "status": item.get("status").and_then(|v| v.as_str()),
+        "created_at_unix_ms": timestamp_ms,
+        "image_path": path.display().to_string(),
+        "output_format": output_format,
+        "byte_count": std::fs::metadata(&path).map(|m| m.len()).unwrap_or_default(),
+        "revised_prompt": revised_prompt,
+        "response_item": response_item,
+    });
+    let metadata_path_string = match serde_json::to_vec_pretty(&metadata).ok().and_then(|bytes| {
+        std::fs::write(&metadata_path, bytes)
+            .ok()
+            .map(|_| metadata_path.clone())
+    }) {
+        Some(path) => Some(path.display().to_string()),
+        None => {
+            crate::logging::warn("Failed to save OpenAI generated image metadata");
+            None
+        }
+    };
+
+    let mut markdown = format!(
+        "\n![Generated image]({})\n\nGenerated image saved to `{}`.",
         path.display(),
         path.display()
-    )))
+    );
+    if let Some(metadata_path) = metadata_path_string.as_deref() {
+        markdown.push_str(&format!("\nMetadata saved to `{}`.", metadata_path));
+    }
+    markdown.push('\n');
+
+    pending.push_back(StreamEvent::TextDelta(markdown));
+
+    Some(StreamEvent::GeneratedImage {
+        id: item_id.to_string(),
+        path: path.display().to_string(),
+        metadata_path: metadata_path_string,
+        output_format: output_format.to_string(),
+        revised_prompt,
+    })
 }
 
 pub(super) struct OpenAIResponsesStream {

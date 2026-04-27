@@ -65,6 +65,35 @@ fn test_status_detail_event_roundtrip() -> Result<()> {
 }
 
 #[test]
+fn test_generated_image_event_roundtrip() -> Result<()> {
+    let event = ServerEvent::GeneratedImage {
+        id: "ig_123".to_string(),
+        path: "/tmp/generated.png".to_string(),
+        metadata_path: Some("/tmp/generated.json".to_string()),
+        output_format: "png".to_string(),
+        revised_prompt: Some("A polished image prompt".to_string()),
+    };
+    let json = encode_event(&event);
+    assert!(json.contains("\"type\":\"generated_image\""));
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::GeneratedImage {
+        id,
+        path,
+        metadata_path,
+        output_format,
+        revised_prompt,
+    } = decoded else {
+        return Err(anyhow!("wrong event type"));
+    };
+    assert_eq!(id, "ig_123");
+    assert_eq!(path, "/tmp/generated.png");
+    assert_eq!(metadata_path.as_deref(), Some("/tmp/generated.json"));
+    assert_eq!(output_format, "png");
+    assert_eq!(revised_prompt.as_deref(), Some("A polished image prompt"));
+    Ok(())
+}
+
+#[test]
 fn test_interrupted_event_roundtrip() -> Result<()> {
     let event = ServerEvent::Interrupted;
     let json = encode_event(&event);

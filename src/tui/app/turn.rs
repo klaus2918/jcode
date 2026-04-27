@@ -653,6 +653,46 @@ impl App {
 
                                         sdk_tool_results.insert(tool_use_id, (content, is_error));
                                     }
+                                    StreamEvent::GeneratedImage {
+                                        id,
+                                        path,
+                                        metadata_path,
+                                        output_format,
+                                        revised_prompt,
+                                    } => {
+                                        self.pause_streaming_tps(false);
+                                        self.commit_pending_streaming_assistant_message();
+                                        let input = crate::message::generated_image_tool_input(
+                                            &path,
+                                            metadata_path.as_deref(),
+                                            &output_format,
+                                            revised_prompt.as_deref(),
+                                        );
+                                        let tool_call = ToolCall {
+                                            id,
+                                            name: crate::message::GENERATED_IMAGE_TOOL_NAME.to_string(),
+                                            input,
+                                            intent: Some("OpenAI native image generation".to_string()),
+                                        };
+                                        let summary = crate::message::generated_image_summary(
+                                            &path,
+                                            metadata_path.as_deref(),
+                                            &output_format,
+                                            revised_prompt.as_deref(),
+                                        );
+                                        self.push_display_message(DisplayMessage {
+                                            role: "tool".to_string(),
+                                            content: summary,
+                                            tool_calls: vec![],
+                                            duration_secs: None,
+                                            title: Some("Generated image".to_string()),
+                                            tool_data: Some(tool_call),
+                                        });
+                                        self.status = ProcessingStatus::Streaming;
+                                        if eager_stream_redraw {
+                                            self.redraw_now(terminal)?;
+                                        }
+                                    }
                                     StreamEvent::NativeToolCall {
                                         request_id,
                                         tool_name,
