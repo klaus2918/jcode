@@ -103,6 +103,15 @@ pub(super) fn image_widget_placeholder(hash: u64, height: u16) -> Vec<Line<'stat
     lines
 }
 
+/// Create a markdown/text marker line that side-panel rendering recognizes as an
+/// inline image placeholder for an already-registered image hash.
+pub fn image_widget_placeholder_markdown(hash: u64) -> String {
+    format!(
+        "{}{:016x}{}\n",
+        MERMAID_MARKER_PREFIX, hash, MERMAID_MARKER_SUFFIX
+    )
+}
+
 /// Check if a line is a mermaid image placeholder and extract the hash
 pub fn parse_image_placeholder(line: &Line<'_>) -> Option<u64> {
     if line.spans.is_empty() {

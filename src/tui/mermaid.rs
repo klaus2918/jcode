@@ -70,8 +70,8 @@ pub use cache_render::{
 };
 pub use content_render::{
     MermaidContent, diagram_placeholder_lines, error_to_lines, estimate_image_height,
-    parse_image_placeholder, result_to_content, result_to_lines, terminal_theme,
-    write_video_export_marker,
+    image_widget_placeholder_markdown, parse_image_placeholder, result_to_content, result_to_lines,
+    terminal_theme, write_video_export_marker,
 };
 pub use runtime::{
     error_lines_for, get_cached_png, get_font_size, image_protocol_available, init_picker,

@@ -669,7 +669,7 @@ impl App {
                                             revised_prompt.as_deref(),
                                         );
                                         let tool_call = ToolCall {
-                                            id,
+                                            id: id.clone(),
                                             name: crate::message::GENERATED_IMAGE_TOOL_NAME.to_string(),
                                             input,
                                             intent: Some("OpenAI native image generation".to_string()),
@@ -688,6 +688,20 @@ impl App {
                                             title: Some("Generated image".to_string()),
                                             tool_data: Some(tool_call),
                                         });
+                                        match crate::tui::write_generated_image_side_panel_page(
+                                            &self.session.id,
+                                            &id,
+                                            &path,
+                                            metadata_path.as_deref(),
+                                            &output_format,
+                                            revised_prompt.as_deref(),
+                                        ) {
+                                            Ok(snapshot) => self.set_side_panel_snapshot(snapshot),
+                                            Err(err) => crate::logging::warn(&format!(
+                                                "Failed to write generated image side panel page: {}",
+                                                err
+                                            )),
+                                        }
                                         self.status = ProcessingStatus::Streaming;
                                         if eager_stream_redraw {
                                             self.redraw_now(terminal)?;

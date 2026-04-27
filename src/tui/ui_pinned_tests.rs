@@ -109,6 +109,16 @@ fn side_panel_mermaid_keeps_fit_mode_when_zoom_stays_readable() {
 }
 
 #[test]
+fn side_panel_generated_image_marker_renders_as_image_placement() {
+    let marker = crate::tui::mermaid::image_widget_placeholder_markdown(0x1234);
+    let page = sample_mermaid_page(format!("# Generated image\n\n{marker}\nDetails below"));
+    let rendered = render_side_panel_markdown_cached(&page, Rect::new(0, 0, 40, 20), true, false);
+
+    assert_eq!(rendered.image_placements.len(), 1);
+    assert_eq!(rendered.image_placements[0].hash, 0x1234);
+}
+
+#[test]
 fn side_panel_mermaid_prefers_viewport_when_downscaled_fit_wastes_space() {
     let layout =
         estimate_side_panel_image_layout_with_font(226, 504, 36, 30, 0, false, Some((8, 16)));
