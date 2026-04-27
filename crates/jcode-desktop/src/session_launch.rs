@@ -623,6 +623,10 @@ pub fn launch_validated_resume_session(session_id: &str, title: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener;
+    #[cfg(unix)]
+    use std::sync::Mutex;
 
     #[test]
     fn validates_safe_session_ids() -> Result<()> {
@@ -673,5 +677,114 @@ mod tests {
         handle.cancel().unwrap();
 
         assert_eq!(command_rx.try_recv(), Ok(DesktopSessionCommand::Cancel));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn desktop_worker_roundtrips_message_with_fake_server() -> Result<()> {
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let socket_path = std::env::temp_dir().join(format!(
+            "jcode-desktop-worker-smoke-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path)?;
+        let previous_socket = std::env::var_os("JCODE_SOCKET");
+        unsafe {
+            std::env::set_var("JCODE_SOCKET", &socket_path);
+        }
+
+        let server = std::thread::spawn(move || fake_desktop_server_roundtrip(listener));
+        let (event_tx, event_rx) = mpsc::channel();
+        let (_command_tx, command_rx) = mpsc::channel();
+
+        let result = run_server_session(None, "hello desktop", Some(event_tx), command_rx);
+
+        restore_env_var("JCODE_SOCKET", previous_socket);
+        let _ = std::fs::remove_file(&socket_path);
+
+        assert_eq!(result?, "session_desktop_fake");
+        let requests = server.join().unwrap()?;
+        assert_eq!(requests[0]["type"], "subscribe");
+        assert_eq!(requests[1]["type"], "message");
+        assert_eq!(requests[1]["content"], "hello desktop");
+        let events = event_rx.try_iter().collect::<Vec<_>>();
+        assert!(events.contains(&DesktopSessionEvent::SessionStarted {
+            session_id: "session_desktop_fake".to_string()
+        }));
+        assert!(events.contains(&DesktopSessionEvent::TextDelta(
+            "fake assistant response".to_string()
+        )));
+        assert!(events.contains(&DesktopSessionEvent::Done));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn fake_desktop_server_roundtrip(listener: UnixListener) -> Result<Vec<Value>> {
+        let (mut reader, mut writer, subscribe) = accept_first_requesting_client(&listener)?;
+        write_json_line(&mut writer, json!({"type": "ack", "id": subscribe["id"]}))?;
+        write_json_line(
+            &mut writer,
+            json!({"type": "session", "session_id": "session_desktop_fake"}),
+        )?;
+
+        let message = read_fake_server_request(&mut reader)?;
+        write_json_line(&mut writer, json!({"type": "ack", "id": message["id"]}))?;
+        write_json_line(
+            &mut writer,
+            json!({"type": "text_delta", "text": "fake assistant response"}),
+        )?;
+        write_json_line(&mut writer, json!({"type": "done", "id": message["id"]}))?;
+        Ok(vec![subscribe, message])
+    }
+
+    #[cfg(unix)]
+    fn accept_first_requesting_client(
+        listener: &UnixListener,
+    ) -> Result<(BufReader<UnixStream>, UnixStream, Value)> {
+        loop {
+            let (stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+            let mut reader = BufReader::new(stream.try_clone()?);
+            let mut first_line = String::new();
+            match reader.read_line(&mut first_line) {
+                Ok(0) => continue,
+                Ok(_) => {
+                    let first_request = serde_json::from_str(first_line.trim())?;
+                    return Ok((reader, stream, first_request));
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_fake_server_request(reader: &mut BufReader<UnixStream>) -> Result<Value> {
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        Ok(serde_json::from_str(line.trim())?)
+    }
+
+    fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {
+        unsafe {
+            if let Some(value) = value {
+                std::env::set_var(key, value);
+            } else {
+                std::env::remove_var(key);
+            }
+        }
     }
 }

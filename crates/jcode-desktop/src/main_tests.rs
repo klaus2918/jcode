@@ -225,6 +225,84 @@ fn single_session_applies_live_server_events_to_visible_body() {
 }
 
 #[test]
+fn desktop_app_drains_session_events_into_visible_debug_snapshot() {
+    let mut app = fresh_single_session_app();
+    assert_eq!(
+        app.handle_key(KeyInput::Character("hello smoke".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(
+        app.handle_key(KeyInput::SubmitDraft),
+        KeyOutcome::StartFreshSession {
+            message: "hello smoke".to_string()
+        }
+    );
+
+    let (event_tx, event_rx) = mpsc::channel();
+    event_tx
+        .send(session_launch::DesktopSessionEvent::SessionStarted {
+            session_id: "session_visible_smoke".to_string(),
+        })
+        .unwrap();
+    event_tx
+        .send(session_launch::DesktopSessionEvent::TextDelta(
+            "visible assistant response".to_string(),
+        ))
+        .unwrap();
+    assert!(apply_pending_session_events(&mut app, &event_rx));
+
+    let streaming = app.debug_snapshot();
+    assert_eq!(streaming.mode, "single_session");
+    assert_eq!(
+        streaming.live_session_id.as_deref(),
+        Some("session_visible_smoke")
+    );
+    assert!(streaming.is_processing);
+    assert!(streaming.body_text.contains("user: hello smoke"));
+    assert!(
+        streaming
+            .body_text
+            .contains("assistant: visible assistant response")
+    );
+
+    event_tx
+        .send(session_launch::DesktopSessionEvent::Done)
+        .unwrap();
+    assert!(apply_pending_session_events(&mut app, &event_rx));
+    let completed = app.debug_snapshot();
+    assert!(!completed.is_processing);
+    assert_eq!(completed.status.as_deref(), Some("ready"));
+    assert!(
+        completed
+            .body_text
+            .contains("assistant: visible assistant response")
+    );
+}
+
+#[test]
+fn headless_chat_smoke_message_parses_hidden_flag() {
+    assert_eq!(
+        headless_chat_smoke_message(&[
+            "jcode-desktop".to_string(),
+            "--headless-chat-smoke".to_string(),
+            "reply pong".to_string(),
+        ]),
+        Some("reply pong".to_string())
+    );
+    assert_eq!(
+        headless_chat_smoke_message(&[
+            "jcode-desktop".to_string(),
+            "--headless-chat-smoke=reply pong".to_string(),
+        ]),
+        Some("reply pong".to_string())
+    );
+    assert_eq!(
+        headless_chat_smoke_message(&["jcode-desktop".to_string()]),
+        None
+    );
+}
+
+#[test]
 fn single_session_reload_event_keeps_worker_state_processing() {
     let mut app = SingleSessionApp::new(None);
     app.apply_session_event(session_launch::DesktopSessionEvent::Reloading {

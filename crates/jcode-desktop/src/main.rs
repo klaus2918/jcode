@@ -66,6 +66,7 @@ const SINGLE_SESSION_CARET_WIDTH: f32 = 2.0;
 const SINGLE_SESSION_CARET_COLOR: [f32; 4] = [0.130, 0.150, 0.190, 0.92];
 const SESSION_SPAWN_REFRESH_DELAY: Duration = Duration::from_millis(350);
 const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(33);
+const HEADLESS_CHAT_SMOKE_TIMEOUT: Duration = Duration::from_secs(90);
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.955,
@@ -127,6 +128,9 @@ fn main() -> Result<()> {
 
 async fn run() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
+    if let Some(message) = headless_chat_smoke_message(&args) {
+        return run_headless_chat_smoke(message);
+    }
     let fullscreen = args.iter().any(|arg| arg == "--fullscreen");
     let desktop_mode = desktop_mode_from_args(args.iter().map(String::as_str));
     let event_loop = EventLoop::new().context("failed to create event loop")?;
@@ -359,6 +363,120 @@ fn load_session_cards_for_desktop() -> Vec<workspace::SessionCard> {
     }
 }
 
+fn headless_chat_smoke_message(args: &[String]) -> Option<String> {
+    args.iter().enumerate().find_map(|(index, arg)| {
+        arg.strip_prefix("--headless-chat-smoke=")
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                (arg == "--headless-chat-smoke")
+                    .then(|| args.get(index + 1).cloned())
+                    .flatten()
+            })
+    })
+}
+
+fn run_headless_chat_smoke(message: String) -> Result<()> {
+    if message.trim().is_empty() {
+        anyhow::bail!("headless chat smoke message cannot be empty");
+    }
+
+    let (event_tx, event_rx) = mpsc::channel();
+    let _handle = session_launch::spawn_fresh_server_session(message, event_tx)
+        .context("failed to start desktop headless chat smoke")?;
+    let started = Instant::now();
+    let mut session_id = None;
+    let mut response = String::new();
+    let mut last_status = None;
+
+    while started.elapsed() < HEADLESS_CHAT_SMOKE_TIMEOUT {
+        let remaining = HEADLESS_CHAT_SMOKE_TIMEOUT.saturating_sub(started.elapsed());
+        let poll = remaining.min(Duration::from_millis(250));
+        let event = match event_rx.recv_timeout(poll) {
+            Ok(event) => event,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                anyhow::bail!(
+                    "desktop chat smoke worker disconnected before completion; last_status={}",
+                    last_status.as_deref().unwrap_or("unknown")
+                );
+            }
+        };
+
+        match event {
+            session_launch::DesktopSessionEvent::Status(status) => {
+                last_status = Some(status.clone());
+                println!(
+                    "{}",
+                    serde_json::json!({"event": "status", "status": status})
+                );
+            }
+            session_launch::DesktopSessionEvent::SessionStarted { session_id: id } => {
+                session_id = Some(id.clone());
+                println!(
+                    "{}",
+                    serde_json::json!({"event": "session", "session_id": id})
+                );
+            }
+            session_launch::DesktopSessionEvent::TextDelta(text) => {
+                response.push_str(&text);
+                println!(
+                    "{}",
+                    serde_json::json!({"event": "text_delta", "chars": text.chars().count()})
+                );
+            }
+            session_launch::DesktopSessionEvent::TextReplace(text) => {
+                response = text;
+                println!(
+                    "{}",
+                    serde_json::json!({"event": "text_replace", "chars": response.chars().count()})
+                );
+            }
+            session_launch::DesktopSessionEvent::Reloading { new_socket } => {
+                last_status = Some("server reloading, reconnecting".to_string());
+                println!(
+                    "{}",
+                    serde_json::json!({"event": "reloading", "new_socket": new_socket})
+                );
+            }
+            session_launch::DesktopSessionEvent::Done => {
+                let response = response.trim().to_string();
+                if response.is_empty() {
+                    anyhow::bail!(
+                        "desktop chat smoke completed without assistant text; session_id={}; last_status={}",
+                        session_id.as_deref().unwrap_or("unknown"),
+                        last_status.as_deref().unwrap_or("unknown")
+                    );
+                }
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "ok",
+                        "session_id": session_id,
+                        "response_chars": response.chars().count(),
+                        "response_preview": response.chars().take(240).collect::<String>(),
+                    })
+                );
+                return Ok(());
+            }
+            session_launch::DesktopSessionEvent::Error(error) => {
+                anyhow::bail!(
+                    "desktop chat smoke failed; session_id={}; error={}",
+                    session_id.as_deref().unwrap_or("unknown"),
+                    error
+                );
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "desktop chat smoke timed out after {:?}; session_id={}; response_chars={}; last_status={}",
+        HEADLESS_CHAT_SMOKE_TIMEOUT,
+        session_id.as_deref().unwrap_or("unknown"),
+        response.chars().count(),
+        last_status.as_deref().unwrap_or("unknown")
+    )
+}
+
 fn load_desktop_preferences() -> Option<workspace::DesktopPreferences> {
     match desktop_prefs::load_preferences() {
         Ok(preferences) => preferences,
@@ -508,6 +626,17 @@ enum DesktopApp {
     Workspace(Workspace),
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DesktopAppDebugSnapshot {
+    mode: &'static str,
+    title: String,
+    live_session_id: Option<String>,
+    status: Option<String>,
+    is_processing: bool,
+    body_text: String,
+}
+
 impl DesktopApp {
     fn is_single_session(&self) -> bool {
         matches!(self, Self::SingleSession(_))
@@ -572,6 +701,28 @@ impl DesktopApp {
         match self {
             Self::SingleSession(app) => app.live_session_id.clone(),
             Self::Workspace(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn debug_snapshot(&self) -> DesktopAppDebugSnapshot {
+        match self {
+            Self::SingleSession(app) => DesktopAppDebugSnapshot {
+                mode: "single_session",
+                title: app.title(),
+                live_session_id: app.live_session_id.clone(),
+                status: app.status.clone(),
+                is_processing: app.is_processing,
+                body_text: app.body_lines().join("\n"),
+            },
+            Self::Workspace(workspace) => DesktopAppDebugSnapshot {
+                mode: "workspace",
+                title: workspace.status_title(),
+                live_session_id: None,
+                status: None,
+                is_processing: false,
+                body_text: workspace.status_title(),
+            },
         }
     }
 }
