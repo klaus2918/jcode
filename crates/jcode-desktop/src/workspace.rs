@@ -17,6 +17,8 @@ pub enum KeyInput {
     Escape,
     Enter,
     Backspace,
+    SpawnPanel,
+    HotkeyHelp,
     Character(String),
     Other,
 }
@@ -133,7 +135,7 @@ impl Workspace {
 
         match self.mode {
             InputMode::Navigation => format!(
-                "Jcode Desktop · {mode}{zoom} · workspace {workspace} · {focused} · h/l columns · j/k workspaces · H/L move · n new · z zoom · i insert · Esc quit"
+                "Jcode Desktop · {mode}{zoom} · workspace {workspace} · {focused} · h/l columns · j/k workspaces · Ctrl+; new · Ctrl+? help · z zoom · i insert · Esc quit"
             ),
             InputMode::Insert => {
                 format!(
@@ -161,6 +163,18 @@ impl Workspace {
     }
 
     fn handle_navigation_key(&mut self, key: KeyInput) -> KeyOutcome {
+        match key {
+            KeyInput::SpawnPanel => {
+                self.add_surface();
+                return KeyOutcome::Redraw;
+            }
+            KeyInput::HotkeyHelp => {
+                self.open_hotkey_help();
+                return KeyOutcome::Redraw;
+            }
+            _ => {}
+        }
+
         let KeyInput::Character(text) = key else {
             return match key {
                 KeyInput::Escape => KeyOutcome::Exit,
@@ -201,6 +215,14 @@ impl Workspace {
 
     fn handle_insert_key(&mut self, key: KeyInput) -> KeyOutcome {
         match key {
+            KeyInput::SpawnPanel => {
+                self.add_surface();
+                KeyOutcome::Redraw
+            }
+            KeyInput::HotkeyHelp => {
+                self.open_hotkey_help();
+                KeyOutcome::Redraw
+            }
             KeyInput::Escape => {
                 self.mode = InputMode::Navigation;
                 KeyOutcome::Redraw
@@ -345,6 +367,39 @@ impl Workspace {
         self.surfaces.push(Surface {
             id,
             title: format!("agent-{id}"),
+            lane,
+            column,
+            color_index: id as usize,
+        });
+        self.focused_id = id;
+        self.zoomed = false;
+    }
+
+    fn open_hotkey_help(&mut self) {
+        let lane = self.current_workspace();
+        if let Some(surface) = self
+            .surfaces
+            .iter()
+            .find(|surface| surface.lane == lane && surface.title == "hotkey help")
+        {
+            self.focused_id = surface.id;
+            self.zoomed = false;
+            return;
+        }
+
+        let column = self
+            .surfaces
+            .iter()
+            .filter(|surface| surface.lane == lane)
+            .map(|surface| surface.column)
+            .max()
+            .unwrap_or(-1)
+            + 1;
+        let id = self.next_id;
+        self.next_id += 1;
+        self.surfaces.push(Surface {
+            id,
+            title: "hotkey help".to_string(),
             lane,
             column,
             color_index: id as usize,
@@ -499,6 +554,50 @@ mod tests {
         workspace.handle_key(KeyInput::Character("x".to_string()));
         assert_eq!(workspace.surfaces.len(), 7);
         assert_ne!(workspace.focused_id, 8);
+    }
+
+    #[test]
+    fn spawn_panel_shortcut_adds_surface_in_current_workspace() {
+        let mut workspace = Workspace::fake();
+        assert_eq!(
+            workspace.handle_key(KeyInput::SpawnPanel),
+            KeyOutcome::Redraw
+        );
+        assert_eq!(workspace.focused_id, 8);
+        assert_eq!(
+            workspace.focused_surface().map(|surface| surface.lane),
+            Some(0)
+        );
+        assert_unique_positions(&workspace);
+    }
+
+    #[test]
+    fn hotkey_help_shortcut_opens_single_help_surface() {
+        let mut workspace = Workspace::fake();
+        assert_eq!(
+            workspace.handle_key(KeyInput::HotkeyHelp),
+            KeyOutcome::Redraw
+        );
+        assert_eq!(
+            workspace
+                .focused_surface()
+                .map(|surface| surface.title.as_str()),
+            Some("hotkey help")
+        );
+        let help_id = workspace.focused_id;
+        assert_eq!(
+            workspace.handle_key(KeyInput::HotkeyHelp),
+            KeyOutcome::Redraw
+        );
+        assert_eq!(workspace.focused_id, help_id);
+        assert_eq!(
+            workspace
+                .surfaces
+                .iter()
+                .filter(|surface| surface.title == "hotkey help")
+                .count(),
+            1
+        );
     }
 
     fn assert_unique_positions(workspace: &Workspace) {

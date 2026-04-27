@@ -85,6 +85,8 @@ Navigation mode:
   H/L          move the focused column left/right
   J/K          move the focused column to the workspace below/above
   n            create a fake session surface
+  Ctrl+;       create a fake session surface
+  Ctrl+?       open/focus hotkey help
   x            close the focused surface
   z            zoom/unzoom the focused surface
   i or Enter   enter insert mode
@@ -95,7 +97,7 @@ Insert mode:
   Esc          return to navigation mode
 ```
 
-The initial renderer may use only primitive colored rectangles and the native window title for mode/status text. Full text rendering can follow after the workspace behavior feels right. The visual direction should put the color in a soft static blue/lavender/mint gradient background, with translucent glass-like panels on top, muted status colors, and a very thin gray focus ring rather than a bright web-style selection color. The layout direction is Niri-like: each workspace is a vertical lane containing a horizontally scrollable strip of full-height columns. Columns should never be stacked within the same workspace.
+The initial renderer may use only primitive colored/rounded primitives and the native window title for mode/status text. Full text rendering can follow after the workspace behavior feels right. The visual direction should put the color in a soft static blue/lavender/mint gradient background, with translucent glass-like panels on top, muted status colors, and a very thin gray focus ring rather than a bright web-style selection color. Panels should fill most of the available space with only narrow gutters and slightly rounded corners. The layout direction is Niri-like: each workspace is a vertical lane containing a horizontally scrollable strip of full-height columns. Columns should never be stacked within the same workspace.
 
 The target shape is:
 
@@ -110,7 +112,7 @@ The target shape is:
 │                    │                    │                    │                    │
 │                    │                    │                    │                    │
 ├────────────────────┴────────────────────┴────────────────────┴────────────────────┤
-│ h/l columns · j/k workspaces · H/L move column · J/K move workspace · n new · z zoom│
+│ h/l columns · j/k workspaces · Ctrl+; new · Ctrl+? help · n new · z zoom           │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 

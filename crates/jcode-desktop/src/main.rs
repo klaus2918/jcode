@@ -7,19 +7,22 @@ use wgpu::{CompositeAlphaMode, PresentMode, SurfaceError, TextureUsages};
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Fullscreen, Window, WindowBuilder};
 use workspace::{InputMode, KeyInput, KeyOutcome, Workspace};
 
 const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
 const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;
-const OUTER_PADDING: f32 = 28.0;
-const GAP: f32 = 16.0;
-const COLUMN_WIDTH: f32 = 360.0;
-const STATUS_BAR_HEIGHT: f32 = 42.0;
+const OUTER_PADDING: f32 = 8.0;
+const GAP: f32 = 6.0;
+const COLUMN_WIDTH: f32 = 420.0;
+const STATUS_BAR_HEIGHT: f32 = 30.0;
 const HEADER_HEIGHT: f32 = 28.0;
 const FOCUSED_BORDER_WIDTH: f32 = 2.0;
 const UNFOCUSED_BORDER_WIDTH: f32 = 1.0;
+const PANEL_RADIUS: f32 = 8.0;
+const STATUS_RADIUS: f32 = 7.0;
+const ROUNDED_CORNER_SEGMENTS: usize = 6;
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.955,
@@ -86,6 +89,7 @@ async fn run() -> Result<()> {
     let mut workspace = Workspace::fake();
     window.set_title(&workspace.status_title());
     let mut canvas = Canvas::new(window).await?;
+    let mut modifiers = ModifiersState::empty();
 
     event_loop.run(move |event, target| {
         target.set_control_flow(ControlFlow::Wait);
@@ -101,10 +105,13 @@ async fn run() -> Result<()> {
                     canvas.resize(window.inner_size());
                     window.request_redraw();
                 }
+                WindowEvent::ModifiersChanged(new_modifiers) => {
+                    modifiers = new_modifiers.state();
+                }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed =>
                 {
-                    match workspace.handle_key(to_key_input(&event.logical_key)) {
+                    match workspace.handle_key(to_key_input(&event.logical_key, modifiers)) {
                         KeyOutcome::Exit => target.exit(),
                         KeyOutcome::Redraw => {
                             window.set_title(&workspace.status_title());
@@ -139,11 +146,15 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-fn to_key_input(key: &Key) -> KeyInput {
+fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
     match key {
         Key::Named(NamedKey::Escape) => KeyInput::Escape,
         Key::Named(NamedKey::Enter) => KeyInput::Enter,
         Key::Named(NamedKey::Backspace) => KeyInput::Backspace,
+        Key::Character(text) if modifiers.control_key() && text == ";" => KeyInput::SpawnPanel,
+        Key::Character(text) if modifiers.control_key() && (text == "?" || text == "/") => {
+            KeyInput::HotkeyHelp
+        }
         Key::Character(text) => KeyInput::Character(text.to_string()),
         _ => KeyInput::Other,
     }
@@ -388,14 +399,15 @@ fn build_vertices(workspace: &Workspace, size: PhysicalSize<u32>) -> Vec<Vertex>
         InputMode::Navigation => NAV_STATUS_COLOR,
         InputMode::Insert => INSERT_STATUS_COLOR,
     };
-    push_rect(
+    push_rounded_rect(
         &mut vertices,
         Rect {
-            x: 0.0,
-            y: height - STATUS_BAR_HEIGHT,
-            width,
+            x: OUTER_PADDING,
+            y: height - STATUS_BAR_HEIGHT - OUTER_PADDING,
+            width: (width - OUTER_PADDING * 2.0).max(1.0),
             height: STATUS_BAR_HEIGHT,
         },
+        STATUS_RADIUS,
         status_color,
         size,
     );
@@ -413,7 +425,7 @@ fn build_vertices(workspace: &Workspace, size: PhysicalSize<u32>) -> Vec<Vertex>
         return vertices;
     }
 
-    let workspace_height = (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 2.0).max(1.0);
+    let workspace_height = (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0);
     let workspace_width = (width - OUTER_PADDING * 2.0).max(1.0);
     let column_width = COLUMN_WIDTH.min(workspace_width);
     let active_workspace = workspace.current_workspace();
@@ -461,14 +473,20 @@ fn push_surface(
         UNFOCUSED_BORDER_COLOR
     };
 
-    push_rect(vertices, rect, border, size);
+    push_rounded_rect(vertices, rect, PANEL_RADIUS, border, size);
     let inset = if focused {
         FOCUSED_BORDER_WIDTH
     } else {
         UNFOCUSED_BORDER_WIDTH
     };
     let inner = inset_rect(rect, inset);
-    push_rect(vertices, inner, GLASS_PANEL_FILL, size);
+    push_rounded_rect(
+        vertices,
+        inner,
+        (PANEL_RADIUS - inset).max(1.0),
+        GLASS_PANEL_FILL,
+        size,
+    );
     push_rect(
         vertices,
         Rect {
@@ -493,6 +511,115 @@ fn inset_rect(rect: Rect, amount: f32) -> Rect {
 
 fn push_rect(vertices: &mut Vec<Vertex>, rect: Rect, color: [f32; 4], size: PhysicalSize<u32>) {
     push_gradient_rect(vertices, rect, color, color, color, color, size);
+}
+
+fn push_rounded_rect(
+    vertices: &mut Vec<Vertex>,
+    rect: Rect,
+    radius: f32,
+    color: [f32; 4],
+    size: PhysicalSize<u32>,
+) {
+    let radius = radius.max(0.0).min(rect.width / 2.0).min(rect.height / 2.0);
+    if radius <= 0.5 {
+        push_rect(vertices, rect, color, size);
+        return;
+    }
+
+    let center = [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0];
+    let mut points = Vec::with_capacity((ROUNDED_CORNER_SEGMENTS + 1) * 4);
+    append_arc_points(
+        &mut points,
+        rect.x + rect.width - radius,
+        rect.y + radius,
+        radius,
+        -std::f32::consts::FRAC_PI_2,
+        0.0,
+    );
+    append_arc_points(
+        &mut points,
+        rect.x + rect.width - radius,
+        rect.y + rect.height - radius,
+        radius,
+        0.0,
+        std::f32::consts::FRAC_PI_2,
+    );
+    append_arc_points(
+        &mut points,
+        rect.x + radius,
+        rect.y + rect.height - radius,
+        radius,
+        std::f32::consts::FRAC_PI_2,
+        std::f32::consts::PI,
+    );
+    append_arc_points(
+        &mut points,
+        rect.x + radius,
+        rect.y + radius,
+        radius,
+        std::f32::consts::PI,
+        std::f32::consts::PI * 1.5,
+    );
+
+    for index in 0..points.len() {
+        let next_index = (index + 1) % points.len();
+        push_pixel_triangle(
+            vertices,
+            center,
+            points[index],
+            points[next_index],
+            color,
+            size,
+        );
+    }
+}
+
+fn append_arc_points(
+    points: &mut Vec<[f32; 2]>,
+    center_x: f32,
+    center_y: f32,
+    radius: f32,
+    start_angle: f32,
+    end_angle: f32,
+) {
+    for step in 0..=ROUNDED_CORNER_SEGMENTS {
+        let t = step as f32 / ROUNDED_CORNER_SEGMENTS as f32;
+        let angle = start_angle + (end_angle - start_angle) * t;
+        points.push([
+            center_x + radius * angle.cos(),
+            center_y + radius * angle.sin(),
+        ]);
+    }
+}
+
+fn push_pixel_triangle(
+    vertices: &mut Vec<Vertex>,
+    a: [f32; 2],
+    b: [f32; 2],
+    c: [f32; 2],
+    color: [f32; 4],
+    size: PhysicalSize<u32>,
+) {
+    vertices.extend_from_slice(&[
+        Vertex {
+            position: pixel_to_ndc(a, size),
+            color,
+        },
+        Vertex {
+            position: pixel_to_ndc(b, size),
+            color,
+        },
+        Vertex {
+            position: pixel_to_ndc(c, size),
+            color,
+        },
+    ]);
+}
+
+fn pixel_to_ndc(point: [f32; 2], size: PhysicalSize<u32>) -> [f32; 2] {
+    let width = size.width.max(1) as f32;
+    let height = size.height.max(1) as f32;
+    [point[0] / width * 2.0 - 1.0, 1.0 - point[1] / height * 2.0]
 }
 
 fn push_gradient_rect(
