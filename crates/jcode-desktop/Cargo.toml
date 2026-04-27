@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
+glyphon = "0.5"
 pollster = "0.3"
 serde_json = "1"
 wgpu = "0.19"

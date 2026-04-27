@@ -1,12 +1,23 @@
+mod animation;
 mod desktop_prefs;
 mod render_helpers;
 mod session_data;
 mod session_launch;
+mod single_session;
 mod workspace;
 
+use animation::{AnimatedViewport, FocusPulse, VisibleColumnLayout, WorkspaceRenderLayout};
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
+use glyphon::{
+    Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Resolution, Shaping,
+    SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+};
 use render_helpers::*;
+use single_session::{
+    SINGLE_SESSION_FONT_FAMILY, SingleSessionApp, single_session_lines, single_session_surface,
+    single_session_typography,
+};
 use wgpu::util::DeviceExt;
 use wgpu::{CompositeAlphaMode, PresentMode, SurfaceError, TextureUsages};
 use winit::dpi::{LogicalSize, PhysicalSize};
@@ -50,54 +61,7 @@ const PANEL_TITLE_LEFT_PADDING: f32 = 12.0;
 const PANEL_TITLE_TOP_PADDING: f32 = 12.0;
 const PANEL_BODY_TOP_PADDING: f32 = 38.0;
 const PANEL_BODY_LINE_GAP: f32 = 8.0;
-const VIEWPORT_ANIMATION_DURATION: Duration = Duration::from_millis(150);
-const FOCUS_PULSE_DURATION: Duration = Duration::from_millis(180);
-const VIEWPORT_ANIMATION_EPSILON: f32 = 0.5;
 const SESSION_SPAWN_REFRESH_DELAY: Duration = Duration::from_millis(350);
-
-const SINGLE_SESSION_FONT_FAMILY: &str = "JetBrainsMono Nerd Font";
-const SINGLE_SESSION_FONT_WEIGHT: &str = "Light";
-const SINGLE_SESSION_FONT_FALLBACKS: &[&str] = &[
-    "JetBrainsMono Nerd Font Mono",
-    "JetBrains Mono",
-    "monospace",
-];
-const SINGLE_SESSION_TITLE_FONT_SIZE: f32 = 18.0;
-const SINGLE_SESSION_BODY_FONT_SIZE: f32 = 15.0;
-const SINGLE_SESSION_META_FONT_SIZE: f32 = 12.0;
-const SINGLE_SESSION_CODE_FONT_SIZE: f32 = 14.0;
-const SINGLE_SESSION_BODY_LINE_HEIGHT: f32 = 1.45;
-const SINGLE_SESSION_CODE_LINE_HEIGHT: f32 = 1.35;
-const SINGLE_SESSION_META_LINE_HEIGHT: f32 = 1.25;
-
-#[derive(Clone, Copy, Debug)]
-struct SingleSessionTypography {
-    family: &'static str,
-    weight: &'static str,
-    fallbacks: &'static [&'static str],
-    title_size: f32,
-    body_size: f32,
-    meta_size: f32,
-    code_size: f32,
-    body_line_height: f32,
-    code_line_height: f32,
-    meta_line_height: f32,
-}
-
-const fn single_session_typography() -> SingleSessionTypography {
-    SingleSessionTypography {
-        family: SINGLE_SESSION_FONT_FAMILY,
-        weight: SINGLE_SESSION_FONT_WEIGHT,
-        fallbacks: SINGLE_SESSION_FONT_FALLBACKS,
-        title_size: SINGLE_SESSION_TITLE_FONT_SIZE,
-        body_size: SINGLE_SESSION_BODY_FONT_SIZE,
-        meta_size: SINGLE_SESSION_META_FONT_SIZE,
-        code_size: SINGLE_SESSION_CODE_FONT_SIZE,
-        body_line_height: SINGLE_SESSION_BODY_LINE_HEIGHT,
-        code_line_height: SINGLE_SESSION_CODE_LINE_HEIGHT,
-        meta_line_height: SINGLE_SESSION_META_LINE_HEIGHT,
-    }
-}
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.955,
@@ -414,7 +378,13 @@ impl DesktopRelaunch {
     fn from_current_process() -> Option<Self> {
         let mut args = std::env::args_os();
         let argv0 = args.next()?;
-        let binary = resolve_invoked_binary(&argv0).or_else(|| std::env::current_exe().ok())?;
+        let binary = match resolve_invoked_binary(&argv0) {
+            Some(binary) => binary,
+            None => match std::env::current_exe() {
+                Ok(binary) => binary,
+                Err(_) => return None,
+            },
+        };
         Some(Self {
             binary,
             args: args.collect(),
@@ -431,7 +401,14 @@ impl DesktopRelaunch {
 }
 
 fn binary_modified_time(path: &Path) -> Option<std::time::SystemTime> {
-    path.metadata().ok()?.modified().ok()
+    let metadata = match path.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => return None,
+    };
+    match metadata.modified() {
+        Ok(modified) => Some(modified),
+        Err(_) => None,
+    }
 }
 
 fn resolve_invoked_binary(argv0: &OsString) -> Option<PathBuf> {
@@ -480,85 +457,6 @@ impl DesktopApp {
     }
 }
 
-#[derive(Clone, Debug)]
-struct SingleSessionApp {
-    session: Option<workspace::SessionCard>,
-    draft: String,
-    detail_scroll: usize,
-}
-
-impl SingleSessionApp {
-    fn new(session: Option<workspace::SessionCard>) -> Self {
-        Self {
-            session,
-            draft: String::new(),
-            detail_scroll: 0,
-        }
-    }
-
-    fn replace_session(&mut self, session: Option<workspace::SessionCard>) {
-        self.session = session;
-        self.detail_scroll = 0;
-    }
-
-    fn reset_fresh_session(&mut self) {
-        self.session = None;
-        self.draft.clear();
-        self.detail_scroll = 0;
-    }
-
-    fn status_title(&self) -> String {
-        let title = self
-            .session
-            .as_ref()
-            .map(|session| session.title.as_str())
-            .unwrap_or("fresh session");
-        format!(
-            "Jcode Desktop · single session · {title} · Ctrl+Enter send · Enter newline · Ctrl+; spawn · Ctrl+R refresh · Esc quit · --workspace for Niri layout"
-        )
-    }
-
-    fn handle_key(&mut self, key: KeyInput) -> KeyOutcome {
-        match key {
-            KeyInput::SpawnPanel => KeyOutcome::SpawnSession,
-            KeyInput::RefreshSessions => KeyOutcome::Redraw,
-            KeyInput::SubmitDraft => self.submit_draft(),
-            KeyInput::Escape => KeyOutcome::Exit,
-            KeyInput::Enter => {
-                self.draft.push('\n');
-                KeyOutcome::Redraw
-            }
-            KeyInput::Backspace => {
-                self.draft.pop();
-                KeyOutcome::Redraw
-            }
-            KeyInput::Character(text) => {
-                self.draft.push_str(&text);
-                KeyOutcome::Redraw
-            }
-            _ => KeyOutcome::None,
-        }
-    }
-
-    fn submit_draft(&mut self) -> KeyOutcome {
-        let message = self.draft.trim().to_string();
-        if message.is_empty() {
-            return KeyOutcome::None;
-        }
-        let Some(session) = &self.session else {
-            return KeyOutcome::None;
-        };
-        let session_id = session.session_id.clone();
-        let title = session.title.clone();
-        self.draft.clear();
-        KeyOutcome::SendDraft {
-            session_id,
-            title,
-            message,
-        }
-    }
-}
-
 fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
     match key {
         Key::Named(NamedKey::Escape) => KeyInput::Escape,
@@ -595,6 +493,10 @@ struct Canvas<'window> {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    text_atlas: TextAtlas,
+    text_renderer: TextRenderer,
     size: PhysicalSize<u32>,
     viewport_animation: AnimatedViewport,
     focus_pulse: FocusPulse,
@@ -701,6 +603,13 @@ impl<'window> Canvas<'window> {
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
         });
+        let mut text_atlas = TextAtlas::new(&device, &queue, format);
+        let text_renderer = TextRenderer::new(
+            &mut text_atlas,
+            &device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
 
         Ok(Self {
             surface,
@@ -708,6 +617,10 @@ impl<'window> Canvas<'window> {
             queue,
             config,
             render_pipeline,
+            font_system: FontSystem::new(),
+            swash_cache: SwashCache::new(),
+            text_atlas,
+            text_renderer,
             size,
             viewport_animation: AnimatedViewport::default(),
             focus_pulse: FocusPulse::default(),
@@ -770,6 +683,29 @@ impl<'window> Canvas<'window> {
                 contents: bytemuck::cast_slice(&vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
+        let text_buffers = match app {
+            DesktopApp::SingleSession(single_session) => {
+                single_session_text_buffers(single_session, self.size, &mut self.font_system)
+            }
+            DesktopApp::Workspace(_) => Vec::new(),
+        };
+        let text_areas = single_session_text_areas(&text_buffers, self.size);
+        if !text_areas.is_empty() {
+            if let Err(error) = self.text_renderer.prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                Resolution {
+                    width: self.config.width,
+                    height: self.config.height,
+                },
+                text_areas,
+                &mut self.swash_cache,
+            ) {
+                eprintln!("jcode-desktop: failed to prepare text: {error:?}");
+            }
+        }
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -789,10 +725,18 @@ impl<'window> Canvas<'window> {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             render_pass.draw(0..vertices.len() as u32, 0..1);
+            if !text_buffers.is_empty()
+                && let Err(error) = self
+                    .text_renderer
+                    .render(&self.text_atlas, &mut render_pass)
+            {
+                eprintln!("jcode-desktop: failed to render text: {error:?}");
+            }
         }
 
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        self.text_atlas.trim();
         Ok(animation_active)
     }
 }
@@ -833,150 +777,6 @@ struct Rect {
     height: f32,
 }
 
-#[derive(Clone, Copy)]
-struct VisibleColumnLayout {
-    visible_columns: u32,
-    first_visible_column: i32,
-}
-
-#[derive(Clone, Copy)]
-struct WorkspaceRenderLayout {
-    visible: VisibleColumnLayout,
-    column_width: f32,
-    scroll_offset: f32,
-    vertical_scroll_offset: f32,
-}
-
-#[derive(Default)]
-struct AnimatedViewport {
-    initialized: bool,
-    start_column_width: f32,
-    start_scroll_offset: f32,
-    start_vertical_scroll_offset: f32,
-    current_column_width: f32,
-    current_scroll_offset: f32,
-    current_vertical_scroll_offset: f32,
-    target_column_width: f32,
-    target_scroll_offset: f32,
-    target_vertical_scroll_offset: f32,
-    started_at: Option<Instant>,
-}
-
-impl AnimatedViewport {
-    fn frame(&mut self, target: WorkspaceRenderLayout, now: Instant) -> WorkspaceRenderLayout {
-        if !self.initialized {
-            self.initialized = true;
-            self.current_column_width = target.column_width;
-            self.current_scroll_offset = target.scroll_offset;
-            self.current_vertical_scroll_offset = target.vertical_scroll_offset;
-            self.target_column_width = target.column_width;
-            self.target_scroll_offset = target.scroll_offset;
-            self.target_vertical_scroll_offset = target.vertical_scroll_offset;
-            return target;
-        }
-
-        if has_layout_target_changed(self.target_column_width, target.column_width)
-            || has_layout_target_changed(self.target_scroll_offset, target.scroll_offset)
-            || has_layout_target_changed(
-                self.target_vertical_scroll_offset,
-                target.vertical_scroll_offset,
-            )
-        {
-            self.start_column_width = self.current_column_width;
-            self.start_scroll_offset = self.current_scroll_offset;
-            self.start_vertical_scroll_offset = self.current_vertical_scroll_offset;
-            self.target_column_width = target.column_width;
-            self.target_scroll_offset = target.scroll_offset;
-            self.target_vertical_scroll_offset = target.vertical_scroll_offset;
-            self.started_at = Some(now);
-        }
-
-        if let Some(started_at) = self.started_at {
-            let progress =
-                (now - started_at).as_secs_f32() / VIEWPORT_ANIMATION_DURATION.as_secs_f32();
-            let progress = progress.clamp(0.0, 1.0);
-            let eased = ease_out_cubic(progress);
-            self.current_column_width =
-                lerp(self.start_column_width, self.target_column_width, eased);
-            self.current_scroll_offset =
-                lerp(self.start_scroll_offset, self.target_scroll_offset, eased);
-            self.current_vertical_scroll_offset = lerp(
-                self.start_vertical_scroll_offset,
-                self.target_vertical_scroll_offset,
-                eased,
-            );
-
-            if progress >= 1.0 {
-                self.current_column_width = self.target_column_width;
-                self.current_scroll_offset = self.target_scroll_offset;
-                self.current_vertical_scroll_offset = self.target_vertical_scroll_offset;
-                self.started_at = None;
-            }
-        }
-
-        WorkspaceRenderLayout {
-            visible: target.visible,
-            column_width: self.current_column_width,
-            scroll_offset: self.current_scroll_offset,
-            vertical_scroll_offset: self.current_vertical_scroll_offset,
-        }
-    }
-
-    fn is_animating(&self) -> bool {
-        self.started_at.is_some()
-    }
-}
-
-#[derive(Default)]
-struct FocusPulse {
-    last_focused_id: Option<u64>,
-    started_at: Option<Instant>,
-}
-
-impl FocusPulse {
-    fn frame(&mut self, focused_id: u64, now: Instant) -> f32 {
-        match self.last_focused_id {
-            None => {
-                self.last_focused_id = Some(focused_id);
-                return 0.0;
-            }
-            Some(last_focused_id) if last_focused_id != focused_id => {
-                self.last_focused_id = Some(focused_id);
-                self.started_at = Some(now);
-            }
-            Some(_) => {}
-        }
-
-        let Some(started_at) = self.started_at else {
-            return 0.0;
-        };
-        let progress =
-            ((now - started_at).as_secs_f32() / FOCUS_PULSE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
-        if progress >= 1.0 {
-            self.started_at = None;
-            return 0.0;
-        }
-
-        1.0 - ease_out_cubic(progress)
-    }
-
-    fn is_animating(&self) -> bool {
-        self.started_at.is_some()
-    }
-}
-
-fn has_layout_target_changed(previous: f32, next: f32) -> bool {
-    (previous - next).abs() > VIEWPORT_ANIMATION_EPSILON
-}
-
-fn ease_out_cubic(progress: f32) -> f32 {
-    1.0 - (1.0 - progress).powi(3)
-}
-
-fn lerp(start: f32, end: f32, progress: f32) -> f32 {
-    start + (end - start) * progress
-}
-
 fn build_single_session_vertices(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
@@ -1007,19 +807,6 @@ fn build_single_session_vertices(
         width: width.max(1.0),
         height: height.max(1.0),
     };
-    let typography = single_session_typography();
-    let _ = (
-        typography.family,
-        typography.weight,
-        typography.fallbacks,
-        typography.title_size,
-        typography.body_size,
-        typography.meta_size,
-        typography.code_size,
-        typography.body_line_height,
-        typography.code_line_height,
-        typography.meta_line_height,
-    );
     let surface = single_session_surface(app.session.as_ref());
     push_surface(
         &mut vertices,
@@ -1029,66 +816,137 @@ fn build_single_session_vertices(
         focus_pulse,
         size,
     );
-    let draft = if !app.draft.trim().is_empty() {
-        Some(app.draft.trim())
-    } else {
-        None
-    };
-    push_panel_contents(
-        &mut vertices,
-        &surface,
-        rect,
-        size,
-        true,
-        app.detail_scroll,
-        draft,
-    );
 
     vertices
 }
 
-fn single_session_surface(session: Option<&workspace::SessionCard>) -> workspace::Surface {
-    let lines = single_session_lines(session);
-    workspace::Surface {
-        id: 1,
-        title: session
-            .map(|session| session.title.clone())
-            .unwrap_or_else(|| "new jcode session".to_string()),
-        body_lines: lines.clone(),
-        detail_lines: lines,
-        session_id: session.map(|session| session.session_id.clone()),
-        lane: 0,
-        column: 0,
-        color_index: 0,
-    }
-}
-
-fn single_session_lines(session: Option<&workspace::SessionCard>) -> Vec<String> {
-    let Some(session) = session else {
-        return vec![
-            "single session mode".to_string(),
-            "fresh desktop-native session draft".to_string(),
-            "type here without nav or insert modes".to_string(),
-            "ctrl+enter will send once desktop-native execution is connected".to_string(),
-            "ctrl+; clears this draft and starts another fresh desktop session".to_string(),
-            "run with --workspace for the niri layout wrapper".to_string(),
-        ];
+fn single_session_text_buffers(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    font_system: &mut FontSystem,
+) -> Vec<Buffer> {
+    let typography = single_session_typography();
+    let content_width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(1.0);
+    let title = app
+        .session
+        .as_ref()
+        .map(|session| session.title.as_str())
+        .unwrap_or("fresh session");
+    let body = single_session_lines(app.session.as_ref()).join("\n");
+    let draft = if app.draft.trim().is_empty() {
+        "".to_string()
+    } else {
+        format!("draft\n{}", app.draft.trim())
     };
 
-    let mut lines = vec![
-        "single session mode".to_string(),
-        session.subtitle.clone(),
-        session.detail.clone(),
-    ];
-    if !session.preview_lines.is_empty() {
-        lines.push("recent transcript".to_string());
-        lines.extend(session.preview_lines.clone());
+    vec![
+        single_session_text_buffer(
+            font_system,
+            title,
+            typography.title_size,
+            typography.title_size * typography.meta_line_height,
+            content_width,
+            48.0,
+        ),
+        single_session_text_buffer(
+            font_system,
+            &body,
+            typography.body_size,
+            typography.body_size * typography.body_line_height,
+            content_width,
+            (size.height as f32 - 150.0).max(1.0),
+        ),
+        single_session_text_buffer(
+            font_system,
+            &draft,
+            typography.code_size,
+            typography.code_size * typography.code_line_height,
+            content_width,
+            96.0,
+        ),
+    ]
+}
+
+fn single_session_text_buffer(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    line_height: f32,
+    width: f32,
+    height: f32,
+) -> Buffer {
+    let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_height));
+    buffer.set_size(font_system, width, height);
+    buffer.set_text(
+        font_system,
+        text,
+        Attrs::new().family(Family::Name(SINGLE_SESSION_FONT_FAMILY)),
+        Shaping::Advanced,
+    );
+    buffer.shape_until_scroll(font_system);
+    buffer
+}
+
+fn single_session_text_areas(buffers: &[Buffer], size: PhysicalSize<u32>) -> Vec<TextArea<'_>> {
+    if buffers.len() < 3 {
+        return Vec::new();
     }
-    if !session.detail_lines.is_empty() {
-        lines.push("expanded transcript".to_string());
-        lines.extend(session.detail_lines.clone());
-    }
-    lines
+
+    let left = PANEL_TITLE_LEFT_PADDING;
+    let right = size.width.saturating_sub(PANEL_TITLE_LEFT_PADDING as u32) as i32;
+    let bottom = size.height.saturating_sub(PANEL_TITLE_TOP_PADDING as u32) as i32;
+    let draft_top = (size.height as f32 - 118.0).max(88.0);
+
+    vec![
+        TextArea {
+            buffer: &buffers[0],
+            left,
+            top: PANEL_TITLE_TOP_PADDING,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: 0,
+                top: 0,
+                right,
+                bottom: 64,
+            },
+            default_color: text_color(PANEL_TITLE_COLOR),
+        },
+        TextArea {
+            buffer: &buffers[1],
+            left,
+            top: PANEL_BODY_TOP_PADDING,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: 0,
+                top: 0,
+                right,
+                bottom: draft_top as i32 - 12,
+            },
+            default_color: text_color(PANEL_BODY_COLOR),
+        },
+        TextArea {
+            buffer: &buffers[2],
+            left,
+            top: draft_top,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: 0,
+                top: draft_top as i32,
+                right,
+                bottom,
+            },
+            default_color: text_color(PANEL_SECTION_COLOR),
+        },
+    ]
+}
+
+fn text_color(color: [f32; 4]) -> TextColor {
+    TextColor::rgba(
+        (color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
+    )
 }
 
 fn build_vertices(
@@ -1328,278 +1186,5 @@ fn push_status_text(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn quarter_size_preset_follows_quarter_screen_width_steps() {
-        let monitor_width = Some(2000);
-
-        assert_eq!(inferred_visible_column_count(500, monitor_width, 0.25), 1);
-        assert_eq!(inferred_visible_column_count(1000, monitor_width, 0.25), 2);
-        assert_eq!(inferred_visible_column_count(1500, monitor_width, 0.25), 3);
-        assert_eq!(inferred_visible_column_count(2000, monitor_width, 0.25), 4);
-    }
-
-    #[test]
-    fn preferred_panel_size_limits_visible_column_count() {
-        let monitor_width = Some(2000);
-
-        assert_eq!(inferred_visible_column_count(2000, monitor_width, 0.25), 4);
-        assert_eq!(inferred_visible_column_count(2000, monitor_width, 0.50), 2);
-        assert_eq!(inferred_visible_column_count(2000, monitor_width, 0.75), 1);
-        assert_eq!(inferred_visible_column_count(2000, monitor_width, 1.00), 1);
-
-        assert_eq!(inferred_visible_column_count(500, monitor_width, 0.25), 1);
-        assert_eq!(inferred_visible_column_count(500, monitor_width, 1.00), 1);
-    }
-
-    #[test]
-    fn visible_column_count_tolerates_window_manager_gaps() {
-        let monitor_width = Some(2000);
-
-        assert_eq!(inferred_visible_column_count(1940, monitor_width, 0.25), 4);
-        assert_eq!(inferred_visible_column_count(970, monitor_width, 0.25), 2);
-        assert_eq!(inferred_visible_column_count(1940, monitor_width, 0.50), 2);
-    }
-
-    #[test]
-    fn visible_column_count_is_clamped_and_safe_without_monitor() {
-        assert_eq!(inferred_visible_column_count(1, Some(2000), 0.25), 1);
-        assert_eq!(inferred_visible_column_count(3000, Some(2000), 0.25), 4);
-        assert_eq!(inferred_visible_column_count(1000, Some(0), 0.25), 1);
-        assert_eq!(inferred_visible_column_count(1000, None, 0.25), 1);
-    }
-
-    #[test]
-    fn viewport_animation_interpolates_to_new_layout_target() {
-        let mut animation = AnimatedViewport::default();
-        let now = Instant::now();
-        let visible = VisibleColumnLayout {
-            visible_columns: 2,
-            first_visible_column: 0,
-        };
-        let start = WorkspaceRenderLayout {
-            visible,
-            column_width: 200.0,
-            scroll_offset: 0.0,
-            vertical_scroll_offset: 0.0,
-        };
-        let target = WorkspaceRenderLayout {
-            visible: VisibleColumnLayout {
-                visible_columns: 2,
-                first_visible_column: 2,
-            },
-            column_width: 300.0,
-            scroll_offset: 600.0,
-            vertical_scroll_offset: 800.0,
-        };
-
-        let first_frame = animation.frame(start, now);
-        assert_eq!(first_frame.column_width, 200.0);
-        assert_eq!(first_frame.scroll_offset, 0.0);
-        assert_eq!(first_frame.vertical_scroll_offset, 0.0);
-        assert!(!animation.is_animating());
-
-        let transition_start = animation.frame(target, now);
-        assert_eq!(transition_start.column_width, 200.0);
-        assert_eq!(transition_start.scroll_offset, 0.0);
-        assert_eq!(transition_start.vertical_scroll_offset, 0.0);
-        assert!(animation.is_animating());
-
-        let middle = animation.frame(target, now + VIEWPORT_ANIMATION_DURATION / 2);
-        assert!(middle.column_width > 200.0);
-        assert!(middle.column_width < 300.0);
-        assert!(middle.scroll_offset > 0.0);
-        assert!(middle.scroll_offset < 600.0);
-        assert!(middle.vertical_scroll_offset > 0.0);
-        assert!(middle.vertical_scroll_offset < 800.0);
-
-        let final_frame = animation.frame(target, now + VIEWPORT_ANIMATION_DURATION);
-        assert_eq!(final_frame.column_width, 300.0);
-        assert_eq!(final_frame.scroll_offset, 600.0);
-        assert_eq!(final_frame.vertical_scroll_offset, 800.0);
-        assert!(!animation.is_animating());
-    }
-
-    #[test]
-    fn focus_pulse_runs_when_focused_surface_changes() {
-        let mut pulse = FocusPulse::default();
-        let now = Instant::now();
-
-        assert_eq!(pulse.frame(1, now), 0.0);
-        assert!(!pulse.is_animating());
-
-        let start = pulse.frame(2, now);
-        assert!(start > 0.0);
-        assert!(pulse.is_animating());
-
-        let middle = pulse.frame(2, now + FOCUS_PULSE_DURATION / 2);
-        assert!(middle > 0.0);
-        assert!(middle < start);
-
-        let end = pulse.frame(2, now + FOCUS_PULSE_DURATION);
-        assert_eq!(end, 0.0);
-        assert!(!pulse.is_animating());
-    }
-
-    #[test]
-    fn bitmap_text_normalization_sanitizes_panel_titles() {
-        assert_eq!(
-            normalize_bitmap_text("fox · coordinator"),
-            "FOX COORDINATOR"
-        );
-        assert_eq!(normalize_bitmap_text("agent-12"), "AGENT-12");
-        assert_eq!(bitmap_text_width("NAV", 2.0), 34.0);
-    }
-
-    #[test]
-    fn bitmap_text_wrapping_breaks_on_words() {
-        assert_eq!(
-            wrap_bitmap_text("ONE TWO THREE", 1.0, bitmap_char_advance(1.0) * 7.0),
-            vec!["ONE TWO", "THREE"]
-        );
-    }
-
-    #[test]
-    fn bitmap_text_wrapping_splits_long_words() {
-        assert_eq!(
-            wrap_bitmap_text("ABCDEFGHI", 1.0, bitmap_char_advance(1.0) * 4.0),
-            vec!["ABCD", "EFGH", "I"]
-        );
-    }
-
-    #[test]
-    fn single_session_typography_targets_jetbrains_mono_light_nerd() {
-        assert_eq!(SINGLE_SESSION_FONT_FAMILY, "JetBrainsMono Nerd Font");
-        assert_eq!(SINGLE_SESSION_FONT_WEIGHT, "Light");
-        assert!(SINGLE_SESSION_FONT_FALLBACKS.contains(&"monospace"));
-        assert!(SINGLE_SESSION_TITLE_FONT_SIZE > SINGLE_SESSION_BODY_FONT_SIZE);
-        assert!(SINGLE_SESSION_BODY_FONT_SIZE > SINGLE_SESSION_META_FONT_SIZE);
-        assert!(SINGLE_SESSION_CODE_FONT_SIZE <= SINGLE_SESSION_BODY_FONT_SIZE);
-        assert!(SINGLE_SESSION_BODY_LINE_HEIGHT > SINGLE_SESSION_CODE_LINE_HEIGHT);
-        assert!(SINGLE_SESSION_CODE_LINE_HEIGHT > SINGLE_SESSION_META_LINE_HEIGHT);
-    }
-
-    #[test]
-    fn single_session_without_session_is_native_fresh_draft() {
-        let mut app = SingleSessionApp::new(None);
-
-        assert!(app.status_title().contains("single session"));
-        assert_eq!(
-            app.handle_key(KeyInput::SpawnPanel),
-            KeyOutcome::SpawnSession
-        );
-        assert!(
-            single_session_lines(None)
-                .iter()
-                .any(|line| line.contains("desktop-native"))
-        );
-    }
-
-    #[test]
-    fn default_single_session_app_starts_without_attaching_recent_session() {
-        let DesktopApp::SingleSession(mut app) = fresh_single_session_app() else {
-            panic!("default desktop app should be single-session mode");
-        };
-
-        assert!(app.session.is_none());
-        assert_eq!(
-            app.handle_key(KeyInput::SpawnPanel),
-            KeyOutcome::SpawnSession
-        );
-    }
-
-    #[test]
-    fn single_session_spawn_resets_to_fresh_native_draft() {
-        let card = workspace::SessionCard {
-            session_id: "session_alpha".to_string(),
-            title: "alpha".to_string(),
-            subtitle: "active".to_string(),
-            detail: "3 msgs".to_string(),
-            preview_lines: Vec::new(),
-            detail_lines: Vec::new(),
-        };
-        let mut app = SingleSessionApp::new(Some(card));
-        app.handle_key(KeyInput::Character("draft".to_string()));
-
-        app.reset_fresh_session();
-
-        assert!(app.session.is_none());
-        assert!(app.draft.is_empty());
-        assert_eq!(app.detail_scroll, 0);
-        assert!(app.status_title().contains("fresh session"));
-    }
-
-    #[test]
-    fn single_session_wraps_one_session_card() {
-        let card = workspace::SessionCard {
-            session_id: "session_alpha".to_string(),
-            title: "alpha".to_string(),
-            subtitle: "active".to_string(),
-            detail: "3 msgs".to_string(),
-            preview_lines: vec!["user hello".to_string()],
-            detail_lines: vec!["assistant hi".to_string()],
-        };
-        let mut app = SingleSessionApp::new(Some(card));
-
-        assert_eq!(app.handle_key(KeyInput::Enter), KeyOutcome::Redraw);
-        assert_eq!(app.draft, "\n");
-        app.handle_key(KeyInput::Character("draft".to_string()));
-        assert_eq!(
-            app.handle_key(KeyInput::SubmitDraft),
-            KeyOutcome::SendDraft {
-                session_id: "session_alpha".to_string(),
-                title: "alpha".to_string(),
-                message: "draft".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn single_session_surface_is_the_panel_primitive() {
-        let card = workspace::SessionCard {
-            session_id: "session_alpha".to_string(),
-            title: "alpha".to_string(),
-            subtitle: "active".to_string(),
-            detail: "3 msgs".to_string(),
-            preview_lines: Vec::new(),
-            detail_lines: Vec::new(),
-        };
-
-        let surface = single_session_surface(Some(&card));
-
-        assert_eq!(surface.id, 1);
-        assert_eq!(surface.title, "alpha");
-        assert_eq!(surface.session_id.as_deref(), Some("session_alpha"));
-        assert_eq!((surface.lane, surface.column), (0, 0));
-        assert!(
-            surface
-                .body_lines
-                .contains(&"single session mode".to_string())
-        );
-    }
-
-    #[test]
-    fn focused_panel_draft_only_shows_for_focused_insert_panel() {
-        let mut workspace = Workspace::from_session_cards(vec![workspace::SessionCard {
-            session_id: "a".to_string(),
-            title: "alpha".to_string(),
-            subtitle: "active".to_string(),
-            detail: "1 msg".to_string(),
-            preview_lines: Vec::new(),
-            detail_lines: Vec::new(),
-        }]);
-        workspace.handle_key(KeyInput::Character("i".to_string()));
-        workspace.handle_key(KeyInput::Character("draft text".to_string()));
-
-        assert_eq!(
-            focused_panel_draft(&workspace, workspace.focused_id),
-            Some("draft text".to_string())
-        );
-        assert_eq!(
-            focused_panel_draft(&workspace, workspace.focused_id + 1),
-            None
-        );
-    }
-}
+#[path = "main_tests.rs"]
+mod tests;
