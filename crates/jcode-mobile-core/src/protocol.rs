@@ -623,8 +623,9 @@ mod tests {
         let Ok(decoded) = decoded else {
             return;
         };
+        assert!(matches!(decoded, DecodedMobileServerEvent::Unknown(_)));
         let DecodedMobileServerEvent::Unknown(raw) = decoded else {
-            panic!("expected unknown event");
+            return;
         };
         assert_eq!(raw.event_type, "future_event");
         assert_eq!(raw.raw["payload"], 123);

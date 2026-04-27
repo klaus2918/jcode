@@ -78,8 +78,10 @@ mod tests {
     }
 
     #[test]
-    fn saves_and_loads_preferences() {
-        let _guard = env_lock().lock().unwrap();
+    fn saves_and_loads_preferences() -> Result<()> {
+        let Ok(_guard) = env_lock().lock() else {
+            anyhow::bail!("desktop prefs test env lock poisoned");
+        };
         let dir =
             std::env::temp_dir().join(format!("jcode-desktop-prefs-test-{}", std::process::id()));
         let path = dir.join("state.json");
@@ -92,12 +94,13 @@ mod tests {
             focused_session_id: Some("session_cow".to_string()),
             workspace_lane: 2,
         };
-        save_preferences(&preferences).unwrap();
-        assert_eq!(load_preferences().unwrap(), Some(preferences));
+        save_preferences(&preferences)?;
+        assert_eq!(load_preferences()?, Some(preferences));
 
         unsafe {
             std::env::remove_var("JCODE_DESKTOP_STATE");
         }
         let _ = fs::remove_dir_all(dir);
+        Ok(())
     }
 }

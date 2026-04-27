@@ -411,10 +411,12 @@ mod tests {
         session_id: &str,
         status: &str,
     ) {
+        assert!(
+            members.contains_key(session_id),
+            "missing test member {session_id}"
+        );
         if let Some(member) = members.get_mut(session_id) {
             member.status = status.to_string();
-        } else {
-            assert!(false, "missing test member {session_id}");
         }
     }
 
@@ -490,12 +492,16 @@ mod tests {
         assert_eq!(signal.request_id, "reload-2");
     }
 
-    #[tokio::test]
-    async fn persist_reload_recovery_intents_records_running_peer_recovery() {
+    #[test]
+    fn persist_reload_recovery_intents_records_running_peer_recovery() -> anyhow::Result<()> {
         let _guard = crate::storage::lock_test_env();
-        let temp_home = tempfile::TempDir::new().expect("temp jcode home");
+        let temp_home = tempfile::TempDir::new()?;
         let prev_home = std::env::var_os("JCODE_HOME");
         crate::env::set_var("JCODE_HOME", temp_home.path());
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
 
         let swarm_members = Arc::new(RwLock::new(HashMap::from([
             ("initiator".to_string(), member("initiator", "running")),
@@ -503,8 +509,11 @@ mod tests {
             ("idle".to_string(), member("idle", "ready")),
         ])));
 
-        persist_reload_recovery_intents("reload-store-test", &swarm_members, Some("initiator"))
-            .await;
+        runtime.block_on(persist_reload_recovery_intents(
+            "reload-store-test",
+            &swarm_members,
+            Some("initiator"),
+        ));
 
         let peer_directive = crate::server::reload_recovery::claim_pending_for_session("peer")
             .expect("claim peer recovery")
@@ -532,6 +541,7 @@ mod tests {
         } else {
             crate::env::remove_var("JCODE_HOME");
         }
+        Ok(())
     }
 
     #[tokio::test]

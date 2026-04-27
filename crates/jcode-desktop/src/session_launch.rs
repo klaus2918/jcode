@@ -147,10 +147,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validates_safe_session_ids() {
-        validate_resume_session_id("session_cow_123-abc.def").unwrap();
+    fn validates_safe_session_ids() -> Result<()> {
+        validate_resume_session_id("session_cow_123-abc.def")?;
         assert!(validate_resume_session_id("bad/id").is_err());
         assert!(validate_resume_session_id("bad id").is_err());
+        Ok(())
     }
 
     #[test]

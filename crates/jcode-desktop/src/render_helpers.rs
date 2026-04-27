@@ -640,7 +640,7 @@ pub(crate) fn status_preview_surface_color(
 }
 
 #[derive(Clone, Copy)]
-struct StatusPreviewLane {
+pub(crate) struct StatusPreviewLane {
     lane: i32,
     min_column: i32,
     max_column: i32,
