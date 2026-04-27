@@ -76,7 +76,26 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
 
 ## Phase 1 target after this
 
-Once Phase 0 works, the next prototype is the fake-data spatial workspace:
+Once Phase 0 works, the next prototype is the fake-data spatial workspace. The first slice should prove the core Niri/Vim-style interaction model before real sessions or text rendering:
+
+```text
+Navigation mode:
+  h/j/k/l      focus surfaces
+  H/J/K/L      move the focused surface
+  n            create a fake session surface
+  x            close the focused surface
+  z            zoom/unzoom the focused surface
+  i or Enter   enter insert mode
+  Esc          quit the prototype
+
+Insert mode:
+  typing       captured as draft input
+  Esc          return to navigation mode
+```
+
+The initial renderer may use only primitive colored rectangles and the native window title for mode/status text. Full text rendering can follow after the workspace behavior feels right.
+
+The target shape is:
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────┐

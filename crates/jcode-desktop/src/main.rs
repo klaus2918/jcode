@@ -1,20 +1,62 @@
+mod workspace;
+
 use anyhow::{Context, Result};
+use bytemuck::{Pod, Zeroable};
+use std::collections::BTreeMap;
+use wgpu::util::DeviceExt;
 use wgpu::{CompositeAlphaMode, PresentMode, SurfaceError, TextureUsages};
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Fullscreen, Window, WindowBuilder};
+use workspace::{InputMode, KeyInput, KeyOutcome, Workspace};
 
 const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
 const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;
+const OUTER_PADDING: f32 = 28.0;
+const GAP: f32 = 16.0;
+const STATUS_BAR_HEIGHT: f32 = 42.0;
+const HEADER_HEIGHT: f32 = 28.0;
+const BORDER_WIDTH: f32 = 4.0;
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
-    r: 1.0,
-    g: 1.0,
-    b: 1.0,
+    r: 0.955,
+    g: 0.965,
+    b: 0.985,
     a: 1.0,
 };
+
+const SURFACE_COLORS: [[f32; 4]; 8] = [
+    [0.875, 0.925, 1.000, 1.0],
+    [0.900, 0.965, 0.925, 1.0],
+    [0.980, 0.925, 0.985, 1.0],
+    [1.000, 0.950, 0.875, 1.0],
+    [0.930, 0.930, 0.980, 1.0],
+    [0.900, 0.965, 0.965, 1.0],
+    [0.985, 0.930, 0.930, 1.0],
+    [0.930, 0.970, 0.900, 1.0],
+];
+
+const SHADER: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4<f32>(position, 0.0, 1.0);
+    out.color = color;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return in.color;
+}
+"#;
 
 fn main() -> Result<()> {
     pollster::block_on(run())
@@ -40,6 +82,8 @@ async fn run() -> Result<()> {
             .context("failed to create desktop window")?,
     ));
 
+    let mut workspace = Workspace::fake();
+    window.set_title(&workspace.status_title());
     let mut canvas = Canvas::new(window).await?;
 
     event_loop.run(move |event, target| {
@@ -57,12 +101,18 @@ async fn run() -> Result<()> {
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }
-                    if event.state == ElementState::Pressed
-                        && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
+                    if event.state == ElementState::Pressed =>
                 {
-                    target.exit();
+                    match workspace.handle_key(to_key_input(&event.logical_key)) {
+                        KeyOutcome::Exit => target.exit(),
+                        KeyOutcome::Redraw => {
+                            window.set_title(&workspace.status_title());
+                            window.request_redraw();
+                        }
+                        KeyOutcome::None => {}
+                    }
                 }
-                WindowEvent::RedrawRequested => match canvas.render() {
+                WindowEvent::RedrawRequested => match canvas.render(&workspace) {
                     Ok(()) => {}
                     Err(SurfaceError::Lost | SurfaceError::Outdated) => {
                         canvas.resize(window.inner_size());
@@ -88,11 +138,22 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+fn to_key_input(key: &Key) -> KeyInput {
+    match key {
+        Key::Named(NamedKey::Escape) => KeyInput::Escape,
+        Key::Named(NamedKey::Enter) => KeyInput::Enter,
+        Key::Named(NamedKey::Backspace) => KeyInput::Backspace,
+        Key::Character(text) => KeyInput::Character(text.to_string()),
+        _ => KeyInput::Other,
+    }
+}
+
 struct Canvas<'window> {
     surface: wgpu::Surface<'window>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    render_pipeline: wgpu::RenderPipeline,
     size: PhysicalSize<u32>,
     needs_initial_frame: bool,
 }
@@ -158,11 +219,52 @@ impl<'window> Canvas<'window> {
         };
         surface.configure(&device, &config);
 
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("jcode-desktop-primitive-shader"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("jcode-desktop-primitive-pipeline-layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("jcode-desktop-primitive-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[Vertex::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
         Ok(Self {
             surface,
             device,
             queue,
             config,
+            render_pipeline,
             size,
             needs_initial_frame: true,
         })
@@ -180,7 +282,7 @@ impl<'window> Canvas<'window> {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn render(&mut self) -> std::result::Result<(), SurfaceError> {
+    fn render(&mut self, workspace: &Workspace) -> std::result::Result<(), SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
@@ -188,12 +290,20 @@ impl<'window> Canvas<'window> {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("jcode-desktop-clear-white"),
+                label: Some("jcode-desktop-render-workspace"),
+            });
+        let vertices = build_vertices(workspace, self.size);
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("jcode-desktop-workspace-vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
             });
 
         {
-            let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("jcode-desktop-white-canvas-pass"),
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("jcode-desktop-workspace-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -206,12 +316,212 @@ impl<'window> Canvas<'window> {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.draw(0..vertices.len() as u32, 0..1);
         }
 
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         Ok(())
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+    color: [f32; 4],
+}
+
+impl Vertex {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Rect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+fn build_vertices(workspace: &Workspace, size: PhysicalSize<u32>) -> Vec<Vertex> {
+    let width = size.width as f32;
+    let height = size.height as f32;
+    let mut vertices = Vec::new();
+
+    let status_color = match workspace.mode {
+        InputMode::Navigation => [0.075, 0.105, 0.180, 1.0],
+        InputMode::Insert => [0.040, 0.300, 0.180, 1.0],
+    };
+    push_rect(
+        &mut vertices,
+        Rect {
+            x: 0.0,
+            y: height - STATUS_BAR_HEIGHT,
+            width,
+            height: STATUS_BAR_HEIGHT,
+        },
+        status_color,
+        size,
+    );
+
+    if workspace.zoomed {
+        if let Some(surface) = workspace.focused_surface() {
+            let rect = Rect {
+                x: OUTER_PADDING,
+                y: OUTER_PADDING,
+                width: (width - OUTER_PADDING * 2.0).max(1.0),
+                height: (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 2.0).max(1.0),
+            };
+            push_surface(&mut vertices, rect, surface.color_index, true, size);
+        }
+        return vertices;
+    }
+
+    let lanes = index_by(workspace.surfaces.iter().map(|surface| surface.lane));
+    let columns = index_by(workspace.surfaces.iter().map(|surface| surface.column));
+    let lane_count = lanes.len().max(1) as f32;
+    let column_count = columns.len().max(1) as f32;
+    let workspace_height = (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 2.0).max(1.0);
+    let workspace_width = (width - OUTER_PADDING * 2.0).max(1.0);
+    let cell_width = ((workspace_width - GAP * (column_count - 1.0)) / column_count).max(24.0);
+    let cell_height = ((workspace_height - GAP * (lane_count - 1.0)) / lane_count).max(24.0);
+
+    for surface in &workspace.surfaces {
+        let column = columns.get(&surface.column).copied().unwrap_or_default() as f32;
+        let lane = lanes.get(&surface.lane).copied().unwrap_or_default() as f32;
+        let rect = Rect {
+            x: OUTER_PADDING + column * (cell_width + GAP),
+            y: OUTER_PADDING + lane * (cell_height + GAP),
+            width: cell_width,
+            height: cell_height,
+        };
+        push_surface(
+            &mut vertices,
+            rect,
+            surface.color_index,
+            workspace.is_focused(surface.id),
+            size,
+        );
+    }
+
+    vertices
+}
+
+fn index_by(values: impl Iterator<Item = i32>) -> BTreeMap<i32, usize> {
+    let mut map = BTreeMap::new();
+    for value in values {
+        if !map.contains_key(&value) {
+            let index = map.len();
+            map.insert(value, index);
+        }
+    }
+    map
+}
+
+fn push_surface(
+    vertices: &mut Vec<Vertex>,
+    rect: Rect,
+    color_index: usize,
+    focused: bool,
+    size: PhysicalSize<u32>,
+) {
+    let fill = SURFACE_COLORS[color_index % SURFACE_COLORS.len()];
+    let header = darken(fill, 0.86);
+    let border = if focused {
+        [0.125, 0.315, 1.000, 1.0]
+    } else {
+        [0.730, 0.760, 0.815, 1.0]
+    };
+
+    push_rect(vertices, rect, border, size);
+    let inset = if focused { BORDER_WIDTH } else { 2.0 };
+    let inner = inset_rect(rect, inset);
+    push_rect(vertices, inner, fill, size);
+    push_rect(
+        vertices,
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: HEADER_HEIGHT.min(inner.height),
+        },
+        header,
+        size,
+    );
+}
+
+fn inset_rect(rect: Rect, amount: f32) -> Rect {
+    Rect {
+        x: rect.x + amount,
+        y: rect.y + amount,
+        width: (rect.width - amount * 2.0).max(1.0),
+        height: (rect.height - amount * 2.0).max(1.0),
+    }
+}
+
+fn darken(color: [f32; 4], factor: f32) -> [f32; 4] {
+    [
+        color[0] * factor,
+        color[1] * factor,
+        color[2] * factor,
+        color[3],
+    ]
+}
+
+fn push_rect(vertices: &mut Vec<Vertex>, rect: Rect, color: [f32; 4], size: PhysicalSize<u32>) {
+    let width = size.width.max(1) as f32;
+    let height = size.height.max(1) as f32;
+    let left = rect.x / width * 2.0 - 1.0;
+    let right = (rect.x + rect.width) / width * 2.0 - 1.0;
+    let top = 1.0 - rect.y / height * 2.0;
+    let bottom = 1.0 - (rect.y + rect.height) / height * 2.0;
+
+    vertices.extend_from_slice(&[
+        Vertex {
+            position: [left, top],
+            color,
+        },
+        Vertex {
+            position: [left, bottom],
+            color,
+        },
+        Vertex {
+            position: [right, bottom],
+            color,
+        },
+        Vertex {
+            position: [left, top],
+            color,
+        },
+        Vertex {
+            position: [right, bottom],
+            color,
+        },
+        Vertex {
+            position: [right, top],
+            color,
+        },
+    ]);
 }
 
 fn non_zero_size(size: PhysicalSize<u32>) -> PhysicalSize<u32> {

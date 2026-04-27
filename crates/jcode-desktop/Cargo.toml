@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.3"
 wgpu = "0.19"
 winit = "0.29"
