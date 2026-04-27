@@ -540,12 +540,14 @@ impl Workspace {
 
     fn open_hotkey_help(&mut self) {
         let lane = self.current_workspace();
-        if let Some(surface) = self
+        let body_lines = self.hotkey_help_lines();
+        if let Some(index) = self
             .surfaces
             .iter()
-            .find(|surface| surface.lane == lane && surface.title == "hotkey help")
+            .position(|surface| surface.lane == lane && surface.title == "hotkey help")
         {
-            self.focused_id = surface.id;
+            self.surfaces[index].body_lines = body_lines;
+            self.focused_id = self.surfaces[index].id;
             self.zoomed = false;
             return;
         }
@@ -561,17 +563,46 @@ impl Workspace {
         let id = self.next_id;
         self.next_id += 1;
         let mut help = Surface::new(id, "hotkey help", lane, column, id as usize);
-        help.body_lines = vec![
-            "h l focus columns".to_string(),
-            "j k focus workspaces".to_string(),
-            "ctrl 1 2 3 4 panel width".to_string(),
-            "ctrl semicolon new panel".to_string(),
-            "ctrl r refresh sessions".to_string(),
-            "ctrl slash help".to_string(),
-        ];
+        help.body_lines = body_lines;
         self.surfaces.push(help);
         self.focused_id = id;
         self.zoomed = false;
+    }
+
+    fn hotkey_help_lines(&self) -> Vec<String> {
+        match self.mode {
+            InputMode::Navigation => {
+                let mut lines = vec![
+                    "NAV mode".to_string(),
+                    "h l focus columns".to_string(),
+                    "j k focus workspaces".to_string(),
+                    "H L swap columns".to_string(),
+                    "J K move panel workspaces".to_string(),
+                    "ctrl 1 2 3 4 panel width".to_string(),
+                    "ctrl r refresh sessions".to_string(),
+                    "ctrl semicolon new panel".to_string(),
+                    "ctrl slash help".to_string(),
+                    "x close panel  z zoom".to_string(),
+                ];
+                if self.focused_session_target().is_some() {
+                    lines.push("o or enter open session".to_string());
+                } else {
+                    lines.push("enter insert mode".to_string());
+                }
+                lines.push("i insert  esc quit".to_string());
+                lines
+            }
+            InputMode::Insert => vec![
+                "INSERT mode".to_string(),
+                "type appends draft text".to_string(),
+                "enter newline".to_string(),
+                "backspace delete char".to_string(),
+                "esc nav mode".to_string(),
+                "ctrl r refresh sessions".to_string(),
+                "ctrl semicolon new panel".to_string(),
+                "ctrl slash help".to_string(),
+            ],
+        }
     }
 
     fn close_focused(&mut self) -> bool {
@@ -798,6 +829,27 @@ mod tests {
                 .count(),
             1
         );
+        assert!(workspace.focused_surface().is_some_and(|surface| {
+            surface
+                .body_lines
+                .contains(&"enter insert mode".to_string())
+        }));
+    }
+
+    #[test]
+    fn hotkey_help_mentions_opening_when_focused_on_real_session() {
+        let mut workspace = Workspace::from_session_cards(vec![session_card("a", "alpha")]);
+
+        assert_eq!(
+            workspace.handle_key(KeyInput::HotkeyHelp),
+            KeyOutcome::Redraw
+        );
+
+        assert!(workspace.focused_surface().is_some_and(|surface| {
+            surface
+                .body_lines
+                .contains(&"o or enter open session".to_string())
+        }));
     }
 
     #[test]
