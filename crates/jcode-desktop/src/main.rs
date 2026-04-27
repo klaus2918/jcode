@@ -19,7 +19,7 @@ const OUTER_PADDING: f32 = 8.0;
 const GAP: f32 = 6.0;
 const STATUS_BAR_HEIGHT: f32 = 30.0;
 const FOCUSED_BORDER_WIDTH: f32 = 2.0;
-const UNFOCUSED_BORDER_WIDTH: f32 = 1.0;
+const UNFOCUSED_BORDER_WIDTH: f32 = 1.5;
 const PANEL_RADIUS: f32 = 8.0;
 const STATUS_RADIUS: f32 = 7.0;
 const ROUNDED_CORNER_SEGMENTS: usize = 6;
@@ -50,9 +50,8 @@ const BACKGROUND_TOP_LEFT: [f32; 4] = [0.902, 0.937, 1.000, 1.0];
 const BACKGROUND_TOP_RIGHT: [f32; 4] = [0.957, 0.925, 1.000, 1.0];
 const BACKGROUND_BOTTOM_RIGHT: [f32; 4] = [0.918, 0.984, 0.953, 1.0];
 const BACKGROUND_BOTTOM_LEFT: [f32; 4] = [0.953, 0.965, 0.984, 1.0];
-const GLASS_PANEL_FILL: [f32; 4] = [0.110, 0.125, 0.165, 0.10];
-const FOCUS_RING_COLOR: [f32; 4] = [0.255, 0.275, 0.315, 0.75];
-const UNFOCUSED_BORDER_COLOR: [f32; 4] = [0.235, 0.260, 0.305, 0.40];
+const FOCUS_RING_COLOR: [f32; 4] = [0.205, 0.225, 0.265, 0.90];
+const UNFOCUSED_BORDER_COLOR: [f32; 4] = [0.205, 0.225, 0.265, 0.58];
 const NAV_STATUS_COLOR: [f32; 4] = [0.184, 0.204, 0.251, 1.0];
 const INSERT_STATUS_COLOR: [f32; 4] = [0.310, 0.435, 0.376, 1.0];
 const STATUS_PREVIEW_ACTIVE_GROUP_COLOR: [f32; 4] = [0.953, 0.965, 0.984, 0.16];
@@ -1069,20 +1068,88 @@ fn push_surface(
         UNFOCUSED_BORDER_COLOR
     };
 
-    push_rounded_rect(vertices, rect, PANEL_RADIUS, border, size);
-    let inset = if focused {
+    let stroke_width = if focused {
         FOCUSED_BORDER_WIDTH
     } else {
         UNFOCUSED_BORDER_WIDTH
     };
-    let inner = inset_rect(rect, inset);
-    push_rounded_rect(
-        vertices,
-        inner,
-        (PANEL_RADIUS - inset).max(1.0),
-        GLASS_PANEL_FILL,
-        size,
+    push_panel_outline(vertices, rect, stroke_width, border, size);
+}
+
+fn push_panel_outline(
+    vertices: &mut Vec<Vertex>,
+    rect: Rect,
+    stroke_width: f32,
+    color: [f32; 4],
+    size: PhysicalSize<u32>,
+) {
+    let stroke_width = stroke_width
+        .max(1.0)
+        .min(rect.width / 2.0)
+        .min(rect.height / 2.0);
+    let outer_radius = PANEL_RADIUS.min(rect.width / 2.0).min(rect.height / 2.0);
+    let inner = inset_rect(rect, stroke_width);
+    let inner_radius = (outer_radius - stroke_width).max(0.0);
+    let outer_points = rounded_rect_points(rect, outer_radius);
+    let inner_points = rounded_rect_points(inner, inner_radius);
+
+    for index in 0..outer_points.len() {
+        let next_index = (index + 1) % outer_points.len();
+        push_pixel_triangle(
+            vertices,
+            outer_points[index],
+            outer_points[next_index],
+            inner_points[next_index],
+            color,
+            size,
+        );
+        push_pixel_triangle(
+            vertices,
+            outer_points[index],
+            inner_points[next_index],
+            inner_points[index],
+            color,
+            size,
+        );
+    }
+}
+
+fn rounded_rect_points(rect: Rect, radius: f32) -> Vec<[f32; 2]> {
+    let radius = radius.max(0.0).min(rect.width / 2.0).min(rect.height / 2.0);
+    let mut points = Vec::with_capacity((ROUNDED_CORNER_SEGMENTS + 1) * 4);
+    append_arc_points(
+        &mut points,
+        rect.x + rect.width - radius,
+        rect.y + radius,
+        radius,
+        -std::f32::consts::FRAC_PI_2,
+        0.0,
     );
+    append_arc_points(
+        &mut points,
+        rect.x + rect.width - radius,
+        rect.y + rect.height - radius,
+        radius,
+        0.0,
+        std::f32::consts::FRAC_PI_2,
+    );
+    append_arc_points(
+        &mut points,
+        rect.x + radius,
+        rect.y + rect.height - radius,
+        radius,
+        std::f32::consts::FRAC_PI_2,
+        std::f32::consts::PI,
+    );
+    append_arc_points(
+        &mut points,
+        rect.x + radius,
+        rect.y + radius,
+        radius,
+        std::f32::consts::PI,
+        std::f32::consts::PI * 1.5,
+    );
+    points
 }
 
 fn inset_rect(rect: Rect, amount: f32) -> Rect {
