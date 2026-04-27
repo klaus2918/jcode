@@ -16,6 +16,7 @@ pub(crate) const SINGLE_SESSION_BODY_LINE_HEIGHT: f32 = 1.45;
 pub(crate) const SINGLE_SESSION_CODE_LINE_HEIGHT: f32 = 1.35;
 pub(crate) const SINGLE_SESSION_META_LINE_HEIGHT: f32 = 1.25;
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SingleSessionTypography {
     pub(crate) family: &'static str,
