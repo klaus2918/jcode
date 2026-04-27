@@ -1295,10 +1295,7 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
 }
 
 pub(super) fn is_refresh_model_list_command(trimmed: &str) -> bool {
-    matches!(
-        trimmed,
-        "/refresh-model-list" | "/refresh-models" | "/refresh models" | "/refresh model list"
-    )
+    trimmed == "/refresh-model-list"
 }
 
 pub(super) fn format_model_refresh_summary(

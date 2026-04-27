@@ -875,9 +875,6 @@ impl App {
 
         const RECOMMENDED_MODELS: &[&str] = &[
             "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4[1m]",
-            "gpt-5.4-pro",
             "claude-opus-4-7",
             "moonshotai/kimi-k2.6",
             "moonshotai/kimi-k2.5",
