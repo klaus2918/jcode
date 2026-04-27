@@ -46,6 +46,25 @@ enum Command {
         socket: Option<PathBuf>,
         node_id: String,
     },
+    HitTest {
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        x: i32,
+        y: i32,
+    },
+    TapAt {
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        x: i32,
+        y: i32,
+    },
+    AssertHit {
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        x: i32,
+        y: i32,
+        node_id: String,
+    },
     AssertScreen {
         #[arg(long)]
         socket: Option<PathBuf>,
@@ -170,6 +189,30 @@ async fn main() -> Result<()> {
                 &resolve_socket(socket),
                 "find_node",
                 json!({ "node_id": node_id }),
+            )
+            .await?,
+        ),
+        Command::HitTest { socket, x, y } => print_result(
+            send_simple(
+                &resolve_socket(socket),
+                "hit_test",
+                json!({ "x": x, "y": y }),
+            )
+            .await?,
+        ),
+        Command::TapAt { socket, x, y } => print_result(
+            send_simple(&resolve_socket(socket), "tap_at", json!({ "x": x, "y": y })).await?,
+        ),
+        Command::AssertHit {
+            socket,
+            x,
+            y,
+            node_id,
+        } => print_result(
+            send_simple(
+                &resolve_socket(socket),
+                "assert_hit",
+                json!({ "x": x, "y": y, "node_id": node_id }),
             )
             .await?,
         ),

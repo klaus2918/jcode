@@ -1,5 +1,8 @@
 use anyhow::{Context, Result, anyhow, bail};
-use jcode_mobile_core::{DispatchReport, ScenarioName, SimulatorAction, SimulatorStore};
+use jcode_mobile_core::{
+    DispatchReport, ScenarioName, SimulatorAction, SimulatorStore, UiNodeAction, hit_test,
+    hit_test_actionable,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -198,6 +201,65 @@ async fn handle_request(
                 Err(err) => Err(err),
             }
         }
+        "hit_test" => match required_i32(&request.params, "x")
+            .and_then(|x| Ok((x, required_i32(&request.params, "y")?)))
+        {
+            Ok((x, y)) => {
+                let store = store.lock().await;
+                let tree = store.semantic_tree();
+                let node = hit_test(&tree, x, y);
+                Ok((json!({"x": x, "y": y, "node": node}), false))
+            }
+            Err(err) => Err(err),
+        },
+        "tap_at" => match required_i32(&request.params, "x")
+            .and_then(|x| Ok((x, required_i32(&request.params, "y")?)))
+        {
+            Ok((x, y)) => {
+                let mut store = store.lock().await;
+                let tree = store.semantic_tree();
+                let node_id = hit_test_actionable(&tree, x, y, UiNodeAction::Tap)
+                    .map(|node| node.id.clone())
+                    .ok_or_else(|| anyhow!("no tappable node at ({x}, {y})"));
+                match node_id {
+                    Ok(node_id) => {
+                        let report: DispatchReport = store.dispatch(SimulatorAction::TapNode {
+                            node_id: node_id.clone(),
+                        });
+                        Ok((
+                            json!({"x": x, "y": y, "node_id": node_id, "report": report}),
+                            false,
+                        ))
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            Err(err) => Err(err),
+        },
+        "assert_hit" => match required_i32(&request.params, "x")
+            .and_then(|x| Ok((x, required_i32(&request.params, "y")?)))
+        {
+            Ok((x, y)) => {
+                let expected = required_str(&request.params, "node_id");
+                match expected {
+                    Ok(expected) => {
+                        let store = store.lock().await;
+                        let tree = store.semantic_tree();
+                        let actual = hit_test(&tree, x, y).map(|node| node.id.as_str());
+                        if actual == Some(expected) {
+                            Ok((json!({"x": x, "y": y, "node_id": expected}), false))
+                        } else {
+                            Err(anyhow!(
+                                "expected hit at ({x}, {y}) to be {expected}, got {:?}",
+                                actual
+                            ))
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            Err(err) => Err(err),
+        },
         "assert_screen" => {
             let expected = required_str(&request.params, "screen");
             match expected {
@@ -420,6 +482,14 @@ fn required_str<'a>(params: &'a Value, field: &str) -> Result<&'a str> {
         .get(field)
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing {field}"))
+}
+
+fn required_i32(params: &Value, field: &str) -> Result<i32> {
+    let value = params
+        .get(field)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("missing integer {field}"))?;
+    i32::try_from(value).map_err(|_| anyhow!("{field} is outside i32 range"))
 }
 
 fn find_node_json<'a>(value: &'a Value, node_id: &str) -> Option<&'a Value> {
@@ -649,6 +719,17 @@ mod tests {
         )
         .await?;
         assert!(assert_node.ok);
+
+        let assert_hit = send_request(
+            &socket,
+            AutomationRequest {
+                id: "assert-hit".to_string(),
+                method: "assert_hit".to_string(),
+                params: json!({"x": 330, "y": 788, "node_id": "chat.send"}),
+            },
+        )
+        .await?;
+        assert!(assert_hit.ok);
 
         let assert_text = send_request(
             &socket,

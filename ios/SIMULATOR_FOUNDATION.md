@@ -212,6 +212,22 @@ cargo run -p jcode-mobile-sim -- tap chat.send
 cargo run -p jcode-mobile-sim -- tap chat.interrupt
 ```
 
+### Hit-test and tap by coordinates
+
+The semantic tree includes deterministic default viewport bounds for Linux
+headless tests. Agents can inspect the node under a point, assert expected hit
+targets, or tap spatially like a human.
+
+```bash
+cargo run -p jcode-mobile-sim -- hit-test 195 354
+cargo run -p jcode-mobile-sim -- assert-hit 195 354 pair.submit
+cargo run -p jcode-mobile-sim -- tap-at 195 354
+```
+
+The default viewport is `390x844` logical pixels. Semantic node IDs remain the
+preferred stable automation surface, while coordinate taps validate layout and
+hit-testing behavior.
+
 ### Load a scenario
 
 ```bash
@@ -282,7 +298,6 @@ This is an initial foundation only.
 Not included yet:
 
 - visible desktop renderer
-- layout geometry export
 - screenshot export
 - richer replay DSL beyond deterministic JSON action bundles
 - live render inspector

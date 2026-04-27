@@ -390,7 +390,7 @@ pub enum UiNodeRole {
     Composer,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UiNodeAction {
     Tap,
@@ -399,12 +399,25 @@ pub enum UiNodeAction {
     Scroll,
 }
 
+pub const DEFAULT_VIEWPORT_WIDTH: i32 = 390;
+pub const DEFAULT_VIEWPORT_HEIGHT: i32 = 844;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiRect {
     pub x: i32,
     pub y: i32,
     pub width: i32,
     pub height: i32,
+}
+
+impl UiRect {
+    pub fn contains_point(&self, x: i32, y: i32) -> bool {
+        x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
+    }
+
+    pub fn center(&self) -> (i32, i32) {
+        (self.x + self.width / 2, self.y + self.height / 2)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -427,6 +440,57 @@ pub struct UiNode {
 pub struct UiTree {
     pub screen: Screen,
     pub root: UiNode,
+}
+
+pub fn hit_test(tree: &UiTree, x: i32, y: i32) -> Option<&UiNode> {
+    hit_test_node(&tree.root, x, y)
+}
+
+pub fn hit_test_actionable(tree: &UiTree, x: i32, y: i32, action: UiNodeAction) -> Option<&UiNode> {
+    hit_test_actionable_node(&tree.root, x, y, action)
+}
+
+fn hit_test_node(node: &UiNode, x: i32, y: i32) -> Option<&UiNode> {
+    if !node.visible
+        || !node
+            .bounds
+            .is_some_and(|bounds| bounds.contains_point(x, y))
+    {
+        return None;
+    }
+
+    node.children
+        .iter()
+        .rev()
+        .find_map(|child| hit_test_node(child, x, y))
+        .or(Some(node))
+}
+
+fn hit_test_actionable_node(
+    node: &UiNode,
+    x: i32,
+    y: i32,
+    action: UiNodeAction,
+) -> Option<&UiNode> {
+    if !node.visible
+        || !node
+            .bounds
+            .is_some_and(|bounds| bounds.contains_point(x, y))
+    {
+        return None;
+    }
+
+    node.children
+        .iter()
+        .rev()
+        .find_map(|child| hit_test_actionable_node(child, x, y, action))
+        .or_else(|| {
+            if node.enabled && node.supported_actions.contains(&action) {
+                Some(node)
+            } else {
+                None
+            }
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1026,7 +1090,7 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
         }
     }
 
-    with_agent_metadata(UiTree {
+    with_default_layout(with_agent_metadata(UiTree {
         screen: state.screen,
         root: UiNode {
             id: "root".to_string(),
@@ -1042,7 +1106,105 @@ fn build_ui_tree(state: &SimulatorState) -> UiTree {
             bounds: None,
             children,
         },
-    })
+    }))
+}
+
+fn with_default_layout(mut tree: UiTree) -> UiTree {
+    tree.root.bounds = Some(UiRect {
+        x: 0,
+        y: 0,
+        width: DEFAULT_VIEWPORT_WIDTH,
+        height: DEFAULT_VIEWPORT_HEIGHT,
+    });
+
+    let mut y = 16;
+    for child in &mut tree.root.children {
+        match child.id.as_str() {
+            "banner.status" | "banner.error" => {
+                child.bounds = Some(UiRect {
+                    x: 16,
+                    y,
+                    width: DEFAULT_VIEWPORT_WIDTH - 32,
+                    height: 44,
+                });
+                y += 56;
+            }
+            _ => {}
+        }
+    }
+
+    match tree.screen {
+        Screen::Onboarding | Screen::Pairing => layout_pairing_screen(&mut tree.root.children, y),
+        Screen::Chat => layout_chat_screen(&mut tree.root.children, y),
+    }
+
+    tree
+}
+
+fn layout_pairing_screen(children: &mut [UiNode], mut y: i32) {
+    for id in [
+        "pair.host",
+        "pair.port",
+        "pair.code",
+        "pair.device_name",
+        "pair.submit",
+    ] {
+        if let Some(node) = children.iter_mut().find(|node| node.id == id) {
+            node.bounds = Some(UiRect {
+                x: 16,
+                y,
+                width: DEFAULT_VIEWPORT_WIDTH - 32,
+                height: 52,
+            });
+            y += 64;
+        }
+    }
+}
+
+fn layout_chat_screen(children: &mut [UiNode], y: i32) {
+    if let Some(messages) = children.iter_mut().find(|node| node.id == "chat.messages") {
+        messages.bounds = Some(UiRect {
+            x: 16,
+            y,
+            width: DEFAULT_VIEWPORT_WIDTH - 32,
+            height: 610 - y,
+        });
+        let mut message_y = y + 8;
+        for message in &mut messages.children {
+            message.bounds = Some(UiRect {
+                x: 24,
+                y: message_y,
+                width: DEFAULT_VIEWPORT_WIDTH - 48,
+                height: 56,
+            });
+            message_y += 64;
+        }
+    }
+
+    if let Some(draft) = children.iter_mut().find(|node| node.id == "chat.draft") {
+        draft.bounds = Some(UiRect {
+            x: 16,
+            y: 690,
+            width: DEFAULT_VIEWPORT_WIDTH - 32,
+            height: 52,
+        });
+    }
+    if let Some(send) = children.iter_mut().find(|node| node.id == "chat.send") {
+        send.bounds = Some(UiRect {
+            x: DEFAULT_VIEWPORT_WIDTH - 110,
+            y: 766,
+            width: 94,
+            height: 44,
+        });
+    }
+    if let Some(interrupt) = children.iter_mut().find(|node| node.id == "chat.interrupt") {
+        interrupt.bounds = Some(UiRect {
+            x: 16,
+            y: 766,
+            width: 120,
+            height: 44,
+        });
+    }
 }
 
 fn with_agent_metadata(mut tree: UiTree) -> UiTree {
@@ -1279,5 +1441,36 @@ mod tests {
         let golden = include_str!("../tests/golden/pairing_ready_chat_send.json");
         let trace: ReplayTrace = serde_json::from_str(golden).expect("parse golden replay trace");
         trace.assert_replays().expect("golden trace replays");
+    }
+
+    #[test]
+    fn layout_bounds_support_hit_testing() {
+        let store = SimulatorStore::new(SimulatorState::for_scenario(ScenarioName::PairingReady));
+        let tree = store.semantic_tree();
+        let submit = tree
+            .root
+            .children
+            .iter()
+            .find(|node| node.id == "pair.submit")
+            .expect("pair.submit node");
+        let (x, y) = submit.bounds.expect("pair.submit bounds").center();
+        assert_eq!(
+            hit_test(&tree, x, y).map(|node| node.id.as_str()),
+            Some("pair.submit")
+        );
+        assert_eq!(
+            hit_test_actionable(&tree, x, y, UiNodeAction::Tap).map(|node| node.id.as_str()),
+            Some("pair.submit")
+        );
+    }
+
+    #[test]
+    fn chat_layout_hit_tests_send_button() {
+        let store = SimulatorStore::new(SimulatorState::for_scenario(ScenarioName::ConnectedChat));
+        let tree = store.semantic_tree();
+        assert_eq!(
+            hit_test_actionable(&tree, 330, 788, UiNodeAction::Tap).map(|node| node.id.as_str()),
+            Some("chat.send")
+        );
     }
 }
