@@ -5,7 +5,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -17,11 +17,30 @@ pub enum DesktopSessionEvent {
     SessionStarted { session_id: String },
     TextDelta(String),
     TextReplace(String),
+    Reloading { new_socket: Option<String> },
     Done,
     Error(String),
 }
 
 pub type DesktopSessionEventSender = Sender<DesktopSessionEvent>;
+
+#[derive(Clone, Debug)]
+pub struct DesktopSessionHandle {
+    command_tx: Sender<DesktopSessionCommand>,
+}
+
+impl DesktopSessionHandle {
+    pub fn cancel(&self) -> Result<()> {
+        self.command_tx
+            .send(DesktopSessionCommand::Cancel)
+            .context("failed to send cancel to desktop session worker")
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DesktopSessionCommand {
+    Cancel,
+}
 
 pub fn launch_resume_session(session_id: &str, title: &str) -> Result<()> {
     let title = format!("jcode · {}", compact_title(title));
@@ -57,43 +76,52 @@ pub fn send_message_to_session(session_id: &str, _title: &str, message: &str) ->
 pub fn spawn_fresh_server_session(
     message: String,
     event_tx: DesktopSessionEventSender,
-) -> Result<()> {
+) -> Result<DesktopSessionHandle> {
     if message.trim().is_empty() {
         anyhow::bail!("empty draft message");
     }
 
+    let (command_tx, command_rx) = mpsc::channel();
+    let handle = DesktopSessionHandle { command_tx };
     std::thread::Builder::new()
         .name("jcode-desktop-fresh-session".to_string())
         .spawn(move || {
-            if let Err(error) = run_server_session(None, &message, Some(event_tx.clone())) {
+            if let Err(error) =
+                run_server_session(None, &message, Some(event_tx.clone()), command_rx)
+            {
                 let _ = event_tx.send(DesktopSessionEvent::Error(format!("{error:#}")));
             }
         })
         .context("failed to spawn desktop session worker")?;
-    Ok(())
+    Ok(handle)
 }
 
 pub fn spawn_message_to_session(
     session_id: String,
     message: String,
     event_tx: DesktopSessionEventSender,
-) -> Result<()> {
+) -> Result<DesktopSessionHandle> {
     validate_resume_session_id(&session_id).context("refusing to send to invalid session id")?;
     if message.trim().is_empty() {
         anyhow::bail!("empty draft message");
     }
 
+    let (command_tx, command_rx) = mpsc::channel();
+    let handle = DesktopSessionHandle { command_tx };
     std::thread::Builder::new()
         .name("jcode-desktop-session-message".to_string())
         .spawn(move || {
-            if let Err(error) =
-                run_server_session(Some(&session_id), &message, Some(event_tx.clone()))
-            {
+            if let Err(error) = run_server_session(
+                Some(&session_id),
+                &message,
+                Some(event_tx.clone()),
+                command_rx,
+            ) {
                 let _ = event_tx.send(DesktopSessionEvent::Error(format!("{error:#}")));
             }
         })
         .context("failed to spawn desktop session worker")?;
-    Ok(())
+    Ok(handle)
 }
 
 #[cfg(unix)]
@@ -101,6 +129,7 @@ fn run_server_session(
     target_session_id: Option<&str>,
     message: &str,
     event_tx: Option<DesktopSessionEventSender>,
+    command_rx: Receiver<DesktopSessionCommand>,
 ) -> Result<String> {
     send_desktop_status(&event_tx, "starting shared server");
     ensure_server_running()?;
@@ -110,17 +139,10 @@ fn run_server_session(
         .try_clone()
         .context("failed to clone server socket writer")?;
     let mut reader = BufReader::new(stream);
+    let mut next_request_id = 1_u64;
 
-    write_json_line(
-        &mut writer,
-        json!({
-            "type": "subscribe",
-            "id": 1,
-            "target_session_id": target_session_id,
-            "client_has_local_history": false,
-            "allow_session_takeover": false,
-        }),
-    )?;
+    subscribe_to_server(&mut writer, next_request_id, target_session_id)?;
+    next_request_id += 1;
 
     let session_id = read_session_id(&mut reader, SERVER_START_TIMEOUT, event_tx.as_ref())?;
     send_desktop_event(
@@ -135,13 +157,43 @@ fn run_server_session(
         &mut writer,
         json!({
             "type": "message",
-            "id": 2,
+            "id": next_request_id,
             "content": message,
             "images": [],
         }),
     )?;
+    next_request_id += 1;
 
-    drain_session_events(reader, event_tx.as_ref());
+    let mut current_socket_path = socket_path();
+    loop {
+        match drain_session_events(
+            reader,
+            &mut writer,
+            &mut next_request_id,
+            event_tx.as_ref(),
+            &command_rx,
+        )? {
+            DrainOutcome::Terminal => break,
+            DrainOutcome::Disconnected => {
+                send_desktop_status(&event_tx, "server disconnected, reconnecting");
+            }
+            DrainOutcome::Reloading { new_socket } => {
+                if let Some(path) = new_socket {
+                    current_socket_path = PathBuf::from(path);
+                }
+                send_desktop_status(&event_tx, "server reloading, reconnecting");
+            }
+        }
+
+        let stream = connect_server_with_retry_path(&current_socket_path, SERVER_START_TIMEOUT)?;
+        writer = stream
+            .try_clone()
+            .context("failed to clone reconnected server socket writer")?;
+        reader = BufReader::new(stream);
+        subscribe_to_server(&mut writer, next_request_id, Some(&session_id))?;
+        next_request_id += 1;
+        let _ = read_session_id(&mut reader, SERVER_START_TIMEOUT, event_tx.as_ref())?;
+    }
     Ok(session_id)
 }
 
@@ -150,6 +202,7 @@ fn run_server_session(
     _target_session_id: Option<&str>,
     _message: &str,
     _event_tx: Option<DesktopSessionEventSender>,
+    _command_rx: Receiver<DesktopSessionCommand>,
 ) -> Result<String> {
     anyhow::bail!("desktop server sessions are not implemented on this platform yet")
 }
@@ -173,11 +226,15 @@ fn ensure_server_running() -> Result<()> {
 
 #[cfg(unix)]
 fn connect_server_with_retry(timeout: Duration) -> Result<UnixStream> {
-    let socket_path = socket_path();
+    connect_server_with_retry_path(&socket_path(), timeout)
+}
+
+#[cfg(unix)]
+fn connect_server_with_retry_path(socket_path: &PathBuf, timeout: Duration) -> Result<UnixStream> {
     let started = Instant::now();
     let mut last_error = None;
     while started.elapsed() < timeout {
-        match UnixStream::connect(&socket_path) {
+        match UnixStream::connect(socket_path) {
             Ok(stream) => return Ok(stream),
             Err(error) => last_error = Some(error),
         }
@@ -193,6 +250,24 @@ fn connect_server_with_retry(timeout: Duration) -> Result<UnixStream> {
         }),
         None => anyhow::bail!("timed out connecting to jcode server"),
     }
+}
+
+#[cfg(unix)]
+fn subscribe_to_server(
+    writer: &mut UnixStream,
+    id: u64,
+    target_session_id: Option<&str>,
+) -> Result<()> {
+    write_json_line(
+        writer,
+        json!({
+            "type": "subscribe",
+            "id": id,
+            "target_session_id": target_session_id,
+            "client_has_local_history": false,
+            "allow_session_takeover": false,
+        }),
+    )
 }
 
 #[cfg(unix)]
@@ -253,18 +328,54 @@ fn write_json_line(writer: &mut UnixStream, value: Value) -> Result<()> {
 }
 
 #[cfg(unix)]
+enum DrainOutcome {
+    Terminal,
+    Disconnected,
+    Reloading { new_socket: Option<String> },
+}
+
+#[cfg(unix)]
 fn drain_session_events(
     mut reader: BufReader<UnixStream>,
+    writer: &mut UnixStream,
+    next_request_id: &mut u64,
     event_tx: Option<&DesktopSessionEventSender>,
-) {
-    let _ = reader.get_ref().set_read_timeout(None);
+    command_rx: &Receiver<DesktopSessionCommand>,
+) -> Result<DrainOutcome> {
+    reader
+        .get_ref()
+        .set_read_timeout(Some(SERVER_CONNECT_RETRY_DELAY))
+        .context("failed to configure server socket timeout")?;
     let mut line = String::new();
     loop {
+        drain_worker_commands(writer, next_request_id, event_tx, command_rx)?;
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => return Ok(DrainOutcome::Disconnected),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error).context("failed to read jcode server event"),
             Ok(_) => {
                 if let Ok(value) = serde_json::from_str::<Value>(line.trim()) {
+                    if value.get("type").and_then(Value::as_str) == Some("reloading") {
+                        let new_socket = value
+                            .get("new_socket")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned);
+                        send_desktop_event_ref(
+                            event_tx,
+                            DesktopSessionEvent::Reloading {
+                                new_socket: new_socket.clone(),
+                            },
+                        );
+                        return Ok(DrainOutcome::Reloading { new_socket });
+                    }
                     let is_terminal = matches!(
                         value.get("type").and_then(Value::as_str),
                         Some("done" | "error")
@@ -273,12 +384,40 @@ fn drain_session_events(
                         send_desktop_event_ref(event_tx, event);
                     }
                     if is_terminal {
-                        break;
+                        return Ok(DrainOutcome::Terminal);
                     }
                 }
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn drain_worker_commands(
+    writer: &mut UnixStream,
+    next_request_id: &mut u64,
+    event_tx: Option<&DesktopSessionEventSender>,
+    command_rx: &Receiver<DesktopSessionCommand>,
+) -> Result<()> {
+    while let Ok(command) = command_rx.try_recv() {
+        match command {
+            DesktopSessionCommand::Cancel => {
+                send_desktop_event_ref(
+                    event_tx,
+                    DesktopSessionEvent::Status("cancelling".to_string()),
+                );
+                write_json_line(
+                    writer,
+                    json!({
+                        "type": "cancel",
+                        "id": *next_request_id,
+                    }),
+                )?;
+                *next_request_id += 1;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSessionEvent> {
@@ -309,6 +448,13 @@ fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSessionEvent>
             .get("name")
             .and_then(Value::as_str)
             .map(|name| DesktopSessionEvent::Status(format!("using tool {name}"))),
+        "interrupted" => Some(DesktopSessionEvent::Status("interrupted".to_string())),
+        "reloading" => Some(DesktopSessionEvent::Reloading {
+            new_socket: value
+                .get("new_socket")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        }),
         "done" => Some(DesktopSessionEvent::Done),
         "error" => Some(DesktopSessionEvent::Error(
             value
@@ -508,5 +654,24 @@ mod tests {
             desktop_event_from_server_value(&json!({"type": "tool_exec", "name": "bash"})),
             Some(DesktopSessionEvent::Status("using tool bash".to_string()))
         );
+        assert_eq!(
+            desktop_event_from_server_value(&json!({
+                "type": "reloading",
+                "new_socket": "/tmp/jcode-new.sock"
+            })),
+            Some(DesktopSessionEvent::Reloading {
+                new_socket: Some("/tmp/jcode-new.sock".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_session_handle_sends_cancel_command() {
+        let (command_tx, command_rx) = mpsc::channel();
+        let handle = DesktopSessionHandle { command_tx };
+
+        handle.cancel().unwrap();
+
+        assert_eq!(command_rx.try_recv(), Ok(DesktopSessionCommand::Cancel));
     }
 }

@@ -20,7 +20,7 @@ use single_session::{
 use wgpu::util::DeviceExt;
 use wgpu::{CompositeAlphaMode, PresentMode, SurfaceError, TextureUsages};
 use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::event::{ElementState, Event, WindowEvent};
+use winit::event::{ElementState, Event, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Fullscreen, Window, WindowBuilder};
@@ -126,8 +126,9 @@ fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
-    let fullscreen = std::env::args().any(|arg| arg == "--fullscreen");
-    let workspace_mode = std::env::args().any(|arg| arg == "--workspace");
+    let args = std::env::args().collect::<Vec<_>>();
+    let fullscreen = args.iter().any(|arg| arg == "--fullscreen");
+    let desktop_mode = desktop_mode_from_args(args.iter().map(String::as_str));
     let event_loop = EventLoop::new().context("failed to create event loop")?;
     let mut window_builder = WindowBuilder::new()
         .with_title("Jcode Desktop")
@@ -146,7 +147,7 @@ async fn run() -> Result<()> {
             .context("failed to create desktop window")?,
     ));
 
-    let mut app = if workspace_mode {
+    let mut app = if desktop_mode == DesktopMode::WorkspacePrototype {
         let session_cards = load_session_cards_for_desktop();
         let mut workspace = Workspace::from_session_cards(session_cards);
         if let Some(preferences) = load_desktop_preferences() {
@@ -184,6 +185,12 @@ async fn run() -> Result<()> {
                 }
                 WindowEvent::ModifiersChanged(new_modifiers) => {
                     modifiers = new_modifiers.state();
+                }
+                WindowEvent::MouseWheel { delta, .. } => {
+                    if let Some(lines) = mouse_scroll_lines(delta) {
+                        app.scroll_single_session_body(lines);
+                        window.request_redraw();
+                    }
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed =>
@@ -246,12 +253,13 @@ async fn run() -> Result<()> {
                             message,
                         } => {
                             if app.is_single_session() {
-                                if let Err(error) = session_launch::spawn_message_to_session(
+                                match session_launch::spawn_message_to_session(
                                     session_id.clone(),
                                     message,
                                     session_event_tx.clone(),
                                 ) {
-                                    apply_single_session_error(&mut app, error);
+                                    Ok(handle) => app.set_single_session_handle(handle),
+                                    Err(error) => apply_single_session_error(&mut app, error),
                                 }
                                 window.set_title(&app.status_title());
                                 window.request_redraw();
@@ -274,12 +282,18 @@ async fn run() -> Result<()> {
                             }
                         }
                         KeyOutcome::StartFreshSession { message } => {
-                            if let Err(error) = session_launch::spawn_fresh_server_session(
+                            match session_launch::spawn_fresh_server_session(
                                 message,
                                 session_event_tx.clone(),
                             ) {
-                                apply_single_session_error(&mut app, error);
+                                Ok(handle) => app.set_single_session_handle(handle),
+                                Err(error) => apply_single_session_error(&mut app, error),
                             }
+                            window.set_title(&app.status_title());
+                            window.request_redraw();
+                        }
+                        KeyOutcome::CancelGeneration => {
+                            app.cancel_single_session_generation();
                             window.set_title(&app.status_title());
                             window.request_redraw();
                         }
@@ -367,6 +381,20 @@ fn load_primary_session_card() -> Option<workspace::SessionCard> {
 
 fn fresh_single_session_app() -> DesktopApp {
     DesktopApp::SingleSession(SingleSessionApp::new(None))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DesktopMode {
+    SingleSession,
+    WorkspacePrototype,
+}
+
+fn desktop_mode_from_args<'a>(args: impl IntoIterator<Item = &'a str>) -> DesktopMode {
+    if args.into_iter().any(|arg| arg == "--workspace") {
+        DesktopMode::WorkspacePrototype
+    } else {
+        DesktopMode::SingleSession
+    }
 }
 
 fn attach_single_session_by_id(app: &mut DesktopApp, session_id: &str) {
@@ -522,6 +550,24 @@ impl DesktopApp {
         }
     }
 
+    fn set_single_session_handle(&mut self, handle: session_launch::DesktopSessionHandle) {
+        if let Self::SingleSession(app) = self {
+            app.set_session_handle(handle);
+        }
+    }
+
+    fn cancel_single_session_generation(&mut self) {
+        if let Self::SingleSession(app) = self {
+            app.cancel_generation();
+        }
+    }
+
+    fn scroll_single_session_body(&mut self, lines: i32) {
+        if let Self::SingleSession(app) = self {
+            app.scroll_body_lines(lines);
+        }
+    }
+
     fn single_session_live_id(&self) -> Option<String> {
         match self {
             Self::SingleSession(app) => app.live_session_id.clone(),
@@ -538,6 +584,8 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         Key::Named(NamedKey::Backspace) if modifiers.control_key() => KeyInput::DeletePreviousWord,
         Key::Named(NamedKey::Backspace) => KeyInput::Backspace,
         Key::Named(NamedKey::Delete) => KeyInput::DeleteNextChar,
+        Key::Named(NamedKey::PageUp) => KeyInput::ScrollBodyPages(1),
+        Key::Named(NamedKey::PageDown) => KeyInput::ScrollBodyPages(-1),
         Key::Named(NamedKey::ArrowLeft) => KeyInput::MoveCursorLeft,
         Key::Named(NamedKey::ArrowRight) => KeyInput::MoveCursorRight,
         Key::Named(NamedKey::Home) => KeyInput::MoveToLineStart,
@@ -553,6 +601,9 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         }
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("k") => {
             KeyInput::DeleteToLineEnd
+        }
+        Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("c") => {
+            KeyInput::CancelGeneration
         }
         Key::Character(text) if modifiers.control_key() && text == ";" => KeyInput::SpawnPanel,
         Key::Character(text) if modifiers.control_key() && (text == "?" || text == "/") => {
@@ -599,6 +650,14 @@ fn apply_single_session_error(app: &mut DesktopApp, error: anyhow::Error) {
     app.apply_session_event(session_launch::DesktopSessionEvent::Error(format!(
         "{error:#}"
     )));
+}
+
+fn mouse_scroll_lines(delta: MouseScrollDelta) -> Option<i32> {
+    let lines = match delta {
+        MouseScrollDelta::LineDelta(_, y) => (y * 3.0).round() as i32,
+        MouseScrollDelta::PixelDelta(position) => (position.y / 40.0).round() as i32,
+    };
+    (lines != 0).then_some(lines)
 }
 
 struct Canvas<'window> {
@@ -769,7 +828,7 @@ impl<'window> Canvas<'window> {
                 label: Some("jcode-desktop-render-workspace"),
             });
         let now = Instant::now();
-        let (vertices, animation_active) = match app {
+        let (mut vertices, animation_active) = match app {
             DesktopApp::SingleSession(single_session) => {
                 let focus_pulse = self.focus_pulse.frame(1, now);
                 let animation_active = self.focus_pulse.is_animating();
@@ -790,6 +849,20 @@ impl<'window> Canvas<'window> {
                 )
             }
         };
+        let text_buffers = match app {
+            DesktopApp::SingleSession(single_session) => {
+                single_session_text_buffers(single_session, self.size, &mut self.font_system)
+            }
+            DesktopApp::Workspace(_) => Vec::new(),
+        };
+        if let DesktopApp::SingleSession(single_session) = app {
+            push_single_session_caret(
+                &mut vertices,
+                single_session,
+                self.size,
+                text_buffers.get(2),
+            );
+        }
         let vertex_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -797,12 +870,6 @@ impl<'window> Canvas<'window> {
                 contents: bytemuck::cast_slice(&vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
-        let text_buffers = match app {
-            DesktopApp::SingleSession(single_session) => {
-                single_session_text_buffers(single_session, self.size, &mut self.font_system)
-            }
-            DesktopApp::Workspace(_) => Vec::new(),
-        };
         let text_areas = single_session_text_areas(&text_buffers, self.size);
         if !text_areas.is_empty() {
             if let Err(error) = self.text_renderer.prepare(
@@ -930,7 +997,6 @@ fn build_single_session_vertices(
         focus_pulse,
         size,
     );
-    push_single_session_caret(&mut vertices, app, size);
 
     vertices
 }
@@ -939,7 +1005,90 @@ fn push_single_session_caret(
     vertices: &mut Vec<Vertex>,
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
+    draft_buffer: Option<&Buffer>,
 ) {
+    let caret = draft_buffer
+        .and_then(|buffer| glyphon_draft_caret_position(app, buffer, size))
+        .unwrap_or_else(|| approximate_draft_caret_position(app, size));
+
+    push_rect(
+        vertices,
+        Rect {
+            x: caret.x,
+            y: caret.y,
+            width: SINGLE_SESSION_CARET_WIDTH,
+            height: caret.height,
+        },
+        SINGLE_SESSION_CARET_COLOR,
+        size,
+    );
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CaretPosition {
+    x: f32,
+    y: f32,
+    height: f32,
+}
+
+fn glyphon_draft_caret_position(
+    app: &SingleSessionApp,
+    draft_buffer: &Buffer,
+    size: PhysicalSize<u32>,
+) -> Option<CaretPosition> {
+    let typography = single_session_typography();
+    let target = app.draft_cursor_line_byte_index();
+    let target_line = target.0 + 1;
+    let target_index = target.1;
+    let mut fallback = None;
+
+    for run in draft_buffer.layout_runs() {
+        if run.line_i != target_line {
+            continue;
+        }
+        let y = single_session_draft_top(size) + run.line_top;
+        let height = typography.code_size * 1.12;
+        if run.glyphs.is_empty() {
+            return Some(CaretPosition {
+                x: PANEL_TITLE_LEFT_PADDING,
+                y,
+                height,
+            });
+        }
+
+        let first = run.glyphs.first()?;
+        let last = run.glyphs.last()?;
+        let mut run_position = CaretPosition {
+            x: PANEL_TITLE_LEFT_PADDING + last.x + last.w,
+            y,
+            height,
+        };
+        if target_index <= first.start {
+            run_position.x = PANEL_TITLE_LEFT_PADDING + first.x;
+            return Some(run_position);
+        }
+        for glyph in run.glyphs {
+            if target_index <= glyph.start {
+                run_position.x = PANEL_TITLE_LEFT_PADDING + glyph.x;
+                return Some(run_position);
+            }
+            if target_index <= glyph.end {
+                run_position.x = PANEL_TITLE_LEFT_PADDING + glyph.x + glyph.w;
+                return Some(run_position);
+            }
+        }
+        if target_index >= first.start && target_index >= last.end {
+            fallback = Some(run_position);
+        }
+    }
+
+    fallback
+}
+
+fn approximate_draft_caret_position(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+) -> CaretPosition {
     let typography = single_session_typography();
     let line_height = typography.code_size * typography.code_line_height;
     let draft_top = single_session_draft_top(size);
@@ -949,18 +1098,11 @@ fn push_single_session_caret(
         + (cursor_column as f32 * char_width)
             .min((size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(0.0));
     let y = draft_top + line_height + cursor_line as f32 * line_height;
-
-    push_rect(
-        vertices,
-        Rect {
-            x,
-            y,
-            width: SINGLE_SESSION_CARET_WIDTH,
-            height: typography.code_size * 1.12,
-        },
-        SINGLE_SESSION_CARET_COLOR,
-        size,
-    );
+    CaretPosition {
+        x,
+        y,
+        height: typography.code_size * 1.12,
+    }
 }
 
 fn single_session_draft_top(size: PhysicalSize<u32>) -> f32 {
@@ -975,7 +1117,7 @@ fn single_session_text_buffers(
     let typography = single_session_typography();
     let content_width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(1.0);
     let title = app.title();
-    let body = app.body_lines().join("\n");
+    let body = single_session_visible_body(app, size).join("\n");
     let draft = format!("draft\n{}", app.draft);
 
     vec![
@@ -1004,6 +1146,24 @@ fn single_session_text_buffers(
             96.0,
         ),
     ]
+}
+
+fn single_session_visible_body(app: &SingleSessionApp, size: PhysicalSize<u32>) -> Vec<String> {
+    let typography = single_session_typography();
+    let line_height = typography.body_size * typography.body_line_height;
+    let available_height =
+        (single_session_draft_top(size) - PANEL_BODY_TOP_PADDING - 12.0).max(line_height);
+    let visible_lines = ((available_height / line_height).floor() as usize).max(1);
+    let lines = app.body_lines();
+    if lines.len() <= visible_lines {
+        return lines;
+    }
+
+    let max_scroll = lines.len().saturating_sub(visible_lines);
+    let scroll = app.body_scroll_lines.min(max_scroll);
+    let end = lines.len().saturating_sub(scroll);
+    let start = end.saturating_sub(visible_lines);
+    lines[start..end].to_vec()
 }
 
 fn single_session_text_buffer(

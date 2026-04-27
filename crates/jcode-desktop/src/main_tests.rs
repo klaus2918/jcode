@@ -160,7 +160,8 @@ fn single_session_vertices_include_a_draft_caret() {
     let mut app = SingleSessionApp::new(None);
     let empty_vertices = build_single_session_vertices(&app, PhysicalSize::new(640, 480), 0.0);
     app.handle_key(KeyInput::Character("abc".to_string()));
-    let typed_vertices = build_single_session_vertices(&app, PhysicalSize::new(640, 480), 0.0);
+    let mut typed_vertices = build_single_session_vertices(&app, PhysicalSize::new(640, 480), 0.0);
+    push_single_session_caret(&mut typed_vertices, &app, PhysicalSize::new(640, 480), None);
 
     assert!(typed_vertices.len() >= empty_vertices.len());
     assert!(
@@ -224,6 +225,63 @@ fn single_session_applies_live_server_events_to_visible_body() {
 }
 
 #[test]
+fn single_session_reload_event_keeps_worker_state_processing() {
+    let mut app = SingleSessionApp::new(None);
+    app.apply_session_event(session_launch::DesktopSessionEvent::Reloading {
+        new_socket: Some("/tmp/jcode-reload.sock".to_string()),
+    });
+
+    assert!(app.has_background_work());
+    assert!(app.body_lines().join("\n").contains("server reloading"));
+}
+
+#[test]
+fn single_session_scrollback_virtualizes_visible_body_lines() {
+    let mut app = SingleSessionApp::new(None);
+    for index in 0..32 {
+        app.apply_session_event(session_launch::DesktopSessionEvent::TextReplace(format!(
+            "message {index}"
+        )));
+        app.apply_session_event(session_launch::DesktopSessionEvent::Done);
+    }
+    let size = PhysicalSize::new(640, 480);
+
+    let bottom = single_session_visible_body(&app, size).join("\n");
+    assert!(bottom.contains("message 31"));
+    assert!(!bottom.contains("message 0"));
+
+    app.scroll_body_lines(24);
+    let older = single_session_visible_body(&app, size).join("\n");
+    assert!(older.contains("message 0") || older.contains("message 1"));
+}
+
+#[test]
+fn mouse_scroll_delta_maps_to_body_scroll_lines() {
+    assert_eq!(
+        mouse_scroll_lines(MouseScrollDelta::LineDelta(0.0, 1.0)),
+        Some(3)
+    );
+    assert_eq!(
+        mouse_scroll_lines(MouseScrollDelta::LineDelta(0.0, -1.0)),
+        Some(-3)
+    );
+}
+
+#[test]
+fn glyphon_caret_position_uses_shaped_draft_buffer() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("hello".to_string()));
+    let mut font_system = FontSystem::new();
+    let buffers = single_session_text_buffers(&app, PhysicalSize::new(640, 480), &mut font_system);
+
+    let caret = glyphon_draft_caret_position(&app, &buffers[2], PhysicalSize::new(640, 480))
+        .expect("caret position should be available from glyphon layout runs");
+
+    assert!(caret.x > PANEL_TITLE_LEFT_PADDING);
+    assert!(caret.y >= single_session_draft_top(PhysicalSize::new(640, 480)));
+}
+
+#[test]
 fn single_session_without_session_is_native_fresh_draft() {
     let mut app = SingleSessionApp::new(None);
 
@@ -263,6 +321,18 @@ fn default_single_session_app_starts_without_attaching_recent_session() {
     assert_eq!(
         app.handle_key(KeyInput::SpawnPanel),
         KeyOutcome::SpawnSession
+    );
+}
+
+#[test]
+fn desktop_mode_defaults_to_single_session_and_gates_workspace_prototype() {
+    assert_eq!(
+        desktop_mode_from_args(["jcode-desktop"]),
+        DesktopMode::SingleSession
+    );
+    assert_eq!(
+        desktop_mode_from_args(["jcode-desktop", "--workspace"]),
+        DesktopMode::WorkspacePrototype
     );
 }
 

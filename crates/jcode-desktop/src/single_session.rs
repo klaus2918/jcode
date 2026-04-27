@@ -1,4 +1,7 @@
-use crate::{session_launch::DesktopSessionEvent, workspace};
+use crate::{
+    session_launch::{DesktopSessionEvent, DesktopSessionHandle},
+    workspace,
+};
 use workspace::{KeyInput, KeyOutcome};
 
 pub(crate) const SINGLE_SESSION_FONT_FAMILY: &str = "JetBrainsMono Nerd Font";
@@ -58,6 +61,8 @@ pub(crate) struct SingleSessionApp {
     pub(crate) status: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) is_processing: bool,
+    pub(crate) body_scroll_lines: usize,
+    session_handle: Option<DesktopSessionHandle>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,6 +84,8 @@ impl SingleSessionApp {
             status: None,
             error: None,
             is_processing: false,
+            body_scroll_lines: 0,
+            session_handle: None,
         }
     }
 
@@ -101,6 +108,8 @@ impl SingleSessionApp {
         self.status = None;
         self.error = None;
         self.is_processing = false;
+        self.body_scroll_lines = 0;
+        self.session_handle = None;
     }
 
     pub(crate) fn status_title(&self) -> String {
@@ -128,6 +137,17 @@ impl SingleSessionApp {
         match key {
             KeyInput::SpawnPanel => KeyOutcome::SpawnSession,
             KeyInput::RefreshSessions => KeyOutcome::Redraw,
+            KeyInput::CancelGeneration => {
+                if self.is_processing {
+                    KeyOutcome::CancelGeneration
+                } else {
+                    KeyOutcome::None
+                }
+            }
+            KeyInput::ScrollBodyPages(pages) => {
+                self.scroll_body_lines(pages * 12);
+                KeyOutcome::Redraw
+            }
             KeyInput::SubmitDraft => self.submit_draft(),
             KeyInput::Escape => KeyOutcome::Exit,
             KeyInput::Enter => {
@@ -179,7 +199,10 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn body_lines(&self) -> Vec<String> {
-        if !self.messages.is_empty() || !self.streaming_response.is_empty() || self.error.is_some()
+        if !self.messages.is_empty()
+            || !self.streaming_response.is_empty()
+            || self.status.is_some()
+            || self.error.is_some()
         {
             let mut lines = vec!["conversation".to_string()];
             for message in &self.messages {
@@ -203,6 +226,10 @@ impl SingleSessionApp {
     pub(crate) fn apply_session_event(&mut self, event: DesktopSessionEvent) {
         match event {
             DesktopSessionEvent::Status(status) => self.status = Some(status),
+            DesktopSessionEvent::Reloading { .. } => {
+                self.status = Some("server reloading, reconnecting".to_string());
+                self.is_processing = true;
+            }
             DesktopSessionEvent::SessionStarted { session_id } => {
                 self.live_session_id = Some(session_id);
                 self.status = Some("connected".to_string());
@@ -218,15 +245,53 @@ impl SingleSessionApp {
             DesktopSessionEvent::Done => {
                 self.finish_streaming_response();
                 self.is_processing = false;
+                self.session_handle = None;
                 self.status = Some("ready".to_string());
             }
             DesktopSessionEvent::Error(error) => {
                 self.finish_streaming_response();
                 self.is_processing = false;
+                self.session_handle = None;
                 self.status = Some("error".to_string());
                 self.error = Some(error);
             }
         }
+    }
+
+    pub(crate) fn set_session_handle(&mut self, handle: DesktopSessionHandle) {
+        self.session_handle = Some(handle);
+    }
+
+    pub(crate) fn cancel_generation(&mut self) -> bool {
+        let Some(handle) = &self.session_handle else {
+            return false;
+        };
+        match handle.cancel() {
+            Ok(()) => {
+                self.status = Some("cancelling".to_string());
+                true
+            }
+            Err(error) => {
+                self.error = Some(format!("{error:#}"));
+                self.is_processing = false;
+                self.session_handle = None;
+                true
+            }
+        }
+    }
+
+    pub(crate) fn scroll_body_lines(&mut self, lines: i32) {
+        if lines > 0 {
+            self.body_scroll_lines = self.body_scroll_lines.saturating_add(lines as usize);
+        } else {
+            self.body_scroll_lines = self
+                .body_scroll_lines
+                .saturating_sub(lines.unsigned_abs() as usize);
+        }
+    }
+
+    pub(crate) fn scroll_body_to_bottom(&mut self) {
+        self.body_scroll_lines = 0;
     }
 
     pub(crate) fn draft_cursor_line_col(&self) -> (usize, usize) {
@@ -239,6 +304,16 @@ impl SingleSessionApp {
             .chars()
             .count();
         (line, column)
+    }
+
+    pub(crate) fn draft_cursor_line_byte_index(&self) -> (usize, usize) {
+        let cursor = self.draft_cursor.min(self.draft.len());
+        let line = self.draft[..cursor]
+            .chars()
+            .filter(|ch| *ch == '\n')
+            .count();
+        let line_start = line_start(&self.draft, cursor);
+        (line, cursor - line_start)
     }
 
     fn submit_draft(&mut self) -> KeyOutcome {
@@ -267,6 +342,7 @@ impl SingleSessionApp {
         self.draft.clear();
         self.draft_cursor = 0;
         self.streaming_response.clear();
+        self.scroll_body_to_bottom();
         self.status = Some("sending".to_string());
         self.error = None;
         self.is_processing = true;

@@ -74,6 +74,8 @@ pub enum KeyInput {
     MoveToLineEnd,
     DeleteToLineStart,
     DeleteToLineEnd,
+    CancelGeneration,
+    ScrollBodyPages(i32),
     SubmitDraft,
     SpawnPanel,
     HotkeyHelp,
@@ -97,6 +99,7 @@ pub enum KeyOutcome {
         title: String,
         message: String,
     },
+    CancelGeneration,
     StartFreshSession {
         message: String,
     },
@@ -404,6 +407,7 @@ impl Workspace {
                 return KeyOutcome::Redraw;
             }
             KeyInput::SubmitDraft => return KeyOutcome::None,
+            KeyInput::CancelGeneration | KeyInput::ScrollBodyPages(_) => return KeyOutcome::None,
             _ => {}
         }
 
@@ -501,7 +505,9 @@ impl Workspace {
             | KeyInput::MoveCursorRight
             | KeyInput::MoveToLineStart
             | KeyInput::MoveToLineEnd
-            | KeyInput::DeleteToLineEnd => KeyOutcome::None,
+            | KeyInput::DeleteToLineEnd
+            | KeyInput::CancelGeneration
+            | KeyInput::ScrollBodyPages(_) => KeyOutcome::None,
             KeyInput::Character(text) => {
                 self.draft.push_str(&text);
                 KeyOutcome::Redraw
