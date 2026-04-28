@@ -136,6 +136,8 @@ pub(crate) fn single_session_transcript_card_runs(
 fn single_session_line_card_color(style: SingleSessionLineStyle) -> Option<[f32; 4]> {
     match style {
         SingleSessionLineStyle::Code => Some(CODE_BLOCK_BACKGROUND_COLOR),
+        SingleSessionLineStyle::AssistantQuote => Some(QUOTE_CARD_BACKGROUND_COLOR),
+        SingleSessionLineStyle::AssistantTable => Some(TABLE_CARD_BACKGROUND_COLOR),
         SingleSessionLineStyle::Tool => Some(TOOL_CARD_BACKGROUND_COLOR),
         SingleSessionLineStyle::Error => Some(ERROR_CARD_BACKGROUND_COLOR),
         SingleSessionLineStyle::OverlaySelection => Some(OVERLAY_SELECTION_BACKGROUND_COLOR),
@@ -300,7 +302,7 @@ pub(crate) fn single_session_text_key(
 ) -> SingleSessionTextKey {
     SingleSessionTextKey {
         size: (size.width, size.height),
-        title: app.title(),
+        title: app.header_title(),
         body: single_session_visible_styled_body(app, size),
         draft: visualize_composer_whitespace(&app.composer_text()),
         status: app.composer_status_line(),
@@ -489,6 +491,10 @@ fn single_session_line_attrs(style: SingleSessionLineStyle) -> Attrs<'static> {
 pub(crate) fn single_session_line_color(style: SingleSessionLineStyle) -> TextColor {
     text_color(match style {
         SingleSessionLineStyle::Assistant => ASSISTANT_TEXT_COLOR,
+        SingleSessionLineStyle::AssistantHeading => ASSISTANT_HEADING_TEXT_COLOR,
+        SingleSessionLineStyle::AssistantQuote => ASSISTANT_QUOTE_TEXT_COLOR,
+        SingleSessionLineStyle::AssistantTable => ASSISTANT_TABLE_TEXT_COLOR,
+        SingleSessionLineStyle::AssistantLink => ASSISTANT_LINK_TEXT_COLOR,
         SingleSessionLineStyle::Code => CODE_TEXT_COLOR,
         SingleSessionLineStyle::User => USER_TEXT_COLOR,
         SingleSessionLineStyle::UserContinuation => USER_CONTINUATION_TEXT_COLOR,

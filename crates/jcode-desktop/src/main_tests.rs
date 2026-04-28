@@ -294,6 +294,124 @@ fn single_session_assistant_markdown_is_prepared_for_desktop_rendering() {
 }
 
 #[test]
+fn single_session_markdown_renderer_handles_rich_commonmark_shapes() {
+    let mut app = SingleSessionApp::new(None);
+    app.messages.push(SingleSessionMessage::assistant(
+        "## Results\n\n> quote line\n> continues\n\n1. first\n2. second\n\n[docs](https://example.com) and **bold** plus _em_.\n\n| name | value |\n| --- | --- |\n| alpha | 42 |\n\n---",
+    ));
+
+    let lines = app.body_styled_lines();
+    let body = lines
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(body.contains("## Results"));
+    assert_eq!(
+        style_for_text(&lines, "## Results"),
+        Some(SingleSessionLineStyle::AssistantHeading)
+    );
+    assert!(body.contains("▌ quote line"));
+    assert!(body.contains("▌ continues"));
+    assert_eq!(
+        style_for_text(&lines, "▌ quote line"),
+        Some(SingleSessionLineStyle::AssistantQuote)
+    );
+    assert!(body.contains("1. first"));
+    assert!(body.contains("2. second"));
+    assert!(body.contains("docs ↗ https://example.com and **bold** plus _em_."));
+    assert_eq!(
+        style_for_text(&lines, "docs ↗ https://example.com and **bold** plus _em_."),
+        Some(SingleSessionLineStyle::AssistantLink)
+    );
+    assert!(body.contains("┆ name │ value"));
+    assert!(body.contains("┆ alpha │ 42"));
+    assert_eq!(
+        style_for_text(&lines, "┆ alpha │ 42"),
+        Some(SingleSessionLineStyle::AssistantTable)
+    );
+    assert!(body.contains("───"));
+}
+
+#[test]
+fn single_session_markdown_structure_uses_distinct_colors_and_cards() {
+    let mut app = SingleSessionApp::new(None);
+    app.messages.push(SingleSessionMessage::assistant(
+        "# Heading\n\n> quoted\n\n| a | b |\n| - | - |\n| c | d |",
+    ));
+    let mut font_system = FontSystem::new();
+
+    let buffers = single_session_text_buffers(&app, PhysicalSize::new(1200, 760), &mut font_system);
+    let body = &buffers[1];
+    assert_eq!(
+        first_glyph_color_for_text(body, "# Heading"),
+        Some(single_session_line_color(
+            SingleSessionLineStyle::AssistantHeading
+        ))
+    );
+    assert_eq!(
+        first_glyph_color_for_text(body, "▌ quoted"),
+        Some(single_session_line_color(
+            SingleSessionLineStyle::AssistantQuote
+        ))
+    );
+    assert_eq!(
+        first_glyph_color_for_text(body, "┆ c │ d"),
+        Some(single_session_line_color(
+            SingleSessionLineStyle::AssistantTable
+        ))
+    );
+
+    let vertices = build_single_session_vertices(&app, PhysicalSize::new(1200, 760), 0.0);
+    assert!(vertices_have_color(&vertices, QUOTE_CARD_BACKGROUND_COLOR));
+    assert!(vertices_have_color(&vertices, TABLE_CARD_BACKGROUND_COLOR));
+}
+
+#[test]
+fn single_session_header_only_uses_previous_message_title_for_static_preview() {
+    let card = test_session_card("session_alpha", "previous user request", "active");
+    let mut app = SingleSessionApp::new(Some(card));
+    let size = PhysicalSize::new(1000, 720);
+
+    assert!(app.should_show_session_title_header());
+    assert_eq!(
+        single_session_text_key(&app, size).title,
+        "previous user request"
+    );
+
+    app.messages.push(SingleSessionMessage::user("live prompt"));
+    app.messages
+        .push(SingleSessionMessage::assistant("live answer"));
+
+    assert!(!app.should_show_session_title_header());
+    assert_eq!(single_session_text_key(&app, size).title, "conversation");
+}
+
+#[test]
+fn single_session_spinner_appears_only_for_active_work() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(app.activity_spinner(), None);
+    assert!(!app.composer_status_line().starts_with("◐ "));
+
+    app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+        "streaming".to_string(),
+    ));
+    assert_eq!(app.activity_spinner(), Some("◐"));
+    assert!(app.composer_status_line().starts_with("◐ receiving"));
+
+    app.apply_session_event(session_launch::DesktopSessionEvent::Done);
+    assert_eq!(app.activity_spinner(), None);
+    assert!(!app.composer_status_line().starts_with("◐ "));
+
+    assert_eq!(
+        app.handle_key(KeyInput::OpenModelPicker),
+        KeyOutcome::LoadModelCatalog
+    );
+    assert_eq!(app.activity_spinner(), Some("◐"));
+}
+
+#[test]
 fn single_session_body_styled_lines_follow_roles_and_overlays() {
     let mut app = SingleSessionApp::new(None);
     app.messages

@@ -2,7 +2,7 @@ use crate::{
     session_launch::{DesktopModelChoice, DesktopSessionEvent, DesktopSessionHandle},
     workspace,
 };
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use workspace::{KeyInput, KeyOutcome};
 
 pub(crate) const SINGLE_SESSION_FONT_FAMILY: &str = "JetBrainsMono Nerd Font";
@@ -97,6 +97,10 @@ pub(crate) struct SingleSessionStyledLine {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SingleSessionLineStyle {
     Assistant,
+    AssistantHeading,
+    AssistantQuote,
+    AssistantTable,
+    AssistantLink,
     Code,
     User,
     UserContinuation,
@@ -537,6 +541,30 @@ impl SingleSessionApp {
         }
     }
 
+    pub(crate) fn header_title(&self) -> String {
+        if self.should_show_session_title_header() {
+            return self.title();
+        }
+        if self.is_processing || !self.streaming_response.is_empty() {
+            "active conversation".to_string()
+        } else if self.session.is_some() || self.live_session_id.is_some() {
+            "conversation".to_string()
+        } else {
+            "fresh session".to_string()
+        }
+    }
+
+    pub(crate) fn should_show_session_title_header(&self) -> bool {
+        self.messages.is_empty()
+            && self.streaming_response.is_empty()
+            && self.error.is_none()
+            && !self.model_picker.open
+            && !self.session_switcher.open
+            && self.stdin_response.is_none()
+            && self.show_help == false
+            && self.session.is_some()
+    }
+
     pub(crate) fn has_background_work(&self) -> bool {
         self.is_processing
     }
@@ -570,6 +598,10 @@ impl SingleSessionApp {
 
     pub(crate) fn composer_status_line(&self) -> String {
         let status = self.status.as_deref().unwrap_or("ready");
+        let spinner = self
+            .activity_spinner()
+            .map(|spinner| format!("{spinner} "))
+            .unwrap_or_default();
         let mode = if self.is_processing {
             "Ctrl+C interrupt"
         } else {
@@ -614,7 +646,19 @@ impl SingleSessionApp {
                     .unwrap_or_else(|| format!(" · model {model}"))
             })
             .unwrap_or_default();
-        format!("{status}{images}{queued}{stdin}{model}{scroll} · {mode}")
+        format!("{spinner}{status}{images}{queued}{stdin}{model}{scroll} · {mode}")
+    }
+
+    pub(crate) fn activity_spinner(&self) -> Option<&'static str> {
+        if self.is_processing
+            || self.model_picker.loading
+            || self.session_switcher.loading
+            || self.status.as_deref().is_some_and(is_in_flight_status)
+        {
+            Some("◐")
+        } else {
+            None
+        }
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyInput) -> KeyOutcome {
@@ -1562,6 +1606,20 @@ fn styled_line(text: impl Into<String>, style: SingleSessionLineStyle) -> Single
     SingleSessionStyledLine::new(text, style)
 }
 
+fn is_in_flight_status(status: &str) -> bool {
+    matches!(
+        status,
+        "loading models"
+            | "loading recent sessions"
+            | "receiving"
+            | "connected"
+            | "sending interactive input"
+            | "switching model"
+            | "cancelling"
+    ) || status.starts_with("using tool ")
+        || status.starts_with("attached ")
+}
+
 fn blank_styled_line() -> SingleSessionStyledLine {
     styled_line(String::new(), SingleSessionLineStyle::Blank)
 }
@@ -2001,27 +2059,71 @@ fn render_assistant_markdown_lines(content: &str) -> Vec<SingleSessionStyledLine
     let mut current = String::new();
     let mut list_stack = Vec::<Option<u64>>::new();
     let mut in_code_block = false;
+    let mut in_quote = false;
+    let mut in_table = false;
+    let mut in_table_row = false;
+    let mut table_cell_count = 0usize;
+    let mut link_stack = Vec::<String>::new();
+    let mut current_style = SingleSessionLineStyle::Assistant;
 
-    for event in Parser::new(content) {
+    let markdown_options = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES;
+    for event in Parser::new_ext(content, markdown_options) {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
-                flush_current_line(&mut lines, &mut current, SingleSessionLineStyle::Assistant);
+                flush_current_line(&mut lines, &mut current, current_style);
+                current_style = SingleSessionLineStyle::AssistantHeading;
                 current.push_str(heading_prefix(level));
             }
             Event::End(TagEnd::Heading(_)) => {
-                flush_current_line(&mut lines, &mut current, SingleSessionLineStyle::Assistant)
+                flush_current_line(
+                    &mut lines,
+                    &mut current,
+                    SingleSessionLineStyle::AssistantHeading,
+                );
+                current_style = if in_quote {
+                    SingleSessionLineStyle::AssistantQuote
+                } else {
+                    SingleSessionLineStyle::Assistant
+                };
+            }
+            Event::Start(Tag::BlockQuote(_)) => {
+                flush_current_line(&mut lines, &mut current, current_style);
+                in_quote = true;
+                current_style = SingleSessionLineStyle::AssistantQuote;
+                current.push_str("▌ ");
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                if current.trim() == "▌" {
+                    current.clear();
+                }
+                flush_current_line(
+                    &mut lines,
+                    &mut current,
+                    SingleSessionLineStyle::AssistantQuote,
+                );
+                in_quote = false;
+                current_style = SingleSessionLineStyle::Assistant;
             }
             Event::Start(Tag::Paragraph) => {}
             Event::End(TagEnd::Paragraph) => {
-                flush_current_line(&mut lines, &mut current, SingleSessionLineStyle::Assistant)
+                flush_current_line(&mut lines, &mut current, current_style);
+                if in_quote {
+                    current.push_str("▌ ");
+                }
             }
             Event::Start(Tag::List(start)) => list_stack.push(start),
             Event::End(TagEnd::List(_)) => {
                 list_stack.pop();
-                flush_current_line(&mut lines, &mut current, SingleSessionLineStyle::Assistant);
+                flush_current_line(&mut lines, &mut current, current_style);
             }
             Event::Start(Tag::Item) => {
-                flush_current_line(&mut lines, &mut current, SingleSessionLineStyle::Assistant);
+                flush_current_line(&mut lines, &mut current, current_style);
+                if in_quote {
+                    current.push_str("▌ ");
+                }
                 if let Some(Some(next)) = list_stack.last_mut() {
                     current.push_str(&format!("{next}. "));
                     *next += 1;
@@ -2029,11 +2131,9 @@ fn render_assistant_markdown_lines(content: &str) -> Vec<SingleSessionStyledLine
                     current.push_str("• ");
                 }
             }
-            Event::End(TagEnd::Item) => {
-                flush_current_line(&mut lines, &mut current, SingleSessionLineStyle::Assistant)
-            }
+            Event::End(TagEnd::Item) => flush_current_line(&mut lines, &mut current, current_style),
             Event::Start(Tag::CodeBlock(kind)) => {
-                flush_current_line(&mut lines, &mut current, SingleSessionLineStyle::Assistant);
+                flush_current_line(&mut lines, &mut current, current_style);
                 let lang = match kind {
                     CodeBlockKind::Fenced(lang) if !lang.is_empty() => format!(" {lang}"),
                     _ => String::new(),
@@ -2049,6 +2149,100 @@ fn render_assistant_markdown_lines(content: &str) -> Vec<SingleSessionStyledLine
                 lines.push(styled_line("```", SingleSessionLineStyle::Code));
                 in_code_block = false;
             }
+            Event::Start(Tag::Table(_)) => {
+                flush_current_line(&mut lines, &mut current, current_style);
+                in_table = true;
+                current_style = SingleSessionLineStyle::AssistantTable;
+            }
+            Event::End(TagEnd::Table) => {
+                flush_current_line(
+                    &mut lines,
+                    &mut current,
+                    SingleSessionLineStyle::AssistantTable,
+                );
+                in_table = false;
+                current_style = if in_quote {
+                    SingleSessionLineStyle::AssistantQuote
+                } else {
+                    SingleSessionLineStyle::Assistant
+                };
+            }
+            Event::Start(Tag::TableHead) => {
+                flush_current_line(
+                    &mut lines,
+                    &mut current,
+                    SingleSessionLineStyle::AssistantTable,
+                );
+                in_table_row = true;
+                table_cell_count = 0;
+                current.push_str("┆ ");
+            }
+            Event::End(TagEnd::TableHead) => {
+                flush_current_line(
+                    &mut lines,
+                    &mut current,
+                    SingleSessionLineStyle::AssistantTable,
+                );
+                in_table_row = false;
+                lines.push(styled_line("┆ ─", SingleSessionLineStyle::AssistantTable));
+            }
+            Event::Start(Tag::TableRow) => {
+                flush_current_line(
+                    &mut lines,
+                    &mut current,
+                    SingleSessionLineStyle::AssistantTable,
+                );
+                in_table_row = true;
+                table_cell_count = 0;
+                current.push_str("┆ ");
+            }
+            Event::End(TagEnd::TableRow) => {
+                flush_current_line(
+                    &mut lines,
+                    &mut current,
+                    SingleSessionLineStyle::AssistantTable,
+                );
+                in_table_row = false;
+            }
+            Event::Start(Tag::TableCell) => {
+                if in_table && !in_table_row {
+                    in_table_row = true;
+                    table_cell_count = 0;
+                    current.push_str("┆ ");
+                }
+                if in_table_row && table_cell_count > 0 {
+                    current.push_str(" │ ");
+                }
+                table_cell_count += 1;
+            }
+            Event::End(TagEnd::TableCell) => {}
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                link_stack.push(dest_url.to_string());
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some(dest_url) = link_stack.pop()
+                    && !dest_url.is_empty()
+                {
+                    current.push_str(" ↗ ");
+                    current.push_str(&dest_url);
+                    current_style = SingleSessionLineStyle::AssistantLink;
+                }
+            }
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                current.push_str("[image");
+                if !dest_url.is_empty() {
+                    current.push_str(" ↗ ");
+                    current.push_str(&dest_url);
+                }
+                current.push(']');
+            }
+            Event::End(TagEnd::Image) => {}
+            Event::Start(Tag::Emphasis) => current.push('_'),
+            Event::End(TagEnd::Emphasis) => current.push('_'),
+            Event::Start(Tag::Strong) => current.push_str("**"),
+            Event::End(TagEnd::Strong) => current.push_str("**"),
+            Event::Start(Tag::Strikethrough) => current.push('~'),
+            Event::End(TagEnd::Strikethrough) => current.push('~'),
             Event::Text(text) => {
                 if in_code_block {
                     for line in text.lines() {
@@ -2067,17 +2261,24 @@ fn render_assistant_markdown_lines(content: &str) -> Vec<SingleSessionStyledLine
                 current.push('`');
             }
             Event::SoftBreak | Event::HardBreak => {
-                flush_current_line(&mut lines, &mut current, SingleSessionLineStyle::Assistant)
+                flush_current_line(&mut lines, &mut current, current_style);
+                if in_quote {
+                    current.push_str("▌ ");
+                }
             }
             Event::Rule => {
-                flush_current_line(&mut lines, &mut current, SingleSessionLineStyle::Assistant);
+                flush_current_line(&mut lines, &mut current, current_style);
                 lines.push(styled_line("───", SingleSessionLineStyle::Meta));
             }
             _ => {}
         }
+
+        if !in_table && current_style == SingleSessionLineStyle::AssistantTable {
+            current_style = SingleSessionLineStyle::Assistant;
+        }
     }
 
-    flush_current_line(&mut lines, &mut current, SingleSessionLineStyle::Assistant);
+    flush_current_line(&mut lines, &mut current, current_style);
     if lines.is_empty() && !content.trim().is_empty() {
         lines.extend(
             content
