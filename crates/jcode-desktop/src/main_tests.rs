@@ -242,6 +242,23 @@ fn single_session_transcript_roles_render_without_stringly_labels() {
 }
 
 #[test]
+fn single_session_assistant_markdown_is_prepared_for_desktop_rendering() {
+    let mut app = SingleSessionApp::new(None);
+    app.messages.push(SingleSessionMessage::assistant(
+        "# Plan\n\n- first\n- second\n\nUse `cargo test`.\n\n```rust\nfn main() {}\n```",
+    ));
+
+    let body = app.body_lines().join("\n");
+    assert!(body.contains("# Plan"));
+    assert!(body.contains("• first"));
+    assert!(body.contains("• second"));
+    assert!(body.contains("Use `cargo test`."));
+    assert!(body.contains("``` rust"));
+    assert!(body.contains("    fn main() {}"));
+    assert!(body.contains("```"));
+}
+
+#[test]
 fn single_session_applies_live_server_events_to_visible_body() {
     let mut app = SingleSessionApp::new(None);
     app.handle_key(KeyInput::Character("hello".to_string()));

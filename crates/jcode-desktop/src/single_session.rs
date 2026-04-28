@@ -2,6 +2,7 @@ use crate::{
     session_launch::{DesktopSessionEvent, DesktopSessionHandle},
     workspace,
 };
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
 use workspace::{KeyInput, KeyOutcome};
 
 pub(crate) const SINGLE_SESSION_FONT_FAMILY: &str = "JetBrainsMono Nerd Font";
@@ -555,7 +556,98 @@ fn append_user_lines(lines: &mut Vec<String>, turn: usize, content: &str) {
 }
 
 fn append_assistant_lines(lines: &mut Vec<String>, content: &str) {
-    lines.extend(content.lines().map(ToOwned::to_owned));
+    lines.extend(render_assistant_markdown_lines(content));
+}
+
+fn render_assistant_markdown_lines(content: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut list_stack = Vec::<Option<u64>>::new();
+    let mut in_code_block = false;
+
+    for event in Parser::new(content) {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                flush_current_line(&mut lines, &mut current);
+                current.push_str(heading_prefix(level));
+            }
+            Event::End(TagEnd::Heading(_)) => flush_current_line(&mut lines, &mut current),
+            Event::Start(Tag::Paragraph) => {}
+            Event::End(TagEnd::Paragraph) => flush_current_line(&mut lines, &mut current),
+            Event::Start(Tag::List(start)) => list_stack.push(start),
+            Event::End(TagEnd::List(_)) => {
+                list_stack.pop();
+                flush_current_line(&mut lines, &mut current);
+            }
+            Event::Start(Tag::Item) => {
+                flush_current_line(&mut lines, &mut current);
+                if let Some(Some(next)) = list_stack.last_mut() {
+                    current.push_str(&format!("{next}. "));
+                    *next += 1;
+                } else {
+                    current.push_str("• ");
+                }
+            }
+            Event::End(TagEnd::Item) => flush_current_line(&mut lines, &mut current),
+            Event::Start(Tag::CodeBlock(kind)) => {
+                flush_current_line(&mut lines, &mut current);
+                let lang = match kind {
+                    CodeBlockKind::Fenced(lang) if !lang.is_empty() => format!(" {lang}"),
+                    _ => String::new(),
+                };
+                lines.push(format!("```{lang}"));
+                in_code_block = true;
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                flush_current_line(&mut lines, &mut current);
+                lines.push("```".to_string());
+                in_code_block = false;
+            }
+            Event::Text(text) => {
+                if in_code_block {
+                    for line in text.lines() {
+                        lines.push(format!("    {line}"));
+                    }
+                } else {
+                    current.push_str(&text);
+                }
+            }
+            Event::Code(code) => {
+                current.push('`');
+                current.push_str(&code);
+                current.push('`');
+            }
+            Event::SoftBreak | Event::HardBreak => flush_current_line(&mut lines, &mut current),
+            Event::Rule => {
+                flush_current_line(&mut lines, &mut current);
+                lines.push("───".to_string());
+            }
+            _ => {}
+        }
+    }
+
+    flush_current_line(&mut lines, &mut current);
+    if lines.is_empty() && !content.trim().is_empty() {
+        lines.extend(content.lines().map(ToOwned::to_owned));
+    }
+    lines
+}
+
+fn flush_current_line(lines: &mut Vec<String>, current: &mut String) {
+    let trimmed = current.trim_end();
+    if !trimmed.is_empty() {
+        lines.push(trimmed.to_string());
+    }
+    current.clear();
+}
+
+fn heading_prefix(level: HeadingLevel) -> &'static str {
+    match level {
+        HeadingLevel::H1 => "# ",
+        HeadingLevel::H2 => "## ",
+        HeadingLevel::H3 => "### ",
+        _ => "#### ",
+    }
 }
 
 fn append_tool_lines(lines: &mut Vec<String>, content: &str) {
