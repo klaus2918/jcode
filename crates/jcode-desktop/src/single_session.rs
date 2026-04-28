@@ -63,6 +63,7 @@ pub(crate) struct SingleSessionApp {
     pub(crate) error: Option<String>,
     pub(crate) is_processing: bool,
     pub(crate) body_scroll_lines: usize,
+    pub(crate) show_help: bool,
     input_undo_stack: Vec<(String, usize)>,
     session_handle: Option<DesktopSessionHandle>,
 }
@@ -142,6 +143,7 @@ impl SingleSessionApp {
             error: None,
             is_processing: false,
             body_scroll_lines: 0,
+            show_help: false,
             input_undo_stack: Vec::new(),
             session_handle: None,
         }
@@ -167,6 +169,7 @@ impl SingleSessionApp {
         self.error = None;
         self.is_processing = false;
         self.body_scroll_lines = 0;
+        self.show_help = false;
         self.input_undo_stack.clear();
         self.session_handle = None;
     }
@@ -224,6 +227,11 @@ impl SingleSessionApp {
     pub(crate) fn handle_key(&mut self, key: KeyInput) -> KeyOutcome {
         match key {
             KeyInput::SpawnPanel => KeyOutcome::SpawnSession,
+            KeyInput::HotkeyHelp => {
+                self.show_help = !self.show_help;
+                self.scroll_body_to_bottom();
+                KeyOutcome::Redraw
+            }
             KeyInput::RefreshSessions => KeyOutcome::Redraw,
             KeyInput::CancelGeneration => {
                 if self.is_processing {
@@ -245,6 +253,10 @@ impl SingleSessionApp {
                 .map(KeyOutcome::CopyLatestResponse)
                 .unwrap_or(KeyOutcome::None),
             KeyInput::SubmitDraft => self.submit_draft(),
+            KeyInput::Escape if self.show_help => {
+                self.show_help = false;
+                KeyOutcome::Redraw
+            }
             KeyInput::Escape => KeyOutcome::Exit,
             KeyInput::Enter => {
                 self.insert_draft_text("\n");
@@ -311,6 +323,9 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn body_lines(&self) -> Vec<String> {
+        if self.show_help {
+            return single_session_help_lines();
+        }
         if !self.messages.is_empty() || !self.streaming_response.is_empty() || self.error.is_some()
         {
             let mut lines = Vec::new();
@@ -681,6 +696,37 @@ impl SingleSessionApp {
             self.draft_cursor -= 1;
         }
     }
+}
+
+pub(crate) fn single_session_help_lines() -> Vec<String> {
+    vec![
+        "desktop shortcuts".to_string(),
+        String::new(),
+        "chat".to_string(),
+        "  Ctrl+Enter  send prompt".to_string(),
+        "  Enter       insert newline".to_string(),
+        "  Ctrl+C      interrupt running generation".to_string(),
+        "  Ctrl+Shift+C copy latest assistant response".to_string(),
+        String::new(),
+        "navigation".to_string(),
+        "  PageUp/PageDown scroll transcript".to_string(),
+        "  Alt+Up/Down jump between user prompts".to_string(),
+        "  Mouse wheel scroll transcript".to_string(),
+        String::new(),
+        "editing".to_string(),
+        "  Ctrl+A/E    start/end of line".to_string(),
+        "  Ctrl+U/K    delete to line start/end".to_string(),
+        "  Ctrl+Backspace delete previous word".to_string(),
+        "  Alt+B/F     move by word".to_string(),
+        "  Alt+D       delete next word".to_string(),
+        "  Ctrl+Z      undo input edit".to_string(),
+        String::new(),
+        "window".to_string(),
+        "  Ctrl+;      reset/spawn fresh desktop session".to_string(),
+        "  Ctrl+R      refresh session metadata".to_string(),
+        "  Ctrl+?      toggle this help".to_string(),
+        "  Esc         close help or quit".to_string(),
+    ]
 }
 
 fn append_chat_message_lines(

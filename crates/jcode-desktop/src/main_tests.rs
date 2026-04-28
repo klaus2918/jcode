@@ -302,6 +302,24 @@ fn single_session_tool_events_create_transcript_cards() {
 }
 
 #[test]
+fn single_session_hotkey_help_toggles_discoverable_shortcuts() {
+    let mut app = SingleSessionApp::new(None);
+    app.messages.push(SingleSessionMessage::user("question"));
+
+    assert_eq!(app.handle_key(KeyInput::HotkeyHelp), KeyOutcome::Redraw);
+    assert!(app.show_help);
+    let help = app.body_lines().join("\n");
+    assert!(help.contains("desktop shortcuts"));
+    assert!(help.contains("Ctrl+Shift+C copy latest assistant response"));
+    assert!(help.contains("Alt+Up/Down jump between user prompts"));
+    assert!(!help.contains("1  question"));
+
+    assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::Redraw);
+    assert!(!app.show_help);
+    assert!(app.body_lines().join("\n").contains("1  question"));
+}
+
+#[test]
 fn single_session_prompt_jump_moves_between_user_turns() {
     let mut app = SingleSessionApp::new(None);
     for index in 0..4 {
