@@ -1369,7 +1369,6 @@ impl<'window> Canvas<'window> {
 
         self.queue.submit(Some(encoder.finish()));
         frame.present();
-        self.text_atlas.trim();
         Ok(animation_active)
     }
 }
