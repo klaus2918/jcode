@@ -84,6 +84,8 @@ pub enum KeyInput {
     CopyLatestResponse,
     CycleModel(i8),
     AttachClipboardImage,
+    PasteText,
+    QueueDraft,
     SubmitDraft,
     SpawnPanel,
     HotkeyHelp,
@@ -112,6 +114,7 @@ pub enum KeyOutcome {
     CopyLatestResponse(String),
     CycleModel(i8),
     AttachClipboardImage,
+    PasteText,
     StartFreshSession {
         message: String,
         images: Vec<(String, String)>,
@@ -423,7 +426,9 @@ impl Workspace {
             KeyInput::CancelGeneration
             | KeyInput::ScrollBodyPages(_)
             | KeyInput::CycleModel(_)
-            | KeyInput::AttachClipboardImage => {
+            | KeyInput::AttachClipboardImage
+            | KeyInput::PasteText
+            | KeyInput::QueueDraft => {
                 return KeyOutcome::None;
             }
             _ => {}
@@ -533,7 +538,9 @@ impl Workspace {
             | KeyInput::JumpPrompt(_)
             | KeyInput::CopyLatestResponse
             | KeyInput::CycleModel(_)
-            | KeyInput::AttachClipboardImage => KeyOutcome::None,
+            | KeyInput::AttachClipboardImage
+            | KeyInput::PasteText
+            | KeyInput::QueueDraft => KeyOutcome::None,
             KeyInput::Character(text) => {
                 self.draft.push_str(&text);
                 KeyOutcome::Redraw

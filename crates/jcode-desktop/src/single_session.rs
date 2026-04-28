@@ -65,6 +65,7 @@ pub(crate) struct SingleSessionApp {
     pub(crate) body_scroll_lines: usize,
     pub(crate) show_help: bool,
     pub(crate) pending_images: Vec<(String, String)>,
+    queued_drafts: Vec<(String, Vec<(String, String)>)>,
     input_undo_stack: Vec<(String, usize)>,
     session_handle: Option<DesktopSessionHandle>,
 }
@@ -146,6 +147,7 @@ impl SingleSessionApp {
             body_scroll_lines: 0,
             show_help: false,
             pending_images: Vec::new(),
+            queued_drafts: Vec::new(),
             input_undo_stack: Vec::new(),
             session_handle: None,
         }
@@ -173,6 +175,7 @@ impl SingleSessionApp {
         self.body_scroll_lines = 0;
         self.show_help = false;
         self.pending_images.clear();
+        self.queued_drafts.clear();
         self.input_undo_stack.clear();
         self.session_handle = None;
     }
@@ -180,7 +183,7 @@ impl SingleSessionApp {
     pub(crate) fn status_title(&self) -> String {
         let title = self.title();
         format!(
-            "Jcode Desktop · single session · {title} · Ctrl+Enter send · Enter newline · Ctrl+; spawn · Ctrl+R refresh · Esc quit · --workspace for Niri layout"
+            "Jcode Desktop · single session · {title} · Enter send · Shift+Enter newline · Ctrl+Enter queue · Ctrl+; spawn · Ctrl+R refresh · Esc quit · --workspace for Niri layout"
         )
     }
 
@@ -222,14 +225,19 @@ impl SingleSessionApp {
         let mode = if self.is_processing {
             "Ctrl+C interrupt"
         } else {
-            "Ctrl+Enter send · Enter newline"
+            "Enter send · Shift+Enter newline · Ctrl+Enter queue"
         };
         let images = match self.pending_images.len() {
             0 => String::new(),
             1 => " · 1 image".to_string(),
             count => format!(" · {count} images"),
         };
-        format!("{status}{images} · {mode}")
+        let queued = match self.queued_drafts.len() {
+            0 => String::new(),
+            1 => " · 1 queued".to_string(),
+            count => format!(" · {count} queued"),
+        };
+        format!("{status}{images}{queued} · {mode}")
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyInput) -> KeyOutcome {
@@ -262,6 +270,9 @@ impl SingleSessionApp {
                 .unwrap_or(KeyOutcome::None),
             KeyInput::CycleModel(direction) => KeyOutcome::CycleModel(direction),
             KeyInput::AttachClipboardImage => KeyOutcome::AttachClipboardImage,
+            KeyInput::PasteText => KeyOutcome::PasteText,
+            KeyInput::QueueDraft if self.is_processing => self.queue_draft(),
+            KeyInput::QueueDraft => self.submit_draft(),
             KeyInput::SubmitDraft => self.submit_draft(),
             KeyInput::Escape if self.show_help => {
                 self.show_help = false;
@@ -596,6 +607,38 @@ impl SingleSessionApp {
         self.status = Some(format!("attached {} image(s)", self.pending_images.len()));
     }
 
+    pub(crate) fn paste_text(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.insert_draft_text(text);
+        }
+    }
+
+    fn queue_draft(&mut self) -> KeyOutcome {
+        let message = self.draft.trim().to_string();
+        if message.is_empty() && self.pending_images.is_empty() {
+            return KeyOutcome::None;
+        }
+        let images = std::mem::take(&mut self.pending_images);
+        self.queued_drafts.push((message.clone(), images));
+        self.messages.push(SingleSessionMessage::meta(format!(
+            "queued prompt: {message}"
+        )));
+        self.draft.clear();
+        self.draft_cursor = 0;
+        self.input_undo_stack.clear();
+        self.status = Some(format!("{} prompt(s) queued", self.queued_drafts.len()));
+        KeyOutcome::Redraw
+    }
+
+    pub(crate) fn take_next_queued_draft(&mut self) -> Option<(String, Vec<(String, String)>)> {
+        if self.is_processing || self.queued_drafts.is_empty() {
+            return None;
+        }
+        let (message, images) = self.queued_drafts.remove(0);
+        self.record_user_submit(&message);
+        Some((message, images))
+    }
+
     fn record_user_submit(&mut self, message: &str) {
         self.messages.push(SingleSessionMessage::user(message));
         self.draft.clear();
@@ -752,10 +795,12 @@ pub(crate) fn single_session_help_lines() -> Vec<String> {
         "desktop shortcuts".to_string(),
         String::new(),
         "chat".to_string(),
-        "  Ctrl+Enter  send prompt".to_string(),
-        "  Enter       insert newline".to_string(),
+        "  Enter       send prompt".to_string(),
+        "  Shift+Enter insert newline".to_string(),
+        "  Ctrl+Enter  queue prompt (desktop queue follow-up pending)".to_string(),
         "  Ctrl+C      interrupt running generation".to_string(),
         "  Ctrl+Shift+C copy latest assistant response".to_string(),
+        "  Ctrl+V      paste clipboard text".to_string(),
         "  Ctrl+I      attach clipboard image to next prompt".to_string(),
         "  Ctrl+M/N    switch to next/previous model".to_string(),
         String::new(),

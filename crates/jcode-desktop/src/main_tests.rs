@@ -379,6 +379,34 @@ fn single_session_attached_image_is_sent_with_next_prompt() {
 }
 
 #[test]
+fn single_session_ctrl_enter_queues_while_processing_then_dequeues() {
+    let mut app = SingleSessionApp::new(None);
+    app.is_processing = true;
+    app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+        "working".to_string(),
+    ));
+    app.handle_key(KeyInput::Character("next prompt".to_string()));
+
+    assert_eq!(app.handle_key(KeyInput::QueueDraft), KeyOutcome::Redraw);
+    assert!(app.composer_status_line().contains("1 queued"));
+    assert!(app.draft.is_empty());
+
+    app.apply_session_event(session_launch::DesktopSessionEvent::Done);
+    assert_eq!(
+        app.take_next_queued_draft(),
+        Some(("next prompt".to_string(), Vec::new()))
+    );
+    assert!(app.is_processing);
+}
+
+#[test]
+fn single_session_paste_text_preserves_spaces() {
+    let mut app = SingleSessionApp::new(None);
+    app.paste_text("hello  pasted");
+    assert_eq!(app.draft, "hello  pasted");
+}
+
+#[test]
 fn single_session_prompt_jump_moves_between_user_turns() {
     let mut app = SingleSessionApp::new(None);
     for index in 0..4 {

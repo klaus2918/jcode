@@ -92,6 +92,7 @@ const WORKSPACE_NUMBER_COLOR: [f32; 4] = [0.953, 0.965, 0.984, 0.90];
 const STATUS_TEXT_COLOR: [f32; 4] = [0.953, 0.965, 0.984, 0.88];
 const PANEL_TITLE_COLOR: [f32; 4] = [0.090, 0.105, 0.135, 0.86];
 const PANEL_BODY_COLOR: [f32; 4] = [0.070, 0.082, 0.110, 0.88];
+const ASSISTANT_TEXT_COLOR: [f32; 4] = [0.030, 0.165, 0.190, 0.92];
 const PANEL_SECTION_COLOR: [f32; 4] = [0.085, 0.100, 0.130, 0.78];
 const STATUS_PREVIEW_ACCENTS: [[f32; 3]; 8] = [
     [0.560, 0.690, 0.980],
@@ -341,6 +342,14 @@ async fn run() -> Result<()> {
                             window.set_title(&app.status_title());
                             window.request_redraw();
                         }
+                        KeyOutcome::PasteText => {
+                            match clipboard_text() {
+                                Ok(text) => app.paste_single_session_text(&text),
+                                Err(error) => apply_single_session_error(&mut app, error),
+                            }
+                            window.set_title(&app.status_title());
+                            window.request_redraw();
+                        }
                         KeyOutcome::None => {}
                     }
                 }
@@ -367,6 +376,26 @@ async fn run() -> Result<()> {
                 if apply_pending_session_events(&mut app, &session_event_rx) {
                     if let Some(session_id) = app.single_session_live_id() {
                         attach_single_session_by_id(&mut app, &session_id);
+                    }
+                    if let Some((message, images)) = app.take_next_queued_single_session_draft() {
+                        let result = if let Some(session_id) = app.single_session_live_id() {
+                            session_launch::spawn_message_to_session(
+                                session_id,
+                                message,
+                                images,
+                                session_event_tx.clone(),
+                            )
+                        } else {
+                            session_launch::spawn_fresh_server_session(
+                                message,
+                                images,
+                                session_event_tx.clone(),
+                            )
+                        };
+                        match result {
+                            Ok(handle) => app.set_single_session_handle(handle),
+                            Err(error) => apply_single_session_error(&mut app, error),
+                        }
                     }
                     window.set_title(&app.status_title());
                     window.request_redraw();
@@ -800,6 +829,19 @@ impl DesktopApp {
         }
     }
 
+    fn paste_single_session_text(&mut self, text: &str) {
+        if let Self::SingleSession(app) = self {
+            app.paste_text(text);
+        }
+    }
+
+    fn take_next_queued_single_session_draft(&mut self) -> Option<(String, Vec<(String, String)>)> {
+        match self {
+            Self::SingleSession(app) => app.take_next_queued_draft(),
+            Self::Workspace(_) => None,
+        }
+    }
+
     fn scroll_single_session_body(&mut self, lines: i32) {
         if let Self::SingleSession(app) = self {
             app.scroll_body_lines(lines);
@@ -839,8 +881,9 @@ impl DesktopApp {
 fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
     match key {
         Key::Named(NamedKey::Escape) => KeyInput::Escape,
-        Key::Named(NamedKey::Enter) if modifiers.control_key() => KeyInput::SubmitDraft,
-        Key::Named(NamedKey::Enter) => KeyInput::Enter,
+        Key::Named(NamedKey::Enter) if modifiers.control_key() => KeyInput::QueueDraft,
+        Key::Named(NamedKey::Enter) if modifiers.shift_key() => KeyInput::Enter,
+        Key::Named(NamedKey::Enter) => KeyInput::SubmitDraft,
         Key::Named(NamedKey::Backspace) if modifiers.control_key() => KeyInput::DeletePreviousWord,
         Key::Named(NamedKey::Backspace) => KeyInput::Backspace,
         Key::Named(NamedKey::Delete) => KeyInput::DeleteNextChar,
@@ -892,6 +935,9 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         }
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("r") => {
             KeyInput::RefreshSessions
+        }
+        Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("v") => {
+            KeyInput::PasteText
         }
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("i") => {
             KeyInput::AttachClipboardImage
@@ -971,6 +1017,13 @@ fn clipboard_image_png_base64() -> Result<(String, String)> {
         "image/png".to_string(),
         base64::engine::general_purpose::STANDARD.encode(cursor.into_inner()),
     ))
+}
+
+fn clipboard_text() -> Result<String> {
+    arboard::Clipboard::new()
+        .context("failed to access clipboard")?
+        .get_text()
+        .context("clipboard does not contain text")
 }
 
 fn mouse_scroll_lines(delta: MouseScrollDelta) -> Option<i32> {
@@ -1444,7 +1497,7 @@ fn single_session_text_buffers(
     let content_width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(1.0);
     let title = app.title();
     let body = single_session_visible_body(app, size).join("\n");
-    let draft = app.composer_text();
+    let draft = visualize_composer_whitespace(&app.composer_text());
     let status = app.composer_status_line();
 
     vec![
@@ -1515,7 +1568,7 @@ fn single_session_text_buffer(
         font_system,
         text,
         Attrs::new().family(Family::Name(SINGLE_SESSION_FONT_FAMILY)),
-        Shaping::Advanced,
+        Shaping::Basic,
     );
     buffer.shape_until_scroll(font_system);
     buffer
@@ -1556,7 +1609,7 @@ fn single_session_text_areas(buffers: &[Buffer], size: PhysicalSize<u32>) -> Vec
                 right,
                 bottom: draft_top as i32 - 12,
             },
-            default_color: text_color(PANEL_BODY_COLOR),
+            default_color: text_color(ASSISTANT_TEXT_COLOR),
         },
         TextArea {
             buffer: &buffers[3],
@@ -1585,6 +1638,10 @@ fn single_session_text_areas(buffers: &[Buffer], size: PhysicalSize<u32>) -> Vec
             default_color: text_color(PANEL_SECTION_COLOR),
         },
     ]
+}
+
+fn visualize_composer_whitespace(text: &str) -> String {
+    text.replace(' ', "·")
 }
 
 fn text_color(color: [f32; 4]) -> TextColor {
