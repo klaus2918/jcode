@@ -50,10 +50,33 @@ pub(crate) fn build_single_session_vertices(
         size,
     );
 
+    push_single_session_composer_card(&mut vertices, size);
     push_single_session_transcript_cards(&mut vertices, app, size);
     push_single_session_selection(&mut vertices, app, size);
 
     vertices
+}
+
+fn push_single_session_composer_card(vertices: &mut Vec<Vertex>, size: PhysicalSize<u32>) {
+    let draft_top = single_session_draft_top(size);
+    let x = PANEL_TITLE_LEFT_PADDING - 8.0;
+    let y = draft_top - SINGLE_SESSION_STATUS_GAP - 8.0;
+    let width = (size.width as f32 - x * 2.0).max(1.0);
+    let height = (size.height as f32 - y - PANEL_TITLE_TOP_PADDING).max(1.0);
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    push_rounded_rect(
+        vertices,
+        rect,
+        PANEL_RADIUS,
+        COMPOSER_CARD_BACKGROUND_COLOR,
+        size,
+    );
+    push_panel_outline(vertices, rect, 1.0, COMPOSER_CARD_BORDER_COLOR, size);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -43,6 +43,22 @@ fn visible_column_count_is_clamped_and_safe_without_monitor() {
 }
 
 #[test]
+fn workspace_status_text_includes_build_hash() {
+    let mut workspace = Workspace::fake();
+
+    assert_eq!(
+        workspace_status_text(&workspace),
+        format!("NAV P25 {}", desktop_build_hash_label())
+    );
+
+    workspace.mode = InputMode::Insert;
+    assert_eq!(
+        workspace_status_text(&workspace),
+        format!("INS P25 {}", desktop_build_hash_label())
+    );
+}
+
+#[test]
 fn viewport_animation_interpolates_to_new_layout_target() {
     let mut animation = AnimatedViewport::default();
     let now = Instant::now();
@@ -169,6 +185,18 @@ fn single_session_vertices_include_a_draft_caret() {
             .iter()
             .any(|vertex| vertex.color == SINGLE_SESSION_CARET_COLOR)
     );
+}
+
+#[test]
+fn single_session_vertices_include_composer_card() {
+    let app = SingleSessionApp::new(None);
+    let vertices = build_single_session_vertices(&app, PhysicalSize::new(900, 700), 0.0);
+
+    assert!(vertices_have_color(
+        &vertices,
+        COMPOSER_CARD_BACKGROUND_COLOR
+    ));
+    assert!(vertices_have_color(&vertices, COMPOSER_CARD_BORDER_COLOR));
 }
 
 #[test]

@@ -111,6 +111,8 @@ const OVERLAY_TEXT_COLOR: [f32; 4] = [0.080, 0.105, 0.150, 0.95];
 const OVERLAY_SELECTION_TEXT_COLOR: [f32; 4] = [0.035, 0.065, 0.140, 0.99];
 const PANEL_SECTION_COLOR: [f32; 4] = [0.045, 0.055, 0.080, 0.95];
 const SELECTION_HIGHLIGHT_COLOR: [f32; 4] = [0.220, 0.420, 0.700, 0.22];
+const COMPOSER_CARD_BACKGROUND_COLOR: [f32; 4] = [0.990, 0.995, 1.000, 0.52];
+const COMPOSER_CARD_BORDER_COLOR: [f32; 4] = [0.085, 0.110, 0.160, 0.24];
 const CODE_BLOCK_BACKGROUND_COLOR: [f32; 4] = [0.075, 0.095, 0.135, 0.075];
 const QUOTE_CARD_BACKGROUND_COLOR: [f32; 4] = [0.520, 0.330, 0.760, 0.070];
 const TABLE_CARD_BACKGROUND_COLOR: [f32; 4] = [0.080, 0.460, 0.520, 0.060];
@@ -1852,12 +1854,7 @@ fn push_status_text(
     status_rect: Rect,
     size: PhysicalSize<u32>,
 ) {
-    let mode = match workspace.mode {
-        InputMode::Navigation => "NAV",
-        InputMode::Insert => "INS",
-    };
-    let panel_percent = (workspace.preferred_panel_screen_fraction() * 100.0).round() as u32;
-    let text = format!("{mode} P{panel_percent}");
+    let text = workspace_status_text(workspace);
     let text_width = bitmap_text_width(&text, BITMAP_TEXT_PIXEL);
     let x = status_rect.x + status_rect.width - STATUS_TEXT_RIGHT_PADDING - text_width;
     let y = status_rect.y + (status_rect.height - bitmap_text_height(BITMAP_TEXT_PIXEL)) / 2.0;
@@ -1873,6 +1870,19 @@ fn push_status_text(
             text_width,
         );
     }
+}
+
+fn workspace_status_text(workspace: &Workspace) -> String {
+    let mode = match workspace.mode {
+        InputMode::Navigation => "NAV",
+        InputMode::Insert => "INS",
+    };
+    let panel_percent = (workspace.preferred_panel_screen_fraction() * 100.0).round() as u32;
+    format!("{mode} P{panel_percent} {}", desktop_build_hash_label())
+}
+
+fn desktop_build_hash_label() -> &'static str {
+    option_env!("JCODE_DESKTOP_GIT_HASH").unwrap_or("unknown")
 }
 
 #[cfg(test)]
