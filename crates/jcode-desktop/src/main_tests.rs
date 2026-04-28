@@ -412,6 +412,58 @@ fn single_session_spinner_appears_only_for_active_work() {
 }
 
 #[test]
+fn single_session_visual_state_smoke_covers_markdown_spinner_and_switcher() {
+    let size = PhysicalSize::new(1200, 760);
+    let mut markdown_app = SingleSessionApp::new(Some(test_session_card(
+        "session_visual",
+        "stale title should hide",
+        "active",
+    )));
+    markdown_app
+        .messages
+        .push(SingleSessionMessage::user("render this"));
+    markdown_app.messages.push(SingleSessionMessage::assistant(
+        "# Heading\n\n> quoted\n\n[docs](https://example.com)\n\n| k | v |\n| - | - |\n| color | yes |",
+    ));
+    markdown_app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+        "streaming tail".to_string(),
+    ));
+
+    let markdown_key = single_session_text_key(&markdown_app, size);
+    assert_eq!(markdown_key.title, "active conversation");
+    assert!(markdown_key.status.starts_with("◐ receiving"));
+    assert_visual_text_contains(&markdown_key, "# Heading");
+    assert_visual_text_contains(&markdown_key, "▌ quoted");
+    assert_visual_text_contains(&markdown_key, "docs ↗ https://example.com");
+    assert_visual_text_contains(&markdown_key, "┆ color │ yes");
+    assert_visual_text_contains(&markdown_key, "streaming tail");
+
+    let markdown_vertices = build_single_session_vertices(&markdown_app, size, 0.0);
+    assert!(vertices_have_color(
+        &markdown_vertices,
+        QUOTE_CARD_BACKGROUND_COLOR
+    ));
+    assert!(vertices_have_color(
+        &markdown_vertices,
+        TABLE_CARD_BACKGROUND_COLOR
+    ));
+
+    let mut switcher_app = SingleSessionApp::new(None);
+    assert_eq!(
+        switcher_app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    let switcher_key = single_session_text_key(&switcher_app, size);
+    assert_eq!(switcher_key.title, "fresh session");
+    assert!(switcher_key.status.starts_with("◐ loading recent sessions"));
+    assert_visual_text_contains(&switcher_key, "desktop session switcher");
+    assert_visual_text_contains(
+        &switcher_key,
+        "loading recent sessions from ~/.jcode/sessions...",
+    );
+}
+
+#[test]
 fn single_session_body_styled_lines_follow_roles_and_overlays() {
     let mut app = SingleSessionApp::new(None);
     app.messages
@@ -557,6 +609,19 @@ fn single_session_vertices_include_transcript_card_backgrounds() {
 
 fn vertices_have_color(vertices: &[Vertex], color: [f32; 4]) -> bool {
     vertices.iter().any(|vertex| vertex.color == color)
+}
+
+fn assert_visual_text_contains(key: &SingleSessionTextKey, expected: &str) {
+    let body = key
+        .body
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        body.contains(expected),
+        "expected visual body to contain {expected:?}, got:\n{body}"
+    );
 }
 
 fn test_session_card(id: &str, title: &str, status: &str) -> workspace::SessionCard {
