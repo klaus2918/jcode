@@ -199,25 +199,33 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn body_lines(&self) -> Vec<String> {
-        if !self.messages.is_empty()
-            || !self.streaming_response.is_empty()
-            || self.status.is_some()
-            || self.error.is_some()
+        if !self.messages.is_empty() || !self.streaming_response.is_empty() || self.error.is_some()
         {
-            let mut lines = vec!["conversation".to_string()];
+            let mut lines = Vec::new();
+            let mut user_turn = 1;
             for message in &self.messages {
-                lines.push(format!("{}: {}", message.role, message.content.trim()));
+                if !lines.is_empty() {
+                    lines.push(String::new());
+                }
+                append_chat_message_lines(&mut lines, message, &mut user_turn);
             }
             if !self.streaming_response.is_empty() {
-                lines.push(format!("assistant: {}", self.streaming_response.trim_end()));
-            }
-            if let Some(status) = &self.status {
-                lines.push(format!("status: {status}"));
+                if !lines.is_empty() {
+                    lines.push(String::new());
+                }
+                append_assistant_lines(&mut lines, self.streaming_response.trim_end());
             }
             if let Some(error) = &self.error {
+                if !lines.is_empty() {
+                    lines.push(String::new());
+                }
                 lines.push(format!("error: {error}"));
             }
             return lines;
+        }
+
+        if let Some(status) = &self.status {
+            return vec![status.clone()];
         }
 
         single_session_lines(self.session.as_ref())
@@ -430,6 +438,35 @@ impl SingleSessionApp {
             self.draft_cursor -= 1;
         }
     }
+}
+
+fn append_chat_message_lines(
+    lines: &mut Vec<String>,
+    message: &SingleSessionMessage,
+    user_turn: &mut usize,
+) {
+    match message.role {
+        "user" => {
+            append_user_lines(lines, *user_turn, message.content.trim());
+            *user_turn += 1;
+        }
+        _ => append_assistant_lines(lines, message.content.trim()),
+    }
+}
+
+fn append_user_lines(lines: &mut Vec<String>, turn: usize, content: &str) {
+    let mut content_lines = content.lines();
+    let Some(first) = content_lines.next() else {
+        return;
+    };
+    lines.push(format!("{turn}  {first}"));
+    for line in content_lines {
+        lines.push(format!("   {line}"));
+    }
+}
+
+fn append_assistant_lines(lines: &mut Vec<String>, content: &str) {
+    lines.extend(content.lines().map(ToOwned::to_owned));
 }
 
 fn previous_char_boundary(text: &str, cursor: usize) -> usize {

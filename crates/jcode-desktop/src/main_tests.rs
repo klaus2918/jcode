@@ -215,13 +215,19 @@ fn single_session_applies_live_server_events_to_visible_body() {
     ));
 
     let live_lines = app.body_lines().join("\n");
-    assert!(live_lines.contains("user: hello"));
-    assert!(live_lines.contains("assistant: hi"));
+    assert!(live_lines.contains("1  hello"));
+    assert!(live_lines.contains("hi"));
+    assert!(!live_lines.contains("user:"));
+    assert!(!live_lines.contains("assistant:"));
+    assert!(!live_lines.contains("status:"));
     assert!(app.has_background_work());
 
     app.apply_session_event(session_launch::DesktopSessionEvent::Done);
     assert!(!app.has_background_work());
-    assert!(app.body_lines().join("\n").contains("assistant: hi"));
+    let completed_lines = app.body_lines().join("\n");
+    assert!(completed_lines.contains("1  hello"));
+    assert!(completed_lines.contains("hi"));
+    assert!(!completed_lines.contains("assistant:"));
 }
 
 #[test]
@@ -258,12 +264,11 @@ fn desktop_app_drains_session_events_into_visible_debug_snapshot() {
         Some("session_visible_smoke")
     );
     assert!(streaming.is_processing);
-    assert!(streaming.body_text.contains("user: hello smoke"));
-    assert!(
-        streaming
-            .body_text
-            .contains("assistant: visible assistant response")
-    );
+    assert!(streaming.body_text.contains("1  hello smoke"));
+    assert!(streaming.body_text.contains("visible assistant response"));
+    assert!(!streaming.body_text.contains("user:"));
+    assert!(!streaming.body_text.contains("assistant:"));
+    assert!(!streaming.body_text.contains("status:"));
 
     event_tx
         .send(session_launch::DesktopSessionEvent::Done)
@@ -272,11 +277,8 @@ fn desktop_app_drains_session_events_into_visible_debug_snapshot() {
     let completed = app.debug_snapshot();
     assert!(!completed.is_processing);
     assert_eq!(completed.status.as_deref(), Some("ready"));
-    assert!(
-        completed
-            .body_text
-            .contains("assistant: visible assistant response")
-    );
+    assert!(completed.body_text.contains("visible assistant response"));
+    assert!(!completed.body_text.contains("assistant:"));
 }
 
 #[test]
