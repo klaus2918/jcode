@@ -229,6 +229,15 @@ fn single_session_composer_uses_next_prompt_number_and_status_footer() {
     assert_eq!(app.composer_prompt(), "1› ");
     assert_eq!(app.composer_text(), "1› ");
     assert!(app.composer_status_line().contains("ready"));
+    assert!(app.composer_status_line().contains("Ctrl+Enter queue/send"));
+    assert!(!app.composer_status_line().contains("scrolled up"));
+
+    app.scroll_body_lines(1);
+    assert!(app.composer_status_line().contains("scrolled up 1 line"));
+    app.scroll_body_lines(2);
+    assert!(app.composer_status_line().contains("scrolled up 3 lines"));
+    app.scroll_body_to_bottom();
+    assert!(!app.composer_status_line().contains("scrolled up"));
 
     app.handle_key(KeyInput::Character("hello".to_string()));
     assert_eq!(app.composer_text(), "1› hello");
@@ -419,8 +428,10 @@ fn single_session_hotkey_help_toggles_discoverable_shortcuts() {
     assert!(app.show_help);
     let help = app.body_lines().join("\n");
     assert!(help.contains("desktop shortcuts"));
+    assert!(help.contains("Ctrl+Enter  queue while running, send when idle"));
     assert!(help.contains("Ctrl+Shift+C copy latest assistant response"));
     assert!(help.contains("Alt+Up/Down jump between user prompts"));
+    assert!(!help.contains("desktop queue follow-up pending"));
     assert!(!help.contains("1  question"));
 
     assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::Redraw);
@@ -979,7 +990,12 @@ fn single_session_without_session_is_native_fresh_draft() {
     assert!(
         single_session_lines(None)
             .iter()
-            .any(|line| line.contains("desktop-native"))
+            .any(|line| line.contains("shared desktop session runtime"))
+    );
+    assert!(
+        single_session_lines(None)
+            .iter()
+            .all(|line| !line.contains("execution is connected"))
     );
 }
 

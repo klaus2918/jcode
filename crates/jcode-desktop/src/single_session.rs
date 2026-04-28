@@ -460,7 +460,12 @@ impl SingleSessionApp {
         let mode = if self.is_processing {
             "Ctrl+C interrupt"
         } else {
-            "Enter send · Shift+Enter newline · Ctrl+Enter queue"
+            "Enter send · Shift+Enter newline · Ctrl+Enter queue/send"
+        };
+        let scroll = match self.body_scroll_lines {
+            0 => String::new(),
+            1 => " · scrolled up 1 line".to_string(),
+            lines => format!(" · scrolled up {lines} lines"),
         };
         let images = match self.pending_images.len() {
             0 => String::new(),
@@ -496,7 +501,7 @@ impl SingleSessionApp {
                     .unwrap_or_else(|| format!(" · model {model}"))
             })
             .unwrap_or_default();
-        format!("{status}{images}{queued}{stdin}{model} · {mode}")
+        format!("{status}{images}{queued}{stdin}{model}{scroll} · {mode}")
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyInput) -> KeyOutcome {
@@ -1558,7 +1563,7 @@ fn single_session_help_styled_lines() -> Vec<SingleSessionStyledLine> {
         "chat",
         "  Enter       send prompt",
         "  Shift+Enter insert newline",
-        "  Ctrl+Enter  queue prompt (desktop queue follow-up pending)",
+        "  Ctrl+Enter  queue while running, send when idle",
         "  Ctrl+C      interrupt running generation",
         "  Ctrl+Shift+C copy latest assistant response",
         "  Ctrl+V      paste clipboard text",
@@ -1903,7 +1908,7 @@ pub(crate) fn single_session_styled_lines(
                 SingleSessionLineStyle::Overlay,
             ),
             styled_line(
-                "ctrl+enter will send once desktop-native execution is connected",
+                "Enter sends through the shared desktop session runtime",
                 SingleSessionLineStyle::Overlay,
             ),
             styled_line(
