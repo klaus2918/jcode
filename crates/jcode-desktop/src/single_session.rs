@@ -597,9 +597,13 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn composer_status_line(&self) -> String {
+        self.composer_status_line_for_tick(0)
+    }
+
+    pub(crate) fn composer_status_line_for_tick(&self, tick: u64) -> String {
         let status = self.status.as_deref().unwrap_or("ready");
         let spinner = self
-            .activity_spinner()
+            .activity_spinner_for_tick(tick)
             .map(|spinner| format!("{spinner} "))
             .unwrap_or_default();
         let mode = if self.is_processing {
@@ -650,12 +654,21 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn activity_spinner(&self) -> Option<&'static str> {
+        self.activity_spinner_for_tick(0)
+    }
+
+    pub(crate) fn activity_spinner_for_tick(&self, tick: u64) -> Option<&'static str> {
         if self.is_processing
             || self.model_picker.loading
             || self.session_switcher.loading
             || self.status.as_deref().is_some_and(is_in_flight_status)
         {
-            Some("◐")
+            Some(match tick % 4 {
+                0 => "◴",
+                1 => "◷",
+                2 => "◶",
+                _ => "◵",
+            })
         } else {
             None
         }

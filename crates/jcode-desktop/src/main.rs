@@ -13,7 +13,7 @@ use base64::Engine;
 use bytemuck::{Pod, Zeroable};
 use glyphon::{
     Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Resolution, Shaping,
-    SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Wrap,
 };
 use render_helpers::*;
 use single_session::{
@@ -72,6 +72,7 @@ const SINGLE_SESSION_CARET_COLOR: [f32; 4] = [0.130, 0.150, 0.190, 0.92];
 const SESSION_SPAWN_REFRESH_DELAY: Duration = Duration::from_millis(350);
 const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(33);
 const HEADLESS_CHAT_SMOKE_TIMEOUT: Duration = Duration::from_secs(90);
+const DESKTOP_SPINNER_FRAME_MS: u128 = 180;
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.955,
@@ -85,7 +86,6 @@ const BACKGROUND_TOP_RIGHT: [f32; 4] = [0.945, 0.884, 1.000, 1.0];
 const BACKGROUND_BOTTOM_RIGHT: [f32; 4] = [0.846, 0.972, 0.910, 1.0];
 const BACKGROUND_BOTTOM_LEFT: [f32; 4] = [0.930, 0.950, 0.988, 1.0];
 const FOCUS_RING_COLOR: [f32; 4] = [0.165, 0.185, 0.225, 0.94];
-const UNFOCUSED_BORDER_COLOR: [f32; 4] = [0.170, 0.190, 0.230, 0.68];
 const NAV_STATUS_COLOR: [f32; 4] = [0.184, 0.204, 0.251, 1.0];
 const INSERT_STATUS_COLOR: [f32; 4] = [0.310, 0.435, 0.376, 1.0];
 const STATUS_PREVIEW_ACTIVE_GROUP_COLOR: [f32; 4] = [0.953, 0.965, 0.984, 0.16];
@@ -1117,6 +1117,7 @@ impl DesktopApp {
 fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
     match key {
         Key::Named(NamedKey::Escape) => KeyInput::Escape,
+        Key::Named(NamedKey::Space) => KeyInput::Character(" ".to_string()),
         Key::Named(NamedKey::Enter) if modifiers.control_key() => KeyInput::QueueDraft,
         Key::Named(NamedKey::Enter) if modifiers.shift_key() => KeyInput::Enter,
         Key::Named(NamedKey::Enter) => KeyInput::SubmitDraft,
@@ -1313,6 +1314,14 @@ fn mouse_scroll_lines(delta: MouseScrollDelta) -> Option<i32> {
     (lines != 0).then_some(lines)
 }
 
+fn desktop_spinner_tick(_now: Instant) -> u64 {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    (millis / DESKTOP_SPINNER_FRAME_MS) as u64
+}
+
 struct Canvas<'window> {
     surface: wgpu::Surface<'window>,
     device: wgpu::Device,
@@ -1471,8 +1480,8 @@ impl<'window> Canvas<'window> {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn refresh_cached_single_session_text_buffers(&mut self, app: &SingleSessionApp) {
-        let key = single_session_text_key(app, self.size);
+    fn refresh_cached_single_session_text_buffers(&mut self, app: &SingleSessionApp, now: Instant) {
+        let key = single_session_text_key_for_tick(app, self.size, desktop_spinner_tick(now));
         if self.single_session_text_key.as_ref() != Some(&key) {
             self.single_session_text_buffers =
                 single_session_text_buffers_from_key(&key, self.size, &mut self.font_system);
@@ -1498,7 +1507,8 @@ impl<'window> Canvas<'window> {
         let (mut vertices, animation_active) = match app {
             DesktopApp::SingleSession(single_session) => {
                 let focus_pulse = self.focus_pulse.frame(1, now);
-                let animation_active = self.focus_pulse.is_animating();
+                let animation_active =
+                    self.focus_pulse.is_animating() || single_session.has_background_work();
                 (
                     build_single_session_vertices(single_session, self.size, focus_pulse),
                     animation_active,
@@ -1517,7 +1527,7 @@ impl<'window> Canvas<'window> {
             }
         };
         if let DesktopApp::SingleSession(single_session) = app {
-            self.refresh_cached_single_session_text_buffers(single_session);
+            self.refresh_cached_single_session_text_buffers(single_session, now);
         } else {
             self.single_session_text_key = None;
             self.single_session_text_buffers.clear();

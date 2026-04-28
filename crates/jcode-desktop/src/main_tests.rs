@@ -397,8 +397,9 @@ fn single_session_spinner_appears_only_for_active_work() {
     app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
         "streaming".to_string(),
     ));
-    assert_eq!(app.activity_spinner(), Some("◐"));
-    assert!(app.composer_status_line().starts_with("◐ receiving"));
+    assert_eq!(app.activity_spinner(), Some("◴"));
+    assert!(app.composer_status_line().starts_with("◴ receiving"));
+    assert_eq!(app.activity_spinner_for_tick(1), Some("◷"));
 
     app.apply_session_event(session_launch::DesktopSessionEvent::Done);
     assert_eq!(app.activity_spinner(), None);
@@ -408,7 +409,49 @@ fn single_session_spinner_appears_only_for_active_work() {
         app.handle_key(KeyInput::OpenModelPicker),
         KeyOutcome::LoadModelCatalog
     );
-    assert_eq!(app.activity_spinner(), Some("◐"));
+    assert_eq!(app.activity_spinner(), Some("◴"));
+}
+
+#[test]
+fn desktop_space_key_inserts_visible_prompt_space() {
+    assert_eq!(
+        to_key_input(&Key::Named(NamedKey::Space), ModifiersState::empty()),
+        KeyInput::Character(" ".to_string())
+    );
+
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("hello".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(
+        app.handle_key(KeyInput::Character(" ".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(
+        app.handle_key(KeyInput::Character("world".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.composer_text(), "1› hello world");
+    assert!(
+        single_session_text_key(&app, PhysicalSize::new(420, 640))
+            .draft
+            .contains("hello world")
+    );
+}
+
+#[test]
+fn single_session_status_spinner_animates_by_tick() {
+    let mut app = SingleSessionApp::new(None);
+    app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+        "streaming".to_string(),
+    ));
+
+    let first = single_session_text_key_for_tick(&app, PhysicalSize::new(900, 700), 0).status;
+    let second = single_session_text_key_for_tick(&app, PhysicalSize::new(900, 700), 1).status;
+    assert!(first.starts_with("◴ receiving"));
+    assert!(second.starts_with("◷ receiving"));
+    assert_ne!(first, second);
 }
 
 #[test]
@@ -431,7 +474,7 @@ fn single_session_visual_state_smoke_covers_markdown_spinner_and_switcher() {
 
     let markdown_key = single_session_text_key(&markdown_app, size);
     assert_eq!(markdown_key.title, "active conversation");
-    assert!(markdown_key.status.starts_with("◐ receiving"));
+    assert!(markdown_key.status.starts_with("◴ receiving"));
     assert_visual_text_contains(&markdown_key, "# Heading");
     assert_visual_text_contains(&markdown_key, "▌ quoted");
     assert_visual_text_contains(&markdown_key, "docs ↗ https://example.com");
@@ -455,7 +498,7 @@ fn single_session_visual_state_smoke_covers_markdown_spinner_and_switcher() {
     );
     let switcher_key = single_session_text_key(&switcher_app, size);
     assert_eq!(switcher_key.title, "fresh session");
-    assert!(switcher_key.status.starts_with("◐ loading recent sessions"));
+    assert!(switcher_key.status.starts_with("◴ loading recent sessions"));
     assert_visual_text_contains(&switcher_key, "desktop session switcher");
     assert_visual_text_contains(
         &switcher_key,

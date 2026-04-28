@@ -300,12 +300,20 @@ pub(crate) fn single_session_text_key(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
 ) -> SingleSessionTextKey {
+    single_session_text_key_for_tick(app, size, 0)
+}
+
+pub(crate) fn single_session_text_key_for_tick(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    tick: u64,
+) -> SingleSessionTextKey {
     SingleSessionTextKey {
         size: (size.width, size.height),
         title: app.header_title(),
         body: single_session_visible_styled_body(app, size),
         draft: visualize_composer_whitespace(&app.composer_text()),
-        status: app.composer_status_line(),
+        status: app.composer_status_line_for_tick(tick),
     }
 }
 
@@ -316,6 +324,10 @@ pub(crate) fn single_session_text_buffers_from_key(
 ) -> Vec<Buffer> {
     let typography = single_session_typography();
     let content_width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(1.0);
+
+    let prompt_height =
+        (size.height as f32 - single_session_draft_top(size) - SINGLE_SESSION_STATUS_GAP - 18.0)
+            .max(typography.code_size * typography.code_line_height * 2.0);
 
     vec![
         single_session_text_buffer(
@@ -340,7 +352,7 @@ pub(crate) fn single_session_text_buffers_from_key(
             typography.code_size,
             typography.code_size * typography.code_line_height,
             content_width,
-            96.0,
+            prompt_height,
         ),
         single_session_text_buffer(
             font_system,
@@ -432,6 +444,7 @@ fn single_session_text_buffer(
 ) -> Buffer {
     let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_height));
     buffer.set_size(font_system, width, height);
+    buffer.set_wrap(font_system, Wrap::Word);
     buffer.set_text(
         font_system,
         text,
@@ -578,7 +591,7 @@ pub(crate) fn single_session_text_areas(
 }
 
 fn visualize_composer_whitespace(text: &str) -> String {
-    text.replace(' ', "·")
+    text.to_string()
 }
 
 fn text_color(color: [f32; 4]) -> TextColor {
