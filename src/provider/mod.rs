@@ -77,7 +77,11 @@ pub trait Provider: Send + Sync {
     /// Send messages with split system prompt for better caching
     /// system_static: Static content (instruction files, base prompt) - cached
     /// system_dynamic: Dynamic content (date, git status, memory) - not cached
-    /// Default implementation combines them and calls complete()
+    /// Default implementation keeps static instructions in the provider's system field and moves
+    /// dynamic context into a late synthetic system-reminder message. This avoids putting changing
+    /// date/time/git/memory text at the beginning of the prompt for providers with implicit prefix
+    /// caching (OpenAI/Gemini/OpenRouter-compatible), while Anthropic overrides this with native
+    /// split system cache-control blocks.
     async fn complete_split(
         &self,
         messages: &[Message],
@@ -86,15 +90,8 @@ pub trait Provider: Send + Sync {
         system_dynamic: &str,
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
-        // Default: combine static and dynamic parts
-        let combined = if system_dynamic.is_empty() {
-            system_static.to_string()
-        } else if system_static.is_empty() {
-            system_dynamic.to_string()
-        } else {
-            format!("{}\n\n{}", system_static, system_dynamic)
-        };
-        self.complete(messages, tools, &combined, resume_session_id)
+        let dynamic_messages = messages_with_dynamic_system_context(messages, system_dynamic);
+        self.complete(&dynamic_messages, tools, system_static, resume_session_id)
             .await
     }
 
@@ -354,6 +351,138 @@ pub trait Provider: Send + Sync {
         }
 
         Ok(result)
+    }
+}
+
+fn is_fresh_user_text_message(message: &Message) -> bool {
+    if message.role != Role::User {
+        return false;
+    }
+
+    let mut saw_user_text = false;
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text, .. } => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with("<system-reminder>") {
+                    saw_user_text = true;
+                }
+            }
+            ContentBlock::Image { .. } => {}
+            _ => return false,
+        }
+    }
+
+    saw_user_text
+}
+
+fn dynamic_system_context_message(system_dynamic: &str) -> Option<Message> {
+    let trimmed = system_dynamic.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(Message::user(&format!(
+        "<system-reminder>\n{}\n</system-reminder>",
+        trimmed
+    )))
+}
+
+fn messages_with_dynamic_system_context(
+    messages: &[Message],
+    system_dynamic: &str,
+) -> Vec<Message> {
+    let Some(dynamic_message) = dynamic_system_context_message(system_dynamic) else {
+        return messages.to_vec();
+    };
+
+    let mut out = messages.to_vec();
+    let insert_at = out
+        .iter()
+        .rposition(is_fresh_user_text_message)
+        .unwrap_or(out.len());
+    out.insert(insert_at, dynamic_message);
+    out
+}
+
+#[cfg(test)]
+mod split_prompt_tests {
+    use super::*;
+
+    fn text_of(message: &Message) -> &str {
+        match message.content.first() {
+            Some(ContentBlock::Text { text, .. }) => text,
+            other => panic!("expected text block, got {:?}", other),
+        }
+    }
+
+    fn assert_role_text(message: &Message, role: Role, text: &str) {
+        assert_eq!(message.role, role);
+        assert_eq!(text_of(message), text);
+    }
+
+    #[test]
+    fn dynamic_context_is_inserted_before_current_user_prompt() {
+        let messages = vec![
+            Message::user("first user"),
+            Message::assistant_text("assistant"),
+            Message::user("current user"),
+        ];
+
+        let out =
+            messages_with_dynamic_system_context(&messages, "# Environment\nTime: 10:00:00 UTC");
+
+        assert_eq!(out.len(), 4);
+        assert_eq!(text_of(&out[0]), "first user");
+        assert_eq!(text_of(&out[1]), "assistant");
+        assert!(text_of(&out[2]).starts_with("<system-reminder>\n# Environment"));
+        assert_eq!(text_of(&out[3]), "current user");
+    }
+
+    #[test]
+    fn dynamic_context_does_not_move_existing_history_prefix() {
+        let messages = vec![
+            Message::user("stable cached user"),
+            Message::assistant_text("stable cached assistant"),
+            Message::user("latest prompt"),
+        ];
+
+        let out_a = messages_with_dynamic_system_context(&messages, "Time: 10:00:00 UTC");
+        let out_b = messages_with_dynamic_system_context(&messages, "Time: 10:00:01 UTC");
+
+        assert_role_text(&out_a[0], Role::User, "stable cached user");
+        assert_role_text(&out_a[1], Role::Assistant, "stable cached assistant");
+        assert_role_text(&out_b[0], Role::User, "stable cached user");
+        assert_role_text(&out_b[1], Role::Assistant, "stable cached assistant");
+        assert_ne!(text_of(&out_a[2]), text_of(&out_b[2]));
+        assert_role_text(&out_a[3], Role::User, "latest prompt");
+        assert_role_text(&out_b[3], Role::User, "latest prompt");
+    }
+
+    #[test]
+    fn empty_dynamic_context_leaves_messages_unchanged() {
+        let messages = vec![Message::user("hello")];
+        let out = messages_with_dynamic_system_context(&messages, "\n  \n");
+        assert_eq!(out.len(), 1);
+        assert_role_text(&out[0], Role::User, "hello");
+    }
+
+    #[test]
+    fn dynamic_context_appends_when_no_fresh_user_prompt_exists() {
+        let messages = vec![
+            Message::assistant_text("assistant"),
+            Message::user("<system-reminder>\ninternal\n</system-reminder>"),
+        ];
+
+        let out = messages_with_dynamic_system_context(&messages, "Time: 10:00:00 UTC");
+
+        assert_eq!(out.len(), 3);
+        assert_role_text(&out[0], Role::Assistant, "assistant");
+        assert_role_text(
+            &out[1],
+            Role::User,
+            "<system-reminder>\ninternal\n</system-reminder>",
+        );
+        assert!(text_of(&out[2]).contains("Time: 10:00:00 UTC"));
     }
 }
 
