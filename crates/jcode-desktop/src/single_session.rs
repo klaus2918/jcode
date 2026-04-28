@@ -252,6 +252,7 @@ impl SingleSessionApp {
                 .latest_assistant_response()
                 .map(KeyOutcome::CopyLatestResponse)
                 .unwrap_or(KeyOutcome::None),
+            KeyInput::CycleModel(direction) => KeyOutcome::CycleModel(direction),
             KeyInput::SubmitDraft => self.submit_draft(),
             KeyInput::Escape if self.show_help => {
                 self.show_help = false;
@@ -395,6 +396,20 @@ impl SingleSessionApp {
                 let marker = if is_error { "failed" } else { "done" };
                 self.messages.push(SingleSessionMessage::tool(format!(
                     "{name} {marker}: {summary}"
+                )));
+            }
+            DesktopSessionEvent::ModelChanged {
+                model,
+                provider_name,
+            } => {
+                let label = provider_name
+                    .as_deref()
+                    .filter(|provider| !provider.is_empty())
+                    .map(|provider| format!("{provider} · {model}"))
+                    .unwrap_or_else(|| model.clone());
+                self.status = Some(format!("model: {label}"));
+                self.messages.push(SingleSessionMessage::meta(format!(
+                    "model switched to {label}"
                 )));
             }
             DesktopSessionEvent::Done => {
@@ -707,6 +722,7 @@ pub(crate) fn single_session_help_lines() -> Vec<String> {
         "  Enter       insert newline".to_string(),
         "  Ctrl+C      interrupt running generation".to_string(),
         "  Ctrl+Shift+C copy latest assistant response".to_string(),
+        "  Ctrl+M/N    switch to next/previous model".to_string(),
         String::new(),
         "navigation".to_string(),
         "  PageUp/PageDown scroll transcript".to_string(),

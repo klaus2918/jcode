@@ -320,6 +320,30 @@ fn single_session_hotkey_help_toggles_discoverable_shortcuts() {
 }
 
 #[test]
+fn single_session_model_cycle_updates_status_and_transcript() {
+    let mut app = SingleSessionApp::new(None);
+
+    assert_eq!(
+        app.handle_key(KeyInput::CycleModel(1)),
+        KeyOutcome::CycleModel(1)
+    );
+    app.apply_session_event(session_launch::DesktopSessionEvent::ModelChanged {
+        model: "claude-opus-4-5".to_string(),
+        provider_name: Some("Claude".to_string()),
+    });
+
+    assert_eq!(
+        app.status.as_deref(),
+        Some("model: Claude · claude-opus-4-5")
+    );
+    assert!(
+        app.body_lines()
+            .join("\n")
+            .contains("model switched to Claude · claude-opus-4-5")
+    );
+}
+
+#[test]
 fn single_session_prompt_jump_moves_between_user_turns() {
     let mut app = SingleSessionApp::new(None);
     for index in 0..4 {

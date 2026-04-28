@@ -82,6 +82,7 @@ pub enum KeyInput {
     ScrollBodyPages(i32),
     JumpPrompt(i32),
     CopyLatestResponse,
+    CycleModel(i8),
     SubmitDraft,
     SpawnPanel,
     HotkeyHelp,
@@ -107,6 +108,7 @@ pub enum KeyOutcome {
     },
     CancelGeneration,
     CopyLatestResponse(String),
+    CycleModel(i8),
     StartFreshSession {
         message: String,
     },
@@ -414,7 +416,9 @@ impl Workspace {
                 return KeyOutcome::Redraw;
             }
             KeyInput::SubmitDraft => return KeyOutcome::None,
-            KeyInput::CancelGeneration | KeyInput::ScrollBodyPages(_) => return KeyOutcome::None,
+            KeyInput::CancelGeneration | KeyInput::ScrollBodyPages(_) | KeyInput::CycleModel(_) => {
+                return KeyOutcome::None;
+            }
             _ => {}
         }
 
@@ -520,7 +524,8 @@ impl Workspace {
             | KeyInput::CancelGeneration
             | KeyInput::ScrollBodyPages(_)
             | KeyInput::JumpPrompt(_)
-            | KeyInput::CopyLatestResponse => KeyOutcome::None,
+            | KeyInput::CopyLatestResponse
+            | KeyInput::CycleModel(_) => KeyOutcome::None,
             KeyInput::Character(text) => {
                 self.draft.push_str(&text);
                 KeyOutcome::Redraw

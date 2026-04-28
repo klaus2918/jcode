@@ -27,6 +27,10 @@ pub enum DesktopSessionEvent {
         summary: String,
         is_error: bool,
     },
+    ModelChanged {
+        model: String,
+        provider_name: Option<String>,
+    },
     Reloading {
         new_socket: Option<String>,
     },
@@ -134,6 +138,55 @@ pub fn spawn_message_to_session(
         })
         .context("failed to spawn desktop session worker")?;
     Ok(handle)
+}
+
+#[cfg(unix)]
+pub fn spawn_cycle_model(direction: i8, event_tx: DesktopSessionEventSender) -> Result<()> {
+    std::thread::Builder::new()
+        .name("jcode-desktop-cycle-model".to_string())
+        .spawn(move || {
+            if let Err(error) = cycle_model(direction, Some(event_tx.clone())) {
+                let _ = event_tx.send(DesktopSessionEvent::Error(format!("{error:#}")));
+            }
+        })
+        .context("failed to spawn desktop model switch worker")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn spawn_cycle_model(_direction: i8, event_tx: DesktopSessionEventSender) -> Result<()> {
+    event_tx
+        .send(DesktopSessionEvent::Error(
+            "desktop model switching is not implemented on this platform yet".to_string(),
+        ))
+        .ok();
+    Ok(())
+}
+
+#[cfg(unix)]
+fn cycle_model(direction: i8, event_tx: Option<DesktopSessionEventSender>) -> Result<()> {
+    send_desktop_status(&event_tx, "switching model");
+    ensure_server_running()?;
+    let stream = connect_server_with_retry(SERVER_START_TIMEOUT)?;
+    let mut writer = stream
+        .try_clone()
+        .context("failed to clone server socket writer")?;
+    let mut reader = BufReader::new(stream);
+    let request_id = 1_u64;
+    write_json_line(
+        &mut writer,
+        json!({
+            "type": "cycle_model",
+            "id": request_id,
+            "direction": direction,
+        }),
+    )?;
+    read_model_changed(
+        &mut reader,
+        SERVER_START_TIMEOUT,
+        event_tx.as_ref(),
+        request_id,
+    )
 }
 
 #[cfg(unix)]
@@ -440,6 +493,64 @@ fn read_session_id_from_state(
 }
 
 #[cfg(unix)]
+fn read_model_changed(
+    reader: &mut BufReader<UnixStream>,
+    timeout: Duration,
+    event_tx: Option<&DesktopSessionEventSender>,
+    request_id: u64,
+) -> Result<()> {
+    reader
+        .get_ref()
+        .set_read_timeout(Some(SERVER_CONNECT_RETRY_DELAY))
+        .context("failed to configure server socket timeout")?;
+    let started = Instant::now();
+    let mut line = String::new();
+    while started.elapsed() < timeout {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => anyhow::bail!("jcode server disconnected before switching model"),
+            Ok(_) => {
+                let value: Value = serde_json::from_str(line.trim())
+                    .context("failed to parse jcode server event")?;
+                if value.get("type").and_then(Value::as_str) == Some("model_changed")
+                    && value.get("id").and_then(Value::as_u64) == Some(request_id)
+                {
+                    if let Some(error) = value.get("error").and_then(Value::as_str) {
+                        anyhow::bail!("failed to switch model: {error}");
+                    }
+                    if let Some(event) = desktop_event_from_server_value(&value) {
+                        send_desktop_event_ref(event_tx, event);
+                    }
+                    return Ok(());
+                }
+                if let Some(event) = desktop_event_from_server_value(&value) {
+                    if !matches!(event, DesktopSessionEvent::Done) {
+                        send_desktop_event_ref(event_tx, event);
+                    }
+                }
+                if value.get("type").and_then(Value::as_str) == Some("error")
+                    && value.get("id").and_then(Value::as_u64) == Some(request_id)
+                {
+                    let message = value
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown server error");
+                    anyhow::bail!("jcode server rejected model switch: {message}");
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(error).context("failed to read jcode server event"),
+        }
+    }
+
+    anyhow::bail!("timed out waiting for jcode server model switch")
+}
+
+#[cfg(unix)]
 fn write_json_line(writer: &mut UnixStream, value: Value) -> Result<()> {
     serde_json::to_writer(&mut *writer, &value).context("failed to encode server request")?;
     writer
@@ -592,6 +703,15 @@ fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSessionEvent>
             }
         }),
         "interrupted" => Some(DesktopSessionEvent::Status("interrupted".to_string())),
+        "model_changed" => value.get("model").and_then(Value::as_str).map(|model| {
+            DesktopSessionEvent::ModelChanged {
+                model: model.to_string(),
+                provider_name: value
+                    .get("provider_name")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+            }
+        }),
         "reloading" => Some(DesktopSessionEvent::Reloading {
             new_socket: value
                 .get("new_socket")
@@ -835,6 +955,17 @@ mod tests {
             })),
             Some(DesktopSessionEvent::Reloading {
                 new_socket: Some("/tmp/jcode-new.sock".to_string())
+            })
+        );
+        assert_eq!(
+            desktop_event_from_server_value(&json!({
+                "type": "model_changed",
+                "model": "claude-opus-4-5",
+                "provider_name": "Claude"
+            })),
+            Some(DesktopSessionEvent::ModelChanged {
+                model: "claude-opus-4-5".to_string(),
+                provider_name: Some("Claude".to_string())
             })
         );
     }

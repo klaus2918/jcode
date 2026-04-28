@@ -307,6 +307,22 @@ async fn run() -> Result<()> {
                             window.set_title(&app.status_title());
                             window.request_redraw();
                         }
+                        KeyOutcome::CycleModel(direction) => {
+                            if let Err(error) = session_launch::spawn_cycle_model(
+                                direction,
+                                session_event_tx.clone(),
+                            ) {
+                                apply_single_session_error(&mut app, error);
+                            } else {
+                                app.apply_session_event(
+                                    session_launch::DesktopSessionEvent::Status(
+                                        "switching model".to_string(),
+                                    ),
+                                );
+                            }
+                            window.set_title(&app.status_title());
+                            window.request_redraw();
+                        }
                         KeyOutcome::None => {}
                     }
                 }
@@ -469,6 +485,24 @@ fn run_headless_chat_smoke(message: String) -> Result<()> {
                 println!(
                     "{}",
                     serde_json::json!({"event": "reloading", "new_socket": new_socket})
+                );
+            }
+            session_launch::DesktopSessionEvent::ModelChanged {
+                model,
+                provider_name,
+            } => {
+                let label = provider_name
+                    .as_deref()
+                    .map(|provider| format!("{provider} · {model}"))
+                    .unwrap_or_else(|| model.clone());
+                last_status = Some(format!("model: {label}"));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "model_changed",
+                        "model": model,
+                        "provider_name": provider_name,
+                    })
                 );
             }
             session_launch::DesktopSessionEvent::Done => {
@@ -816,6 +850,12 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         }
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("r") => {
             KeyInput::RefreshSessions
+        }
+        Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("m") => {
+            KeyInput::CycleModel(1)
+        }
+        Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("n") => {
+            KeyInput::CycleModel(-1)
         }
         Key::Character(text) if modifiers.control_key() && text == "1" => {
             KeyInput::SetPanelSize(PanelSizePreset::Quarter)
