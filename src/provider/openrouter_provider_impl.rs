@@ -677,11 +677,15 @@ impl Provider for OpenRouterProvider {
         };
 
         if !self.supports_model_catalog {
-            let model = self.model();
-            if model.trim().is_empty() {
-                return Vec::new();
+            if !self.static_models.is_empty() {
+                return with_current_model(self.static_models.clone());
             }
-            return vec![model];
+            let model = self.model();
+            return if model.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![model]
+            };
         }
 
         if let Ok(cache) = self.models_cache.try_read()
@@ -816,6 +820,7 @@ impl Provider for OpenRouterProvider {
             auth: self.auth.clone(),
             supports_provider_features: self.supports_provider_features,
             supports_model_catalog: self.supports_model_catalog,
+            static_models: self.static_models.clone(),
             send_openrouter_headers: self.send_openrouter_headers,
             models_cache: Arc::clone(&self.models_cache),
             model_catalog_refresh: Arc::clone(&self.model_catalog_refresh),
