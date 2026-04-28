@@ -97,9 +97,10 @@ pub fn send_message_to_session(session_id: &str, _title: &str, message: &str) ->
 
 pub fn spawn_fresh_server_session(
     message: String,
+    images: Vec<(String, String)>,
     event_tx: DesktopSessionEventSender,
 ) -> Result<DesktopSessionHandle> {
-    if message.trim().is_empty() {
+    if message.trim().is_empty() && images.is_empty() {
         anyhow::bail!("empty draft message");
     }
 
@@ -109,7 +110,7 @@ pub fn spawn_fresh_server_session(
         .name("jcode-desktop-fresh-session".to_string())
         .spawn(move || {
             if let Err(error) =
-                run_server_session(None, &message, Some(event_tx.clone()), command_rx)
+                run_server_session(None, &message, images, Some(event_tx.clone()), command_rx)
             {
                 let _ = event_tx.send(DesktopSessionEvent::Error(format!("{error:#}")));
             }
@@ -121,10 +122,11 @@ pub fn spawn_fresh_server_session(
 pub fn spawn_message_to_session(
     session_id: String,
     message: String,
+    images: Vec<(String, String)>,
     event_tx: DesktopSessionEventSender,
 ) -> Result<DesktopSessionHandle> {
     validate_resume_session_id(&session_id).context("refusing to send to invalid session id")?;
-    if message.trim().is_empty() {
+    if message.trim().is_empty() && images.is_empty() {
         anyhow::bail!("empty draft message");
     }
 
@@ -136,6 +138,7 @@ pub fn spawn_message_to_session(
             if let Err(error) = run_server_session(
                 Some(&session_id),
                 &message,
+                images,
                 Some(event_tx.clone()),
                 command_rx,
             ) {
@@ -199,6 +202,7 @@ fn cycle_model(direction: i8, event_tx: Option<DesktopSessionEventSender>) -> Re
 fn run_server_session(
     target_session_id: Option<&str>,
     message: &str,
+    images: Vec<(String, String)>,
     event_tx: Option<DesktopSessionEventSender>,
     command_rx: Receiver<DesktopSessionCommand>,
 ) -> Result<String> {
@@ -238,7 +242,7 @@ fn run_server_session(
             "type": "message",
             "id": message_request_id,
             "content": message,
-            "images": [],
+            "images": images,
         }),
     )?;
     next_request_id += 1;
@@ -288,6 +292,7 @@ fn run_server_session(
 fn run_server_session(
     _target_session_id: Option<&str>,
     _message: &str,
+    _images: Vec<(String, String)>,
     _event_tx: Option<DesktopSessionEventSender>,
     _command_rx: Receiver<DesktopSessionCommand>,
 ) -> Result<String> {
@@ -1046,7 +1051,13 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel();
         let (_command_tx, command_rx) = mpsc::channel();
 
-        let result = run_server_session(None, "hello desktop", Some(event_tx), command_rx);
+        let result = run_server_session(
+            None,
+            "hello desktop",
+            vec![("image/png".to_string(), "abc123".to_string())],
+            Some(event_tx),
+            command_rx,
+        );
 
         restore_env_var("JCODE_SOCKET", previous_socket);
         let _ = std::fs::remove_file(&socket_path);
@@ -1057,6 +1068,7 @@ mod tests {
         assert_eq!(requests[1]["type"], "state");
         assert_eq!(requests[2]["type"], "message");
         assert_eq!(requests[2]["content"], "hello desktop");
+        assert_eq!(requests[2]["images"], json!([["image/png", "abc123"]]));
         let events = event_rx.try_iter().collect::<Vec<_>>();
         assert!(events.contains(&DesktopSessionEvent::SessionStarted {
             session_id: "session_desktop_fake".to_string()

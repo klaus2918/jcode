@@ -64,6 +64,7 @@ pub(crate) struct SingleSessionApp {
     pub(crate) is_processing: bool,
     pub(crate) body_scroll_lines: usize,
     pub(crate) show_help: bool,
+    pub(crate) pending_images: Vec<(String, String)>,
     input_undo_stack: Vec<(String, usize)>,
     session_handle: Option<DesktopSessionHandle>,
 }
@@ -144,6 +145,7 @@ impl SingleSessionApp {
             is_processing: false,
             body_scroll_lines: 0,
             show_help: false,
+            pending_images: Vec::new(),
             input_undo_stack: Vec::new(),
             session_handle: None,
         }
@@ -170,6 +172,7 @@ impl SingleSessionApp {
         self.is_processing = false;
         self.body_scroll_lines = 0;
         self.show_help = false;
+        self.pending_images.clear();
         self.input_undo_stack.clear();
         self.session_handle = None;
     }
@@ -221,7 +224,12 @@ impl SingleSessionApp {
         } else {
             "Ctrl+Enter send · Enter newline"
         };
-        format!("{status} · {mode}")
+        let images = match self.pending_images.len() {
+            0 => String::new(),
+            1 => " · 1 image".to_string(),
+            count => format!(" · {count} images"),
+        };
+        format!("{status}{images} · {mode}")
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyInput) -> KeyOutcome {
@@ -253,6 +261,7 @@ impl SingleSessionApp {
                 .map(KeyOutcome::CopyLatestResponse)
                 .unwrap_or(KeyOutcome::None),
             KeyInput::CycleModel(direction) => KeyOutcome::CycleModel(direction),
+            KeyInput::AttachClipboardImage => KeyOutcome::AttachClipboardImage,
             KeyInput::SubmitDraft => self.submit_draft(),
             KeyInput::Escape if self.show_help => {
                 self.show_help = false;
@@ -564,12 +573,13 @@ impl SingleSessionApp {
 
     fn submit_draft(&mut self) -> KeyOutcome {
         let message = self.draft.trim().to_string();
-        if message.is_empty() {
+        if message.is_empty() && self.pending_images.is_empty() {
             return KeyOutcome::None;
         }
+        let images = std::mem::take(&mut self.pending_images);
         self.record_user_submit(&message);
         let Some(session) = &self.session else {
-            return KeyOutcome::StartFreshSession { message };
+            return KeyOutcome::StartFreshSession { message, images };
         };
         let session_id = session.session_id.clone();
         let title = session.title.clone();
@@ -577,7 +587,13 @@ impl SingleSessionApp {
             session_id,
             title,
             message,
+            images,
         }
+    }
+
+    pub(crate) fn attach_image(&mut self, media_type: String, base64_data: String) {
+        self.pending_images.push((media_type, base64_data));
+        self.status = Some(format!("attached {} image(s)", self.pending_images.len()));
     }
 
     fn record_user_submit(&mut self, message: &str) {
@@ -740,6 +756,7 @@ pub(crate) fn single_session_help_lines() -> Vec<String> {
         "  Enter       insert newline".to_string(),
         "  Ctrl+C      interrupt running generation".to_string(),
         "  Ctrl+Shift+C copy latest assistant response".to_string(),
+        "  Ctrl+I      attach clipboard image to next prompt".to_string(),
         "  Ctrl+M/N    switch to next/previous model".to_string(),
         String::new(),
         "navigation".to_string(),

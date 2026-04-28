@@ -83,6 +83,7 @@ pub enum KeyInput {
     JumpPrompt(i32),
     CopyLatestResponse,
     CycleModel(i8),
+    AttachClipboardImage,
     SubmitDraft,
     SpawnPanel,
     HotkeyHelp,
@@ -105,12 +106,15 @@ pub enum KeyOutcome {
         session_id: String,
         title: String,
         message: String,
+        images: Vec<(String, String)>,
     },
     CancelGeneration,
     CopyLatestResponse(String),
     CycleModel(i8),
+    AttachClipboardImage,
     StartFreshSession {
         message: String,
+        images: Vec<(String, String)>,
     },
     Exit,
 }
@@ -416,7 +420,10 @@ impl Workspace {
                 return KeyOutcome::Redraw;
             }
             KeyInput::SubmitDraft => return KeyOutcome::None,
-            KeyInput::CancelGeneration | KeyInput::ScrollBodyPages(_) | KeyInput::CycleModel(_) => {
+            KeyInput::CancelGeneration
+            | KeyInput::ScrollBodyPages(_)
+            | KeyInput::CycleModel(_)
+            | KeyInput::AttachClipboardImage => {
                 return KeyOutcome::None;
             }
             _ => {}
@@ -525,7 +532,8 @@ impl Workspace {
             | KeyInput::ScrollBodyPages(_)
             | KeyInput::JumpPrompt(_)
             | KeyInput::CopyLatestResponse
-            | KeyInput::CycleModel(_) => KeyOutcome::None,
+            | KeyInput::CycleModel(_)
+            | KeyInput::AttachClipboardImage => KeyOutcome::None,
             KeyInput::Character(text) => {
                 self.draft.push_str(&text);
                 KeyOutcome::Redraw
@@ -549,6 +557,7 @@ impl Workspace {
             session_id,
             title,
             message,
+            images: Vec::new(),
         }
     }
 

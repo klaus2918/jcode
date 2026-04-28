@@ -236,7 +236,8 @@ fn single_session_composer_uses_next_prompt_number_and_status_footer() {
     assert_eq!(
         app.handle_key(KeyInput::SubmitDraft),
         KeyOutcome::StartFreshSession {
-            message: "hello".to_string()
+            message: "hello".to_string(),
+            images: Vec::new()
         }
     );
 
@@ -360,6 +361,24 @@ fn single_session_stdin_request_is_visible_in_transcript() {
 }
 
 #[test]
+fn single_session_attached_image_is_sent_with_next_prompt() {
+    let mut app = SingleSessionApp::new(None);
+    app.attach_image("image/png".to_string(), "abc123".to_string());
+
+    assert!(app.composer_status_line().contains("1 image"));
+    app.handle_key(KeyInput::Character("describe this".to_string()));
+
+    assert_eq!(
+        app.handle_key(KeyInput::SubmitDraft),
+        KeyOutcome::StartFreshSession {
+            message: "describe this".to_string(),
+            images: vec![("image/png".to_string(), "abc123".to_string())]
+        }
+    );
+    assert!(app.pending_images.is_empty());
+}
+
+#[test]
 fn single_session_prompt_jump_moves_between_user_turns() {
     let mut app = SingleSessionApp::new(None);
     for index in 0..4 {
@@ -414,7 +433,8 @@ fn single_session_streaming_preserves_manual_scroll_but_submit_follows_bottom() 
     assert_eq!(
         app.handle_key(KeyInput::SubmitDraft),
         KeyOutcome::StartFreshSession {
-            message: "new prompt".to_string()
+            message: "new prompt".to_string(),
+            images: Vec::new()
         }
     );
     assert_eq!(app.body_scroll_lines, 0);
@@ -427,7 +447,8 @@ fn single_session_applies_live_server_events_to_visible_body() {
     assert_eq!(
         app.handle_key(KeyInput::SubmitDraft),
         KeyOutcome::StartFreshSession {
-            message: "hello".to_string()
+            message: "hello".to_string(),
+            images: Vec::new()
         }
     );
     app.apply_session_event(session_launch::DesktopSessionEvent::SessionStarted {
@@ -463,7 +484,8 @@ fn desktop_app_drains_session_events_into_visible_debug_snapshot() {
     assert_eq!(
         app.handle_key(KeyInput::SubmitDraft),
         KeyOutcome::StartFreshSession {
-            message: "hello smoke".to_string()
+            message: "hello smoke".to_string(),
+            images: Vec::new()
         }
     );
 
@@ -608,7 +630,8 @@ fn fresh_single_session_submit_requests_backend_session() {
     assert_eq!(
         app.handle_key(KeyInput::SubmitDraft),
         KeyOutcome::StartFreshSession {
-            message: "hello desktop".to_string()
+            message: "hello desktop".to_string(),
+            images: Vec::new()
         }
     );
     assert!(app.draft.is_empty());
@@ -681,6 +704,7 @@ fn single_session_wraps_one_session_card() {
             session_id: "session_alpha".to_string(),
             title: "alpha".to_string(),
             message: "draft".to_string(),
+            images: Vec::new(),
         }
     );
 }

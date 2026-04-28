@@ -314,7 +314,8 @@ fn ctrl_enter_submits_insert_draft_to_focused_session() {
         KeyOutcome::SendDraft {
             session_id: "a".to_string(),
             title: "alpha".to_string(),
-            message: "hello".to_string()
+            message: "hello".to_string(),
+            images: Vec::new()
         }
     );
     assert_eq!(workspace.mode, InputMode::Navigation);

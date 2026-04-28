@@ -8,6 +8,7 @@ mod workspace;
 
 use animation::{AnimatedViewport, FocusPulse, VisibleColumnLayout, WorkspaceRenderLayout};
 use anyhow::{Context, Result};
+use base64::Engine;
 use bytemuck::{Pod, Zeroable};
 use glyphon::{
     Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Resolution, Shaping,
@@ -256,11 +257,13 @@ async fn run() -> Result<()> {
                             session_id,
                             title,
                             message,
+                            images,
                         } => {
                             if app.is_single_session() {
                                 match session_launch::spawn_message_to_session(
                                     session_id.clone(),
                                     message,
+                                    images,
                                     session_event_tx.clone(),
                                 ) {
                                     Ok(handle) => app.set_single_session_handle(handle),
@@ -268,6 +271,10 @@ async fn run() -> Result<()> {
                                 }
                                 window.set_title(&app.status_title());
                                 window.request_redraw();
+                            } else if !images.is_empty() {
+                                eprintln!(
+                                    "jcode-desktop: image drafts are only supported in single-session mode"
+                                );
                             } else if let Err(error) = session_launch::send_message_to_session(
                                 &session_id,
                                 &title,
@@ -286,9 +293,10 @@ async fn run() -> Result<()> {
                                 window.request_redraw();
                             }
                         }
-                        KeyOutcome::StartFreshSession { message } => {
+                        KeyOutcome::StartFreshSession { message, images } => {
                             match session_launch::spawn_fresh_server_session(
                                 message,
+                                images,
                                 session_event_tx.clone(),
                             ) {
                                 Ok(handle) => app.set_single_session_handle(handle),
@@ -319,6 +327,16 @@ async fn run() -> Result<()> {
                                         "switching model".to_string(),
                                     ),
                                 );
+                            }
+                            window.set_title(&app.status_title());
+                            window.request_redraw();
+                        }
+                        KeyOutcome::AttachClipboardImage => {
+                            match clipboard_image_png_base64() {
+                                Ok((media_type, base64_data)) => {
+                                    app.attach_single_session_image(media_type, base64_data);
+                                }
+                                Err(error) => apply_single_session_error(&mut app, error),
                             }
                             window.set_title(&app.status_title());
                             window.request_redraw();
@@ -403,7 +421,7 @@ fn run_headless_chat_smoke(message: String) -> Result<()> {
     }
 
     let (event_tx, event_rx) = mpsc::channel();
-    let _handle = session_launch::spawn_fresh_server_session(message, event_tx)
+    let _handle = session_launch::spawn_fresh_server_session(message, Vec::new(), event_tx)
         .context("failed to start desktop headless chat smoke")?;
     let started = Instant::now();
     let mut session_id = None;
@@ -776,6 +794,12 @@ impl DesktopApp {
         }
     }
 
+    fn attach_single_session_image(&mut self, media_type: String, base64_data: String) {
+        if let Self::SingleSession(app) = self {
+            app.attach_image(media_type, base64_data);
+        }
+    }
+
     fn scroll_single_session_body(&mut self, lines: i32) {
         if let Self::SingleSession(app) = self {
             app.scroll_body_lines(lines);
@@ -869,6 +893,9 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("r") => {
             KeyInput::RefreshSessions
         }
+        Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("i") => {
+            KeyInput::AttachClipboardImage
+        }
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("m") => {
             KeyInput::CycleModel(1)
         }
@@ -924,6 +951,26 @@ fn copy_text_to_clipboard(text: &str, app: &mut DesktopApp) {
             "failed to copy latest response: {error}"
         ))),
     }
+}
+
+fn clipboard_image_png_base64() -> Result<(String, String)> {
+    let mut clipboard = arboard::Clipboard::new().context("failed to access clipboard")?;
+    let image = clipboard
+        .get_image()
+        .context("clipboard does not contain an image")?;
+    let width = u32::try_from(image.width).context("clipboard image is too wide")?;
+    let height = u32::try_from(image.height).context("clipboard image is too tall")?;
+    let rgba = image.bytes.into_owned();
+    let buffer = image::RgbaImage::from_raw(width, height, rgba)
+        .context("clipboard image data had unexpected dimensions")?;
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(buffer)
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .context("failed to encode clipboard image as png")?;
+    Ok((
+        "image/png".to_string(),
+        base64::engine::general_purpose::STANDARD.encode(cursor.into_inner()),
+    ))
 }
 
 fn mouse_scroll_lines(delta: MouseScrollDelta) -> Option<i32> {
