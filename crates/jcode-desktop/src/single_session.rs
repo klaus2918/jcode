@@ -236,6 +236,14 @@ impl SingleSessionApp {
                 self.scroll_body_lines(pages * 12);
                 KeyOutcome::Redraw
             }
+            KeyInput::JumpPrompt(direction) => {
+                self.jump_prompt(direction);
+                KeyOutcome::Redraw
+            }
+            KeyInput::CopyLatestResponse => self
+                .latest_assistant_response()
+                .map(KeyOutcome::CopyLatestResponse)
+                .unwrap_or(KeyOutcome::None),
             KeyInput::SubmitDraft => self.submit_draft(),
             KeyInput::Escape => KeyOutcome::Exit,
             KeyInput::Enter => {
@@ -424,6 +432,55 @@ impl SingleSessionApp {
 
     pub(crate) fn scroll_body_to_bottom(&mut self) {
         self.body_scroll_lines = 0;
+    }
+
+    pub(crate) fn latest_assistant_response(&self) -> Option<String> {
+        if !self.streaming_response.trim().is_empty() {
+            return Some(self.streaming_response.trim().to_string());
+        }
+        self.messages
+            .iter()
+            .rev()
+            .find(|message| message.role == SingleSessionRole::Assistant)
+            .map(|message| message.content.trim().to_string())
+            .filter(|message| !message.is_empty())
+    }
+
+    pub(crate) fn jump_prompt(&mut self, direction: i32) {
+        let lines = self.body_lines();
+        let prompt_indices = lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| is_user_prompt_line(line).then_some(index))
+            .collect::<Vec<_>>();
+        if prompt_indices.is_empty() {
+            return;
+        }
+        let current_line = lines
+            .len()
+            .saturating_sub(self.body_scroll_lines)
+            .saturating_sub(1);
+        let target = if direction < 0 {
+            prompt_indices
+                .iter()
+                .rev()
+                .copied()
+                .find(|index| *index < current_line)
+                .or_else(|| prompt_indices.first().copied())
+        } else {
+            let next = prompt_indices
+                .iter()
+                .copied()
+                .find(|index| *index > current_line);
+            if next.is_none() {
+                self.scroll_body_to_bottom();
+                return;
+            }
+            next
+        };
+        if let Some(target) = target {
+            self.body_scroll_lines = lines.len().saturating_sub(target + 1);
+        }
     }
 
     pub(crate) fn draft_cursor_line_col(&self) -> (usize, usize) {
@@ -653,6 +710,13 @@ fn append_user_lines(lines: &mut Vec<String>, turn: usize, content: &str) {
     for line in content_lines {
         lines.push(format!("   {line}"));
     }
+}
+
+fn is_user_prompt_line(line: &str) -> bool {
+    let Some((number, rest)) = line.split_once("  ") else {
+        return false;
+    };
+    !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()) && !rest.trim().is_empty()
 }
 
 fn append_assistant_lines(lines: &mut Vec<String>, content: &str) {

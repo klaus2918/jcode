@@ -80,6 +80,8 @@ pub enum KeyInput {
     UndoInput,
     CancelGeneration,
     ScrollBodyPages(i32),
+    JumpPrompt(i32),
+    CopyLatestResponse,
     SubmitDraft,
     SpawnPanel,
     HotkeyHelp,
@@ -104,6 +106,7 @@ pub enum KeyOutcome {
         message: String,
     },
     CancelGeneration,
+    CopyLatestResponse(String),
     StartFreshSession {
         message: String,
     },
@@ -515,7 +518,9 @@ impl Workspace {
             | KeyInput::DeleteToLineEnd
             | KeyInput::UndoInput
             | KeyInput::CancelGeneration
-            | KeyInput::ScrollBodyPages(_) => KeyOutcome::None,
+            | KeyInput::ScrollBodyPages(_)
+            | KeyInput::JumpPrompt(_)
+            | KeyInput::CopyLatestResponse => KeyOutcome::None,
             KeyInput::Character(text) => {
                 self.draft.push_str(&text);
                 KeyOutcome::Redraw

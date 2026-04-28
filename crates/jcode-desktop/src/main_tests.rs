@@ -302,6 +302,67 @@ fn single_session_tool_events_create_transcript_cards() {
 }
 
 #[test]
+fn single_session_prompt_jump_moves_between_user_turns() {
+    let mut app = SingleSessionApp::new(None);
+    for index in 0..4 {
+        app.messages
+            .push(SingleSessionMessage::user(format!("question {index}")));
+        app.messages
+            .push(SingleSessionMessage::assistant(format!("answer {index}")));
+    }
+
+    assert_eq!(app.body_scroll_lines, 0);
+    assert_eq!(app.handle_key(KeyInput::JumpPrompt(-1)), KeyOutcome::Redraw);
+    assert!(app.body_scroll_lines > 0);
+    let older_scroll = app.body_scroll_lines;
+
+    assert_eq!(app.handle_key(KeyInput::JumpPrompt(1)), KeyOutcome::Redraw);
+    assert!(app.body_scroll_lines < older_scroll || app.body_scroll_lines == 0);
+}
+
+#[test]
+fn single_session_copy_latest_response_prefers_streaming_text() {
+    let mut app = SingleSessionApp::new(None);
+    app.messages
+        .push(SingleSessionMessage::assistant("completed answer"));
+    assert_eq!(
+        app.handle_key(KeyInput::CopyLatestResponse),
+        KeyOutcome::CopyLatestResponse("completed answer".to_string())
+    );
+
+    app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+        "streaming answer".to_string(),
+    ));
+    assert_eq!(
+        app.handle_key(KeyInput::CopyLatestResponse),
+        KeyOutcome::CopyLatestResponse("streaming answer".to_string())
+    );
+}
+
+#[test]
+fn single_session_streaming_preserves_manual_scroll_but_submit_follows_bottom() {
+    let mut app = SingleSessionApp::new(None);
+    app.messages.push(SingleSessionMessage::user("older"));
+    app.messages
+        .push(SingleSessionMessage::assistant("older answer"));
+    app.scroll_body_lines(12);
+
+    app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+        "new token".to_string(),
+    ));
+    assert_eq!(app.body_scroll_lines, 12);
+
+    app.handle_key(KeyInput::Character("new prompt".to_string()));
+    assert_eq!(
+        app.handle_key(KeyInput::SubmitDraft),
+        KeyOutcome::StartFreshSession {
+            message: "new prompt".to_string()
+        }
+    );
+    assert_eq!(app.body_scroll_lines, 0);
+}
+
+#[test]
 fn single_session_applies_live_server_events_to_visible_body() {
     let mut app = SingleSessionApp::new(None);
     app.handle_key(KeyInput::Character("hello".to_string()));

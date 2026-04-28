@@ -302,6 +302,11 @@ async fn run() -> Result<()> {
                             window.set_title(&app.status_title());
                             window.request_redraw();
                         }
+                        KeyOutcome::CopyLatestResponse(text) => {
+                            copy_text_to_clipboard(&text, &mut app);
+                            window.set_title(&app.status_title());
+                            window.request_redraw();
+                        }
                         KeyOutcome::None => {}
                     }
                 }
@@ -765,6 +770,8 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         Key::Named(NamedKey::Delete) => KeyInput::DeleteNextChar,
         Key::Named(NamedKey::PageUp) => KeyInput::ScrollBodyPages(1),
         Key::Named(NamedKey::PageDown) => KeyInput::ScrollBodyPages(-1),
+        Key::Named(NamedKey::ArrowUp) if modifiers.alt_key() => KeyInput::JumpPrompt(-1),
+        Key::Named(NamedKey::ArrowDown) if modifiers.alt_key() => KeyInput::JumpPrompt(1),
         Key::Named(NamedKey::ArrowLeft) => KeyInput::MoveCursorLeft,
         Key::Named(NamedKey::ArrowRight) => KeyInput::MoveCursorRight,
         Key::Named(NamedKey::Home) => KeyInput::MoveToLineStart,
@@ -783,6 +790,13 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         }
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("z") => {
             KeyInput::UndoInput
+        }
+        Key::Character(text)
+            if modifiers.control_key()
+                && modifiers.shift_key()
+                && text.eq_ignore_ascii_case("c") =>
+        {
+            KeyInput::CopyLatestResponse
         }
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("c") => {
             KeyInput::CancelGeneration
@@ -841,6 +855,17 @@ fn apply_single_session_error(app: &mut DesktopApp, error: anyhow::Error) {
     app.apply_session_event(session_launch::DesktopSessionEvent::Error(format!(
         "{error:#}"
     )));
+}
+
+fn copy_text_to_clipboard(text: &str, app: &mut DesktopApp) {
+    match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text.to_string())) {
+        Ok(()) => app.apply_session_event(session_launch::DesktopSessionEvent::Status(
+            "copied latest response".to_string(),
+        )),
+        Err(error) => app.apply_session_event(session_launch::DesktopSessionEvent::Error(format!(
+            "failed to copy latest response: {error}"
+        ))),
+    }
 }
 
 fn mouse_scroll_lines(delta: MouseScrollDelta) -> Option<i32> {
