@@ -62,6 +62,7 @@ const PANEL_TITLE_TOP_PADDING: f32 = 12.0;
 const PANEL_BODY_TOP_PADDING: f32 = 38.0;
 const PANEL_BODY_LINE_GAP: f32 = 8.0;
 const SINGLE_SESSION_DRAFT_TOP_OFFSET: f32 = 158.0;
+const SINGLE_SESSION_STATUS_GAP: f32 = 30.0;
 const SINGLE_SESSION_CARET_WIDTH: f32 = 2.0;
 const SINGLE_SESSION_CARET_COLOR: [f32; 4] = [0.130, 0.150, 0.190, 0.92];
 const SESSION_SPAWN_REFRESH_DELAY: Duration = Duration::from_millis(350);
@@ -1188,8 +1189,8 @@ fn glyphon_draft_caret_position(
     size: PhysicalSize<u32>,
 ) -> Option<CaretPosition> {
     let typography = single_session_typography();
-    let target = app.draft_cursor_line_byte_index();
-    let target_line = target.0 + 1;
+    let target = app.composer_cursor_line_byte_index();
+    let target_line = target.0;
     let target_index = target.1;
     let mut fallback = None;
 
@@ -1245,10 +1246,15 @@ fn approximate_draft_caret_position(
     let draft_top = single_session_draft_top(size);
     let (cursor_line, cursor_column) = app.draft_cursor_line_col();
     let char_width = typography.code_size * 0.58;
+    let prompt_column = if cursor_line == 0 {
+        app.composer_prompt().chars().count()
+    } else {
+        0
+    };
     let x = PANEL_TITLE_LEFT_PADDING
-        + (cursor_column as f32 * char_width)
+        + ((prompt_column + cursor_column) as f32 * char_width)
             .min((size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(0.0));
-    let y = draft_top + line_height + cursor_line as f32 * line_height;
+    let y = draft_top + cursor_line as f32 * line_height;
     CaretPosition {
         x,
         y,
@@ -1269,7 +1275,8 @@ fn single_session_text_buffers(
     let content_width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(1.0);
     let title = app.title();
     let body = single_session_visible_body(app, size).join("\n");
-    let draft = format!("draft\n{}", app.draft);
+    let draft = app.composer_text();
+    let status = app.composer_status_line();
 
     vec![
         single_session_text_buffer(
@@ -1295,6 +1302,14 @@ fn single_session_text_buffers(
             typography.code_size * typography.code_line_height,
             content_width,
             96.0,
+        ),
+        single_session_text_buffer(
+            font_system,
+            &status,
+            typography.meta_size,
+            typography.meta_size * typography.meta_line_height,
+            content_width,
+            28.0,
         ),
     ]
 }
@@ -1338,7 +1353,7 @@ fn single_session_text_buffer(
 }
 
 fn single_session_text_areas(buffers: &[Buffer], size: PhysicalSize<u32>) -> Vec<TextArea<'_>> {
-    if buffers.len() < 3 {
+    if buffers.len() < 4 {
         return Vec::new();
     }
 
@@ -1373,6 +1388,19 @@ fn single_session_text_areas(buffers: &[Buffer], size: PhysicalSize<u32>) -> Vec
                 bottom: draft_top as i32 - 12,
             },
             default_color: text_color(PANEL_BODY_COLOR),
+        },
+        TextArea {
+            buffer: &buffers[3],
+            left,
+            top: draft_top - SINGLE_SESSION_STATUS_GAP,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: 0,
+                top: (draft_top - SINGLE_SESSION_STATUS_GAP) as i32,
+                right,
+                bottom: draft_top as i32,
+            },
+            default_color: text_color(PANEL_SECTION_COLOR),
         },
         TextArea {
             buffer: &buffers[2],

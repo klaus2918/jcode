@@ -133,6 +133,35 @@ impl SingleSessionApp {
         self.is_processing
     }
 
+    pub(crate) fn user_turn_count(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|message| message.role == "user")
+            .count()
+    }
+
+    pub(crate) fn next_prompt_number(&self) -> usize {
+        self.user_turn_count() + 1
+    }
+
+    pub(crate) fn composer_prompt(&self) -> String {
+        format!("{}› ", self.next_prompt_number())
+    }
+
+    pub(crate) fn composer_text(&self) -> String {
+        format!("{}{}", self.composer_prompt(), self.draft)
+    }
+
+    pub(crate) fn composer_status_line(&self) -> String {
+        let status = self.status.as_deref().unwrap_or("ready");
+        let mode = if self.is_processing {
+            "Ctrl+C interrupt"
+        } else {
+            "Ctrl+Enter send · Enter newline"
+        };
+        format!("{status} · {mode}")
+    }
+
     pub(crate) fn handle_key(&mut self, key: KeyInput) -> KeyOutcome {
         match key {
             KeyInput::SpawnPanel => KeyOutcome::SpawnSession,
@@ -322,6 +351,15 @@ impl SingleSessionApp {
             .count();
         let line_start = line_start(&self.draft, cursor);
         (line, cursor - line_start)
+    }
+
+    pub(crate) fn composer_cursor_line_byte_index(&self) -> (usize, usize) {
+        let (line, index) = self.draft_cursor_line_byte_index();
+        if line == 0 {
+            (line, self.composer_prompt().len() + index)
+        } else {
+            (line, index)
+        }
     }
 
     fn submit_draft(&mut self) -> KeyOutcome {

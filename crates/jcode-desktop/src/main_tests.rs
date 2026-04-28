@@ -198,6 +198,29 @@ fn single_session_cursor_editing_inserts_and_deletes_in_middle() {
 }
 
 #[test]
+fn single_session_composer_uses_next_prompt_number_and_status_footer() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(app.next_prompt_number(), 1);
+    assert_eq!(app.composer_prompt(), "1› ");
+    assert_eq!(app.composer_text(), "1› ");
+    assert!(app.composer_status_line().contains("ready"));
+
+    app.handle_key(KeyInput::Character("hello".to_string()));
+    assert_eq!(app.composer_text(), "1› hello");
+    assert_eq!(app.composer_cursor_line_byte_index(), (0, "1› hello".len()));
+    assert_eq!(
+        app.handle_key(KeyInput::SubmitDraft),
+        KeyOutcome::StartFreshSession {
+            message: "hello".to_string()
+        }
+    );
+
+    assert_eq!(app.next_prompt_number(), 2);
+    assert_eq!(app.composer_text(), "2› ");
+    assert!(app.composer_status_line().contains("Ctrl+C interrupt"));
+}
+
+#[test]
 fn single_session_applies_live_server_events_to_visible_body() {
     let mut app = SingleSessionApp::new(None);
     app.handle_key(KeyInput::Character("hello".to_string()));
