@@ -596,6 +596,7 @@ impl SingleSessionApp {
         format!("{}{}", self.composer_prompt(), self.draft)
     }
 
+    #[cfg(test)]
     pub(crate) fn composer_status_line(&self) -> String {
         self.composer_status_line_for_tick(0)
     }
@@ -653,6 +654,7 @@ impl SingleSessionApp {
         format!("{spinner}{status}{images}{queued}{stdin}{model}{scroll} · {mode}")
     }
 
+    #[cfg(test)]
     pub(crate) fn activity_spinner(&self) -> Option<&'static str> {
         self.activity_spinner_for_tick(0)
     }

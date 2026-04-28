@@ -4,6 +4,7 @@ use super::*;
 pub(crate) struct SingleSessionTextKey {
     pub(crate) size: (u32, u32),
     pub(crate) title: String,
+    pub(crate) version: String,
     pub(crate) body: Vec<SingleSessionStyledLine>,
     pub(crate) draft: String,
     pub(crate) status: String,
@@ -296,6 +297,7 @@ pub(crate) fn single_session_text_buffers(
     single_session_text_buffers_from_key(&key, size, font_system)
 }
 
+#[cfg(test)]
 pub(crate) fn single_session_text_key(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
@@ -311,6 +313,7 @@ pub(crate) fn single_session_text_key_for_tick(
     SingleSessionTextKey {
         size: (size.width, size.height),
         title: app.header_title(),
+        version: desktop_header_version_label(),
         body: single_session_visible_styled_body(app, size),
         draft: visualize_composer_whitespace(&app.composer_text()),
         status: app.composer_status_line_for_tick(tick),
@@ -361,6 +364,14 @@ pub(crate) fn single_session_text_buffers_from_key(
             typography.meta_size * typography.meta_line_height,
             content_width,
             28.0,
+        ),
+        single_session_text_buffer(
+            font_system,
+            &key.version,
+            typography.meta_size,
+            typography.meta_size * typography.meta_line_height,
+            content_width,
+            24.0,
         ),
     ]
 }
@@ -525,7 +536,7 @@ pub(crate) fn single_session_text_areas(
     buffers: &[Buffer],
     size: PhysicalSize<u32>,
 ) -> Vec<TextArea<'_>> {
-    if buffers.len() < 4 {
+    if buffers.len() < 5 {
         return Vec::new();
     }
 
@@ -533,6 +544,7 @@ pub(crate) fn single_session_text_areas(
     let right = size.width.saturating_sub(PANEL_TITLE_LEFT_PADDING as u32) as i32;
     let bottom = size.height.saturating_sub(PANEL_TITLE_TOP_PADDING as u32) as i32;
     let draft_top = single_session_draft_top(size);
+    let version_left = (size.width as f32 * 0.42).max(left + 220.0);
 
     vec![
         TextArea {
@@ -547,6 +559,19 @@ pub(crate) fn single_session_text_areas(
                 bottom: 64,
             },
             default_color: text_color(PANEL_TITLE_COLOR),
+        },
+        TextArea {
+            buffer: &buffers[4],
+            left: version_left,
+            top: PANEL_TITLE_TOP_PADDING + 3.0,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: 0,
+                top: 0,
+                right,
+                bottom: 64,
+            },
+            default_color: text_color(META_TEXT_COLOR),
         },
         TextArea {
             buffer: &buffers[1],
@@ -592,6 +617,15 @@ pub(crate) fn single_session_text_areas(
 
 fn visualize_composer_whitespace(text: &str) -> String {
     text.to_string()
+}
+
+pub(crate) fn desktop_header_version_label() -> String {
+    let version = option_env!("JCODE_DESKTOP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+    let binary = std::env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "unknown binary".to_string());
+    format!("{binary} · {version}")
 }
 
 fn text_color(color: [f32; 4]) -> TextColor {

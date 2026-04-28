@@ -441,6 +441,31 @@ fn desktop_space_key_inserts_visible_prompt_space() {
 }
 
 #[test]
+fn single_session_header_exposes_desktop_binary_and_version() {
+    let app = SingleSessionApp::new(None);
+    let key = single_session_text_key(&app, PhysicalSize::new(900, 700));
+    let build_version = option_env!("JCODE_DESKTOP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+
+    assert!(key.version.contains(build_version));
+    assert!(
+        key.version.contains("jcode-desktop") || key.version.contains("jcode_desktop"),
+        "version label should include the running desktop binary path, got {:?}",
+        key.version
+    );
+}
+
+#[test]
+fn single_session_text_buffers_include_header_version_area() {
+    let app = SingleSessionApp::new(None);
+    let size = PhysicalSize::new(900, 700);
+    let mut font_system = FontSystem::new();
+    let buffers = single_session_text_buffers(&app, size, &mut font_system);
+
+    assert_eq!(buffers.len(), 5);
+    assert_eq!(single_session_text_areas(&buffers, size).len(), 5);
+}
+
+#[test]
 fn single_session_status_spinner_animates_by_tick() {
     let mut app = SingleSessionApp::new(None);
     app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(

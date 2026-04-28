@@ -154,6 +154,10 @@ fn main() -> Result<()> {
 
 async fn run() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("{}", desktop_header_version_label());
+        return Ok(());
+    }
     if let Some(message) = headless_chat_smoke_message(&args) {
         return run_headless_chat_smoke(message);
     }
