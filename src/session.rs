@@ -811,6 +811,21 @@ impl Session {
             },
             "compaction": {
                 "present": self.compaction.is_some(),
+                "covers_up_to_turn": self
+                    .compaction
+                    .as_ref()
+                    .map(|c| c.covers_up_to_turn)
+                    .unwrap_or(0),
+                "original_turn_count": self
+                    .compaction
+                    .as_ref()
+                    .map(|c| c.original_turn_count)
+                    .unwrap_or(0),
+                "compacted_count": self
+                    .compaction
+                    .as_ref()
+                    .map(|c| c.compacted_count)
+                    .unwrap_or(0),
                 "json_bytes": compaction_json_bytes,
                 "summary_text_bytes": compaction_summary_bytes,
                 "encrypted_content_bytes": compaction_encrypted_bytes,
