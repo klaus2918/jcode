@@ -221,6 +221,27 @@ fn single_session_composer_uses_next_prompt_number_and_status_footer() {
 }
 
 #[test]
+fn single_session_transcript_roles_render_without_stringly_labels() {
+    let mut app = SingleSessionApp::new(None);
+    app.messages.push(SingleSessionMessage::user("question"));
+    app.messages.push(SingleSessionMessage::assistant("answer"));
+    app.messages
+        .push(SingleSessionMessage::tool("using tool bash"));
+    app.messages
+        .push(SingleSessionMessage::system("system note"));
+    app.messages.push(SingleSessionMessage::meta("meta note"));
+
+    let body = app.body_lines().join("\n");
+    assert!(body.contains("1  question"));
+    assert!(body.contains("answer"));
+    assert!(body.contains("• using tool bash"));
+    assert!(body.contains("  system note"));
+    assert!(body.contains("  meta note"));
+    assert!(!body.contains("user:"));
+    assert!(!body.contains("assistant:"));
+}
+
+#[test]
 fn single_session_applies_live_server_events_to_visible_body() {
     let mut app = SingleSessionApp::new(None);
     app.handle_key(KeyInput::Character("hello".to_string()));

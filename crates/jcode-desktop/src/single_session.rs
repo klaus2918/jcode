@@ -67,8 +67,60 @@ pub(crate) struct SingleSessionApp {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SingleSessionMessage {
-    role: &'static str,
+    role: SingleSessionRole,
     content: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SingleSessionRole {
+    User,
+    Assistant,
+    Tool,
+    System,
+    Meta,
+}
+
+impl SingleSessionRole {
+    pub(crate) fn is_user(self) -> bool {
+        matches!(self, Self::User)
+    }
+}
+
+impl SingleSessionMessage {
+    pub(crate) fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: SingleSessionRole::User,
+            content: content.into(),
+        }
+    }
+
+    pub(crate) fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: SingleSessionRole::Assistant,
+            content: content.into(),
+        }
+    }
+
+    pub(crate) fn tool(content: impl Into<String>) -> Self {
+        Self {
+            role: SingleSessionRole::Tool,
+            content: content.into(),
+        }
+    }
+
+    pub(crate) fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: SingleSessionRole::System,
+            content: content.into(),
+        }
+    }
+
+    pub(crate) fn meta(content: impl Into<String>) -> Self {
+        Self {
+            role: SingleSessionRole::Meta,
+            content: content.into(),
+        }
+    }
 }
 
 impl SingleSessionApp {
@@ -136,7 +188,7 @@ impl SingleSessionApp {
     pub(crate) fn user_turn_count(&self) -> usize {
         self.messages
             .iter()
-            .filter(|message| message.role == "user")
+            .filter(|message| message.role.is_user())
             .count()
     }
 
@@ -381,10 +433,7 @@ impl SingleSessionApp {
     }
 
     fn record_user_submit(&mut self, message: &str) {
-        self.messages.push(SingleSessionMessage {
-            role: "user",
-            content: message.to_string(),
-        });
+        self.messages.push(SingleSessionMessage::user(message));
         self.draft.clear();
         self.draft_cursor = 0;
         self.streaming_response.clear();
@@ -397,10 +446,8 @@ impl SingleSessionApp {
     fn finish_streaming_response(&mut self) {
         let response = self.streaming_response.trim().to_string();
         if !response.is_empty() {
-            self.messages.push(SingleSessionMessage {
-                role: "assistant",
-                content: response,
-            });
+            self.messages
+                .push(SingleSessionMessage::assistant(response));
         }
         self.streaming_response.clear();
     }
@@ -484,11 +531,15 @@ fn append_chat_message_lines(
     user_turn: &mut usize,
 ) {
     match message.role {
-        "user" => {
+        SingleSessionRole::User => {
             append_user_lines(lines, *user_turn, message.content.trim());
             *user_turn += 1;
         }
-        _ => append_assistant_lines(lines, message.content.trim()),
+        SingleSessionRole::Assistant => append_assistant_lines(lines, message.content.trim()),
+        SingleSessionRole::Tool => append_tool_lines(lines, message.content.trim()),
+        SingleSessionRole::System | SingleSessionRole::Meta => {
+            append_meta_lines(lines, message.content.trim())
+        }
     }
 }
 
@@ -505,6 +556,20 @@ fn append_user_lines(lines: &mut Vec<String>, turn: usize, content: &str) {
 
 fn append_assistant_lines(lines: &mut Vec<String>, content: &str) {
     lines.extend(content.lines().map(ToOwned::to_owned));
+}
+
+fn append_tool_lines(lines: &mut Vec<String>, content: &str) {
+    if content.is_empty() {
+        return;
+    }
+    lines.push(format!("• {content}"));
+}
+
+fn append_meta_lines(lines: &mut Vec<String>, content: &str) {
+    if content.is_empty() {
+        return;
+    }
+    lines.push(format!("  {content}"));
 }
 
 fn previous_char_boundary(text: &str, cursor: usize) -> usize {
