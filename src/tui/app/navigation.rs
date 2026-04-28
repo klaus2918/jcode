@@ -935,7 +935,7 @@ impl App {
                 return false;
             }
         }
-        true
+        false
     }
 
     pub(super) fn scroll_up(&mut self, amount: usize) {
