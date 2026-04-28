@@ -66,11 +66,21 @@ pub(crate) struct SingleSessionApp {
     pub(crate) show_help: bool,
     pub(crate) pending_images: Vec<(String, String)>,
     pub(crate) model_picker: ModelPickerState,
+    pub(crate) stdin_response: Option<StdinResponseState>,
     queued_drafts: Vec<(String, Vec<(String, String)>)>,
     selection_anchor_line: Option<usize>,
     selection_focus_line: Option<usize>,
     input_undo_stack: Vec<(String, usize)>,
     session_handle: Option<DesktopSessionHandle>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StdinResponseState {
+    pub(crate) request_id: String,
+    pub(crate) prompt: String,
+    pub(crate) is_password: bool,
+    pub(crate) tool_call_id: String,
+    pub(crate) input: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -322,6 +332,7 @@ impl SingleSessionApp {
             show_help: false,
             pending_images: Vec::new(),
             model_picker: ModelPickerState::default(),
+            stdin_response: None,
             queued_drafts: Vec::new(),
             selection_anchor_line: None,
             selection_focus_line: None,
@@ -353,6 +364,7 @@ impl SingleSessionApp {
         self.show_help = false;
         self.pending_images.clear();
         self.model_picker = ModelPickerState::default();
+        self.stdin_response = None;
         self.queued_drafts.clear();
         self.clear_selection();
         self.input_undo_stack.clear();
@@ -416,6 +428,17 @@ impl SingleSessionApp {
             1 => " · 1 queued".to_string(),
             count => format!(" · {count} queued"),
         };
+        let stdin = self
+            .stdin_response
+            .as_ref()
+            .map(|state| {
+                if state.is_password {
+                    " · password input requested".to_string()
+                } else {
+                    " · interactive input requested".to_string()
+                }
+            })
+            .unwrap_or_default();
         let model = self
             .model_picker
             .current_model
@@ -429,10 +452,14 @@ impl SingleSessionApp {
                     .unwrap_or_else(|| format!(" · model {model}"))
             })
             .unwrap_or_default();
-        format!("{status}{images}{queued}{model} · {mode}")
+        format!("{status}{images}{queued}{stdin}{model} · {mode}")
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyInput) -> KeyOutcome {
+        if self.stdin_response.is_some() {
+            return self.handle_stdin_response_key(key);
+        }
+
         if self.model_picker.open {
             return self.handle_model_picker_key(key);
         }
@@ -587,7 +614,56 @@ impl SingleSessionApp {
         }
     }
 
+    fn handle_stdin_response_key(&mut self, key: KeyInput) -> KeyOutcome {
+        match key {
+            KeyInput::SubmitDraft | KeyInput::QueueDraft => {
+                let Some(state) = self.stdin_response.take() else {
+                    return KeyOutcome::None;
+                };
+                self.status = Some("sending interactive input".to_string());
+                KeyOutcome::SendStdinResponse {
+                    request_id: state.request_id,
+                    input: state.input,
+                }
+            }
+            KeyInput::Enter => {
+                if let Some(state) = &mut self.stdin_response {
+                    state.input.push('\n');
+                }
+                KeyOutcome::Redraw
+            }
+            KeyInput::Backspace => {
+                if let Some(state) = &mut self.stdin_response {
+                    state.input.pop();
+                }
+                KeyOutcome::Redraw
+            }
+            KeyInput::DeleteToLineStart => {
+                if let Some(state) = &mut self.stdin_response {
+                    state.input.clear();
+                }
+                KeyOutcome::Redraw
+            }
+            KeyInput::PasteText => KeyOutcome::PasteText,
+            KeyInput::Character(text) => {
+                if let Some(state) = &mut self.stdin_response {
+                    state.input.push_str(&text);
+                }
+                KeyOutcome::Redraw
+            }
+            KeyInput::CancelGeneration => KeyOutcome::CancelGeneration,
+            KeyInput::Escape => {
+                self.status = Some("interactive input pending · Ctrl+C to cancel".to_string());
+                KeyOutcome::Redraw
+            }
+            _ => KeyOutcome::None,
+        }
+    }
+
     pub(crate) fn body_lines(&self) -> Vec<String> {
+        if let Some(stdin_response) = &self.stdin_response {
+            return stdin_response_lines(stdin_response);
+        }
         if self.model_picker.open {
             return model_picker_lines(&self.model_picker);
         }
@@ -710,26 +786,37 @@ impl SingleSessionApp {
                 tool_call_id,
             } => {
                 self.status = Some("interactive input requested".to_string());
-                let prompt = prompt.trim();
-                let prompt = if prompt.is_empty() {
+                self.show_help = false;
+                self.model_picker.close();
+                let raw_prompt = prompt.trim();
+                let display_prompt = if raw_prompt.is_empty() {
                     "interactive input requested"
                 } else {
-                    prompt
+                    raw_prompt
                 };
+                self.stdin_response = Some(StdinResponseState {
+                    request_id: request_id.clone(),
+                    prompt: display_prompt.to_string(),
+                    is_password,
+                    tool_call_id: tool_call_id.clone(),
+                    input: String::new(),
+                });
                 let sensitive = if is_password { " password" } else { "" };
                 self.messages.push(SingleSessionMessage::meta(format!(
-                    "interactive{sensitive} input requested by {tool_call_id} ({request_id}): {prompt}"
+                    "interactive{sensitive} input requested by {tool_call_id} ({request_id}): {display_prompt}"
                 )));
             }
             DesktopSessionEvent::Done => {
                 self.finish_streaming_response();
                 self.is_processing = false;
+                self.stdin_response = None;
                 self.session_handle = None;
                 self.status = Some("ready".to_string());
             }
             DesktopSessionEvent::Error(error) => {
                 self.finish_streaming_response();
                 self.is_processing = false;
+                self.stdin_response = None;
                 self.session_handle = None;
                 self.status = Some("error".to_string());
                 self.error = Some(error);
@@ -747,12 +834,14 @@ impl SingleSessionApp {
         };
         match handle.cancel() {
             Ok(()) => {
+                self.stdin_response = None;
                 self.status = Some("cancelling".to_string());
                 true
             }
             Err(error) => {
                 self.error = Some(format!("{error:#}"));
                 self.is_processing = false;
+                self.stdin_response = None;
                 self.session_handle = None;
                 true
             }
@@ -880,8 +969,25 @@ impl SingleSessionApp {
 
     pub(crate) fn paste_text(&mut self, text: &str) {
         if !text.is_empty() {
+            if let Some(stdin_response) = &mut self.stdin_response {
+                stdin_response.input.push_str(text);
+                return;
+            }
             self.insert_draft_text(text);
         }
+    }
+
+    pub(crate) fn send_stdin_response(
+        &mut self,
+        request_id: String,
+        input: String,
+    ) -> anyhow::Result<()> {
+        let Some(handle) = &self.session_handle else {
+            anyhow::bail!("no active desktop session to receive interactive input");
+        };
+        handle.send_stdin_response(request_id, input)?;
+        self.status = Some("interactive input sent".to_string());
+        Ok(())
     }
 
     fn queue_draft(&mut self) -> KeyOutcome {
@@ -1090,6 +1196,32 @@ impl SingleSessionApp {
             self.draft_cursor -= 1;
         }
     }
+}
+
+fn stdin_response_lines(state: &StdinResponseState) -> Vec<String> {
+    let kind = if state.is_password {
+        "interactive password input"
+    } else {
+        "interactive input"
+    };
+    let input = if state.is_password {
+        "•".repeat(state.input.chars().count())
+    } else if state.input.is_empty() {
+        "<empty>".to_string()
+    } else {
+        state.input.replace(' ', "·")
+    };
+    vec![
+        format!("{kind} requested"),
+        format!("tool: {}", state.tool_call_id),
+        format!("request: {}", state.request_id),
+        format!("prompt: {}", state.prompt),
+        String::new(),
+        format!("input: {input}"),
+        String::new(),
+        "Enter send · Ctrl+Enter send · Shift+Enter newline · Ctrl+V paste · Ctrl+U clear · Ctrl+C cancel"
+            .to_string(),
+    ]
 }
 
 fn model_picker_lines(picker: &ModelPickerState) -> Vec<String> {

@@ -430,7 +430,40 @@ fn single_session_stdin_request_is_visible_in_transcript() {
 
     assert_eq!(app.status.as_deref(), Some("interactive input requested"));
     let body = app.body_lines().join("\n");
-    assert!(body.contains("interactive password input requested by tool-1 (stdin-1): Password:"));
+    assert!(body.contains("interactive password input requested"));
+    assert!(body.contains("prompt: Password:"));
+    assert!(body.contains("request: stdin-1"));
+    assert!(body.contains("tool: tool-1"));
+}
+
+#[test]
+fn single_session_stdin_response_masks_password_and_sends_input() {
+    let mut app = SingleSessionApp::new(None);
+    app.apply_session_event(session_launch::DesktopSessionEvent::StdinRequest {
+        request_id: "stdin-1".to_string(),
+        prompt: "Password:".to_string(),
+        is_password: true,
+        tool_call_id: "tool-1".to_string(),
+    });
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("s3 cr".to_string())),
+        KeyOutcome::Redraw
+    );
+    app.paste_text("et");
+    let body = app.body_lines().join("\n");
+    assert!(body.contains("input: •••••••"));
+    assert!(!body.contains("s3 cr"));
+
+    assert_eq!(
+        app.handle_key(KeyInput::SubmitDraft),
+        KeyOutcome::SendStdinResponse {
+            request_id: "stdin-1".to_string(),
+            input: "s3 cret".to_string()
+        }
+    );
+    assert!(app.stdin_response.is_none());
+    assert_eq!(app.status.as_deref(), Some("sending interactive input"));
 }
 
 #[test]

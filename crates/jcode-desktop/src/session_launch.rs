@@ -74,11 +74,18 @@ impl DesktopSessionHandle {
             .send(DesktopSessionCommand::Cancel)
             .context("failed to send cancel to desktop session worker")
     }
+
+    pub fn send_stdin_response(&self, request_id: String, input: String) -> Result<()> {
+        self.command_tx
+            .send(DesktopSessionCommand::StdinResponse { request_id, input })
+            .context("failed to send stdin response to desktop session worker")
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DesktopSessionCommand {
     Cancel,
+    StdinResponse { request_id: String, input: String },
 }
 
 pub fn launch_resume_session(session_id: &str, title: &str) -> Result<()> {
@@ -890,7 +897,9 @@ fn drain_session_events(
                         _ => false,
                     };
                     if let Some(event) = desktop_event_from_server_value(&value) {
-                        send_desktop_event_ref(event_tx, event);
+                        if !matches!(event, DesktopSessionEvent::Done) || is_terminal {
+                            send_desktop_event_ref(event_tx, event);
+                        }
                     }
                     if is_terminal {
                         return Ok(DrainOutcome::Terminal);
@@ -920,6 +929,22 @@ fn drain_worker_commands(
                     json!({
                         "type": "cancel",
                         "id": *next_request_id,
+                    }),
+                )?;
+                *next_request_id += 1;
+            }
+            DesktopSessionCommand::StdinResponse { request_id, input } => {
+                send_desktop_event_ref(
+                    event_tx,
+                    DesktopSessionEvent::Status("sending interactive input".to_string()),
+                );
+                write_json_line(
+                    writer,
+                    json!({
+                        "type": "stdin_response",
+                        "id": *next_request_id,
+                        "request_id": request_id,
+                        "input": input,
                     }),
                 )?;
                 *next_request_id += 1;
@@ -1384,6 +1409,24 @@ mod tests {
         handle.cancel().unwrap();
 
         assert_eq!(command_rx.try_recv(), Ok(DesktopSessionCommand::Cancel));
+    }
+
+    #[test]
+    fn desktop_session_handle_sends_stdin_response_command() {
+        let (command_tx, command_rx) = mpsc::channel();
+        let handle = DesktopSessionHandle { command_tx };
+
+        handle
+            .send_stdin_response("stdin-1".to_string(), "secret".to_string())
+            .unwrap();
+
+        assert_eq!(
+            command_rx.try_recv(),
+            Ok(DesktopSessionCommand::StdinResponse {
+                request_id: "stdin-1".to_string(),
+                input: "secret".to_string()
+            })
+        );
     }
 
     #[cfg(unix)]

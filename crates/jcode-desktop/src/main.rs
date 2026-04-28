@@ -400,6 +400,14 @@ async fn run() -> Result<()> {
                             window.set_title(&app.status_title());
                             window.request_redraw();
                         }
+                        KeyOutcome::SendStdinResponse { request_id, input } => {
+                            if let Err(error) = app.send_single_session_stdin_response(request_id, input)
+                            {
+                                apply_single_session_error(&mut app, error);
+                            }
+                            window.set_title(&app.status_title());
+                            window.request_redraw();
+                        }
                         KeyOutcome::AttachClipboardImage => {
                             match clipboard_image_png_base64() {
                                 Ok((media_type, base64_data)) => {
@@ -939,6 +947,19 @@ impl DesktopApp {
             Self::SingleSession(app) => app.paste_text(text),
             Self::Workspace(workspace) => {
                 workspace.paste_text(text);
+            }
+        }
+    }
+
+    fn send_single_session_stdin_response(
+        &mut self,
+        request_id: String,
+        input: String,
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::SingleSession(app) => app.send_stdin_response(request_id, input),
+            Self::Workspace(_) => {
+                anyhow::bail!("stdin responses are only supported in single-session mode")
             }
         }
     }

@@ -117,6 +117,10 @@ pub enum KeyOutcome {
     LoadModelCatalog,
     SetModel(String),
     CycleModel(i8),
+    SendStdinResponse {
+        request_id: String,
+        input: String,
+    },
     AttachClipboardImage,
     PasteText,
     StartFreshSession {
