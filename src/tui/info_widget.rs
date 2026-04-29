@@ -364,6 +364,12 @@ pub struct CacheHitInfo {
     pub creation_tokens: u64,
     /// Approximate reusable prefix tokens expected to be cache-readable.
     pub optimal_input_tokens: u64,
+    /// Input tokens from the latest completed request with cache telemetry.
+    pub last_reported_input_tokens: Option<u64>,
+    /// Cached input tokens read on the latest completed request with cache telemetry.
+    pub last_read_tokens: Option<u64>,
+    /// Approximate reusable prefix tokens expected on the latest completed request.
+    pub last_optimal_input_tokens: Option<u64>,
     /// Recent attributed misses with estimated cacheable tokens not read.
     pub miss_attributions: Vec<CacheMissAttribution>,
 }
@@ -390,6 +396,24 @@ impl CacheHitInfo {
             None
         } else {
             Some((self.read_tokens as f32 / self.optimal_input_tokens as f32).clamp(0.0, 1.0))
+        }
+    }
+
+    pub fn last_ratio(&self) -> Option<f32> {
+        let input = self.last_reported_input_tokens?;
+        if input == 0 {
+            None
+        } else {
+            Some((self.last_read_tokens.unwrap_or(0) as f32 / input as f32).clamp(0.0, 1.0))
+        }
+    }
+
+    pub fn last_optimal_ratio(&self) -> Option<f32> {
+        let optimal = self.last_optimal_input_tokens?;
+        if optimal == 0 {
+            None
+        } else {
+            Some((self.last_read_tokens.unwrap_or(0) as f32 / optimal as f32).clamp(0.0, 1.0))
         }
     }
 }
@@ -1427,34 +1451,69 @@ fn render_kv_cache_widget(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'stat
 }
 
 fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Line<'static> {
-    let Some(actual_ratio) = cache.hit_ratio() else {
+    let Some(lifetime_ratio) = cache.hit_ratio() else {
         return Line::default();
     };
 
-    let actual_pct = ratio_pct(actual_ratio);
-    let optimal = cache.optimal_ratio().map(ratio_pct);
-    let color = optimal
-        .map(kv_cache_optimal_color)
-        .unwrap_or_else(|| rgb(140, 140, 150));
-    let tail = if let Some(optimal_pct) = optimal {
-        format!("optimal {}%", optimal_pct)
-    } else {
-        "warming".to_string()
-    };
+    let lifetime_pct = ratio_pct(lifetime_ratio);
+    let warm_pct = cache.optimal_ratio().map(ratio_pct);
+    let last_pct = cache.last_ratio().map(ratio_pct);
+    let last_optimal_pct = cache.last_optimal_ratio().map(ratio_pct);
+    let health_pct = last_optimal_pct
+        .or(last_pct)
+        .or(warm_pct)
+        .unwrap_or(lifetime_pct);
+    let color = kv_cache_optimal_color(health_pct);
 
-    Line::from(vec![
-        Span::styled("KV cache: ", Style::default().fg(rgb(180, 180, 190)).bold()),
-        Span::styled("actual ", Style::default().fg(rgb(140, 140, 150))),
-        Span::styled(
-            format!("{}%", actual_pct),
+    let mut spans = vec![Span::styled(
+        "KV cache: ",
+        Style::default().fg(rgb(180, 180, 190)).bold(),
+    )];
+
+    if let Some(warm_pct) = warm_pct {
+        spans.push(Span::styled(
+            "warm ",
+            Style::default().fg(rgb(140, 140, 150)),
+        ));
+        spans.push(Span::styled(
+            format!("{}%", warm_pct),
             Style::default().fg(color).bold(),
-        ),
-        Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))),
-        Span::styled(
-            tail,
+        ));
+    } else {
+        spans.push(Span::styled(
+            "warming",
             Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-    ])
+        ));
+    }
+
+    if let Some(last_pct) = last_pct {
+        spans.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
+        spans.push(Span::styled(
+            "last ",
+            Style::default().fg(rgb(140, 140, 150)),
+        ));
+        spans.push(Span::styled(
+            format!("{}%", last_pct),
+            Style::default().fg(color).bold(),
+        ));
+    }
+
+    spans.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))));
+    spans.push(Span::styled(
+        "all ",
+        Style::default().fg(rgb(140, 140, 150)),
+    ));
+    spans.push(Span::styled(
+        format!("{}%", lifetime_pct),
+        Style::default().fg(color).bold(),
+    ));
+
+    spans.push(Span::styled(
+        " lifetime",
+        Style::default().fg(rgb(100, 100, 110)),
+    ));
+
+    Line::from(spans)
 }
 
 fn ratio_pct(ratio: f32) -> u8 {

@@ -34,6 +34,9 @@ fn kv_cache_widget_shows_session_hit_ratio() {
             read_tokens: 15_000,
             creation_tokens: 3_000,
             optimal_input_tokens: 16_667,
+            last_reported_input_tokens: Some(10_000),
+            last_read_tokens: Some(9_400),
+            last_optimal_input_tokens: Some(9_895),
             miss_attributions: vec![CacheMissAttribution {
                 turn_number: 20,
                 call_index: 1,
@@ -50,9 +53,12 @@ fn kv_cache_widget_shows_session_hit_ratio() {
 
     assert_eq!(lines.len(), 4);
     assert!(text.contains("KV cache:"));
-    assert!(text.contains("actual "));
+    assert!(text.contains("warm "));
+    assert!(text.contains("90%"));
+    assert!(text.contains("last "));
+    assert!(text.contains("94%"));
+    assert!(text.contains("all "));
     assert!(text.contains("75%"));
-    assert!(text.contains("optimal 90%"));
     assert!(text.contains("miss attribution"));
     assert!(text.contains("69k missed total"));
     assert!(text.contains("20>"));

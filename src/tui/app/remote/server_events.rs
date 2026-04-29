@@ -488,6 +488,9 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.total_cache_read_tokens = 0;
                 app.total_cache_creation_tokens = 0;
                 app.total_cache_optimal_input_tokens = 0;
+                app.last_cache_reported_input_tokens = None;
+                app.last_cache_read_tokens = None;
+                app.last_cache_optimal_input_tokens = None;
                 app.cache_next_optimal_input_tokens = None;
                 app.kv_cache_baseline = None;
                 app.pending_kv_cache_request = None;

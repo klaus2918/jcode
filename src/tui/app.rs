@@ -502,6 +502,9 @@ pub struct App {
     total_cache_read_tokens: u64,
     total_cache_creation_tokens: u64,
     total_cache_optimal_input_tokens: u64,
+    last_cache_reported_input_tokens: Option<u64>,
+    last_cache_read_tokens: Option<u64>,
+    last_cache_optimal_input_tokens: Option<u64>,
     cache_next_optimal_input_tokens: Option<u64>,
     kv_cache_baseline: Option<KvCacheBaseline>,
     pending_kv_cache_request: Option<PendingKvCacheRequest>,
@@ -1033,6 +1036,9 @@ impl App {
         self.total_cache_creation_tokens = self
             .total_cache_creation_tokens
             .saturating_add(self.streaming_cache_creation_tokens.unwrap_or(0));
+        self.last_cache_reported_input_tokens = Some(self.streaming_input_tokens);
+        self.last_cache_read_tokens = Some(self.streaming_cache_read_tokens.unwrap_or(0));
+        self.last_cache_optimal_input_tokens = optimal_input_tokens;
 
         self.log_kv_cache_usage_summary(&request, optimal_input_tokens);
 
@@ -1075,8 +1081,20 @@ impl App {
             .filter(|sample| {
                 sample.turn_number == request.turn_number && sample.call_index == request.call_index
             })
-            .map(|sample| format!("{}:{}", sample.missed_tokens, sample.reason.label()))
-            .unwrap_or_else(|| "none".to_string());
+            .map(|sample| {
+                format!(
+                    "{}:{}",
+                    sample.missed_tokens,
+                    sample.reason.label().replace(' ', "_")
+                )
+            })
+            .unwrap_or_else(|| {
+                if request.baseline.is_none() {
+                    "warmup:no_baseline".to_string()
+                } else {
+                    "none".to_string()
+                }
+            });
         let baseline_age_secs = request
             .baseline
             .as_ref()
