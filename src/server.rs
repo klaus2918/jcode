@@ -307,11 +307,11 @@ mod state;
 
 use self::state::latest_peer_touches;
 pub use self::state::{
-    FileAccess, SharedContext, SwarmEvent, SwarmEventType, SwarmMember, SwarmState,
-    SwarmTaskProgress, VersionedPlan,
+    FileAccess, SessionControlHandle, SharedContext, SwarmEvent, SwarmEventType, SwarmMember,
+    SwarmState, SwarmTaskProgress, VersionedPlan,
 };
 use self::state::{
-    SessionInterruptQueues, enqueue_soft_interrupt, fanout_live_client_event, fanout_session_event,
+    SessionInterruptQueues, fanout_live_client_event, fanout_session_event,
     queue_soft_interrupt_for_session, register_session_event_sender,
     register_session_interrupt_queue, remove_session_interrupt_queue,
     rename_session_interrupt_queue, session_event_fanout_sender, unregister_session_event_sender,

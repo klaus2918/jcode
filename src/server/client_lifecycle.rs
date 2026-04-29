@@ -33,10 +33,9 @@ use super::provider_control::{
     handle_switch_anthropic_account, handle_switch_openai_account,
 };
 use super::{
-    AwaitMembersRuntime, ClientConnectionInfo, ClientDebugState, FileAccess,
+    AwaitMembersRuntime, ClientConnectionInfo, ClientDebugState, FileAccess, SessionControlHandle,
     SessionInterruptQueues, SharedContext, SwarmEvent, SwarmMember, SwarmMutationRuntime,
-    VersionedPlan, enqueue_soft_interrupt, register_session_interrupt_queue, truncate_detail,
-    update_member_status,
+    VersionedPlan, register_session_interrupt_queue, truncate_detail, update_member_status,
 };
 use crate::agent::Agent;
 use crate::bus::{Bus, BusEvent};
@@ -47,7 +46,7 @@ use crate::tool::Registry;
 use crate::transport::Stream;
 use anyhow::Result;
 use futures::FutureExt;
-use jcode_agent_runtime::{InterruptSignal, SoftInterruptQueue, SoftInterruptSource, StreamError};
+use jcode_agent_runtime::{InterruptSignal, SoftInterruptSource, StreamError};
 use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -691,11 +690,13 @@ async fn handle_lightweight_control_request(
     Ok(())
 }
 
-async fn refresh_runtime_handles(
+async fn refresh_session_control_handle(
+    session_id: &str,
     agent: &Arc<Mutex<Agent>>,
-) -> (SoftInterruptQueue, InterruptSignal, InterruptSignal) {
+) -> SessionControlHandle {
     let agent_guard = agent.lock().await;
-    (
+    SessionControlHandle::new(
+        session_id,
         agent_guard.soft_interrupt_queue(),
         agent_guard.background_tool_signal(),
         agent_guard.graceful_shutdown_signal(),
@@ -869,28 +870,28 @@ pub(super) async fn handle_client(
         }
     }
 
-    // Get a handle to the soft interrupt queue BEFORE wrapping in Mutex
-    // This allows queueing interrupts while the agent is processing
-    let mut soft_interrupt_queue = new_agent.soft_interrupt_queue();
-
-    // Get a handle to the background tool signal BEFORE wrapping in Mutex
-    // This allows signaling "move to background" while the agent is processing
-    let mut background_tool_signal = new_agent.background_tool_signal();
-
-    // Get a handle to the graceful shutdown signal BEFORE wrapping in Mutex
-    // This allows signaling cancel (checkpoint partial response) without needing the lock
-    let mut cancel_signal = new_agent.graceful_shutdown_signal();
+    // Get lock-free control-plane handles BEFORE wrapping in Mutex.
+    // This allows cancel/soft-interrupt/background-tool requests while the agent is processing.
+    let mut session_control = SessionControlHandle::new(
+        client_session_id.clone(),
+        new_agent.soft_interrupt_queue(),
+        new_agent.background_tool_signal(),
+        new_agent.graceful_shutdown_signal(),
+    );
 
     // Register the shutdown signal in the server-level map so
     // graceful_shutdown_sessions can signal it without locking the agent mutex
     {
         let mut signals = shutdown_signals.write().await;
-        signals.insert(client_session_id.clone(), cancel_signal.clone());
+        signals.insert(
+            client_session_id.clone(),
+            session_control.stop_current_turn_signal(),
+        );
     }
     register_session_interrupt_queue(
         &soft_interrupt_queues,
         &client_session_id,
-        soft_interrupt_queue.clone(),
+        new_agent.soft_interrupt_queue(),
     )
     .await;
 
@@ -1280,7 +1281,7 @@ pub(super) async fn handle_client(
                         session_id: &mut processing_session_id,
                         task: &mut processing_task,
                     },
-                    &cancel_signal,
+                    &session_control,
                     &client_event_tx,
                     &SwarmStatusRefs {
                         members: &swarm_members,
@@ -1310,22 +1311,17 @@ pub(super) async fn handle_client(
                     content,
                     urgent,
                     SoftInterruptSource::User,
-                    &soft_interrupt_queue,
+                    &session_control,
                     &client_event_tx,
                 );
             }
 
             Request::CancelSoftInterrupts { id } => {
-                clear_soft_interrupts(
-                    id,
-                    &client_session_id,
-                    &soft_interrupt_queue,
-                    &client_event_tx,
-                );
+                clear_soft_interrupts(id, &client_session_id, &session_control, &client_event_tx);
             }
 
             Request::BackgroundTool { id } => {
-                move_tool_to_background(id, &background_tool_signal, &client_event_tx);
+                move_tool_to_background(id, &session_control, &client_event_tx);
             }
 
             Request::Clear { id } => {
@@ -1354,8 +1350,7 @@ pub(super) async fn handle_client(
                     &client_event_tx,
                 )
                 .await;
-                (soft_interrupt_queue, background_tool_signal, cancel_signal) =
-                    refresh_runtime_handles(&agent).await;
+                session_control = refresh_session_control_handle(&client_session_id, &agent).await;
             }
 
             Request::Ping { id } => {
@@ -1435,8 +1430,8 @@ pub(super) async fn handle_client(
                             &swarm_event_tx,
                         )
                         .await?;
-                        (soft_interrupt_queue, background_tool_signal, cancel_signal) =
-                            refresh_runtime_handles(&agent).await;
+                        session_control =
+                            refresh_session_control_handle(&client_session_id, &agent).await;
                         if client_session_id == target_session_id {
                             handle_subscribe(
                                 id,
@@ -1637,8 +1632,7 @@ pub(super) async fn handle_client(
                     &swarm_event_tx,
                 )
                 .await?;
-                (soft_interrupt_queue, background_tool_signal, cancel_signal) =
-                    refresh_runtime_handles(&agent).await;
+                session_control = refresh_session_control_handle(&client_session_id, &agent).await;
                 if let Some(snapshot) = try_available_models_snapshot(&agent) {
                     last_available_models_snapshot = Some(snapshot);
                 }
@@ -2502,7 +2496,7 @@ async fn start_processing_message(
 
 async fn cancel_processing_message(
     state: &mut ProcessingState<'_>,
-    cancel_signal: &InterruptSignal,
+    session_control: &SessionControlHandle,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     swarm: &SwarmStatusRefs<'_>,
 ) {
@@ -2511,7 +2505,7 @@ async fn cancel_processing_message(
             *state.task = Some(handle);
             return;
         }
-        cancel_signal.fire();
+        session_control.request_cancel();
         match tokio::time::timeout(std::time::Duration::from_millis(500), &mut handle).await {
             Ok(_) => {}
             Err(_) => {
@@ -2524,7 +2518,7 @@ async fn cancel_processing_message(
                 }
             }
         }
-        cancel_signal.reset();
+        session_control.reset_cancel();
         *state.task = None;
         *state.client_is_processing = false;
         if let Some(session_id) = state.session_id.take() {
@@ -2561,22 +2555,20 @@ fn queue_soft_interrupt(
     content: String,
     urgent: bool,
     source: SoftInterruptSource,
-    soft_interrupt_queue: &SoftInterruptQueue,
+    session_control: &SessionControlHandle,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    let _ = enqueue_soft_interrupt(soft_interrupt_queue, content, urgent, source);
+    let _ = session_control.queue_soft_interrupt(content, urgent, source);
     let _ = client_event_tx.send(ServerEvent::Ack { id });
 }
 
 fn clear_soft_interrupts(
     id: u64,
     session_id: &str,
-    soft_interrupt_queue: &SoftInterruptQueue,
+    session_control: &SessionControlHandle,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    if let Ok(mut queue) = soft_interrupt_queue.lock() {
-        queue.clear();
-    }
+    session_control.clear_soft_interrupts();
     if let Err(err) = crate::soft_interrupt_store::clear(session_id) {
         crate::logging::warn(&format!(
             "Failed to clear persisted soft interrupts for {}: {}",
@@ -2588,10 +2580,10 @@ fn clear_soft_interrupts(
 
 fn move_tool_to_background(
     id: u64,
-    background_tool_signal: &InterruptSignal,
+    session_control: &SessionControlHandle,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    background_tool_signal.fire();
+    session_control.request_background_current_tool();
     let _ = client_event_tx.send(ServerEvent::Ack { id });
 }
 

@@ -1,8 +1,7 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
 use super::debug_jobs::{DebugJob, maybe_start_async_debug_job};
-use super::state::enqueue_soft_interrupt;
-use super::{ServerIdentity, SessionInterruptQueues};
+use super::{ServerIdentity, SessionControlHandle, SessionInterruptQueues};
 use crate::agent::Agent;
 use crate::build;
 use crate::mcp::McpConfig;
@@ -20,6 +19,28 @@ pub(super) struct DebugInterruptContext {
     pub session_id: String,
     pub shutdown_signals: Arc<RwLock<HashMap<String, InterruptSignal>>>,
     pub soft_interrupt_queues: SessionInterruptQueues,
+}
+
+impl DebugInterruptContext {
+    async fn control_handle(&self) -> Option<SessionControlHandle> {
+        let queue = self
+            .soft_interrupt_queues
+            .read()
+            .await
+            .get(&self.session_id)
+            .cloned()?;
+        let signal = self
+            .shutdown_signals
+            .read()
+            .await
+            .get(&self.session_id)
+            .cloned()?;
+        Some(SessionControlHandle::cancel_only(
+            self.session_id.clone(),
+            queue,
+            signal,
+        ))
+    }
 }
 
 pub(super) async fn resolve_debug_session(
@@ -305,31 +326,14 @@ pub(super) async fn execute_debug_command(
         let content = "[CANCELLED] Generation cancelled via debug socket".to_string();
         let mut delivered_without_agent_lock = false;
 
-        if let Some(ctx) = interrupt_context {
-            if let Some(queue) = ctx
-                .soft_interrupt_queues
-                .read()
-                .await
-                .get(&ctx.session_id)
-                .cloned()
-            {
-                delivered_without_agent_lock = enqueue_soft_interrupt(
-                    &queue,
-                    content.clone(),
-                    true,
-                    SoftInterruptSource::User,
-                );
-            }
-            if let Some(signal) = ctx
-                .shutdown_signals
-                .read()
-                .await
-                .get(&ctx.session_id)
-                .cloned()
-            {
-                signal.fire();
-                delivered_without_agent_lock = true;
-            }
+        if let Some(control) = match &interrupt_context {
+            Some(ctx) => ctx.control_handle().await,
+            None => None,
+        } {
+            let _queued =
+                control.queue_soft_interrupt(content.clone(), true, SoftInterruptSource::User);
+            control.request_cancel();
+            delivered_without_agent_lock = true;
         }
 
         if !delivered_without_agent_lock {

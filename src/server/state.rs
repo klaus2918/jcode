@@ -1,7 +1,9 @@
 use crate::bus::FileOp;
 use crate::plan::PlanItem;
 use crate::protocol::ServerEvent;
-use jcode_agent_runtime::{SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource};
+use jcode_agent_runtime::{
+    InterruptSignal, SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -811,6 +813,85 @@ pub(super) fn enqueue_soft_interrupt(
         true
     } else {
         false
+    }
+}
+
+/// Lock-free control-plane handles for a live session.
+///
+/// This intentionally exposes only out-of-band controls that are safe to use
+/// while a turn owns the Agent mutex. Stateful operations such as history
+/// mutation, model changes, or direct tool execution should continue to
+/// coordinate through the Agent lock after the turn is idle/stopped.
+#[derive(Clone)]
+pub struct SessionControlHandle {
+    pub session_id: String,
+    soft_interrupt_queue: SoftInterruptQueue,
+    background_tool_signal: Option<InterruptSignal>,
+    stop_current_turn_signal: InterruptSignal,
+}
+
+impl SessionControlHandle {
+    pub fn new(
+        session_id: impl Into<String>,
+        soft_interrupt_queue: SoftInterruptQueue,
+        background_tool_signal: InterruptSignal,
+        stop_current_turn_signal: InterruptSignal,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            soft_interrupt_queue,
+            background_tool_signal: Some(background_tool_signal),
+            stop_current_turn_signal,
+        }
+    }
+
+    pub fn cancel_only(
+        session_id: impl Into<String>,
+        soft_interrupt_queue: SoftInterruptQueue,
+        stop_current_turn_signal: InterruptSignal,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            soft_interrupt_queue,
+            background_tool_signal: None,
+            stop_current_turn_signal,
+        }
+    }
+
+    pub fn queue_soft_interrupt(
+        &self,
+        content: String,
+        urgent: bool,
+        source: SoftInterruptSource,
+    ) -> bool {
+        enqueue_soft_interrupt(&self.soft_interrupt_queue, content, urgent, source)
+    }
+
+    pub fn clear_soft_interrupts(&self) {
+        if let Ok(mut queue) = self.soft_interrupt_queue.lock() {
+            queue.clear();
+        }
+    }
+
+    pub fn request_cancel(&self) {
+        self.stop_current_turn_signal.fire();
+    }
+
+    pub fn reset_cancel(&self) {
+        self.stop_current_turn_signal.reset();
+    }
+
+    pub fn request_background_current_tool(&self) -> bool {
+        if let Some(signal) = &self.background_tool_signal {
+            signal.fire();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn stop_current_turn_signal(&self) -> InterruptSignal {
+        self.stop_current_turn_signal.clone()
     }
 }
 
