@@ -961,6 +961,14 @@ impl crate::tui::TuiState for App {
             None
         };
 
+        let cache_hit_info = (self.total_cache_reported_input_tokens > 0).then(|| {
+            crate::tui::info_widget::CacheHitInfo {
+                reported_input_tokens: self.total_cache_reported_input_tokens,
+                read_tokens: self.total_cache_read_tokens,
+                creation_tokens: self.total_cache_creation_tokens,
+            }
+        });
+
         let auth_method = self.widget_auth_method(route);
 
         // Get active mermaid diagrams - only for margin mode (pinned mode uses dedicated pane)
@@ -1016,6 +1024,7 @@ impl crate::tui::TuiState for App {
             workspace_animation_tick,
             ambient_info: gather_ambient_info(crate::config::config().ambient.enabled),
             observed_context_tokens: self.current_stream_context_tokens(),
+            cache_hit_info,
             is_compacting: if !self.is_remote && self.provider.uses_jcode_compaction() {
                 let compaction = self.registry.compaction();
                 compaction

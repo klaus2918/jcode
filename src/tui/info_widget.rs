@@ -85,6 +85,8 @@ pub enum WidgetKind {
     BackgroundTasks,
     /// 5-hour/weekly subscription bars
     UsageLimits,
+    /// Session-level KV cache hit ratio
+    KvCache,
     /// Current model name
     ModelInfo,
     /// Mermaid diagrams
@@ -107,13 +109,14 @@ impl WidgetKind {
             WidgetKind::Todos => 3,
             WidgetKind::ContextUsage => 4,
             WidgetKind::UsageLimits => 5, // Bumped up - important when near limits
-            WidgetKind::MemoryActivity => 6,
-            WidgetKind::ModelInfo => 7,
-            WidgetKind::BackgroundTasks => 8,
-            WidgetKind::GitStatus => 9,
-            WidgetKind::SwarmStatus => 10, // Session list - lower priority
-            WidgetKind::AmbientMode => 11, // Scheduled agent - lower priority
-            WidgetKind::Tips => 12,        // Did you know - lowest
+            WidgetKind::KvCache => 6,
+            WidgetKind::MemoryActivity => 7,
+            WidgetKind::ModelInfo => 8,
+            WidgetKind::BackgroundTasks => 9,
+            WidgetKind::GitStatus => 10,
+            WidgetKind::SwarmStatus => 11, // Session list - lower priority
+            WidgetKind::AmbientMode => 12, // Scheduled agent - lower priority
+            WidgetKind::Tips => 13,        // Did you know - lowest
         }
     }
 
@@ -130,6 +133,7 @@ impl WidgetKind {
             WidgetKind::BackgroundTasks => Side::Left,
             WidgetKind::AmbientMode => Side::Left,
             WidgetKind::UsageLimits => Side::Left,
+            WidgetKind::KvCache => Side::Left,
             WidgetKind::ModelInfo => Side::Left,
             WidgetKind::Tips => Side::Left,
             WidgetKind::GitStatus => Side::Left,
@@ -149,6 +153,7 @@ impl WidgetKind {
             WidgetKind::BackgroundTasks => 2,
             WidgetKind::AmbientMode => 3,
             WidgetKind::UsageLimits => 3,
+            WidgetKind::KvCache => 3,
             WidgetKind::ModelInfo => 3, // Model + usage bars
             WidgetKind::Tips => 3,
             WidgetKind::GitStatus => 3,
@@ -164,6 +169,7 @@ impl WidgetKind {
             WidgetKind::Todos,
             WidgetKind::ContextUsage,
             WidgetKind::UsageLimits,
+            WidgetKind::KvCache,
             WidgetKind::MemoryActivity,
             WidgetKind::ModelInfo,
             WidgetKind::BackgroundTasks,
@@ -186,6 +192,7 @@ impl WidgetKind {
             WidgetKind::BackgroundTasks => "background",
             WidgetKind::AmbientMode => "ambient",
             WidgetKind::UsageLimits => "usage",
+            WidgetKind::KvCache => "kv-cache",
             WidgetKind::ModelInfo => "model",
             WidgetKind::Tips => "tips",
             WidgetKind::GitStatus => "git",
@@ -218,6 +225,7 @@ pub(crate) fn is_overview_mergeable(kind: WidgetKind) -> bool {
             | WidgetKind::BackgroundTasks
             | WidgetKind::ModelInfo
             | WidgetKind::UsageLimits
+            | WidgetKind::KvCache
             | WidgetKind::GitStatus
     )
 }
@@ -343,6 +351,27 @@ pub struct UsageInfo {
     pub output_tps: Option<f32>,
     /// Whether data was successfully fetched / available to show
     pub available: bool,
+}
+
+/// Session-level KV cache telemetry for providers that report cache usage.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CacheHitInfo {
+    /// Input tokens from completed API requests that included explicit cache telemetry.
+    pub reported_input_tokens: u64,
+    /// Tokens read from provider KV/prefix cache across this session.
+    pub read_tokens: u64,
+    /// Tokens written/created in provider cache across this session, when reported.
+    pub creation_tokens: u64,
+}
+
+impl CacheHitInfo {
+    pub fn hit_ratio(&self) -> Option<f32> {
+        if self.reported_input_tokens == 0 {
+            None
+        } else {
+            Some((self.read_tokens as f32 / self.reported_input_tokens as f32).clamp(0.0, 1.0))
+        }
+    }
 }
 
 impl UsageInfo {
@@ -508,6 +537,8 @@ pub struct InfoWidgetData {
     /// Actual API-reported context tokens (from last streaming response)
     /// When available, this is more accurate than the char-based estimate in context_info
     pub observed_context_tokens: Option<u64>,
+    /// Session-level cache read ratio, when the active provider reports cache telemetry.
+    pub cache_hit_info: Option<CacheHitInfo>,
     /// Whether background compaction is currently in progress
     pub is_compacting: bool,
     /// Git repository status
@@ -578,6 +609,9 @@ impl InfoWidgetData {
                 {
                     sections += 1;
                 }
+                if self.cache_hit_info.is_some() {
+                    sections += 1;
+                }
                 if self
                     .git_info
                     .as_ref()
@@ -612,6 +646,7 @@ impl InfoWidgetData {
                 .as_ref()
                 .map(|u| u.available)
                 .unwrap_or(false),
+            WidgetKind::KvCache => self.cache_hit_info.is_some(),
             WidgetKind::ModelInfo => self.model.is_some(),
             WidgetKind::Tips => false,
             WidgetKind::GitStatus => self
@@ -883,6 +918,13 @@ pub(crate) fn calculate_widget_height(
                 } else {
                     0
                 }
+            } else {
+                0
+            }
+        }
+        WidgetKind::KvCache => {
+            if data.cache_hit_info.is_some() {
+                3
             } else {
                 0
             }
@@ -1296,9 +1338,96 @@ fn render_widget_content(
         WidgetKind::BackgroundTasks => render_background_widget(data, inner),
         WidgetKind::AmbientMode => render_ambient_widget(data, inner),
         WidgetKind::UsageLimits => render_usage_widget(data, inner),
+        WidgetKind::KvCache => render_kv_cache_widget(data, inner),
         WidgetKind::ModelInfo => render_model_widget(data, inner),
         WidgetKind::Tips => render_tips_widget(inner),
         WidgetKind::GitStatus => render_git_widget(data, inner),
+    }
+}
+
+fn render_kv_cache_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
+    let Some(cache) = data.cache_hit_info.as_ref() else {
+        return Vec::new();
+    };
+    let Some(ratio) = cache.hit_ratio() else {
+        return Vec::new();
+    };
+
+    let pct = (ratio * 100.0).round().clamp(0.0, 100.0) as u8;
+    let (label, color) = kv_cache_status(pct, cache.reported_input_tokens);
+    let bar_width = inner.width.saturating_sub(14).clamp(4, 18) as usize;
+    let filled = ((bar_width as f32 * ratio).round() as usize).min(bar_width);
+    let empty = bar_width.saturating_sub(filled);
+
+    vec![
+        Line::from(vec![
+            Span::styled("⚿ ", Style::default().fg(color)),
+            Span::styled("KV cache", Style::default().fg(rgb(180, 180, 190)).bold()),
+            Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))),
+            Span::styled(label.to_string(), Style::default().fg(color)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("█".repeat(filled), Style::default().fg(color)),
+            Span::styled("░".repeat(empty), Style::default().fg(rgb(50, 50, 60))),
+            Span::styled(format!(" {}%", pct), Style::default().fg(color).bold()),
+        ]),
+        Line::from(vec![Span::styled(
+            format!(
+                "  read {} / seen {}{}",
+                compact_token_count(cache.read_tokens),
+                compact_token_count(cache.reported_input_tokens),
+                if cache.creation_tokens > 0 {
+                    format!(" · write {}", compact_token_count(cache.creation_tokens))
+                } else {
+                    String::new()
+                }
+            ),
+            Style::default().fg(rgb(140, 140, 150)),
+        )]),
+    ]
+}
+
+fn render_kv_cache_compact(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'static>> {
+    let Some(cache) = data.cache_hit_info.as_ref() else {
+        return Vec::new();
+    };
+    let Some(ratio) = cache.hit_ratio() else {
+        return Vec::new();
+    };
+    let pct = (ratio * 100.0).round().clamp(0.0, 100.0) as u8;
+    let (label, color) = kv_cache_status(pct, cache.reported_input_tokens);
+    vec![Line::from(vec![
+        Span::styled("⚿ ", Style::default().fg(color)),
+        Span::styled(format!("KV {}%", pct), Style::default().fg(color).bold()),
+        Span::styled(" · ", Style::default().fg(rgb(80, 80, 90))),
+        Span::styled(label.to_string(), Style::default().fg(color)),
+        Span::styled(
+            format!(" · {} read", compact_token_count(cache.read_tokens)),
+            Style::default().fg(rgb(140, 140, 150)),
+        ),
+    ])]
+}
+
+fn kv_cache_status(pct: u8, reported_input_tokens: u64) -> (&'static str, Color) {
+    if reported_input_tokens < 8_000 {
+        return ("warming", rgb(140, 140, 150));
+    }
+    match pct {
+        0..=9 => ("low", rgb(255, 110, 110)),
+        10..=39 => ("weak", rgb(255, 200, 100)),
+        40..=69 => ("ok", rgb(140, 180, 255)),
+        _ => ("good", rgb(110, 210, 140)),
+    }
+}
+
+fn compact_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f32 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f32 / 1_000.0)
+    } else {
+        tokens.to_string()
     }
 }
 
@@ -1556,6 +1685,10 @@ fn render_sections(
         && info.available
     {
         lines.extend(render_usage_compact(info, inner.width));
+    }
+
+    if data.cache_hit_info.is_some() {
+        lines.extend(render_kv_cache_compact(data, inner));
     }
 
     // Git info

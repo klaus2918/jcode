@@ -426,6 +426,10 @@ pub struct App {
     // Total session token usage (accumulated across all turns)
     total_input_tokens: u64,
     total_output_tokens: u64,
+    // Total session KV cache usage for turns where the provider reported cache telemetry.
+    total_cache_reported_input_tokens: u64,
+    total_cache_read_tokens: u64,
+    total_cache_creation_tokens: u64,
     // Total cost in USD (for API-key providers)
     total_cost: f32,
     // Cached pricing (input $/1M tokens, output $/1M tokens)
@@ -862,6 +866,24 @@ impl App {
     const AUTO_RETRY_MAX_ATTEMPTS: u8 = 3;
     const INPUT_UNDO_LIMIT: usize = 128;
     const CLIENT_FOCUS_RECORD_DEBOUNCE: Duration = Duration::from_secs(2);
+
+    pub(super) fn record_completed_stream_cache_usage(&mut self) {
+        let has_cache_telemetry = self.streaming_cache_read_tokens.is_some()
+            || self.streaming_cache_creation_tokens.is_some();
+        if !has_cache_telemetry || self.streaming_input_tokens == 0 {
+            return;
+        }
+
+        self.total_cache_reported_input_tokens = self
+            .total_cache_reported_input_tokens
+            .saturating_add(self.streaming_input_tokens);
+        self.total_cache_read_tokens = self
+            .total_cache_read_tokens
+            .saturating_add(self.streaming_cache_read_tokens.unwrap_or(0));
+        self.total_cache_creation_tokens = self
+            .total_cache_creation_tokens
+            .saturating_add(self.streaming_cache_creation_tokens.unwrap_or(0));
+    }
 }
 
 #[cfg(test)]

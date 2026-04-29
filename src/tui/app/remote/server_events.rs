@@ -281,6 +281,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.is_processing = false;
                 app.status = ProcessingStatus::Idle;
                 app.stream_message_ended = false;
+                app.record_completed_stream_cache_usage();
                 app.processing_started = None;
                 app.replay_processing_started_ms = None;
                 app.replay_elapsed_override = None;
@@ -480,6 +481,9 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.streaming_output_tokens = 0;
                 app.streaming_cache_read_tokens = None;
                 app.streaming_cache_creation_tokens = None;
+                app.total_cache_reported_input_tokens = 0;
+                app.total_cache_read_tokens = 0;
+                app.total_cache_creation_tokens = 0;
                 app.processing_started = None;
                 app.clear_visible_turn_started();
                 app.replay_processing_started_ms = None;
