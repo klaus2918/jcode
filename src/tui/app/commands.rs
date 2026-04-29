@@ -20,7 +20,7 @@ pub(super) use super::commands_review::{
 };
 pub(super) use super::todos_view::handle_todos_view_command;
 use super::{App, DisplayMessage, ProcessingStatus};
-use crate::bus::{Bus, BusEvent, ManualToolCompleted, ToolEvent, ToolStatus};
+use crate::bus::{Bus, BusEvent, GitStatusCompleted, ManualToolCompleted, ToolEvent, ToolStatus};
 use crate::id;
 use crate::message::{ContentBlock, Message, Role};
 use std::path::PathBuf;
@@ -995,6 +995,20 @@ fn handle_git_command(app: &mut App, trimmed: &str) -> bool {
         Err(error) => app.push_display_message(DisplayMessage::error(error)),
     }
     true
+}
+
+pub(super) fn handle_git_status_completed(app: &mut App, completed: GitStatusCompleted) {
+    if completed.session_id != active_session_id(app) {
+        return;
+    }
+
+    match completed.result {
+        Ok(message) => {
+            app.push_display_message(DisplayMessage::system(message));
+            app.set_status_notice("Git status");
+        }
+        Err(error) => app.push_display_message(DisplayMessage::error(error)),
+    }
 }
 
 pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
