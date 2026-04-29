@@ -78,10 +78,10 @@ pub trait Provider: Send + Sync {
     /// system_static: Static content (instruction files, base prompt) - cached
     /// system_dynamic: Dynamic content (date, git status, memory) - not cached
     /// Default implementation keeps static instructions in the provider's system field and moves
-    /// dynamic context into a late synthetic system-reminder message. This avoids putting changing
-    /// date/time/git/memory text at the beginning of the prompt for providers with implicit prefix
-    /// caching (OpenAI/Gemini/OpenRouter-compatible), while Anthropic overrides this with native
-    /// split system cache-control blocks.
+    /// dynamic context into a late synthetic system-reminder message after the latest user prompt.
+    /// This avoids putting changing date/time/git/memory text before cacheable conversation text for
+    /// providers with implicit prefix caching (OpenAI/Gemini/OpenRouter-compatible), while Anthropic
+    /// overrides this with native split system cache-control blocks.
     async fn complete_split(
         &self,
         messages: &[Message],
@@ -399,6 +399,7 @@ fn messages_with_dynamic_system_context(
     let insert_at = out
         .iter()
         .rposition(is_fresh_user_text_message)
+        .map(|idx| idx + 1)
         .unwrap_or(out.len());
     out.insert(insert_at, dynamic_message);
     out
@@ -421,7 +422,7 @@ mod split_prompt_tests {
     }
 
     #[test]
-    fn dynamic_context_is_inserted_before_current_user_prompt() {
+    fn dynamic_context_is_inserted_after_current_user_prompt() {
         let messages = vec![
             Message::user("first user"),
             Message::assistant_text("assistant"),
@@ -434,8 +435,8 @@ mod split_prompt_tests {
         assert_eq!(out.len(), 4);
         assert_eq!(text_of(&out[0]), "first user");
         assert_eq!(text_of(&out[1]), "assistant");
-        assert!(text_of(&out[2]).starts_with("<system-reminder>\n# Environment"));
-        assert_eq!(text_of(&out[3]), "current user");
+        assert_eq!(text_of(&out[2]), "current user");
+        assert!(text_of(&out[3]).starts_with("<system-reminder>\n# Environment"));
     }
 
     #[test]
@@ -453,9 +454,9 @@ mod split_prompt_tests {
         assert_role_text(&out_a[1], Role::Assistant, "stable cached assistant");
         assert_role_text(&out_b[0], Role::User, "stable cached user");
         assert_role_text(&out_b[1], Role::Assistant, "stable cached assistant");
-        assert_ne!(text_of(&out_a[2]), text_of(&out_b[2]));
-        assert_role_text(&out_a[3], Role::User, "latest prompt");
-        assert_role_text(&out_b[3], Role::User, "latest prompt");
+        assert_role_text(&out_a[2], Role::User, "latest prompt");
+        assert_role_text(&out_b[2], Role::User, "latest prompt");
+        assert_ne!(text_of(&out_a[3]), text_of(&out_b[3]));
     }
 
     #[test]
