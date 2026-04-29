@@ -3,6 +3,7 @@
 //! Config is loaded from `~/.jcode/config.toml` (or `$JCODE_HOME/config.toml`)
 //! Environment variables override config file settings.
 
+pub use jcode_config_types::CompactionMode;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -12,38 +13,6 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 /// Get the global config instance (loaded once on first access)
 pub fn config() -> &'static Config {
     CONFIG.get_or_init(Config::load)
-}
-
-/// Compaction mode
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum CompactionMode {
-    /// Compact when context hits a fixed threshold (default)
-    #[default]
-    Reactive,
-    /// Compact early based on predicted token growth rate
-    Proactive,
-    /// Compact based on semantic topic shifts and relevance scoring
-    Semantic,
-}
-
-impl CompactionMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Reactive => "reactive",
-            Self::Proactive => "proactive",
-            Self::Semantic => "semantic",
-        }
-    }
-
-    pub fn parse(input: &str) -> Option<Self> {
-        match input.trim().to_ascii_lowercase().as_str() {
-            "reactive" => Some(Self::Reactive),
-            "proactive" => Some(Self::Proactive),
-            "semantic" => Some(Self::Semantic),
-            _ => None,
-        }
-    }
 }
 
 /// Compaction configuration

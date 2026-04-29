@@ -1,6 +1,8 @@
 use super::{Session, StoredDisplayRole};
 use crate::message::{ContentBlock, Role, ToolCall};
-use serde::{Deserialize, Serialize};
+pub use jcode_session_types::{
+    RenderedCompactedHistoryInfo, RenderedImage, RenderedImageSource, RenderedMessage,
+};
 use std::collections::HashMap;
 
 fn is_internal_system_reminder(msg: &super::StoredMessage) -> bool {
@@ -11,37 +13,6 @@ fn is_internal_system_reminder(msg: &super::StoredMessage) -> bool {
             _ => None,
         })
         .is_some_and(|text| text.starts_with("<system-reminder>"))
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RenderedMessage {
-    pub role: String,
-    pub content: String,
-    pub tool_calls: Vec<String>,
-    pub tool_data: Option<ToolCall>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RenderedCompactedHistoryInfo {
-    pub total_messages: usize,
-    pub visible_messages: usize,
-    pub remaining_messages: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RenderedImageSource {
-    UserInput,
-    ToolResult { tool_name: String },
-    Other { role: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RenderedImage {
-    pub media_type: String,
-    pub data: String,
-    pub label: Option<String>,
-    pub source: RenderedImageSource,
 }
 
 fn image_source_for_message(role: Role, tool: Option<&ToolCall>) -> RenderedImageSource {
