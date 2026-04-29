@@ -193,6 +193,7 @@ impl Agent {
         agent.session.model = Some(agent.provider.model());
         agent.session.provider_key =
             crate::session::derive_session_provider_key(agent.provider.name());
+        agent.session.ensure_initial_session_context_message();
         agent.seed_compaction_from_session();
         agent.log_env_snapshot("create");
         crate::telemetry::begin_session(agent.provider.name(), &agent.provider.model());
@@ -221,6 +222,7 @@ impl Agent {
         } else {
             agent.session.model = Some(agent.provider.model());
         }
+        agent.session.ensure_initial_session_context_message();
         agent.sync_memory_dedup_state_from_session();
         agent.seed_compaction_from_session();
         agent.log_env_snapshot("attach");

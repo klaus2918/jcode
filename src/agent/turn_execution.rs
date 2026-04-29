@@ -132,10 +132,13 @@ impl Agent {
         let mut new_session = Session::create(None, None);
         new_session.mark_active();
         new_session.model = Some(self.provider.model());
+        new_session.provider_key =
+            crate::session::derive_session_provider_key(self.provider.name());
         new_session.is_canary = preserve_canary;
         new_session.testing_build = preserve_testing_build;
         new_session.is_debug = preserve_debug;
         new_session.working_dir = preserve_working_dir;
+        new_session.ensure_initial_session_context_message();
 
         self.session = new_session;
         self.reset_runtime_state_for_session_change();

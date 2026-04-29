@@ -185,6 +185,8 @@ pub struct StoredTokenUsage {
     pub cache_creation_input_tokens: Option<u64>,
 }
 
+const SESSION_CONTEXT_PREFIX: &str = "<system-reminder>\n# Session Context";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredCompactionState {
     pub summary_text: String,
@@ -1301,6 +1303,37 @@ impl Session {
         } else {
             self.mark_env_snapshots_append_dirty();
         }
+    }
+
+    pub fn has_session_context_message(&self) -> bool {
+        self.messages.iter().any(|message| {
+            message.content.iter().any(|block| match block {
+                ContentBlock::Text { text, .. } => text.starts_with(SESSION_CONTEXT_PREFIX),
+                _ => false,
+            })
+        })
+    }
+
+    /// Persist an immutable session-context snapshot as the first provider-visible
+    /// transcript item for new sessions. Existing non-empty sessions are left
+    /// untouched so their historical context is never rewritten with newer state.
+    pub fn ensure_initial_session_context_message(&mut self) -> bool {
+        if !self.messages.is_empty() || self.has_session_context_message() {
+            return false;
+        }
+
+        let context =
+            crate::prompt::build_session_context(self.working_dir.as_deref().map(Path::new));
+        let wrapped = format!("<system-reminder>\n{}\n</system-reminder>", context.trim());
+        self.add_message_with_display_role(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: wrapped,
+                cache_control: None,
+            }],
+            Some(StoredDisplayRole::System),
+        );
+        true
     }
 
     /// Get the display name for this session (short memorable name if available)

@@ -68,10 +68,22 @@ fn test_load_agents_md_files_uses_sandboxed_global_files() {
 }
 
 #[test]
-fn test_dynamic_system_prompt_includes_time_and_timezone() {
+fn test_session_context_includes_time_timezone_and_system_info() {
+    let context = build_session_context(None);
+    assert!(context.contains("# Session Context"));
+    assert!(context.contains("Time: "));
+    assert!(context.contains("Timezone: UTC"));
+    assert!(context.contains("OS: "));
+    assert!(context.contains("Architecture: "));
+    assert!(context.contains("Jcode version: "));
+}
+
+#[test]
+fn test_split_prompt_does_not_inject_session_context_per_turn() {
     let (split, _info) = build_system_prompt_split(None, &[], false, None, None);
-    assert!(split.dynamic_part.contains("Time: "));
-    assert!(split.dynamic_part.contains("Timezone: UTC"));
+    assert!(!split.dynamic_part.contains("# Session Context"));
+    assert!(!split.dynamic_part.contains("Time: "));
+    assert!(!split.dynamic_part.contains("Timezone: UTC"));
 }
 
 #[test]

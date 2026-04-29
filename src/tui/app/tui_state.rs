@@ -616,6 +616,7 @@ impl crate::tui::TuiState for App {
         }
 
         let mut info = self.context_info.clone();
+        info.session_context_chars = 0;
 
         // Compute dynamic stats from conversation
         let mut user_chars = 0usize;
@@ -677,10 +678,19 @@ impl crate::tui::TuiState for App {
 
                 for block in &msg.content {
                     match block {
-                        ContentBlock::Text { text, .. } => match msg.role {
-                            Role::User => user_chars += text.len(),
-                            Role::Assistant => asst_chars += text.len(),
-                        },
+                        ContentBlock::Text { text, .. } => {
+                            if msg.role == Role::User
+                                && text.starts_with("<system-reminder>\n# Session Context")
+                            {
+                                info.session_context_chars += text.len();
+                                user_count = user_count.saturating_sub(1);
+                            } else {
+                                match msg.role {
+                                    Role::User => user_chars += text.len(),
+                                    Role::Assistant => asst_chars += text.len(),
+                                }
+                            }
+                        }
                         ContentBlock::ToolUse { name, input, .. } => {
                             tool_call_count += 1;
                             tool_call_chars += name.len() + input.to_string().len();
@@ -729,7 +739,7 @@ impl crate::tui::TuiState for App {
 
         // Update total
         info.total_chars = info.system_prompt_chars
-            + info.env_context_chars
+            + info.session_context_chars
             + info.project_agents_md_chars
             + info.global_agents_md_chars
             + info.skills_chars
