@@ -253,14 +253,14 @@ impl App {
     }
 
     fn start_jcode_login(&mut self) {
-        self.push_display_message(DisplayMessage::system(format!(
-            "**Jcode Subscription Login**\n\nThis doesn't exist yet.\n\nCurated entries planned for this path: {}",
-            crate::subscription_catalog::curated_models()
-                .iter()
-                .map(|model| model.display_name)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
+        self.push_display_message(DisplayMessage::system(
+            "**Jcode Subscription Login**\n\n\
+             This doesn't exist yet.\n\n\
+             This would be a managed API key for a curated list of models chosen for good compatibility with jcode. It would be net-zero profit: your dollars would go toward tokens as much as possible. This subscription would be required for the mobile app version.\n\n\
+             Jcode currently has no way of making money. Net-zero profit may change in the distant future if jcode reaches a scale where it can be profitable while still subsidizing token costs.\n\n\
+             If you are interested in this, please tell Jeremy."
+                .to_string(),
+        ));
         self.set_status_notice("Login: jcode unavailable");
     }
 
