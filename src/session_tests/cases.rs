@@ -739,6 +739,29 @@ fn test_render_messages_honors_background_task_display_role_override() {
 }
 
 #[test]
+fn test_render_messages_hides_internal_system_reminders() {
+    let mut session = Session::create_with_id(
+        "session_hidden_system_reminder_test".to_string(),
+        None,
+        Some("hidden reminder test".to_string()),
+    );
+
+    assert!(session.ensure_initial_session_context_message());
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "visible prompt".to_string(),
+            cache_control: None,
+        }],
+    );
+
+    let rendered = render_messages(&session);
+    assert_eq!(rendered.len(), 1);
+    assert_eq!(rendered[0].role, "user");
+    assert_eq!(rendered[0].content, "visible prompt");
+}
+
+#[test]
 fn test_render_messages_hides_compacted_leading_history() {
     let mut session = Session::create_with_id(
         "session_render_compacted_history_test".to_string(),

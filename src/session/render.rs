@@ -3,6 +3,16 @@ use crate::message::{ContentBlock, Role, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn is_internal_system_reminder(msg: &super::StoredMessage) -> bool {
+    msg.content
+        .iter()
+        .find_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.trim_start()),
+            _ => None,
+        })
+        .is_some_and(|text| text.starts_with("<system-reminder>"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderedMessage {
     pub role: String,
@@ -189,6 +199,10 @@ pub fn render_messages_and_images_with_compacted_history(
     }
 
     for msg in session.messages.iter().skip(render_start_idx) {
+        if is_internal_system_reminder(msg) {
+            continue;
+        }
+
         let role = match msg.display_role {
             Some(StoredDisplayRole::System) => "system",
             Some(StoredDisplayRole::BackgroundTask) => "background_task",
