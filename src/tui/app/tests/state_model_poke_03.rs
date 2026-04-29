@@ -591,6 +591,24 @@ fn test_autojudge_command_toggles_session_preference() {
 }
 
 #[test]
+fn test_transcript_path_command_reports_current_session_file() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        let expected = crate::session::session_path(&app.session.id).expect("session path");
+
+        assert!(super::commands::handle_session_command(
+            &mut app,
+            "/transcript path"
+        ));
+
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content.contains("Transcript file:")
+                && msg.content.contains(&expected.display().to_string())
+        }));
+    });
+}
+
+#[test]
 fn test_poke_arms_auto_poke_until_todos_are_done() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();

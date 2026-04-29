@@ -1003,6 +1003,65 @@ fn handle_git_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+fn transcript_opened_message(path: &std::path::Path) -> String {
+    format!(
+        "Opened transcript file:\n\n```text\n{}\n```",
+        path.display()
+    )
+}
+
+fn transcript_path_message(path: &std::path::Path) -> String {
+    format!("Transcript file:\n\n```text\n{}\n```", path.display())
+}
+
+fn handle_transcript_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed != "/transcript" && trimmed != "/transcript path" {
+        if trimmed.starts_with("/transcript ") {
+            app.push_display_message(DisplayMessage::error(
+                "Usage: `/transcript` or `/transcript path`".to_string(),
+            ));
+            return true;
+        }
+        return false;
+    }
+
+    let session_id = active_session_id(app);
+    let path = match crate::session::session_path(&session_id) {
+        Ok(path) => path,
+        Err(error) => {
+            app.push_display_message(DisplayMessage::error(format!(
+                "Failed to resolve transcript path: {}",
+                error
+            )));
+            return true;
+        }
+    };
+
+    if !app.is_remote && app.session.id == session_id {
+        let _ = app.session.save();
+    }
+
+    if trimmed == "/transcript path" {
+        app.push_display_message(DisplayMessage::system(transcript_path_message(&path)));
+        app.set_status_notice("Transcript path");
+        return true;
+    }
+
+    match open::that_detached(&path) {
+        Ok(()) => {
+            app.push_display_message(DisplayMessage::system(transcript_opened_message(&path)));
+            app.set_status_notice("Transcript opened");
+        }
+        Err(error) => app.push_display_message(DisplayMessage::error(format!(
+            "Failed to open transcript file `{}`: {}",
+            path.display(),
+            error
+        ))),
+    }
+
+    true
+}
+
 pub(super) fn handle_git_status_completed(app: &mut App, completed: GitStatusCompleted) {
     if completed.session_id != active_session_id(app) {
         return;
@@ -1024,6 +1083,7 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         || handle_todos_view_command(app, trimmed)
         || super::split_view::handle_split_view_command(app, trimmed)
         || handle_btw_command(app, trimmed)
+        || handle_transcript_command(app, trimmed)
         || handle_git_command(app, trimmed)
         || handle_catchup_command(app, trimmed)
         || handle_back_command(app, trimmed)
