@@ -1,18 +1,26 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
-use super::ServerIdentity;
 use super::debug_jobs::{DebugJob, maybe_start_async_debug_job};
+use super::state::enqueue_soft_interrupt;
+use super::{ServerIdentity, SessionInterruptQueues};
 use crate::agent::Agent;
 use crate::build;
 use crate::mcp::McpConfig;
 use anyhow::Result;
-use jcode_agent_runtime::SoftInterruptSource;
+use jcode_agent_runtime::{InterruptSignal, SoftInterruptSource};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 
 type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+
+#[derive(Clone)]
+pub(super) struct DebugInterruptContext {
+    pub session_id: String,
+    pub shutdown_signals: Arc<RwLock<HashMap<String, InterruptSignal>>>,
+    pub soft_interrupt_queues: SessionInterruptQueues,
+}
 
 pub(super) async fn resolve_debug_session(
     sessions: &SessionAgents,
@@ -90,6 +98,7 @@ pub(super) async fn execute_debug_command(
     command: &str,
     debug_jobs: Arc<RwLock<HashMap<String, DebugJob>>>,
     server_identity: Option<&ServerIdentity>,
+    interrupt_context: Option<DebugInterruptContext>,
 ) -> Result<String> {
     let trimmed = command.trim();
 
@@ -293,15 +302,44 @@ pub(super) async fn execute_debug_command(
     }
 
     if trimmed == "cancel" {
-        let agent = agent.lock().await;
-        agent.queue_soft_interrupt(
-            "[CANCELLED] Generation cancelled via debug socket".to_string(),
-            true,
-            SoftInterruptSource::User,
-        );
+        let content = "[CANCELLED] Generation cancelled via debug socket".to_string();
+        let mut delivered_without_agent_lock = false;
+
+        if let Some(ctx) = interrupt_context {
+            if let Some(queue) = ctx
+                .soft_interrupt_queues
+                .read()
+                .await
+                .get(&ctx.session_id)
+                .cloned()
+            {
+                delivered_without_agent_lock = enqueue_soft_interrupt(
+                    &queue,
+                    content.clone(),
+                    true,
+                    SoftInterruptSource::User,
+                );
+            }
+            if let Some(signal) = ctx
+                .shutdown_signals
+                .read()
+                .await
+                .get(&ctx.session_id)
+                .cloned()
+            {
+                signal.fire();
+                delivered_without_agent_lock = true;
+            }
+        }
+
+        if !delivered_without_agent_lock {
+            let agent = agent.lock().await;
+            agent.queue_soft_interrupt(content, true, SoftInterruptSource::User);
+            agent.request_graceful_shutdown();
+        }
         return Ok(serde_json::json!({
             "status": "cancel_queued",
-            "message": "Urgent interrupt queued - will cancel at next tool boundary"
+            "message": "Cancel signal sent - running generation should stop promptly"
         })
         .to_string());
     }
@@ -576,12 +614,13 @@ pub(super) async fn execute_debug_command(
 
 #[cfg(test)]
 mod tests {
-    use super::execute_debug_command;
+    use super::{DebugInterruptContext, execute_debug_command};
     use crate::agent::Agent;
     use crate::provider::{EventStream, Provider};
     use crate::tool::Registry;
     use anyhow::Result;
     use async_trait::async_trait;
+    use jcode_agent_runtime::InterruptSignal;
     use std::collections::HashMap;
     use std::ffi::OsString;
     use std::sync::{Arc, Mutex, OnceLock};
@@ -682,6 +721,7 @@ mod tests {
                 r#"tool:selfdev {"action":"reload"}"#,
                 debug_jobs,
                 None,
+                None,
             ),
         )
         .await
@@ -698,5 +738,49 @@ mod tests {
             "expected reload acknowledgement output, got: {}",
             output
         );
+    }
+
+    #[tokio::test]
+    async fn debug_cancel_does_not_wait_for_busy_agent_lock() {
+        let provider: Arc<dyn Provider> = Arc::new(TestProvider);
+        let registry = Registry::new(provider.clone()).await;
+        let agent = Arc::new(AsyncMutex::new(Agent::new(provider, registry)));
+        let session_id = agent.lock().await.session_id().to_string();
+
+        let queue = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let signal = InterruptSignal::new();
+        let shutdown_signals = Arc::new(RwLock::new(HashMap::from([(
+            session_id.clone(),
+            signal.clone(),
+        )])));
+        let soft_interrupt_queues = Arc::new(RwLock::new(HashMap::from([(
+            session_id.clone(),
+            queue.clone(),
+        )])));
+
+        let _busy_agent_lock = agent.lock().await;
+        let output = tokio::time::timeout(
+            Duration::from_millis(200),
+            execute_debug_command(
+                Arc::clone(&agent),
+                "cancel",
+                Arc::new(RwLock::new(HashMap::new())),
+                None,
+                Some(DebugInterruptContext {
+                    session_id,
+                    shutdown_signals,
+                    soft_interrupt_queues,
+                }),
+            ),
+        )
+        .await
+        .expect("debug cancel should not block on the busy agent lock")
+        .expect("debug cancel should succeed");
+
+        assert!(output.contains("cancel_queued"));
+        assert!(signal.is_set());
+        let pending = queue.lock().expect("queue lock should not be poisoned");
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].urgent);
     }
 }
