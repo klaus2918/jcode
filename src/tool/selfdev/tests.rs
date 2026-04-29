@@ -261,6 +261,7 @@ fn schema_only_advertises_core_selfdev_fields() {
     assert!(props.contains_key("prompt"));
     assert!(props.contains_key("context"));
     assert!(props.contains_key("reason"));
+    assert!(props.contains_key("target"));
     assert!(props.contains_key("request_id"));
     assert!(props.contains_key("task_id"));
     assert!(!props.contains_key("notify"));

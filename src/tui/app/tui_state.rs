@@ -17,12 +17,14 @@ enum WidgetProviderKind {
 
 impl WidgetProviderKind {
     fn from_provider_key(raw: Option<&str>) -> Self {
-        match raw.map(|s| s.trim().to_ascii_lowercase()) {
+        match raw.map(|provider| provider.trim().to_ascii_lowercase()) {
             Some(provider) if provider == "openrouter" => Self::OpenRouter,
             Some(provider) if provider == "copilot" => Self::Copilot,
             Some(provider) if provider == "gemini" => Self::Gemini,
             Some(provider) if provider == "openai" => Self::OpenAI,
-            Some(provider) if provider == "claude" => Self::Anthropic,
+            Some(provider) if matches!(provider.as_str(), "anthropic" | "claude") => {
+                Self::Anthropic
+            }
             _ => Self::Unknown,
         }
     }
@@ -1250,7 +1252,7 @@ impl crate::tui::TuiState for App {
         if last_provider != provider || last_model != model {
             return None;
         }
-        let ttl_secs = crate::tui::cache_ttl_for_provider(provider)?;
+        let ttl_secs = crate::tui::cache_ttl_for_provider_model(provider, Some(&model))?;
         let elapsed = last_completed.elapsed().as_secs();
         let remaining = ttl_secs.saturating_sub(elapsed);
         Some(crate::tui::CacheTtlInfo {

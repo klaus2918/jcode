@@ -7,8 +7,8 @@ pub use paths::{
     current_binary_build_time_string, current_binary_built_at, find_dev_binary,
     find_repo_in_ancestors, get_repo_dir, is_jcode_repo, launcher_binary_path, launcher_dir,
     preferred_reload_candidate, release_binary_path, run_selfdev_build, selfdev_binary_path,
-    selfdev_build_command, shared_server_update_candidate, update_launcher_symlink_to_current,
-    update_launcher_symlink_to_stable,
+    selfdev_build_command, selfdev_build_command_for_target, shared_server_update_candidate,
+    update_launcher_symlink_to_current, update_launcher_symlink_to_stable,
 };
 pub use source_state::{
     current_build_info, current_git_diff, current_git_hash, current_git_hash_full,
@@ -38,6 +38,30 @@ pub struct SelfDevBuildCommand {
     pub program: String,
     pub args: Vec<String>,
     pub display: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfDevBuildTarget {
+    Auto,
+    Tui,
+    Desktop,
+    All,
+}
+
+impl SelfDevBuildTarget {
+    pub fn parse(value: Option<&str>) -> Result<Self> {
+        match value.unwrap_or("auto").trim().to_ascii_lowercase().as_str() {
+            "" | "auto" => Ok(Self::Auto),
+            "tui" | "jcode" => Ok(Self::Tui),
+            "desktop" | "jcode-desktop" => Ok(Self::Desktop),
+            "all" | "both" => Ok(Self::All),
+            other => anyhow::bail!(
+                "invalid selfdev build target `{}`; expected auto, tui, desktop, or all",
+                other
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -350,21 +350,17 @@ pub struct CopyBadgeFeedback {
 }
 
 impl CopyBadgeUiState {
+    fn pulse_active(expires_at: Option<Instant>, now: Instant) -> bool {
+        expires_at.is_some_and(|expires_at| expires_at > now)
+    }
+
     pub(crate) fn alt_is_active(&self, now: Instant) -> bool {
-        self.alt_active
-            || self
-                .alt_pulse_until
-                .map(|expires_at| expires_at > now)
-                .unwrap_or(false)
+        self.alt_active || Self::pulse_active(self.alt_pulse_until, now)
     }
 
     pub(crate) fn shift_is_active(&self, now: Instant) -> bool {
         self.alt_is_active(now)
-            && (self.shift_active
-                || self
-                    .shift_pulse_until
-                    .map(|expires_at| expires_at > now)
-                    .unwrap_or(false))
+            && (self.shift_active || Self::pulse_active(self.shift_pulse_until, now))
     }
 
     pub(crate) fn key_is_active(&self, key: char, now: Instant) -> bool {
@@ -1246,7 +1242,8 @@ impl App {
             return KvCacheMissReason::UpstreamSwitch;
         }
 
-        if let Some(ttl_secs) = crate::tui::cache_ttl_for_provider(&baseline.provider)
+        if let Some(ttl_secs) =
+            crate::tui::cache_ttl_for_provider_model(&baseline.provider, Some(&baseline.model))
             && baseline.completed_at.elapsed() >= Duration::from_secs(ttl_secs)
         {
             return KvCacheMissReason::Expired;

@@ -344,6 +344,7 @@ impl SelfDevTool {
     pub(super) async fn do_build(
         &self,
         reason: Option<String>,
+        target: Option<String>,
         notify: Option<bool>,
         wake: Option<bool>,
         ctx: &ToolContext,
@@ -362,7 +363,8 @@ impl SelfDevTool {
             })?;
 
         let requested_source = SelfDevTool::requested_source_state(&repo_dir)?;
-        let command = SelfDevTool::build_command(&repo_dir);
+        let target = build::SelfDevBuildTarget::parse(target.as_deref())?;
+        let command = SelfDevTool::build_command(&repo_dir, target);
         let dedupe_key = SelfDevTool::build_dedupe_key(&requested_source, &command);
         let blocker = SelfDevTool::newest_active_request(&requested_source.worktree_scope)?;
         let duplicate =

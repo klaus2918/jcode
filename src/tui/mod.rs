@@ -389,9 +389,22 @@ pub struct CacheTtlInfo {
 /// Get the prompt cache TTL in seconds for a given provider name.
 /// Returns None if the provider doesn't support prompt caching or TTL is unknown.
 pub fn cache_ttl_for_provider(provider: &str) -> Option<u64> {
+    cache_ttl_for_provider_model(provider, None)
+}
+
+pub fn cache_ttl_for_provider_model(provider: &str, model: Option<&str>) -> Option<u64> {
     match provider.to_lowercase().as_str() {
         "anthropic" | "claude" => Some(300),
-        "openai" => Some(300),
+        "openai" => {
+            if model
+                .map(crate::provider::openai::OpenAIProvider::supports_extended_prompt_cache_retention)
+                .unwrap_or(false)
+            {
+                Some(24 * 60 * 60)
+            } else {
+                Some(300)
+            }
+        }
         "openrouter" => Some(300),
         "jcode subscription" => Some(300),
         "gemini" => Some(300),
@@ -428,29 +441,36 @@ impl KvCacheProblem {
 }
 
 fn normalized_provider_matches(provider: &str, needle: &str) -> bool {
-    provider
-        .trim()
-        .to_ascii_lowercase()
-        .contains(&needle.to_ascii_lowercase())
+    provider.trim().to_ascii_lowercase().contains(needle)
 }
 
 fn provider_stack_contains(provider: &str, upstream_provider: Option<&str>, needle: &str) -> bool {
+    let needle = &needle.to_ascii_lowercase();
     normalized_provider_matches(provider, needle)
         || upstream_provider
             .map(|upstream| normalized_provider_matches(upstream, needle))
             .unwrap_or(false)
 }
 
+fn provider_stack_contains_any(
+    provider: &str,
+    upstream_provider: Option<&str>,
+    needles: &[&str],
+) -> bool {
+    needles
+        .iter()
+        .any(|needle| provider_stack_contains(provider, upstream_provider, needle))
+}
+
 fn supports_reliable_zero_cache_read_warning(
     provider: &str,
     upstream_provider: Option<&str>,
 ) -> bool {
-    if provider_stack_contains(provider, upstream_provider, "openai")
-        || provider_stack_contains(provider, upstream_provider, "anthropic")
-        || provider_stack_contains(provider, upstream_provider, "claude")
-        || provider_stack_contains(provider, upstream_provider, "gemini")
-        || provider_stack_contains(provider, upstream_provider, "google")
-    {
+    if provider_stack_contains_any(
+        provider,
+        upstream_provider,
+        &["openai", "anthropic", "claude", "gemini", "google"],
+    ) {
         return true;
     }
 
@@ -462,9 +482,7 @@ fn supports_reliable_zero_cache_read_warning(
 }
 
 fn min_cacheable_input_tokens(provider: &str, upstream_provider: Option<&str>) -> u64 {
-    if provider_stack_contains(provider, upstream_provider, "gemini")
-        || provider_stack_contains(provider, upstream_provider, "google")
-    {
+    if provider_stack_contains_any(provider, upstream_provider, &["gemini", "google"]) {
         // Be conservative for Gemini-style implicit caching. Several Gemini models have
         // higher minimums than OpenAI/Anthropic; a higher UI threshold avoids warning on
         // prompts that might legitimately be below the provider's cacheable size.

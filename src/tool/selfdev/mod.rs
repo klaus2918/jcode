@@ -43,6 +43,9 @@ struct SelfDevInput {
     /// Why this build is needed; shown to other queued/blocked agents.
     #[serde(default)]
     reason: Option<String>,
+    /// Build target for selfdev build: auto, tui, desktop, or all.
+    #[serde(default)]
+    target: Option<String>,
     /// Whether to notify the requesting agent when the queued background build completes.
     #[serde(default)]
     notify: Option<bool>,
@@ -391,6 +394,11 @@ impl Tool for SelfDevTool {
                 "prompt": { "type": "string" },
                 "context": { "type": "string" },
                 "reason": { "type": "string" },
+                "target": {
+                    "type": "string",
+                    "enum": ["auto", "tui", "desktop", "all"],
+                    "description": "Build target for action=build. auto chooses from changed paths; tui builds jcode; desktop builds jcode-desktop; all builds both."
+                },
                 "request_id": { "type": "string" },
                 "task_id": { "type": "string" }
             },
@@ -407,8 +415,14 @@ impl Tool for SelfDevTool {
         let result = match action.as_str() {
             "enter" => self.do_enter(params.prompt, &ctx).await,
             "build" => {
-                self.do_build(params.reason, params.notify, params.wake, &ctx)
-                    .await
+                self.do_build(
+                    params.reason,
+                    params.target,
+                    params.notify,
+                    params.wake,
+                    &ctx,
+                )
+                .await
             }
             "cancel-build" => {
                 self.do_cancel_build(params.request_id, params.task_id, &ctx)
@@ -496,8 +510,8 @@ impl SelfDevTool {
             .ok_or_else(|| anyhow::anyhow!("Could not resolve jcode executable to launch"))
     }
 
-    fn build_command(repo_dir: &Path) -> SelfDevBuildCommand {
-        build::selfdev_build_command(repo_dir)
+    fn build_command(repo_dir: &Path, target: build::SelfDevBuildTarget) -> SelfDevBuildCommand {
+        build::selfdev_build_command_for_target(repo_dir, target)
     }
 
     fn build_lock_path(worktree_scope: &str) -> Result<PathBuf> {
