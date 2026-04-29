@@ -153,7 +153,7 @@ impl WidgetKind {
             WidgetKind::BackgroundTasks => 2,
             WidgetKind::AmbientMode => 3,
             WidgetKind::UsageLimits => 3,
-            WidgetKind::KvCache => 1,
+            WidgetKind::KvCache => 3,
             WidgetKind::ModelInfo => 3, // Model + usage bars
             WidgetKind::Tips => 3,
             WidgetKind::GitStatus => 3,
@@ -364,6 +364,16 @@ pub struct CacheHitInfo {
     pub creation_tokens: u64,
     /// Approximate reusable prefix tokens expected to be cache-readable.
     pub optimal_input_tokens: u64,
+    /// Recent attributed misses with estimated cacheable tokens not read.
+    pub miss_attributions: Vec<CacheMissAttribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheMissAttribution {
+    pub turn_number: usize,
+    pub call_index: u16,
+    pub missed_tokens: u64,
+    pub reason: String,
 }
 
 impl CacheHitInfo {
@@ -933,11 +943,16 @@ pub(crate) fn calculate_widget_height(
             }
         }
         WidgetKind::KvCache => {
-            if data.cache_hit_info.is_some() {
-                1
+            let Some(cache) = data.cache_hit_info.as_ref() else {
+                return 0;
+            };
+            let attribution_lines = if cache.miss_attributions.is_empty() {
+                2
             } else {
-                0
-            }
+                let visible = cache.miss_attributions.len().min(5) as u16;
+                2 + visible + u16::from(cache.miss_attributions.len() > 5)
+            };
+            1 + attribution_lines
         }
         WidgetKind::ModelInfo => {
             if data.model.is_none() {
@@ -1359,8 +1374,61 @@ fn render_kv_cache_widget(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'stat
     let Some(cache) = data.cache_hit_info.as_ref() else {
         return Vec::new();
     };
+    let mut lines = vec![render_kv_cache_summary_line(cache)];
+
+    lines.push(Line::from(vec![Span::styled(
+        "miss attribution",
+        Style::default().fg(rgb(140, 140, 150)).bold(),
+    )]));
+
+    if cache.miss_attributions.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            "none",
+            Style::default().fg(rgb(110, 210, 140)),
+        )]));
+        return lines;
+    }
+
+    let total_missed: u64 = cache
+        .miss_attributions
+        .iter()
+        .map(|sample| sample.missed_tokens)
+        .sum();
+    lines.push(Line::from(vec![Span::styled(
+        format!("{} missed total", compact_token_count(total_missed)),
+        Style::default().fg(rgb(180, 180, 190)),
+    )]));
+
+    for sample in cache.miss_attributions.iter().take(5) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format_cache_turn_label(sample.turn_number, sample.call_index),
+                Style::default().fg(rgb(140, 180, 255)).bold(),
+            ),
+            Span::styled(
+                format!(" {} miss ", compact_token_count(sample.missed_tokens)),
+                Style::default().fg(rgb(255, 200, 100)),
+            ),
+            Span::styled(
+                format!("({})", sample.reason),
+                Style::default().fg(rgb(140, 140, 150)),
+            ),
+        ]));
+    }
+
+    if cache.miss_attributions.len() > 5 {
+        lines.push(Line::from(vec![Span::styled(
+            format!("… {} more", cache.miss_attributions.len() - 5),
+            Style::default().fg(rgb(100, 100, 110)),
+        )]));
+    }
+
+    lines
+}
+
+fn render_kv_cache_summary_line(cache: &CacheHitInfo) -> Line<'static> {
     let Some(actual_ratio) = cache.hit_ratio() else {
-        return Vec::new();
+        return Line::default();
     };
 
     let actual_pct = ratio_pct(actual_ratio);
@@ -1374,7 +1442,7 @@ fn render_kv_cache_widget(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'stat
         "warming".to_string()
     };
 
-    vec![Line::from(vec![
+    Line::from(vec![
         Span::styled("KV cache: ", Style::default().fg(rgb(180, 180, 190)).bold()),
         Span::styled("actual ", Style::default().fg(rgb(140, 140, 150))),
         Span::styled(
@@ -1386,7 +1454,7 @@ fn render_kv_cache_widget(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'stat
             tail,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
-    ])]
+    ])
 }
 
 fn ratio_pct(ratio: f32) -> u8 {
@@ -1399,6 +1467,24 @@ fn kv_cache_optimal_color(pct: u8) -> Color {
         25..=59 => rgb(255, 200, 100),
         60..=84 => rgb(140, 180, 255),
         _ => rgb(110, 210, 140),
+    }
+}
+
+fn format_cache_turn_label(turn_number: usize, call_index: u16) -> String {
+    if call_index <= 1 {
+        format!("{}>", turn_number)
+    } else {
+        format!("{}.{}>", turn_number, call_index)
+    }
+}
+
+fn compact_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f32 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.0}k", tokens as f32 / 1_000.0)
+    } else {
+        tokens.to_string()
     }
 }
 
@@ -1658,8 +1744,8 @@ fn render_sections(
         lines.extend(render_usage_compact(info, inner.width));
     }
 
-    if data.cache_hit_info.is_some() {
-        lines.extend(render_kv_cache_widget(data, inner));
+    if let Some(cache) = data.cache_hit_info.as_ref() {
+        lines.push(render_kv_cache_summary_line(cache));
     }
 
     // Git info

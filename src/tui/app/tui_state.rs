@@ -967,6 +967,17 @@ impl crate::tui::TuiState for App {
                 read_tokens: self.total_cache_read_tokens,
                 creation_tokens: self.total_cache_creation_tokens,
                 optimal_input_tokens: self.total_cache_optimal_input_tokens,
+                miss_attributions: self
+                    .kv_cache_miss_samples
+                    .iter()
+                    .rev()
+                    .map(|sample| crate::tui::info_widget::CacheMissAttribution {
+                        turn_number: sample.turn_number,
+                        call_index: sample.call_index,
+                        missed_tokens: sample.missed_tokens,
+                        reason: sample.reason.label().to_string(),
+                    })
+                    .collect(),
             }
         });
 

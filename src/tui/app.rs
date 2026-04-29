@@ -9,7 +9,7 @@ use crate::config::config;
 use crate::id;
 use crate::mcp::McpManager;
 use crate::message::{
-    ContentBlock, Message, Role, StreamEvent, TOOL_OUTPUT_MISSING_TEXT, ToolCall,
+    ContentBlock, Message, Role, StreamEvent, TOOL_OUTPUT_MISSING_TEXT, ToolCall, ToolDefinition,
 };
 use crate::provider::Provider;
 use crate::runtime_memory_log::RuntimeMemoryLogController;
@@ -29,6 +29,7 @@ use helpers::*;
 use ratatui::DefaultTerminal;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -101,6 +102,76 @@ struct PendingSplitPrompt {
 
 struct PendingLocalTransfer {
     receiver: mpsc::Receiver<anyhow::Result<PreparedTransferSession>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KvCacheRequestSignature {
+    system_static_hash: u64,
+    tools_hash: u64,
+    messages_hash: u64,
+    message_count: usize,
+    tool_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct KvCacheBaseline {
+    input_tokens: u64,
+    completed_at: Instant,
+    provider: String,
+    model: String,
+    upstream_provider: Option<String>,
+    signature: Option<KvCacheRequestSignature>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingKvCacheRequest {
+    turn_number: usize,
+    call_index: u16,
+    provider: String,
+    model: String,
+    upstream_provider: Option<String>,
+    signature: Option<KvCacheRequestSignature>,
+    baseline_messages_prefix_matches: Option<bool>,
+    baseline: Option<KvCacheBaseline>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KvCacheMissReason {
+    ProviderSwitch,
+    ModelSwitch,
+    UpstreamSwitch,
+    Expired,
+    HarnessSystemChanged,
+    HarnessToolsChanged,
+    HarnessPrefixChanged,
+    ZeroRead,
+    LowRead,
+    Unknown,
+}
+
+impl KvCacheMissReason {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ProviderSwitch => "provider switch",
+            Self::ModelSwitch => "model switch",
+            Self::UpstreamSwitch => "upstream switch",
+            Self::Expired => "expired",
+            Self::HarnessSystemChanged => "harness: system changed",
+            Self::HarnessToolsChanged => "harness: tools changed",
+            Self::HarnessPrefixChanged => "harness: prefix changed",
+            Self::ZeroRead => "zero read",
+            Self::LowRead => "low read",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct KvCacheMissSample {
+    turn_number: usize,
+    call_index: u16,
+    missed_tokens: u64,
+    reason: KvCacheMissReason,
 }
 
 struct PendingSessionPickerLoad {
@@ -432,6 +503,11 @@ pub struct App {
     total_cache_creation_tokens: u64,
     total_cache_optimal_input_tokens: u64,
     cache_next_optimal_input_tokens: Option<u64>,
+    kv_cache_baseline: Option<KvCacheBaseline>,
+    pending_kv_cache_request: Option<PendingKvCacheRequest>,
+    kv_cache_turn_number: Option<usize>,
+    kv_cache_turn_call_index: u16,
+    kv_cache_miss_samples: Vec<KvCacheMissSample>,
     // Total cost in USD (for API-key providers)
     total_cost: f32,
     // Cached pricing (input $/1M tokens, output $/1M tokens)
@@ -868,6 +944,47 @@ impl App {
     const AUTO_RETRY_MAX_ATTEMPTS: u8 = 3;
     const INPUT_UNDO_LIMIT: usize = 128;
     const CLIENT_FOCUS_RECORD_DEBOUNCE: Duration = Duration::from_secs(2);
+    const KV_CACHE_OPTIMAL_OK_PCT: u8 = 85;
+    const KV_CACHE_MIN_MISSED_TOKENS: u64 = 1_024;
+    const KV_CACHE_MAX_MISS_SAMPLES: usize = 12;
+
+    pub(super) fn begin_kv_cache_request(
+        &mut self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system_static: &str,
+    ) {
+        let turn_number = self
+            .display_messages
+            .iter()
+            .filter(|message| message.role == "user")
+            .count()
+            .max(1);
+        if self.kv_cache_turn_number == Some(turn_number) {
+            self.kv_cache_turn_call_index = self.kv_cache_turn_call_index.saturating_add(1).max(1);
+        } else {
+            self.kv_cache_turn_number = Some(turn_number);
+            self.kv_cache_turn_call_index = 1;
+        }
+
+        let baseline = self.kv_cache_baseline.clone();
+        let signature = Self::kv_cache_request_signature(messages, tools, system_static);
+        let baseline_messages_prefix_matches = baseline
+            .as_ref()
+            .and_then(|baseline| baseline.signature.as_ref())
+            .map(|previous| Self::kv_cache_messages_prefix_matches(messages, previous));
+
+        self.pending_kv_cache_request = Some(PendingKvCacheRequest {
+            turn_number,
+            call_index: self.kv_cache_turn_call_index,
+            provider: self.kv_cache_provider_name(),
+            model: self.kv_cache_provider_model(),
+            upstream_provider: self.upstream_provider.clone(),
+            signature: Some(signature),
+            baseline_messages_prefix_matches,
+            baseline,
+        });
+    }
 
     pub(super) fn record_completed_stream_cache_usage(&mut self) {
         let has_cache_telemetry = self.streaming_cache_read_tokens.is_some()
@@ -878,6 +995,22 @@ impl App {
 
         let optimal_input_tokens = self.cache_next_optimal_input_tokens;
         self.cache_next_optimal_input_tokens = Some(self.streaming_input_tokens);
+
+        let request = self
+            .pending_kv_cache_request
+            .take()
+            .unwrap_or_else(|| self.fallback_pending_kv_cache_request());
+
+        self.record_kv_cache_miss_sample(&request);
+
+        self.kv_cache_baseline = Some(KvCacheBaseline {
+            input_tokens: self.streaming_input_tokens,
+            completed_at: Instant::now(),
+            provider: request.provider,
+            model: request.model,
+            upstream_provider: request.upstream_provider,
+            signature: request.signature,
+        });
 
         if !has_cache_telemetry {
             return;
@@ -897,6 +1030,187 @@ impl App {
         self.total_cache_creation_tokens = self
             .total_cache_creation_tokens
             .saturating_add(self.streaming_cache_creation_tokens.unwrap_or(0));
+    }
+
+    fn fallback_pending_kv_cache_request(&self) -> PendingKvCacheRequest {
+        PendingKvCacheRequest {
+            turn_number: self
+                .display_messages
+                .iter()
+                .filter(|message| message.role == "user")
+                .count()
+                .max(1),
+            call_index: 1,
+            provider: self.kv_cache_provider_name(),
+            model: self.kv_cache_provider_model(),
+            upstream_provider: self.upstream_provider.clone(),
+            signature: None,
+            baseline_messages_prefix_matches: None,
+            baseline: self.kv_cache_baseline.clone(),
+        }
+    }
+
+    fn record_kv_cache_miss_sample(&mut self, request: &PendingKvCacheRequest) {
+        let Some(baseline) = request.baseline.as_ref() else {
+            return;
+        };
+        let expected_tokens = baseline.input_tokens;
+        if expected_tokens == 0 {
+            return;
+        }
+
+        let read_tokens = self.streaming_cache_read_tokens.unwrap_or(0);
+        let missed_tokens = expected_tokens.saturating_sub(read_tokens);
+        if missed_tokens < Self::KV_CACHE_MIN_MISSED_TOKENS {
+            return;
+        }
+
+        let optimal_pct = ratio_pct(read_tokens, expected_tokens);
+        let reason =
+            self.classify_kv_cache_miss_reason(request, baseline, read_tokens, optimal_pct);
+        if optimal_pct >= Self::KV_CACHE_OPTIMAL_OK_PCT
+            && !matches!(
+                reason,
+                KvCacheMissReason::ProviderSwitch
+                    | KvCacheMissReason::ModelSwitch
+                    | KvCacheMissReason::UpstreamSwitch
+                    | KvCacheMissReason::Expired
+                    | KvCacheMissReason::HarnessSystemChanged
+                    | KvCacheMissReason::HarnessToolsChanged
+                    | KvCacheMissReason::HarnessPrefixChanged
+            )
+        {
+            return;
+        }
+
+        self.kv_cache_miss_samples.push(KvCacheMissSample {
+            turn_number: request.turn_number,
+            call_index: request.call_index,
+            missed_tokens,
+            reason,
+        });
+        if self.kv_cache_miss_samples.len() > Self::KV_CACHE_MAX_MISS_SAMPLES {
+            let overflow = self.kv_cache_miss_samples.len() - Self::KV_CACHE_MAX_MISS_SAMPLES;
+            self.kv_cache_miss_samples.drain(0..overflow);
+        }
+    }
+
+    fn classify_kv_cache_miss_reason(
+        &self,
+        request: &PendingKvCacheRequest,
+        baseline: &KvCacheBaseline,
+        read_tokens: u64,
+        optimal_pct: u8,
+    ) -> KvCacheMissReason {
+        if baseline.provider != request.provider {
+            return KvCacheMissReason::ProviderSwitch;
+        }
+        if baseline.model != request.model {
+            return KvCacheMissReason::ModelSwitch;
+        }
+        if baseline.upstream_provider.is_some()
+            && request.upstream_provider.is_some()
+            && baseline.upstream_provider != request.upstream_provider
+        {
+            return KvCacheMissReason::UpstreamSwitch;
+        }
+
+        if let Some(ttl_secs) = crate::tui::cache_ttl_for_provider(&baseline.provider)
+            && baseline.completed_at.elapsed() >= Duration::from_secs(ttl_secs)
+        {
+            return KvCacheMissReason::Expired;
+        }
+
+        if let (Some(previous), Some(current)) = (&baseline.signature, &request.signature) {
+            if previous.system_static_hash != current.system_static_hash {
+                return KvCacheMissReason::HarnessSystemChanged;
+            }
+            if previous.tools_hash != current.tools_hash
+                || previous.tool_count != current.tool_count
+            {
+                return KvCacheMissReason::HarnessToolsChanged;
+            }
+        }
+
+        if request.baseline_messages_prefix_matches == Some(false) {
+            return KvCacheMissReason::HarnessPrefixChanged;
+        }
+
+        if self.streaming_cache_read_tokens.is_none() {
+            return KvCacheMissReason::Unknown;
+        }
+        if read_tokens == 0 {
+            return KvCacheMissReason::ZeroRead;
+        }
+        if optimal_pct < Self::KV_CACHE_OPTIMAL_OK_PCT {
+            return KvCacheMissReason::LowRead;
+        }
+        KvCacheMissReason::Unknown
+    }
+
+    fn kv_cache_provider_name(&self) -> String {
+        if self.is_remote || self.is_replay {
+            self.remote_provider_name
+                .clone()
+                .unwrap_or_else(|| self.provider.name().to_string())
+        } else {
+            self.provider.name().to_string()
+        }
+    }
+
+    fn kv_cache_provider_model(&self) -> String {
+        if self.is_remote || self.is_replay {
+            self.remote_provider_model
+                .clone()
+                .unwrap_or_else(|| self.provider.model())
+        } else {
+            self.provider.model()
+        }
+    }
+
+    fn kv_cache_request_signature(
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system_static: &str,
+    ) -> KvCacheRequestSignature {
+        KvCacheRequestSignature {
+            system_static_hash: stable_hash_str(system_static),
+            tools_hash: stable_hash_json(tools),
+            messages_hash: stable_hash_json(messages),
+            message_count: messages.len(),
+            tool_count: tools.len(),
+        }
+    }
+
+    fn kv_cache_messages_prefix_matches(
+        messages: &[Message],
+        previous: &KvCacheRequestSignature,
+    ) -> bool {
+        if previous.message_count > messages.len() {
+            return false;
+        }
+        stable_hash_json(&messages[..previous.message_count]) == previous.messages_hash
+    }
+}
+
+fn stable_hash_str(value: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn stable_hash_json<T: serde::Serialize + ?Sized>(value: &T) -> u64 {
+    let encoded = serde_json::to_string(value).unwrap_or_default();
+    stable_hash_str(&encoded)
+}
+
+fn ratio_pct(numerator: u64, denominator: u64) -> u8 {
+    if denominator == 0 {
+        0
+    } else {
+        ((numerator as f32 / denominator as f32) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u8
     }
 }
 

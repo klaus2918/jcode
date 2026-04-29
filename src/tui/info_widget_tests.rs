@@ -1,9 +1,9 @@
 use super::{
-    BackgroundInfo, CacheHitInfo, GraphEdge, GraphNode, InfoWidgetData, Margins, MemoryActivity,
-    MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState, PipelineState, StepStatus, SwarmInfo,
-    UsageInfo, UsageProvider, WidgetKind, calculate_placements, occasional_status_tip,
-    render_kv_cache_widget, render_memory_compact, render_memory_widget, render_model_widget,
-    truncate_smart,
+    BackgroundInfo, CacheHitInfo, CacheMissAttribution, GraphEdge, GraphNode, InfoWidgetData,
+    Margins, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState, PipelineState,
+    StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind, calculate_placements,
+    occasional_status_tip, render_kv_cache_widget, render_memory_compact, render_memory_widget,
+    render_model_widget, truncate_smart,
 };
 use crate::protocol::SwarmMemberStatus;
 use ratatui::layout::Rect;
@@ -34,19 +34,30 @@ fn kv_cache_widget_shows_session_hit_ratio() {
             read_tokens: 15_000,
             creation_tokens: 3_000,
             optimal_input_tokens: 16_667,
+            miss_attributions: vec![CacheMissAttribution {
+                turn_number: 20,
+                call_index: 1,
+                missed_tokens: 69_000,
+                reason: "provider switch".to_string(),
+            }],
         }),
         ..Default::default()
     };
 
     assert!(data.has_data_for(WidgetKind::KvCache));
-    let lines = render_kv_cache_widget(&data, Rect::new(0, 0, 40, 1));
+    let lines = render_kv_cache_widget(&data, Rect::new(0, 0, 40, 5));
     let text = lines_text(&lines);
 
-    assert_eq!(lines.len(), 1);
+    assert_eq!(lines.len(), 4);
     assert!(text.contains("KV cache:"));
     assert!(text.contains("actual "));
     assert!(text.contains("75%"));
     assert!(text.contains("optimal 90%"));
+    assert!(text.contains("miss attribution"));
+    assert!(text.contains("69k missed total"));
+    assert!(text.contains("20>"));
+    assert!(text.contains("69k miss"));
+    assert!(text.contains("provider switch"));
 }
 
 fn node(kind: &str, label: &str, degree: usize) -> GraphNode {

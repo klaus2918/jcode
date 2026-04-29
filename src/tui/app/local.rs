@@ -364,7 +364,6 @@ fn handle_input_shell_completed(app: &mut App, shell: InputShellCompleted) {
 pub(super) fn finish_turn(app: &mut App) {
     app.total_input_tokens += app.streaming_input_tokens;
     app.total_output_tokens += app.streaming_output_tokens;
-    app.record_completed_stream_cache_usage();
     app.update_cost_impl();
     app.is_processing = false;
     app.status = ProcessingStatus::Idle;
