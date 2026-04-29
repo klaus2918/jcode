@@ -1007,16 +1007,15 @@ impl App {
 
         self.record_kv_cache_miss_sample(&request);
 
-        self.kv_cache_baseline = Some(KvCacheBaseline {
-            input_tokens: self.streaming_input_tokens,
-            completed_at: Instant::now(),
-            provider: request.provider,
-            model: request.model,
-            upstream_provider: request.upstream_provider,
-            signature: request.signature,
-        });
-
         if !has_cache_telemetry {
+            self.kv_cache_baseline = Some(KvCacheBaseline {
+                input_tokens: self.streaming_input_tokens,
+                completed_at: Instant::now(),
+                provider: request.provider,
+                model: request.model,
+                upstream_provider: request.upstream_provider,
+                signature: request.signature,
+            });
             return;
         }
 
@@ -1034,6 +1033,116 @@ impl App {
         self.total_cache_creation_tokens = self
             .total_cache_creation_tokens
             .saturating_add(self.streaming_cache_creation_tokens.unwrap_or(0));
+
+        self.log_kv_cache_usage_summary(&request, optimal_input_tokens);
+
+        self.kv_cache_baseline = Some(KvCacheBaseline {
+            input_tokens: self.streaming_input_tokens,
+            completed_at: Instant::now(),
+            provider: request.provider,
+            model: request.model,
+            upstream_provider: request.upstream_provider,
+            signature: request.signature,
+        });
+    }
+
+    fn log_kv_cache_usage_summary(
+        &self,
+        request: &PendingKvCacheRequest,
+        optimal_input_tokens: Option<u64>,
+    ) {
+        let input_tokens = self.streaming_input_tokens;
+        let read_tokens = self.streaming_cache_read_tokens.unwrap_or(0);
+        let creation_tokens = self.streaming_cache_creation_tokens.unwrap_or(0);
+        let read_pct = ratio_pct(read_tokens, input_tokens);
+        let creation_pct = ratio_pct(creation_tokens, input_tokens);
+        let optimal_read_pct = optimal_input_tokens.map(|optimal| ratio_pct(read_tokens, optimal));
+        let session_read_pct = ratio_pct(
+            self.total_cache_read_tokens,
+            self.total_cache_reported_input_tokens,
+        );
+        let session_optimal_read_pct = if self.total_cache_optimal_input_tokens > 0 {
+            Some(ratio_pct(
+                self.total_cache_read_tokens,
+                self.total_cache_optimal_input_tokens,
+            ))
+        } else {
+            None
+        };
+        let miss = self
+            .kv_cache_miss_samples
+            .last()
+            .filter(|sample| {
+                sample.turn_number == request.turn_number && sample.call_index == request.call_index
+            })
+            .map(|sample| format!("{}:{}", sample.missed_tokens, sample.reason.label()))
+            .unwrap_or_else(|| "none".to_string());
+        let baseline_age_secs = request
+            .baseline
+            .as_ref()
+            .map(|baseline| baseline.completed_at.elapsed().as_secs());
+        let baseline_input_tokens = request
+            .baseline
+            .as_ref()
+            .map(|baseline| baseline.input_tokens);
+        let current_signature = request.signature.as_ref();
+        let baseline_signature = request
+            .baseline
+            .as_ref()
+            .and_then(|baseline| baseline.signature.as_ref());
+        let system_static_hash_changed = current_signature
+            .zip(baseline_signature)
+            .map(|(current, baseline)| current.system_static_hash != baseline.system_static_hash);
+        let tools_hash_changed = current_signature
+            .zip(baseline_signature)
+            .map(|(current, baseline)| current.tools_hash != baseline.tools_hash);
+        let message_prefix_hash_changed = current_signature
+            .zip(baseline_signature)
+            .map(|(current, baseline)| current.messages_hash != baseline.messages_hash);
+        let current_message_count = current_signature.map(|signature| signature.message_count);
+        let baseline_message_count = baseline_signature.map(|signature| signature.message_count);
+        let current_tool_count = current_signature.map(|signature| signature.tool_count);
+        let baseline_tool_count = baseline_signature.map(|signature| signature.tool_count);
+
+        crate::logging::info(&format!(
+            "KV_CACHE_USAGE: turn={} call={} provider={} upstream={:?} model={} \
+             input={} cache_read={} cache_write={} read_pct={} write_pct={} \
+             optimal_input={:?} optimal_read_pct={:?} miss={} \
+             session_input={} session_read={} session_write={} session_read_pct={} \
+             session_optimal_input={} session_optimal_read_pct={:?} \
+             baseline_input={:?} baseline_age_secs={:?} prefix_matches={:?} \
+             system_changed={:?} tools_changed={:?} message_prefix_changed={:?} \
+             message_count={:?} baseline_message_count={:?} tool_count={:?} baseline_tool_count={:?}",
+            request.turn_number,
+            request.call_index,
+            request.provider,
+            request.upstream_provider,
+            request.model,
+            input_tokens,
+            read_tokens,
+            creation_tokens,
+            read_pct,
+            creation_pct,
+            optimal_input_tokens,
+            optimal_read_pct,
+            miss,
+            self.total_cache_reported_input_tokens,
+            self.total_cache_read_tokens,
+            self.total_cache_creation_tokens,
+            session_read_pct,
+            self.total_cache_optimal_input_tokens,
+            session_optimal_read_pct,
+            baseline_input_tokens,
+            baseline_age_secs,
+            request.baseline_messages_prefix_matches,
+            system_static_hash_changed,
+            tools_hash_changed,
+            message_prefix_hash_changed,
+            current_message_count,
+            baseline_message_count,
+            current_tool_count,
+            baseline_tool_count,
+        ));
     }
 
     fn fallback_pending_kv_cache_request(&self) -> PendingKvCacheRequest {
