@@ -553,7 +553,7 @@ impl Tool for CommunicateTool {
                     "enum": ["share", "share_append", "read", "message", "broadcast", "dm", "channel", "list", "list_channels", "channel_members",
                              "propose_plan", "approve_plan", "reject_plan", "spawn", "stop", "assign_role",
                              "status", "plan_status", "summary", "read_context", "resync_plan", "assign_task", "assign_next", "fill_slots",
-                             "start", "wake", "resume", "retry", "reassign", "replace", "salvage",
+                             "start", "start_task", "wake", "resume", "retry", "reassign", "replace", "salvage",
                              "subscribe_channel", "unsubscribe_channel", "await_members"],
                     "description": "Action. For spawn, prefer including prompt with the initial task so the new agent starts useful work immediately."
                 },
@@ -585,6 +585,10 @@ impl Tool for CommunicateTool {
                 "prompt": {
                     "type": "string",
                     "description": "Preferred for spawn. Initial task/instructions for the new agent. Spawning without prompt usually creates an idle agent that needs follow-up assignment."
+                },
+                "initial_message": {
+                    "type": "string",
+                    "description": "Explicit initial task/instructions for spawn. If both initial_message and prompt are supplied, initial_message wins."
                 },
                 "limit": {
                     "type": "integer",
@@ -1184,6 +1188,7 @@ impl Tool for CommunicateTool {
                     id: REQUEST_ID,
                     session_id: ctx.session_id.clone(),
                     target_session: params.target_session.clone(),
+                    working_dir: params.working_dir.clone(),
                     prefer_spawn: params.prefer_spawn,
                     spawn_if_needed: params.spawn_if_needed,
                     message: params.message.clone(),
@@ -1231,6 +1236,7 @@ impl Tool for CommunicateTool {
                         id: REQUEST_ID,
                         session_id: ctx.session_id.clone(),
                         target_session: params.target_session.clone(),
+                        working_dir: params.working_dir.clone(),
                         prefer_spawn: params.prefer_spawn,
                         spawn_if_needed: params.spawn_if_needed,
                         message: params.message.clone(),
@@ -1279,7 +1285,8 @@ impl Tool for CommunicateTool {
                 }
             }
 
-            "start" | "wake" | "resume" | "retry" | "reassign" | "replace" | "salvage" => {
+            "start" | "start_task" | "wake" | "resume" | "retry" | "reassign" | "replace"
+            | "salvage" => {
                 let task_id = params.task_id.ok_or_else(|| {
                     anyhow::anyhow!("'task_id' is required for {} action", params.action)
                 })?;
@@ -1292,10 +1299,16 @@ impl Tool for CommunicateTool {
                     ));
                 }
 
+                let control_action = if params.action == "start_task" {
+                    "start".to_string()
+                } else {
+                    params.action.clone()
+                };
+
                 let request = Request::CommTaskControl {
                     id: REQUEST_ID,
                     session_id: ctx.session_id.clone(),
-                    action: params.action.clone(),
+                    action: control_action.clone(),
                     task_id: task_id.clone(),
                     target_session: params.target_session.clone(),
                     message: params.message.clone(),
@@ -1341,7 +1354,7 @@ impl Tool for CommunicateTool {
                             task_id, params.action, target_suffix
                         )))
                     }
-                    Err(e) => Err(anyhow::anyhow!("Failed to {} task: {}", params.action, e)),
+                    Err(e) => Err(anyhow::anyhow!("Failed to {} task: {}", control_action, e)),
                 }
             }
 
@@ -1422,7 +1435,7 @@ impl Tool for CommunicateTool {
             _ => Err(anyhow::anyhow!(
                 "Unknown action '{}'. Valid actions: share, share_append, read, message, broadcast, dm, channel, list, list_channels, channel_members, \
                  propose_plan, approve_plan, reject_plan, spawn, stop, assign_role, status, plan_status, summary, read_context, \
-                 resync_plan, assign_task, assign_next, fill_slots, start, wake, resume, retry, reassign, replace, salvage, subscribe_channel, unsubscribe_channel, await_members",
+                 resync_plan, assign_task, assign_next, fill_slots, start, start_task, wake, resume, retry, reassign, replace, salvage, subscribe_channel, unsubscribe_channel, await_members",
                 params.action
             )),
         }

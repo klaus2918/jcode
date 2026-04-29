@@ -90,7 +90,7 @@ fn schema_advertises_supported_swarm_fields() {
     assert!(props.contains_key("wake"));
     assert!(props.contains_key("delivery"));
     assert!(props.contains_key("plan_items"));
-    assert!(!props.contains_key("initial_message"));
+    assert!(props.contains_key("initial_message"));
     assert_eq!(
         props["delivery"]["enum"],
         json!(["notify", "interrupt", "wake"])
@@ -116,6 +116,12 @@ fn schema_advertises_supported_swarm_fields() {
             .as_array()
             .expect("action enum")
             .contains(&json!("start"))
+    );
+    assert!(
+        schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum")
+            .contains(&json!("start_task"))
     );
     assert!(
         schema["properties"]["action"]["enum"]

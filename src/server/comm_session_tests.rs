@@ -1,13 +1,43 @@
 use super::{
     ensure_spawn_coordinator_swarm, prepare_visible_spawn_session, register_visible_spawned_member,
+    resolve_spawn_working_dir,
 };
+use crate::agent::Agent;
+use crate::message::{Message, ToolDefinition};
 use crate::protocol::{NotificationType, ServerEvent};
+use crate::provider::{EventStream, Provider};
 use crate::server::{SwarmEventType, SwarmMember, VersionedPlan};
+use crate::tool::Registry;
+use anyhow::Result;
+use async_trait::async_trait;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
-use tokio::sync::{RwLock, broadcast, mpsc};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+
+struct MockProvider;
+
+#[async_trait]
+impl Provider for MockProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        Err(anyhow::anyhow!("mock provider should not be called"))
+    }
+
+    fn name(&self) -> &str {
+        "mock"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(MockProvider)
+    }
+}
 
 fn member(
     session_id: &str,
@@ -34,6 +64,64 @@ fn member(
         },
         event_rx,
     )
+}
+
+async fn test_agent_with_working_dir(session_id: &str, working_dir: &str) -> Arc<Mutex<Agent>> {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let mut session = crate::session::Session::create_with_id(session_id.to_string(), None, None);
+    session.model = Some("mock".to_string());
+    session.working_dir = Some(working_dir.to_string());
+    Arc::new(Mutex::new(Agent::new_with_session(
+        provider, registry, session, None,
+    )))
+}
+
+#[tokio::test]
+async fn resolve_spawn_working_dir_prefers_explicit_then_spawner_agent_dir() {
+    let sessions = Arc::new(RwLock::new(HashMap::new()));
+    sessions.write().await.insert(
+        "req".to_string(),
+        test_agent_with_working_dir("req", "/tmp/spawner-agent").await,
+    );
+    let swarm_members = Arc::new(RwLock::new(HashMap::new()));
+
+    assert_eq!(
+        resolve_spawn_working_dir(
+            Some("/tmp/explicit".to_string()),
+            "req",
+            &sessions,
+            &swarm_members,
+        )
+        .await
+        .as_deref(),
+        Some("/tmp/explicit")
+    );
+    assert_eq!(
+        resolve_spawn_working_dir(None, "req", &sessions, &swarm_members)
+            .await
+            .as_deref(),
+        Some("/tmp/spawner-agent")
+    );
+}
+
+#[tokio::test]
+async fn resolve_spawn_working_dir_falls_back_to_member_dir() {
+    let sessions = Arc::new(RwLock::new(HashMap::new()));
+    let swarm_members = Arc::new(RwLock::new(HashMap::new()));
+    let (mut req_member, _rx) = member("req", Some("swarm-1"), "coordinator");
+    req_member.working_dir = Some(std::path::PathBuf::from("/tmp/member-dir"));
+    swarm_members
+        .write()
+        .await
+        .insert("req".to_string(), req_member);
+
+    assert_eq!(
+        resolve_spawn_working_dir(None, "req", &sessions, &swarm_members)
+            .await
+            .as_deref(),
+        Some("/tmp/member-dir")
+    );
 }
 
 #[tokio::test]

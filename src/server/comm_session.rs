@@ -45,6 +45,42 @@ fn create_visible_spawn_session(
     Ok((session.id.clone(), cwd))
 }
 
+async fn resolve_spawn_working_dir(
+    requested_working_dir: Option<String>,
+    req_session_id: &str,
+    sessions: &SessionAgents,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+) -> Option<String> {
+    if requested_working_dir
+        .as_deref()
+        .is_some_and(|dir| !dir.trim().is_empty())
+    {
+        return requested_working_dir;
+    }
+
+    if let Some(agent_dir) = {
+        let agent_sessions = sessions.read().await;
+        agent_sessions.get(req_session_id).and_then(|agent| {
+            agent
+                .try_lock()
+                .ok()
+                .and_then(|agent_guard| agent_guard.working_dir().map(str::to_string))
+        })
+    } {
+        if !agent_dir.trim().is_empty() {
+            return Some(agent_dir);
+        }
+    }
+
+    swarm_members
+        .read()
+        .await
+        .get(req_session_id)
+        .and_then(|member| member.working_dir.as_ref())
+        .map(|dir| dir.display().to_string())
+        .filter(|dir| !dir.trim().is_empty())
+}
+
 fn spawn_visible_session_window(
     session_id: &str,
     cwd: &std::path::Path,
@@ -211,6 +247,8 @@ pub(super) async fn spawn_swarm_agent(
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
     soft_interrupt_queues: &SessionInterruptQueues,
 ) -> anyhow::Result<String> {
+    let resolved_working_dir =
+        resolve_spawn_working_dir(working_dir, req_session_id, sessions, swarm_members).await;
     let coordinator_model = {
         let agent_sessions = sessions.read().await;
         agent_sessions.get(req_session_id).and_then(|agent| {
@@ -239,7 +277,7 @@ pub(super) async fn spawn_swarm_agent(
     };
 
     let visible_spawn = prepare_visible_spawn_session(
-        working_dir.as_deref(),
+        resolved_working_dir.as_deref(),
         spawn_model.as_deref(),
         coordinator_is_canary,
         initial_message.as_deref(),
@@ -249,7 +287,7 @@ pub(super) async fn spawn_swarm_agent(
     let (new_session_id, is_headless_fallback) = match visible_spawn {
         Ok((new_session_id, true)) => Ok((new_session_id, false)),
         Ok((_, false)) | Err(_) => {
-            let cmd = if let Some(ref dir) = working_dir {
+            let cmd = if let Some(ref dir) = resolved_working_dir {
                 format!("create_session:{dir}")
             } else {
                 "create_session".to_string()
@@ -308,7 +346,7 @@ pub(super) async fn spawn_swarm_agent(
         register_visible_spawned_member(
             &new_session_id,
             swarm_id,
-            working_dir.as_deref(),
+            resolved_working_dir.as_deref(),
             startup_message.is_some(),
             Some(req_session_id),
             swarm_members,
@@ -426,7 +464,7 @@ pub(super) async fn handle_comm_spawn(
     let swarm_id = match ensure_spawn_coordinator_swarm(
         id,
         &req_session_id,
-        "Only the coordinator can spawn new agents.",
+        "Only the coordinator can spawn new agents. Assign the current session as coordinator first, e.g. swarm assign_role target_session=current role=coordinator.",
         client_event_tx,
         swarm_members,
         swarms_by_id,

@@ -499,6 +499,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_session: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         prefer_spawn: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spawn_if_needed: Option<bool>,

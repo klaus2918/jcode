@@ -303,6 +303,7 @@ fn test_comm_assign_next_roundtrip() -> Result<()> {
         id: 60,
         session_id: "sess_coord".to_string(),
         target_session: Some("sess_worker".to_string()),
+        working_dir: Some("/tmp/project".to_string()),
         prefer_spawn: Some(true),
         spawn_if_needed: Some(true),
         message: Some("Take the next runnable task.".to_string()),
@@ -314,6 +315,7 @@ fn test_comm_assign_next_roundtrip() -> Result<()> {
     let Request::CommAssignNext {
         session_id,
         target_session,
+        working_dir,
         prefer_spawn,
         spawn_if_needed,
         message,
@@ -324,6 +326,7 @@ fn test_comm_assign_next_roundtrip() -> Result<()> {
     };
     assert_eq!(session_id, "sess_coord");
     assert_eq!(target_session.as_deref(), Some("sess_worker"));
+    assert_eq!(working_dir.as_deref(), Some("/tmp/project"));
     assert_eq!(prefer_spawn, Some(true));
     assert_eq!(spawn_if_needed, Some(true));
     assert_eq!(message.as_deref(), Some("Take the next runnable task."));

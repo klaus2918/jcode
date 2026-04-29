@@ -1372,6 +1372,7 @@ pub(super) async fn handle_comm_assign_next(
     id: u64,
     req_session_id: String,
     target_session: Option<String>,
+    working_dir: Option<String>,
     prefer_spawn: Option<bool>,
     spawn_if_needed: Option<bool>,
     message: Option<String>,
@@ -1432,7 +1433,7 @@ pub(super) async fn handle_comm_assign_next(
             match super::comm_session::spawn_swarm_agent(
                 &req_session_id,
                 &swarm_id,
-                None,
+                working_dir.clone(),
                 None,
                 sessions,
                 global_session_id,
