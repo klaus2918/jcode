@@ -1203,7 +1203,14 @@ pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
         let arg = trimmed.strip_prefix("/cache").unwrap_or("").trim();
         match arg {
             "stats" | "status" => {
-                app.push_display_message(DisplayMessage::system(format_cache_stats(app)));
+                app.push_display_message(DisplayMessage {
+                    role: "usage".to_string(),
+                    content: format_cache_stats(app),
+                    tool_calls: vec![],
+                    duration_secs: None,
+                    title: Some("KV cache stats".to_string()),
+                    tool_data: None,
+                });
                 app.set_status_notice("Cache stats");
             }
             "1h" | "1hour" | "extended" => {
