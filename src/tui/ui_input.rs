@@ -521,8 +521,9 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             ProcessingStatus::Streaming => {
                 let time_str = format_elapsed(elapsed);
                 let (input_tokens, output_tokens) = app.streaming_tokens();
+                let stream_message_ended = app.stream_message_ended();
                 let mut status_text =
-                    streaming_liveness_label(time_str, stale_secs, app.stream_message_ended());
+                    streaming_liveness_label(time_str, stale_secs, stream_message_ended);
                 if let Some(tps) = app.output_tps() {
                     status_text = format!("{} · {:.1} tps", status_text, tps);
                 }
@@ -546,17 +547,18 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                     };
                     status_text = format!("⚠ {} cache miss · {}", miss_str, status_text);
                 }
-                let mut spans = vec![
-                    Span::styled(spinner, Style::default().fg(ai_color())),
-                    Span::styled(
-                        format!(" {}", status_text),
-                        Style::default().fg(if kv_cache_problem.is_some() {
-                            rgb(255, 193, 7)
-                        } else {
-                            dim_color()
-                        }),
-                    ),
-                ];
+                let mut spans = Vec::new();
+                if !stream_message_ended {
+                    spans.push(Span::styled(spinner, Style::default().fg(ai_color())));
+                }
+                spans.push(Span::styled(
+                    format!(" {}", status_text),
+                    Style::default().fg(if kv_cache_problem.is_some() {
+                        rgb(255, 193, 7)
+                    } else {
+                        dim_color()
+                    }),
+                ));
                 if !queued_suffix.is_empty() {
                     spans.push(Span::styled(
                         queued_suffix.clone(),
