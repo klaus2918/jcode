@@ -203,6 +203,10 @@ pub trait TuiState {
     fn connected_clients(&self) -> Option<usize>;
     /// Short-lived notice shown in the status line (e.g., model switch, toggle diff)
     fn status_notice(&self) -> Option<String>;
+    /// First-use experimental feature warning for the currently active operation.
+    fn active_experimental_feature_notice(&self) -> Option<String> {
+        None
+    }
     /// Whether a transient remote startup phase is active and should keep redraws responsive.
     fn remote_startup_phase_active(&self) -> bool;
     /// Whether mouse-wheel smoothing has queued lines to animate.

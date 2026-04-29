@@ -816,6 +816,10 @@ pub struct App {
     input_undo_stack: Vec<(String, usize)>,
     // Short-lived notice for status feedback (model switch, cycle diff mode, etc.)
     status_notice: Option<(String, Instant)>,
+    // Experimental feature warnings already shown in this session.
+    experimental_feature_warnings_seen: HashSet<String>,
+    // Active first-use experimental warning for the currently running tool.
+    active_experimental_feature_notice: Option<String>,
     // Message to interleave during processing (set via Ctrl+Enter in queue mode)
     interleave_message: Option<String>,
     // Message sent as soft interrupt but not yet injected (shown in queue preview until injected)

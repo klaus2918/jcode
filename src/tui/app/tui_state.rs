@@ -550,6 +550,10 @@ impl crate::tui::TuiState for App {
         })
     }
 
+    fn active_experimental_feature_notice(&self) -> Option<String> {
+        self.active_experimental_feature_notice.clone()
+    }
+
     fn remote_startup_phase_active(&self) -> bool {
         self.remote_startup_phase.is_some()
     }

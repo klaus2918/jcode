@@ -416,6 +416,7 @@ impl App {
                                     }
                                     StreamEvent::ToolUseStart { id, name } => {
                                         self.pause_streaming_tps(false);
+                                        self.clear_active_experimental_feature_notice();
                                         self.broadcast_debug(crate::tui::backend::DebugEvent::ToolStart {
                                             id: id.clone(),
                                             name: name.clone(),
@@ -457,6 +458,9 @@ impl App {
                                             tool.input = serde_json::from_str(&current_tool_input)
                                                 .unwrap_or(serde_json::Value::Null);
                                             tool.refresh_intent_from_input();
+                                            if let Some(key) = Self::experimental_feature_key_for_tool(&tool) {
+                                                self.note_experimental_feature_use(key);
+                                            }
                                             if let Some(streaming_tool) = self
                                                 .streaming_tool_calls
                                                 .iter_mut()

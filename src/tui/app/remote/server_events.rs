@@ -74,6 +74,7 @@ pub(in crate::tui::app) fn handle_server_event(
         }
         ServerEvent::ToolStart { id, name } => {
             app.pause_streaming_tps(false);
+            app.clear_active_experimental_feature_notice();
             remote.handle_tool_start(&id, &name);
             app.commit_pending_streaming_assistant_message();
             if matches!(name.as_str(), "memory") {
@@ -101,6 +102,9 @@ pub(in crate::tui::app) fn handle_server_event(
                 input: parsed_input.clone(),
                 intent: ToolCall::intent_from_input(&parsed_input),
             };
+            if let Some(key) = App::experimental_feature_key_for_tool(&tool_call) {
+                app.note_experimental_feature_use(key);
+            }
             if let Some(tc) = app.streaming_tool_calls.iter_mut().find(|tc| tc.id == id) {
                 tc.input = parsed_input;
                 tc.refresh_intent_from_input();

@@ -6,7 +6,6 @@ use super::{
     pending_color, queued_color, rainbow_prompt_color, user_color,
 };
 use crate::message::ConnectionPhase;
-use crate::message::ToolCall;
 use crate::tui::app;
 use crate::tui::color_support::rgb;
 use crate::tui::detect_kv_cache_problem;
@@ -56,30 +55,6 @@ fn shell_mode_hint(mode: ComposerMode) -> Option<&'static str> {
 
 fn normalize_repaint_sensitive_notice_text(text: &str) -> String {
     text.replace("⚠️", "⚠")
-}
-
-fn experimental_tool_status_notice(
-    tool: Option<&ToolCall>,
-    running_tool_name: &str,
-) -> Option<&'static str> {
-    if running_tool_name != "swarm" {
-        return None;
-    }
-
-    let input = &tool?.input;
-    let action = input.get("action").and_then(|value| value.as_str());
-    let spawns_agents = matches!(action, Some("spawn") | Some("fill_slots"))
-        || matches!(action, Some("assign_task") | Some("assign_next"))
-            && (input
-                .get("spawn_if_needed")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-                || input
-                    .get("prefer_spawn")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false));
-
-    spawns_agents.then_some("experimental: may have more bugs")
 }
 
 pub(super) fn input_hint_line_height(app: &dyn TuiState) -> u16 {
@@ -634,8 +609,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                         .map(get_tool_summary)
                         .filter(|s| !s.is_empty())
                 };
-                let experimental_notice =
-                    experimental_tool_status_notice(app.streaming_tool_calls().last(), name);
+                let experimental_notice = app.active_experimental_feature_notice();
                 let subagent = app.subagent_status();
 
                 let mut spans = vec![
@@ -895,48 +869,6 @@ mod tests {
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content.as_ref(), " · 0/3 done");
         assert_eq!(spans[1].content.as_ref(), " · running: #1 bash +2");
-    }
-
-    #[test]
-    fn experimental_notice_marks_swarm_spawn_actions() {
-        let tool = ToolCall {
-            id: "tc".to_string(),
-            name: "swarm".to_string(),
-            input: serde_json::json!({"action": "spawn", "prompt": "try it"}),
-            intent: None,
-        };
-
-        assert_eq!(
-            experimental_tool_status_notice(Some(&tool), "swarm"),
-            Some("experimental: may have more bugs")
-        );
-    }
-
-    #[test]
-    fn experimental_notice_marks_spawn_if_needed_assignment() {
-        let tool = ToolCall {
-            id: "tc".to_string(),
-            name: "swarm".to_string(),
-            input: serde_json::json!({"action": "assign_task", "spawn_if_needed": true}),
-            intent: None,
-        };
-
-        assert_eq!(
-            experimental_tool_status_notice(Some(&tool), "swarm"),
-            Some("experimental: may have more bugs")
-        );
-    }
-
-    #[test]
-    fn experimental_notice_does_not_mark_non_spawning_swarm_actions() {
-        let tool = ToolCall {
-            id: "tc".to_string(),
-            name: "swarm".to_string(),
-            input: serde_json::json!({"action": "status"}),
-            intent: None,
-        };
-
-        assert_eq!(experimental_tool_status_notice(Some(&tool), "swarm"), None);
     }
 
     #[test]
