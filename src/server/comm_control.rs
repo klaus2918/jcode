@@ -14,7 +14,7 @@ use super::{
 };
 use crate::agent::Agent;
 use crate::plan::{
-    cycle_item_ids, is_terminal_status, missing_dependencies, next_runnable_item_ids,
+    PlanItem, cycle_item_ids, is_terminal_status, missing_dependencies, next_runnable_item_ids,
     unresolved_dependencies,
 };
 use crate::protocol::{NotificationType, PlanGraphStatus, ServerEvent};
@@ -298,6 +298,53 @@ async fn resolve_assignment_target_session(
             "No ready or completed swarm agents are available for automatic task assignment."
                 .to_string()
         })
+}
+
+async fn task_id_for_target_session(
+    swarm_id: &str,
+    target_session: &str,
+    action: TaskControlAction,
+    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+) -> Result<String, String> {
+    let plans = swarm_plans.read().await;
+    let Some(plan) = plans.get(swarm_id) else {
+        return Err("No swarm plan exists for this swarm.".to_string());
+    };
+
+    let mut candidates: Vec<&PlanItem> = plan
+        .items
+        .iter()
+        .filter(|item| item.assigned_to.as_deref() == Some(target_session))
+        .filter(|item| action_allows_status(action, &item.status))
+        .collect();
+
+    candidates.sort_by_key(|item| match item.status.as_str() {
+        "running" | "running_stale" => 0,
+        "queued" | "ready" | "pending" | "todo" => 1,
+        "failed" | "stopped" | "crashed" => 2,
+        "completed" | "done" => 3,
+        _ => 4,
+    });
+
+    match candidates.as_slice() {
+        [] => Err(format!(
+            "No task assigned to '{}' can be {}. Provide task_id explicitly, or assign a task first.",
+            target_session,
+            action.as_str()
+        )),
+        [item] => Ok(item.id.clone()),
+        [first, second, ..] if first.status != second.status => Ok(first.id.clone()),
+        _ => Err(format!(
+            "Multiple tasks assigned to '{}' can be {}: {}. Provide task_id explicitly.",
+            target_session,
+            action.as_str(),
+            candidates
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 async fn next_unassigned_runnable_task_id(
@@ -1585,6 +1632,33 @@ pub(super) async fn handle_comm_task_control(
     {
         Some(swarm_id) => swarm_id,
         None => return,
+    };
+
+    let task_id = if task_id.trim().is_empty() {
+        let Some(target_session) = target_session.as_deref() else {
+            let _ = client_event_tx.send(ServerEvent::Error {
+                id,
+                message: format!(
+                    "task_id is required for {} unless target_session uniquely identifies an assigned task.",
+                    action.as_str()
+                ),
+                retry_after_secs: None,
+            });
+            return;
+        };
+        match task_id_for_target_session(&swarm_id, target_session, action, swarm_plans).await {
+            Ok(task_id) => task_id,
+            Err(message) => {
+                let _ = client_event_tx.send(ServerEvent::Error {
+                    id,
+                    message,
+                    retry_after_secs: None,
+                });
+                return;
+            }
+        }
+    } else {
+        task_id
     };
 
     let Some(snapshot) = task_snapshot_for(&swarm_id, &task_id, swarm_plans).await else {

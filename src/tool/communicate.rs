@@ -858,7 +858,7 @@ impl Tool for CommunicateTool {
                 },
                 "task_id": {
                     "type": "string",
-                    "description": "Optional plan task ID. If omitted for assign_task, the coordinator assigns the next runnable unassigned task."
+                    "description": "Optional plan task ID. If omitted for assign_task/assign_next, the coordinator picks a runnable task. If omitted for resume/wake/retry/start with target_session, the server resumes the unique assigned task for that session."
                 },
                 "spawn_if_needed": {
                     "type": "boolean",
@@ -1563,9 +1563,16 @@ impl Tool for CommunicateTool {
 
             "start" | "start_task" | "wake" | "resume" | "retry" | "reassign" | "replace"
             | "salvage" => {
-                let task_id = params.task_id.ok_or_else(|| {
-                    anyhow::anyhow!("'task_id' is required for {} action", params.action)
-                })?;
+                let task_id = match params.task_id.clone() {
+                    Some(task_id) => task_id,
+                    None if params.target_session.is_some() => String::new(),
+                    None => {
+                        return Err(anyhow::anyhow!(
+                            "'task_id' is required for {} action unless 'target_session' uniquely identifies the assigned task. Use `swarm list`/`swarm plan_status` to inspect assignments, or pass task_id explicitly.",
+                            params.action
+                        ));
+                    }
+                };
                 if matches!(params.action.as_str(), "reassign" | "replace" | "salvage")
                     && params.target_session.is_none()
                 {
