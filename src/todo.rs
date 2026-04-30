@@ -2,7 +2,7 @@ use crate::storage;
 use anyhow::Result;
 use std::path::PathBuf;
 
-pub use jcode_core::todo_types::TodoItem;
+pub use jcode_task_types::TodoItem;
 
 pub fn load_todos(session_id: &str) -> Result<Vec<TodoItem>> {
     let path = todo_path(session_id)?;

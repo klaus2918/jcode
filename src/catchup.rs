@@ -4,7 +4,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::{BTreeMap, HashSet};
 
-pub use jcode_core::catchup_types::{CatchupBrief, PersistedCatchupState};
+pub use jcode_task_types::{CatchupBrief, PersistedCatchupState};
 
 const CATCHUP_STATE_FILE: &str = "catchup_seen.json";
 
