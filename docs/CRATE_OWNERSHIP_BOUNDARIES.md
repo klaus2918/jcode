@@ -104,7 +104,27 @@ Measured on 2026-04-30 with `scripts/dev_cargo.sh check --profile selfdev -p jco
 
 Implication: the compile-speed target is not simply "move things out of root". Moving stable, low-churn contracts out of root is good, but putting many high-churn domain DTOs into `jcode-core` can be counterproductive because `jcode-core` has high fan-out. Prefer focused leaf crates such as `jcode-usage-types`, `jcode-gateway-types`, and `jcode-ambient-types` for domain DTOs that are likely to change.
 
-## Current `jcode-core` export audit
+## Current `jcode-core` fan-out audit
+
+At this checkpoint, the root crate is the only direct Cargo dependency on `jcode-core`, but root re-exports many `jcode-core` modules and root is the high-cost recompilation target. A touch to `jcode-core` invalidated broad downstream checks in the baseline above. Therefore `jcode-core` should be treated as a high-fan-out crate even if Cargo.toml direct dependents are currently few.
+
+Observed root re-export/use paths:
+
+- `src/ambient/scheduler.rs` -> `ambient_usage_types`
+- `src/catchup.rs` -> `catchup_types`
+- `src/copilot_usage.rs` -> `copilot_usage_types`
+- `src/gateway.rs` -> `gateway_types`
+- `src/goal.rs` -> `goal_types`
+- `src/memory_types.rs` -> `memory_types`
+- `src/todo.rs` -> `todo_types`
+- `src/usage.rs` -> `usage_types`
+- `src/env.rs`, `src/id.rs`, `src/stdin_detect.rs`, `src/util.rs`, and panic UI helpers -> general utilities
+
+Compile-speed priority from this audit:
+
+1. Move clustered, likely-changing domain DTOs from `jcode-core` to focused leaf crates.
+2. Keep stable general utilities in `jcode-core`.
+3. Avoid adding new domain DTOs to `jcode-core` unless they are very stable or temporary staging.
 
 | Module | Current contents | Preferred long-term home | Notes |
 | --- | --- | --- | --- |
