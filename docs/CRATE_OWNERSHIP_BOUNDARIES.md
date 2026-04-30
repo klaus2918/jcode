@@ -67,18 +67,29 @@ During migrations:
 
 ## Move checklist
 
-Before moving a type:
+Use this checklist for every type or pure-helper migration. Copy it into the PR/commit notes when a move is non-trivial.
 
-- [ ] Does it have inherent methods?
-- [ ] Do those methods require root-only APIs?
-- [ ] Does its serde representation stay identical?
-- [ ] Are all field visibilities still appropriate?
-- [ ] Does the target crate already have needed dependencies?
-- [ ] Is the target crate still acyclic?
-- [ ] Can root keep a compatibility re-export?
-- [ ] Is there a focused test filter that covers the moved type?
-- [ ] Did `cargo check --profile selfdev` pass for the target crate and root binary?
-- [ ] Did selfdev build and reload pass on a clean HEAD?
+1. Classify the candidate.
+   - [ ] Is it a stable data contract or pure helper rather than root runtime behavior?
+   - [ ] Does it have inherent methods?
+   - [ ] Do those methods require root-only APIs such as storage, network clients, TUI state, process management, or globals?
+   - [ ] If behavior must move too, can the full dependency boundary move without increasing fan-out?
+2. Check compatibility.
+   - [ ] Does its serde representation stay identical?
+   - [ ] Are defaults, skips, renames, and enum discriminants preserved?
+   - [ ] Are all field visibilities still appropriate?
+   - [ ] Can root keep a compatibility re-export?
+3. Check crate health.
+   - [ ] Does the target crate already have the needed dependency policy?
+   - [ ] Are new dependencies limited to type-crate-appropriate libraries, usually `serde`, `serde_json`, `chrono`, or sibling type crates?
+   - [ ] Is the target crate still acyclic?
+   - [ ] Did `cargo metadata`/`cargo check` avoid pulling root, TUI, provider, storage, server, or process dependencies into the type crate?
+4. Validate.
+   - [ ] Is there a focused test filter that covers the moved type?
+   - [ ] Did `cargo check --profile selfdev -p <type-crate> -p jcode --bin jcode` pass?
+   - [ ] Did relevant focused root tests pass?
+   - [ ] Did `cargo fmt` pass?
+   - [ ] Did selfdev build and reload pass from a clean committed HEAD?
 
 ## Test policy
 
@@ -92,6 +103,17 @@ Known broad-filter hazards observed during modularization:
 
 Document precise filters next to each domain crate/module. Broad filters are still useful for periodic sweeps, but they should not block a DTO-only extraction when precise tests and compile checks pass.
 
+Focused validation matrix after the current DTO splits:
+
+| Area | Fast compile check | Focused root tests used during split | Notes |
+| --- | --- | --- | --- |
+| Usage DTOs | `cargo check --profile selfdev -p jcode-usage-types -p jcode --bin jcode` | Prefer exact tests under usage/copilot usage modules. Avoid bare `usage` as a required gate because it selects display/UI tests too. | DTO crate owns report and local counter contracts. Runtime fetch/cache/display stay root. |
+| Gateway DTOs | `cargo check --profile selfdev -p jcode-gateway-types -p jcode --bin jcode` | Focus gateway persistence/auth tests by exact test names when available. | Pairing/token HTTP/WebSocket behavior stays root. |
+| Ambient DTOs | `cargo check --profile selfdev -p jcode-ambient-types -p jcode --bin jcode` | Scheduler/type consumers only. Do not move `AmbientState` until root persistence methods are separated. | Queue/runtime/prompt behavior stays root. |
+| Memory activity DTOs | `cargo check --profile selfdev -p jcode-memory-types -p jcode-core -p jcode --bin jcode` | `cargo test --profile selfdev -p jcode runtime_memory_log --lib`; `cargo test --profile selfdev -p jcode tui::info_widget::tests --lib` | `memory::activity` currently matches no tests, so use consumer tests. |
+| Goal/todo/catchup core DTOs | `cargo check --profile selfdev -p jcode-core -p jcode --bin jcode` | Exact goal/todo/catchup filters if behavior changes. | Currently small/stable enough to leave in `jcode-core`; revisit if churn grows. |
+
+
 ## Compile baseline observations
 
 Measured on 2026-04-30 with `scripts/dev_cargo.sh check --profile selfdev -p jcode --bin jcode` after the compile-speed boundary doc commit. This is a coarse mtime-touch benchmark, not a full statistical study, but it is enough to guide priorities.
@@ -104,20 +126,15 @@ Measured on 2026-04-30 with `scripts/dev_cargo.sh check --profile selfdev -p jco
 
 Implication: the compile-speed target is not simply "move things out of root". Moving stable, low-churn contracts out of root is good, but putting many high-churn domain DTOs into `jcode-core` can be counterproductive because `jcode-core` has high fan-out. Prefer focused leaf crates such as `jcode-usage-types`, `jcode-gateway-types`, and `jcode-ambient-types` for domain DTOs that are likely to change.
 
-## Current `jcode-core` fan-out audit
+## `jcode-core` fan-out audit
 
 At this checkpoint, the root crate is the only direct Cargo dependency on `jcode-core`, but root re-exports many `jcode-core` modules and root is the high-cost recompilation target. A touch to `jcode-core` invalidated broad downstream checks in the baseline above. Therefore `jcode-core` should be treated as a high-fan-out crate even if Cargo.toml direct dependents are currently few.
 
 Observed root re-export/use paths:
 
-- `src/ambient/scheduler.rs` -> `ambient_usage_types`
 - `src/catchup.rs` -> `catchup_types`
-- `src/copilot_usage.rs` -> `copilot_usage_types`
-- `src/gateway.rs` -> `gateway_types`
 - `src/goal.rs` -> `goal_types`
-- `src/memory_types.rs` -> `memory_types`
 - `src/todo.rs` -> `todo_types`
-- `src/usage.rs` -> `usage_types`
 - `src/env.rs`, `src/id.rs`, `src/stdin_detect.rs`, `src/util.rs`, and panic UI helpers -> general utilities
 
 Compile-speed priority from this audit:
@@ -128,14 +145,14 @@ Compile-speed priority from this audit:
 
 | Module | Current contents | Preferred long-term home | Notes |
 | --- | --- | --- | --- |
-| `ambient_usage_types` | Ambient scheduler usage records/rate limit DTOs | `jcode-ambient-types` or `jcode-ambient-core` | Pure DTOs. Good candidate to split once more ambient types are ready. |
+| `ambient_usage_types` | Ambient scheduler usage records/rate limit DTOs | moved to `jcode-ambient-types` | Compatibility re-export remains in root module. |
 | `catchup_types` | Catch-up persisted state and rendered brief DTOs | `jcode-catchup-types` or stay in core | Small and low churn. Split only if catch-up grows. |
-| `copilot_usage_types` | Local Copilot usage counters | `jcode-usage-types` | Belongs with usage report DTOs. |
-| `gateway_types` | Paired device and pairing code persisted records | `jcode-gateway-types` | Pairing/token behavior remains root. |
+| `copilot_usage_types` | Local Copilot usage counters | moved to `jcode-usage-types` | Compatibility re-export remains in root module. |
+| `gateway_types` | Paired device and pairing code persisted records | moved to `jcode-gateway-types` | Pairing/token behavior remains root. |
 | `goal_types` | Goal state, milestones, status, updates | `jcode-goal-types` or `jcode-task-types` | Larger domain. Worth splitting if goal/tool work grows. |
-| `memory_types` | Memory activity DTOs | `jcode-memory-types` | Memory has enough domain weight for its own type crate. |
+| `memory_types` | Memory activity DTOs | moved to `jcode-memory-types` | Memory has enough domain weight for its own type crate. |
 | `todo_types` | Todo item DTO | `jcode-task-types`, `jcode-todo-types`, or core | Tiny. Could join goal/catchup task-state crate. |
-| `usage_types` | Provider usage report DTOs | `jcode-usage-types` | Should join Copilot usage and account usage DTOs. |
+| `usage_types` | Provider usage report DTOs | moved to `jcode-usage-types` | Runtime fetch/cache/display remain root. |
 | `env` | Environment variable helpers | stay in core | General utility, no domain crate needed. |
 | `id` | ID helpers | stay in core | General utility. |
 | `panic_util` | Panic formatting helpers | stay in core | General runtime utility. |
@@ -144,7 +161,7 @@ Compile-speed priority from this audit:
 
 ## Target domain type crates
 
-High-value next splits:
+Completed/high-value domain type splits:
 
 1. `jcode-usage-types`
    - `usage_types`
