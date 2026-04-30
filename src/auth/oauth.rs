@@ -914,14 +914,25 @@ pub fn save_claude_tokens(tokens: &OAuthTokens) -> Result<()> {
 
 /// Save Claude tokens for a specific stored account label.
 pub fn save_claude_tokens_for_account(tokens: &OAuthTokens, label: &str) -> Result<()> {
+    let existing = claude_auth::list_accounts()?
+        .into_iter()
+        .find(|account| account.label == label);
+    let scopes = if tokens.scopes.is_empty() {
+        existing
+            .as_ref()
+            .map(|account| account.scopes.clone())
+            .unwrap_or_default()
+    } else {
+        tokens.scopes.clone()
+    };
     let account = claude_auth::AnthropicAccount {
         label: label.to_string(),
         access: tokens.access_token.clone(),
         refresh: tokens.refresh_token.clone(),
         expires: tokens.expires_at,
-        email: None,
-        subscription_type: None,
-        scopes: tokens.scopes.clone(),
+        email: existing.as_ref().and_then(|account| account.email.clone()),
+        subscription_type: existing.and_then(|account| account.subscription_type),
+        scopes,
     };
     claude_auth::upsert_account(account)?;
     Ok(())
