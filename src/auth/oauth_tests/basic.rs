@@ -110,11 +110,21 @@ fn save_openai_tokens_uses_jcode_home_sandbox() -> Result<()> {
 #[test]
 fn claude_oauth_constants() {
     assert!(!claude::CLIENT_ID.is_empty());
-    assert!(claude::AUTHORIZE_URL.starts_with("https://"));
-    assert!(claude::TOKEN_URL.starts_with("https://"));
+    assert_eq!(
+        claude::AUTHORIZE_URL,
+        "https://platform.claude.com/oauth/authorize"
+    );
+    assert_eq!(
+        claude::TOKEN_URL,
+        "https://platform.claude.com/v1/oauth/token"
+    );
     assert!(claude::PROFILE_URL.starts_with("https://"));
-    assert!(claude::REDIRECT_URI.starts_with("https://"));
-    assert!(!claude::SCOPES.is_empty());
+    assert_eq!(
+        claude::REDIRECT_URI,
+        "https://platform.claude.com/oauth/code/callback"
+    );
+    assert!(claude::SCOPES.contains("user:sessions:claude_code"));
+    assert!(claude::REFRESH_SCOPES.contains("user:file_upload"));
 }
 
 #[tokio::test]

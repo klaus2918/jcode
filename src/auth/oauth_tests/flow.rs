@@ -6,11 +6,15 @@ fn utf8_body(body: Vec<u8>) -> Result<String> {
     String::from_utf8(body).map_err(|e| anyhow!(e))
 }
 
-fn form_pairs(body: Vec<u8>) -> Result<HashMap<String, String>> {
-    let body = utf8_body(body)?;
-    Ok(url::form_urlencoded::parse(body.as_bytes())
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect())
+fn json_body(body: Vec<u8>) -> Result<serde_json::Value> {
+    serde_json::from_slice(&body).map_err(|e| anyhow!(e))
+}
+
+fn require_json_str<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("missing JSON string field: {key}"))
 }
 
 fn require_param<'a>(pairs: &'a HashMap<String, String>, key: &str) -> Result<&'a str> {
@@ -21,42 +25,36 @@ fn require_param<'a>(pairs: &'a HashMap<String, String>, key: &str) -> Result<&'
 }
 
 #[test]
-fn claude_exchange_request_uses_form_urlencoded() -> Result<()> {
+fn claude_exchange_request_uses_json_like_claude_code() -> Result<()> {
     let (_url, content_type, _body) =
         build_claude_exchange_request("code123", "verifier456", claude::REDIRECT_URI, None);
-    assert_eq!(content_type, "application/x-www-form-urlencoded");
-    assert_ne!(content_type, "application/json");
+    assert_eq!(content_type, "application/json");
+    assert_ne!(content_type, "application/x-www-form-urlencoded");
     Ok(())
 }
 
 #[test]
-fn claude_exchange_request_body_is_not_json() -> Result<()> {
+fn claude_exchange_request_body_is_json() -> Result<()> {
     let (_url, _ct, body) =
         build_claude_exchange_request("code123", "verifier456", claude::REDIRECT_URI, None);
-    let body_str = utf8_body(body)?;
-    assert!(
-        serde_json::from_str::<serde_json::Value>(&body_str).is_err(),
-        "Body must NOT be valid JSON (should be form-urlencoded)"
-    );
+    let body = json_body(body)?;
+    assert_eq!(require_json_str(&body, "grant_type")?, "authorization_code");
     Ok(())
 }
 
 #[test]
-fn claude_refresh_request_uses_form_urlencoded() -> Result<()> {
+fn claude_refresh_request_uses_json_like_claude_code() -> Result<()> {
     let (_url, content_type, _body) = build_claude_refresh_request("rt_test");
-    assert_eq!(content_type, "application/x-www-form-urlencoded");
-    assert_ne!(content_type, "application/json");
+    assert_eq!(content_type, "application/json");
+    assert_ne!(content_type, "application/x-www-form-urlencoded");
     Ok(())
 }
 
 #[test]
-fn claude_refresh_request_body_is_not_json() -> Result<()> {
+fn claude_refresh_request_body_is_json() -> Result<()> {
     let (_url, _ct, body) = build_claude_refresh_request("rt_test");
-    let body_str = utf8_body(body)?;
-    assert!(
-        serde_json::from_str::<serde_json::Value>(&body_str).is_err(),
-        "Body must NOT be valid JSON (should be form-urlencoded)"
-    );
+    let body = json_body(body)?;
+    assert_eq!(require_json_str(&body, "grant_type")?, "refresh_token");
     Ok(())
 }
 
@@ -72,16 +70,16 @@ fn claude_exchange_request_contains_required_fields() -> Result<()> {
         "https://example.com/callback",
         None,
     );
-    let pairs = form_pairs(body)?;
-    assert_eq!(require_param(&pairs, "grant_type")?, "authorization_code");
-    assert_eq!(require_param(&pairs, "client_id")?, claude::CLIENT_ID);
-    assert_eq!(require_param(&pairs, "code")?, "auth_code_xyz");
-    assert_eq!(require_param(&pairs, "code_verifier")?, "verifier_abc");
+    let body = json_body(body)?;
+    assert_eq!(require_json_str(&body, "grant_type")?, "authorization_code");
+    assert_eq!(require_json_str(&body, "client_id")?, claude::CLIENT_ID);
+    assert_eq!(require_json_str(&body, "code")?, "auth_code_xyz");
+    assert_eq!(require_json_str(&body, "code_verifier")?, "verifier_abc");
     assert_eq!(
-        require_param(&pairs, "redirect_uri")?,
+        require_json_str(&body, "redirect_uri")?,
         "https://example.com/callback"
     );
-    assert_eq!(require_param(&pairs, "state")?, "verifier_abc");
+    assert_eq!(require_json_str(&body, "state")?, "verifier_abc");
     Ok(())
 }
 
@@ -93,15 +91,15 @@ fn claude_exchange_request_includes_state_when_present() -> Result<()> {
         claude::REDIRECT_URI,
         Some("state_value"),
     );
-    let pairs = form_pairs(body)?;
-    assert_eq!(require_param(&pairs, "state")?, "state_value");
+    let body = json_body(body)?;
+    assert_eq!(require_json_str(&body, "state")?, "state_value");
     Ok(())
 }
 
 #[test]
 fn claude_exchange_request_targets_correct_url() -> Result<()> {
     let (url, _ct, _body) = build_claude_exchange_request("c", "v", claude::REDIRECT_URI, None);
-    assert_eq!(url, "https://console.anthropic.com/v1/oauth/token");
+    assert_eq!(url, "https://platform.claude.com/v1/oauth/token");
     Ok(())
 }
 
@@ -112,20 +110,21 @@ fn claude_exchange_request_targets_correct_url() -> Result<()> {
 #[test]
 fn claude_refresh_request_contains_required_fields() -> Result<()> {
     let (_url, _ct, body) = build_claude_refresh_request("rt_refresh_token_value");
-    let pairs = form_pairs(body)?;
-    assert_eq!(require_param(&pairs, "grant_type")?, "refresh_token");
+    let body = json_body(body)?;
+    assert_eq!(require_json_str(&body, "grant_type")?, "refresh_token");
     assert_eq!(
-        require_param(&pairs, "refresh_token")?,
+        require_json_str(&body, "refresh_token")?,
         "rt_refresh_token_value"
     );
-    assert_eq!(require_param(&pairs, "client_id")?, claude::CLIENT_ID);
+    assert_eq!(require_json_str(&body, "client_id")?, claude::CLIENT_ID);
+    assert_eq!(require_json_str(&body, "scope")?, claude::REFRESH_SCOPES);
     Ok(())
 }
 
 #[test]
 fn claude_refresh_request_targets_correct_url() -> Result<()> {
     let (url, _ct, _body) = build_claude_refresh_request("rt");
-    assert_eq!(url, "https://console.anthropic.com/v1/oauth/token");
+    assert_eq!(url, "https://platform.claude.com/v1/oauth/token");
     Ok(())
 }
 
@@ -376,7 +375,17 @@ fn parse_callback_input_extracts_code_and_state() -> Result<()> {
 }
 
 #[test]
-fn claude_redirect_uri_uses_manual_callback_for_console_url() -> Result<()> {
+fn claude_redirect_uri_uses_manual_callback_for_platform_url() -> Result<()> {
+    let selected = claude_redirect_uri_for_input(
+        "https://platform.claude.com/oauth/code/callback?code=abc&state=xyz",
+        "http://localhost:9999/callback",
+    );
+    assert_eq!(selected, claude::REDIRECT_URI);
+    Ok(())
+}
+
+#[test]
+fn claude_redirect_uri_accepts_legacy_console_callback_url() -> Result<()> {
     let selected = claude_redirect_uri_for_input(
         "https://console.anthropic.com/oauth/code/callback?code=abc&state=xyz",
         "http://localhost:9999/callback",
@@ -397,7 +406,7 @@ fn claude_redirect_uri_keeps_localhost_fallback_for_raw_code() -> Result<()> {
 // ========================
 
 #[tokio::test]
-async fn claude_exchange_mock_server_receives_form_urlencoded() -> Result<()> {
+async fn claude_exchange_mock_server_receives_json() -> Result<()> {
     let success_body = serde_json::json!({
         "access_token": "at_mock",
         "refresh_token": "rt_mock",
@@ -422,19 +431,13 @@ async fn claude_exchange_mock_server_receives_form_urlencoded() -> Result<()> {
             .get("content-type")
             .map(String::as_str)
             .ok_or_else(|| anyhow!("missing content-type header"))?,
-        "application/x-www-form-urlencoded"
+        "application/json"
     );
-    assert!(
-        serde_json::from_str::<serde_json::Value>(&body).is_err(),
-        "Body must be form-urlencoded, not JSON"
-    );
-    let pairs: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes())
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    assert_eq!(require_param(&pairs, "grant_type")?, "authorization_code");
-    assert_eq!(require_param(&pairs, "code")?, "code123");
-    assert_eq!(require_param(&pairs, "code_verifier")?, "verifier456");
-    assert_eq!(require_param(&pairs, "state")?, "verifier456");
+    let body: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(require_json_str(&body, "grant_type")?, "authorization_code");
+    assert_eq!(require_json_str(&body, "code")?, "code123");
+    assert_eq!(require_json_str(&body, "code_verifier")?, "verifier456");
+    assert_eq!(require_json_str(&body, "state")?, "verifier456");
     Ok(())
 }
 
@@ -452,10 +455,8 @@ async fn claude_exchange_mock_server_with_state() -> Result<()> {
     let _ = exchange_code_at_url(&url, "c", "v", "https://r", Some("my_state")).await?;
 
     let (_method, _path, _headers, body) = handle.await.map_err(|e| anyhow!(e))?;
-    let pairs: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes())
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    assert_eq!(require_param(&pairs, "state")?, "my_state");
+    let body: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(require_json_str(&body, "state")?, "my_state");
     Ok(())
 }
 
@@ -479,16 +480,14 @@ async fn claude_exchange_uses_state_from_url_query_when_present() -> Result<()> 
     .await?;
 
     let (_method, _path, _headers, body) = handle.await.map_err(|e| anyhow!(e))?;
-    let pairs: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes())
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    assert_eq!(require_param(&pairs, "state")?, "query_state");
-    assert_eq!(require_param(&pairs, "code")?, "test_code");
+    let body: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(require_json_str(&body, "state")?, "query_state");
+    assert_eq!(require_json_str(&body, "code")?, "test_code");
     Ok(())
 }
 
 #[tokio::test]
-async fn claude_exchange_sends_browser_like_headers() -> Result<()> {
+async fn claude_exchange_uses_claude_code_token_headers() -> Result<()> {
     let success_body = serde_json::json!({
         "access_token": "at",
         "refresh_token": "rt",
@@ -502,22 +501,20 @@ async fn claude_exchange_sends_browser_like_headers() -> Result<()> {
 
     let (_method, _path, headers, _body) = handle.await.map_err(|e| anyhow!(e))?;
     assert_eq!(
-        headers.get("origin").map(String::as_str),
-        Some("https://claude.ai")
-    );
-    assert_eq!(
-        headers.get("referer").map(String::as_str),
-        Some("https://claude.ai/")
-    );
-    assert_eq!(
-        headers.get("sec-fetch-mode").map(String::as_str),
-        Some("cors")
+        headers.get("content-type").map(String::as_str),
+        Some("application/json")
     );
     assert!(
-        headers
-            .get("user-agent")
-            .is_some_and(|value| value.contains("Mozilla/5.0")),
-        "expected browser-like user-agent, got {headers:?}"
+        headers.get("origin").is_none(),
+        "unexpected Origin: {headers:?}"
+    );
+    assert!(
+        headers.get("referer").is_none(),
+        "unexpected Referer: {headers:?}"
+    );
+    assert!(
+        headers.get("sec-fetch-mode").is_none(),
+        "unexpected Sec-Fetch-Mode: {headers:?}"
     );
     Ok(())
 }
@@ -603,11 +600,9 @@ async fn claude_exchange_falls_back_to_verifier_when_input_has_no_state() -> Res
     let _ = exchange_claude_code_at_url(&url, "verifier_only", "plain_code", "https://r").await?;
 
     let (_method, _path, _headers, body) = handle.await.map_err(|e| anyhow!(e))?;
-    let pairs: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes())
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    assert_eq!(require_param(&pairs, "state")?, "verifier_only");
-    assert_eq!(require_param(&pairs, "code")?, "plain_code");
+    let body: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(require_json_str(&body, "state")?, "verifier_only");
+    assert_eq!(require_json_str(&body, "code")?, "plain_code");
     Ok(())
 }
 
@@ -625,10 +620,8 @@ async fn claude_exchange_uses_verifier_when_input_state_is_empty() -> Result<()>
     let _ = exchange_claude_code_at_url(&url, "verifier_only", "plain_code#", "https://r").await?;
 
     let (_method, _path, _headers, body) = handle.await.map_err(|e| anyhow!(e))?;
-    let pairs: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes())
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    assert_eq!(require_param(&pairs, "state")?, "verifier_only");
+    let body: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(require_json_str(&body, "state")?, "verifier_only");
     Ok(())
 }
 
@@ -651,7 +644,7 @@ async fn claude_exchange_mock_server_error_propagates() -> Result<()> {
 // ========================
 
 #[tokio::test]
-async fn claude_refresh_mock_server_receives_form_urlencoded() -> Result<()> {
+async fn claude_refresh_mock_server_receives_json() -> Result<()> {
     let success_body = serde_json::json!({
         "access_token": "at_refreshed",
         "refresh_token": "rt_refreshed",
@@ -673,14 +666,16 @@ async fn claude_refresh_mock_server_receives_form_urlencoded() -> Result<()> {
             .get("content-type")
             .map(String::as_str)
             .ok_or_else(|| anyhow!("missing content-type header"))?,
-        "application/x-www-form-urlencoded"
+        "application/json"
     );
-    let pairs: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes())
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    assert_eq!(require_param(&pairs, "grant_type")?, "refresh_token");
-    assert_eq!(require_param(&pairs, "refresh_token")?, "old_refresh_token");
-    assert_eq!(require_param(&pairs, "client_id")?, claude::CLIENT_ID);
+    let body: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(require_json_str(&body, "grant_type")?, "refresh_token");
+    assert_eq!(
+        require_json_str(&body, "refresh_token")?,
+        "old_refresh_token"
+    );
+    assert_eq!(require_json_str(&body, "client_id")?, claude::CLIENT_ID);
+    assert_eq!(require_json_str(&body, "scope")?, claude::REFRESH_SCOPES);
     Ok(())
 }
 
@@ -702,11 +697,11 @@ async fn claude_refresh_mock_server_error_propagates() -> Result<()> {
 }
 
 // ========================
-// Regression: JSON body must be rejected
+// Regression: Claude Code now sends JSON token exchange bodies
 // ========================
 
 #[tokio::test]
-async fn regression_json_body_rejected_by_strict_server() -> Result<()> {
+async fn claude_json_body_accepted_by_strict_server() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| anyhow!(e))?;
@@ -748,7 +743,7 @@ async fn regression_json_body_rejected_by_strict_server() -> Result<()> {
             reader.read_exact(&mut body).await.map_err(|e| anyhow!(e))?;
         }
 
-        if content_type.contains("application/json") {
+        if !content_type.contains("application/json") {
             let error_resp = r#"{"type":"error","error":{"type":"invalid_request_error","message":"Invalid request format"}}"#;
             let response = format!(
                 "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -786,12 +781,9 @@ async fn regression_json_body_rejected_by_strict_server() -> Result<()> {
     let server_accepted = handle.await.map_err(|e| anyhow!(e))??;
     assert!(
         server_accepted,
-        "Server should have accepted the form-urlencoded request"
+        "Server should have accepted the Claude Code-style JSON request"
     );
-    assert!(
-        result.is_ok(),
-        "Exchange should succeed with form-urlencoded"
-    );
+    assert!(result.is_ok(), "Exchange should succeed with JSON");
     Ok(())
 }
 
@@ -860,9 +852,9 @@ fn claude_exchange_handles_special_chars_in_code() -> Result<()> {
         claude::REDIRECT_URI,
         None,
     );
-    let pairs = form_pairs(body)?;
+    let body = json_body(body)?;
     assert_eq!(
-        require_param(&pairs, "code")?,
+        require_json_str(&body, "code")?,
         "code+with/special=chars&more"
     );
     Ok(())
@@ -877,32 +869,39 @@ fn openai_redirect_uri_format() {
 }
 
 // ========================
-// All providers use form-urlencoded (comprehensive check)
+// Provider token request content types match their upstream CLIs.
 // ========================
 
 #[test]
-fn all_token_requests_use_form_urlencoded_not_json() {
-    let checks: Vec<(&str, String)> = vec![
+fn token_requests_use_expected_content_types() {
+    let checks: Vec<(&str, String, &str)> = vec![
         (
             "claude_exchange",
             build_claude_exchange_request("c", "v", "r", None).1,
+            "application/json",
         ),
         (
             "claude_exchange_with_state",
             build_claude_exchange_request("c", "v", "r", Some("s")).1,
+            "application/json",
         ),
-        ("claude_refresh", build_claude_refresh_request("rt").1),
+        (
+            "claude_refresh",
+            build_claude_refresh_request("rt").1,
+            "application/json",
+        ),
         (
             "openai_exchange",
             build_openai_exchange_request("c", "v", "r").1,
+            "application/x-www-form-urlencoded",
         ),
-        ("openai_refresh", build_openai_refresh_request("rt").1),
+        (
+            "openai_refresh",
+            build_openai_refresh_request("rt").1,
+            "application/x-www-form-urlencoded",
+        ),
     ];
-    for (name, ct) in checks {
-        assert_eq!(
-            ct, "application/x-www-form-urlencoded",
-            "{} must use application/x-www-form-urlencoded, got {}",
-            name, ct
-        );
+    for (name, ct, expected) in checks {
+        assert_eq!(ct, expected, "{name} must use {expected}, got {ct}");
     }
 }
