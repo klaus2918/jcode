@@ -28,6 +28,7 @@ mod debug_swarm_write;
 mod debug_testers;
 mod durable_state;
 mod headless;
+mod lifecycle;
 mod provider_control;
 mod reload;
 mod reload_recovery;
@@ -330,6 +331,7 @@ pub use self::reload_state::{
     wait_for_reload_ack, wait_for_reload_handoff_event, write_reload_marker, write_reload_state,
 };
 
+pub(crate) use self::lifecycle::configure_temporary_server;
 #[cfg(unix)]
 pub use self::socket::spawn_server_notify;
 #[cfg(unix)]
@@ -857,7 +859,11 @@ impl Server {
         (main_handle, debug_handle)
     }
 
-    fn spawn_background_tasks(&self, server_start_time: Instant) {
+    fn spawn_background_tasks(
+        &self,
+        server_start_time: Instant,
+        temporary_server_policy: Option<lifecycle::TemporaryServerPolicy>,
+    ) {
         // Preload the embedding model in background so warm startups get fast
         // memory recall. On a cold install, skip eager preload because the
         // first-time model download can make the first spawned client look hung
@@ -1293,7 +1299,15 @@ impl Server {
             });
         }
 
-        if debug_control_allowed() {
+        if let Some(policy) = temporary_server_policy {
+            lifecycle::spawn_temporary_lifecycle_monitor(
+                Arc::clone(&self.client_count),
+                self.socket_path.clone(),
+                self.debug_socket_path.clone(),
+                self.identity.name.clone(),
+                policy,
+            );
+        } else if debug_control_allowed() {
             crate::logging::info("Debug control enabled; idle timeout monitor disabled.");
         } else {
             let idle_client_count = Arc::clone(&self.client_count);
@@ -1706,9 +1720,22 @@ impl Server {
         crate::logging::info(&format!("Server listening on {:?}", self.socket_path));
         crate::logging::info(&format!("Debug socket on {:?}", self.debug_socket_path));
 
+        let temporary_server_policy = lifecycle::temporary_server_policy_from_env();
+        if let Some(policy) = temporary_server_policy.as_ref() {
+            crate::logging::info(&format!(
+                "Temporary server lifecycle enabled: owner_pid={:?}, idle_timeout_secs={}",
+                policy.owner_pid, policy.idle_timeout_secs
+            ));
+            let _ = lifecycle::write_temporary_metadata(
+                &self.socket_path,
+                &self.debug_socket_path,
+                policy,
+            );
+        }
+
         let server_start_time = Instant::now();
 
-        self.spawn_background_tasks(server_start_time);
+        self.spawn_background_tasks(server_start_time, temporary_server_policy);
         let (main_handle, debug_handle) = self
             .finish_startup_after_bind(main_listener, debug_listener, server_start_time)
             .await;
