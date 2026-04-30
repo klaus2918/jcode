@@ -196,6 +196,63 @@ fn auth_status_check_returns_valid_struct() {
 }
 
 #[test]
+fn copilot_recent_token_exchange_failure_is_not_auto_usable() {
+    let _lock = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let prev_copilot_token = std::env::var_os("COPILOT_GITHUB_TOKEN");
+    let prev_gh_token = std::env::var_os("GH_TOKEN");
+    let prev_github_token = std::env::var_os("GITHUB_TOKEN");
+
+    crate::env::set_var("JCODE_HOME", temp.path());
+    crate::env::remove_var("COPILOT_GITHUB_TOKEN");
+    crate::env::remove_var("GH_TOKEN");
+    crate::env::remove_var("GITHUB_TOKEN");
+    AuthStatus::invalidate_cache();
+    crate::auth::copilot::invalidate_github_token_cache();
+
+    crate::auth::copilot::save_github_token("gho_saved_token", "tester")
+        .expect("save copilot token");
+    crate::auth::validation::save(
+        "copilot",
+        crate::auth::validation::ProviderValidationRecord {
+            checked_at_ms: chrono::Utc::now().timestamp_millis(),
+            success: false,
+            provider_smoke_ok: None,
+            tool_smoke_ok: None,
+            summary:
+                "refresh_probe: Copilot token exchange failed (HTTP 403 Forbidden): feature_flag_blocked"
+                    .to_string(),
+        },
+    )
+    .expect("save validation failure");
+
+    AuthStatus::invalidate_cache();
+    crate::auth::copilot::invalidate_github_token_cache();
+    let status = AuthStatus::check_fast();
+    assert_eq!(status.copilot, AuthState::Expired);
+    assert!(!status.copilot_has_api_token);
+    assert_eq!(
+        copilot_auth_state_from_credentials(),
+        (AuthState::Expired, false)
+    );
+
+    crate::env::set_var("GH_TOKEN", "gho_env_override");
+    AuthStatus::invalidate_cache();
+    crate::auth::copilot::invalidate_github_token_cache();
+    let status = AuthStatus::check_fast();
+    assert_eq!(status.copilot, AuthState::Available);
+    assert!(status.copilot_has_api_token);
+
+    restore_env_var("JCODE_HOME", prev_home);
+    restore_env_var("COPILOT_GITHUB_TOKEN", prev_copilot_token);
+    restore_env_var("GH_TOKEN", prev_gh_token);
+    restore_env_var("GITHUB_TOKEN", prev_github_token);
+    AuthStatus::invalidate_cache();
+    crate::auth::copilot::invalidate_github_token_cache();
+}
+
+#[test]
 fn openrouter_like_status_is_provider_specific() {
     let _lock = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("create temp dir");
