@@ -1,1 +1,1 @@
-pub use jcode_core::memory_types::*;
+pub use jcode_memory_types::*;
