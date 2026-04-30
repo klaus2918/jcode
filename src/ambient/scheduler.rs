@@ -11,7 +11,7 @@ use std::time::Duration;
 // Usage record types
 // ---------------------------------------------------------------------------
 
-pub use jcode_core::ambient_usage_types::{RateLimitInfo, UsageRecord, UsageSource};
+pub use jcode_ambient_types::{RateLimitInfo, UsageRecord, UsageSource};
 
 // ---------------------------------------------------------------------------
 // Usage log — rolling, persisted to disk
