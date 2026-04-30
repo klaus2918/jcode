@@ -1685,7 +1685,12 @@ impl Tool for CommunicateTool {
                 let target_status = params
                     .target_status
                     .unwrap_or_else(default_await_target_statuses);
-                let session_ids = params.session_ids.unwrap_or_default();
+                let mut session_ids = params.session_ids.unwrap_or_default();
+                if let Some(target_session) = params.target_session.clone()
+                    && !session_ids.iter().any(|id| id == &target_session)
+                {
+                    session_ids.push(target_session);
+                }
                 let timeout_minutes = params.timeout_minutes.unwrap_or(60);
                 let timeout_secs = timeout_minutes * 60;
 
