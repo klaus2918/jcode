@@ -36,6 +36,7 @@ use super::{
     AwaitMembersRuntime, ClientConnectionInfo, ClientDebugState, FileAccess, SessionControlHandle,
     SessionInterruptQueues, SharedContext, SwarmEvent, SwarmMember, SwarmMutationRuntime,
     VersionedPlan, register_session_interrupt_queue, truncate_detail, update_member_status,
+    update_member_status_with_report,
 };
 use crate::agent::Agent;
 use crate::bus::{Bus, BusEvent};
@@ -814,7 +815,7 @@ pub(super) async fn handle_client(
     // Per-client state
     let mut client_is_processing = false;
     let (processing_done_tx, mut processing_done_rx) =
-        mpsc::unbounded_channel::<(u64, Result<()>)>();
+        mpsc::unbounded_channel::<(u64, Result<()>, Option<String>)>();
     let mut processing_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut processing_message_id: Option<u64> = None;
     let mut processing_session_id: Option<String> = None;
@@ -1042,7 +1043,7 @@ pub(super) async fn handle_client(
                 }
             }
             done = processing_done_rx.recv() => {
-                if let Some((done_id, result)) = done {
+                if let Some((done_id, result, completion_report)) = done {
                     if Some(done_id) != processing_message_id {
                         crate::logging::warn(&format!(
                             "Done event id={} doesn't match processing_message_id={:?}, dropping",
@@ -1070,10 +1071,11 @@ pub(super) async fn handle_client(
                     match result {
                         Ok(()) => {
                             if let Some(session_id) = done_session.as_deref() {
-                                update_member_status(
+                                update_member_status_with_report(
                                     session_id,
                                     "ready",
                                     None,
+                                    completion_report,
                                     &swarm_members,
                                     &swarms_by_id,
                                     Some(&event_history),
@@ -2413,7 +2415,7 @@ async fn start_processing_message(
     state: &mut ProcessingState<'_>,
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    processing_done_tx: &mpsc::UnboundedSender<(u64, Result<()>)>,
+    processing_done_tx: &mpsc::UnboundedSender<(u64, Result<()>, Option<String>)>,
     swarm: &SwarmStatusRefs<'_>,
 ) {
     let ProcessingMessage {
@@ -2456,7 +2458,12 @@ async fn start_processing_message(
     )
     .await;
 
+    let start_message_index = {
+        let agent_guard = agent.lock().await;
+        agent_guard.message_count()
+    };
     let agent = Arc::clone(agent);
+    let report_agent = Arc::clone(&agent);
     let tx = client_event_tx.clone();
     let done_tx = processing_done_tx.clone();
     crate::logging::info(&format!("Processing message id={} spawning task", id));
@@ -2498,7 +2505,13 @@ async fn start_processing_message(
                 id, error
             )),
         }
-        let _ = done_tx.send((id, result));
+        let completion_report = if result.is_ok() {
+            let agent = report_agent.lock().await;
+            agent.latest_assistant_text_after(start_message_index)
+        } else {
+            None
+        };
+        let _ = done_tx.send((id, result, completion_report));
     }));
 }
 

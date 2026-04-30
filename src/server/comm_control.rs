@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(clippy::items_after_test_module))]
 
+use super::append_swarm_completion_report_instructions;
 use super::swarm::{now_unix_ms, swarm_task_heartbeat_interval, touch_swarm_task_progress};
 use super::swarm_mutation_state::{
     PersistedSwarmMutationResponse, begin_or_replay as begin_swarm_mutation_or_replay,
@@ -10,7 +11,7 @@ use super::{
     SwarmState, SwarmTaskProgress, VersionedPlan, broadcast_swarm_plan,
     broadcast_swarm_plan_with_previous, broadcast_swarm_status, fanout_session_event,
     persist_swarm_state_for, queue_soft_interrupt_for_session, record_swarm_event, truncate_detail,
-    update_member_status,
+    update_member_status, update_member_status_with_report,
 };
 use crate::agent::Agent;
 use crate::plan::{
@@ -499,6 +500,7 @@ fn spawn_assigned_task_run(
     event_counter: Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: broadcast::Sender<SwarmEvent>,
 ) {
+    let assignment_text = append_swarm_completion_report_instructions(&assignment_text);
     tokio::spawn(async move {
         {
             let now_ms = now_unix_ms();
@@ -610,6 +612,10 @@ fn spawn_assigned_task_run(
             Arc::clone(&event_counter),
             swarm_event_tx.clone(),
         );
+        let start_message_index = {
+            let agent = agent_arc.lock().await;
+            agent.message_count()
+        };
         let result = super::client_lifecycle::process_message_streaming_mpsc(
             Arc::clone(&agent_arc),
             &assignment_text,
@@ -618,6 +624,12 @@ fn spawn_assigned_task_run(
             event_tx,
         )
         .await;
+        let completion_report = if result.is_ok() {
+            let agent = agent_arc.lock().await;
+            agent.latest_assistant_text_after(start_message_index)
+        } else {
+            None
+        };
         let _ = heartbeat_stop_tx.send(true);
         let _ = heartbeat_task.await;
 
@@ -664,10 +676,11 @@ fn spawn_assigned_task_run(
                     &swarms_by_id,
                 )
                 .await;
-                update_member_status(
+                update_member_status_with_report(
                     &target_session,
                     "completed",
                     None,
+                    completion_report,
                     &swarm_members,
                     &swarms_by_id,
                     Some(&event_history),
@@ -1318,6 +1331,7 @@ pub(super) async fn handle_comm_assign_task(
     } else {
         format!("Task assigned to you by coordinator: {}", content)
     };
+    let queued_task_prompt = append_swarm_completion_report_instructions(&notification);
 
     let target_agent = {
         let agent_sessions = sessions.read().await;
@@ -1325,7 +1339,7 @@ pub(super) async fn handle_comm_assign_task(
     };
     let _ = queue_soft_interrupt_for_session(
         &target_session,
-        notification.clone(),
+        queued_task_prompt,
         false,
         SoftInterruptSource::System,
         soft_interrupt_queues,
@@ -1819,6 +1833,7 @@ pub(super) async fn handle_comm_task_control(
             }
 
             if action == TaskControlAction::Wake {
+                let assignment_text = append_swarm_completion_report_instructions(&assignment_text);
                 let wake_message = format!(
                     "Coordinator requested you wake and continue task '{}'.\n\n{}",
                     task_id, assignment_text
