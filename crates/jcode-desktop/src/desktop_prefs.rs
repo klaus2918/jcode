@@ -2,7 +2,8 @@ use crate::workspace::{DesktopPreferences, PanelSizePreset};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 pub fn load_preferences() -> Result<Option<DesktopPreferences>> {
     let path = preferences_path()?;
@@ -44,8 +45,30 @@ pub fn save_preferences(preferences: &DesktopPreferences) -> Result<()> {
         "focused_session_id": preferences.focused_session_id,
         "workspace_lane": preferences.workspace_lane,
     });
-    fs::write(&path, serde_json::to_vec_pretty(&value)?)
-        .with_context(|| format!("failed to write {}", path.display()))
+    let bytes = serde_json::to_vec_pretty(&value)?;
+    let temp_path = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("json")
+    ));
+
+    write_preferences_file(&temp_path, &bytes)
+        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    fs::rename(&temp_path, &path).with_context(|| {
+        format!(
+            "failed to replace {} from {}",
+            path.display(),
+            temp_path.display()
+        )
+    })
+}
+
+fn write_preferences_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
 }
 
 fn preferences_path() -> Result<PathBuf> {
@@ -96,6 +119,7 @@ mod tests {
         };
         save_preferences(&preferences)?;
         assert_eq!(load_preferences()?, Some(preferences));
+        assert!(!path.with_extension("json.tmp").exists());
 
         unsafe {
             std::env::remove_var("JCODE_DESKTOP_STATE");
