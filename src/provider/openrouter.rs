@@ -290,6 +290,7 @@ fn is_coding_agent_api_base(api_base: &str) -> bool {
     let path = url.path().trim_end_matches('/');
     is_kimi_coding_api_base(api_base)
         || host == "coding.dashscope.aliyuncs.com"
+        || host == "coding-intl.dashscope.aliyuncs.com"
         || (host == "api.z.ai" && path.starts_with("/api/coding/paas"))
 }
 
