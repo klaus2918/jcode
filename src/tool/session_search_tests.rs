@@ -1,6 +1,7 @@
 use super::*;
 use crate::message::{ContentBlock, Role};
 use crate::session::{Session, StoredDisplayRole};
+use chrono::Duration;
 use serde_json::json;
 use std::path::Path;
 
@@ -40,7 +41,7 @@ fn save_test_session(id: &str, messages: Vec<(Role, Vec<ContentBlock>)>) -> Sess
     session
 }
 
-fn run_search(home: &Path, query: &str, options: &SearchOptions) -> Vec<SearchResult> {
+fn run_report(home: &Path, query: &str, options: &SearchOptions) -> SearchReport {
     search_sessions_blocking(
         &home.join("sessions"),
         &QueryProfile::new(query),
@@ -48,6 +49,10 @@ fn run_search(home: &Path, query: &str, options: &SearchOptions) -> Vec<SearchRe
         "test-log-session",
     )
     .expect("search succeeds")
+}
+
+fn run_search(home: &Path, query: &str, options: &SearchOptions) -> Vec<SearchResult> {
+    run_report(home, query, options).results
 }
 
 #[test]
@@ -162,7 +167,7 @@ fn stop_word_only_query_is_not_actionable() {
         let results =
             search_sessions_blocking(&home.join("sessions"), &query, &options, "test-log-session")
                 .expect("search succeeds");
-        assert!(results.is_empty());
+        assert!(results.results.is_empty());
     });
 }
 
@@ -292,13 +297,167 @@ fn formatter_emits_stable_locators_and_safe_code_fences() {
         );
 
         let options = SearchOptions::for_test("current-session");
-        let results = run_search(home, "format-needle", &options);
-        let output = format_results("format-needle", &results, &options);
+        let report = run_report(home, "format-needle", &options);
+        let output = format_results("format-needle", &report, &options);
         assert!(output.contains("Session ID: `format-session`"));
         assert!(output.contains("Match: message #1"));
         assert!(
             output.contains("````text"),
             "fence should grow when snippet contains ```"
+        );
+    });
+}
+
+#[test]
+fn filters_cover_role_provider_model_flags_and_dates() {
+    with_temp_home(|home| {
+        let mut session = save_test_session(
+            "filter-session",
+            vec![
+                (Role::User, vec![text("filterable-needle from the user")]),
+                (
+                    Role::Assistant,
+                    vec![text("filterable-needle from the assistant")],
+                ),
+            ],
+        );
+        session.provider_key = Some("anthropic".to_string());
+        session.model = Some("claude-sonnet-4".to_string());
+        session.saved = true;
+        session.is_debug = true;
+        session.is_canary = true;
+        session.save().expect("save filter metadata");
+
+        let mut options = SearchOptions::for_test("current-session");
+        options.limit = 10;
+        options.max_per_session = 10;
+        options.role_filter = Some(RoleFilter::User);
+        let results = run_search(home, "filterable-needle", &options);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].role, "user");
+
+        options.role_filter = Some(RoleFilter::Assistant);
+        let results = run_search(home, "filterable-needle", &options);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].role, "assistant");
+
+        options.role_filter = None;
+        options.provider_filter = Some("anthropic".to_string());
+        options.model_filter = Some("sonnet".to_string());
+        options.saved_filter = Some(true);
+        options.debug_filter = Some(true);
+        options.canary_filter = Some(true);
+        options.before = Some(Utc::now() + Duration::days(1));
+        assert!(!run_search(home, "filterable-needle", &options).is_empty());
+
+        options.model_filter = Some("nonexistent-model".to_string());
+        assert!(run_search(home, "filterable-needle", &options).is_empty());
+
+        options.model_filter = Some("sonnet".to_string());
+        options.saved_filter = Some(false);
+        assert!(run_search(home, "filterable-needle", &options).is_empty());
+
+        options.saved_filter = Some(true);
+        options.after = Some(Utc::now() + Duration::days(1));
+        assert!(run_search(home, "filterable-needle", &options).is_empty());
+    });
+}
+
+#[test]
+fn context_expansion_returns_neighboring_messages_without_matching_hit() {
+    with_temp_home(|home| {
+        save_test_session(
+            "context-session",
+            vec![
+                (Role::User, vec![text("context-before-line")]),
+                (Role::Assistant, vec![text("context-hit-needle")]),
+                (Role::User, vec![text("context-after-line")]),
+            ],
+        );
+
+        let mut options = SearchOptions::for_test("current-session");
+        options.context_before = 1;
+        options.context_after = 1;
+        let results = run_search(home, "context-hit-needle", &options);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].message_index, Some(1));
+        assert_eq!(results[0].context.len(), 2);
+        assert!(results[0].context[0].text.contains("context-before-line"));
+        assert!(results[0].context[1].text.contains("context-after-line"));
+    });
+}
+
+#[test]
+fn external_codex_sessions_are_searchable_without_jcode_session_dir() {
+    with_temp_home(|home| {
+        let codex_dir = home.join("external/.codex/sessions/2026/05/01");
+        std::fs::create_dir_all(&codex_dir).expect("create codex dir");
+        let lines = [
+            json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": "codex-test",
+                    "timestamp": "2026-05-01T00:00:00Z",
+                    "cwd": "/tmp/external-project"
+                }
+            }),
+            json!({
+                "type": "message",
+                "id": "m1",
+                "role": "user",
+                "timestamp": "2026-05-01T00:01:00Z",
+                "content": [{"type": "input_text", "text": "external before context"}]
+            }),
+            json!({
+                "type": "message",
+                "id": "m2",
+                "role": "assistant",
+                "timestamp": "2026-05-01T00:02:00Z",
+                "content": [{"type": "output_text", "text": "external-codex-needle answer"}]
+            }),
+            json!({
+                "type": "message",
+                "id": "m3",
+                "role": "user",
+                "timestamp": "2026-05-01T00:03:00Z",
+                "content": [{"type": "input_text", "text": "external after context"}]
+            }),
+        ];
+        let body = lines
+            .iter()
+            .map(|line| serde_json::to_string(line).expect("serialize codex line"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(codex_dir.join("codex-test.jsonl"), body).expect("write codex jsonl");
+        std::fs::remove_dir_all(home.join("sessions")).expect("remove jcode sessions dir");
+
+        let mut options = SearchOptions::for_test("current-session");
+        options.source_filter = Some("codex".to_string());
+        options.context_before = 1;
+        options.context_after = 1;
+        let report = run_report(home, "external-codex-needle", &options);
+
+        assert_eq!(report.scanned_jcode_sessions, 0);
+        assert!(report.scanned_external_sessions >= 1);
+        assert_eq!(report.external_sources, vec!["codex"]);
+        assert_eq!(report.results.len(), 1);
+        let result = &report.results[0];
+        assert_eq!(result.source, "codex");
+        assert_eq!(result.session_id, "codex:codex-test");
+        assert_eq!(result.working_dir.as_deref(), Some("/tmp/external-project"));
+        assert_eq!(result.message_id.as_deref(), Some("m2"));
+        assert!(
+            result
+                .context
+                .iter()
+                .any(|line| line.text.contains("external before context"))
+        );
+        assert!(
+            result
+                .context
+                .iter()
+                .any(|line| line.text.contains("external after context"))
         );
     });
 }
