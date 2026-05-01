@@ -39,15 +39,7 @@ pub(super) fn handle_overnight_command(app: &mut App, trimmed: &str) -> bool {
             match crate::overnight::start_overnight_run(options) {
                 Ok(launch) => {
                     let manifest = launch.manifest;
-                    app.push_display_message(DisplayMessage::system(format!(
-                        "🌙 Started overnight run **{}**.\n\nCoordinator session: `{}` ({})\nTarget wake/report time: `{}`\nReview page: `{}`\nLog: `{}`\n\nUse `/overnight status`, `/overnight log`, `/overnight review`, or `/overnight cancel`.",
-                        manifest.run_id,
-                        manifest.coordinator_session_id,
-                        manifest.coordinator_session_name,
-                        manifest.target_wake_at.to_rfc3339(),
-                        manifest.review_path.display(),
-                        manifest.human_log_path.display(),
-                    )));
+                    app.upsert_overnight_display_card(&manifest);
                     app.set_status_notice("Overnight started");
                 }
                 Err(error) => app.push_display_message(DisplayMessage::error(format!(
@@ -71,9 +63,11 @@ fn show_overnight_help(app: &mut App) {
 fn show_overnight_status(app: &mut App) {
     match crate::overnight::latest_manifest() {
         Ok(Some(manifest)) => {
-            app.push_display_message(DisplayMessage::system(
-                crate::overnight::format_status_markdown(&manifest),
-            ));
+            if !app.upsert_overnight_display_card(&manifest) {
+                app.push_display_message(DisplayMessage::system(
+                    crate::overnight::format_status_markdown(&manifest),
+                ));
+            }
             app.set_status_notice("Overnight status");
         }
         Ok(None) => app.push_display_message(DisplayMessage::system(
@@ -142,16 +136,12 @@ fn open_overnight_review(app: &mut App) {
 fn cancel_overnight(app: &mut App) {
     match crate::overnight::cancel_latest_run() {
         Ok(manifest) => {
-            app.push_display_message(DisplayMessage::system(format!(
-                "Cancellation requested for overnight run `{}`. The coordinator will stop after the current turn reaches a safe boundary. Status: **{}**.",
-                manifest.run_id,
-                match manifest.status {
-                    crate::overnight::OvernightRunStatus::Running => "running",
-                    crate::overnight::OvernightRunStatus::CancelRequested => "cancel requested",
-                    crate::overnight::OvernightRunStatus::Completed => "already completed",
-                    crate::overnight::OvernightRunStatus::Failed => "already failed",
-                }
-            )));
+            if !app.upsert_overnight_display_card(&manifest) {
+                app.push_display_message(DisplayMessage::system(format!(
+                    "Cancellation requested for overnight run `{}`. The coordinator will stop after the current turn reaches a safe boundary.",
+                    manifest.run_id,
+                )));
+            }
             app.set_status_notice("Overnight cancel requested");
         }
         Err(error) => app.push_display_message(DisplayMessage::error(format!(

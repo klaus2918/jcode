@@ -72,7 +72,12 @@ fn user_prompt_text_style() -> Style {
 }
 
 fn default_message_alignment(role: &str, centered: bool) -> ratatui::layout::Alignment {
-    if centered && !matches!(role, "tool" | "system" | "swarm" | "background_task") {
+    if centered
+        && !matches!(
+            role,
+            "tool" | "system" | "swarm" | "background_task" | "overnight"
+        )
+    {
         ratatui::layout::Alignment::Center
     } else {
         ratatui::layout::Alignment::Left
@@ -780,6 +785,20 @@ pub(super) fn prepare_body_incremental(
                     new_line_copy_offsets.push(0);
                 }
             }
+            "overnight" => {
+                let content_width = width.saturating_sub(4);
+                let cached = get_cached_message_lines(
+                    msg,
+                    content_width,
+                    app.diff_mode(),
+                    super::messages::render_overnight_message,
+                );
+                for line in cached {
+                    new_lines.push(align_if_unset(line, align));
+                    new_line_raw_overrides.push(None);
+                    new_line_copy_offsets.push(0);
+                }
+            }
             "error" => {
                 let error_start_line = new_lines.len();
                 if let Some(target) = error_copy_target(&msg.content, 1) {
@@ -1244,6 +1263,20 @@ pub(super) fn prepare_body(
                     content_width,
                     app.diff_mode(),
                     render_usage_message,
+                );
+                for line in cached {
+                    lines.push(align_if_unset(line, align));
+                    line_raw_overrides.push(None);
+                    line_copy_offsets.push(0);
+                }
+            }
+            "overnight" => {
+                let content_width = width.saturating_sub(4);
+                let cached = get_cached_message_lines(
+                    msg,
+                    content_width,
+                    app.diff_mode(),
+                    super::messages::render_overnight_message,
                 );
                 for line in cached {
                     lines.push(align_if_unset(line, align));

@@ -931,6 +931,8 @@ pub struct App {
     usage_overlay: Option<RefCell<super::usage_overlay::UsageOverlay>>,
     /// Whether a usage refresh request is currently in flight.
     usage_report_refreshing: bool,
+    /// Last time the passive overnight progress card polled its run files.
+    last_overnight_card_refresh: Option<Instant>,
 }
 
 /// A placeholder provider for remote mode (never actually called)

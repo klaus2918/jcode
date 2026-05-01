@@ -184,6 +184,121 @@ pub struct OvernightPreflight {
     pub git: GitSnapshot,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OvernightTaskCardBefore {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OvernightTaskCardAfter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<String>,
+    #[serde(default)]
+    pub files_changed: Vec<String>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OvernightTaskCardValidation {
+    #[serde(default)]
+    pub commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OvernightTaskCard {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why_selected: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifiability: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub before: OvernightTaskCardBefore,
+    #[serde(default)]
+    pub after: OvernightTaskCardAfter,
+    #[serde(default)]
+    pub validation: OvernightTaskCardValidation,
+    #[serde(default)]
+    pub followups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct OvernightTaskStatusCounts {
+    pub completed: usize,
+    pub active: usize,
+    pub blocked: usize,
+    pub deferred: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub unknown: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct OvernightTaskCardSummary {
+    pub total: usize,
+    pub counts: OvernightTaskStatusCounts,
+    pub validated: usize,
+    pub high_risk: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OvernightProgressCard {
+    pub run_id: String,
+    pub status: String,
+    pub phase: String,
+    pub coordinator_session_id: String,
+    pub coordinator_session_name: String,
+    pub elapsed_label: String,
+    pub target_duration_label: String,
+    pub progress_percent: f32,
+    pub target_wake_at: String,
+    pub time_relation: String,
+    pub last_activity_label: String,
+    pub next_prompt_label: String,
+    pub usage_risk: String,
+    pub usage_confidence: String,
+    pub usage_projection: String,
+    pub resources_summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_event_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_event_summary: Option<String>,
+    pub task_summary: OvernightTaskCardSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_task_title: Option<String>,
+    pub review_path: String,
+    pub log_path: String,
+    pub run_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct OvernightLaunch {
     pub manifest: OvernightManifest,
@@ -343,6 +458,7 @@ pub fn start_overnight_run(options: OvernightStartOptions) -> Result<OvernightLa
 
     save_manifest(&manifest)?;
     write_initial_review_notes(&manifest)?;
+    write_task_card_schema(&manifest)?;
     record_event(
         &manifest,
         "run_started",
@@ -1000,6 +1116,317 @@ pub fn read_events(manifest: &OvernightManifest) -> Result<Vec<OvernightEvent>> 
         .collect())
 }
 
+pub fn read_task_cards(manifest: &OvernightManifest) -> Result<Vec<OvernightTaskCard>> {
+    if !manifest.task_cards_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(&manifest.task_cards_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if file_name.starts_with('_')
+            || path.extension().and_then(|ext| ext.to_str()) != Some("json")
+        {
+            continue;
+        }
+        paths.push(path);
+    }
+    paths.sort();
+
+    let mut cards = Vec::new();
+    for path in paths {
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(mut parsed) = serde_json::from_str::<Vec<OvernightTaskCard>>(&contents) {
+            cards.append(&mut parsed);
+        } else if let Ok(card) = serde_json::from_str::<OvernightTaskCard>(&contents) {
+            cards.push(card);
+        }
+    }
+
+    cards.retain(|card| !card.title.trim().is_empty() || !card.id.trim().is_empty());
+    cards.sort_by(|a, b| {
+        a.updated_at
+            .cmp(&b.updated_at)
+            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| a.title.cmp(&b.title))
+    });
+    Ok(cards)
+}
+
+pub fn summarize_task_cards(manifest: &OvernightManifest) -> OvernightTaskCardSummary {
+    summarize_task_cards_slice(&read_task_cards(manifest).unwrap_or_default())
+}
+
+pub fn summarize_task_cards_slice(cards: &[OvernightTaskCard]) -> OvernightTaskCardSummary {
+    let mut summary = OvernightTaskCardSummary {
+        total: cards.len(),
+        ..Default::default()
+    };
+    for card in cards {
+        match task_status_bucket(&card.status) {
+            "completed" => summary.counts.completed += 1,
+            "active" => summary.counts.active += 1,
+            "blocked" => summary.counts.blocked += 1,
+            "deferred" => summary.counts.deferred += 1,
+            "failed" => summary.counts.failed += 1,
+            "skipped" => summary.counts.skipped += 1,
+            _ => summary.counts.unknown += 1,
+        }
+        if task_card_validated(card) {
+            summary.validated += 1;
+        }
+        if card
+            .risk
+            .as_deref()
+            .map(|risk| risk.to_ascii_lowercase().contains("high"))
+            .unwrap_or(false)
+        {
+            summary.high_risk += 1;
+        }
+    }
+    if let Some(latest) = cards.last() {
+        summary.latest_title = Some(task_card_title(latest));
+        summary.latest_status = Some(if latest.status.trim().is_empty() {
+            "unknown".to_string()
+        } else {
+            latest.status.clone()
+        });
+    }
+    summary
+}
+
+pub fn format_progress_card_content(manifest: &OvernightManifest) -> Result<String> {
+    Ok(serde_json::to_string(&build_progress_card(manifest))?)
+}
+
+pub fn latest_progress_card_content() -> Result<Option<String>> {
+    latest_manifest()?
+        .map(|manifest| format_progress_card_content(&manifest))
+        .transpose()
+}
+
+pub fn build_progress_card(manifest: &OvernightManifest) -> OvernightProgressCard {
+    let now = Utc::now();
+    let target_minutes = manifest
+        .target_wake_at
+        .signed_duration_since(manifest.started_at)
+        .num_minutes()
+        .max(1) as u32;
+    let elapsed_minutes = now
+        .signed_duration_since(manifest.started_at)
+        .num_minutes()
+        .max(0) as u32;
+    let progress_percent = ((elapsed_minutes as f32 / target_minutes as f32) * 100.0).min(100.0);
+    let events = read_events(manifest).unwrap_or_default();
+    let latest_event = events
+        .iter()
+        .rev()
+        .find(|event| event.meaningful)
+        .or_else(|| events.last());
+    let preflight = read_preflight(manifest);
+    let latest_resource = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == "resource_sample")
+        .and_then(|event| serde_json::from_value::<ResourceSnapshot>(event.details.clone()).ok())
+        .or_else(|| {
+            preflight
+                .as_ref()
+                .map(|preflight| preflight.resources.clone())
+        });
+    let resources_summary = latest_resource
+        .as_ref()
+        .map(resource_summary)
+        .unwrap_or_else(|| "resources pending".to_string());
+    let usage = preflight.as_ref().map(|preflight| &preflight.usage);
+    let usage_projection = usage
+        .and_then(|usage| {
+            usage
+                .projected_end_min_percent
+                .zip(usage.projected_end_max_percent)
+        })
+        .map(|(min, max)| format!("projected {:.0}% to {:.0}%", min, max))
+        .unwrap_or_else(|| "projection pending".to_string());
+    let task_cards = read_task_cards(manifest).unwrap_or_default();
+    let task_summary = summarize_task_cards_slice(&task_cards);
+    let active_task_title = task_cards
+        .iter()
+        .rev()
+        .find(|card| matches!(task_status_bucket(&card.status), "active" | "blocked"))
+        .map(task_card_title)
+        .or_else(|| task_summary.latest_title.clone());
+
+    OvernightProgressCard {
+        run_id: manifest.run_id.clone(),
+        status: manifest.status.label().to_string(),
+        phase: overnight_phase(manifest, now).to_string(),
+        coordinator_session_id: manifest.coordinator_session_id.clone(),
+        coordinator_session_name: manifest.coordinator_session_name.clone(),
+        elapsed_label: format_minutes(elapsed_minutes),
+        target_duration_label: format_minutes(target_minutes),
+        progress_percent,
+        target_wake_at: manifest.target_wake_at.to_rfc3339(),
+        time_relation: time_relation_to_target(manifest, now),
+        last_activity_label: relative_time(manifest.last_activity_at, now),
+        next_prompt_label: next_prompt_label(manifest, now),
+        usage_risk: usage
+            .map(|usage| usage.risk.clone())
+            .unwrap_or_else(|| "pending".to_string()),
+        usage_confidence: usage
+            .map(|usage| usage.confidence.clone())
+            .unwrap_or_else(|| "pending".to_string()),
+        usage_projection,
+        resources_summary,
+        latest_event_kind: latest_event.map(|event| event.kind.clone()),
+        latest_event_summary: latest_event.map(|event| event.summary.clone()),
+        task_summary,
+        active_task_title,
+        review_path: manifest.review_path.display().to_string(),
+        log_path: manifest.human_log_path.display().to_string(),
+        run_dir: manifest.run_dir.display().to_string(),
+        completed_at: manifest.completed_at.map(|at| at.to_rfc3339()),
+    }
+}
+
+fn read_preflight(manifest: &OvernightManifest) -> Option<OvernightPreflight> {
+    if !manifest.preflight_path.exists() {
+        return None;
+    }
+    storage::read_json(&manifest.preflight_path).ok()
+}
+
+fn task_card_title(card: &OvernightTaskCard) -> String {
+    if !card.title.trim().is_empty() {
+        card.title.clone()
+    } else if !card.id.trim().is_empty() {
+        card.id.clone()
+    } else {
+        "untitled task".to_string()
+    }
+}
+
+fn task_status_bucket(status: &str) -> &'static str {
+    let normalized = status
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_");
+    match normalized.as_str() {
+        "done" | "complete" | "completed" | "fixed" | "validated" | "merged" => "completed",
+        "active" | "running" | "in_progress" | "working" | "verifying" | "planned" => "active",
+        "blocked" | "needs_user" | "waiting" => "blocked",
+        "deferred" | "queued" | "backlog" | "todo" => "deferred",
+        "failed" | "error" | "abandoned" => "failed",
+        "skipped" | "rejected" | "not_started" => "skipped",
+        _ => "unknown",
+    }
+}
+
+fn task_card_validated(card: &OvernightTaskCard) -> bool {
+    let result = card
+        .validation
+        .result
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    result.contains("pass")
+        || result.contains("success")
+        || result.contains("validated")
+        || result == "ok"
+}
+
+fn overnight_phase(manifest: &OvernightManifest, now: DateTime<Utc>) -> &'static str {
+    match manifest.status {
+        OvernightRunStatus::Completed => "completed",
+        OvernightRunStatus::Failed => "failed",
+        OvernightRunStatus::CancelRequested => "cancelling",
+        OvernightRunStatus::Running => {
+            if now < manifest.handoff_ready_at {
+                "running"
+            } else if now < manifest.target_wake_at {
+                "wind-down"
+            } else if manifest.morning_report_posted_at.is_none() {
+                "morning report"
+            } else if now < manifest.post_wake_grace_until {
+                "post-wake"
+            } else {
+                "finalizing"
+            }
+        }
+    }
+}
+
+fn time_relation_to_target(manifest: &OvernightManifest, now: DateTime<Utc>) -> String {
+    let minutes = manifest
+        .target_wake_at
+        .signed_duration_since(now)
+        .num_minutes();
+    if minutes >= 0 {
+        format!("target in {}", format_minutes(minutes as u32))
+    } else {
+        format!("target passed {} ago", format_minutes((-minutes) as u32))
+    }
+}
+
+fn relative_time(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let minutes = now.signed_duration_since(then).num_minutes();
+    if minutes >= 0 {
+        format!("{} ago", format_minutes(minutes as u32))
+    } else {
+        format!("in {}", format_minutes((-minutes) as u32))
+    }
+}
+
+fn next_prompt_label(manifest: &OvernightManifest, now: DateTime<Utc>) -> String {
+    if !matches!(manifest.status, OvernightRunStatus::Running) {
+        return "none".to_string();
+    }
+    if now < manifest.handoff_ready_at {
+        return format!(
+            "handoff mode in {} or after current turn",
+            format_minutes(
+                manifest
+                    .handoff_ready_at
+                    .signed_duration_since(now)
+                    .num_minutes()
+                    .max(0) as u32
+            )
+        );
+    }
+    if now < manifest.target_wake_at {
+        return format!(
+            "morning report in {} or after current turn",
+            format_minutes(
+                manifest
+                    .target_wake_at
+                    .signed_duration_since(now)
+                    .num_minutes()
+                    .max(0) as u32
+            )
+        );
+    }
+    if manifest.morning_report_posted_at.is_none() {
+        return "morning report after current turn".to_string();
+    }
+    if now < manifest.post_wake_grace_until {
+        return format!(
+            "final wrap by {} or after current turn",
+            manifest.post_wake_grace_until.format("%H:%M UTC")
+        );
+    }
+    "final wrap after current turn".to_string()
+}
+
 pub fn record_event(
     manifest: &OvernightManifest,
     kind: &str,
@@ -1072,6 +1499,7 @@ fn mark_completed(
 }
 
 pub fn format_status_markdown(manifest: &OvernightManifest) -> String {
+    let task_summary = summarize_task_cards(manifest);
     let remaining = manifest
         .target_wake_at
         .signed_duration_since(Utc::now())
@@ -1085,12 +1513,18 @@ pub fn format_status_markdown(manifest: &OvernightManifest) -> String {
         )
     };
     format!(
-        "🌙 **Overnight run `{}`**\n\nStatus: **{}**\nCoordinator: `{}` ({})\n{}\nPost-wake soft grace until: `{}`\nLast meaningful activity: {}\nReview: `{}`\nLog: `{}`",
+        "🌙 **Overnight run `{}`**\n\nStatus: **{}**\nCoordinator: `{}` ({})\n{}\nTask cards: **{} complete**, **{} active**, **{} blocked**, **{} deferred** ({} total, {} validated)\nPost-wake soft grace until: `{}`\nLast meaningful activity: {}\nReview: `{}`\nLog: `{}`",
         manifest.run_id,
         manifest.status.label(),
         manifest.coordinator_session_id,
         manifest.coordinator_session_name,
         remaining_line,
+        task_summary.counts.completed,
+        task_summary.counts.active,
+        task_summary.counts.blocked,
+        task_summary.counts.deferred,
+        task_summary.total,
+        task_summary.validated,
         manifest.post_wake_grace_until.to_rfc3339(),
         manifest.last_activity_at.to_rfc3339(),
         manifest.review_path.display(),
@@ -1133,6 +1567,56 @@ fn write_initial_review_notes(manifest: &OvernightManifest) -> Result<()> {
     write_text_file(&manifest.review_notes_path, &content)
 }
 
+fn write_task_card_schema(manifest: &OvernightManifest) -> Result<()> {
+    let schema_path = manifest.task_cards_dir.join("task-card-schema.md");
+    if schema_path.exists() {
+        return Ok(());
+    }
+    let content = r#"# Overnight task-card schema
+
+Create one `*.json` file per meaningful task. Keep it current while you work. The generated review page and TUI progress card read these files continuously.
+
+Required spirit: make the morning review objectively useful. Each completed or important attempted task should show why it was selected, what was true before, what changed after, and exactly how it was validated.
+
+```json
+{
+  "id": "task-001",
+  "title": "Fix deterministic provider reload timeout",
+  "status": "active | completed | blocked | deferred | failed | skipped",
+  "priority": "high | medium | low",
+  "source": "GH issue | failing test | static analysis | code quality | user request",
+  "why_selected": "Objective, bounded, high-confidence reason for choosing this task.",
+  "verifiability": "How we can prove the problem and prove the fix.",
+  "risk": "low | medium | high",
+  "outcome": "Concise final outcome or current state.",
+  "before": {
+    "problem": "Observed bug/code state before work.",
+    "evidence": ["validation/task-001-before.txt"]
+  },
+  "after": {
+    "change": "Changed behavior or code state after work.",
+    "files_changed": ["src/example.rs"],
+    "evidence": ["validation/task-001-after.txt"]
+  },
+  "validation": {
+    "commands": ["cargo test provider_reload"],
+    "result": "passed",
+    "evidence": ["validation/task-001-test.txt"]
+  },
+  "followups": ["Optional remaining safe next step"],
+  "updated_at": "2026-05-01T08:00:00Z"
+}
+```
+
+Notes:
+- Use `active` for the task currently being worked.
+- Use `completed` only when validation evidence exists or the task is intentionally documentation/issue-draft only.
+- Use `blocked` when user input, credentials, external access, or taste is required.
+- Use `deferred` or `skipped` when a task was considered but not pursued.
+"#;
+    write_text_file(&schema_path, content)
+}
+
 pub fn render_review_html(manifest: &OvernightManifest) -> Result<()> {
     let events = read_events(manifest).unwrap_or_default();
     let notes = std::fs::read_to_string(&manifest.review_notes_path).unwrap_or_else(|_| {
@@ -1143,6 +1627,9 @@ pub fn render_review_html(manifest: &OvernightManifest) -> Result<()> {
     } else {
         String::new()
     };
+    let task_cards = read_task_cards(manifest).unwrap_or_default();
+    let task_summary = summarize_task_cards_slice(&task_cards);
+    let task_cards_html = render_task_cards_html(&task_cards);
 
     let mut timeline = String::new();
     for event in events
@@ -1176,11 +1663,18 @@ a {{ color: #8ab4ff; }}
 header {{ padding: 28px 36px; background: linear-gradient(135deg, #1d2340, #12141c); border-bottom: 1px solid #30364a; }}
 main {{ padding: 24px 36px 48px; max-width: 1200px; margin: 0 auto; }}
 .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 18px; }}
-.card {{ background: #171b26; border: 1px solid #2c3347; border-radius: 14px; padding: 16px; }}
-.card .label {{ color: #9aa4bc; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
-.card .value {{ font-size: 18px; margin-top: 6px; }}
-section {{ margin-top: 28px; background: #151923; border: 1px solid #2a3041; border-radius: 16px; padding: 20px; }}
-h1, h2 {{ margin: 0 0 12px; }}
+	.card {{ background: #171b26; border: 1px solid #2c3347; border-radius: 14px; padding: 16px; }}
+	.card .label {{ color: #9aa4bc; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
+	.card .value {{ font-size: 18px; margin-top: 6px; }}
+	.task-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }}
+	.task-card {{ background: #111620; border: 1px solid #2b3348; border-radius: 14px; padding: 16px; }}
+	.task-card h3 {{ margin: 0 0 8px; }}
+	.task-card p {{ margin: 8px 0; }}
+	.task-card ul {{ margin: 8px 0 0 18px; padding: 0; }}
+	.meta {{ color: #9aa4bc; font-size: 13px; }}
+	.status-pill {{ display: inline-block; margin-right: 6px; padding: 3px 8px; border-radius: 999px; background: #24314f; color: #cfe0ff; font-size: 12px; }}
+	section {{ margin-top: 28px; background: #151923; border: 1px solid #2a3041; border-radius: 16px; padding: 20px; }}
+	h1, h2 {{ margin: 0 0 12px; }}
 ul.timeline {{ list-style: none; padding: 0; margin: 0; }}
 .timeline li {{ display: grid; grid-template-columns: 86px 240px 1fr; gap: 12px; padding: 9px 0; border-bottom: 1px solid #252b3a; }}
 .timeline li:last-child {{ border-bottom: none; }}
@@ -1200,20 +1694,25 @@ pre {{ white-space: pre-wrap; word-break: break-word; background: #0b0d12; color
   <div class="badge">{status}</div>
   <div class="cards">
     <div class="card"><div class="label">Coordinator</div><div class="value"><code>{coordinator}</code><br>{coordinator_name}</div></div>
-    <div class="card"><div class="label">Started</div><div class="value">{started}</div></div>
-    <div class="card"><div class="label">Target wake</div><div class="value">{target}</div></div>
-    <div class="card"><div class="label">Last activity</div><div class="value">{last_activity}</div></div>
-  </div>
-</header>
-<main>
+	    <div class="card"><div class="label">Started</div><div class="value">{started}</div></div>
+	    <div class="card"><div class="label">Target wake</div><div class="value">{target}</div></div>
+	    <div class="card"><div class="label">Last activity</div><div class="value">{last_activity}</div></div>
+	    <div class="card"><div class="label">Task cards</div><div class="value">{task_completed}/{task_total} complete<br><span class="meta">{task_active} active · {task_blocked} blocked · {task_deferred} deferred</span></div></div>
+	  </div>
+	</header>
+	<main>
 <section>
   <h2>Executive summary</h2>
   <p>Mission: {mission}</p>
-  <p>Working directory: <span class="path">{working_dir}</span></p>
-  <p>Provider/model: <code>{provider}</code> / <code>{model}</code></p>
-</section>
-<section>
-  <h2>Coordinator review notes</h2>
+	  <p>Working directory: <span class="path">{working_dir}</span></p>
+	  <p>Provider/model: <code>{provider}</code> / <code>{model}</code></p>
+	</section>
+	<section>
+	  <h2>Structured task cards</h2>
+	  {task_cards_html}
+	</section>
+	<section>
+	  <h2>Coordinator review notes</h2>
   <pre>{notes}</pre>
 </section>
 <section>
@@ -1246,6 +1745,11 @@ pre {{ white-space: pre-wrap; word-break: break-word; background: #0b0d12; color
         started = html_escape(&manifest.started_at.to_rfc3339()),
         target = html_escape(&manifest.target_wake_at.to_rfc3339()),
         last_activity = html_escape(&manifest.last_activity_at.to_rfc3339()),
+        task_total = task_summary.total,
+        task_completed = task_summary.counts.completed,
+        task_active = task_summary.counts.active,
+        task_blocked = task_summary.counts.blocked,
+        task_deferred = task_summary.counts.deferred,
         mission = html_escape(
             manifest
                 .mission
@@ -1255,6 +1759,7 @@ pre {{ white-space: pre-wrap; word-break: break-word; background: #0b0d12; color
         working_dir = html_escape(manifest.working_dir.as_deref().unwrap_or("unknown")),
         provider = html_escape(&manifest.provider_name),
         model = html_escape(&manifest.model),
+        task_cards_html = task_cards_html,
         notes = html_escape(&notes),
         timeline = timeline,
         preflight = html_escape(&preflight),
@@ -1265,6 +1770,114 @@ pre {{ white-space: pre-wrap; word-break: break-word; background: #0b0d12; color
         validation = html_escape(&manifest.validation_dir.display().to_string()),
     );
     write_text_file(&manifest.review_path, &html)
+}
+
+fn render_task_cards_html(cards: &[OvernightTaskCard]) -> String {
+    if cards.is_empty() {
+        return "<p class=\"meta\">No structured task cards have been written yet. The coordinator should create `task-cards/*.json` as meaningful tasks are selected.</p>".to_string();
+    }
+
+    let mut out = String::from("<div class=\"task-grid\">\n");
+    for card in cards.iter().rev() {
+        out.push_str("<article class=\"task-card\">\n");
+        out.push_str(&format!(
+            "<h3>{}</h3>\n<div class=\"meta\"><span class=\"status-pill\">{}</span>{}</div>\n",
+            html_escape(&task_card_title(card)),
+            html_escape(if card.status.trim().is_empty() {
+                "unknown"
+            } else {
+                card.status.trim()
+            }),
+            html_escape(&task_card_meta(card))
+        ));
+        push_optional_task_paragraph(&mut out, "Why selected", card.why_selected.as_deref());
+        push_optional_task_paragraph(&mut out, "Verifiability", card.verifiability.as_deref());
+        push_optional_task_paragraph(&mut out, "Before", card.before.problem.as_deref());
+        push_list(&mut out, "Before evidence", &card.before.evidence);
+        push_optional_task_paragraph(&mut out, "After", card.after.change.as_deref());
+        push_list(&mut out, "Files changed", &card.after.files_changed);
+        push_list(&mut out, "After evidence", &card.after.evidence);
+        push_list(&mut out, "Validation commands", &card.validation.commands);
+        push_optional_task_paragraph(
+            &mut out,
+            "Validation result",
+            card.validation.result.as_deref(),
+        );
+        push_list(&mut out, "Validation evidence", &card.validation.evidence);
+        push_optional_task_paragraph(&mut out, "Outcome", card.outcome.as_deref());
+        push_list(&mut out, "Followups", &card.followups);
+        out.push_str("</article>\n");
+    }
+    out.push_str("</div>");
+    out
+}
+
+fn task_card_meta(card: &OvernightTaskCard) -> String {
+    let mut parts = Vec::new();
+    if let Some(priority) = card
+        .priority
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(format!("priority: {}", priority.trim()));
+    }
+    if let Some(source) = card
+        .source
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(format!("source: {}", source.trim()));
+    }
+    if let Some(risk) = card
+        .risk
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(format!("risk: {}", risk.trim()));
+    }
+    if let Some(updated_at) = card
+        .updated_at
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(format!("updated: {}", updated_at.trim()));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", parts.join(" · "))
+    }
+}
+
+fn push_optional_task_paragraph(out: &mut String, label: &str, value: Option<&str>) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    out.push_str(&format!(
+        "<p><strong>{}</strong>: {}</p>\n",
+        html_escape(label),
+        html_escape(value)
+    ));
+}
+
+fn push_list(out: &mut String, label: &str, values: &[String]) {
+    let values: Vec<&str> = values
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect();
+    if values.is_empty() {
+        return;
+    }
+    out.push_str(&format!(
+        "<p><strong>{}</strong></p>\n<ul>\n",
+        html_escape(label)
+    ));
+    for value in values {
+        out.push_str(&format!("<li>{}</li>\n", html_escape(value)));
+    }
+    out.push_str("</ul>\n");
 }
 
 fn event_class(kind: &str) -> &'static str {
@@ -1325,8 +1938,8 @@ Operating contract:
 
 Review/log requirements:
 - Keep `{review_notes}` updated as you work.
-- For each meaningful task, include a task card with clear Before/After, evidence, validation, files changed, risk, and outcome.
-- Put detailed task cards in `{task_cards}` when useful.
+- For each meaningful task, maintain one structured JSON task card in `{task_cards}` using the schema in `{task_card_schema}`. These cards drive the live TUI progress card and the generated review page.
+- Each task card must include clear Before/After, evidence, validation, files changed, risk, status, and outcome. Keep the current task marked `active`, completed verified work marked `completed`, user/taste/credential stalls marked `blocked`, and considered-but-not-pursued work marked `deferred` or `skipped`.
 - Put reproduction/test/command outputs in `{validation}` when useful.
 - The generated review page is `{review_html}` and will be regenerated from logs plus your review notes.
 
@@ -1348,6 +1961,10 @@ Initial steps:
         issue_drafts = manifest.issue_drafts_dir.display(),
         review_notes = manifest.review_notes_path.display(),
         task_cards = manifest.task_cards_dir.display(),
+        task_card_schema = manifest
+            .task_cards_dir
+            .join("task-card-schema.md")
+            .display(),
         validation = manifest.validation_dir.display(),
         review_html = manifest.review_path.display(),
         preflight_summary = preflight_summary(preflight),
@@ -1361,7 +1978,7 @@ fn build_continuation_prompt(manifest: &OvernightManifest) -> String {
         .num_minutes()
         .max(0) as u32;
     format!(
-        "Overnight continuation: there is about {} remaining until the target wake/report time. If your current task is complete, run another discovery/scoring pass and choose another high-confidence, verifiable task. If you are stuck, record why in `{}` and switch to a smaller bounded task. Update the review notes before continuing.",
+        "Overnight continuation: there is about {} remaining until the target wake/report time. If your current task is complete, run another discovery/scoring pass and choose another high-confidence, verifiable task. If you are stuck, record why in `{}` and the relevant task-card JSON, then switch to a smaller bounded task. Update review notes and task cards before continuing.",
         format_minutes(remaining),
         manifest.review_notes_path.display()
     )
@@ -1369,14 +1986,14 @@ fn build_continuation_prompt(manifest: &OvernightManifest) -> String {
 
 fn build_handoff_ready_prompt(manifest: &OvernightManifest) -> String {
     format!(
-        "Handoff-ready reminder: target wake/report time is in about 30 minutes. Do not abandon useful work, but make the run easy to understand. Update `{}` with current task, completed work, validation state, files changed, risks, skipped work, and next steps. Avoid starting large/risky new changes unless they are isolated and clearly verifiable.",
+        "Handoff-ready reminder: target wake/report time is in about 30 minutes. Do not abandon useful work, but make the run easy to understand. Update `{}` and task-card JSON with current task, completed work, validation state, files changed, risks, skipped work, and next steps. Avoid starting large/risky new changes unless they are isolated and clearly verifiable.",
         manifest.review_notes_path.display()
     )
 }
 
 fn build_morning_report_prompt(manifest: &OvernightManifest) -> String {
     format!(
-        "Target wake/report time reached. Post a morning report now, even if work is still ongoing. Update `{}` and make sure `{}` is useful. Include completed work, current task, before/after evidence, files changed, validation, risks, usage/resource notes if relevant, and whether you plan to continue. You may continue only if the next chunk is bounded, safe, and verifiable.",
+        "Target wake/report time reached. Post a morning report now, even if work is still ongoing. Update `{}` plus task-card JSON and make sure `{}` is useful. Include completed work, current task, before/after evidence, files changed, validation, risks, usage/resource notes if relevant, and whether you plan to continue. You may continue only if the next chunk is bounded, safe, and verifiable.",
         manifest.review_notes_path.display(),
         manifest.review_path.display()
     )
@@ -1384,7 +2001,7 @@ fn build_morning_report_prompt(manifest: &OvernightManifest) -> String {
 
 fn build_post_wake_continuation_prompt(manifest: &OvernightManifest) -> String {
     format!(
-        "Post-wake continuation: the target wake/report time has passed and the morning report should already be available. You may continue only with bounded, safe, verifiable work that is already in progress or clearly high-value. Do not start broad/risky new changes. Keep `{}` current so the user can safely inspect or interrupt at any time. Soft grace window ends at `{}`.",
+        "Post-wake continuation: the target wake/report time has passed and the morning report should already be available. You may continue only with bounded, safe, verifiable work that is already in progress or clearly high-value. Do not start broad/risky new changes. Keep `{}` and task-card JSON current so the user can safely inspect or interrupt at any time. Soft grace window ends at `{}`.",
         manifest.review_notes_path.display(),
         manifest.post_wake_grace_until.to_rfc3339()
     )
@@ -1392,7 +2009,7 @@ fn build_post_wake_continuation_prompt(manifest: &OvernightManifest) -> String {
 
 fn build_final_wrapup_prompt(manifest: &OvernightManifest) -> String {
     format!(
-        "Final overnight wrap-up: the post-wake grace window has expired. Stop starting new work. Finish only immediate cleanup, update `{}` and `{}` with final before/after evidence, validation status, dirty repo state, remaining risks, and next steps, then stop.",
+        "Final overnight wrap-up: the post-wake grace window has expired. Stop starting new work. Finish only immediate cleanup, update `{}`, task-card JSON, and `{}` with final before/after evidence, validation status, dirty repo state, remaining risks, and next steps, then stop.",
         manifest.review_notes_path.display(),
         manifest.review_path.display()
     )
@@ -1493,6 +2110,42 @@ pub fn format_minutes(minutes: u32) -> String {
 mod tests {
     use super::*;
 
+    fn test_manifest(root: &Path, run_id: &str) -> OvernightManifest {
+        let run_dir = root.join("run");
+        let now = Utc::now();
+        OvernightManifest {
+            version: OVERNIGHT_VERSION,
+            run_id: run_id.to_string(),
+            parent_session_id: "parent".to_string(),
+            coordinator_session_id: "coord".to_string(),
+            coordinator_session_name: "coordinator".to_string(),
+            started_at: now,
+            target_wake_at: now + ChronoDuration::hours(7),
+            handoff_ready_at: now + ChronoDuration::hours(6),
+            post_wake_grace_until: now + ChronoDuration::hours(9),
+            morning_report_posted_at: None,
+            completed_at: None,
+            cancel_requested_at: None,
+            status: OvernightRunStatus::Running,
+            mission: Some("verify things".to_string()),
+            working_dir: Some("/tmp/project".to_string()),
+            provider_name: "test-provider".to_string(),
+            model: "test-model".to_string(),
+            max_agents_guidance: 2,
+            process_id: 123,
+            run_dir: run_dir.clone(),
+            events_path: run_dir.join("events.jsonl"),
+            human_log_path: run_dir.join("run.log"),
+            review_path: run_dir.join("review.html"),
+            review_notes_path: run_dir.join("review-notes.md"),
+            preflight_path: run_dir.join("preflight.json"),
+            task_cards_dir: run_dir.join("task-cards"),
+            issue_drafts_dir: run_dir.join("issue-drafts"),
+            validation_dir: run_dir.join("validation"),
+            last_activity_at: now,
+        }
+    }
+
     #[test]
     fn parse_duration_accepts_hours_minutes_and_decimals() {
         assert_eq!(parse_duration("7").unwrap().minutes, 420);
@@ -1549,39 +2202,7 @@ mod tests {
     #[test]
     fn render_review_html_writes_required_sections() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let run_dir = temp.path().join("run");
-        let now = Utc::now();
-        let manifest = OvernightManifest {
-            version: OVERNIGHT_VERSION,
-            run_id: "overnight_test".to_string(),
-            parent_session_id: "parent".to_string(),
-            coordinator_session_id: "coord".to_string(),
-            coordinator_session_name: "coordinator".to_string(),
-            started_at: now,
-            target_wake_at: now + ChronoDuration::hours(7),
-            handoff_ready_at: now + ChronoDuration::hours(6),
-            post_wake_grace_until: now + ChronoDuration::hours(9),
-            morning_report_posted_at: None,
-            completed_at: None,
-            cancel_requested_at: None,
-            status: OvernightRunStatus::Running,
-            mission: Some("verify things".to_string()),
-            working_dir: Some("/tmp/project".to_string()),
-            provider_name: "test-provider".to_string(),
-            model: "test-model".to_string(),
-            max_agents_guidance: 2,
-            process_id: 123,
-            run_dir: run_dir.clone(),
-            events_path: run_dir.join("events.jsonl"),
-            human_log_path: run_dir.join("run.log"),
-            review_path: run_dir.join("review.html"),
-            review_notes_path: run_dir.join("review-notes.md"),
-            preflight_path: run_dir.join("preflight.json"),
-            task_cards_dir: run_dir.join("task-cards"),
-            issue_drafts_dir: run_dir.join("issue-drafts"),
-            validation_dir: run_dir.join("validation"),
-            last_activity_at: now,
-        };
+        let manifest = test_manifest(temp.path(), "overnight_test");
         write_initial_review_notes(&manifest).expect("write notes");
         render_review_html(&manifest).expect("render review");
 
@@ -1592,5 +2213,124 @@ mod tests {
         assert!(html.contains("Artifacts"));
         assert!(html.contains("Before"));
         assert!(html.contains("After"));
+    }
+
+    #[test]
+    fn task_card_summary_reads_structured_json_cards() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = test_manifest(temp.path(), "overnight_cards");
+        std::fs::create_dir_all(&manifest.task_cards_dir).expect("task card dir");
+        std::fs::write(
+            manifest.task_cards_dir.join("task-001.json"),
+            r#"{
+              "id": "task-001",
+              "title": "Fix deterministic bug",
+              "status": "completed",
+              "risk": "low",
+              "validation": { "commands": ["cargo test bug"], "result": "passed" },
+              "updated_at": "2026-05-01T08:00:00Z"
+            }"#,
+        )
+        .expect("write completed card");
+        std::fs::write(
+            manifest.task_cards_dir.join("task-002.json"),
+            r#"{
+              "id": "task-002",
+              "title": "Investigate static-analysis finding",
+              "status": "active",
+              "risk": "high",
+              "updated_at": "2026-05-01T08:10:00Z"
+            }"#,
+        )
+        .expect("write active card");
+
+        let cards = read_task_cards(&manifest).expect("read cards");
+        assert_eq!(cards.len(), 2);
+        let summary = summarize_task_cards_slice(&cards);
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.counts.completed, 1);
+        assert_eq!(summary.counts.active, 1);
+        assert_eq!(summary.validated, 1);
+        assert_eq!(summary.high_risk, 1);
+        assert_eq!(
+            summary.latest_title.as_deref(),
+            Some("Investigate static-analysis finding")
+        );
+    }
+
+    #[test]
+    fn progress_card_content_includes_task_summary_and_latest_event() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = test_manifest(temp.path(), "overnight_progress");
+        std::fs::create_dir_all(&manifest.task_cards_dir).expect("task card dir");
+        std::fs::create_dir_all(manifest.events_path.parent().unwrap()).expect("events dir");
+        std::fs::write(
+            manifest.task_cards_dir.join("task-001.json"),
+            r#"{
+              "id": "task-001",
+              "title": "Verify reload race",
+              "status": "completed",
+              "validation": { "result": "passed" },
+              "updated_at": "2026-05-01T08:00:00Z"
+            }"#,
+        )
+        .expect("write card");
+        let event = OvernightEvent {
+            timestamp: Utc::now(),
+            run_id: manifest.run_id.clone(),
+            session_id: Some(manifest.coordinator_session_id.clone()),
+            kind: "coordinator_turn_completed".to_string(),
+            summary: "Coordinator turn completed".to_string(),
+            details: json!({}),
+            meaningful: true,
+        };
+        std::fs::write(
+            &manifest.events_path,
+            format!("{}\n", serde_json::to_string(&event).unwrap()),
+        )
+        .expect("write event");
+
+        let card: OvernightProgressCard =
+            serde_json::from_str(&format_progress_card_content(&manifest).expect("progress card"))
+                .expect("parse card");
+        assert_eq!(card.task_summary.counts.completed, 1);
+        assert_eq!(card.task_summary.validated, 1);
+        assert_eq!(
+            card.latest_event_kind.as_deref(),
+            Some("coordinator_turn_completed")
+        );
+        assert_eq!(
+            card.active_task_title.as_deref(),
+            Some("Verify reload race")
+        );
+    }
+
+    #[test]
+    fn render_review_html_includes_structured_task_cards() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = test_manifest(temp.path(), "overnight_review_cards");
+        write_initial_review_notes(&manifest).expect("write notes");
+        std::fs::create_dir_all(&manifest.task_cards_dir).expect("task card dir");
+        std::fs::write(
+            manifest.task_cards_dir.join("task-001.json"),
+            r#"{
+              "id": "task-001",
+              "title": "Fix deterministic bug",
+              "status": "completed",
+              "why_selected": "Reproducible failure",
+              "before": { "problem": "Test failed before the fix" },
+              "after": { "change": "Test passes after the fix", "files_changed": ["src/example.rs"] },
+              "validation": { "commands": ["cargo test deterministic_bug"], "result": "passed" },
+              "updated_at": "2026-05-01T08:00:00Z"
+            }"#,
+        )
+        .expect("write card");
+
+        render_review_html(&manifest).expect("render review");
+        let html = std::fs::read_to_string(&manifest.review_path).expect("read html");
+        assert!(html.contains("Structured task cards"));
+        assert!(html.contains("Fix deterministic bug"));
+        assert!(html.contains("Reproducible failure"));
+        assert!(html.contains("cargo test deterministic_bug"));
     }
 }

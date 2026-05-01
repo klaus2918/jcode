@@ -445,6 +445,7 @@ impl App {
             account_picker_overlay: None,
             usage_overlay: None,
             usage_report_refreshing: false,
+            last_overnight_card_refresh: None,
         };
 
         for notice in app.provider.drain_startup_notices() {
@@ -797,6 +798,7 @@ impl App {
             account_picker_overlay: None,
             usage_overlay: None,
             usage_report_refreshing: false,
+            last_overnight_card_refresh: None,
         };
 
         for notice in app.provider.drain_startup_notices() {

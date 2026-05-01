@@ -253,6 +253,271 @@ pub(crate) fn render_usage_message(
     )
 }
 
+pub(crate) fn render_overnight_message(
+    msg: &DisplayMessage,
+    width: u16,
+    diff_mode: crate::config::DiffDisplayMode,
+) -> Vec<Line<'static>> {
+    let Ok(card) = serde_json::from_str::<crate::overnight::OvernightProgressCard>(&msg.content)
+    else {
+        return render_system_message(msg, width, diff_mode);
+    };
+
+    let centered = markdown::center_code_blocks();
+    let (icon, border_color, status_color, text_color) = match card.status.as_str() {
+        "completed" => (
+            "✓",
+            rgb(90, 190, 120),
+            rgb(130, 225, 155),
+            rgb(220, 246, 226),
+        ),
+        "failed" => (
+            "✗",
+            rgb(220, 100, 100),
+            rgb(255, 150, 150),
+            rgb(255, 225, 225),
+        ),
+        "cancel requested" | "cancelling" => (
+            "◌",
+            rgb(255, 193, 94),
+            rgb(255, 214, 120),
+            rgb(255, 241, 214),
+        ),
+        _ => (
+            "◌",
+            rgb(158, 135, 255),
+            rgb(198, 184, 255),
+            rgb(232, 228, 255),
+        ),
+    };
+    let border_style = Style::default().fg(border_color);
+    let status_style = Style::default().fg(status_color).bold();
+    let text_style = Style::default().fg(text_color);
+    let label_style = Style::default().fg(dim_color());
+    let dim_style = Style::default().fg(dim_color()).dim();
+    let filled_style = Style::default().fg(status_color);
+    let empty_style = Style::default().fg(rgb(70, 68, 95));
+
+    let max_box_width = if centered {
+        (width.saturating_sub(4) as usize).min(120)
+    } else {
+        (width.saturating_sub(2) as usize).min(100)
+    }
+    .max(28);
+    let inner_width = max_box_width.saturating_sub(4).max(1);
+    let short_run_id = compact_run_id(&card.run_id);
+    let title = format!("{} overnight · {} · {}", icon, card.phase, short_run_id);
+
+    let mut box_content = vec![render_overnight_progress_line(
+        &card,
+        inner_width,
+        filled_style,
+        empty_style,
+        label_style,
+        status_style,
+    )];
+
+    push_overnight_kv_line(
+        &mut box_content,
+        "Target",
+        &format!("{} · {}", card.time_relation, card.target_wake_at),
+        inner_width,
+        label_style,
+        text_style,
+    );
+    push_overnight_kv_line(
+        &mut box_content,
+        "Coordinator",
+        &format!(
+            "{} ({})",
+            card.coordinator_session_id, card.coordinator_session_name
+        ),
+        inner_width,
+        label_style,
+        text_style,
+    );
+    push_overnight_kv_line(
+        &mut box_content,
+        "Last activity",
+        &format!(
+            "{} · next: {}",
+            card.last_activity_label, card.next_prompt_label
+        ),
+        inner_width,
+        label_style,
+        text_style,
+    );
+    push_overnight_kv_line(
+        &mut box_content,
+        "Tasks",
+        &format_overnight_task_counts(&card),
+        inner_width,
+        label_style,
+        text_style,
+    );
+    if let Some(active) = card
+        .active_task_title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        push_overnight_kv_line(
+            &mut box_content,
+            "Current",
+            active,
+            inner_width,
+            label_style,
+            text_style,
+        );
+    }
+    push_overnight_kv_line(
+        &mut box_content,
+        "Usage",
+        &format!(
+            "{} risk, {} confidence · {}",
+            card.usage_risk, card.usage_confidence, card.usage_projection
+        ),
+        inner_width,
+        label_style,
+        text_style,
+    );
+    push_overnight_kv_line(
+        &mut box_content,
+        "Resources",
+        &card.resources_summary,
+        inner_width,
+        label_style,
+        text_style,
+    );
+    if let Some(summary) = card
+        .latest_event_summary
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let latest = card
+            .latest_event_kind
+            .as_deref()
+            .map(|kind| format!("{}: {}", kind, summary))
+            .unwrap_or_else(|| summary.to_string());
+        push_overnight_kv_line(
+            &mut box_content,
+            "Latest",
+            &latest,
+            inner_width,
+            label_style,
+            text_style,
+        );
+    }
+    push_overnight_kv_line(
+        &mut box_content,
+        "Review",
+        &format!("{} · log: {}", card.review_path, card.log_path),
+        inner_width,
+        label_style,
+        dim_style,
+    );
+
+    let mut lines = render_rounded_box(&title, box_content, max_box_width, border_style);
+    if centered {
+        left_pad_lines_for_centered_mode(&mut lines, width);
+    }
+    lines
+}
+
+fn compact_run_id(run_id: &str) -> String {
+    if run_id.width() <= 22 {
+        run_id.to_string()
+    } else {
+        let prefix: String = run_id.chars().take(18).collect();
+        format!("{}…", prefix)
+    }
+}
+
+fn render_overnight_progress_line(
+    card: &crate::overnight::OvernightProgressCard,
+    inner_width: usize,
+    filled_style: Style,
+    empty_style: Style,
+    label_style: Style,
+    text_style: Style,
+) -> Line<'static> {
+    let percent = card.progress_percent.clamp(0.0, 100.0);
+    let label = format!("{:>3}%", percent.round() as u32);
+    let summary = format!("{} / {}", card.elapsed_label, card.target_duration_label);
+    let separator = " · ";
+    let fixed_width = 1 + label.width() + separator.width();
+    let bar_width = if inner_width >= 56 {
+        18
+    } else if inner_width >= 40 {
+        14
+    } else if inner_width >= 28 {
+        10
+    } else {
+        6
+    }
+    .min(inner_width.saturating_sub(fixed_width).max(1));
+    let filled = ((percent / 100.0) * bar_width as f32).round() as usize;
+    let filled = filled.min(bar_width);
+    let empty = bar_width.saturating_sub(filled);
+    let line = Line::from(vec![
+        Span::styled("█".repeat(filled), filled_style),
+        Span::styled("░".repeat(empty), empty_style),
+        Span::styled(" ", label_style),
+        Span::styled(label, label_style),
+        Span::styled(separator, label_style),
+        Span::styled(summary, text_style),
+    ]);
+    super::truncate_line_with_ellipsis_to_width(&line, inner_width)
+}
+
+fn push_overnight_kv_line(
+    content: &mut Vec<Line<'static>>,
+    label: &str,
+    value: &str,
+    inner_width: usize,
+    label_style: Style,
+    value_style: Style,
+) {
+    let prefix = format!("{}: ", label);
+    let prefix_width = prefix.width();
+    let available = inner_width.saturating_sub(prefix_width).max(1);
+    let chunks = split_by_display_width(value.trim(), available);
+    if chunks.is_empty() {
+        return;
+    }
+    for (idx, chunk) in chunks.into_iter().enumerate() {
+        if idx == 0 {
+            content.push(super::truncate_line_with_ellipsis_to_width(
+                &Line::from(vec![
+                    Span::styled(prefix.clone(), label_style),
+                    Span::styled(chunk, value_style),
+                ]),
+                inner_width,
+            ));
+        } else {
+            content.push(super::truncate_line_with_ellipsis_to_width(
+                &Line::from(vec![
+                    Span::styled(" ".repeat(prefix_width), label_style),
+                    Span::styled(chunk, value_style),
+                ]),
+                inner_width,
+            ));
+        }
+    }
+}
+
+fn format_overnight_task_counts(card: &crate::overnight::OvernightProgressCard) -> String {
+    let counts = &card.task_summary.counts;
+    format!(
+        "{} complete, {} active, {} blocked, {} deferred · {} total, {} validated",
+        counts.completed,
+        counts.active,
+        counts.blocked,
+        counts.deferred,
+        card.task_summary.total,
+        card.task_summary.validated
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedScheduledSessionMessage {
     task: String,

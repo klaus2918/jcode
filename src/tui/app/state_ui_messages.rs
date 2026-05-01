@@ -2,10 +2,13 @@ use super::state_ui_storage::{
     compact_display_message_tool_data, compact_display_messages_for_storage,
 };
 use super::*;
+use crate::overnight::OvernightRunStatus;
+use std::time::{Duration, Instant};
 
 const COMPACTED_HISTORY_CHUNK_MESSAGES: usize = 64;
 const COMPACTED_HISTORY_LOAD_SCROLL_THRESHOLD: usize = 2;
 const COMPACTED_HISTORY_MARKER_PREFIX: &str = "Earlier conversation compacted — ";
+const OVERNIGHT_CARD_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 impl App {
     pub fn push_display_message(&mut self, mut message: DisplayMessage) {
@@ -95,6 +98,57 @@ impl App {
         } else {
             self.push_display_message(DisplayMessage::background_task(content));
         }
+    }
+
+    pub(super) fn upsert_overnight_display_card(
+        &mut self,
+        manifest: &crate::overnight::OvernightManifest,
+    ) -> bool {
+        let Ok(content) = crate::overnight::format_progress_card_content(manifest) else {
+            return false;
+        };
+        let title = Some("Overnight".to_string());
+        let idx = self.display_messages.iter().rposition(|message| {
+            message.role == "overnight"
+                && serde_json::from_str::<crate::overnight::OvernightProgressCard>(&message.content)
+                    .is_ok_and(|card| card.run_id == manifest.run_id)
+        });
+        if let Some(idx) = idx {
+            self.replace_display_message_title_and_content(idx, title, content)
+        } else {
+            self.push_display_message(DisplayMessage::overnight(content));
+            true
+        }
+    }
+
+    pub(super) fn maybe_refresh_overnight_display_card(&mut self) -> bool {
+        if self.is_remote {
+            return false;
+        }
+        let now = Instant::now();
+        if self
+            .last_overnight_card_refresh
+            .is_some_and(|last| now.duration_since(last) < OVERNIGHT_CARD_REFRESH_INTERVAL)
+        {
+            return false;
+        }
+        self.last_overnight_card_refresh = Some(now);
+
+        let has_card = self
+            .display_messages
+            .iter()
+            .any(|message| message.role == "overnight");
+        let Ok(Some(manifest)) = crate::overnight::latest_manifest() else {
+            return false;
+        };
+        let active = matches!(
+            manifest.status,
+            OvernightRunStatus::Running | OvernightRunStatus::CancelRequested
+        );
+        if !has_card && !active {
+            return false;
+        }
+        self.upsert_overnight_display_card(&manifest)
     }
 
     pub(super) fn remove_display_message(&mut self, idx: usize) -> Option<DisplayMessage> {
