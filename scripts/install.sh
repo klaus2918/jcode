@@ -14,13 +14,14 @@ case "$OS" in
   Linux)
     case "$ARCH" in
       x86_64)  ARTIFACT="jcode-linux-x86_64" ;;
-      *)       err "Unsupported Linux architecture: $ARCH (only x86_64 supported)" ;;
+      aarch64|arm64) ARTIFACT="jcode-linux-aarch64" ;;
+      *)       err "Unsupported Linux architecture: $ARCH" ;;
     esac
     ;;
   Darwin)
     case "$ARCH" in
       arm64)   ARTIFACT="jcode-macos-aarch64" ;;
-      x86_64)  ARTIFACT="jcode-macos-aarch64" ;; # Rosetta 2
+      x86_64)  ARTIFACT="jcode-macos-x86_64" ;;
       *)       err "Unsupported macOS architecture: $ARCH" ;;
     esac
     ;;
