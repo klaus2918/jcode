@@ -436,6 +436,7 @@ impl Agent {
         } else {
             self.session.model = Some(self.provider.model());
         }
+        self.restore_reasoning_effort_from_session();
         let model_ms = model_start.elapsed().as_millis();
 
         let mark_active_start = Instant::now();

@@ -1,13 +1,10 @@
 use crate::id::{extract_session_name, new_id, new_memorable_session_id};
 use crate::message::{ContentBlock, Message, Role};
 use crate::storage;
-use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::time::Instant;
 mod active_pids;
 use active_pids::{active_pids_dir, register_active_pid, unregister_active_pid};
 pub use active_pids::{active_session_ids, find_active_session_id_by_pid};
@@ -15,6 +12,7 @@ mod crash;
 mod journal;
 mod memory_profile;
 mod model;
+mod persistence;
 mod render;
 mod storage_paths;
 pub use crash::{
@@ -22,10 +20,7 @@ pub use crash::{
     find_session_by_name_or_id, recover_crashed_sessions,
 };
 pub use jcode_session_types::{EnvSnapshot, GitState, SessionImproveMode, SessionStatus};
-use journal::{
-    PersistVectorMode, SessionJournalEntry, SessionJournalMeta, SessionPersistState,
-    metadata_requires_snapshot,
-};
+use journal::{PersistVectorMode, SessionJournalMeta, SessionPersistState};
 pub use memory_profile::SessionMemoryProfileSnapshot;
 use memory_profile::{
     ContentBlockMemoryStats, SessionMemoryProfileCache, summarize_blocks, summarize_message_content,
@@ -43,7 +38,7 @@ pub use render::{
 pub(crate) use storage_paths::session_journal_path_from_snapshot;
 #[cfg(test)]
 pub(crate) use storage_paths::session_path_in_dir;
-use storage_paths::{estimate_json_bytes, file_len_or_zero, persist_vector_mode_label};
+use storage_paths::{estimate_json_bytes, persist_vector_mode_label};
 pub use storage_paths::{session_exists, session_journal_path, session_path};
 
 fn stored_messages_to_messages(messages: &[StoredMessage]) -> Vec<Message> {
@@ -175,6 +170,8 @@ struct SessionStartupStub {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
     subagent_model: Option<String>,
     #[serde(default)]
     improve_mode: Option<SessionImproveMode>,
@@ -208,6 +205,12 @@ const MAX_SESSION_JOURNAL_BYTES: u64 = 512 * 1024;
 
 /// Max number of environment snapshots to retain per session
 const MAX_ENV_SNAPSHOTS: usize = 8;
+
+fn current_working_dir_string() -> Option<String> {
+    std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+}
 
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
@@ -266,6 +269,7 @@ impl Session {
         session.provider_session_id = stub.provider_session_id;
         session.provider_key = stub.provider_key;
         session.model = stub.model;
+        session.reasoning_effort = stub.reasoning_effort;
         session.subagent_model = stub.subagent_model;
         session.improve_mode = stub.improve_mode;
         session.autoreview_enabled = stub.autoreview_enabled;
@@ -298,6 +302,7 @@ impl Session {
         session.provider_session_id = snapshot.provider_session_id;
         session.provider_key = snapshot.provider_key;
         session.model = snapshot.model;
+        session.reasoning_effort = snapshot.reasoning_effort;
         session.subagent_model = snapshot.subagent_model;
         session.improve_mode = snapshot.improve_mode;
         session.autoreview_enabled = snapshot.autoreview_enabled;
@@ -433,6 +438,7 @@ impl Session {
             provider_session_id: self.provider_session_id.clone(),
             provider_key: self.provider_key.clone(),
             model: self.model.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
             subagent_model: self.subagent_model.clone(),
             improve_mode: self.improve_mode,
             autoreview_enabled: self.autoreview_enabled,
@@ -615,6 +621,7 @@ impl Session {
         self.provider_session_id = meta.provider_session_id;
         self.provider_key = meta.provider_key;
         self.model = meta.model;
+        self.reasoning_effort = meta.reasoning_effort;
         self.subagent_model = meta.subagent_model;
         self.improve_mode = meta.improve_mode;
         self.autoreview_enabled = meta.autoreview_enabled;
@@ -630,84 +637,6 @@ impl Session {
         self.saved = meta.saved;
         self.save_label = meta.save_label;
         self.mark_memory_profile_dirty();
-    }
-
-    fn apply_journal_entry(&mut self, entry: SessionJournalEntry) {
-        self.apply_journal_meta(entry.meta);
-        self.messages.extend(entry.append_messages);
-        self.env_snapshots.extend(entry.append_env_snapshots);
-        self.memory_injections
-            .extend(entry.append_memory_injections);
-        self.replay_events.extend(entry.append_replay_events);
-        self.mark_memory_profile_dirty();
-    }
-
-    fn checkpoint_snapshot(&mut self, snapshot_path: &Path, journal_path: &Path) -> Result<()> {
-        storage::write_json_fast(snapshot_path, self)?;
-        if journal_path.exists() {
-            let _ = std::fs::remove_file(journal_path);
-        }
-        self.reset_persist_state(true);
-        Ok(())
-    }
-
-    pub fn load_from_path(path: &Path) -> Result<Self> {
-        let load_start = Instant::now();
-        let snapshot_bytes = file_len_or_zero(path);
-        let snapshot_start = Instant::now();
-        let mut session: Session = storage::read_json(path)?;
-        let snapshot_ms = snapshot_start.elapsed().as_millis();
-        let journal_path = session_journal_path_from_snapshot(path);
-        let journal_bytes = file_len_or_zero(&journal_path);
-        let journal_start = Instant::now();
-        let mut journal_entries = 0usize;
-        if journal_path.exists() {
-            let file = std::fs::File::open(&journal_path)?;
-            let reader = BufReader::new(file);
-            for (line_idx, line) in reader.lines().enumerate() {
-                let line = line?;
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<SessionJournalEntry>(trimmed) {
-                    Ok(entry) => {
-                        journal_entries += 1;
-                        session.apply_journal_entry(entry)
-                    }
-                    Err(err) => {
-                        crate::logging::warn(&format!(
-                            "Session journal parse failed at {} line {}: {}",
-                            journal_path.display(),
-                            line_idx + 1,
-                            err
-                        ));
-                        break;
-                    }
-                }
-            }
-        }
-        let journal_ms = journal_start.elapsed().as_millis();
-        let finalize_start = Instant::now();
-        session.reset_persist_state(path.exists());
-        session.reset_provider_messages_cache();
-        session.mark_memory_profile_dirty();
-        let finalize_ms = finalize_start.elapsed().as_millis();
-        crate::logging::info(&format!(
-            "[TIMING] session_load: session={}, snapshot={}ms, journal={}ms, finalize={}ms, snapshot_bytes={}, journal_bytes={}, journal_entries={}, messages={}, env_snapshots={}, replay_events={}, total={}ms",
-            session.id,
-            snapshot_ms,
-            journal_ms,
-            finalize_ms,
-            snapshot_bytes,
-            journal_bytes,
-            journal_entries,
-            session.messages.len(),
-            session.env_snapshots.len(),
-            session.replay_events.len(),
-            load_start.elapsed().as_millis(),
-        ));
-        Ok(session)
     }
 
     pub fn create_with_id(
@@ -737,9 +666,7 @@ impl Session {
             autojudge_enabled: None,
             is_canary: false,
             testing_build: None,
-            working_dir: std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string()),
+            working_dir: current_working_dir_string(),
             short_name,
             status: SessionStatus::Active,
             last_pid: Some(std::process::id()),
@@ -784,9 +711,7 @@ impl Session {
             autojudge_enabled: None,
             is_canary: false,
             testing_build: None,
-            working_dir: std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string()),
+            working_dir: current_working_dir_string(),
             short_name: Some(short_name),
             status: SessionStatus::Active,
             last_pid: Some(std::process::id()),
@@ -858,6 +783,15 @@ impl Session {
     pub fn ensure_initial_session_context_message(&mut self) -> bool {
         if !self.messages.is_empty() || self.has_session_context_message() {
             return false;
+        }
+
+        // Capture the cwd at the moment the immutable session-context message is
+        // first inserted. A Session may be constructed before CLI startup, TUI
+        // launch, or tests finish changing the process cwd; using the older
+        // constructor snapshot here can produce a stale "Working directory" and
+        // git status in the model-visible context.
+        if let Some(current_dir) = current_working_dir_string() {
+            self.working_dir = Some(current_dir);
         }
 
         let context =
@@ -975,241 +909,6 @@ impl Session {
         } else {
             false
         }
-    }
-
-    pub fn load(session_id: &str) -> Result<Self> {
-        let path = session_path(session_id)?;
-        Self::load_from_path(&path)
-    }
-
-    /// Load only the metadata needed for remote-client startup.
-    ///
-    /// This intentionally skips heavyweight transcript vectors so the remote
-    /// client can paint quickly while the server performs the authoritative
-    /// session restore + history bootstrap.
-    pub fn load_startup_stub(session_id: &str) -> Result<Self> {
-        let path = session_path(session_id)?;
-        let reader = BufReader::new(std::fs::File::open(&path)?);
-        let stub: SessionStartupStub = serde_json::from_reader(reader)?;
-        Ok(Self::session_from_startup_stub(stub))
-    }
-
-    pub fn load_for_remote_startup(session_id: &str) -> Result<Self> {
-        let path = session_path(session_id)?;
-        let load_start = Instant::now();
-        let snapshot_bytes = file_len_or_zero(&path);
-        let snapshot_start = Instant::now();
-        let reader = BufReader::new(std::fs::File::open(&path)?);
-        let snapshot: RemoteStartupSessionSnapshot = serde_json::from_reader(reader)?;
-        let snapshot_ms = snapshot_start.elapsed().as_millis();
-        let mut session = Self::session_from_remote_startup_snapshot(snapshot);
-        let journal_path = session_journal_path_from_snapshot(&path);
-        let journal_bytes = file_len_or_zero(&journal_path);
-        let journal_start = Instant::now();
-        let mut journal_entries = 0usize;
-        if journal_path.exists() {
-            let file = std::fs::File::open(&journal_path)?;
-            let reader = BufReader::new(file);
-            for (line_idx, line) in reader.lines().enumerate() {
-                let line = line?;
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<SessionJournalEntry>(trimmed) {
-                    Ok(entry) => {
-                        journal_entries += 1;
-                        session.apply_journal_meta(entry.meta);
-                        session.messages.extend(entry.append_messages);
-                        session.replay_events.extend(entry.append_replay_events);
-                    }
-                    Err(err) => {
-                        crate::logging::warn(&format!(
-                            "Remote startup journal parse failed at {} line {}: {}",
-                            journal_path.display(),
-                            line_idx + 1,
-                            err
-                        ));
-                        break;
-                    }
-                }
-            }
-        }
-        let journal_ms = journal_start.elapsed().as_millis();
-        let finalize_start = Instant::now();
-        session.reset_persist_state(path.exists());
-        session.reset_provider_messages_cache();
-        session.mark_memory_profile_dirty();
-        let finalize_ms = finalize_start.elapsed().as_millis();
-        crate::logging::info(&format!(
-            "[TIMING] remote_startup_load: session={}, snapshot={}ms, journal={}ms, finalize={}ms, snapshot_bytes={}, journal_bytes={}, journal_entries={}, messages={}, total={}ms",
-            session.id,
-            snapshot_ms,
-            journal_ms,
-            finalize_ms,
-            snapshot_bytes,
-            journal_bytes,
-            journal_entries,
-            session.messages.len(),
-            load_start.elapsed().as_millis(),
-        ));
-        Ok(session)
-    }
-
-    pub fn save(&mut self) -> Result<()> {
-        self.updated_at = Utc::now();
-        let path = session_path(&self.id)?;
-        let journal_path = session_journal_path_from_snapshot(&path);
-        let start = std::time::Instant::now();
-        let snapshot_bytes_before = file_len_or_zero(&path);
-        let journal_bytes_before = file_len_or_zero(&journal_path);
-        let current_meta = self.journal_meta();
-        let metadata_needs_snapshot = self
-            .persist_state
-            .last_meta
-            .as_ref()
-            .is_some_and(|prev| metadata_requires_snapshot(prev, &current_meta));
-        let vectors_need_snapshot = !self.persist_state.snapshot_exists
-            || self.persist_state.messages_mode == PersistVectorMode::Full
-            || self.persist_state.env_snapshots_mode == PersistVectorMode::Full
-            || self.persist_state.memory_injections_mode == PersistVectorMode::Full
-            || self.persist_state.replay_events_mode == PersistVectorMode::Full
-            || self.messages.len() < self.persist_state.messages_len
-            || self.env_snapshots.len() < self.persist_state.env_snapshots_len
-            || self.memory_injections.len() < self.persist_state.memory_injections_len
-            || self.replay_events.len() < self.persist_state.replay_events_len;
-
-        let delta_messages = self
-            .messages
-            .len()
-            .saturating_sub(self.persist_state.messages_len);
-        let delta_env_snapshots = self
-            .env_snapshots
-            .len()
-            .saturating_sub(self.persist_state.env_snapshots_len);
-        let delta_memory_injections = self
-            .memory_injections
-            .len()
-            .saturating_sub(self.persist_state.memory_injections_len);
-        let delta_replay_events = self
-            .replay_events
-            .len()
-            .saturating_sub(self.persist_state.replay_events_len);
-        let (
-            result,
-            save_mode,
-            entry_build_ms,
-            append_ms,
-            journal_stat_ms,
-            checkpoint_ms,
-            journal_bytes_after,
-        ) = if metadata_needs_snapshot || vectors_need_snapshot {
-            let checkpoint_start = Instant::now();
-            let result = self.checkpoint_snapshot(&path, &journal_path);
-            let checkpoint_ms = checkpoint_start.elapsed().as_millis();
-            let journal_bytes_after = file_len_or_zero(&journal_path);
-            (
-                result,
-                "snapshot",
-                0,
-                0,
-                0,
-                checkpoint_ms,
-                journal_bytes_after,
-            )
-        } else {
-            let entry_build_start = Instant::now();
-            let entry = SessionJournalEntry {
-                meta: current_meta.clone(),
-                append_messages: self.messages[self.persist_state.messages_len..].to_vec(),
-                append_env_snapshots: self.env_snapshots[self.persist_state.env_snapshots_len..]
-                    .to_vec(),
-                append_memory_injections: self.memory_injections
-                    [self.persist_state.memory_injections_len..]
-                    .to_vec(),
-                append_replay_events: self.replay_events[self.persist_state.replay_events_len..]
-                    .to_vec(),
-            };
-            let entry_build_ms = entry_build_start.elapsed().as_millis();
-            let append_start = Instant::now();
-            let append_result = storage::append_json_line_fast(&journal_path, &entry);
-            let append_ms = append_start.elapsed().as_millis();
-            match append_result {
-                Ok(()) => {
-                    self.reset_persist_state(true);
-                    let journal_stat_start = Instant::now();
-                    let journal_bytes_after = file_len_or_zero(&journal_path);
-                    let journal_stat_ms = journal_stat_start.elapsed().as_millis();
-                    if journal_bytes_after > MAX_SESSION_JOURNAL_BYTES {
-                        let checkpoint_start = Instant::now();
-                        let result = self.checkpoint_snapshot(&path, &journal_path);
-                        let checkpoint_ms = checkpoint_start.elapsed().as_millis();
-                        let journal_bytes_after = file_len_or_zero(&journal_path);
-                        (
-                            result,
-                            "append+checkpoint",
-                            entry_build_ms,
-                            append_ms,
-                            journal_stat_ms,
-                            checkpoint_ms,
-                            journal_bytes_after,
-                        )
-                    } else {
-                        (
-                            Ok(()),
-                            "append",
-                            entry_build_ms,
-                            append_ms,
-                            journal_stat_ms,
-                            0,
-                            journal_bytes_after,
-                        )
-                    }
-                }
-                Err(err) => {
-                    crate::logging::warn(&format!(
-                        "Session journal append failed for {} ({}); checkpointing full snapshot",
-                        self.id, err
-                    ));
-                    let checkpoint_start = Instant::now();
-                    let result = self.checkpoint_snapshot(&path, &journal_path);
-                    let checkpoint_ms = checkpoint_start.elapsed().as_millis();
-                    let journal_bytes_after = file_len_or_zero(&journal_path);
-                    (
-                        result,
-                        "append_failed_fallback_snapshot",
-                        entry_build_ms,
-                        append_ms,
-                        0,
-                        checkpoint_ms,
-                        journal_bytes_after,
-                    )
-                }
-            }
-        };
-        let elapsed = start.elapsed();
-        if elapsed.as_millis() > 50 {
-            crate::logging::info(&format!(
-                "Session save slow: total={:.0}ms mode={} metadata_snapshot={} vectors_snapshot={} entry_build={}ms append={}ms journal_stat={}ms checkpoint={}ms messages={} delta_messages={} delta_env_snapshots={} delta_memory_injections={} delta_replay_events={} snapshot_bytes_before={} journal_bytes_before={} journal_bytes_after={}",
-                elapsed.as_secs_f64() * 1000.0,
-                save_mode,
-                metadata_needs_snapshot,
-                vectors_need_snapshot,
-                entry_build_ms,
-                append_ms,
-                journal_stat_ms,
-                checkpoint_ms,
-                self.messages.len(),
-                delta_messages,
-                delta_env_snapshots,
-                delta_memory_injections,
-                delta_replay_events,
-                snapshot_bytes_before,
-                journal_bytes_before,
-                journal_bytes_after,
-            ));
-        }
-        result
     }
 
     pub fn redacted_for_export(&self) -> Self {
@@ -1598,6 +1297,8 @@ struct RemoteStartupSessionSnapshot {
     provider_key: Option<String>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
     #[serde(default)]
     subagent_model: Option<String>,
     #[serde(default)]

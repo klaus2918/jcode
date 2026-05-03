@@ -280,16 +280,16 @@ pub(super) async fn handle_set_reasoning_effort(
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    let provider = {
-        let agent_guard = agent.lock().await;
-        agent_guard.provider_handle()
+    let result = {
+        let mut agent_guard = agent.lock().await;
+        agent_guard.set_reasoning_effort(&effort)
     };
 
-    match provider.set_reasoning_effort(&effort) {
-        Ok(()) => {
+    match result {
+        Ok(effort) => {
             let _ = client_event_tx.send(ServerEvent::ReasoningEffortChanged {
                 id,
-                effort: provider.reasoning_effort(),
+                effort,
                 error: None,
             });
         }

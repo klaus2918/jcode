@@ -121,6 +121,53 @@ fn initial_session_context_is_persisted_once_and_not_overwritten() {
 }
 
 #[test]
+fn initial_session_context_uses_current_cwd_when_inserted() -> Result<()> {
+    let _env_lock = lock_env();
+    let original_cwd = std::env::current_dir().map_err(|e| anyhow!(e))?;
+    let first_dir = tempfile::Builder::new()
+        .prefix("jcode-session-context-first-")
+        .tempdir()
+        .map_err(|e| anyhow!(e))?;
+    let second_dir = tempfile::Builder::new()
+        .prefix("jcode-session-context-second-")
+        .tempdir()
+        .map_err(|e| anyhow!(e))?;
+
+    std::env::set_current_dir(first_dir.path()).map_err(|e| anyhow!(e))?;
+    let mut session = Session::create_with_id(
+        "session_context_cwd_refresh_test".to_string(),
+        None,
+        Some("Session context cwd refresh".to_string()),
+    );
+    assert_eq!(
+        session.working_dir.as_deref(),
+        Some(first_dir.path().to_str().unwrap())
+    );
+
+    std::env::set_current_dir(second_dir.path()).map_err(|e| anyhow!(e))?;
+    let result: std::result::Result<(), anyhow::Error> = (|| {
+        assert!(session.ensure_initial_session_context_message());
+        let first = session.messages[0].content_preview();
+        assert!(
+            first.contains(&format!(
+                "Working directory: {}",
+                second_dir.path().display()
+            )),
+            "session context should use cwd at insertion time, got: {first}"
+        );
+        assert_eq!(
+            session.working_dir.as_deref(),
+            Some(second_dir.path().to_str().unwrap())
+        );
+        Ok(())
+    })();
+    std::env::set_current_dir(original_cwd).map_err(|e| anyhow!(e))?;
+    result?;
+
+    Ok(())
+}
+
+#[test]
 fn existing_non_empty_session_does_not_get_retroactive_session_context() {
     let mut session = Session::create_with_id(
         "session_context_existing_test".to_string(),
@@ -160,6 +207,7 @@ fn load_startup_stub_preserves_metadata_but_skips_heavy_vectors() -> Result<()> 
         Some("startup stub".to_string()),
     );
     session.model = Some("gpt-5.4".to_string());
+    session.reasoning_effort = Some("high".to_string());
     session.provider_key = Some("openai".to_string());
     session.set_canary("self-dev");
     session.append_stored_message(StoredMessage {
@@ -208,6 +256,7 @@ fn load_startup_stub_preserves_metadata_but_skips_heavy_vectors() -> Result<()> 
     assert_eq!(stub.parent_id.as_deref(), Some("parent_123"));
     assert_eq!(stub.title.as_deref(), Some("startup stub"));
     assert_eq!(stub.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(stub.reasoning_effort.as_deref(), Some("high"));
     assert_eq!(stub.provider_key.as_deref(), Some("openai"));
     assert!(stub.is_canary);
     assert!(stub.messages.is_empty());
@@ -233,6 +282,7 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
         Some("remote startup".to_string()),
     );
     session.model = Some("gpt-5.4".to_string());
+    session.reasoning_effort = Some("medium".to_string());
     session.append_stored_message(StoredMessage {
         id: "msg_remote_1".to_string(),
         role: Role::Assistant,
@@ -278,6 +328,7 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
     assert_eq!(loaded.id, session_id);
     assert_eq!(loaded.parent_id.as_deref(), Some("parent_remote"));
     assert_eq!(loaded.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(loaded.reasoning_effort.as_deref(), Some("medium"));
     assert_eq!(loaded.messages.len(), 1);
     assert!(loaded.replay_events.is_empty());
     assert!(loaded.env_snapshots.is_empty());
@@ -445,6 +496,31 @@ fn test_save_persists_provider_key() -> Result<()> {
     let loaded = Session::load("session_provider_key_persist_test")?;
     assert_eq!(loaded.provider_key.as_deref(), Some("opencode"));
     assert_eq!(loaded.model.as_deref(), Some("anthropic/claude-sonnet-4"));
+    Ok(())
+}
+
+#[test]
+fn test_save_persists_reasoning_effort() -> Result<()> {
+    let _env_lock = lock_env();
+    let temp_home = tempfile::Builder::new()
+        .prefix("jcode-session-reasoning-effort-save-test-")
+        .tempdir()
+        .map_err(|e| anyhow!(e))?;
+    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
+
+    let mut session = Session::create_with_id(
+        "session_reasoning_effort_persist_test".to_string(),
+        None,
+        Some("reasoning effort persistence test".to_string()),
+    );
+    session.model = Some("gpt-5.4".to_string());
+    session.reasoning_effort = Some("xhigh".to_string());
+
+    session.save()?;
+
+    let loaded = Session::load("session_reasoning_effort_persist_test")?;
+    assert_eq!(loaded.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(loaded.reasoning_effort.as_deref(), Some("xhigh"));
     Ok(())
 }
 

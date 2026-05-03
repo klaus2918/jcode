@@ -240,6 +240,7 @@ impl Agent {
         } else {
             agent.session.model = Some(agent.provider.model());
         }
+        agent.restore_reasoning_effort_from_session();
         agent.session.ensure_initial_session_context_message();
         agent.sync_memory_dedup_state_from_session();
         agent.seed_compaction_from_session();

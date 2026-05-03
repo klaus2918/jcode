@@ -59,6 +59,28 @@ impl Agent {
         Ok(())
     }
 
+    pub fn restore_reasoning_effort_from_session(&mut self) {
+        if let Some(effort) = self.session.reasoning_effort.clone() {
+            if let Err(e) = self.provider.set_reasoning_effort(&effort) {
+                crate::logging::error(&format!(
+                    "Failed to restore session reasoning effort '{}': {}",
+                    effort, e
+                ));
+            }
+        } else {
+            self.session.reasoning_effort = self.provider.reasoning_effort();
+        }
+    }
+
+    pub fn set_reasoning_effort(&mut self, effort: &str) -> Result<Option<String>> {
+        self.provider.set_reasoning_effort(effort)?;
+        let current = self.provider.reasoning_effort();
+        self.session.reasoning_effort = current.clone();
+        self.log_env_snapshot("set_reasoning_effort");
+        self.session.save()?;
+        Ok(current)
+    }
+
     pub fn subagent_model(&self) -> Option<String> {
         self.session.subagent_model.clone()
     }

@@ -390,7 +390,10 @@ async fn send_history_from_persisted_session(
         connection_type: None,
         status_detail: None,
         upstream_provider: None,
-        reasoning_effort: None,
+        reasoning_effort: session
+            .reasoning_effort
+            .clone()
+            .or_else(|| provider.reasoning_effort()),
         service_tier: None,
         compaction_mode: crate::config::config().compaction.mode.clone(),
         activity,
