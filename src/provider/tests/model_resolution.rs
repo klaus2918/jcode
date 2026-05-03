@@ -208,6 +208,56 @@ fn test_forced_openrouter_preserves_custom_at_sign_model_ids() {
 }
 
 #[test]
+fn test_config_default_provider_openai_compatible_keeps_gpt_model_provider_local() {
+    with_clean_provider_test_env(|| {
+        with_env_var(
+            "JCODE_OPENAI_COMPAT_API_BASE",
+            "https://compat.example.test/v1",
+            || {
+                with_env_var("JCODE_OPENAI_COMPAT_API_KEY_NAME", "OPENAI_API_KEY", || {
+                    with_env_var("OPENAI_API_KEY", "test-compatible-key", || {
+                        crate::provider_catalog::force_apply_openai_compatible_profile_env(Some(
+                            crate::provider_catalog::OPENAI_COMPAT_PROFILE,
+                        ));
+                        let openrouter = Arc::new(
+                            openrouter::OpenRouterProvider::new()
+                                .expect("OpenAI-compatible provider should initialize"),
+                        );
+                        let provider = MultiProvider {
+                            claude: RwLock::new(None),
+                            anthropic: RwLock::new(None),
+                            openai: RwLock::new(None),
+                            copilot_api: RwLock::new(None),
+                            antigravity: RwLock::new(None),
+                            gemini: RwLock::new(None),
+                            cursor: RwLock::new(None),
+                            openrouter: RwLock::new(Some(openrouter)),
+                            active: RwLock::new(ActiveProvider::OpenRouter),
+                            use_claude_cli: false,
+                            startup_notices: RwLock::new(Vec::new()),
+                            forced_provider: None,
+                        };
+
+                        provider
+                            .set_config_default_model("gpt-5.5", Some("openai-compatible"))
+                            .expect(
+                                "configured OpenAI-compatible default model should apply locally",
+                            );
+
+                        assert_eq!(provider.active_provider(), ActiveProvider::OpenRouter);
+                        assert_eq!(provider.model(), "gpt-5.5");
+                        assert_eq!(
+                            crate::provider_catalog::runtime_provider_display_name(provider.name()),
+                            "OpenAI-compatible"
+                        );
+                    })
+                })
+            },
+        )
+    });
+}
+
+#[test]
 fn test_custom_compatible_model_routes_do_not_request_openrouter_rewrite() {
     with_clean_provider_test_env(|| {
         with_env_var("OPENROUTER_API_KEY", "test-openrouter-key", || {

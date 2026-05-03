@@ -977,6 +977,40 @@ impl MultiProvider {
         self.set_active_provider(ActiveProvider::OpenRouter);
         Ok(())
     }
+
+    pub(super) fn set_config_default_model(
+        &self,
+        model: &str,
+        default_provider: Option<&str>,
+    ) -> Result<()> {
+        let model = model.trim();
+        if model.is_empty() {
+            anyhow::bail!("Model cannot be empty");
+        }
+
+        // A configured default_provider is a routing decision, not just a
+        // startup hint. Treat default_model as provider-local when the config
+        // names a concrete provider/profile so global model-name heuristics
+        // cannot undo that decision. This is especially important for
+        // OpenAI-compatible gateways whose model IDs often look like built-in
+        // OpenAI, Anthropic, or OpenRouter models.
+        if let Some(pref) = default_provider.and_then(|pref| {
+            let trimmed = pref.trim();
+            (!trimmed.is_empty()).then_some(trimmed)
+        }) {
+            if crate::provider_catalog::resolve_openai_compatible_profile_selection(pref).is_some()
+                || crate::config::config().providers.contains_key(pref)
+            {
+                return self.set_model_on_provider(ActiveProvider::OpenRouter, model);
+            }
+
+            if let Some(provider) = Self::parse_provider_hint(pref) {
+                return self.set_model_on_provider(provider, model);
+            }
+        }
+
+        self.set_model(model)
+    }
 }
 
 impl Default for MultiProvider {

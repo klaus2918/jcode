@@ -307,7 +307,9 @@ impl MultiProvider {
         };
 
         if let Some(ref model) = cfg.provider.default_model {
-            if let Err(e) = result.set_model(model) {
+            if let Err(e) =
+                result.set_config_default_model(model, cfg.provider.default_provider.as_deref())
+            {
                 crate::logging::warn(&format!(
                     "Failed to apply default_model '{}' from config: {}",
                     model, e
