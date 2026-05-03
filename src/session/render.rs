@@ -5,6 +5,13 @@ pub use jcode_session_types::{
 };
 use std::collections::HashMap;
 
+/// Number of compacted historical messages shown by default in the UI.
+///
+/// Compaction still keeps older history out of the active model context, but
+/// the transcript should retain recent continuity instead of replacing the
+/// entire compacted prefix with a marker.
+pub const DEFAULT_VISIBLE_COMPACTED_HISTORY_MESSAGES: usize = 64;
+
 fn is_internal_system_reminder(msg: &super::StoredMessage) -> bool {
     msg.content
         .iter()
@@ -115,7 +122,10 @@ pub fn render_messages(session: &Session) -> Vec<RenderedMessage> {
 }
 
 pub fn render_messages_and_images(session: &Session) -> (Vec<RenderedMessage>, Vec<RenderedImage>) {
-    let (messages, images, _) = render_messages_and_images_with_compacted_history(session, 0);
+    let (messages, images, _) = render_messages_and_images_with_compacted_history(
+        session,
+        DEFAULT_VISIBLE_COMPACTED_HISTORY_MESSAGES,
+    );
     (messages, images)
 }
 

@@ -762,7 +762,7 @@ fn test_render_messages_hides_internal_system_reminders() {
 }
 
 #[test]
-fn test_render_messages_hides_compacted_leading_history() {
+fn test_render_messages_shows_recent_compacted_history_by_default() {
     let mut session = Session::create_with_id(
         "session_render_compacted_history_test".to_string(),
         None,
@@ -799,11 +799,15 @@ fn test_render_messages_hides_compacted_leading_history() {
     });
 
     let rendered = render_messages(&session);
-    assert_eq!(rendered.len(), 2);
+    assert_eq!(rendered.len(), 4);
     assert_eq!(rendered[0].role, "system");
-    assert!(rendered[0].content.contains("2 historical messages hidden"));
+    assert!(rendered[0].content.contains("showing all 2"));
     assert_eq!(rendered[1].role, "user");
-    assert_eq!(rendered[1].content, "current prompt");
+    assert_eq!(rendered[1].content, "old prompt");
+    assert_eq!(rendered[2].role, "assistant");
+    assert_eq!(rendered[2].content, "old response");
+    assert_eq!(rendered[3].role, "user");
+    assert_eq!(rendered[3].content, "current prompt");
 }
 
 #[test]
