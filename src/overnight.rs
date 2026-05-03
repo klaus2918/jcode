@@ -311,6 +311,9 @@ pub struct OvernightStartOptions {
     pub provider: Arc<dyn Provider>,
     pub registry: Registry,
     pub working_dir: Option<PathBuf>,
+    /// When true, run the overnight coordinator in the session that launched
+    /// `/overnight` instead of forking an invisible child transcript.
+    pub use_current_session: bool,
 }
 
 pub fn parse_overnight_command(trimmed: &str) -> Option<Result<OvernightCommand, String>> {
@@ -409,7 +412,11 @@ pub fn start_overnight_run(options: OvernightStartOptions) -> Result<OvernightLa
     std::fs::create_dir_all(&issue_drafts_dir)?;
     std::fs::create_dir_all(&validation_dir)?;
 
-    let mut child = create_coordinator_session(&options.parent_session, &options.mission)?;
+    let mut child = if options.use_current_session {
+        options.parent_session.clone()
+    } else {
+        create_coordinator_session(&options.parent_session, &options.mission)?
+    };
     if let Some(working_dir) = options.working_dir.as_ref() {
         child.working_dir = Some(working_dir.to_string_lossy().to_string());
     }
@@ -417,10 +424,14 @@ pub fn start_overnight_run(options: OvernightStartOptions) -> Result<OvernightLa
     let coordinator_session_id = child.id.clone();
     let coordinator_session_name = child.display_name().to_string();
     let child_is_canary = child.is_canary;
-    child.status = SessionStatus::Closed;
+    if !options.use_current_session {
+        child.status = SessionStatus::Closed;
+    }
     child.save()?;
 
-    if let Ok(todos) = crate::todo::load_todos(&options.parent_session.id) {
+    if !options.use_current_session
+        && let Ok(todos) = crate::todo::load_todos(&options.parent_session.id)
+    {
         let _ = crate::todo::save_todos(&coordinator_session_id, &todos);
     }
 

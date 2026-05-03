@@ -27,6 +27,7 @@ pub(super) fn handle_overnight_command(app: &mut App, trimmed: &str) -> bool {
                 provider: app.provider.fork(),
                 registry: app.registry.clone(),
                 working_dir,
+                use_current_session: true,
             };
             match crate::overnight::start_overnight_run(options) {
                 Ok(launch) => {
