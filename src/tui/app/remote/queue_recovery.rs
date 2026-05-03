@@ -26,6 +26,10 @@ impl App {
     }
 
     pub(super) fn mark_soft_interrupt_injected(&mut self, content: &str) {
+        if self.mark_combined_soft_interrupt_injected(content) {
+            return;
+        }
+
         if let Some(index) = self
             .pending_soft_interrupts
             .iter()
@@ -41,6 +45,37 @@ impl App {
         {
             self.pending_soft_interrupt_requests.remove(index);
         }
+    }
+
+    fn mark_combined_soft_interrupt_injected(&mut self, content: &str) -> bool {
+        let mut combined = String::new();
+        for (index, pending) in self.pending_soft_interrupts.iter().enumerate() {
+            if index > 0 {
+                combined.push_str("\n\n");
+            }
+            combined.push_str(pending);
+
+            if combined == content {
+                let count = index + 1;
+                let removed: Vec<String> = self.pending_soft_interrupts.drain(..count).collect();
+                for removed_content in removed {
+                    if let Some(request_index) = self
+                        .pending_soft_interrupt_requests
+                        .iter()
+                        .position(|(_, pending)| pending == &removed_content)
+                    {
+                        self.pending_soft_interrupt_requests.remove(request_index);
+                    }
+                }
+                return true;
+            }
+
+            if !content.starts_with(&combined) {
+                break;
+            }
+        }
+
+        false
     }
 }
 

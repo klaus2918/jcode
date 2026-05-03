@@ -594,6 +594,31 @@ fn test_handle_server_event_soft_interrupt_injected_duplicate_content_keeps_late
 }
 
 #[test]
+fn test_handle_server_event_soft_interrupt_injected_combined_content_clears_component_previews() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.pending_soft_interrupts = vec!["first".to_string(), "second".to_string()];
+    app.pending_soft_interrupt_requests =
+        vec![(11, "first".to_string()), (22, "second".to_string())];
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::SoftInterruptInjected {
+            content: "first\n\nsecond".to_string(),
+            display_role: Some("user".to_string()),
+            point: "D".to_string(),
+            tools_skipped: None,
+        },
+        &mut remote,
+    );
+
+    assert!(app.pending_soft_interrupts.is_empty());
+    assert!(app.pending_soft_interrupt_requests.is_empty());
+}
+
+#[test]
 fn test_handle_server_event_soft_interrupt_injected_unrelated_content_keeps_pending_previews() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
