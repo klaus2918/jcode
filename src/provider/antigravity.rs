@@ -351,13 +351,13 @@ fn catalog_is_stale(fetched_at_rfc3339: &str) -> bool {
         >= CATALOG_REFRESH_TTL_HOURS
 }
 
-pub struct AntigravityCliProvider {
+pub struct AntigravityProvider {
     client: reqwest::Client,
     model: Arc<RwLock<String>>,
     fetched_catalog: Arc<RwLock<Vec<CatalogModel>>>,
 }
 
-impl Clone for AntigravityCliProvider {
+impl Clone for AntigravityProvider {
     fn clone(&self) -> Self {
         Self {
             client: self.client.clone(),
@@ -367,7 +367,7 @@ impl Clone for AntigravityCliProvider {
     }
 }
 
-impl AntigravityCliProvider {
+impl AntigravityProvider {
     fn persisted_catalog_path() -> Result<std::path::PathBuf> {
         Ok(crate::storage::app_config_dir()?.join("antigravity_models_cache.json"))
     }
@@ -486,18 +486,13 @@ impl AntigravityCliProvider {
     async fn fetch_available_models(&self) -> Result<Vec<CatalogModel>> {
         let mut tokens = antigravity_auth::load_or_refresh_tokens().await?;
 
-        if let Ok(models) = self
-            .fetch_available_models_with_project(&tokens.access_token, None)
-            .await
-            && !models.is_empty()
-        {
-            return Ok(models);
-        }
-
-        if let Some(project_id) = tokens.project_id.clone()
-            && !project_id.trim().is_empty()
+        if let Some(project_id) = tokens
+            .project_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
             && let Ok(models) = self
-                .fetch_available_models_with_project(&tokens.access_token, Some(&project_id))
+                .fetch_available_models_with_project(&tokens.access_token, Some(project_id))
                 .await
             && !models.is_empty()
         {
@@ -507,9 +502,13 @@ impl AntigravityCliProvider {
         if let Ok(project_id) = antigravity_auth::fetch_project_id(&tokens.access_token).await {
             tokens.project_id = Some(project_id.clone());
             let _ = antigravity_auth::save_tokens(&tokens);
-            return self
+            if let Ok(models) = self
                 .fetch_available_models_with_project(&tokens.access_token, Some(&project_id))
-                .await;
+                .await
+                && !models.is_empty()
+            {
+                return Ok(models);
+            }
         }
 
         self.fetch_available_models_with_project(&tokens.access_token, None)
@@ -593,14 +592,14 @@ impl AntigravityCliProvider {
     }
 }
 
-impl Default for AntigravityCliProvider {
+impl Default for AntigravityProvider {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Provider for AntigravityCliProvider {
+impl Provider for AntigravityProvider {
     async fn complete(
         &self,
         messages: &[Message],

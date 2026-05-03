@@ -18,6 +18,10 @@ fn parse_fetch_available_models_response_discovers_metadata_and_priority_order()
                 "displayName": "Gemini 3.1 Pro (High)",
                 "quotaInfo": { "remainingFraction": 0.25 }
             },
+            "gemini-3-flash": {
+                "displayName": "Gemini 3 Flash",
+                "quotaInfo": { "remainingFraction": 0, "resetTime": "2026-04-24T21:53:26Z" }
+            },
             "gpt-oss-120b-medium": {}
         }
     }))
@@ -32,11 +36,23 @@ fn parse_fetch_available_models_response_discovers_metadata_and_priority_order()
         Some("Claude Opus 4.6 (Thinking)")
     );
     assert_eq!(parsed[1].remaining_fraction_milli, Some(250));
+    let flash = parsed
+        .iter()
+        .find(|model| model.id == "gemini-3-flash")
+        .expect("gemini flash model");
+    assert!(!flash.available);
+    assert_eq!(flash.remaining_fraction_milli, Some(0));
+}
+
+#[test]
+fn client_metadata_uses_backend_accepted_platform() {
+    assert_eq!(metadata_platform(), "PLATFORM_UNSPECIFIED");
+    assert!(client_metadata_header().contains("\"platform\":\"PLATFORM_UNSPECIFIED\""));
 }
 
 #[test]
 fn available_models_display_includes_dynamic_cache_and_current_override() {
-    let provider = AntigravityCliProvider::new();
+    let provider = AntigravityProvider::new();
     *provider.fetched_catalog.write().expect("catalog lock") = vec![
         CatalogModel {
             id: "claude-opus-4-6-thinking".to_string(),
@@ -81,7 +97,7 @@ fn available_models_display_seeds_from_persisted_catalog() {
     let previous = std::env::var_os("JCODE_HOME");
     crate::env::set_var("JCODE_HOME", temp.path());
 
-    let path = AntigravityCliProvider::persisted_catalog_path().expect("catalog path");
+    let path = AntigravityProvider::persisted_catalog_path().expect("catalog path");
     crate::storage::write_json(
         &path,
         &PersistedCatalog {
@@ -102,7 +118,7 @@ fn available_models_display_seeds_from_persisted_catalog() {
     )
     .expect("write persisted catalog");
 
-    let provider = AntigravityCliProvider::new();
+    let provider = AntigravityProvider::new();
     assert!(
         provider
             .available_models_display()
@@ -143,7 +159,7 @@ fn catalog_stale_handles_invalid_timestamp() {
 
 #[tokio::test]
 async fn complete_uses_native_https_transport_not_cli_subprocess() {
-    let provider = AntigravityCliProvider::new();
+    let provider = AntigravityProvider::new();
     let mut stream = provider
         .complete(&[], &[], "say hello", None)
         .await

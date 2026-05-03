@@ -401,7 +401,7 @@ fn test_multi_provider_antigravity_routes_do_not_include_legacy_duplicate_entrie
         anthropic: RwLock::new(None),
         openai: RwLock::new(None),
         copilot_api: RwLock::new(None),
-        antigravity: RwLock::new(Some(Arc::new(antigravity::AntigravityCliProvider::new()))),
+        antigravity: RwLock::new(Some(Arc::new(antigravity::AntigravityProvider::new()))),
         gemini: RwLock::new(None),
         cursor: RwLock::new(None),
         openrouter: RwLock::new(None),

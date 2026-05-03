@@ -22,7 +22,7 @@ impl MultiProvider {
             .clone()
     }
 
-    pub(super) fn antigravity_provider(&self) -> Option<Arc<antigravity::AntigravityCliProvider>> {
+    pub(super) fn antigravity_provider(&self) -> Option<Arc<antigravity::AntigravityProvider>> {
         self.antigravity
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

@@ -580,8 +580,8 @@ pub struct MultiProvider {
     openai: RwLock<Option<Arc<openai::OpenAIProvider>>>,
     /// GitHub Copilot API provider (direct API, hot-swappable after login)
     copilot_api: RwLock<Option<Arc<copilot::CopilotApiProvider>>>,
-    /// Antigravity provider (CLI-backed, hot-swappable after login)
-    antigravity: RwLock<Option<Arc<antigravity::AntigravityCliProvider>>>,
+    /// Antigravity provider (direct HTTPS, hot-swappable after login)
+    antigravity: RwLock<Option<Arc<antigravity::AntigravityProvider>>>,
     /// Gemini provider (hot-swappable after login)
     gemini: RwLock<Option<Arc<gemini::GeminiProvider>>>,
     /// Cursor provider (native/direct API, hot-swappable after login)
@@ -1746,7 +1746,7 @@ impl Provider for MultiProvider {
                 .antigravity
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                Some(Arc::new(antigravity::AntigravityCliProvider::new()));
+                Some(Arc::new(antigravity::AntigravityProvider::new()));
         }
 
         let already_has_gemini = self.gemini_provider().is_some();

@@ -149,7 +149,7 @@ impl MultiProvider {
         };
 
         let antigravity_provider = if has_antigravity_creds {
-            Some(Arc::new(antigravity::AntigravityCliProvider::new()))
+            Some(Arc::new(antigravity::AntigravityProvider::new()))
         } else {
             None
         };

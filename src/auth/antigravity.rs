@@ -617,6 +617,12 @@ mod tests {
     }
 
     #[test]
+    fn client_metadata_uses_backend_accepted_platform() {
+        assert_eq!(metadata_platform(), "PLATFORM_UNSPECIFIED");
+        assert!(client_metadata_header().contains("\"platform\":\"PLATFORM_UNSPECIFIED\""));
+    }
+
+    #[test]
     fn extract_project_id_supports_string_or_object() {
         assert_eq!(
             extract_project_id(Some(serde_json::Value::String("proj-123".to_string()))),
