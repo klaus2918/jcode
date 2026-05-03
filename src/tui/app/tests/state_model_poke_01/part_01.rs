@@ -118,6 +118,58 @@ fn test_rewind_lists_visible_messages_when_initial_session_context_is_hidden() {
 }
 
 #[test]
+fn test_rewind_autocomplete_does_not_fuzzy_rewrite_numeric_targets() {
+    let mut app = create_test_app();
+    app.session.replace_messages(Vec::new());
+
+    for idx in 1..=3 {
+        app.session.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: format!("msg-{}", idx),
+                cache_control: None,
+            }],
+        );
+    }
+
+    app.input = "/rewind 10".to_string();
+    assert!(!app.autocomplete());
+    assert_eq!(app.input, "/rewind 10");
+
+    app.input = "/rewind 2".to_string();
+    assert!(!app.autocomplete());
+    assert_eq!(app.input, "/rewind 2");
+}
+
+#[test]
+fn test_rewind_autocomplete_uses_visible_message_count() {
+    let mut app = create_test_app();
+    app.session.replace_messages(Vec::new());
+
+    app.session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "<system-reminder>hidden</system-reminder>".to_string(),
+            cache_control: None,
+        }],
+    );
+    app.session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "visible".to_string(),
+            cache_control: None,
+        }],
+    );
+
+    assert_eq!(app.session.messages.len(), 2);
+    assert_eq!(app.session.visible_conversation_message_count(), 1);
+
+    app.input = "/rewind ".to_string();
+    let suggestions = app.get_suggestions_for(&app.input);
+    assert_eq!(suggestions, vec![("/rewind 1".to_string(), "Rewind to this message")]);
+}
+
+#[test]
 fn test_accumulate_streaming_output_tokens_uses_deltas() {
     let mut app = create_test_app();
     let mut seen = 0;

@@ -954,7 +954,24 @@ impl App {
         }
 
         if prefix.starts_with("/rewind ") {
-            let suggestions = (1..=self.session.messages.len())
+            let arg = prefix.strip_prefix("/rewind ").unwrap_or_default().trim();
+            let visible_count = self.session.visible_conversation_message_count();
+
+            // Rewind targets are 1-based visible conversation message numbers.
+            // Do not fuzzy-rank numeric arguments: `/rewind 10` should never be
+            // completed or preview-accepted as `/rewind 1` just because `1` is a
+            // fuzzy prefix match. If a complete numeric target is present, only
+            // surface the exact valid command.
+            if !arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit()) {
+                if let Ok(n) = arg.parse::<usize>()
+                    && (1..=visible_count).contains(&n)
+                {
+                    return vec![(format!("/rewind {}", n), "Rewind to this message")];
+                }
+                return Vec::new();
+            }
+
+            let suggestions = (1..=visible_count)
                 .map(|n| (format!("/rewind {}", n), "Rewind to this message"))
                 .collect();
             return self.rank_suggestions(input, suggestions);
