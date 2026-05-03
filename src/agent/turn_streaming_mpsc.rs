@@ -298,10 +298,9 @@ impl Agent {
                     }
                     StreamEvent::ToolUseEnd => {
                         if let Some(mut tool) = current_tool.take() {
-                            tool.input = ToolCall::normalize_input_to_object(
+                            tool.input =
                                 serde_json::from_str::<serde_json::Value>(&current_tool_input)
-                                    .unwrap_or(serde_json::Value::Null),
-                            );
+                                    .unwrap_or(serde_json::Value::Null);
                             tool.refresh_intent_from_input();
 
                             let _ = event_tx.send(ServerEvent::ToolExec {
@@ -743,11 +742,31 @@ impl Agent {
                 }
                 let tc = &tool_calls[tool_index];
 
-                self.validate_tool_allowed(&tc.name)?;
-
                 let message_id = assistant_message_id
                     .clone()
                     .unwrap_or_else(|| self.session.id.clone());
+
+                if let Some(error_msg) = tc.validation_error() {
+                    logging::warn(&error_msg);
+                    let _ = event_tx.send(ServerEvent::ToolDone {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        output: error_msg.clone(),
+                        error: Some(error_msg.clone()),
+                    });
+                    self.add_message(
+                        Role::User,
+                        vec![ContentBlock::ToolResult {
+                            tool_use_id: tc.id.clone(),
+                            content: error_msg,
+                            is_error: Some(true),
+                        }],
+                    );
+                    tool_results_dirty = true;
+                    continue;
+                }
+
+                self.validate_tool_allowed(&tc.name)?;
 
                 let is_native_tool = JCODE_NATIVE_TOOLS.contains(&tc.name.as_str());
 

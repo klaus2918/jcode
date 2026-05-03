@@ -227,10 +227,9 @@ impl Agent {
                     StreamEvent::ToolUseEnd => {
                         if let Some(mut tool) = current_tool.take() {
                             // Parse the accumulated JSON
-                            let tool_input = ToolCall::normalize_input_to_object(
+                            let tool_input =
                                 serde_json::from_str::<serde_json::Value>(&current_tool_input)
-                                    .unwrap_or(serde_json::Value::Null),
-                            );
+                                    .unwrap_or(serde_json::Value::Null);
                             tool.input = tool_input.clone();
                             tool.intent = ToolCall::intent_from_input(&tool_input);
 
@@ -647,11 +646,36 @@ impl Agent {
             // Execute tools and add results
             let mut tool_results_dirty = false;
             for tc in tool_calls {
-                self.validate_tool_allowed(&tc.name)?;
-
                 let message_id = assistant_message_id
                     .clone()
                     .unwrap_or_else(|| self.session.id.clone());
+
+                if let Some(error_msg) = tc.validation_error() {
+                    logging::warn(&error_msg);
+                    Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                        session_id: self.session.id.clone(),
+                        message_id: message_id.clone(),
+                        tool_call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        status: ToolStatus::Error,
+                        title: None,
+                    }));
+                    if print_output {
+                        println!("\n  → {}", error_msg);
+                    }
+                    self.add_message(
+                        Role::User,
+                        vec![ContentBlock::ToolResult {
+                            tool_use_id: tc.id,
+                            content: error_msg,
+                            is_error: Some(true),
+                        }],
+                    );
+                    tool_results_dirty = true;
+                    continue;
+                }
+
+                self.validate_tool_allowed(&tc.name)?;
 
                 let is_native_tool = JCODE_NATIVE_TOOLS.contains(&tc.name.as_str());
 

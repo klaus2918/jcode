@@ -89,6 +89,39 @@ fn tool_call_normalizes_non_object_input_to_empty_object() {
 }
 
 #[test]
+fn tool_call_validation_rejects_empty_name_and_non_object_input() {
+    let empty_name = ToolCall {
+        id: "call_1".to_string(),
+        name: "".to_string(),
+        input: serde_json::json!({}),
+        intent: None,
+    };
+    assert_eq!(
+        empty_name.validation_error().as_deref(),
+        Some("Invalid tool call: tool name must not be empty.")
+    );
+
+    let primitive_args = ToolCall {
+        id: "call_2".to_string(),
+        name: "read".to_string(),
+        input: serde_json::json!(20),
+        intent: None,
+    };
+    assert_eq!(
+        primitive_args.validation_error().as_deref(),
+        Some("Invalid tool call for 'read': arguments must be a JSON object, got number.")
+    );
+
+    let valid = ToolCall {
+        id: "call_3".to_string(),
+        name: "read".to_string(),
+        input: serde_json::json!({"path":"README.md"}),
+        intent: None,
+    };
+    assert_eq!(valid.validation_error(), None);
+}
+
+#[test]
 fn sanitize_tool_id_hyphens_passthrough() {
     assert_eq!(sanitize_tool_id("call-abc-123"), "call-abc-123");
     assert_eq!(
