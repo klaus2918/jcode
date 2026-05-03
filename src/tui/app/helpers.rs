@@ -159,6 +159,9 @@ pub(super) fn parse_rate_limit_error(error: &str) -> Option<Duration> {
 }
 
 pub(super) fn is_context_limit_error(error: &str) -> bool {
+    if crate::provider::openai_request::is_openai_encrypted_content_too_large_error(error) {
+        return true;
+    }
     let lower = error.to_lowercase();
     lower.contains("context length")
         || lower.contains("context window")

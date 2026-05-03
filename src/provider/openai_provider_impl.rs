@@ -512,6 +512,15 @@ impl Provider for OpenAIProvider {
 
         let mut input = Vec::new();
         if let Some(encrypted_content) = existing_openai_encrypted_content {
+            if !crate::provider::openai_request::openai_encrypted_content_is_sendable(
+                encrypted_content,
+            ) {
+                anyhow::bail!(
+                    "OpenAI native compaction payload is too large to replay ({} chars > safe limit {} chars)",
+                    encrypted_content.len(),
+                    crate::provider::openai_request::OPENAI_ENCRYPTED_CONTENT_SAFE_MAX_CHARS,
+                );
+            }
             input.push(serde_json::json!({
                 "type": "compaction",
                 "encrypted_content": encrypted_content,
@@ -576,6 +585,16 @@ impl Provider for OpenAIProvider {
                 })
             })
             .ok_or_else(|| anyhow::anyhow!("OpenAI compact response missing compaction item"))?;
+
+        if !crate::provider::openai_request::openai_encrypted_content_is_sendable(
+            &encrypted_content,
+        ) {
+            anyhow::bail!(
+                "OpenAI compact response returned oversized encrypted_content ({} chars > safe limit {} chars)",
+                encrypted_content.len(),
+                crate::provider::openai_request::OPENAI_ENCRYPTED_CONTENT_SAFE_MAX_CHARS,
+            );
+        }
 
         Ok(crate::provider::NativeCompactionResult {
             summary_text: None,

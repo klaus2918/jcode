@@ -266,10 +266,20 @@ impl Agent {
         } else {
             manager.seed_restored_stored_messages_with(&self.session.messages);
         }
+        let sanitized_state = if manager.discard_oversized_openai_native_compaction() {
+            Some(manager.persisted_state())
+        } else {
+            None
+        };
         logging::info(&format!(
             "seed_compaction_from_session: seeded compaction with {} messages",
             self.session.messages.len()
         ));
+        drop(manager);
+        if let Some(state) = sanitized_state {
+            self.session.compaction = state;
+            self.persist_session_best_effort("sanitized oversized OpenAI native compaction");
+        }
     }
 
     fn sync_memory_dedup_state_from_session(&self) {
@@ -359,9 +369,27 @@ impl Agent {
         encrypted_content: String,
         compacted_count: usize,
     ) -> Result<()> {
+        let encrypted_content_len = encrypted_content.len();
+        let (summary_text, openai_encrypted_content) =
+            if crate::provider::openai_request::openai_encrypted_content_is_sendable(
+                &encrypted_content,
+            ) {
+                (String::new(), Some(encrypted_content))
+            } else {
+                logging::warn(&format!(
+                    "Discarding oversized OpenAI native compaction payload before persist ({} chars)",
+                    encrypted_content_len,
+                ));
+                (
+                    crate::provider::openai_request::openai_encrypted_content_fallback_summary(
+                        encrypted_content_len,
+                    ),
+                    None,
+                )
+            };
         let state = crate::session::StoredCompactionState {
-            summary_text: String::new(),
-            openai_encrypted_content: Some(encrypted_content),
+            summary_text,
+            openai_encrypted_content,
             covers_up_to_turn: compacted_count,
             original_turn_count: compacted_count,
             compacted_count,
@@ -395,6 +423,8 @@ impl Agent {
             let compaction = self.registry.compaction();
             match compaction.try_write() {
                 Ok(mut manager) => {
+                    let discarded_oversized_native =
+                        manager.discard_oversized_openai_native_compaction();
                     let messages = {
                         let all_messages = self.session.provider_messages();
                         if self.provider.uses_jcode_compaction() {
@@ -425,7 +455,7 @@ impl Agent {
                     } else {
                         None
                     };
-                    if event.is_some() {
+                    if event.is_some() || discarded_oversized_native {
                         self.sync_session_compaction_state_from_manager(&manager);
                     }
                     let user_count = messages

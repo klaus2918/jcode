@@ -237,7 +237,9 @@ impl App {
     }
 
     pub(super) fn reseed_compaction_from_provider_messages(&mut self) {
-        if self.is_remote || !self.provider.uses_jcode_compaction() {
+        if self.is_remote
+            || (!self.provider.uses_jcode_compaction() && self.session.compaction.is_none())
+        {
             return;
         }
         let provider_messages = self.materialized_provider_messages();
@@ -249,6 +251,9 @@ impl App {
                 manager.restore_persisted_state_with(state, &provider_messages);
             } else {
                 manager.seed_restored_messages_with(&provider_messages);
+            }
+            if manager.discard_oversized_openai_native_compaction() {
+                self.sync_session_compaction_state_from_manager(&manager);
             }
         };
     }
@@ -274,9 +279,27 @@ impl App {
         encrypted_content: String,
         compacted_count: usize,
     ) -> anyhow::Result<()> {
+        let encrypted_content_len = encrypted_content.len();
+        let (summary_text, openai_encrypted_content) =
+            if crate::provider::openai_request::openai_encrypted_content_is_sendable(
+                &encrypted_content,
+            ) {
+                (String::new(), Some(encrypted_content))
+            } else {
+                crate::logging::warn(&format!(
+                    "Discarding oversized OpenAI native compaction payload before TUI persist ({} chars)",
+                    encrypted_content_len,
+                ));
+                (
+                    crate::provider::openai_request::openai_encrypted_content_fallback_summary(
+                        encrypted_content_len,
+                    ),
+                    None,
+                )
+            };
         let state = crate::session::StoredCompactionState {
-            summary_text: String::new(),
-            openai_encrypted_content: Some(encrypted_content),
+            summary_text,
+            openai_encrypted_content,
             covers_up_to_turn: compacted_count,
             original_turn_count: compacted_count,
             compacted_count,
@@ -310,6 +333,8 @@ impl App {
         let compaction = self.registry.compaction();
         match compaction.try_write() {
             Ok(mut manager) => {
+                let discarded_oversized_native =
+                    manager.discard_oversized_openai_native_compaction();
                 if self.provider.uses_jcode_compaction() {
                     let action = manager.ensure_context_fits(&base_messages, self.provider.clone());
                     match action {
@@ -329,7 +354,7 @@ impl App {
                 } else {
                     None
                 };
-                if event.is_some() {
+                if event.is_some() || discarded_oversized_native {
                     self.sync_session_compaction_state_from_manager(&manager);
                 }
                 (messages, event)

@@ -22,6 +22,11 @@ impl Agent {
     /// Performs a synchronous hard compaction and resets provider session state,
     /// allowing the caller to retry the same turn immediately.
     pub(super) fn try_auto_compact_after_context_limit(&mut self, error: &str) -> bool {
+        if crate::provider::openai_request::is_openai_encrypted_content_too_large_error(error)
+            && self.try_recover_oversized_openai_native_compaction()
+        {
+            return true;
+        }
         if !Self::is_context_limit_error(error) {
             return false;
         }
@@ -77,6 +82,48 @@ impl Agent {
             .with_detail(format!(
                 "dropped_messages={dropped},usage_pct={usage_pct:.1}"
             ))
+            .force_attribution(),
+        );
+
+        true
+    }
+
+    fn try_recover_oversized_openai_native_compaction(&mut self) -> bool {
+        let compaction = self.registry.compaction();
+        let recovered = match compaction.try_write() {
+            Ok(mut manager) => {
+                if !manager.discard_oversized_openai_native_compaction() {
+                    return false;
+                }
+                self.sync_session_compaction_state_from_manager(&manager);
+                true
+            }
+            Err(_) => {
+                logging::warn(
+                    "OpenAI native compaction recovery skipped: compaction manager lock busy",
+                );
+                false
+            }
+        };
+
+        if !recovered {
+            return false;
+        }
+
+        self.cache_tracker.reset();
+        self.locked_tools = None;
+        self.provider_session_id = None;
+        self.session.provider_session_id = None;
+
+        logging::warn(
+            "OpenAI native compaction payload exceeded provider size limit; discarded native state and retrying with text fallback",
+        );
+        crate::runtime_memory_log::emit_event(
+            crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                "native_compaction_payload_recovered",
+                "openai_encrypted_content_too_large",
+            )
+            .with_session_id(self.session.id.clone())
             .force_attribution(),
         );
 

@@ -208,6 +208,38 @@ fn test_build_responses_input_keeps_image_context_after_tool_output() {
 }
 
 #[test]
+fn test_build_responses_input_replaces_oversized_native_compaction_with_text() {
+    let oversized =
+        "x".repeat(crate::provider::openai_request::OPENAI_ENCRYPTED_CONTENT_SAFE_MAX_CHARS + 1);
+    let messages = vec![ChatMessage {
+        role: Role::User,
+        content: vec![ContentBlock::OpenAICompaction {
+            encrypted_content: oversized,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+
+    let items = build_responses_input(&messages);
+
+    assert!(
+        items
+            .iter()
+            .all(|item| response_item_type(item) != Some("compaction")),
+        "oversized native compaction must not be sent to OpenAI"
+    );
+    let fallback = items
+        .iter()
+        .find(|item| response_item_type(item) == Some("message"))
+        .expect("fallback text message should be present");
+    let text = fallback["content"][0]["text"]
+        .as_str()
+        .expect("fallback message should contain text");
+    assert!(text.contains("OpenAI native compaction state was discarded"));
+    assert!(text.contains("safe replay limit"));
+}
+
+#[test]
 fn test_build_responses_input_injects_only_missing_outputs() {
     let expected_missing = format!("[Error] {}", TOOL_OUTPUT_MISSING_TEXT);
     let messages = vec![

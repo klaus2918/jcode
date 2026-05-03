@@ -17,6 +17,9 @@
 
 use crate::message::{ContentBlock, Message, Role};
 use crate::provider::Provider;
+use crate::provider::openai_request::{
+    openai_encrypted_content_fallback_summary, openai_encrypted_content_is_sendable,
+};
 use anyhow::Result;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -392,6 +395,41 @@ impl CompactionManager {
                 original_turn_count: summary.original_turn_count,
                 compacted_count: self.compacted_count,
             })
+    }
+
+    /// Drop provider-native OpenAI compaction state when it can no longer be
+    /// replayed within OpenAI's per-string request limit. The compacted prefix
+    /// remains compacted, but future requests use a small text fallback instead
+    /// of bricking the session with an oversized `encrypted_content` field.
+    pub fn discard_oversized_openai_native_compaction(&mut self) -> bool {
+        let Some(summary) = self.active_summary.as_mut() else {
+            return false;
+        };
+        let Some(encrypted_content) = summary.openai_encrypted_content.as_ref() else {
+            return false;
+        };
+        if openai_encrypted_content_is_sendable(encrypted_content) {
+            return false;
+        }
+
+        let encrypted_content_len = encrypted_content.len();
+        crate::logging::warn(&format!(
+            "[compaction] Discarding oversized OpenAI native compaction payload ({} chars)",
+            encrypted_content_len,
+        ));
+        summary.openai_encrypted_content = None;
+        let fallback = openai_encrypted_content_fallback_summary(encrypted_content_len);
+        if summary.text.trim().is_empty() {
+            summary.text = fallback;
+        } else if !summary
+            .text
+            .contains("OpenAI native compaction state was discarded")
+        {
+            summary.text.push_str("\n\n");
+            summary.text.push_str(&fallback);
+        }
+        self.observed_input_tokens = None;
+        true
     }
 
     // ── Token snapshot (proactive mode) ────────────────────────────────────
@@ -1072,6 +1110,7 @@ impl CompactionManager {
 
                 // Store summary
                 self.active_summary = Some(summary);
+                self.discard_oversized_openai_native_compaction();
                 self.observed_input_tokens = None;
                 let post_tokens = self.effective_token_count_with(all_messages) as u64;
                 self.last_compaction = Some(CompactionEvent {
@@ -1143,6 +1182,7 @@ impl CompactionManager {
     /// Takes the full message list from the caller.
     pub fn messages_for_api_with(&mut self, all_messages: &[Message]) -> Vec<Message> {
         self.check_and_apply_compaction_with(all_messages);
+        self.discard_oversized_openai_native_compaction();
 
         let active = self.active_messages(all_messages);
 
@@ -1184,6 +1224,7 @@ impl CompactionManager {
     /// Returns only summary if present, or empty vec.
     pub fn messages_for_api(&mut self) -> Vec<Message> {
         self.check_and_apply_compaction();
+        self.discard_oversized_openai_native_compaction();
 
         // Without caller messages, we can only return the summary
         match &self.active_summary {
@@ -1639,9 +1680,31 @@ fn mean_embedding(embeddings: &[&Vec<f32>], dim: usize) -> Vec<f32> {
 async fn generate_compaction_artifact(
     provider: Arc<dyn Provider>,
     messages: Vec<Message>,
-    existing_summary: Option<Summary>,
+    mut existing_summary: Option<Summary>,
 ) -> Result<CompactionResult> {
     let start = Instant::now();
+    if let Some(summary) = existing_summary.as_mut()
+        && let Some(encrypted_content) = summary.openai_encrypted_content.as_ref()
+        && !openai_encrypted_content_is_sendable(encrypted_content)
+    {
+        let encrypted_content_len = encrypted_content.len();
+        crate::logging::warn(&format!(
+            "[compaction] Existing OpenAI native compaction payload is oversized ({} chars); falling back to text summary",
+            encrypted_content_len,
+        ));
+        summary.openai_encrypted_content = None;
+        let fallback = openai_encrypted_content_fallback_summary(encrypted_content_len);
+        if summary.text.trim().is_empty() {
+            summary.text = fallback;
+        } else if !summary
+            .text
+            .contains("OpenAI native compaction state was discarded")
+        {
+            summary.text.push_str("\n\n");
+            summary.text.push_str(&fallback);
+        }
+    }
+
     if let Ok(native) = provider
         .native_compact(
             &messages,
@@ -1654,13 +1717,22 @@ async fn generate_compaction_artifact(
         )
         .await
     {
-        return Ok(CompactionResult {
-            summary_text: native.summary_text.unwrap_or_default(),
-            openai_encrypted_content: native.openai_encrypted_content,
-            covers_up_to_turn: messages.len(),
-            duration_ms: start.elapsed().as_millis() as u64,
-            summarized_messages: messages.len(),
-        });
+        if let Some(encrypted_content) = native.openai_encrypted_content.as_ref()
+            && !openai_encrypted_content_is_sendable(encrypted_content)
+        {
+            crate::logging::warn(&format!(
+                "[compaction] OpenAI native compaction returned oversized encrypted_content ({} chars); falling back to text summary",
+                encrypted_content.len(),
+            ));
+        } else {
+            return Ok(CompactionResult {
+                summary_text: native.summary_text.unwrap_or_default(),
+                openai_encrypted_content: native.openai_encrypted_content,
+                covers_up_to_turn: messages.len(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                summarized_messages: messages.len(),
+            });
+        }
     }
 
     // Build the conversation text for summarization

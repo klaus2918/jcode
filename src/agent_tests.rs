@@ -234,6 +234,58 @@ async fn messages_for_provider_replays_persisted_native_compaction_in_auto_mode(
     assert_eq!(messages[1].role, Role::Assistant);
 }
 
+#[tokio::test]
+async fn oversized_openai_native_compaction_is_persisted_as_text_fallback() {
+    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+
+    agent.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "first".to_string(),
+            cache_control: None,
+        }],
+    );
+    agent.add_message(
+        Role::Assistant,
+        vec![ContentBlock::Text {
+            text: "second".to_string(),
+            cache_control: None,
+        }],
+    );
+
+    let oversized =
+        "x".repeat(crate::provider::openai_request::OPENAI_ENCRYPTED_CONTENT_SAFE_MAX_CHARS + 1);
+    agent
+        .apply_openai_native_compaction(oversized, 1)
+        .expect("persist fallback compaction");
+
+    let state = agent
+        .session
+        .compaction
+        .as_ref()
+        .expect("compaction should be persisted");
+    assert!(state.openai_encrypted_content.is_none());
+    assert!(
+        state
+            .summary_text
+            .contains("OpenAI native compaction state was discarded")
+    );
+
+    let (messages, event) = agent.messages_for_provider();
+    assert!(event.is_none());
+    assert_eq!(messages.len(), 2);
+    match &messages[0].content[0] {
+        ContentBlock::Text { text, .. } => {
+            assert!(text.contains("Previous Conversation Summary"));
+            assert!(text.contains("OpenAI native compaction state was discarded"));
+        }
+        other => panic!("expected text fallback summary, got {other:?}"),
+    }
+    assert_eq!(messages[1].role, Role::Assistant);
+}
+
 // ── InterruptSignal tests ────────────────────────────────────────────────
 
 #[tokio::test]

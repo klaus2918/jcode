@@ -12,6 +12,36 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static REWRITTEN_ORPHAN_TOOL_OUTPUTS: AtomicU64 = AtomicU64::new(0);
 
+/// OpenAI rejects `input[*].encrypted_content` strings above this size.
+pub(crate) const OPENAI_ENCRYPTED_CONTENT_PROVIDER_MAX_CHARS: usize = 10_485_760;
+
+/// Stay below the provider hard limit so JSON escaping/near-boundary changes do
+/// not brick a session on the next replay.
+pub(crate) const OPENAI_ENCRYPTED_CONTENT_SAFE_MAX_CHARS: usize = 9_500_000;
+
+pub(crate) fn openai_encrypted_content_is_sendable(encrypted_content: &str) -> bool {
+    encrypted_content.len() <= OPENAI_ENCRYPTED_CONTENT_SAFE_MAX_CHARS
+}
+
+pub(crate) fn openai_encrypted_content_fallback_summary(encrypted_content_len: usize) -> String {
+    format!(
+        "OpenAI native compaction state was discarded because its encrypted payload was {} chars, above Jcode's safe replay limit of {} chars (provider hard limit: {} chars). Earlier compacted details may be unavailable; use the recent visible messages and session search/tools if exact prior details are needed.",
+        encrypted_content_len,
+        OPENAI_ENCRYPTED_CONTENT_SAFE_MAX_CHARS,
+        OPENAI_ENCRYPTED_CONTENT_PROVIDER_MAX_CHARS,
+    )
+}
+
+pub(crate) fn is_openai_encrypted_content_too_large_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("encrypted_content")
+        && (lower.contains("string_above_max_length")
+            || lower.contains("string too long")
+            || lower.contains("maximum length")
+            || lower.contains("large_string_param")
+            || lower.contains("largestringparam"))
+}
+
 pub(crate) fn build_tools(tools: &[ToolDefinition]) -> Vec<Value> {
     tools
         .iter()
@@ -331,10 +361,26 @@ pub(crate) fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
                                     "content": std::mem::take(&mut content_parts)
                                 }));
                             }
-                            items.push(serde_json::json!({
-                                "type": "compaction",
-                                "encrypted_content": encrypted_content,
-                            }));
+                            if openai_encrypted_content_is_sendable(encrypted_content) {
+                                items.push(serde_json::json!({
+                                    "type": "compaction",
+                                    "encrypted_content": encrypted_content,
+                                }));
+                            } else {
+                                crate::logging::warn(&format!(
+                                    "[openai] Dropping oversized native compaction payload before request build ({} chars > safe limit {} chars)",
+                                    encrypted_content.len(),
+                                    OPENAI_ENCRYPTED_CONTENT_SAFE_MAX_CHARS,
+                                ));
+                                items.push(serde_json::json!({
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [{
+                                        "type": "input_text",
+                                        "text": openai_encrypted_content_fallback_summary(encrypted_content.len()),
+                                    }]
+                                }));
+                            }
                         }
                         ContentBlock::ToolResult {
                             tool_use_id,
