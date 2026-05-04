@@ -909,3 +909,41 @@ fn test_overnight_help_command_is_handled() {
     assert!(msg.content.contains("`/overnight <hours>[h|m] [mission]`"));
     assert!(msg.content.contains("`/overnight review`"));
 }
+
+#[test]
+fn test_overnight_start_runs_as_visible_local_turn() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        assert!(super::commands::handle_session_command(
+            &mut app,
+            "/overnight 1m hi"
+        ));
+
+        assert!(app.pending_turn, "local overnight should start a visible turn");
+        assert!(app.is_processing, "local overnight should enter processing state");
+        assert!(app.queued_messages.is_empty(), "local overnight should not use remote queue");
+        let last_message = app.session.messages.last().expect("overnight prompt message");
+        assert!(last_message.content.iter().any(|block| matches!(
+            block,
+            crate::message::ContentBlock::Text { text, .. }
+                if text.contains("visible Overnight Coordinator")
+        )));
+    });
+}
+
+#[test]
+fn test_overnight_start_queues_remote_turn_without_stuck_sending() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+        assert!(super::commands::handle_session_command(
+            &mut app,
+            "/overnight 1m hi"
+        ));
+
+        assert!(!app.pending_turn, "remote overnight should not set local pending_turn");
+        assert!(!app.is_processing, "remote overnight should not get stuck in local Sending");
+        assert_eq!(app.queued_messages.len(), 1);
+        assert!(app.queued_messages[0].contains("visible Overnight Coordinator"));
+    });
+}

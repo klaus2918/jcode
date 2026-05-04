@@ -2004,6 +2004,8 @@ fn build_visible_current_session_prompt(manifest: &OvernightManifest) -> String 
 
 The user expects this current session to become the overnight session. Keep all work visible here: your normal tool calls, any spawned/swarm helper agents, their reports, and validation should be observable from this session like a normal interactive run.
 
+Important: because this is the visible current-session mode, there is no separate hidden supervisor loop running additional turns for you. You must self-manage the overnight lifecycle from this visible turn: check the target wake time yourself, post a morning report when it is reached, avoid continuing past the grace window except for a bounded safe wrap-up, and check the manifest for cancellation before starting each major new task.
+
 Target wake/report time: `{target_wake_at}`
 Soft post-wake grace window ends: `{post_wake_grace_until}`
 
@@ -2023,6 +2025,7 @@ Review/log requirements:
 - Task cards should include Before/After, evidence, validation, files changed, risk, status, and outcome.
 - Put useful command outputs in `{validation}`.
 - The generated review page is `{review_html}`.
+- Manifest path: `{manifest_path}`. If cancellation is requested or the run completes, update the manifest/status consistently when safe.
 
 Initial steps:
 1. Inspect current repo/session state, including git status and current todos.
@@ -2037,9 +2040,13 @@ Initial steps:
         mission = mission,
         review_notes = manifest.review_notes_path.display(),
         task_cards = manifest.task_cards_dir.display(),
-        task_card_schema = manifest.task_cards_dir.join("task-card-schema.md").display(),
+        task_card_schema = manifest
+            .task_cards_dir
+            .join("task-card-schema.md")
+            .display(),
         validation = manifest.validation_dir.display(),
         review_html = manifest.review_path.display(),
+        manifest_path = manifest.run_dir.join("manifest.json").display(),
     )
 }
 

@@ -25,6 +25,7 @@ pub(super) fn handle_overnight_command(app: &mut App, trimmed: &str) -> bool {
                 .filter(|path| path.is_dir())
                 .or_else(|| std::env::current_dir().ok());
             let provider = overnight_provider_for_app(app);
+            let visible_provider = provider.clone();
             let options = OvernightStartOptions {
                 duration,
                 mission,
@@ -39,6 +40,9 @@ pub(super) fn handle_overnight_command(app: &mut App, trimmed: &str) -> bool {
                     let manifest = launch.manifest;
                     app.upsert_overnight_display_card(&manifest);
                     if let Some(prompt) = launch.initial_prompt {
+                        if !app.is_remote {
+                            app.provider = visible_provider;
+                        }
                         start_visible_overnight_turn(app, prompt);
                         app.set_status_notice("Overnight started in current session");
                     } else {
@@ -58,6 +62,13 @@ pub(super) fn handle_overnight_command(app: &mut App, trimmed: &str) -> bool {
 }
 
 fn start_visible_overnight_turn(app: &mut App, content: String) {
+    if app.is_remote {
+        app.commit_pending_streaming_assistant_message();
+        app.queued_messages.push(content);
+        app.set_status_notice("Overnight queued in current remote session");
+        return;
+    }
+
     app.commit_pending_streaming_assistant_message();
     app.add_provider_message(Message::user(&content));
     app.session.add_message(
