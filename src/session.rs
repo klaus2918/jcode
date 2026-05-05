@@ -19,17 +19,17 @@ pub use crash::{
     CrashedSessionsInfo, detect_crashed_sessions, find_recent_crashed_sessions,
     find_session_by_name_or_id, recover_crashed_sessions,
 };
-pub use jcode_session_types::{EnvSnapshot, GitState, SessionImproveMode, SessionStatus};
+pub use jcode_session_types::{
+    EnvSnapshot, GitState, SessionImproveMode, SessionStatus, StoredCompactionState,
+    StoredDisplayRole, StoredMemoryInjection, StoredMessage, StoredTokenUsage,
+};
 use journal::{PersistVectorMode, SessionJournalMeta, SessionPersistState};
 pub use memory_profile::SessionMemoryProfileSnapshot;
 use memory_profile::{
     ContentBlockMemoryStats, SessionMemoryProfileCache, summarize_blocks, summarize_message_content,
 };
 use model::SESSION_CONTEXT_PREFIX;
-pub use model::{
-    StoredCompactionState, StoredDisplayRole, StoredMemoryInjection, StoredMessage,
-    StoredReplayEvent, StoredReplayEventKind, StoredTokenUsage,
-};
+pub use model::{StoredReplayEvent, StoredReplayEventKind};
 pub use render::{
     RenderedCompactedHistoryInfo, RenderedImage, RenderedImageSource, RenderedMessage,
     has_rendered_images, render_images, render_messages, render_messages_and_images,
