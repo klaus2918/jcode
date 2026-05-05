@@ -10,16 +10,16 @@ use chrono::{DateTime, Utc};
 use jcode_import_core::{
     ClaudeCodeContent, ClaudeCodeContentBlock, ClaudeCodeEntry, ClaudeCodeSessionInfo,
     SessionIndexEntry, SessionsIndex, claude_code_session_info_from_index,
-    claude_text_from_content, clean_optional_text, codex_title_candidate,
-    extract_text_from_json_value, ordered_claude_code_message_entries, parse_rfc3339_json,
-    parse_rfc3339_string, resolve_claude_session_path, truncate_title,
+    claude_text_from_content, clean_optional_text, codex_title_candidate, collect_files_recursive,
+    collect_recent_files_recursive, extract_text_from_json_value,
+    ordered_claude_code_message_entries, parse_rfc3339_json, parse_rfc3339_string,
+    resolve_claude_session_path, truncate_title,
 };
 pub use jcode_import_core::{
     imported_claude_code_session_id, imported_codex_session_id, imported_opencode_session_id,
     imported_pi_session_id,
 };
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -576,83 +576,6 @@ pub fn import_session_from_file(path: &Path, session_id: &str) -> Result<Session
     session.save()?;
 
     Ok(session)
-}
-
-fn collect_files_recursive(root: &Path, extension: &str) -> Vec<PathBuf> {
-    fn walk(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, extension, out);
-            } else if path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case(extension))
-                .unwrap_or(false)
-            {
-                out.push(path);
-            }
-        }
-    }
-
-    let mut files = Vec::new();
-    walk(root, extension, &mut files);
-    files.sort();
-    files
-}
-
-fn collect_recent_files_recursive(root: &Path, extension: &str, limit: usize) -> Vec<PathBuf> {
-    fn modified_sort_key(path: &Path) -> u64 {
-        path.metadata()
-            .and_then(|meta| meta.modified())
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0)
-    }
-
-    fn walk(
-        dir: &Path,
-        extension: &str,
-        limit: usize,
-        out: &mut BinaryHeap<Reverse<(u64, PathBuf)>>,
-    ) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, extension, limit, out);
-            } else if path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case(extension))
-                .unwrap_or(false)
-            {
-                let key = (modified_sort_key(&path), path);
-                if out.len() < limit {
-                    out.push(Reverse(key));
-                } else if out.peek().map(|smallest| key > smallest.0).unwrap_or(true) {
-                    out.pop();
-                    out.push(Reverse(key));
-                }
-            }
-        }
-    }
-
-    if limit == 0 {
-        return Vec::new();
-    }
-
-    let mut heap: BinaryHeap<Reverse<(u64, PathBuf)>> = BinaryHeap::new();
-    walk(root, extension, limit, &mut heap);
-    let mut files: Vec<(u64, PathBuf)> = heap.into_iter().map(|entry| entry.0).collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-    files.into_iter().map(|(_, path)| path).collect()
 }
 
 fn append_text_message(
