@@ -25,19 +25,21 @@ use std::time::Instant;
 #[path = "memory/activity.rs"]
 mod activity;
 mod cache;
-pub(crate) mod model;
 #[path = "memory/pending.rs"]
 mod pending;
 #[path = "memory_prompt.rs"]
 mod prompt_support;
-pub(crate) mod search;
 
+pub use crate::memory_types::{MemoryCategory, MemoryEntry, Reinforcement, TrustLevel};
+use crate::memory_types::{
+    collect_skill_query_terms, memory_matches_search, normalize_memory_search_text,
+    normalize_search_text, skill_retrieval_bonus,
+};
 pub use activity::{
     activity_snapshot, add_event, apply_remote_activity_snapshot, check_staleness, clear_activity,
     get_activity, pipeline_start, pipeline_update, record_injected_prompt, set_state,
 };
 use cache::{cache_graph, cached_graph};
-pub use model::{MemoryCategory, MemoryEntry, Reinforcement, TrustLevel};
 #[cfg(test)]
 use pending::insert_pending_memory_for_test;
 pub use pending::{
@@ -52,10 +54,6 @@ use prompt_support::format_entries_for_prompt;
 pub(crate) use prompt_support::{
     format_context_for_extraction, format_context_for_relevance, format_relevant_display_prompt,
     format_relevant_prompt,
-};
-use search::{
-    collect_skill_query_terms, memory_matches_search, normalize_memory_search_text,
-    normalize_search_text, skill_retrieval_bonus,
 };
 
 const LEGACY_NOTE_CATEGORY: &str = "note";
@@ -211,6 +209,31 @@ fn memory_score(entry: &MemoryEntry) -> f64 {
     score += (entry.strength as f64).ln() * 5.0;
 
     score
+}
+
+trait MemoryEntryEmbeddingExt {
+    fn ensure_embedding(&mut self) -> bool;
+}
+
+impl MemoryEntryEmbeddingExt for MemoryEntry {
+    /// Generate and set embedding if not already present.
+    /// Returns true if embedding was generated, false if already exists or failed.
+    fn ensure_embedding(&mut self) -> bool {
+        if self.embedding.is_some() {
+            return false;
+        }
+
+        match crate::embedding::embed(&self.content) {
+            Ok(embedding) => {
+                self.embedding = Some(embedding);
+                true
+            }
+            Err(err) => {
+                crate::logging::info(&format!("Failed to generate embedding: {err}"));
+                false
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
