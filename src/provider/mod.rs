@@ -30,22 +30,22 @@ use account_failover::{
 };
 use anyhow::Result;
 use async_trait::async_trait;
-#[cfg(test)]
-use failover::FailoverDecision;
 use futures::Stream;
+#[cfg(test)]
+use jcode_provider_core::FailoverDecision;
 use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 // Re-export native tool result types for use by agent
 pub use claude::{NativeToolResult, NativeToolResultSender};
-pub(crate) use failover::{ProviderFailoverPrompt, parse_failover_prompt_message};
 pub use jcode_provider_core::{
     CHEAPNESS_REFERENCE_INPUT_TOKENS, CHEAPNESS_REFERENCE_OUTPUT_TOKENS,
     ModelCatalogRefreshSummary, ModelRoute, NativeCompactionResult, RouteBillingKind,
     RouteCheapnessEstimate, RouteCostConfidence, RouteCostSource, shared_http_client,
     summarize_model_catalog_refresh,
 };
+pub(crate) use jcode_provider_core::{ProviderFailoverPrompt, parse_failover_prompt_message};
 pub use route_builders::{
     build_anthropic_oauth_route, build_copilot_route, build_openai_api_key_route,
     build_openai_oauth_route, build_openrouter_auto_route, build_openrouter_endpoint_route,
