@@ -32,8 +32,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 #[cfg(test)]
 use jcode_provider_core::FailoverDecision;
-use std::borrow::Cow;
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 pub use jcode_provider_core::{
@@ -41,8 +39,9 @@ pub use jcode_provider_core::{
     CHEAPNESS_REFERENCE_OUTPUT_TOKENS, DEFAULT_CONTEXT_LIMIT, EventStream, ModelCapabilities,
     ModelCatalogRefreshSummary, ModelRoute, NativeCompactionResult, NativeToolResult,
     NativeToolResultSender, PremiumMode, Provider, RouteBillingKind, RouteCheapnessEstimate,
-    RouteCostConfidence, RouteCostSource, normalize_copilot_model_name, shared_http_client,
-    summarize_model_catalog_refresh,
+    RouteCostConfidence, RouteCostSource, dedupe_model_routes, explicit_model_provider_prefix,
+    model_name_for_provider, normalize_copilot_model_name, provider_from_model_key,
+    shared_http_client, summarize_model_catalog_refresh,
 };
 pub(crate) use jcode_provider_core::{ProviderFailoverPrompt, parse_failover_prompt_message};
 pub use route_builders::{
@@ -129,20 +128,6 @@ impl MultiProvider {
     #[cfg(test)]
     fn same_provider_account_candidates(provider: ActiveProvider) -> Vec<String> {
         account_failover::same_provider_account_candidates(provider)
-    }
-
-    fn dedupe_model_routes(routes: Vec<ModelRoute>) -> Vec<ModelRoute> {
-        let mut seen = HashSet::new();
-        routes
-            .into_iter()
-            .filter(|route| {
-                seen.insert((
-                    route.provider.clone(),
-                    route.api_method.clone(),
-                    route.model.clone(),
-                ))
-            })
-            .collect()
     }
 
     async fn complete_with_failover(
@@ -319,19 +304,6 @@ impl MultiProvider {
         Err(self.no_provider_available_error(&notes))
     }
 
-    fn provider_from_model_key(key: &str) -> Option<ActiveProvider> {
-        match key {
-            "claude" => Some(ActiveProvider::Claude),
-            "openai" => Some(ActiveProvider::OpenAI),
-            "copilot" => Some(ActiveProvider::Copilot),
-            "antigravity" => Some(ActiveProvider::Antigravity),
-            "gemini" => Some(ActiveProvider::Gemini),
-            "cursor" => Some(ActiveProvider::Cursor),
-            "openrouter" => Some(ActiveProvider::OpenRouter),
-            _ => None,
-        }
-    }
-
     fn openai_compatible_model_prefix(
         model: &str,
     ) -> Option<(crate::provider_catalog::OpenAiCompatibleProfile, &str)> {
@@ -343,18 +315,6 @@ impl MultiProvider {
 
         let profile = crate::provider_catalog::openai_compatible_profile_by_id(prefix)?;
         Some((profile, rest))
-    }
-
-    fn explicit_model_provider_prefix(model: &str) -> Option<(ActiveProvider, &'static str, &str)> {
-        if let Some(rest) = model.strip_prefix("copilot:") {
-            Some((ActiveProvider::Copilot, "copilot:", rest))
-        } else if let Some(rest) = model.strip_prefix("antigravity:") {
-            Some((ActiveProvider::Antigravity, "antigravity:", rest))
-        } else if let Some(rest) = model.strip_prefix("cursor:") {
-            Some((ActiveProvider::Cursor, "cursor:", rest))
-        } else {
-            None
-        }
     }
 
     fn ensure_provider_lock_allows_model_target(
@@ -394,15 +354,6 @@ impl MultiProvider {
         );
     }
 
-    fn model_name_for_provider<'a>(provider: ActiveProvider, model: &'a str) -> Cow<'a, str> {
-        if matches!(provider, ActiveProvider::Claude)
-            && let Some(canonical) = normalize_copilot_model_name(model)
-        {
-            return Cow::Borrowed(canonical);
-        }
-        Cow::Borrowed(model)
-    }
-
     fn set_model_on_provider(&self, provider: ActiveProvider, model: &str) -> Result<()> {
         let model = model.trim();
         if model.is_empty() {
@@ -413,7 +364,7 @@ impl MultiProvider {
 
         match provider {
             ActiveProvider::Claude => {
-                let model = Self::model_name_for_provider(provider, model);
+                let model = model_name_for_provider(provider, model);
                 if let Some(anthropic) = self.anthropic_provider() {
                     anthropic.set_model(&model)?;
                 } else if let Some(claude) = self.claude_provider() {
@@ -705,7 +656,7 @@ impl Provider for MultiProvider {
         // must never silently fall through to another provider when the target
         // is unavailable or when --provider locks a different backend.
         if let Some((target, _prefix, target_model)) =
-            Self::explicit_model_provider_prefix(requested_model)
+            explicit_model_provider_prefix(requested_model)
         {
             self.ensure_provider_lock_allows_model_target(target, requested_model)?;
             return self.set_model_on_provider(target, target_model);
@@ -741,7 +692,7 @@ impl Provider for MultiProvider {
         // --provider lock was requested.
         let target_provider = provider_for_model(model);
         if let Some(target_provider) = target_provider
-            && let Some(target) = Self::provider_from_model_key(target_provider)
+            && let Some(target) = provider_from_model_key(target_provider)
         {
             self.set_model_on_provider(target, model)
         } else {
@@ -1160,7 +1111,7 @@ impl Provider for MultiProvider {
             ));
         }
 
-        Self::dedupe_model_routes(routes)
+        dedupe_model_routes(routes)
     }
 
     async fn prefetch_models(&self) -> Result<()> {
