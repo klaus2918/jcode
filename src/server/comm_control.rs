@@ -15,8 +15,9 @@ use super::{
 };
 use crate::agent::Agent;
 use crate::plan::{
-    PlanItem, cycle_item_ids, is_terminal_status, missing_dependencies, next_runnable_item_ids,
-    unresolved_dependencies,
+    PlanItem, TaskControlAction, build_control_assignment_text, combine_assignment_text,
+    cycle_item_ids, is_terminal_status, missing_dependencies, next_runnable_item_ids,
+    task_control_action_allows_status, task_control_status_error, unresolved_dependencies,
 };
 use crate::protocol::{NotificationType, PlanGraphStatus, ServerEvent};
 use jcode_agent_runtime::SoftInterruptSource;
@@ -55,89 +56,12 @@ fn filter_swarm_agent_candidates<'a>(
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TaskControlAction {
-    Start,
-    Wake,
-    Resume,
-    Retry,
-    Reassign,
-    Replace,
-    Salvage,
-}
-
-impl TaskControlAction {
-    fn parse(action: &str) -> Option<Self> {
-        match action {
-            "start" => Some(Self::Start),
-            "wake" => Some(Self::Wake),
-            "resume" => Some(Self::Resume),
-            "retry" => Some(Self::Retry),
-            "reassign" => Some(Self::Reassign),
-            "replace" => Some(Self::Replace),
-            "salvage" => Some(Self::Salvage),
-            _ => None,
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Start => "start",
-            Self::Wake => "wake",
-            Self::Resume => "resume",
-            Self::Retry => "retry",
-            Self::Reassign => "reassign",
-            Self::Replace => "replace",
-            Self::Salvage => "salvage",
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 struct TaskSnapshot {
     content: String,
     status: String,
     assigned_to: Option<String>,
     progress: Option<SwarmTaskProgress>,
-}
-
-fn combine_assignment_text(content: &str, message: Option<&str>) -> String {
-    if let Some(extra) = message {
-        format!(
-            "{}\n\nAdditional coordinator instructions:\n{}",
-            content, extra
-        )
-    } else {
-        content.to_string()
-    }
-}
-
-fn restart_instruction_prefix(action: TaskControlAction) -> Option<&'static str> {
-    match action {
-        TaskControlAction::Resume => Some(
-            "Resume your assigned task from the current session context and continue the work.",
-        ),
-        TaskControlAction::Retry => {
-            Some("Retry your assigned task. Fix any earlier issues and continue toward completion.")
-        }
-        _ => None,
-    }
-}
-
-fn build_control_assignment_text(
-    action: TaskControlAction,
-    content: &str,
-    message: Option<&str>,
-) -> String {
-    let mut parts = Vec::new();
-    if let Some(prefix) = restart_instruction_prefix(action) {
-        parts.push(prefix.to_string());
-    }
-    parts.push(content.to_string());
-    if let Some(extra) = message {
-        parts.push(format!("Additional coordinator instructions:\n{}", extra));
-    }
-    parts.join("\n\n")
 }
 
 async fn task_snapshot_for(
@@ -316,7 +240,7 @@ async fn task_id_for_target_session(
         .items
         .iter()
         .filter(|item| item.assigned_to.as_deref() == Some(target_session))
-        .filter(|item| action_allows_status(action, &item.status))
+        .filter(|item| task_control_action_allows_status(action, &item.status))
         .collect();
 
     candidates.sort_by_key(|item| match item.status.as_str() {
@@ -738,50 +662,6 @@ fn spawn_assigned_task_run(
             }
         }
     });
-}
-
-fn action_allows_status(action: TaskControlAction, status: &str) -> bool {
-    match action {
-        TaskControlAction::Start | TaskControlAction::Wake => status == "queued",
-        TaskControlAction::Resume => matches!(status, "queued" | "running" | "running_stale"),
-        TaskControlAction::Retry => matches!(status, "failed" | "running_stale"),
-        TaskControlAction::Reassign | TaskControlAction::Replace | TaskControlAction::Salvage => {
-            !matches!(status, "done")
-        }
-    }
-}
-
-fn action_status_error(action: TaskControlAction, status: &str, task_id: &str) -> String {
-    match action {
-        TaskControlAction::Start => format!(
-            "Task '{}' is '{}' and cannot be started. Use start only for queued assignments.",
-            task_id, status
-        ),
-        TaskControlAction::Wake => format!(
-            "Task '{}' is '{}' and cannot be woken. Use wake only for queued assignments.",
-            task_id, status
-        ),
-        TaskControlAction::Resume => format!(
-            "Task '{}' is '{}' and cannot be resumed safely.",
-            task_id, status
-        ),
-        TaskControlAction::Retry => format!(
-            "Task '{}' is '{}' and cannot be retried. Retry is only for failed or stale work.",
-            task_id, status
-        ),
-        TaskControlAction::Reassign => format!(
-            "Task '{}' is already complete. Reassign unfinished work instead.",
-            task_id
-        ),
-        TaskControlAction::Replace => format!(
-            "Task '{}' is already complete. Replace is only for unfinished work.",
-            task_id
-        ),
-        TaskControlAction::Salvage => format!(
-            "Task '{}' is already complete. Salvage is only for unfinished or failed work.",
-            task_id
-        ),
-    }
 }
 
 fn format_salvage_message(
@@ -1684,10 +1564,10 @@ pub(super) async fn handle_comm_task_control(
         return;
     };
 
-    if !action_allows_status(action, &snapshot.status) {
+    if !task_control_action_allows_status(action, &snapshot.status) {
         let _ = client_event_tx.send(ServerEvent::Error {
             id,
-            message: action_status_error(action, &snapshot.status, &task_id),
+            message: task_control_status_error(action, &snapshot.status, &task_id),
             retry_after_secs: None,
         });
         return;

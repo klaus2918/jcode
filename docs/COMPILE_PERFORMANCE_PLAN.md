@@ -423,6 +423,11 @@ Start with the highest-leverage cache boundaries:
   This is a small but directionally important server seam: protocol-shape policy belongs with the
   protocol contract, while the large client lifecycle module keeps runtime dispatch.
 - Validation: `cargo check -p jcode-protocol --quiet` and `cargo check -p jcode --quiet` pass.
+- 2026-05-05: moved swarm task-control action parsing, assignment-message formatting, and status
+  eligibility/error policy from `src/server/comm_control.rs` into `jcode-plan`. This keeps plan/task
+  policy next to the plan graph/status helpers and leaves server comm control focused on runtime I/O
+  and mutation orchestration.
+- Validation: `cargo test -p jcode-plan --quiet` and `cargo check -p jcode --quiet` pass.
 
 - 2026-03-30: moved the workspace-map subsystem into the new `crates/jcode-tui-workspace` crate.
 - Boundary decision: move **workspace map data/model + widget rendering** first, while keeping the surrounding
