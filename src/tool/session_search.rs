@@ -16,8 +16,13 @@ use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use jcode_session_types::{
     SessionSearchQueryProfile as QueryProfile,
     score_session_search_text_match as score_message_match,
+    session_search_datetime_matches as session_datetime_matches,
+    session_search_field_filter_matches as field_filter_matches,
+    session_search_format_matched_terms as format_matched_terms,
+    session_search_markdown_code_block as markdown_code_block,
     session_search_path_matches_query as path_matches_query,
     session_search_raw_matches_query as raw_matches_query,
+    session_search_truncate_title_text as truncate_title_text,
     session_search_working_dir_matches as working_dir_matches,
 };
 use serde::Deserialize;
@@ -960,7 +965,7 @@ fn append_external_session_results(
     }
 
     if role_filter_allows_metadata(options)
-        && datetime_matches(session.updated_at, options)
+        && session_datetime_matches(session.updated_at, options.after, options.before)
         && let Some(match_score) = score_message_match(&external_metadata_text(session), query)
     {
         results.push(SearchResult {
@@ -989,7 +994,11 @@ fn append_external_session_results(
         if !role_filter_allows_external_message(&msg.role, options) {
             continue;
         }
-        if !datetime_matches(msg.timestamp.unwrap_or(session.updated_at), options) {
+        if !session_datetime_matches(
+            msg.timestamp.unwrap_or(session.updated_at),
+            options.after,
+            options.before,
+        ) {
             continue;
         }
         let Some(match_score) = score_message_match(&msg.text, query) else {
@@ -1486,21 +1495,6 @@ fn modified_datetime(path: &Path) -> Option<DateTime<Utc>> {
         .map(DateTime::<Utc>::from)
 }
 
-fn truncate_title_text(text: &str, max_chars: usize) -> String {
-    let trimmed = text.trim();
-    if trimmed.chars().count() <= max_chars {
-        trimmed.to_string()
-    } else {
-        format!(
-            "{}…",
-            trimmed
-                .chars()
-                .take(max_chars.saturating_sub(1))
-                .collect::<String>()
-        )
-    }
-}
-
 fn append_session_results(
     results: &mut Vec<SearchResult>,
     session: &Session,
@@ -1524,7 +1518,7 @@ fn append_session_results(
     }
 
     if role_filter_allows_metadata(options)
-        && datetime_matches(session.updated_at, options)
+        && session_datetime_matches(session.updated_at, options.after, options.before)
         && let Some(match_score) = score_message_match(&metadata_text(session), query)
     {
         results.push(SearchResult {
@@ -1559,7 +1553,11 @@ fn append_session_results(
         if !role_filter_allows_message(msg, options) {
             continue;
         }
-        if !datetime_matches(msg.timestamp.unwrap_or(session.updated_at), options) {
+        if !session_datetime_matches(
+            msg.timestamp.unwrap_or(session.updated_at),
+            options.after,
+            options.before,
+        ) {
             continue;
         }
 
@@ -1695,25 +1693,6 @@ fn provider_matches(provider_key: Option<&str>, source: &str, options: &SearchOp
         return true;
     };
     field_filter_matches(provider_key, Some(filter)) || source.to_ascii_lowercase().contains(filter)
-}
-
-fn field_filter_matches(value: Option<&str>, filter: Option<&str>) -> bool {
-    let Some(filter) = filter else {
-        return true;
-    };
-    value
-        .map(|value| value.to_ascii_lowercase().contains(filter))
-        .unwrap_or(false)
-}
-
-fn datetime_matches(value: DateTime<Utc>, options: &SearchOptions) -> bool {
-    if options.after.is_some_and(|after| value < after) {
-        return false;
-    }
-    if options.before.is_some_and(|before| value > before) {
-        return false;
-    }
-    true
 }
 
 fn role_filter_allows_metadata(options: &SearchOptions) -> bool {
@@ -2014,50 +1993,8 @@ fn no_results_message(query: &str, options: &SearchOptions) -> String {
     output
 }
 
-fn format_matched_terms(terms: &[String]) -> String {
-    if terms.is_empty() {
-        return "matched exact phrase".to_string();
-    }
-    let rendered = terms
-        .iter()
-        .take(8)
-        .map(|term| format!("`{term}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    if terms.len() > 8 {
-        format!("matched terms {rendered}, ...")
-    } else {
-        format!("matched terms {rendered}")
-    }
-}
-
 fn format_datetime(ts: DateTime<Utc>) -> String {
     ts.to_rfc3339_opts(SecondsFormat::Secs, true)
-}
-
-fn markdown_code_block(text: &str) -> String {
-    let longest_backtick_run = longest_repeated_char_run(text, '`');
-    let fence_len = if longest_backtick_run >= 3 {
-        longest_backtick_run + 1
-    } else {
-        3
-    };
-    let fence = "`".repeat(fence_len);
-    format!("{fence}text\n{text}\n{fence}")
-}
-
-fn longest_repeated_char_run(text: &str, needle: char) -> usize {
-    let mut longest = 0;
-    let mut current = 0;
-    for ch in text.chars() {
-        if ch == needle {
-            current += 1;
-            longest = longest.max(current);
-        } else {
-            current = 0;
-        }
-    }
-    longest
 }
 
 #[cfg(test)]
