@@ -999,6 +999,18 @@ impl App {
                 added_any = true;
             }
 
+            if crate::provider::gemini::is_gemini_model_id(model) {
+                routes.push(crate::provider::ModelRoute {
+                    model: model.clone(),
+                    provider: "Gemini".to_string(),
+                    api_method: "code-assist-oauth".to_string(),
+                    available: auth.gemini == crate::auth::AuthState::Available,
+                    detail: String::new(),
+                    cheapness: None,
+                });
+                added_any = true;
+            }
+
             if !added_any {
                 routes.push(crate::provider::ModelRoute {
                     model: model.clone(),
