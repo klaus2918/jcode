@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::MemoryCategory;
+use crate::{MemoryCategory, MemoryEntry, MemoryStore};
 
 fn make_test_memory(content: &str) -> MemoryEntry {
     MemoryEntry::new(MemoryCategory::Fact, content)

@@ -1,3 +1,8 @@
+pub mod graph;
+pub use graph::{
+    ClusterEntry, Edge, EdgeKind, GRAPH_VERSION, GraphMetadata, MemoryGraph, TagEntry,
+};
+
 use std::time::Instant;
 
 /// Represents current memory system activity.
