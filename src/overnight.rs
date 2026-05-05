@@ -17,8 +17,9 @@ pub use jcode_overnight_core::{
     OvernightManifest, OvernightPreflight, OvernightProgressCard, OvernightRunStatus,
     OvernightTaskCard, OvernightTaskCardAfter, OvernightTaskCardBefore, OvernightTaskCardSummary,
     OvernightTaskCardValidation, OvernightTaskStatusCounts, ResourceSnapshot, UsageLimitSnapshot,
-    UsageProjection, UsageProviderSnapshot, overnight_usage, parse_duration,
-    parse_overnight_command,
+    UsageProjection, UsageProviderSnapshot, event_class, format_minutes, git_summary, html_escape,
+    overnight_usage, parse_duration, parse_overnight_command, resource_summary,
+    summarize_task_cards_slice, task_card_title, task_card_validated, task_status_bucket,
 };
 
 const RESOURCE_SAMPLE_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -839,44 +840,6 @@ pub fn summarize_task_cards(manifest: &OvernightManifest) -> OvernightTaskCardSu
     summarize_task_cards_slice(&read_task_cards(manifest).unwrap_or_default())
 }
 
-pub fn summarize_task_cards_slice(cards: &[OvernightTaskCard]) -> OvernightTaskCardSummary {
-    let mut summary = OvernightTaskCardSummary {
-        total: cards.len(),
-        ..Default::default()
-    };
-    for card in cards {
-        match task_status_bucket(&card.status) {
-            "completed" => summary.counts.completed += 1,
-            "active" => summary.counts.active += 1,
-            "blocked" => summary.counts.blocked += 1,
-            "deferred" => summary.counts.deferred += 1,
-            "failed" => summary.counts.failed += 1,
-            "skipped" => summary.counts.skipped += 1,
-            _ => summary.counts.unknown += 1,
-        }
-        if task_card_validated(card) {
-            summary.validated += 1;
-        }
-        if card
-            .risk
-            .as_deref()
-            .map(|risk| risk.to_ascii_lowercase().contains("high"))
-            .unwrap_or(false)
-        {
-            summary.high_risk += 1;
-        }
-    }
-    if let Some(latest) = cards.last() {
-        summary.latest_title = Some(task_card_title(latest));
-        summary.latest_status = Some(if latest.status.trim().is_empty() {
-            "unknown".to_string()
-        } else {
-            latest.status.clone()
-        });
-    }
-    summary
-}
-
 pub fn format_progress_card_content(manifest: &OvernightManifest) -> Result<String> {
     Ok(serde_json::to_string(&build_progress_card(manifest))?)
 }
@@ -975,46 +938,6 @@ fn read_preflight(manifest: &OvernightManifest) -> Option<OvernightPreflight> {
         return None;
     }
     storage::read_json(&manifest.preflight_path).ok()
-}
-
-fn task_card_title(card: &OvernightTaskCard) -> String {
-    if !card.title.trim().is_empty() {
-        card.title.clone()
-    } else if !card.id.trim().is_empty() {
-        card.id.clone()
-    } else {
-        "untitled task".to_string()
-    }
-}
-
-fn task_status_bucket(status: &str) -> &'static str {
-    let normalized = status
-        .trim()
-        .to_ascii_lowercase()
-        .replace('-', "_")
-        .replace(' ', "_");
-    match normalized.as_str() {
-        "done" | "complete" | "completed" | "fixed" | "validated" | "merged" => "completed",
-        "active" | "running" | "in_progress" | "working" | "verifying" | "planned" => "active",
-        "blocked" | "needs_user" | "waiting" => "blocked",
-        "deferred" | "queued" | "backlog" | "todo" => "deferred",
-        "failed" | "error" | "abandoned" => "failed",
-        "skipped" | "rejected" | "not_started" => "skipped",
-        _ => "unknown",
-    }
-}
-
-fn task_card_validated(card: &OvernightTaskCard) -> bool {
-    let result = card
-        .validation
-        .result
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    result.contains("pass")
-        || result.contains("success")
-        || result.contains("validated")
-        || result == "ok"
 }
 
 fn overnight_phase(manifest: &OvernightManifest, now: DateTime<Utc>) -> &'static str {
@@ -1552,33 +1475,12 @@ fn push_list(out: &mut String, label: &str, values: &[String]) {
     out.push_str("</ul>\n");
 }
 
-fn event_class(kind: &str) -> &'static str {
-    if kind.contains("failed") || kind.contains("cancel") {
-        "bad"
-    } else if kind.contains("warning") || kind.contains("requested") || kind.contains("handoff") {
-        "warn"
-    } else if kind.contains("completed") || kind.contains("started") {
-        "ok"
-    } else {
-        "info"
-    }
-}
-
 fn write_text_file(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, content)?;
     Ok(())
-}
-
-fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 fn build_coordinator_prompt(
@@ -1774,64 +1676,6 @@ fn preflight_summary(preflight: &OvernightPreflight) -> String {
         resource_summary(&preflight.resources),
         git_summary(&preflight.git),
     )
-}
-
-fn resource_summary(snapshot: &ResourceSnapshot) -> String {
-    let memory = snapshot
-        .memory_used_percent
-        .map(|pct| format!("RAM {:.0}%", pct))
-        .unwrap_or_else(|| "RAM unknown".to_string());
-    let load = snapshot
-        .load_one
-        .zip(snapshot.cpu_count)
-        .map(|(load, cpus)| format!("load {:.1}/{}", load, cpus))
-        .unwrap_or_else(|| "load unknown".to_string());
-    let battery = snapshot
-        .battery_percent
-        .map(|pct| {
-            format!(
-                "battery {}%{}",
-                pct,
-                snapshot
-                    .battery_status
-                    .as_ref()
-                    .map(|status| format!(" {}", status))
-                    .unwrap_or_default()
-            )
-        })
-        .unwrap_or_else(|| "battery unknown".to_string());
-    format!("{}, {}, {}", memory, load, battery)
-}
-
-fn git_summary(snapshot: &GitSnapshot) -> String {
-    if let Some(error) = snapshot.error.as_ref() {
-        return format!("git unavailable ({})", error);
-    }
-    let dirty = snapshot.dirty_count.unwrap_or(0);
-    let branch = snapshot.branch.as_deref().unwrap_or("unknown branch");
-    if dirty == 0 {
-        format!("{} clean", branch)
-    } else {
-        format!(
-            "{} with {} dirty file{}",
-            branch,
-            dirty,
-            if dirty == 1 { "" } else { "s" }
-        )
-    }
-}
-
-pub fn format_minutes(minutes: u32) -> String {
-    if minutes < 60 {
-        return format!("{}m", minutes);
-    }
-    let hours = minutes / 60;
-    let mins = minutes % 60;
-    if mins == 0 {
-        format!("{}h", hours)
-    } else {
-        format!("{}h {}m", hours, mins)
-    }
 }
 
 #[cfg(test)]
