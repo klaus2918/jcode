@@ -1,4 +1,3 @@
-use super::state::ChannelIndex;
 use super::{
     ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember,
     fanout_session_event, queue_soft_interrupt_for_session, record_swarm_event,
@@ -7,6 +6,7 @@ use super::{
 use crate::agent::Agent;
 use crate::protocol::{CommDeliveryMode, NotificationType, ServerEvent};
 use jcode_agent_runtime::SoftInterruptSource;
+use jcode_swarm_core::ChannelIndex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};

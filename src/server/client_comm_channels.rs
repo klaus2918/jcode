@@ -1,9 +1,9 @@
-use super::state::ChannelIndex;
 use super::{
     SwarmEvent, SwarmEventType, SwarmMember, record_swarm_event, subscribe_session_to_channel,
     unsubscribe_session_from_channel,
 };
 use crate::protocol::{AgentInfo, ServerEvent, SwarmChannelInfo};
+use jcode_swarm_core::ChannelIndex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, mpsc};

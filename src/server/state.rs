@@ -4,7 +4,7 @@ use crate::protocol::ServerEvent;
 use jcode_agent_runtime::{
     InterruptSignal, SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource,
 };
-pub use jcode_swarm_core::{ChannelIndex, SwarmLifecycleStatus, SwarmMemberRecord, SwarmRole};
+use jcode_swarm_core::{SwarmLifecycleStatus, SwarmMemberRecord, SwarmRole};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

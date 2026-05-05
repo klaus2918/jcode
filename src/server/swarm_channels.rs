@@ -1,4 +1,4 @@
-use super::state::ChannelIndex;
+use jcode_swarm_core::ChannelIndex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
