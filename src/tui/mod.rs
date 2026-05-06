@@ -28,7 +28,7 @@ pub mod workspace_client;
 pub use jcode_tui_workspace::workspace_map;
 pub use jcode_tui_workspace::workspace_map_widget;
 
-pub use app::{App, CopyBadgeUiState, DisplayMessage, ProcessingStatus, RunResult};
+pub use app::{App, CopyBadgeUiState, ProcessingStatus, RunResult};
 pub use generated_image::{
     generated_image_side_panel_markdown, generated_image_side_panel_page_id,
     write_generated_image_side_panel_page,
@@ -55,9 +55,11 @@ pub(crate) fn scheduled_notification_text(
     Some(format!("⏰ next scheduled task {}{}", next, suffix))
 }
 
+pub(crate) use self::core::DisplayMessageRoleExt;
 pub use jcode_tui_core::{
     CopySelectionPane, CopySelectionPoint, CopySelectionRange, CopySelectionStatus,
 };
+pub use jcode_tui_messages::DisplayMessage;
 
 fn keyboard_enhancement_flags() -> crossterm::event::KeyboardEnhancementFlags {
     use crossterm::event::KeyboardEnhancementFlags;

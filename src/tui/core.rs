@@ -3,7 +3,6 @@
 //! This module contains the common display state, input handling,
 //! and helper methods used by both local and remote TUI modes.
 use super::DisplayMessage;
-use crate::message::ToolCall;
 
 /// Find the byte offset of the previous character boundary before `pos`.
 /// Returns 0 if `pos` is 0 or at the start.
@@ -50,14 +49,18 @@ pub fn char_index_to_byte_offset(s: &str, char_index: usize) -> usize {
 
 // ========== DisplayMessage Helpers ==========
 
-impl DisplayMessage {
+pub(crate) trait DisplayMessageRoleExt {
     /// Return the role that should be used for rendering.
     ///
     /// Background-task notifications are persisted/injected through a few older
     /// paths that can lose the dedicated `background_task` display role and come
     /// back as plain `user`/`system` markdown. Detect the canonical notification
     /// shape so those messages still render as the rounded background-task card.
-    pub(crate) fn effective_role(&self) -> &str {
+    fn effective_role(&self) -> &str;
+}
+
+impl DisplayMessageRoleExt for DisplayMessage {
+    fn effective_role(&self) -> &str {
         if self.role != "background_task"
             && self.role != "tool"
             && is_background_task_notification_content(&self.content)
@@ -66,168 +69,6 @@ impl DisplayMessage {
         } else {
             self.role.as_str()
         }
-    }
-
-    /// Create an error message
-    pub fn error(content: impl Into<String>) -> Self {
-        Self {
-            role: "error".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        }
-    }
-
-    /// Create a system message
-    pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: "system".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        }
-    }
-
-    /// Create a background task completion message (dedicated card display)
-    pub fn background_task(content: impl Into<String>) -> Self {
-        Self {
-            role: "background_task".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        }
-    }
-
-    /// Create a display-only usage card. This is shown in the transcript UI but
-    /// is not part of provider/model context.
-    pub fn usage(content: impl Into<String>) -> Self {
-        Self {
-            role: "usage".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: Some("Usage".to_string()),
-            tool_data: None,
-        }
-    }
-
-    /// Create a display-only overnight progress card. This is shown in the
-    /// transcript UI but is not part of provider/model context.
-    pub fn overnight(content: impl Into<String>) -> Self {
-        Self {
-            role: "overnight".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: Some("Overnight".to_string()),
-            tool_data: None,
-        }
-    }
-
-    /// Create a memory injection message (bordered box display)
-    pub fn memory(title: impl Into<String>, content: impl Into<String>) -> Self {
-        Self {
-            role: "memory".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: Some(title.into()),
-            tool_data: None,
-        }
-    }
-
-    /// Create a swarm notification message (DM/channel/broadcast/shared context)
-    pub fn swarm(title: impl Into<String>, content: impl Into<String>) -> Self {
-        Self {
-            role: "swarm".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: Some(title.into()),
-            tool_data: None,
-        }
-    }
-
-    /// Create a user message
-    pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: "user".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        }
-    }
-
-    /// Create an assistant message
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Self {
-            role: "assistant".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        }
-    }
-
-    /// Create an assistant message with duration
-    pub fn assistant_with_duration(content: impl Into<String>, duration_secs: f32) -> Self {
-        Self {
-            role: "assistant".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: Some(duration_secs),
-            title: None,
-            tool_data: None,
-        }
-    }
-
-    /// Create a tool message
-    pub fn tool(content: impl Into<String>, tool_data: ToolCall) -> Self {
-        Self {
-            role: "tool".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: None,
-            tool_data: Some(tool_data),
-        }
-    }
-
-    /// Create a tool message with title
-    pub fn tool_with_title(
-        content: impl Into<String>,
-        tool_data: ToolCall,
-        title: impl Into<String>,
-    ) -> Self {
-        Self {
-            role: "tool".to_string(),
-            content: content.into(),
-            tool_calls: Vec::new(),
-            duration_secs: None,
-            title: Some(title.into()),
-            tool_data: Some(tool_data),
-        }
-    }
-
-    /// Add tool calls to message (builder pattern)
-    pub fn with_tool_calls(mut self, tool_calls: Vec<String>) -> Self {
-        self.tool_calls = tool_calls;
-        self
-    }
-
-    /// Add title to message (builder pattern)
-    pub fn with_title(mut self, title: impl Into<String>) -> Self {
-        self.title = Some(title.into());
-        self
     }
 }
 
@@ -239,6 +80,7 @@ fn is_background_task_notification_content(content: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jcode_tui_messages::DisplayMessage;
 
     #[test]
     fn test_display_message_helpers() {

@@ -1,3 +1,4 @@
+use super::DisplayMessageRoleExt;
 use super::keybind::{
     CenteredToggleKeys, ModelSwitchKeys, OptionalBinding, ScrollKeys, WorkspaceNavigationKeys,
 };
@@ -26,6 +27,7 @@ use crossterm::event::{
 use debug::DebugTrace;
 use futures::StreamExt;
 use helpers::*;
+use jcode_tui_messages::DisplayMessage;
 use ratatui::DefaultTerminal;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -340,18 +342,6 @@ impl RemoteStartupPhase {
 
         format!("{base} {elapsed_str}")
     }
-}
-
-/// A message in the conversation for display
-#[derive(Clone)]
-pub struct DisplayMessage {
-    pub role: String,
-    pub content: String,
-    pub tool_calls: Vec<String>,
-    pub duration_secs: Option<f32>,
-    pub title: Option<String>,
-    /// Full tool call data (for role="tool" messages)
-    pub tool_data: Option<ToolCall>,
 }
 
 pub(super) fn reload_persisted_background_tasks_note(session_id: &str) -> String {

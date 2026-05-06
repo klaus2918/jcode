@@ -8,7 +8,6 @@ use crate::message::{
 pub(super) use cache_support::get_cached_message_lines;
 use cache_support::{centered_wrap_width, left_pad_lines_for_centered_mode};
 use std::borrow::Cow;
-use std::hash::{Hash, Hasher};
 use unicode_width::UnicodeWidthStr;
 
 fn prefer_width_stable_system_glyphs() -> bool {
@@ -1751,53 +1750,6 @@ fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
     ToolOutputTokenBadge {
         label: crate::util::format_approx_token_count(tokens),
         color,
-    }
-}
-
-fn hash_display_message(msg: &DisplayMessage) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    msg.role.hash(&mut hasher);
-    msg.content.hash(&mut hasher);
-    msg.tool_calls.hash(&mut hasher);
-    msg.title.hash(&mut hasher);
-    if let Some(tool) = &msg.tool_data {
-        tool.id.hash(&mut hasher);
-        tool.name.hash(&mut hasher);
-        hash_json_value(&tool.input, &mut hasher);
-    }
-    hasher.finish()
-}
-
-fn hash_json_value(value: &serde_json::Value, hasher: &mut DefaultHasher) {
-    match value {
-        serde_json::Value::Null => 0u8.hash(hasher),
-        serde_json::Value::Bool(b) => {
-            1u8.hash(hasher);
-            b.hash(hasher);
-        }
-        serde_json::Value::Number(n) => {
-            2u8.hash(hasher);
-            n.hash(hasher);
-        }
-        serde_json::Value::String(s) => {
-            3u8.hash(hasher);
-            s.hash(hasher);
-        }
-        serde_json::Value::Array(arr) => {
-            4u8.hash(hasher);
-            arr.len().hash(hasher);
-            for item in arr {
-                hash_json_value(item, hasher);
-            }
-        }
-        serde_json::Value::Object(map) => {
-            5u8.hash(hasher);
-            map.len().hash(hasher);
-            for (k, v) in map {
-                k.hash(hasher);
-                hash_json_value(v, hasher);
-            }
-        }
     }
 }
 
