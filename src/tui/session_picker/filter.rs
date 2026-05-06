@@ -115,58 +115,26 @@ impl SessionPicker {
     }
 
     pub(super) fn session_is_claude_code(session: &SessionInfo) -> bool {
-        session.source == SessionSource::ClaudeCode || session.id.starts_with("imported_cc_")
+        jcode_tui_session_picker::session_is_claude_code(session.source, &session.id)
     }
 
     pub(super) fn session_is_codex(session: &SessionInfo) -> bool {
-        if session.source == SessionSource::Codex {
-            return true;
-        }
-        session
-            .model
-            .as_deref()
-            .map(|model| model.to_ascii_lowercase().contains("codex"))
-            .unwrap_or(false)
+        jcode_tui_session_picker::session_is_codex(session.source, session.model.as_deref())
     }
 
     pub(super) fn session_is_pi(session: &SessionInfo) -> bool {
-        if session.source == SessionSource::Pi {
-            return true;
-        }
-        let provider_matches = session
-            .provider_key
-            .as_deref()
-            .map(|key| {
-                let key = key.to_ascii_lowercase();
-                key == "pi" || key.starts_with("pi-")
-            })
-            .unwrap_or(false);
-        let model_matches = session
-            .model
-            .as_deref()
-            .map(|model| {
-                let model = model.to_ascii_lowercase();
-                model == "pi"
-                    || model.starts_with("pi-")
-                    || model.starts_with("pi/")
-                    || model.contains("/pi-")
-            })
-            .unwrap_or(false);
-        provider_matches || model_matches
+        jcode_tui_session_picker::session_is_pi(
+            session.source,
+            session.provider_key.as_deref(),
+            session.model.as_deref(),
+        )
     }
 
     pub(super) fn session_is_open_code(session: &SessionInfo) -> bool {
-        if session.source == SessionSource::OpenCode {
-            return true;
-        }
-        session
-            .provider_key
-            .as_deref()
-            .map(|key| {
-                let key = key.to_ascii_lowercase();
-                key == "opencode" || key == "opencode-go" || key.contains("opencode")
-            })
-            .unwrap_or(false)
+        jcode_tui_session_picker::session_is_open_code(
+            session.source,
+            session.provider_key.as_deref(),
+        )
     }
 
     fn session_matches_filter_mode(session: &SessionInfo, filter_mode: SessionFilterMode) -> bool {

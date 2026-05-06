@@ -19,6 +19,8 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::time::Duration;
 
+pub use jcode_tui_session_picker::{ResumeTarget, SessionFilterMode, SessionSource};
+
 mod filter;
 mod loading;
 mod memory;
@@ -67,61 +69,6 @@ pub struct SessionInfo {
     pub resume_target: ResumeTarget,
     /// Backing external transcript/storage path when available.
     pub external_path: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionSource {
-    Jcode,
-    ClaudeCode,
-    Codex,
-    Pi,
-    OpenCode,
-}
-
-impl SessionSource {
-    pub fn badge(self) -> Option<&'static str> {
-        match self {
-            Self::Jcode => None,
-            Self::ClaudeCode => Some("🧵 Claude Code"),
-            Self::Codex => Some("🧠 Codex"),
-            Self::Pi => Some("π Pi"),
-            Self::OpenCode => Some("◌ OpenCode"),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ResumeTarget {
-    JcodeSession {
-        session_id: String,
-    },
-    ClaudeCodeSession {
-        session_id: String,
-        session_path: String,
-    },
-    CodexSession {
-        session_id: String,
-        session_path: String,
-    },
-    PiSession {
-        session_path: String,
-    },
-    OpenCodeSession {
-        session_id: String,
-        session_path: String,
-    },
-}
-
-impl ResumeTarget {
-    pub fn stable_id(&self) -> &str {
-        match self {
-            Self::JcodeSession { session_id } => session_id,
-            Self::ClaudeCodeSession { session_id, .. } => session_id,
-            Self::CodexSession { session_id, .. } => session_id,
-            Self::PiSession { session_path } => session_path,
-            Self::OpenCodeSession { session_id, .. } => session_id,
-        }
-    }
 }
 
 /// A group of sessions under a server
@@ -215,55 +162,6 @@ enum PaneFocus {
     Sessions,
     /// Preview (right pane) - j/k scroll preview
     Preview,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SessionFilterMode {
-    All,
-    CatchUp,
-    Saved,
-    ClaudeCode,
-    Codex,
-    Pi,
-    OpenCode,
-}
-
-impl SessionFilterMode {
-    fn next(self) -> Self {
-        match self {
-            Self::All => Self::CatchUp,
-            Self::CatchUp => Self::Saved,
-            Self::Saved => Self::ClaudeCode,
-            Self::ClaudeCode => Self::Codex,
-            Self::Codex => Self::Pi,
-            Self::Pi => Self::OpenCode,
-            Self::OpenCode => Self::All,
-        }
-    }
-
-    fn previous(self) -> Self {
-        match self {
-            Self::All => Self::OpenCode,
-            Self::CatchUp => Self::All,
-            Self::Saved => Self::CatchUp,
-            Self::ClaudeCode => Self::Saved,
-            Self::Codex => Self::ClaudeCode,
-            Self::Pi => Self::Codex,
-            Self::OpenCode => Self::Pi,
-        }
-    }
-
-    fn label(self) -> Option<&'static str> {
-        match self {
-            Self::All => None,
-            Self::CatchUp => Some("⏭ catch up"),
-            Self::Saved => Some("📌 saved"),
-            Self::ClaudeCode => Some("🧵 Claude Code"),
-            Self::Codex => Some("🧠 Codex"),
-            Self::Pi => Some("π Pi"),
-            Self::OpenCode => Some("◌ OpenCode"),
-        }
-    }
 }
 
 const PREVIEW_SCROLL_STEP: u16 = 3;
