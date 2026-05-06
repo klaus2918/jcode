@@ -4,62 +4,10 @@ use super::{dim_color, rgb, tool_color, truncate_line_preserving_suffix_to_width
 use ratatui::prelude::*;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// Map provider-side tool names to internal display names.
-/// Mirrors `Registry::resolve_tool_name` so the TUI shows friendly names.
-pub(crate) fn resolve_display_tool_name(name: &str) -> &str {
-    match name {
-        "communicate" => "swarm",
-        "task" | "task_runner" => "subagent",
-        "shell_exec" => "bash",
-        "file_read" => "read",
-        "file_write" => "write",
-        "file_edit" => "edit",
-        "file_glob" => "glob",
-        "file_grep" => "grep",
-        "todo_read" | "todo_write" | "todoread" | "todowrite" => "todo",
-        other => other,
-    }
-}
-
-pub(crate) fn canonical_tool_name(name: &str) -> &str {
-    match name {
-        "communicate" => "swarm",
-        "Write" => "write",
-        "Edit" => "edit",
-        "MultiEdit" => "multiedit",
-        "Patch" => "patch",
-        "ApplyPatch" => "apply_patch",
-        other => other,
-    }
-}
-
-pub(crate) fn is_edit_tool_name(name: &str) -> bool {
-    matches!(
-        canonical_tool_name(name),
-        "write" | "edit" | "multiedit" | "patch" | "apply_patch"
-    )
-}
-
-fn parse_nonzero_exit_code_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    if let Some(rest) = trimmed.strip_prefix("Exit code:") {
-        return rest
-            .trim()
-            .parse::<i32>()
-            .map(|code| code != 0)
-            .unwrap_or(false);
-    }
-    if let Some(rest) = trimmed.strip_prefix("--- Command finished with exit code:") {
-        return rest
-            .trim()
-            .trim_end_matches('-')
-            .trim()
-            .parse::<i32>()
-            .map(|code| code != 0)
-            .unwrap_or(false);
-    }
-    false
-}
+pub(super) use jcode_tui_tool_display::concise_tool_error_summary;
+pub(crate) use jcode_tui_tool_display::{
+    canonical_tool_name, is_edit_tool_name, resolve_display_tool_name, tool_output_looks_failed,
+};
 
 fn infer_bg_action_from_intent_for_display(intent: Option<&str>) -> Option<&'static str> {
     let intent = intent?.trim().to_ascii_lowercase();
@@ -84,83 +32,6 @@ fn infer_bg_action_from_intent_for_display(intent: Option<&str>) -> Option<&'sta
     } else {
         None
     }
-}
-
-fn normalize_backticked_identifier(text: &str) -> String {
-    text.replace('`', "").trim().to_string()
-}
-
-pub(super) fn concise_tool_error_summary(content: &str) -> Option<String> {
-    for raw_line in content.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let detail = line
-            .strip_prefix("Error:")
-            .or_else(|| line.strip_prefix("error:"))
-            .or_else(|| line.strip_prefix("Failed:"))
-            .map(str::trim);
-        if let Some(detail) = detail {
-            if let Some(field) = detail.strip_prefix("missing field ") {
-                return Some(format!(
-                    "invalid input: missing {}",
-                    normalize_backticked_identifier(field)
-                ));
-            }
-            if detail.starts_with("invalid type") || detail.starts_with("unknown variant") {
-                return Some(format!("invalid input: {}", detail));
-            }
-            if detail.contains("source metadata") && detail.contains("was for") {
-                return Some("build source changed before reload".to_string());
-            }
-            if detail.starts_with("Refusing to publish") {
-                return Some("reload refused: rebuild against current source".to_string());
-            }
-            return Some(format!("error: {}", truncate_middle_display(detail, 80)));
-        }
-
-        if line.contains("Compile terminated by signal") {
-            return Some(line.to_string());
-        }
-        if let Some(rest) = line.strip_prefix("Exit code:")
-            && let Ok(code) = rest.trim().parse::<i32>()
-            && code != 0
-        {
-            return Some(format!("exit {}", code));
-        }
-        if let Some(rest) = line.strip_prefix("--- Command finished with exit code:") {
-            let code = rest.trim().trim_end_matches('-').trim();
-            if code != "0" && !code.is_empty() {
-                return Some(format!("exit {}", code));
-            }
-        }
-    }
-
-    None
-}
-
-pub(crate) fn tool_output_looks_failed(content: &str) -> bool {
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    if concise_tool_error_summary(trimmed).is_some()
-        || lower.starts_with("error:")
-        || lower.starts_with("failed:")
-    {
-        return true;
-    }
-
-    trimmed.lines().any(|line| {
-        let line = line.trim();
-        parse_nonzero_exit_code_line(line)
-            || line.eq_ignore_ascii_case("Status: failed")
-            || line.eq_ignore_ascii_case("failed to start")
-            || line.eq_ignore_ascii_case("terminated")
-    })
 }
 
 #[path = "ui_tools/batch.rs"]
