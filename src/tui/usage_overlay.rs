@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
+pub use jcode_tui_usage_overlay::{UsageOverlayItem, UsageOverlayStatus, UsageOverlaySummary};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph, Wrap},
@@ -14,111 +15,6 @@ const MUTED: Color = Color::Rgb(140, 146, 163);
 const MUTED_DARK: Color = Color::Rgb(100, 106, 122);
 const OVERLAY_PERCENT_X: u16 = 88;
 const OVERLAY_PERCENT_Y: u16 = 74;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UsageOverlayStatus {
-    Loading,
-    Good,
-    Warning,
-    Critical,
-    Error,
-    Info,
-}
-
-impl UsageOverlayStatus {
-    pub fn label_for_display(self) -> &'static str {
-        self.label()
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Loading => "loading",
-            Self::Good => "healthy",
-            Self::Warning => "watch",
-            Self::Critical => "high",
-            Self::Error => "error",
-            Self::Info => "info",
-        }
-    }
-
-    fn color(self) -> Color {
-        match self {
-            Self::Loading => Color::Rgb(129, 184, 255),
-            Self::Good => Color::Rgb(111, 214, 181),
-            Self::Warning => Color::Rgb(255, 196, 112),
-            Self::Critical => Color::Rgb(255, 146, 110),
-            Self::Error => Color::Rgb(232, 134, 134),
-            Self::Info => Color::Rgb(196, 170, 255),
-        }
-    }
-
-    fn icon(self) -> &'static str {
-        match self {
-            Self::Loading => "◌",
-            Self::Good => "●",
-            Self::Warning => "▲",
-            Self::Critical => "◆",
-            Self::Error => "✕",
-            Self::Info => "○",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct UsageOverlayItem {
-    id: String,
-    title: String,
-    subtitle: String,
-    status: UsageOverlayStatus,
-    detail_lines: Vec<String>,
-}
-
-impl UsageOverlayItem {
-    pub fn new(
-        id: impl Into<String>,
-        title: impl Into<String>,
-        subtitle: impl Into<String>,
-        status: UsageOverlayStatus,
-        detail_lines: Vec<String>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            title: title.into(),
-            subtitle: subtitle.into(),
-            status,
-            detail_lines,
-        }
-    }
-
-    fn matches_filter(&self, filter: &str) -> bool {
-        if filter.is_empty() {
-            return true;
-        }
-
-        let haystack = format!(
-            "{} {} {} {} {}",
-            self.id,
-            self.title,
-            self.subtitle,
-            self.status.label(),
-            self.detail_lines.join(" ")
-        )
-        .to_lowercase();
-
-        filter
-            .split_whitespace()
-            .all(|needle| haystack.contains(&needle.to_lowercase()))
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct UsageOverlaySummary {
-    pub provider_count: usize,
-    pub warning_count: usize,
-    pub critical_count: usize,
-    pub error_count: usize,
-    pub session_visible: bool,
-}
 
 #[derive(Debug, Clone)]
 pub struct UsageOverlay {
@@ -316,7 +212,9 @@ impl UsageOverlay {
             .items
             .iter()
             .enumerate()
-            .filter_map(|(idx, item)| item.matches_filter(&self.filter).then_some(idx))
+            .filter_map(|(idx, item)| {
+                jcode_tui_usage_overlay::item_matches_filter(item, &self.filter).then_some(idx)
+            })
             .collect();
         if self.selected >= self.filtered.len() {
             self.selected = self.filtered.len().saturating_sub(1);
