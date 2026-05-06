@@ -341,13 +341,12 @@ async fn validate_copilot_import() -> Result<String> {
 }
 
 async fn validate_cursor_import() -> Result<String> {
-    let has_agent_auth = auth::cursor::has_cursor_agent_auth();
     let has_api_key = auth::cursor::has_cursor_api_key();
     let has_vscdb = auth::cursor::has_cursor_vscdb_token();
-    if has_agent_auth || has_api_key || has_vscdb {
+    if has_api_key || has_vscdb {
         Ok(format!(
-            "Cursor source loaded (agent_session={}, api_key={}, vscdb_token={}).",
-            has_agent_auth, has_api_key, has_vscdb
+            "Cursor native source loaded (api_key={}, vscdb_token={}).",
+            has_api_key, has_vscdb
         ))
     } else {
         anyhow::bail!("Cursor source did not expose a usable auth token.")

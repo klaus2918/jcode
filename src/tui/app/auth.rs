@@ -938,55 +938,13 @@ impl App {
     }
 
     fn start_cursor_login(&mut self) {
-        let binary = crate::auth::cursor::cursor_agent_cli_path();
-
-        crate::telemetry::record_auth_started("cursor", "cli");
-
-        if crate::auth::cursor::has_cursor_agent_cli() {
-            self.push_display_message(DisplayMessage::system(format!(
-                "**Cursor Login**\n\n\
-                 Running `{} login` to open browser authentication.\n\n\
-                 If that fails, jcode will fall back to saving a Cursor API key for `cursor-agent`.",
-                binary
-            )));
-            self.set_status_notice("Login: cursor browser...");
-
-            match crate::auth::login_flows::run_external_login_command_with_terminal_handoff(
-                &binary,
-                &["login"],
-            ) {
-                Ok(()) => {
-                    crate::telemetry::record_auth_success("cursor", "cli");
-                    self.push_display_message(DisplayMessage::system(
-                        "Cursor login completed.".to_string(),
-                    ));
-                    self.set_status_notice("Login: cursor ready");
-                    crate::auth::AuthStatus::invalidate_cache();
-                    return;
-                }
-                Err(e) => {
-                    let reason = crate::auth::login_diagnostics::classify_auth_failure_message(
-                        &e.to_string(),
-                    );
-                    crate::telemetry::record_auth_surface_blocked_reason(
-                        "cursor",
-                        "cli",
-                        reason.label(),
-                    );
-                    self.push_display_message(DisplayMessage::error(format!(
-                        "Cursor CLI login failed: {}\n\nFalling back to API key mode...",
-                        e
-                    )));
-                }
-            }
-        }
+        crate::telemetry::record_auth_started("cursor", "api_key");
 
         self.push_display_message(DisplayMessage::system(
             "**Cursor API Key**\n\n\
              Get your API key from: https://cursor.com/settings\n\
              (Dashboard > Integrations > User API Keys)\n\n\
-             jcode will save it securely and provide it to `cursor-agent` at runtime.\n\
-             You still need Cursor Agent installed to use the Cursor provider.\n\n\
+             jcode will save it securely and use the native Cursor HTTPS transport.\n\n\
              **Paste your API key below**, or type `/cancel` to abort."
                 .to_string(),
         ));
@@ -1706,8 +1664,7 @@ impl App {
                             success: true,
                             message: "**Cursor API key saved.**\n\n\
                              Stored at `~/.config/jcode/cursor.env`.\n\
-                             jcode will pass it to `cursor-agent` automatically.\n\
-                             Install Cursor Agent if it is not already on PATH."
+                             jcode will use it with the native Cursor HTTPS transport."
                                 .to_string(),
                         }));
                     }

@@ -161,33 +161,6 @@ pub fn cursor_direct_client_version() -> String {
         .unwrap_or_else(|| CURSOR_DIRECT_CLIENT_VERSION_DEFAULT.to_string())
 }
 
-/// Resolve the Cursor Agent CLI path from the environment or default.
-pub fn cursor_agent_cli_path() -> String {
-    std::env::var("JCODE_CURSOR_CLI_PATH").unwrap_or_else(|_| "cursor-agent".to_string())
-}
-
-/// Check if `cursor-agent` CLI is available on PATH.
-pub fn has_cursor_agent_cli() -> bool {
-    super::command_available_from_env("JCODE_CURSOR_CLI_PATH", "cursor-agent")
-}
-
-/// Check whether Cursor Agent reports an authenticated local session.
-pub fn has_cursor_agent_auth() -> bool {
-    if !has_cursor_agent_cli() {
-        return false;
-    }
-
-    let mut command = Command::new(cursor_agent_cli_path());
-    command.arg("status");
-    let output = match command_output_with_timeout(&mut command, CURSOR_EXTERNAL_COMMAND_TIMEOUT) {
-        Ok(Some(output)) => output,
-        Ok(None) => return false,
-        Err(_) => return false,
-    };
-
-    status_output_indicates_authenticated(output.status.success(), &output.stdout, &output.stderr)
-}
-
 /// Check if Cursor IDE's local vscdb has an access token.
 pub fn has_cursor_vscdb_token() -> bool {
     find_cursor_vscdb()
@@ -671,6 +644,7 @@ fn timestamp_header_now() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
+#[cfg(test)]
 fn status_output_indicates_authenticated(success: bool, stdout: &[u8], stderr: &[u8]) -> bool {
     let combined = format!(
         "{}\n{}",

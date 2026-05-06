@@ -2,17 +2,6 @@ use std::sync::OnceLock;
 
 use super::COMMAND_EXISTS_CACHE;
 
-pub(crate) fn command_available_from_env(env_var: &str, fallback: &str) -> bool {
-    if let Ok(cmd) = std::env::var(env_var) {
-        let trimmed = cmd.trim();
-        if !trimmed.is_empty() && command_exists(trimmed) {
-            return true;
-        }
-    }
-
-    command_exists(fallback)
-}
-
 pub(crate) fn command_exists(command: &str) -> bool {
     let command = command.trim();
     if command.is_empty() {

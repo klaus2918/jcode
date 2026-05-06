@@ -17,7 +17,7 @@ pub mod refresh_state;
 mod status_types;
 pub mod validation;
 
-pub(crate) use commands::{command_available_from_env, command_exists};
+pub(crate) use commands::command_exists;
 #[cfg(test)]
 pub(crate) use commands::{
     command_candidates, contains_path_separator, dedup_preserve_order, has_extension,
@@ -609,18 +609,12 @@ impl AuthStatus {
             Err(_) => AuthState::NotConfigured,
         };
 
-        let cursor_has_cli = cursor::has_cursor_agent_cli();
         let cursor_has_api_key = cursor::has_cursor_api_key();
         let cursor_has_native_auth = cursor::has_cursor_native_auth();
-        let cursor_has_cli_auth = if cursor_has_cli {
-            cursor::has_cursor_agent_auth()
-        } else {
-            false
-        };
 
-        status.cursor = if cursor_has_native_auth || (cursor_has_cli && cursor_has_cli_auth) {
+        status.cursor = if cursor_has_native_auth {
             AuthState::Available
-        } else if cursor_has_cli || cursor_has_api_key {
+        } else if cursor_has_api_key {
             AuthState::Expired
         } else {
             AuthState::NotConfigured
@@ -747,14 +741,11 @@ impl AuthStatus {
         timings.push(("gemini", step_start.elapsed().as_millis()));
 
         let step_start = Instant::now();
-        let cursor_has_cli = cursor::has_cursor_agent_cli();
         let cursor_has_api_key = cursor::has_cursor_api_key();
         let cursor_has_file_or_env_auth = cursor::load_access_token_from_env_or_file().is_ok();
 
         status.cursor = if cursor_has_file_or_env_auth || cursor_has_api_key {
             AuthState::Available
-        } else if cursor_has_cli {
-            AuthState::Expired
         } else {
             AuthState::NotConfigured
         };
@@ -1187,12 +1178,6 @@ fn cursor_source() -> Option<(AuthCredentialSource, String)> {
     }
     if config_source("CURSOR_API_KEY", "cursor.env", "~/.config/jcode/cursor.env").is_some() {
         return config_source("CURSOR_API_KEY", "cursor.env", "~/.config/jcode/cursor.env");
-    }
-    if crate::auth::cursor::has_cursor_agent_auth() {
-        return Some((
-            AuthCredentialSource::LocalCliSession,
-            "cursor-agent authenticated session".to_string(),
-        ));
     }
     None
 }

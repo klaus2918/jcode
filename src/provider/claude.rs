@@ -634,14 +634,16 @@ impl Provider for ClaudeProvider {
         let resume = resume_session_id.map(|s| s.to_string());
         let cwd = std::env::current_dir().ok();
 
-        crate::logging::info("Claude transport: CLI subprocess");
+        crate::logging::warn(
+            "Claude transport: deprecated CLI subprocess; prefer `--provider claude` native Anthropic OAuth/API transport.",
+        );
 
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(100);
 
         tokio::spawn(async move {
             if tx
                 .send(Ok(StreamEvent::ConnectionType {
-                    connection: "cli subprocess".to_string(),
+                    connection: "deprecated cli subprocess".to_string(),
                 }))
                 .await
                 .is_err()

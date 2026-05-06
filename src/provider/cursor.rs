@@ -1,7 +1,6 @@
-use super::cli_common::{build_cli_prompt, run_cli_text_command};
 use super::{EventStream, Provider};
 use crate::auth::cursor as cursor_auth;
-use crate::message::{Message, StreamEvent, ToolDefinition};
+use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -22,6 +21,7 @@ const DIRECT_CHAT_URL: &str =
     "https://api2.cursor.sh/aiserver.v1.ChatService/StreamUnifiedChatWithTools";
 const MODELS_API_URL: &str = "https://api.cursor.com/v0/models";
 const DEFAULT_MODEL: &str = "composer-1.5";
+const MAX_PROMPT_CHARS: usize = 120_000;
 pub(crate) const AVAILABLE_MODELS: &[&str] = &[
     "composer-2-fast",
     "composer-2",
@@ -40,6 +40,82 @@ pub(crate) const AVAILABLE_MODELS: &[&str] = &[
 pub(crate) fn is_known_model(model: &str) -> bool {
     let trimmed = model.trim();
     AVAILABLE_MODELS.contains(&trimmed)
+}
+
+fn build_cli_prompt(system: &str, messages: &[Message]) -> String {
+    let mut out = String::new();
+
+    if !system.trim().is_empty() {
+        out.push_str("System:\n");
+        out.push_str(system.trim());
+        out.push_str("\n\n");
+    }
+
+    out.push_str("Conversation:\n");
+
+    for message in messages {
+        let role = match message.role {
+            Role::User => "User",
+            Role::Assistant => "Assistant",
+        };
+        out.push_str(role);
+        out.push_str(":\n");
+
+        for block in &message.content {
+            match block {
+                ContentBlock::Text { text, .. } => {
+                    out.push_str(text);
+                    out.push('\n');
+                }
+                ContentBlock::Reasoning { .. } => {}
+                ContentBlock::ToolUse { name, input, .. } => {
+                    out.push_str("[tool_use ");
+                    out.push_str(name);
+                    out.push_str(" input=");
+                    out.push_str(&input.to_string());
+                    out.push_str("]\n");
+                }
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => {
+                    out.push_str("[tool_result ");
+                    out.push_str(tool_use_id);
+                    out.push_str(" is_error=");
+                    out.push_str(if is_error.unwrap_or(false) {
+                        "true"
+                    } else {
+                        "false"
+                    });
+                    out.push_str("]\n");
+                    out.push_str(content);
+                    out.push('\n');
+                }
+                ContentBlock::Image { .. } => {
+                    out.push_str("[image]\n");
+                }
+                ContentBlock::OpenAICompaction { .. } => {
+                    out.push_str("[openai native compaction]\n");
+                }
+            }
+        }
+        out.push('\n');
+    }
+
+    out.push_str("Assistant:\n");
+
+    if out.chars().count() <= MAX_PROMPT_CHARS {
+        return out;
+    }
+
+    let mut kept = out.chars().rev().take(MAX_PROMPT_CHARS).collect::<Vec<_>>();
+    kept.reverse();
+    let tail: String = kept.into_iter().collect();
+    format!(
+        "[Earlier conversation truncated to fit prompt limits]\n\n{}",
+        tail
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,19 +189,7 @@ fn runtime_cursor_api_key() -> Option<String> {
     crate::auth::cursor::load_api_key().ok()
 }
 
-fn use_native_transport() -> bool {
-    match std::env::var("JCODE_CURSOR_TRANSPORT") {
-        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-            "cli" => false,
-            "native" | "direct" | "http" | "https" | "connect" => true,
-            _ => cursor_auth::has_cursor_native_auth(),
-        },
-        Err(_) => cursor_auth::has_cursor_native_auth(),
-    }
-}
-
 pub struct CursorCliProvider {
-    cli_path: String,
     client: reqwest::Client,
     model: Arc<RwLock<String>>,
     fetched_models: Arc<RwLock<Vec<String>>>,
@@ -172,11 +236,8 @@ impl CursorCliProvider {
     }
 
     pub fn new() -> Self {
-        let cli_path =
-            std::env::var("JCODE_CURSOR_CLI_PATH").unwrap_or_else(|_| "cursor-agent".to_string());
         let model = std::env::var("JCODE_CURSOR_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
         let provider = Self {
-            cli_path,
             client: crate::provider::shared_http_client(),
             model: Arc::new(RwLock::new(model)),
             fetched_models: Arc::new(RwLock::new(Vec::new())),
@@ -199,7 +260,7 @@ impl Provider for CursorCliProvider {
         messages: &[Message],
         _tools: &[ToolDefinition],
         system: &str,
-        resume_session_id: Option<&str>,
+        _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
         let prompt = build_cli_prompt(system, messages);
         let model = self
@@ -207,19 +268,11 @@ impl Provider for CursorCliProvider {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let cli_path = self.cli_path.clone();
         let client = self.client.clone();
-        let api_key = runtime_cursor_api_key();
-        let resume = resume_session_id.map(|s| s.to_string());
-        let cwd = std::env::current_dir().ok();
         let (tx, rx) = mpsc::channel::<Result<crate::message::StreamEvent>>(100);
 
         tokio::spawn(async move {
-            let result = if use_native_transport() {
-                run_native_text_command(client, tx.clone(), &prompt, &model).await
-            } else {
-                run_cli_command(cli_path, api_key, cwd, resume, model, prompt, tx.clone()).await
-            };
+            let result = run_native_text_command(client, tx.clone(), &prompt, &model).await;
 
             if let Err(err) = result {
                 let _ = tx.send(Err(err)).await;
@@ -314,7 +367,7 @@ impl Provider for CursorCliProvider {
     }
 
     fn handles_tools_internally(&self) -> bool {
-        !use_native_transport()
+        false
     }
 
     fn supports_compaction(&self) -> bool {
@@ -323,52 +376,11 @@ impl Provider for CursorCliProvider {
 
     fn fork(&self) -> Arc<dyn Provider> {
         Arc::new(Self {
-            cli_path: self.cli_path.clone(),
             client: self.client.clone(),
             model: Arc::new(RwLock::new(self.model())),
             fetched_models: self.fetched_models.clone(),
         })
     }
-}
-
-async fn run_cli_command(
-    cli_path: String,
-    api_key: Option<String>,
-    cwd: Option<std::path::PathBuf>,
-    resume: Option<String>,
-    model: String,
-    prompt: String,
-    tx: mpsc::Sender<Result<StreamEvent>>,
-) -> Result<()> {
-    if tx
-        .send(Ok(StreamEvent::ConnectionType {
-            connection: "cli subprocess".to_string(),
-        }))
-        .await
-        .is_err()
-    {
-        return Ok(());
-    }
-
-    let mut cmd = Command::new(&cli_path);
-    cmd.arg("-p")
-        .arg("--print")
-        .arg("--output-format")
-        .arg("text")
-        .arg("--model")
-        .arg(&model);
-    if let Some(ref session_id) = resume {
-        cmd.arg("--resume").arg(session_id);
-    }
-    cmd.arg(prompt);
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    if let Some(api_key) = api_key {
-        cmd.env("CURSOR_API_KEY", api_key);
-    }
-
-    run_cli_text_command(cmd, tx, "Cursor").await
 }
 
 async fn run_native_text_command(
