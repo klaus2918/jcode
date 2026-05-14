@@ -410,6 +410,14 @@ fn single_session_slash_help_opens_help_without_sending_prompt() {
 
     assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
     assert!(app.show_help);
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::HotkeyHelp)
+    );
+    assert_eq!(
+        app.active_inline_widget_mode(),
+        Some(InlineWidgetMode::ReadOnly)
+    );
     assert!(app.draft.is_empty());
     assert!(app.messages.is_empty());
     let help = app
@@ -444,6 +452,14 @@ fn single_session_info_hotkey_toggles_inline_session_stats() {
         KeyOutcome::Redraw
     );
     assert!(app.show_session_info);
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::SessionInfo)
+    );
+    assert_eq!(
+        app.active_inline_widget_mode(),
+        Some(InlineWidgetMode::ReadOnly)
+    );
     let info = app
         .inline_widget_styled_lines()
         .into_iter()
@@ -509,6 +525,14 @@ fn single_session_typing_model_slash_opens_preview_picker_without_submitting() {
     );
     assert!(app.model_picker.open);
     assert!(app.model_picker.preview);
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::ModelPicker)
+    );
+    assert_eq!(
+        app.active_inline_widget_mode(),
+        Some(InlineWidgetMode::ReadOnly)
+    );
     assert_eq!(app.draft, "/model opus");
     assert_eq!(app.model_picker.filter, "opus");
 
@@ -1781,6 +1805,14 @@ fn single_session_model_picker_loads_filters_and_selects_model() {
     );
     assert!(app.model_picker.open);
     assert!(app.model_picker.loading);
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::ModelPicker)
+    );
+    assert_eq!(
+        app.active_inline_widget_mode(),
+        Some(InlineWidgetMode::Interactive)
+    );
     assert!(
         app.inline_widget_styled_lines()
             .into_iter()

@@ -157,6 +157,29 @@ pub(crate) struct ReadOnlyInlineWidget {
     pub(crate) lines: Vec<SingleSessionStyledLine>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InlineWidgetMode {
+    ReadOnly,
+    Interactive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InlineWidgetKind {
+    HotkeyHelp,
+    SessionInfo,
+    ModelPicker,
+}
+
+impl InlineWidgetKind {
+    pub(crate) fn mode(self, app: &SingleSessionApp) -> InlineWidgetMode {
+        match self {
+            Self::HotkeyHelp | Self::SessionInfo => InlineWidgetMode::ReadOnly,
+            Self::ModelPicker if app.model_picker.preview => InlineWidgetMode::ReadOnly,
+            Self::ModelPicker => InlineWidgetMode::Interactive,
+        }
+    }
+}
+
 impl ReadOnlyInlineWidget {
     fn new(title: impl Into<String>, lines: Vec<SingleSessionStyledLine>) -> Self {
         Self {
@@ -895,7 +918,11 @@ impl SingleSessionApp {
             return self.handle_session_switcher_key(key);
         }
 
-        if self.model_picker.open && !self.model_picker.preview {
+        if matches!(
+            self.active_inline_widget_mode(),
+            Some(InlineWidgetMode::Interactive)
+        ) && self.model_picker.open
+        {
             return self.handle_model_picker_key(key);
         }
 
@@ -1383,29 +1410,35 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn inline_widget_styled_lines(&self) -> Vec<SingleSessionStyledLine> {
-        if self.show_help {
-            return hotkey_help_inline_widget().styled_lines();
+        match self.active_inline_widget() {
+            Some(InlineWidgetKind::HotkeyHelp) => hotkey_help_inline_widget().styled_lines(),
+            Some(InlineWidgetKind::ModelPicker) => {
+                model_picker_inline_styled_lines(&self.model_picker)
+            }
+            Some(InlineWidgetKind::SessionInfo) => session_info_inline_styled_lines(self),
+            None => Vec::new(),
         }
-        if self.model_picker.open {
-            return model_picker_inline_styled_lines(&self.model_picker);
-        }
-        if self.show_session_info {
-            return session_info_inline_styled_lines(self);
-        }
-        Vec::new()
     }
 
     pub(crate) fn inline_widget_line_count(&self) -> usize {
+        self.inline_widget_styled_lines().len()
+    }
+
+    pub(crate) fn active_inline_widget(&self) -> Option<InlineWidgetKind> {
         if self.show_help {
-            return hotkey_help_inline_widget().styled_lines().len();
+            return Some(InlineWidgetKind::HotkeyHelp);
         }
         if self.model_picker.open {
-            return model_picker_inline_styled_lines(&self.model_picker).len();
+            return Some(InlineWidgetKind::ModelPicker);
         }
         if self.show_session_info {
-            return session_info_inline_styled_lines(self).len();
+            return Some(InlineWidgetKind::SessionInfo);
         }
-        0
+        None
+    }
+
+    pub(crate) fn active_inline_widget_mode(&self) -> Option<InlineWidgetMode> {
+        self.active_inline_widget().map(|kind| kind.mode(self))
     }
 
     fn body_styled_lines_without_inline_widgets(&self) -> Vec<SingleSessionStyledLine> {
