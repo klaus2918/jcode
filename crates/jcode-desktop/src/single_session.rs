@@ -1659,6 +1659,7 @@ impl SingleSessionApp {
             }
             DesktopSessionEvent::ToolStarted { name } => {
                 self.reload_phase = ReloadPhase::Stable;
+                self.finish_streaming_response();
                 self.collapse_active_tool_message();
                 self.active_tool_input_buffer.clear();
                 self.status = Some(format!("preparing tool {name}"));
@@ -1668,11 +1669,13 @@ impl SingleSessionApp {
             }
             DesktopSessionEvent::ToolExecuting { name } => {
                 self.reload_phase = ReloadPhase::Stable;
+                self.finish_streaming_response();
                 self.status = Some(format!("using tool {name}"));
                 self.replace_active_tool_header(&format!("▾ {name} running"));
             }
             DesktopSessionEvent::ToolInput { delta } => {
                 self.reload_phase = ReloadPhase::Stable;
+                self.finish_streaming_response();
                 self.append_active_tool_input(&delta);
             }
             DesktopSessionEvent::ToolFinished {
@@ -1681,6 +1684,7 @@ impl SingleSessionApp {
                 is_error,
             } => {
                 self.reload_phase = ReloadPhase::Stable;
+                self.finish_streaming_response();
                 self.status = Some(if is_error {
                     format!("tool {name} failed")
                 } else {

@@ -1540,6 +1540,44 @@ fn single_session_tool_events_expand_context_and_collapse_previous_call() {
 }
 
 #[test]
+fn single_session_tool_event_preserves_prior_streaming_text_order() {
+    let mut app = SingleSessionApp::new(None);
+
+    app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+        "Before the tool".to_string(),
+    ));
+    app.apply_session_event(session_launch::DesktopSessionEvent::ToolStarted {
+        name: "bash".to_string(),
+    });
+    app.apply_session_event(session_launch::DesktopSessionEvent::ToolFinished {
+        name: "bash".to_string(),
+        summary: "done".to_string(),
+        is_error: false,
+    });
+    app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+        "After the tool".to_string(),
+    ));
+
+    let body = app.body_lines().join("\n");
+    let before = body
+        .find("Before the tool")
+        .expect("streaming text before tool is rendered");
+    let tool = body.find("bash").expect("tool message is rendered");
+    let after = body
+        .find("After the tool")
+        .expect("streaming text after tool is rendered");
+
+    assert!(
+        before < tool,
+        "assistant text that arrived before a tool should stay above the tool: {body}"
+    );
+    assert!(
+        tool < after,
+        "assistant text that arrives after a tool should stay below the tool: {body}"
+    );
+}
+
+#[test]
 fn single_session_adjacent_tool_messages_render_as_compact_summary() {
     let mut app = SingleSessionApp::new(None);
     app.messages
