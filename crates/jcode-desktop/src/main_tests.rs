@@ -1362,11 +1362,80 @@ fn glyphon_body_buffer_uses_line_style_colors() {
     );
     assert_eq!(
         first_glyph_color_for_text(body, "  bash done"),
-        Some(single_session_line_color(SingleSessionLineStyle::Tool))
+        Some(text_color(TOOL_MUTED_TEXT_COLOR))
     );
     assert_eq!(
         first_glyph_color_for_text(body, "  model switched"),
         Some(single_session_line_color(SingleSessionLineStyle::Meta))
+    );
+}
+
+#[test]
+fn single_session_tool_text_segments_use_stateful_colors() {
+    let lines = [
+        SingleSessionStyledLine {
+            text: "  ✓ bash · done · tests passed".to_string(),
+            style: SingleSessionLineStyle::Tool,
+        },
+        SingleSessionStyledLine {
+            text: "  │intent: Run tests                                            │".to_string(),
+            style: SingleSessionLineStyle::Tool,
+        },
+        SingleSessionStyledLine {
+            text: "  plain tool output".to_string(),
+            style: SingleSessionLineStyle::Tool,
+        },
+    ];
+
+    let segments = single_session_styled_text_segments(&lines);
+
+    assert!(
+        segments.contains(&(
+            "✓",
+            Attrs::new()
+                .family(Family::Name(SINGLE_SESSION_FONT_FAMILY))
+                .color(text_color(TOOL_SUCCESS_TEXT_COLOR))
+        ))
+    );
+    assert!(
+        segments.contains(&(
+            "bash",
+            Attrs::new()
+                .family(Family::Name(SINGLE_SESSION_FONT_FAMILY))
+                .color(text_color(TOOL_TEXT_COLOR))
+        ))
+    );
+    assert!(
+        segments.contains(&(
+            "done",
+            Attrs::new()
+                .family(Family::Name(SINGLE_SESSION_FONT_FAMILY))
+                .color(text_color(TOOL_SUCCESS_TEXT_COLOR))
+        ))
+    );
+    assert!(
+        segments.contains(&(
+            "tests passed",
+            Attrs::new()
+                .family(Family::Name(SINGLE_SESSION_FONT_FAMILY))
+                .color(text_color(TOOL_DETAIL_TEXT_COLOR))
+        ))
+    );
+    assert!(
+        segments.contains(&(
+            "intent: Run tests",
+            Attrs::new()
+                .family(Family::Name(SINGLE_SESSION_FONT_FAMILY))
+                .color(text_color(TOOL_DETAIL_TEXT_COLOR))
+        ))
+    );
+    assert!(
+        segments.contains(&(
+            "plain tool output",
+            Attrs::new()
+                .family(Family::Name(SINGLE_SESSION_FONT_FAMILY))
+                .color(text_color(TOOL_DETAIL_TEXT_COLOR))
+        ))
     );
 }
 

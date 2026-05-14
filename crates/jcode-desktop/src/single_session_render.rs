@@ -5287,6 +5287,8 @@ pub(crate) fn single_session_styled_text_segments(
         if !line.text.is_empty() {
             if line.style == SingleSessionLineStyle::User {
                 push_user_prompt_segments(&mut segments, &line.text, total_user_turns);
+            } else if line.style == SingleSessionLineStyle::Tool {
+                push_tool_line_segments(&mut segments, &line.text);
             } else {
                 segments.push((
                     line.text.as_str(),
@@ -5344,6 +5346,169 @@ fn push_user_prompt_segments<'a>(
         text,
         single_session_style_attrs(SingleSessionLineStyle::User),
     ));
+}
+
+fn push_tool_line_segments<'a>(segments: &mut Vec<(&'a str, Attrs<'static>)>, line: &'a str) {
+    let trimmed = line.trim_start_matches(' ');
+    let indent_len = line.len().saturating_sub(trimmed.len());
+    if indent_len > 0 {
+        segments.push((
+            &line[..indent_len],
+            single_session_color_attrs(text_color(TOOL_MUTED_TEXT_COLOR)),
+        ));
+    }
+
+    if trimmed.is_empty() {
+        return;
+    }
+
+    if push_tool_widget_segments(segments, trimmed) {
+        return;
+    }
+
+    let Some((icon, icon_text, mut rest)) = split_tool_line_icon(trimmed) else {
+        segments.push((
+            trimmed,
+            single_session_color_attrs(text_color(TOOL_DETAIL_TEXT_COLOR)),
+        ));
+        return;
+    };
+
+    segments.push((
+        icon_text,
+        single_session_color_attrs(text_color(tool_icon_text_color(icon))),
+    ));
+
+    let rest_indent_len = rest
+        .char_indices()
+        .find(|(_, ch)| *ch != ' ')
+        .map(|(index, _)| index)
+        .unwrap_or(rest.len());
+    if rest_indent_len > 0 {
+        segments.push((
+            &rest[..rest_indent_len],
+            single_session_color_attrs(text_color(TOOL_MUTED_TEXT_COLOR)),
+        ));
+        rest = &rest[rest_indent_len..];
+    }
+
+    push_tool_header_segments(segments, rest);
+}
+
+fn push_tool_widget_segments<'a>(
+    segments: &mut Vec<(&'a str, Attrs<'static>)>,
+    text: &'a str,
+) -> bool {
+    if text.starts_with('╭') || text.starts_with('╰') {
+        segments.push((
+            text,
+            single_session_color_attrs(text_color(TOOL_MUTED_TEXT_COLOR)),
+        ));
+        return true;
+    }
+
+    if text.starts_with('│') && text.ends_with('│') && text.len() >= '│'.len_utf8() * 2 {
+        let border_len = '│'.len_utf8();
+        let content_start = border_len;
+        let content_end = text.len().saturating_sub(border_len);
+        let content = &text[content_start..content_end];
+        let visible_content_end = content.trim_end_matches(' ').len();
+
+        segments.push((
+            &text[..content_start],
+            single_session_color_attrs(text_color(TOOL_MUTED_TEXT_COLOR)),
+        ));
+        if visible_content_end > 0 {
+            segments.push((
+                &content[..visible_content_end],
+                single_session_color_attrs(text_color(TOOL_DETAIL_TEXT_COLOR)),
+            ));
+        }
+        if visible_content_end < content.len() {
+            segments.push((
+                &content[visible_content_end..],
+                single_session_color_attrs(text_color(TOOL_MUTED_TEXT_COLOR)),
+            ));
+        }
+        segments.push((
+            &text[content_end..],
+            single_session_color_attrs(text_color(TOOL_MUTED_TEXT_COLOR)),
+        ));
+        return true;
+    }
+
+    false
+}
+
+fn split_tool_line_icon(text: &str) -> Option<(char, &str, &str)> {
+    let mut chars = text.char_indices();
+    let (_, icon) = chars.next()?;
+    if !matches!(icon, '✓' | '✕' | '●' | '○' | '▸' | '•') {
+        return None;
+    }
+    let icon_end = chars.next().map(|(index, _)| index).unwrap_or(text.len());
+    Some((icon, &text[..icon_end], &text[icon_end..]))
+}
+
+fn push_tool_header_segments<'a>(segments: &mut Vec<(&'a str, Attrs<'static>)>, text: &'a str) {
+    const TOOL_SEPARATOR: &str = " · ";
+
+    if text.is_empty() {
+        return;
+    }
+
+    let mut remaining = text;
+    let mut part_index = 0usize;
+    while let Some(separator_index) = remaining.find(TOOL_SEPARATOR) {
+        let part = &remaining[..separator_index];
+        push_tool_header_part_segment(segments, part, part_index);
+        let separator_end = separator_index + TOOL_SEPARATOR.len();
+        segments.push((
+            &remaining[separator_index..separator_end],
+            single_session_color_attrs(text_color(TOOL_MUTED_TEXT_COLOR)),
+        ));
+        remaining = &remaining[separator_end..];
+        part_index += 1;
+    }
+
+    push_tool_header_part_segment(segments, remaining, part_index);
+}
+
+fn push_tool_header_part_segment<'a>(
+    segments: &mut Vec<(&'a str, Attrs<'static>)>,
+    part: &'a str,
+    part_index: usize,
+) {
+    if part.is_empty() {
+        return;
+    }
+    let color = match part_index {
+        0 => TOOL_TEXT_COLOR,
+        1 => tool_state_text_color(part).unwrap_or(TOOL_MUTED_TEXT_COLOR),
+        _ => TOOL_DETAIL_TEXT_COLOR,
+    };
+    segments.push((part, single_session_color_attrs(text_color(color))));
+}
+
+fn tool_icon_text_color(icon: char) -> [f32; 4] {
+    match icon {
+        '✓' => TOOL_SUCCESS_TEXT_COLOR,
+        '✕' => TOOL_FAILED_TEXT_COLOR,
+        '●' => TOOL_RUNNING_TEXT_COLOR,
+        '○' => TOOL_PENDING_TEXT_COLOR,
+        '▸' | '•' => TOOL_TEXT_COLOR,
+        _ => TOOL_DETAIL_TEXT_COLOR,
+    }
+}
+
+fn tool_state_text_color(state: &str) -> Option<[f32; 4]> {
+    match state.trim().to_ascii_lowercase().as_str() {
+        "done" | "success" | "succeeded" | "passed" => Some(TOOL_SUCCESS_TEXT_COLOR),
+        "failed" | "failure" | "error" | "errored" => Some(TOOL_FAILED_TEXT_COLOR),
+        "running" | "executing" | "active" => Some(TOOL_RUNNING_TEXT_COLOR),
+        "preparing" | "pending" | "queued" | "waiting" => Some(TOOL_PENDING_TEXT_COLOR),
+        _ => None,
+    }
 }
 
 fn single_session_style_attrs(style: SingleSessionLineStyle) -> Attrs<'static> {
