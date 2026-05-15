@@ -609,14 +609,18 @@ fn welcome_timeline_visual_offset_pixels_for_total_lines(
     smooth_scroll_lines: f32,
     total_lines: usize,
 ) -> f32 {
-    if !app.is_welcome_timeline_visible() || !app.has_welcome_timeline_transcript() {
+    if !app.is_welcome_timeline_visible() {
         return 0.0;
+    }
+
+    if !app.has_welcome_timeline_transcript() {
+        return fresh_welcome_inline_widget_visual_offset(app, size);
     }
 
     let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
     let body_top = single_session_body_top_for_app(app, size);
-    let body_bottom = single_session_body_bottom_base_for_total_lines(app, size, total_lines);
+    let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
     let visible_lines = (((body_bottom - body_top).max(line_height)) / line_height)
         .floor()
         .max(1.0);
@@ -629,6 +633,29 @@ fn welcome_timeline_visual_offset_pixels_for_total_lines(
     let scroll = (app.body_scroll_lines + smooth_scroll_lines).clamp(0.0, max_scroll);
     let top_line = (total_lines - scroll - visible_lines).max(0.0);
     -top_line * line_height
+}
+
+fn fresh_welcome_inline_widget_visual_offset(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+) -> f32 {
+    if app.inline_widget_line_count() == 0 {
+        return 0.0;
+    }
+
+    let typography = single_session_typography_for_scale(app.text_scale());
+    let line_height = typography.body_size * typography.body_line_height;
+    let visual_bottom = fresh_welcome_visual_bottom_for_scale(size, app.text_scale());
+    let gap = fresh_welcome_inline_widget_gap_for_scale(app.text_scale());
+    let draft_top = single_session_draft_top_for_app(app, size);
+    let inline_height = inline_widget_text_height(app).max(line_height);
+    let available = (draft_top - visual_bottom - gap).max(0.0);
+
+    if inline_height <= available {
+        0.0
+    } else {
+        -(inline_height - available)
+    }
 }
 
 #[cfg(test)]
@@ -4484,7 +4511,17 @@ fn fresh_welcome_draft_top_for_scale(size: PhysicalSize<u32>, ui_scale: f32) -> 
 }
 
 fn fresh_welcome_visual_bottom(size: PhysicalSize<u32>) -> f32 {
-    fresh_welcome_version_top(size) + fresh_welcome_version_font_size() * 1.4
+    fresh_welcome_visual_bottom_for_scale(size, 1.0)
+}
+
+fn fresh_welcome_visual_bottom_for_scale(size: PhysicalSize<u32>, ui_scale: f32) -> f32 {
+    fresh_welcome_version_top_for_scale(size, ui_scale)
+        + fresh_welcome_version_font_size() * ui_scale * 1.4
+}
+
+fn fresh_welcome_inline_widget_gap_for_scale(ui_scale: f32) -> f32 {
+    let typography = single_session_typography_for_scale(ui_scale);
+    (typography.body_size * 0.58).max(10.0 * ui_scale)
 }
 
 #[cfg(test)]
@@ -5859,7 +5896,13 @@ pub(crate) fn single_session_text_areas_for_state(
     let typography = single_session_typography_for_scale(ui_scale);
     let line_height = typography.body_size * typography.body_line_height;
     let inline_widget_top = if inline_widget_line_count > 0 {
-        body_bottom as f32 + 8.0
+        if welcome_chrome_visible {
+            fresh_welcome_visual_bottom_for_scale(size, ui_scale)
+                + welcome_chrome_offset_pixels
+                + fresh_welcome_inline_widget_gap_for_scale(ui_scale)
+        } else {
+            body_bottom as f32 + 8.0
+        }
     } else {
         0.0
     };
@@ -6022,10 +6065,6 @@ pub(crate) fn fresh_welcome_version_label() -> String {
 
 fn fresh_welcome_version_font_size() -> f32 {
     (single_session_typography().meta_size * 0.58).clamp(11.0, 14.0)
-}
-
-fn fresh_welcome_version_top(size: PhysicalSize<u32>) -> f32 {
-    fresh_welcome_version_top_for_scale(size, 1.0)
 }
 
 fn fresh_welcome_version_top_for_scale(size: PhysicalSize<u32>, ui_scale: f32) -> f32 {
