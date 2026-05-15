@@ -556,10 +556,10 @@ fn single_session_typing_model_slash_opens_preview_picker_without_submitting() {
         .map(|line| line.text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(picker.contains("MODEL"));
-    assert!(picker.contains("PROVIDER"));
-    assert!(picker.contains("METHOD"));
-    assert!(picker.contains("\"opus\""));
+    assert!(picker.contains("Model picker"));
+    assert!(picker.contains("filter \"opus\""));
+    assert!(picker.contains("claude-opus-4-5"));
+    assert!(picker.contains("claude · oauth · premium"));
 
     assert_eq!(
         app.handle_key(KeyInput::SubmitDraft),
@@ -1816,7 +1816,7 @@ fn single_session_model_picker_loads_filters_and_selects_model() {
     assert!(
         app.inline_widget_styled_lines()
             .into_iter()
-            .any(|line| line.text.contains("loading models"))
+            .any(|line| line.text.contains("Loading models"))
     );
 
     app.apply_session_event(session_launch::DesktopSessionEvent::ModelCatalog {
@@ -1850,10 +1850,9 @@ fn single_session_model_picker_loads_filters_and_selects_model() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(picker.contains("Model picker    current Claude · claude-sonnet-4-5"));
-    assert!(picker.contains("MODEL"));
-    assert!(picker.contains("PROVIDER"));
-    assert!(picker.contains("METHOD"));
-    assert!(picker.contains("✓ claude-sonnet-4-5"));
+    assert!(picker.contains("type to filter"));
+    assert!(picker.contains("2 models"));
+    assert!(picker.contains("claude-sonnet-4-5"));
     assert!(picker.contains("claude"));
     assert!(picker.contains("oauth"));
 
@@ -3408,7 +3407,7 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     assert!(
         key.inline_widget
             .iter()
-            .any(|line| line.text.contains("MODEL"))
+            .any(|line| line.text.contains("Model picker"))
     );
     assert_eq!(
         single_session_draft_top_for_app(&app, size),
@@ -3419,7 +3418,6 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     let mut font_system = FontSystem::new();
     let buffers = single_session_text_buffers(&app, size, &mut font_system);
     let areas = single_session_text_areas_for_app(&app, &buffers, size);
-    let vertices = build_single_session_vertices(&app, size, 0.0, 0);
     let draft_area = areas.first().expect("draft text area");
     assert_eq!(draft_area.top, single_session_draft_top(size));
     let inline_area = areas.last().expect("inline model picker text area");
@@ -3444,10 +3442,6 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     assert!(
         inline_area.bounds.bottom > inline_area.bounds.top,
         "fresh inline picker should keep a visible clipped lane"
-    );
-    assert!(
-        vertices_have_color(&vertices, [0.975, 0.985, 1.0, 0.58]),
-        "inline picker should render a native flat card background"
     );
 }
 

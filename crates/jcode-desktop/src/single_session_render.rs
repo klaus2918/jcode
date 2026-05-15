@@ -1,4 +1,5 @@
 use super::*;
+use crate::single_session::MODEL_PICKER_INLINE_ROW_LIMIT;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SingleSessionTextKey {
@@ -685,16 +686,24 @@ fn push_single_session_inline_widget_card(
         return;
     }
 
+    let progress = app.inline_widget_reveal_progress().clamp(0.0, 1.0);
+    if progress <= 0.001 {
+        return;
+    }
+
     let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
     let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
-    let inline_top = if welcome_timeline_chrome_visible(app, size, welcome_chrome_offset_pixels) {
-        fresh_welcome_visual_bottom_for_scale(size, app.text_scale())
-            + welcome_chrome_offset_pixels
-            + fresh_welcome_inline_widget_gap_for_scale(app.text_scale())
-    } else {
-        body_bottom + 8.0
-    };
+    let welcome_chrome_visible =
+        welcome_timeline_chrome_visible(app, size, welcome_chrome_offset_pixels);
+    let target_top = inline_widget_target_top(
+        size,
+        app.text_scale(),
+        body_bottom,
+        welcome_chrome_visible,
+        welcome_chrome_offset_pixels,
+    );
+    let inline_top = target_top + (1.0 - progress) * 8.0;
 
     let left = PANEL_TITLE_LEFT_PADDING;
     let right = size.width as f32 - PANEL_TITLE_LEFT_PADDING;
@@ -705,42 +714,54 @@ fn push_single_session_inline_widget_card(
         x: (left - card_padding_x).max(0.0),
         y: (inline_top - card_padding_y).max(PANEL_TITLE_TOP_PADDING),
         width: (right - left + card_padding_x * 2.0).max(1.0),
-        height: text_height + card_padding_y * 2.0,
+        height: (text_height + card_padding_y * 2.0) * progress,
     };
 
+    const INLINE_CARD_BACKGROUND_COLOR: [f32; 4] = [0.972, 0.982, 1.000, 0.54];
+    const INLINE_CARD_BORDER_COLOR: [f32; 4] = [0.180, 0.255, 0.430, 0.18];
     push_rounded_rect(
         vertices,
         card,
-        PANEL_RADIUS + 3.0,
-        [0.975, 0.985, 1.0, 0.58],
+        PANEL_RADIUS + 4.0,
+        with_alpha(
+            INLINE_CARD_BORDER_COLOR,
+            INLINE_CARD_BORDER_COLOR[3] * progress,
+        ),
         size,
     );
     push_rounded_rect(
         vertices,
-        Rect {
-            x: card.x,
-            y: card.y,
-            width: card.width,
-            height: 1.0,
-        },
-        0.0,
-        [0.210, 0.320, 0.560, 0.20],
+        inset_rect(card, 1.0),
+        PANEL_RADIUS + 3.0,
+        with_alpha(
+            INLINE_CARD_BACKGROUND_COLOR,
+            INLINE_CARD_BACKGROUND_COLOR[3] * progress,
+        ),
         size,
     );
 
-    if app.model_picker.open && !app.model_picker.loading && app.model_picker.error.is_none() {
-        let selected_line = 2usize.saturating_add(app.model_picker.selected);
+    if app.model_picker.open
+        && !app.model_picker.loading
+        && app.model_picker.error.is_none()
+        && let Some(row) = app
+            .model_picker
+            .selected_row_in_window(MODEL_PICKER_INLINE_ROW_LIMIT)
+    {
+        let selected_line = 2 + row * 2;
         if selected_line < line_count {
             push_rounded_rect(
                 vertices,
                 Rect {
                     x: card.x + 6.0,
-                    y: inline_top + selected_line as f32 * line_height - 1.0,
+                    y: inline_top + selected_line as f32 * line_height - 2.0,
                     width: card.width - 12.0,
-                    height: line_height + 2.0,
+                    height: line_height * 2.0 + 2.0,
                 },
-                6.0,
-                OVERLAY_SELECTION_BACKGROUND_COLOR,
+                7.0,
+                with_alpha(
+                    OVERLAY_SELECTION_BACKGROUND_COLOR,
+                    OVERLAY_SELECTION_BACKGROUND_COLOR[3] * progress,
+                ),
                 size,
             );
         }
@@ -5289,6 +5310,22 @@ fn inline_widget_reserved_height(app: &SingleSessionApp) -> f32 {
     }
 }
 
+fn inline_widget_target_top(
+    size: PhysicalSize<u32>,
+    ui_scale: f32,
+    body_bottom: f32,
+    welcome_chrome_visible: bool,
+    welcome_chrome_offset_pixels: f32,
+) -> f32 {
+    if welcome_chrome_visible {
+        fresh_welcome_visual_bottom_for_scale(size, ui_scale)
+            + welcome_chrome_offset_pixels
+            + fresh_welcome_inline_widget_gap_for_scale(ui_scale)
+    } else {
+        body_bottom + 8.0
+    }
+}
+
 pub(crate) fn single_session_body_bottom(size: PhysicalSize<u32>) -> f32 {
     single_session_draft_top(size) - SINGLE_SESSION_STATUS_GAP - 12.0
 }
@@ -5789,6 +5826,7 @@ pub(crate) fn single_session_text_areas_for_app_with_scroll<'a>(
         app.text_scale(),
         welcome_hero_runtime_mask_supported(&app.welcome_hero_text()),
         1.0,
+        app.inline_widget_reveal_progress(),
     )
 }
 
@@ -5862,6 +5900,7 @@ pub(crate) fn single_session_text_areas_for_app_with_cached_body_viewport_and_re
         app.text_scale(),
         welcome_hero_runtime_mask_supported(&app.welcome_hero_text()),
         welcome_hero_reveal_progress,
+        app.inline_widget_reveal_progress(),
     )
 }
 
@@ -5916,6 +5955,7 @@ pub(crate) fn single_session_text_areas_for_fresh_state(
         1.0,
         false,
         1.0,
+        1.0,
     )
 }
 
@@ -5941,6 +5981,7 @@ pub(crate) fn single_session_text_areas_for_state(
     ui_scale: f32,
     welcome_hero_runtime_mask_available: bool,
     welcome_hero_reveal_progress: f32,
+    inline_widget_reveal_progress: f32,
 ) -> Vec<TextArea<'_>> {
     if buffers.len() < 5 {
         return Vec::new();
@@ -5985,13 +6026,13 @@ pub(crate) fn single_session_text_areas_for_state(
     let typography = single_session_typography_for_scale(ui_scale);
     let line_height = typography.body_size * typography.body_line_height;
     let inline_widget_top = if inline_widget_line_count > 0 {
-        if welcome_chrome_visible {
-            fresh_welcome_visual_bottom_for_scale(size, ui_scale)
-                + welcome_chrome_offset_pixels
-                + fresh_welcome_inline_widget_gap_for_scale(ui_scale)
-        } else {
-            body_bottom as f32 + 8.0
-        }
+        inline_widget_target_top(
+            size,
+            ui_scale,
+            body_bottom as f32,
+            welcome_chrome_visible,
+            welcome_chrome_offset_pixels,
+        ) + (1.0 - inline_widget_reveal_progress.clamp(0.0, 1.0)) * 4.0
     } else {
         0.0
     };
@@ -6113,7 +6154,11 @@ pub(crate) fn single_session_text_areas_for_state(
     {
         let inline_top = inline_widget_top;
         let inline_bottom = inline_top + inline_widget_line_count as f32 * line_height;
-        let inline_bounds_bottom = inline_bottom.min(draft_top) as i32;
+        let reveal_bottom = inline_top
+            + inline_widget_line_count as f32
+                * line_height
+                * inline_widget_reveal_progress.clamp(0.0, 1.0);
+        let inline_bounds_bottom = reveal_bottom.min(inline_bottom).min(draft_top) as i32;
         areas.push(TextArea {
             buffer,
             left,

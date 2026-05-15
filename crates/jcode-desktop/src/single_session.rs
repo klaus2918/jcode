@@ -5,6 +5,7 @@ use crate::{
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
 use workspace::{KeyInput, KeyOutcome};
 
 pub(crate) const SINGLE_SESSION_FONT_FAMILY: &str = "JetBrainsMono Nerd Font";
@@ -40,6 +41,10 @@ const DESKTOP_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/status", "show current desktop session status"),
     ("/quit", "exit the desktop app"),
 ];
+
+#[cfg_attr(test, allow(dead_code))]
+const INLINE_WIDGET_REVEAL_DURATION: Duration = Duration::from_millis(180);
+pub(crate) const MODEL_PICKER_INLINE_ROW_LIMIT: usize = 5;
 
 const BODY_CACHE_TEXT_EDGE_BYTES: usize = 256;
 const BODY_CACHE_MESSAGE_EDGE_COUNT: usize = 12;
@@ -118,6 +123,7 @@ pub(crate) struct SingleSessionApp {
     active_tool_message_index: Option<usize>,
     active_tool_input_buffer: String,
     reload_phase: ReloadPhase,
+    inline_widget_opened_at: Option<Instant>,
     // True for the fresh-start chat that owns the welcome hero as visual UI.
     // The hero must stay out of `body_styled_lines()` so it never becomes part
     // of the persisted/rendered transcript text.
@@ -393,6 +399,27 @@ impl ModelPickerState {
                 }
             })
             .collect()
+    }
+
+    pub(crate) fn visible_row_window(&self, limit: usize) -> (usize, Vec<usize>) {
+        let visible = self.filtered_indices();
+        if visible.is_empty() || limit == 0 {
+            return (0, Vec::new());
+        }
+        let max_start = visible.len().saturating_sub(limit);
+        let selected = self.selected.min(visible.len() - 1);
+        let start = selected.saturating_sub(limit / 2).min(max_start);
+        let end = (start + limit).min(visible.len());
+        (start, visible[start..end].to_vec())
+    }
+
+    pub(crate) fn selected_row_in_window(&self, limit: usize) -> Option<usize> {
+        let (start, visible) = self.visible_row_window(limit);
+        if visible.is_empty() {
+            None
+        } else {
+            Some(self.selected.saturating_sub(start).min(visible.len() - 1))
+        }
     }
 
     fn current_choice_index(&self) -> Option<usize> {
@@ -685,6 +712,7 @@ impl SingleSessionApp {
             active_tool_message_index: None,
             active_tool_input_buffer: String::new(),
             reload_phase: ReloadPhase::Stable,
+            inline_widget_opened_at: None,
             welcome_timeline,
             welcome_hero_phrase_index,
             text_scale: 1.0,
@@ -723,6 +751,7 @@ impl SingleSessionApp {
         self.active_tool_message_index = None;
         self.active_tool_input_buffer.clear();
         self.reload_phase = ReloadPhase::Stable;
+        self.inline_widget_opened_at = None;
         self.welcome_timeline = false;
     }
 
@@ -759,6 +788,7 @@ impl SingleSessionApp {
         self.active_tool_message_index = None;
         self.active_tool_input_buffer.clear();
         self.reload_phase = ReloadPhase::Stable;
+        self.inline_widget_opened_at = None;
         self.welcome_timeline = true;
     }
 
@@ -803,7 +833,37 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn has_frame_animation(&self) -> bool {
-        self.has_activity_indicator()
+        self.has_activity_indicator() || self.inline_widget_reveal_in_progress()
+    }
+
+    fn mark_inline_widget_opened(&mut self) {
+        self.inline_widget_opened_at = Some(Instant::now());
+    }
+
+    fn inline_widget_reveal_in_progress(&self) -> bool {
+        self.active_inline_widget().is_some() && self.inline_widget_reveal_progress() < 1.0
+    }
+
+    pub(crate) fn inline_widget_reveal_progress(&self) -> f32 {
+        if self.active_inline_widget().is_none() {
+            return 0.0;
+        }
+
+        #[cfg(test)]
+        {
+            return 1.0;
+        }
+
+        #[cfg(not(test))]
+        {
+            let Some(opened_at) = self.inline_widget_opened_at else {
+                return 1.0;
+            };
+            let raw = (opened_at.elapsed().as_secs_f32()
+                / INLINE_WIDGET_REVEAL_DURATION.as_secs_f32())
+            .clamp(0.0, 1.0);
+            1.0 - (1.0 - raw).powi(3)
+        }
     }
 
     fn current_session_id(&self) -> Option<&str> {
@@ -943,6 +1003,7 @@ impl SingleSessionApp {
                     self.show_session_info = false;
                     self.model_picker.close();
                     self.session_switcher.close();
+                    self.mark_inline_widget_opened();
                 }
                 self.scroll_body_to_bottom();
                 KeyOutcome::Redraw
@@ -953,6 +1014,7 @@ impl SingleSessionApp {
                     self.show_help = false;
                     self.model_picker.close();
                     self.session_switcher.close();
+                    self.mark_inline_widget_opened();
                 }
                 self.scroll_body_to_bottom();
                 KeyOutcome::Redraw
@@ -1106,20 +1168,28 @@ impl SingleSessionApp {
     }
 
     fn open_model_picker(&mut self) -> KeyOutcome {
+        let was_open = self.model_picker.open;
         self.show_help = false;
         self.show_session_info = false;
         self.session_switcher.close();
         self.model_picker.open_loading();
+        if !was_open {
+            self.mark_inline_widget_opened();
+        }
         self.status = Some("loading models".to_string());
         self.scroll_body_to_bottom();
         KeyOutcome::LoadModelCatalog
     }
 
     fn open_model_picker_preview(&mut self, filter: String) -> KeyOutcome {
+        let was_open = self.model_picker.open;
         self.show_help = false;
         self.show_session_info = false;
         self.session_switcher.close();
         self.model_picker.open_preview_loading(filter);
+        if !was_open {
+            self.mark_inline_widget_opened();
+        }
         self.status = Some("loading models".to_string());
         self.scroll_body_to_bottom();
         KeyOutcome::LoadModelCatalog
@@ -1251,6 +1321,7 @@ impl SingleSessionApp {
             KeyInput::HotkeyHelp => {
                 self.model_picker.close();
                 self.show_help = true;
+                self.mark_inline_widget_opened();
                 KeyOutcome::Redraw
             }
             _ => KeyOutcome::None,
@@ -1286,6 +1357,7 @@ impl SingleSessionApp {
             KeyInput::HotkeyHelp => {
                 self.session_switcher.close();
                 self.show_help = true;
+                self.mark_inline_widget_opened();
                 KeyOutcome::Redraw
             }
             KeyInput::OpenModelPicker => {
@@ -2021,6 +2093,9 @@ impl SingleSessionApp {
                 self.draft_cursor = 0;
                 self.input_undo_stack.clear();
                 self.show_help = true;
+                self.model_picker.close();
+                self.session_switcher.close();
+                self.mark_inline_widget_opened();
                 self.status = Some("showing desktop slash commands".to_string());
                 self.scroll_body_to_bottom();
                 KeyOutcome::Redraw
@@ -2088,6 +2163,9 @@ impl SingleSessionApp {
                 self.input_undo_stack.clear();
                 self.show_help = false;
                 self.show_session_info = true;
+                self.model_picker.close();
+                self.session_switcher.close();
+                self.mark_inline_widget_opened();
                 self.status = Some("showing session info".to_string());
                 self.scroll_body_to_bottom();
                 KeyOutcome::Redraw
@@ -3135,17 +3213,16 @@ fn session_message_role_counts(
 }
 
 fn model_picker_inline_styled_lines(picker: &ModelPickerState) -> Vec<SingleSessionStyledLine> {
-    let (active_hint, default_hint) = if picker.preview {
-        ("↵ open", "")
-    } else {
-        ("↑↓ ←→ ↵ Esc", "  ^D=default")
-    };
-    let filter = (!picker.filter.is_empty()).then(|| format!("  \"{}\"", picker.filter));
     let visible = picker.filtered_indices();
     let count = if visible.len() == picker.choices.len() {
-        format!(" ({})", picker.choices.len())
+        format!("{} models", picker.choices.len())
     } else {
-        format!(" ({}/{})", visible.len(), picker.choices.len())
+        format!("{} of {} models", visible.len(), picker.choices.len())
+    };
+    let filter = if picker.filter.trim().is_empty() {
+        "type to filter".to_string()
+    } else {
+        format!("filter \"{}\"", truncate_chars(picker.filter.trim(), 28))
     };
     let mut lines = vec![
         styled_line(
@@ -3159,95 +3236,104 @@ fn model_picker_inline_styled_lines(picker: &ModelPickerState) -> Vec<SingleSess
             SingleSessionLineStyle::OverlayTitle,
         ),
         styled_line(
-            format!(
-                "  {:<32} {:<18} {:<12}{}{}  {}{}",
-                "MODEL",
-                "PROVIDER",
-                "METHOD",
-                filter.unwrap_or_default(),
-                count,
-                active_hint,
-                default_hint,
-            ),
+            format!("{filter}    {count}"),
             SingleSessionLineStyle::Overlay,
         ),
     ];
 
     if picker.loading {
         lines.push(styled_line(
-            "  loading models from shared server...",
+            "Loading models from shared server...",
             SingleSessionLineStyle::Status,
         ));
     }
 
     if let Some(error) = &picker.error {
         lines.push(styled_line(
-            format!("  error: {error}"),
+            format!("Error: {error}"),
             SingleSessionLineStyle::Error,
         ));
     }
 
     if visible.is_empty() && !picker.loading {
         lines.push(styled_line(
-            "  no matching models",
+            "No matching models",
             SingleSessionLineStyle::Status,
         ));
         lines.push(styled_line(
-            "  clear the filter or press Ctrl+R to reload",
+            "Clear the filter or press Ctrl+R to reload",
             SingleSessionLineStyle::Overlay,
         ));
         return lines;
     }
 
     let current = picker.current_model.as_deref();
-    let limit = 8;
-    for (position, index) in visible.iter().take(limit).enumerate() {
+    let (window_start, window) = picker.visible_row_window(MODEL_PICKER_INLINE_ROW_LIMIT);
+    for (row_offset, index) in window.iter().enumerate() {
         let Some(choice) = picker.choices.get(*index) else {
             continue;
         };
-        let selector = if position == picker.selected {
+        let visible_position = window_start + row_offset;
+        let selector = if visible_position == picker.selected {
             "›"
-        } else {
-            " "
-        };
-        let current_marker = if Some(choice.model.as_str()) == current {
-            "✓"
         } else {
             " "
         };
         let provider = choice.provider.as_deref().unwrap_or("auto");
         let method = choice.api_method.as_deref().unwrap_or("auto");
+        let current_badge = if Some(choice.model.as_str()) == current {
+            "  Current"
+        } else {
+            ""
+        };
+        let availability = if choice.available {
+            "available"
+        } else {
+            "unavailable"
+        };
+        let detail = choice
+            .detail
+            .as_deref()
+            .filter(|detail| !detail.is_empty())
+            .unwrap_or(availability);
+        let row_style = if visible_position == picker.selected {
+            SingleSessionLineStyle::OverlaySelection
+        } else {
+            SingleSessionLineStyle::Overlay
+        };
         lines.push(styled_line(
             format!(
-                "  {selector} {current_marker} {:<32} {:<18} {:<12}{}{}",
-                truncate_chars(&choice.model, 32),
-                truncate_chars(provider, 18),
-                truncate_chars(method, 12),
-                if choice.available { "" } else { " ×" },
-                choice
-                    .detail
-                    .as_deref()
-                    .filter(|detail| !detail.is_empty())
-                    .map(|detail| format!("  {detail}"))
-                    .unwrap_or_default(),
+                "{selector} {}{}",
+                truncate_chars(&choice.model, 54),
+                current_badge,
             ),
-            if position == picker.selected {
-                SingleSessionLineStyle::OverlaySelection
-            } else {
-                SingleSessionLineStyle::Overlay
-            },
+            row_style,
+        ));
+        lines.push(styled_line(
+            format!(
+                "  {} · {} · {}",
+                truncate_chars(provider, 22),
+                truncate_chars(method, 18),
+                truncate_chars(detail, 42),
+            ),
+            SingleSessionLineStyle::Meta,
         ));
     }
-    if visible.len() > limit {
+    if visible.len() > window_start + window.len() {
         lines.push(styled_line(
-            format!("  … {} more models", visible.len() - limit),
+            format!(
+                "… {} more models",
+                visible.len() - window_start - window.len()
+            ),
             SingleSessionLineStyle::Overlay,
         ));
     }
-    lines.push(styled_line(
-        "  ↑↓ select   ←→ columns   Enter use   Esc close",
-        SingleSessionLineStyle::Overlay,
-    ));
+    let footer = if picker.preview {
+        "Enter use model   Esc clear /model"
+    } else {
+        "↑↓ select   Type filter   Enter use   Esc close"
+    };
+    lines.push(styled_line(footer, SingleSessionLineStyle::Overlay));
 
     lines
 }
