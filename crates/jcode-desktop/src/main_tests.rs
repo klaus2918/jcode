@@ -1551,6 +1551,10 @@ fn positions_for_color(vertices: &[Vertex], color: [f32; 4]) -> Vec<[u32; 2]> {
         .collect()
 }
 
+fn ndc_x_to_pixel(x: f32, size: PhysicalSize<u32>) -> f32 {
+    (x + 1.0) * 0.5 * size.width.max(1) as f32
+}
+
 fn assert_visual_text_contains(key: &SingleSessionTextKey, expected: &str) {
     let body_lines = key
         .body
@@ -3430,6 +3434,16 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
         "fresh inline picker should render above the typed /model command"
     );
     assert!(
+        inline_area.left > PANEL_TITLE_LEFT_PADDING,
+        "inline picker should leave extra side breathing room: left={}",
+        inline_area.left
+    );
+    assert!(
+        inline_area.bounds.right < (size.width as f32 - PANEL_TITLE_LEFT_PADDING) as i32,
+        "inline picker should use an intrinsic text width instead of the full panel: right={}",
+        inline_area.bounds.right
+    );
+    assert!(
         inline_area.top >= version_area.bounds.bottom as f32,
         "fresh inline picker should flow below the welcome hero/version chrome instead of overlaying it: inline_top={}, version_bottom={}",
         inline_area.top,
@@ -3442,6 +3456,29 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     assert!(
         inline_area.bounds.bottom > inline_area.bounds.top,
         "fresh inline picker should keep a visible clipped lane"
+    );
+
+    let vertices = build_single_session_vertices(&app, size, 0.0, 0);
+    let inline_card_vertices = positions_for_color(&vertices, [0.972, 0.982, 1.000, 0.54]);
+    assert!(
+        !inline_card_vertices.is_empty(),
+        "inline picker should draw a rounded card background"
+    );
+    let min_x = inline_card_vertices
+        .iter()
+        .map(|position| ndc_x_to_pixel(f32::from_bits(position[0]), size))
+        .fold(f32::INFINITY, f32::min);
+    let max_x = inline_card_vertices
+        .iter()
+        .map(|position| ndc_x_to_pixel(f32::from_bits(position[0]), size))
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        min_x > PANEL_TITLE_LEFT_PADDING,
+        "inline card should start after the normal panel gutter: min_x={min_x}"
+    );
+    assert!(
+        max_x < size.width as f32 - PANEL_TITLE_LEFT_PADDING,
+        "inline card should hug the text instead of spanning full width: max_x={max_x}"
     );
 }
 
