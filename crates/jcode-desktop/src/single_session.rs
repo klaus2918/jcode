@@ -3150,7 +3150,7 @@ fn model_picker_inline_styled_lines(picker: &ModelPickerState) -> Vec<SingleSess
     let mut lines = vec![
         styled_line(
             format!(
-                "╭─ model picker · current {}",
+                "Model picker    current {}",
                 model_picker_current_label(
                     picker.provider_name.as_deref(),
                     picker.current_model.as_deref(),
@@ -3160,7 +3160,7 @@ fn model_picker_inline_styled_lines(picker: &ModelPickerState) -> Vec<SingleSess
         ),
         styled_line(
             format!(
-                "│ {:<32} {:<18} {:<12}{}{}  {}{}",
+                "  {:<32} {:<18} {:<12}{}{}  {}{}",
                 "MODEL",
                 "PROVIDER",
                 "METHOD",
@@ -3175,25 +3175,25 @@ fn model_picker_inline_styled_lines(picker: &ModelPickerState) -> Vec<SingleSess
 
     if picker.loading {
         lines.push(styled_line(
-            "│ loading models from shared server...",
+            "  loading models from shared server...",
             SingleSessionLineStyle::Status,
         ));
     }
 
     if let Some(error) = &picker.error {
         lines.push(styled_line(
-            format!("│ error: {error}"),
+            format!("  error: {error}"),
             SingleSessionLineStyle::Error,
         ));
     }
 
     if visible.is_empty() && !picker.loading {
         lines.push(styled_line(
-            "│ no matching models",
+            "  no matching models",
             SingleSessionLineStyle::Status,
         ));
         lines.push(styled_line(
-            "╰─ clear the filter or press Ctrl+R to reload",
+            "  clear the filter or press Ctrl+R to reload",
             SingleSessionLineStyle::Overlay,
         ));
         return lines;
@@ -3219,7 +3219,7 @@ fn model_picker_inline_styled_lines(picker: &ModelPickerState) -> Vec<SingleSess
         let method = choice.api_method.as_deref().unwrap_or("auto");
         lines.push(styled_line(
             format!(
-                "│ {selector} {current_marker} {:<32} {:<18} {:<12}{}{}",
+                "  {selector} {current_marker} {:<32} {:<18} {:<12}{}{}",
                 truncate_chars(&choice.model, 32),
                 truncate_chars(provider, 18),
                 truncate_chars(method, 12),
@@ -3240,11 +3240,14 @@ fn model_picker_inline_styled_lines(picker: &ModelPickerState) -> Vec<SingleSess
     }
     if visible.len() > limit {
         lines.push(styled_line(
-            format!("│ … {} more models", visible.len() - limit),
+            format!("  … {} more models", visible.len() - limit),
             SingleSessionLineStyle::Overlay,
         ));
     }
-    lines.push(styled_line("╰─", SingleSessionLineStyle::Overlay));
+    lines.push(styled_line(
+        "  ↑↓ select   ←→ columns   Enter use   Esc close",
+        SingleSessionLineStyle::Overlay,
+    ));
 
     lines
 }

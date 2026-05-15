@@ -1849,7 +1849,7 @@ fn single_session_model_picker_loads_filters_and_selects_model() {
         .map(|line| line.text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(picker.contains("╭─ model picker · current Claude · claude-sonnet-4-5"));
+    assert!(picker.contains("Model picker    current Claude · claude-sonnet-4-5"));
     assert!(picker.contains("MODEL"));
     assert!(picker.contains("PROVIDER"));
     assert!(picker.contains("METHOD"));
@@ -1998,7 +1998,7 @@ fn single_session_model_picker_updates_current_model_after_switch() {
             .map(|line| line.text)
             .collect::<Vec<_>>()
             .join("\n")
-            .contains("╭─ model picker · current OpenAI · gpt-5.4")
+            .contains("Model picker    current OpenAI · gpt-5.4")
     );
     assert!(app.composer_status_line().contains("model OpenAI/gpt-5.4"));
 }
@@ -3419,6 +3419,7 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     let mut font_system = FontSystem::new();
     let buffers = single_session_text_buffers(&app, size, &mut font_system);
     let areas = single_session_text_areas_for_app(&app, &buffers, size);
+    let vertices = build_single_session_vertices(&app, size, 0.0, 0);
     let draft_area = areas.first().expect("draft text area");
     assert_eq!(draft_area.top, single_session_draft_top(size));
     let inline_area = areas.last().expect("inline model picker text area");
@@ -3443,6 +3444,10 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     assert!(
         inline_area.bounds.bottom > inline_area.bounds.top,
         "fresh inline picker should keep a visible clipped lane"
+    );
+    assert!(
+        vertices_have_color(&vertices, [0.975, 0.985, 1.0, 0.58]),
+        "inline picker should render a native flat card background"
     );
 }
 

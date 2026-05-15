@@ -123,6 +123,13 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
     if app.has_activity_indicator() {
         push_native_activity_spinner(&mut vertices, app, size, spinner_tick);
     }
+    push_single_session_inline_widget_card(
+        &mut vertices,
+        app,
+        size,
+        welcome_chrome_offset,
+        welcome_timeline_total_body_lines(app, size),
+    );
     push_single_session_transcript_cards(
         &mut vertices,
         app,
@@ -204,6 +211,14 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
     if app.has_activity_indicator() {
         push_native_activity_spinner(&mut vertices, app, size, spinner_tick);
     }
+
+    push_single_session_inline_widget_card(
+        &mut vertices,
+        app,
+        size,
+        welcome_chrome_offset,
+        rendered_body_lines.len(),
+    );
 
     let viewport = single_session_body_viewport_from_lines(
         app,
@@ -655,6 +670,80 @@ fn fresh_welcome_inline_widget_visual_offset(
         0.0
     } else {
         -(inline_height - available)
+    }
+}
+
+fn push_single_session_inline_widget_card(
+    vertices: &mut Vec<Vertex>,
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    welcome_chrome_offset_pixels: f32,
+    total_lines: usize,
+) {
+    let line_count = app.inline_widget_line_count();
+    if line_count == 0 {
+        return;
+    }
+
+    let typography = single_session_typography_for_scale(app.text_scale());
+    let line_height = typography.body_size * typography.body_line_height;
+    let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
+    let inline_top = if welcome_timeline_chrome_visible(app, size, welcome_chrome_offset_pixels) {
+        fresh_welcome_visual_bottom_for_scale(size, app.text_scale())
+            + welcome_chrome_offset_pixels
+            + fresh_welcome_inline_widget_gap_for_scale(app.text_scale())
+    } else {
+        body_bottom + 8.0
+    };
+
+    let left = PANEL_TITLE_LEFT_PADDING;
+    let right = size.width as f32 - PANEL_TITLE_LEFT_PADDING;
+    let text_height = line_count as f32 * line_height;
+    let card_padding_x = 10.0;
+    let card_padding_y = 8.0;
+    let card = Rect {
+        x: (left - card_padding_x).max(0.0),
+        y: (inline_top - card_padding_y).max(PANEL_TITLE_TOP_PADDING),
+        width: (right - left + card_padding_x * 2.0).max(1.0),
+        height: text_height + card_padding_y * 2.0,
+    };
+
+    push_rounded_rect(
+        vertices,
+        card,
+        PANEL_RADIUS + 3.0,
+        [0.975, 0.985, 1.0, 0.58],
+        size,
+    );
+    push_rounded_rect(
+        vertices,
+        Rect {
+            x: card.x,
+            y: card.y,
+            width: card.width,
+            height: 1.0,
+        },
+        0.0,
+        [0.210, 0.320, 0.560, 0.20],
+        size,
+    );
+
+    if app.model_picker.open && !app.model_picker.loading && app.model_picker.error.is_none() {
+        let selected_line = 2usize.saturating_add(app.model_picker.selected);
+        if selected_line < line_count {
+            push_rounded_rect(
+                vertices,
+                Rect {
+                    x: card.x + 6.0,
+                    y: inline_top + selected_line as f32 * line_height - 1.0,
+                    width: card.width - 12.0,
+                    height: line_height + 2.0,
+                },
+                6.0,
+                OVERLAY_SELECTION_BACKGROUND_COLOR,
+                size,
+            );
+        }
     }
 }
 
