@@ -719,7 +719,7 @@ fn push_single_session_inline_widget_card(
     push_rounded_rect(
         vertices,
         layout.card,
-        PANEL_RADIUS + 4.0,
+        INLINE_WIDGET_CARD_RADIUS,
         with_alpha(
             INLINE_CARD_BORDER_COLOR,
             INLINE_CARD_BORDER_COLOR[3] * progress,
@@ -729,7 +729,7 @@ fn push_single_session_inline_widget_card(
     push_rounded_rect(
         vertices,
         inset_rect(layout.card, 1.0),
-        PANEL_RADIUS + 3.0,
+        INLINE_WIDGET_CARD_RADIUS - 1.0,
         with_alpha(
             INLINE_CARD_BACKGROUND_COLOR,
             INLINE_CARD_BACKGROUND_COLOR[3] * progress,
@@ -762,7 +762,7 @@ fn push_single_session_inline_widget_card(
                     width: row_width,
                     height: row_visible_height.max(1.0),
                 },
-                7.0,
+                INLINE_WIDGET_SELECTION_RADIUS,
                 with_alpha(
                     OVERLAY_SELECTION_BACKGROUND_COLOR,
                     OVERLAY_SELECTION_BACKGROUND_COLOR[3] * progress,
@@ -777,6 +777,8 @@ const INLINE_WIDGET_SIDE_GUTTER_EXTRA: f32 = 24.0;
 const INLINE_WIDGET_CARD_PADDING_X: f32 = 14.0;
 const INLINE_WIDGET_CARD_PADDING_Y: f32 = 8.0;
 const INLINE_WIDGET_BODY_GAP: f32 = 8.0;
+const INLINE_WIDGET_CARD_RADIUS: f32 = 18.0;
+const INLINE_WIDGET_SELECTION_RADIUS: f32 = 10.0;
 
 #[derive(Clone, Copy, Debug)]
 struct InlineWidgetCardLayout {
