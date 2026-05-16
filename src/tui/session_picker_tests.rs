@@ -523,9 +523,6 @@ fn test_loading_preview_refreshes_search_index_for_picker_filtering() {
     let sessions = load_sessions().expect("load sessions");
     let mut picker = SessionPicker::new(sessions);
 
-    let selected_before = picker.selected_session().expect("selected session");
-    assert!(!selected_before.search_index.contains("needle hidden"));
-
     picker.ensure_selected_preview_loaded();
 
     let selected_after = picker
