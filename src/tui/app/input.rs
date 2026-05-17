@@ -120,7 +120,9 @@ pub(super) struct PreparedInput {
     pub images: Vec<(String, String)>,
 }
 
-pub(super) const MAX_SUBMITTED_TEXT_BYTES: usize = 1024 * 1024;
+// Roughly 500k English words at ~6 bytes/word including spaces. This is still
+// low enough to avoid multi-megabyte submit-path hangs while allowing very large logs.
+pub(super) const MAX_SUBMITTED_TEXT_BYTES: usize = 3 * 1024 * 1024;
 
 fn oversized_message_notice(size: usize) -> String {
     format!(
