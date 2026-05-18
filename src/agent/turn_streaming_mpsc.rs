@@ -135,6 +135,12 @@ impl Agent {
                         _ = keepalive.tick() => {
                             send_stream_keepalive_mpsc(&event_tx);
                         }
+                        _ = self.graceful_shutdown.notified() => {
+                            logging::info(
+                                "Graceful shutdown/cancel before API stream opened - stopping turn",
+                            );
+                            return Ok(());
+                        }
                         result = &mut complete_future => {
                             match result {
                                 Ok(stream) => break stream,
@@ -206,6 +212,12 @@ impl Agent {
                     _ = keepalive.tick() => {
                         send_stream_keepalive_mpsc(&event_tx);
                         continue;
+                    }
+                    _ = self.graceful_shutdown.notified() => {
+                        logging::info(
+                            "Graceful shutdown/cancel while waiting for API stream event - stopping stream",
+                        );
+                        break;
                     }
                     event = next_event => event,
                 };

@@ -754,8 +754,43 @@ async fn handle_lightweight_control_request(
 async fn refresh_session_control_handle(
     session_id: &str,
     agent: &Arc<Mutex<Agent>>,
+    shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
 ) -> SessionControlHandle {
-    let agent_guard = agent.lock().await;
+    let started = Instant::now();
+    let agent_guard = match agent.try_lock() {
+        Ok(agent_guard) => agent_guard,
+        Err(_) => {
+            crate::logging::warn(&format!(
+                "refresh_session_control_handle: waiting for busy agent lock for session {}; cancel/control requests on this connection may be delayed",
+                session_id
+            ));
+            let fallback_stop_signal = shutdown_signals.read().await.get(session_id).cloned();
+            let fallback_soft_interrupt_queue =
+                soft_interrupt_queues.read().await.get(session_id).cloned();
+            if let (Some(stop_signal), Some(soft_interrupt_queue)) =
+                (fallback_stop_signal, fallback_soft_interrupt_queue)
+            {
+                crate::logging::warn(&format!(
+                    "refresh_session_control_handle: using lock-free cancel-only control handle for busy session {} after {}ms",
+                    session_id,
+                    started.elapsed().as_millis()
+                ));
+                return SessionControlHandle::cancel_only(
+                    session_id,
+                    soft_interrupt_queue,
+                    stop_signal,
+                );
+            }
+            let agent_guard = agent.lock().await;
+            crate::logging::warn(&format!(
+                "refresh_session_control_handle: acquired agent lock for session {} after {}ms",
+                session_id,
+                started.elapsed().as_millis()
+            ));
+            agent_guard
+        }
+    };
     SessionControlHandle::new(
         session_id,
         agent_guard.soft_interrupt_queue(),
@@ -1408,7 +1443,13 @@ pub(super) async fn handle_client(
                     &client_event_tx,
                 )
                 .await;
-                session_control = refresh_session_control_handle(&client_session_id, &agent).await;
+                session_control = refresh_session_control_handle(
+                    &client_session_id,
+                    &agent,
+                    &shutdown_signals,
+                    &soft_interrupt_queues,
+                )
+                .await;
             }
 
             Request::Rewind { id, message_index } => {
@@ -1590,8 +1631,13 @@ pub(super) async fn handle_client(
                             &swarm_event_tx,
                         )
                         .await?;
-                        session_control =
-                            refresh_session_control_handle(&client_session_id, &agent).await;
+                        session_control = refresh_session_control_handle(
+                            &client_session_id,
+                            &agent,
+                            &shutdown_signals,
+                            &soft_interrupt_queues,
+                        )
+                        .await;
                         if client_session_id == target_session_id {
                             handle_subscribe(
                                 id,
@@ -1792,7 +1838,13 @@ pub(super) async fn handle_client(
                     &swarm_event_tx,
                 )
                 .await?;
-                session_control = refresh_session_control_handle(&client_session_id, &agent).await;
+                session_control = refresh_session_control_handle(
+                    &client_session_id,
+                    &agent,
+                    &shutdown_signals,
+                    &soft_interrupt_queues,
+                )
+                .await;
                 if let Some(snapshot) = try_available_models_snapshot(&agent) {
                     last_available_models_snapshot = Some(snapshot);
                 }
@@ -2742,15 +2794,45 @@ async fn cancel_processing_message(
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     swarm: &SwarmStatusRefs<'_>,
 ) {
+    let session_label = state
+        .session_id
+        .as_deref()
+        .unwrap_or(session_control.session_id.as_str())
+        .to_string();
+    crate::logging::info(&format!(
+        "cancel request received: session={} control_session={} client_processing={} message_id={:?} has_task={}",
+        session_label,
+        session_control.session_id,
+        *state.client_is_processing,
+        *state.message_id,
+        state.task.is_some()
+    ));
     if let Some(mut handle) = state.task.take() {
         if handle.is_finished() {
+            crate::logging::info(&format!(
+                "cancel request ignored because processing task is already finished: session={} message_id={:?}",
+                session_label, *state.message_id
+            ));
             *state.task = Some(handle);
             return;
         }
         session_control.request_cancel();
+        crate::logging::info(&format!(
+            "cancel request signalled active turn: session={} message_id={:?}; waiting up to 500ms for cooperative stop",
+            session_label, *state.message_id
+        ));
         match tokio::time::timeout(std::time::Duration::from_millis(500), &mut handle).await {
-            Ok(_) => {}
+            Ok(_) => {
+                crate::logging::info(&format!(
+                    "cancel request completed cooperatively: session={} message_id={:?}",
+                    session_label, *state.message_id
+                ));
+            }
             Err(_) => {
+                crate::logging::warn(&format!(
+                    "cancel request did not complete cooperatively within 500ms; aborting task: session={} message_id={:?}",
+                    session_label, *state.message_id
+                ));
                 handle.abort();
                 match tokio::time::timeout(std::time::Duration::from_millis(2000), handle).await {
                     Ok(_) => crate::logging::info("Aborted processing task released resources"),
@@ -2778,6 +2860,40 @@ async fn cancel_processing_message(
         }
         if let Some(message_id) = state.message_id.take() {
             let _ = client_event_tx.send(ServerEvent::Interrupted);
+            let _ = client_event_tx.send(ServerEvent::Done { id: message_id });
+        }
+    } else {
+        crate::logging::warn(&format!(
+            "cancel request had no local processing task to stop: session={} control_session={} client_processing={} message_id={:?}; signalling session cancel handle anyway",
+            session_label,
+            session_control.session_id,
+            *state.client_is_processing,
+            *state.message_id
+        ));
+        session_control.request_cancel();
+        let reset_control = session_control.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            reset_control.reset_cancel();
+        });
+        *state.client_is_processing = false;
+        let status_session_id = state
+            .session_id
+            .take()
+            .unwrap_or_else(|| session_control.session_id.clone());
+        update_member_status(
+            &status_session_id,
+            "stopped",
+            Some("cancelled".to_string()),
+            swarm.members,
+            swarm.swarms_by_id,
+            Some(swarm.event_history),
+            Some(swarm.event_counter),
+            Some(swarm.event_tx),
+        )
+        .await;
+        let _ = client_event_tx.send(ServerEvent::Interrupted);
+        if let Some(message_id) = state.message_id.take() {
             let _ = client_event_tx.send(ServerEvent::Done { id: message_id });
         }
     }

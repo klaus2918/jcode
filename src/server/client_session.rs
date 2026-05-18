@@ -765,6 +765,25 @@ pub(super) async fn handle_resume_session(
                 })
                 .cloned()
         };
+        let live_target_busy = live_target_agent.try_lock().is_err();
+        crate::logging::info(&format!(
+            "Resume attach to existing live session {} from temporary {} on connection {}: live_target_busy={}, conflict_owner={}, conflict_processing={}, allow_takeover={}, local_history={}, incoming_instance={:?}",
+            session_id,
+            old_session_id,
+            client_connection_id,
+            live_target_busy,
+            conflicting_live_client
+                .as_ref()
+                .map(|info| info.client_id.as_str())
+                .unwrap_or("<none>"),
+            conflicting_live_client
+                .as_ref()
+                .map(|info| info.is_processing)
+                .unwrap_or(false),
+            allow_session_takeover,
+            client_has_local_history,
+            incoming_client_instance_id
+        ));
 
         cleanup_detached_source_session_if_unused(
             &old_session_id,
@@ -815,6 +834,17 @@ pub(super) async fn handle_resume_session(
                         )
                     }
                 };
+                if transferred_processing {
+                    crate::logging::warn(&format!(
+                        "Taking over live session {} from {} while old owner reports processing; new connection receives status/tool metadata but not the old processing task handle",
+                        session_id, conflict.client_id
+                    ));
+                } else {
+                    crate::logging::info(&format!(
+                        "Taking over live session {} from idle owner {}",
+                        session_id, conflict.client_id
+                    ));
+                }
 
                 {
                     let mut connections = client_connections.write().await;
