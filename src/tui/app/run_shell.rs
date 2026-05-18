@@ -56,7 +56,11 @@ impl App {
                         needs_redraw |= local::handle_tick(&mut self);
                     }
                     event = event_stream.next() => {
-                        needs_redraw |= local::handle_terminal_event(&mut self, &mut terminal, event)?;
+                        if event.is_some() {
+                            needs_redraw |= local::handle_terminal_event(&mut self, &mut terminal, event)?;
+                        } else {
+                            tokio::time::sleep(redraw_period).await;
+                        }
                     }
                     command = async {
                         match handterm_native_scroll.as_mut() {
@@ -202,7 +206,11 @@ impl App {
                         }
                     }
                     event = event_stream.next() => {
-                        needs_redraw |= remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, event).await?;
+                        if event.is_some() {
+                            needs_redraw |= remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, event).await?;
+                        } else {
+                            tokio::time::sleep(redraw_period).await;
+                        }
                     }
                     command = async {
                         match handterm_native_scroll.as_mut() {
