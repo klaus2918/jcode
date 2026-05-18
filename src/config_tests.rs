@@ -1,6 +1,6 @@
 use super::{
     AmbientConfig, Config, DiffDisplayMode, DisplayConfig, ProviderConfig,
-    SessionPickerResumeAction, SwarmSpawnMode,
+    SessionPickerResumeAction, SwarmSpawnMode, config_env_fingerprint,
 };
 use std::ffi::OsString;
 use std::path::Path;
@@ -127,6 +127,30 @@ fn config_save_invalidates_global_config_cache() {
 
     restore_env_var("JCODE_HOME", prev_home);
     Config::invalidate_cache();
+}
+
+#[test]
+fn config_env_fingerprint_ignores_runtime_only_jcode_vars() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_runtime_provider = std::env::var_os("JCODE_RUNTIME_PROVIDER");
+    let prev_active_provider = std::env::var_os("JCODE_ACTIVE_PROVIDER");
+    let prev_display_centered = std::env::var_os("JCODE_DISPLAY_CENTERED");
+
+    crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
+    crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
+    crate::env::remove_var("JCODE_DISPLAY_CENTERED");
+    let baseline = config_env_fingerprint();
+
+    crate::env::set_var("JCODE_RUNTIME_PROVIDER", "openai");
+    crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openai");
+    assert_eq!(baseline, config_env_fingerprint());
+
+    crate::env::set_var("JCODE_DISPLAY_CENTERED", "1");
+    assert_ne!(baseline, config_env_fingerprint());
+
+    restore_env_var("JCODE_RUNTIME_PROVIDER", prev_runtime_provider);
+    restore_env_var("JCODE_ACTIVE_PROVIDER", prev_active_provider);
+    restore_env_var("JCODE_DISPLAY_CENTERED", prev_display_centered);
 }
 
 #[test]

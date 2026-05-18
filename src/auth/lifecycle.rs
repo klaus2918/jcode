@@ -304,12 +304,16 @@ fn apply_auth_provider_runtime(provider_id: Option<&str>) -> Option<String> {
         Some(profile_id)
             if crate::provider_catalog::openai_compatible_profile_by_id(profile_id).is_some() =>
         {
-            let Some(profile) = crate::provider_catalog::openai_compatible_profile_by_id(profile_id)
+            let Some(profile) =
+                crate::provider_catalog::openai_compatible_profile_by_id(profile_id)
             else {
                 crate::logging::auth_event(
                     "auth_changed_runtime_activation_failed",
                     profile_id,
-                    &[("reason", "openai-compatible profile disappeared during activation")],
+                    &[(
+                        "reason",
+                        "openai-compatible profile disappeared during activation",
+                    )],
                 );
                 return None;
             };
