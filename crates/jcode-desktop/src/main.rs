@@ -1317,9 +1317,11 @@ async fn run_hero_screenshot_capture(output_dir: &Path) -> Result<()> {
     }
 
     let manifest_path = output_dir.join("manifest.json");
+    let manifest_json = serde_json::to_string_pretty(&manifest)
+        .context("failed to serialize hero frame manifest")?;
     std::fs::write(
         &manifest_path,
-        serde_json::to_string_pretty(&manifest).expect("manifest json serializes"),
+        manifest_json,
     )
     .with_context(|| format!("failed to save {}", manifest_path.display()))?;
     println!(
