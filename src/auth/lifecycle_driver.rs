@@ -585,7 +585,8 @@ pub(crate) async fn run_live_openai_compatible_smoke(
     profile: OpenAiCompatibleProfile,
     api_key: &str,
     model: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<crate::live_tests::LiveVerificationStage> {
+    let started = std::time::Instant::now();
     let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
     let url = format!(
         "{}/chat/completions",
@@ -632,14 +633,24 @@ pub(crate) async fn run_live_openai_compatible_smoke(
         resolved.display_name,
         content
     );
-    Ok(())
+    let mut stage = crate::live_tests::LiveVerificationStage::passed("chat_completion")
+        .with_duration_ms(started.elapsed().as_millis() as u64)
+        .with_evidence("http_status", serde_json::json!(status.as_u16()))
+        .with_evidence("matched_expected_content", serde_json::json!(true));
+    for key in ["id", "model", "usage", "cost"] {
+        if let Some(value) = parsed.get(key) {
+            stage = stage.with_evidence(key, value.clone());
+        }
+    }
+    Ok(stage)
 }
 
 pub(crate) async fn run_live_openai_compatible_tool_smoke(
     profile: OpenAiCompatibleProfile,
     api_key: &str,
     model: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<crate::live_tests::LiveVerificationStage> {
+    let started = std::time::Instant::now();
     let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
     let url = format!(
         "{}/chat/completions",
@@ -732,7 +743,29 @@ pub(crate) async fn run_live_openai_compatible_tool_smoke(
         resolved.display_name,
         arguments
     );
-    Ok(())
+    let choice = parsed
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let mut stage = crate::live_tests::LiveVerificationStage::passed("tool_call")
+        .with_duration_ms(started.elapsed().as_millis() as u64)
+        .with_evidence("http_status", serde_json::json!(status.as_u16()))
+        .with_evidence("tool_name", serde_json::json!(returned_name))
+        .with_evidence("tool_arguments", parsed_arguments)
+        .with_evidence(
+            "finish_reason",
+            choice
+                .get("finish_reason")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        );
+    for key in ["id", "model", "usage", "cost"] {
+        if let Some(value) = parsed.get(key) {
+            stage = stage.with_evidence(key, value.clone());
+        }
+    }
+    Ok(stage)
 }
 
 #[cfg(test)]
@@ -749,27 +782,95 @@ mod tests {
             .unwrap_or(false)
     }
 
-    fn live_cerebras_api_key() -> Option<String> {
+    struct LiveTestApiKey {
+        secret: String,
+        auth: crate::live_tests::LiveVerificationAuth,
+    }
+
+    fn live_cerebras_api_key() -> Option<LiveTestApiKey> {
         std::env::var("JCODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
+            .map(|secret| LiveTestApiKey {
+                auth: crate::live_tests::LiveVerificationAuth::from_secret(
+                    "env:JCODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY",
+                    Some("JCODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY"),
+                    &secret,
+                ),
+                secret,
+            })
     }
 
-    fn live_opencode_zen_api_key() -> Option<String> {
-        std::env::var("JCODE_AUTH_LIFECYCLE_OPENCODE_API_KEY")
+    fn live_opencode_zen_api_key() -> Option<LiveTestApiKey> {
+        if let Some(secret) = std::env::var("JCODE_AUTH_LIFECYCLE_OPENCODE_API_KEY")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .or_else(|| {
-                let resolved = crate::provider_catalog::resolve_openai_compatible_profile(
-                    crate::provider_catalog::OPENCODE_PROFILE,
-                );
-                crate::provider_catalog::load_api_key_from_env_or_config(
-                    &resolved.api_key_env,
-                    &resolved.env_file,
-                )
-            })
+        {
+            return Some(LiveTestApiKey {
+                auth: crate::live_tests::LiveVerificationAuth::from_secret(
+                    "env:JCODE_AUTH_LIFECYCLE_OPENCODE_API_KEY",
+                    Some("JCODE_AUTH_LIFECYCLE_OPENCODE_API_KEY"),
+                    &secret,
+                ),
+                secret,
+            });
+        }
+
+        let resolved = crate::provider_catalog::resolve_openai_compatible_profile(
+            crate::provider_catalog::OPENCODE_PROFILE,
+        );
+        crate::provider_catalog::load_api_key_from_env_or_config(
+            &resolved.api_key_env,
+            &resolved.env_file,
+        )
+        .map(|secret| LiveTestApiKey {
+            auth: crate::live_tests::LiveVerificationAuth::from_secret(
+                format!("{} via {}", resolved.api_key_env, resolved.env_file),
+                Some(resolved.api_key_env.clone()),
+                &secret,
+            ),
+            secret,
+        })
+    }
+
+    fn live_event(
+        test_name: &str,
+        profile: OpenAiCompatibleProfile,
+        auth: crate::live_tests::LiveVerificationAuth,
+        model: Option<&str>,
+        capabilities: &[&str],
+        result: crate::live_tests::LiveVerificationResult,
+    ) -> crate::live_tests::LiveVerificationEvent {
+        let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
+        let mut event = crate::live_tests::LiveVerificationEvent::new(
+            test_name,
+            resolved.id,
+            resolved.display_name,
+            auth,
+            result,
+        )
+        .with_endpoint(resolved.api_base)
+        .with_capabilities(capabilities.iter().copied())
+        .with_metadata(
+            "cost_policy",
+            serde_json::json!("env_gated_may_spend_balance"),
+        );
+        if let Some(model) = model {
+            event = event.with_model(model);
+        }
+        event
+    }
+
+    fn append_live_event(event: &crate::live_tests::LiveVerificationEvent) {
+        let paths = crate::live_tests::append_event(event)
+            .expect("append live verification evidence ledger");
+        eprintln!(
+            "live verification recorded: events={} coverage={}",
+            paths.events.display(),
+            paths.coverage.display()
+        );
     }
 
     fn stale_openai_route(model: &str) -> ModelRoute {
@@ -1308,12 +1409,40 @@ mod tests {
         let api_key = live_cerebras_api_key()
             .expect("JCODE_AUTH_LIFECYCLE_LIVE=1 requires JCODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY");
 
-        let models = fetch_live_openai_compatible_models(
+        let mut stages = vec![crate::live_tests::LiveVerificationStage::passed(
+            "auth_key_loaded",
+        )];
+        let models_result = fetch_live_openai_compatible_models(
             crate::provider_catalog::CEREBRAS_PROFILE,
-            &api_key,
+            &api_key.secret,
         )
-        .await
-        .expect("live Cerebras model catalog");
+        .await;
+        let models = match models_result {
+            Ok(models) => models,
+            Err(error) => {
+                stages.push(crate::live_tests::LiveVerificationStage::failed(
+                    "models_endpoint",
+                    error.to_string(),
+                ));
+                let event = live_event(
+                    "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
+                    crate::provider_catalog::CEREBRAS_PROFILE,
+                    api_key.auth.clone(),
+                    None,
+                    &["auth_key_loaded", "models_endpoint", "auth_lifecycle"],
+                    crate::live_tests::LiveVerificationResult::Failed,
+                )
+                .with_stages(stages);
+                append_live_event(&event);
+                panic!("live Cerebras model catalog: {error:?}");
+            }
+        };
+        stages.push(
+            crate::live_tests::LiveVerificationStage::passed("models_endpoint").with_evidence(
+                "models",
+                crate::live_tests::concise_model_sample(&models, 12),
+            ),
+        );
         let default_model = crate::provider_catalog::CEREBRAS_PROFILE.default_model;
         let selected = default_model
             .filter(|default| models.iter().any(|model| model == default))
@@ -1324,7 +1453,7 @@ mod tests {
         let driver = AuthLifecycleDriver::new().expect("driver");
         let mut spec =
             AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
-        spec.api_key = api_key.clone();
+        spec.api_key = api_key.secret.clone();
         spec.catalog_models_after_auth = models;
         spec.selected_model_override = Some(selected.clone());
 
@@ -1341,16 +1470,79 @@ mod tests {
             "{}",
             result.failure_report(&spec)
         );
+        stages.push(
+            crate::live_tests::LiveVerificationStage::passed("auth_lifecycle_model_picker")
+                .with_evidence("selected_model", serde_json::json!(selected.clone()))
+                .with_evidence(
+                    "picker_entries",
+                    serde_json::json!(result.picker.provider_entries.clone()),
+                )
+                .with_evidence(
+                    "switch_request",
+                    serde_json::json!(result.picker.switch_request.clone()),
+                )
+                .with_evidence(
+                    "catalog_route_count",
+                    serde_json::json!(result.catalog_routes.len()),
+                ),
+        );
 
         if env_truthy("JCODE_AUTH_LIFECYCLE_SMOKE") {
-            run_live_openai_compatible_smoke(
+            match run_live_openai_compatible_smoke(
                 crate::provider_catalog::CEREBRAS_PROFILE,
-                &api_key,
+                &api_key.secret,
                 &selected,
             )
             .await
-            .expect("live Cerebras smoke completion");
+            {
+                Ok(stage) => stages.push(stage),
+                Err(error) => {
+                    stages.push(crate::live_tests::LiveVerificationStage::failed(
+                        "chat_completion",
+                        error.to_string(),
+                    ));
+                    let event = live_event(
+                        "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
+                        crate::provider_catalog::CEREBRAS_PROFILE,
+                        api_key.auth.clone(),
+                        Some(&selected),
+                        &[
+                            "auth_key_loaded",
+                            "models_endpoint",
+                            "auth_lifecycle",
+                            "model_picker_route",
+                            "model_switch_route",
+                            "chat_completion",
+                        ],
+                        crate::live_tests::LiveVerificationResult::Failed,
+                    )
+                    .with_stages(stages);
+                    append_live_event(&event);
+                    panic!("live Cerebras smoke completion: {error:?}");
+                }
+            }
         }
+
+        let mut capabilities = vec![
+            "auth_key_loaded",
+            "models_endpoint",
+            "auth_lifecycle",
+            "model_picker_route",
+            "model_switch_route",
+        ];
+        if env_truthy("JCODE_AUTH_LIFECYCLE_SMOKE") {
+            capabilities.push("chat_completion");
+        }
+        let event = live_event(
+            "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
+            crate::provider_catalog::CEREBRAS_PROFILE,
+            api_key.auth.clone(),
+            Some(&selected),
+            &capabilities,
+            crate::live_tests::LiveVerificationResult::Passed,
+        )
+        .with_stages(stages);
+        append_live_event(&event);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1370,13 +1562,136 @@ mod tests {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "kimi-k2.6".to_string());
 
-        run_live_openai_compatible_tool_smoke(
+        let mut stages = vec![crate::live_tests::LiveVerificationStage::passed(
+            "auth_key_loaded",
+        )];
+        let models_result = fetch_live_openai_compatible_models(
             crate::provider_catalog::OPENCODE_PROFILE,
-            &api_key,
+            &api_key.secret,
+        )
+        .await;
+        let models = match models_result {
+            Ok(models) => models,
+            Err(error) => {
+                stages.push(crate::live_tests::LiveVerificationStage::failed(
+                    "models_endpoint",
+                    error.to_string(),
+                ));
+                let event = live_event(
+                    "opencode_zen_live_opt_in_tool_call_smoke",
+                    crate::provider_catalog::OPENCODE_PROFILE,
+                    api_key.auth.clone(),
+                    Some(&model),
+                    &[
+                        "auth_key_loaded",
+                        "models_endpoint",
+                        "model_picker_route",
+                        "tool_call",
+                    ],
+                    crate::live_tests::LiveVerificationResult::Failed,
+                )
+                .with_stages(stages);
+                append_live_event(&event);
+                panic!("live OpenCode Zen model catalog: {error:?}");
+            }
+        };
+        stages.push(
+            crate::live_tests::LiveVerificationStage::passed("models_endpoint")
+                .with_evidence(
+                    "models",
+                    crate::live_tests::concise_model_sample(&models, 16),
+                )
+                .with_evidence(
+                    "requested_model_present",
+                    serde_json::json!(models.contains(&model)),
+                ),
+        );
+        assert!(
+            models.iter().any(|candidate| candidate == &model),
+            "live OpenCode Zen catalog did not include requested test model `{model}`"
+        );
+
+        let driver = AuthLifecycleDriver::new().expect("driver");
+        let mut spec = AuthLifecycleSpec::openai_compatible_fixture(
+            crate::provider_catalog::OPENCODE_PROFILE,
+            AuthLifecycleAuthPath::RemoteTuiPasteApiKey,
+        );
+        spec.api_key = api_key.secret.clone();
+        spec.catalog_models_after_auth = models.clone();
+        spec.selected_model_override = Some(model.clone());
+        let result = driver
+            .run_openai_compatible_fixture(&spec)
+            .expect("live OpenCode Zen auth lifecycle fixture");
+        result.assert_success(&spec);
+        stages.push(
+            crate::live_tests::LiveVerificationStage::passed("auth_lifecycle_model_picker")
+                .with_evidence("selected_model", serde_json::json!(model.clone()))
+                .with_evidence(
+                    "picker_entries",
+                    serde_json::json!(result.picker.provider_entries.clone()),
+                )
+                .with_evidence(
+                    "switch_request",
+                    serde_json::json!(result.picker.switch_request.clone()),
+                )
+                .with_evidence(
+                    "catalog_route_count",
+                    serde_json::json!(result.catalog_routes.len()),
+                ),
+        );
+
+        match run_live_openai_compatible_tool_smoke(
+            crate::provider_catalog::OPENCODE_PROFILE,
+            &api_key.secret,
             &model,
         )
         .await
-        .expect("live OpenCode Zen tool-call smoke");
+        {
+            Ok(stage) => stages.push(stage),
+            Err(error) => {
+                stages.push(crate::live_tests::LiveVerificationStage::failed(
+                    "tool_call",
+                    error.to_string(),
+                ));
+                let event = live_event(
+                    "opencode_zen_live_opt_in_tool_call_smoke",
+                    crate::provider_catalog::OPENCODE_PROFILE,
+                    api_key.auth.clone(),
+                    Some(&model),
+                    &[
+                        "auth_key_loaded",
+                        "models_endpoint",
+                        "auth_lifecycle",
+                        "model_picker_route",
+                        "model_switch_route",
+                        "tool_call",
+                    ],
+                    crate::live_tests::LiveVerificationResult::Failed,
+                )
+                .with_stages(stages);
+                append_live_event(&event);
+                panic!("live OpenCode Zen tool-call smoke: {error:?}");
+            }
+        }
+
+        let event = live_event(
+            "opencode_zen_live_opt_in_tool_call_smoke",
+            crate::provider_catalog::OPENCODE_PROFILE,
+            api_key.auth.clone(),
+            Some(&model),
+            &[
+                "auth_key_loaded",
+                "models_endpoint",
+                "auth_lifecycle",
+                "model_picker_route",
+                "model_switch_route",
+                "tool_call",
+            ],
+            crate::live_tests::LiveVerificationResult::Passed,
+        )
+        .with_stages(stages)
+        .with_metadata("default_model", serde_json::json!("kimi-k2.6"));
+        append_live_event(&event);
     }
 
     #[test]
