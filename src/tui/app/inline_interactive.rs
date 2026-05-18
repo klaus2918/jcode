@@ -1097,13 +1097,13 @@ impl App {
             if !crate::provider_catalog::openai_compatible_profile_is_configured(profile) {
                 continue;
             }
-            if !crate::provider_catalog::openai_compatible_profile_static_models(profile)
+            let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
+            if !Self::remote_openai_compatible_profile_models(&resolved, profile)
                 .iter()
                 .any(|candidate| candidate == model)
             {
                 continue;
             }
-            let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
             return Some(crate::provider::ModelRoute {
                 model: model.to_string(),
                 provider: resolved.display_name,
@@ -1114,6 +1114,39 @@ impl App {
             });
         }
         None
+    }
+
+    fn remote_openai_compatible_profile_models(
+        resolved: &crate::provider_catalog::ResolvedOpenAiCompatibleProfile,
+        profile: crate::provider_catalog::OpenAiCompatibleProfile,
+    ) -> Vec<String> {
+        let mut models = Vec::new();
+        let mut push = |model: String| {
+            let model = model.trim().to_string();
+            if !model.is_empty() && !models.iter().any(|existing| existing == &model) {
+                models.push(model);
+            }
+        };
+
+        if let Some(cache) = jcode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)
+        {
+            let source_matches = cache
+                .source_api_base
+                .as_deref()
+                .and_then(crate::provider_catalog::normalize_api_base)
+                == crate::provider_catalog::normalize_api_base(&resolved.api_base);
+            if source_matches {
+                for model in cache.models {
+                    push(model.id);
+                }
+            }
+        }
+
+        for model in crate::provider_catalog::openai_compatible_profile_static_models(profile) {
+            push(model);
+        }
+
+        models
     }
 
     pub(super) fn remote_model_is_server_copilot_only(model: &str) -> bool {
