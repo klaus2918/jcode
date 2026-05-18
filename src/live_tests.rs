@@ -13,7 +13,7 @@ const DEFAULT_RETEST_DAYS: i64 = 14;
 const LEDGER_ENV: &str = "JCODE_LIVE_TEST_LEDGER";
 const COVERAGE_ENV: &str = "JCODE_LIVE_TEST_COVERAGE";
 
-pub const CHECKPOINT_TAXONOMY_VERSION: u32 = 1;
+pub const CHECKPOINT_TAXONOMY_VERSION: u32 = 2;
 
 pub mod checkpoints {
     pub const AUTH_UX_KEY_ENTRY: &str = "auth_ux_key_entry";
@@ -29,6 +29,7 @@ pub mod checkpoints {
     pub const TOOL_CALL_PARSE: &str = "tool_call_parse";
     pub const TOOL_EXECUTION_LOOP: &str = "tool_execution_loop";
     pub const TOOL_RESULT_FOLLOWUP: &str = "tool_result_followup";
+    pub const REAL_JCODE_TOOL_SMOKE: &str = "real_jcode_tool_smoke";
     pub const RESTART_PERSISTENCE: &str = "restart_persistence";
     pub const NEGATIVE_ERROR_UX: &str = "negative_error_ux";
     pub const MODEL_CAPABILITY_MATRIX: &str = "model_capability_matrix";
@@ -149,6 +150,14 @@ const END_TO_END_CHECKPOINTS: &[LiveVerificationCheckpointDefinition] = &[
         required_for_user_ready: true,
         spends_balance: true,
         description: "The provider accepts tool results and the model completes the final assistant response.",
+    },
+    LiveVerificationCheckpointDefinition {
+        id: checkpoints::REAL_JCODE_TOOL_SMOKE,
+        label: "Real Jcode tool smoke",
+        category: "tools",
+        required_for_user_ready: true,
+        spends_balance: true,
+        description: "A normal Jcode agent turn uses the real streamed parser, advertised tool schema, registry execution, tool-result followup, and transcript validation without malformed tool calls.",
     },
     LiveVerificationCheckpointDefinition {
         id: checkpoints::RESTART_PERSISTENCE,
@@ -859,6 +868,7 @@ mod tests {
             checkpoints::TOOL_CALL_PARSE,
             checkpoints::TOOL_EXECUTION_LOOP,
             checkpoints::TOOL_RESULT_FOLLOWUP,
+            checkpoints::REAL_JCODE_TOOL_SMOKE,
             checkpoints::RESTART_PERSISTENCE,
             checkpoints::NEGATIVE_ERROR_UX,
             checkpoints::MODEL_CAPABILITY_MATRIX,

@@ -597,7 +597,6 @@ pub(crate) async fn run_live_openai_compatible_smoke(
         "messages": [
             {"role": "user", "content": "Reply with exactly AUTH_TEST_OK and nothing else."}
         ],
-        "temperature": 0,
         "stream": false
     });
     let request = crate::provider::shared_http_client()
@@ -663,9 +662,7 @@ pub(crate) async fn run_live_openai_compatible_stream_smoke(
         "messages": [
             {"role": "user", "content": "Reply with exactly STREAM_TEST_OK and nothing else."}
         ],
-        "temperature": 0,
-        "stream": true,
-        "max_tokens": 32
+        "stream": true
     });
     let request = crate::provider::shared_http_client()
         .post(&url)
@@ -767,8 +764,7 @@ pub(crate) async fn run_live_openai_compatible_tool_smoke(
                 }
             }
         ],
-        "tool_choice": {"type": "function", "function": {"name": tool_name}},
-        "temperature": 0,
+        "tool_choice": "auto",
         "stream": false,
         "max_tokens": 256
     });
