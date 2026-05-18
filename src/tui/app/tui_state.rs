@@ -464,7 +464,11 @@ impl crate::tui::TuiState for App {
     }
 
     fn time_since_activity(&self) -> Option<std::time::Duration> {
-        self.last_stream_activity.map(|t| t.elapsed())
+        Some(
+            self.last_stream_activity
+                .unwrap_or(self.app_started)
+                .elapsed(),
+        )
     }
 
     fn stream_message_ended(&self) -> bool {

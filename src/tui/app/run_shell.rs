@@ -227,8 +227,7 @@ impl App {
                         }
                     }
                     bus_event = bus_receiver_remote.recv() => {
-                        remote::handle_bus_event(&mut self, &mut remote_conn, bus_event).await;
-                        needs_redraw = true;
+                        needs_redraw |= remote::handle_bus_event(&mut self, &mut remote_conn, bus_event).await;
                     }
                 }
             }

@@ -1069,6 +1069,20 @@ pub(crate) fn redraw_interval_with_policy(
     let animation_interval = fps_to_duration(policy.animation_fps);
     let fast_interval = fps_to_duration(policy.redraw_fps);
 
+    let deep_idle = state
+        .time_since_activity()
+        .map(|d| d >= REDRAW_DEEP_IDLE_AFTER)
+        .unwrap_or(false);
+
+    if deep_idle
+        && !state.is_processing()
+        && state.streaming_text().is_empty()
+        && !state.has_pending_mouse_scroll_animation()
+        && !state.remote_startup_phase_active()
+    {
+        return REDRAW_DEEP_IDLE;
+    }
+
     if idle_donut_active_with_policy(state, policy) {
         return match policy.tier {
             crate::perf::PerformanceTier::Minimal => fast_interval,
@@ -1101,11 +1115,6 @@ pub(crate) fn redraw_interval_with_policy(
     if state.remote_startup_phase_active() {
         return REDRAW_REMOTE_STARTUP;
     }
-
-    let deep_idle = state
-        .time_since_activity()
-        .map(|d| d >= REDRAW_DEEP_IDLE_AFTER)
-        .unwrap_or(false);
 
     if deep_idle {
         REDRAW_DEEP_IDLE
