@@ -8,7 +8,15 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tempfile::TempDir;
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+struct SharedEnvLock;
+
+static ENV_LOCK: SharedEnvLock = SharedEnvLock;
+
+impl SharedEnvLock {
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'static, ()>> {
+        crate::storage::test_env_lock().lock()
+    }
+}
 
 struct EnvVarGuard {
     key: &'static str,
