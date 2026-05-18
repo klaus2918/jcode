@@ -13,7 +13,9 @@ use super::client_disconnect_cleanup::cleanup_client_connection;
 use super::client_session::{
     handle_clear_session, handle_reload, handle_resume_session, handle_subscribe,
 };
-use super::client_state::{handle_get_compacted_history, handle_get_history, handle_get_state};
+use super::client_state::{
+    handle_get_compacted_history, handle_get_history, handle_get_model_catalog, handle_get_state,
+};
 use super::comm_await::{CommAwaitMembersContext, handle_comm_await_members};
 use super::comm_control::{
     handle_client_debug_command, handle_client_debug_response, handle_comm_assign_next,
@@ -1751,6 +1753,18 @@ pub(super) async fn handle_client(
                 )
                 .await
                 .is_err()
+                {
+                    break;
+                }
+                if let Some(snapshot) = try_available_models_snapshot(&agent) {
+                    last_available_models_snapshot = Some(snapshot);
+                }
+            }
+
+            Request::GetModelCatalog { id } => {
+                if handle_get_model_catalog(id, &client_session_id, &agent, &writer)
+                    .await
+                    .is_err()
                 {
                     break;
                 }

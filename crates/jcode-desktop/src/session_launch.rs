@@ -400,7 +400,7 @@ fn load_model_catalog(
     write_json_line(
         &mut writer,
         json!({
-            "type": "get_history",
+            "type": "get_model_catalog",
             "id": request_id,
         }),
     )?;
