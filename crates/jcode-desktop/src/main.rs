@@ -110,6 +110,10 @@ const SINGLE_SESSION_STREAMING_BODY_TEXT_WINDOW_AFTER_LINES: usize = 4;
 const STREAMING_TEXT_FADE_DURATION: Duration = Duration::from_millis(120);
 const STREAMING_TEXT_FADE_START_OPACITY: f32 = 0.4;
 const DESKTOP_ASYNC_JOB_LIMIT: usize = 12;
+const PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY: usize = 1024;
+const PRIMITIVE_VERTEX_BUFFER_SHRINK_RATIO: usize = 4;
+const WORKSPACE_BASE_VERTEX_CAPACITY_HINT: usize = 512;
+const WORKSPACE_SURFACE_VERTEX_CAPACITY_HINT: usize = 384;
 
 static DESKTOP_ASYNC_JOB_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -371,6 +375,7 @@ fn install_desktop_diagnostic_hooks() {
 }
 
 async fn run() -> Result<()> {
+    log_desktop_platform_support_warning();
     let args = std::env::args().collect::<Vec<_>>();
     let startup_benchmark = startup_benchmark_requested(&args);
     let startup_content_benchmark = startup_content_benchmark_requested(&args);
@@ -1964,12 +1969,66 @@ fn desktop_frame_profile_mode() -> Option<String> {
     std::env::var("JCODE_DESKTOP_FRAME_PROFILE").ok()
 }
 
+fn parse_positive_duration_millis(value: &str) -> Option<Duration> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|ms| Duration::from_secs_f64(ms / 1000.0))
+}
+
+fn duration_millis_env(name: &str, default: Duration) -> Duration {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| parse_positive_duration_millis(&value))
+        .unwrap_or(default)
+}
+
 fn desktop_frame_profile_enabled(mode: Option<&str>) -> bool {
     mode.is_some_and(env_flag_text_enabled)
 }
 
 fn desktop_frame_profile_log_all(mode: Option<&str>) -> bool {
     mode.is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "all" | "trace"))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DesktopPlatform {
+    Linux,
+    Macos,
+    Windows,
+    Other,
+}
+
+fn current_desktop_platform() -> DesktopPlatform {
+    if cfg!(target_os = "linux") {
+        DesktopPlatform::Linux
+    } else if cfg!(target_os = "macos") {
+        DesktopPlatform::Macos
+    } else if cfg!(windows) {
+        DesktopPlatform::Windows
+    } else {
+        DesktopPlatform::Other
+    }
+}
+
+fn desktop_platform_support_warning(platform: DesktopPlatform) -> Option<&'static str> {
+    match platform {
+        DesktopPlatform::Linux | DesktopPlatform::Macos => None,
+        DesktopPlatform::Windows => Some(
+            "Windows desktop support is experimental; terminal spawning, power inhibit, and GPU backend behavior may differ from Linux/macOS",
+        ),
+        DesktopPlatform::Other => Some(
+            "this platform is not officially supported by jcode-desktop; startup will continue on a best-effort GPU backend",
+        ),
+    }
+}
+
+fn log_desktop_platform_support_warning() {
+    if let Some(warning) = desktop_platform_support_warning(current_desktop_platform()) {
+        desktop_log::warn(format_args!("jcode-desktop: {warning}"));
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -5499,12 +5558,8 @@ impl DesktopFrameProfiler {
         let mode = desktop_frame_profile_mode();
         let enabled = desktop_frame_profile_enabled(mode.as_deref());
         let log_all = desktop_frame_profile_log_all(mode.as_deref());
-        let budget = std::env::var("JCODE_DESKTOP_FRAME_BUDGET_MS")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .map(|ms| Duration::from_secs_f64(ms / 1000.0))
-            .unwrap_or(DESKTOP_120FPS_FRAME_BUDGET);
+        let budget =
+            duration_millis_env("JCODE_DESKTOP_FRAME_BUDGET_MS", DESKTOP_120FPS_FRAME_BUDGET);
         Self {
             enabled,
             log_all,
@@ -5628,12 +5683,10 @@ impl DesktopInteractionLatencyProfiler {
         let mode = desktop_frame_profile_mode();
         let enabled = desktop_frame_profile_enabled(mode.as_deref());
         let log_all = desktop_frame_profile_log_all(mode.as_deref());
-        let budget = std::env::var("JCODE_DESKTOP_INPUT_LATENCY_BUDGET_MS")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .map(|ms| Duration::from_secs_f64(ms / 1000.0))
-            .unwrap_or(DESKTOP_INPUT_LATENCY_BUDGET);
+        let budget = duration_millis_env(
+            "JCODE_DESKTOP_INPUT_LATENCY_BUDGET_MS",
+            DESKTOP_INPUT_LATENCY_BUDGET,
+        );
         Self {
             enabled,
             log_all,
@@ -5734,12 +5787,8 @@ impl DesktopNoPaintWatchdog {
     fn new_with_start_and_mode(now: Instant, mode: Option<&str>) -> Self {
         let enabled = desktop_frame_profile_enabled(mode);
         let log_all = desktop_frame_profile_log_all(mode);
-        let budget = std::env::var("JCODE_DESKTOP_NO_PAINT_BUDGET_MS")
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .map(|ms| Duration::from_secs_f64(ms / 1000.0))
-            .unwrap_or(DESKTOP_NO_PAINT_BUDGET);
+        let budget =
+            duration_millis_env("JCODE_DESKTOP_NO_PAINT_BUDGET_MS", DESKTOP_NO_PAINT_BUDGET);
         Self {
             enabled,
             log_all,
@@ -6108,6 +6157,7 @@ struct Canvas<'window> {
     primitive_vertices_cache_key: Option<u64>,
     primitive_vertices_cache: Vec<Vertex>,
     primitive_frame_vertices: Vec<Vertex>,
+    primitive_workspace_vertices: Vec<Vertex>,
     needs_initial_frame: bool,
     boot_frame_presented: bool,
     first_render_completed: bool,
@@ -6212,6 +6262,7 @@ impl<'window> Canvas<'window> {
             primitive_vertices_cache_key: None,
             primitive_vertices_cache: Vec::new(),
             primitive_frame_vertices: Vec::new(),
+            primitive_workspace_vertices: Vec::new(),
             needs_initial_frame: true,
             boot_frame_presented: false,
             first_render_completed: false,
@@ -6671,6 +6722,20 @@ impl<'window> Canvas<'window> {
         self.streaming_text_needs_prepare = true;
     }
 
+    fn release_streaming_text_renderer_if_idle(&mut self, has_streaming_text_buffer: bool) {
+        if !streaming_text_renderer_should_release(
+            has_streaming_text_buffer,
+            self.streaming_text_renderer.is_some(),
+            self.streaming_text_atlas.is_some(),
+        ) {
+            return;
+        }
+
+        self.streaming_text_renderer = None;
+        self.streaming_text_atlas = None;
+        self.streaming_text_needs_prepare = false;
+    }
+
     fn cached_single_session_body_lines(
         &mut self,
         app: &SingleSessionApp,
@@ -6895,9 +6960,10 @@ impl<'window> Canvas<'window> {
         if streaming_text_fade_active && self.single_session_streaming_text_buffer.is_some() {
             self.streaming_text_needs_prepare = true;
         }
+        let has_streaming_text_buffer = self.single_session_streaming_text_buffer.is_some();
+        self.release_streaming_text_renderer_if_idle(has_streaming_text_buffer);
         let text_buffers = &self.single_session_text_buffers;
         let has_text_buffers = !text_buffers.is_empty();
-        let has_streaming_text_buffer = self.single_session_streaming_text_buffer.is_some();
         let mut text_area_count = 0usize;
         let mut text_prepared = false;
         let single_session_viewport = if let DesktopApp::SingleSession(single_session) = app {
@@ -7112,14 +7178,20 @@ impl<'window> Canvas<'window> {
                 let focus_pulse = self.focus_pulse.frame(workspace.focused_id, now);
                 let animation_active =
                     self.viewport_animation.is_animating() || self.focus_pulse.is_animating();
+                reserve_workspace_vertex_capacity(
+                    &mut self.primitive_workspace_vertices,
+                    workspace,
+                );
+                build_vertices_into(
+                    workspace,
+                    self.size,
+                    render_layout,
+                    focus_pulse,
+                    workspace_space_hold_progress,
+                    &mut self.primitive_workspace_vertices,
+                );
                 (
-                    Cow::Owned(build_vertices(
-                        workspace,
-                        self.size,
-                        render_layout,
-                        focus_pulse,
-                        workspace_space_hold_progress,
-                    )),
+                    Cow::Borrowed(self.primitive_workspace_vertices.as_slice()),
                     animation_active,
                 )
             }
@@ -7306,8 +7378,8 @@ fn upload_primitive_vertices(
         return;
     }
 
-    if *primitive_vertex_capacity < vertices.len() {
-        *primitive_vertex_capacity = vertices.len().next_power_of_two();
+    if primitive_vertex_buffer_should_reallocate(*primitive_vertex_capacity, vertices.len()) {
+        *primitive_vertex_capacity = primitive_vertex_capacity_for_len(vertices.len());
         let size =
             (*primitive_vertex_capacity * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress;
         *primitive_vertex_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
@@ -7321,6 +7393,34 @@ fn upload_primitive_vertices(
     if let Some(vertex_buffer) = primitive_vertex_buffer.as_ref() {
         queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(vertices));
     }
+}
+
+fn primitive_vertex_capacity_for_len(len: usize) -> usize {
+    if len == 0 {
+        0
+    } else {
+        len.next_power_of_two()
+            .max(PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY)
+    }
+}
+
+fn primitive_vertex_buffer_should_reallocate(capacity: usize, len: usize) -> bool {
+    if len == 0 {
+        false
+    } else if capacity < len {
+        true
+    } else {
+        capacity > PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY
+            && len.saturating_mul(PRIMITIVE_VERTEX_BUFFER_SHRINK_RATIO) < capacity
+    }
+}
+
+fn streaming_text_renderer_should_release(
+    has_streaming_text_buffer: bool,
+    renderer_live: bool,
+    atlas_live: bool,
+) -> bool {
+    !has_streaming_text_buffer && (renderer_live || atlas_live)
 }
 
 #[repr(C)]
@@ -8028,12 +8128,47 @@ fn build_vertices(
     focus_pulse: f32,
     space_hold_progress: Option<f32>,
 ) -> Vec<Vertex> {
+    let mut vertices = Vec::with_capacity(workspace_vertex_capacity_hint(workspace));
+    build_vertices_into(
+        workspace,
+        size,
+        render_layout,
+        focus_pulse,
+        space_hold_progress,
+        &mut vertices,
+    );
+    vertices
+}
+
+fn reserve_workspace_vertex_capacity(vertices: &mut Vec<Vertex>, workspace: &Workspace) {
+    let hint = workspace_vertex_capacity_hint(workspace);
+    if vertices.capacity() < hint {
+        vertices.reserve(hint - vertices.capacity());
+    }
+}
+
+fn workspace_vertex_capacity_hint(workspace: &Workspace) -> usize {
+    WORKSPACE_BASE_VERTEX_CAPACITY_HINT
+        + workspace
+            .surfaces
+            .len()
+            .saturating_mul(WORKSPACE_SURFACE_VERTEX_CAPACITY_HINT)
+}
+
+fn build_vertices_into(
+    workspace: &Workspace,
+    size: PhysicalSize<u32>,
+    render_layout: WorkspaceRenderLayout,
+    focus_pulse: f32,
+    space_hold_progress: Option<f32>,
+    vertices: &mut Vec<Vertex>,
+) {
+    vertices.clear();
     let width = size.width as f32;
     let height = size.height as f32;
-    let mut vertices = Vec::new();
 
     push_gradient_rect(
-        &mut vertices,
+        vertices,
         Rect {
             x: 0.0,
             y: 0.0,
@@ -8057,26 +8192,20 @@ fn build_vertices(
         width: (width - OUTER_PADDING * 2.0).max(1.0),
         height: STATUS_BAR_HEIGHT,
     };
-    push_rounded_rect(
-        &mut vertices,
-        status_rect,
-        STATUS_RADIUS,
-        status_color,
-        size,
-    );
+    push_rounded_rect(vertices, status_rect, STATUS_RADIUS, status_color, size);
 
     let active_workspace = workspace.current_workspace();
     let visible_layout = render_layout.visible;
-    push_workspace_number(&mut vertices, active_workspace, status_rect, size);
+    push_workspace_number(vertices, active_workspace, status_rect, size);
     push_status_preview(
-        &mut vertices,
+        vertices,
         workspace,
         active_workspace,
         visible_layout,
         status_rect,
         size,
     );
-    push_status_text(&mut vertices, workspace, status_rect, size);
+    push_status_text(vertices, workspace, status_rect, size);
 
     if workspace.zoomed {
         if let Some(surface) = workspace.focused_surface() {
@@ -8086,17 +8215,10 @@ fn build_vertices(
                 width: (width - OUTER_PADDING * 2.0).max(1.0),
                 height: (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0),
             };
-            push_surface(
-                &mut vertices,
-                rect,
-                surface.color_index,
-                true,
-                focus_pulse,
-                size,
-            );
+            push_surface(vertices, rect, surface.color_index, true, focus_pulse, size);
             let draft = focused_panel_draft(workspace, surface.id);
             push_panel_contents(
-                &mut vertices,
+                vertices,
                 surface,
                 rect,
                 size,
@@ -8106,9 +8228,9 @@ fn build_vertices(
             );
         }
         if let Some(progress) = space_hold_progress {
-            push_space_hold_progress(&mut vertices, progress, size);
+            push_space_hold_progress(vertices, progress, size);
         }
-        return vertices;
+        return;
     }
 
     let workspace_height = (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0);
@@ -8138,7 +8260,7 @@ fn build_vertices(
         let focused = workspace.is_focused(surface.id);
         let surface_pulse = if focused { focus_pulse } else { 0.0 };
         push_surface(
-            &mut vertices,
+            vertices,
             rect,
             surface.color_index,
             focused,
@@ -8146,22 +8268,12 @@ fn build_vertices(
             size,
         );
         let draft = focused_panel_draft(workspace, surface.id);
-        push_panel_contents(
-            &mut vertices,
-            surface,
-            rect,
-            size,
-            false,
-            0,
-            draft.as_deref(),
-        );
+        push_panel_contents(vertices, surface, rect, size, false, 0, draft.as_deref());
     }
 
     if let Some(progress) = space_hold_progress {
-        push_space_hold_progress(&mut vertices, progress, size);
+        push_space_hold_progress(vertices, progress, size);
     }
-
-    vertices
 }
 
 fn push_space_hold_progress(vertices: &mut Vec<Vertex>, progress: f32, size: PhysicalSize<u32>) {

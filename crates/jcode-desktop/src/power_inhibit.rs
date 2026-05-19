@@ -1,6 +1,7 @@
 use std::process::{Child, Command, Stdio};
 
 const DISABLE_ENV: &str = "JCODE_DISABLE_POWER_INHIBIT";
+const MODE_ENV: &str = "JCODE_DESKTOP_POWER_INHIBIT";
 
 /// Best-effort inhibitor that keeps laptops awake while Jcode is actively
 /// streaming/processing. The helper process is kept alive only while active work
@@ -12,9 +13,18 @@ pub(crate) struct PowerInhibitor {
 
 impl PowerInhibitor {
     pub(crate) fn new() -> Self {
+        let mode = std::env::var(MODE_ENV)
+            .ok()
+            .as_deref()
+            .map(power_inhibit_mode_from_env_value)
+            .unwrap_or_default();
         Self {
             child: None,
-            available: current_platform().is_some() && std::env::var_os(DISABLE_ENV).is_none(),
+            available: power_inhibit_available(
+                std::env::var_os(DISABLE_ENV).is_some(),
+                mode,
+                current_platform(),
+            ),
         }
     }
 
@@ -86,6 +96,29 @@ enum InhibitPlatform {
     MacosCaffeinate,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum PowerInhibitMode {
+    #[default]
+    Auto,
+    Off,
+}
+
+fn power_inhibit_mode_from_env_value(value: &str) -> PowerInhibitMode {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "false" | "off" | "no" | "never" | "disabled" => PowerInhibitMode::Off,
+        "1" | "true" | "on" | "yes" | "auto" | "while-active" | "active" => PowerInhibitMode::Auto,
+        _ => PowerInhibitMode::Auto,
+    }
+}
+
+fn power_inhibit_available(
+    legacy_disable_present: bool,
+    mode: PowerInhibitMode,
+    platform: Option<InhibitPlatform>,
+) -> bool {
+    platform.is_some() && !legacy_disable_present && mode != PowerInhibitMode::Off
+}
+
 fn current_platform() -> Option<InhibitPlatform> {
     if cfg!(target_os = "linux") {
         Some(InhibitPlatform::LinuxSystemd)
@@ -134,7 +167,7 @@ fn build_macos_caffeinate_command() -> Command {
 
 #[cfg(test)]
 mod tests {
-    use super::InhibitPlatform;
+    use super::{InhibitPlatform, PowerInhibitMode};
 
     fn command_name(command: &std::process::Command) -> String {
         command.get_program().to_string_lossy().to_string()
@@ -145,6 +178,58 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().to_string())
             .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn power_inhibit_mode_env_accepts_explicit_off_and_auto_values() {
+        assert_eq!(
+            super::power_inhibit_mode_from_env_value("off"),
+            PowerInhibitMode::Off
+        );
+        assert_eq!(
+            super::power_inhibit_mode_from_env_value(" 0 "),
+            PowerInhibitMode::Off
+        );
+        assert_eq!(
+            super::power_inhibit_mode_from_env_value("never"),
+            PowerInhibitMode::Off
+        );
+        assert_eq!(
+            super::power_inhibit_mode_from_env_value("auto"),
+            PowerInhibitMode::Auto
+        );
+        assert_eq!(
+            super::power_inhibit_mode_from_env_value("while-active"),
+            PowerInhibitMode::Auto
+        );
+        assert_eq!(
+            super::power_inhibit_mode_from_env_value("unexpected"),
+            PowerInhibitMode::Auto
+        );
+    }
+
+    #[test]
+    fn power_inhibit_availability_respects_legacy_disable_mode_and_platform() {
+        assert!(super::power_inhibit_available(
+            false,
+            PowerInhibitMode::Auto,
+            Some(InhibitPlatform::LinuxSystemd),
+        ));
+        assert!(!super::power_inhibit_available(
+            true,
+            PowerInhibitMode::Auto,
+            Some(InhibitPlatform::LinuxSystemd),
+        ));
+        assert!(!super::power_inhibit_available(
+            false,
+            PowerInhibitMode::Off,
+            Some(InhibitPlatform::LinuxSystemd),
+        ));
+        assert!(!super::power_inhibit_available(
+            false,
+            PowerInhibitMode::Auto,
+            None,
+        ));
     }
 
     #[test]

@@ -19,6 +19,101 @@ fn desktop_frame_profile_is_opt_in_and_recognizes_trace_modes() {
 }
 
 #[test]
+fn desktop_config_parses_positive_millisecond_durations_only() {
+    assert_eq!(
+        parse_positive_duration_millis("8.5"),
+        Some(Duration::from_secs_f64(0.0085))
+    );
+    assert_eq!(
+        parse_positive_duration_millis(" 250 "),
+        Some(Duration::from_millis(250))
+    );
+    assert_eq!(parse_positive_duration_millis("0"), None);
+    assert_eq!(parse_positive_duration_millis("-1"), None);
+    assert_eq!(parse_positive_duration_millis("NaN"), None);
+    assert_eq!(parse_positive_duration_millis("inf"), None);
+    assert_eq!(parse_positive_duration_millis("nope"), None);
+}
+
+#[test]
+fn desktop_platform_warnings_only_fire_for_less_supported_targets() {
+    assert_eq!(
+        desktop_platform_support_warning(DesktopPlatform::Linux),
+        None
+    );
+    assert_eq!(
+        desktop_platform_support_warning(DesktopPlatform::Macos),
+        None
+    );
+    assert!(desktop_platform_support_warning(DesktopPlatform::Windows).is_some());
+    assert!(desktop_platform_support_warning(DesktopPlatform::Other).is_some());
+}
+
+#[test]
+fn primitive_vertex_buffer_capacity_grows_and_shrinks_with_hysteresis() {
+    assert_eq!(primitive_vertex_capacity_for_len(0), 0);
+    assert_eq!(
+        primitive_vertex_capacity_for_len(1),
+        PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY
+    );
+    assert_eq!(
+        primitive_vertex_capacity_for_len(PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY + 1),
+        (PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY + 1).next_power_of_two()
+    );
+    assert!(!primitive_vertex_buffer_should_reallocate(
+        PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY,
+        0,
+    ));
+    assert!(!primitive_vertex_buffer_should_reallocate(
+        PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY,
+        PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY / 2,
+    ));
+    assert!(primitive_vertex_buffer_should_reallocate(128, 129));
+    assert!(!primitive_vertex_buffer_should_reallocate(4096, 1024));
+    assert!(primitive_vertex_buffer_should_reallocate(4096, 1023));
+}
+
+#[test]
+fn streaming_text_renderer_releases_only_after_streaming_buffer_disappears() {
+    assert!(!streaming_text_renderer_should_release(true, true, true));
+    assert!(!streaming_text_renderer_should_release(false, false, false));
+    assert!(streaming_text_renderer_should_release(false, true, false));
+    assert!(streaming_text_renderer_should_release(false, false, true));
+}
+
+#[test]
+fn workspace_vertex_capacity_hint_scales_with_surface_count() {
+    let first_card = workspace::SessionCard {
+        session_id: "a".to_string(),
+        title: "alpha".to_string(),
+        subtitle: "active".to_string(),
+        detail: "1 msg".to_string(),
+        preview_lines: Vec::new(),
+        detail_lines: Vec::new(),
+    };
+    let second_card = workspace::SessionCard {
+        session_id: "b".to_string(),
+        title: "beta".to_string(),
+        subtitle: "idle".to_string(),
+        detail: "2 msgs".to_string(),
+        preview_lines: Vec::new(),
+        detail_lines: Vec::new(),
+    };
+    let mut workspace = Workspace::from_session_cards(vec![first_card.clone()]);
+
+    assert_eq!(
+        workspace_vertex_capacity_hint(&workspace),
+        WORKSPACE_BASE_VERTEX_CAPACITY_HINT + WORKSPACE_SURFACE_VERTEX_CAPACITY_HINT
+    );
+
+    workspace = Workspace::from_session_cards(vec![first_card, second_card]);
+    assert_eq!(
+        workspace_vertex_capacity_hint(&workspace),
+        WORKSPACE_BASE_VERTEX_CAPACITY_HINT + WORKSPACE_SURFACE_VERTEX_CAPACITY_HINT * 2
+    );
+}
+
+#[test]
 fn desktop_background_wake_only_tracks_active_frame_animation() {
     let now = Instant::now();
 
