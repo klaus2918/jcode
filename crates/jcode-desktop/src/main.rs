@@ -1275,7 +1275,7 @@ async fn run() -> Result<()> {
                         window.request_redraw();
                     }
                 }
-                if let Some(relaunch) = hot_reloader.poll() {
+                if let Some(relaunch) = hot_reloader.poll(&app) {
                     if let Err(error) = relaunch.spawn() {
                         desktop_log::error(format_args!(
                             "jcode-desktop: failed to hot reload desktop: {error:#}"
@@ -3827,7 +3827,7 @@ fn desktop_resume_session_id_from_args<'a>(
 
 struct DesktopHotReloader {
     relaunch: Option<DesktopRelaunch>,
-    initial_modified: Option<std::time::SystemTime>,
+    observed_modified: Option<std::time::SystemTime>,
     last_checked: Instant,
 }
 
@@ -3836,28 +3836,29 @@ impl DesktopHotReloader {
 
     fn new() -> Self {
         let relaunch = DesktopRelaunch::from_current_process();
-        let initial_modified = relaunch
-            .as_ref()
-            .and_then(|relaunch| binary_modified_time(&relaunch.binary));
+        let observed_modified = relaunch.as_ref().and_then(|relaunch| {
+            binary_modified_time(&desktop_reload_binary_candidate(&relaunch.binary))
+        });
         Self {
             relaunch,
-            initial_modified,
+            observed_modified,
             last_checked: Instant::now(),
         }
     }
 
-    fn poll(&mut self) -> Option<DesktopRelaunch> {
+    fn poll(&mut self, app: &DesktopApp) -> Option<DesktopRelaunch> {
         if self.last_checked.elapsed() < Self::CHECK_INTERVAL {
             return None;
         }
         self.last_checked = Instant::now();
 
         let relaunch = self.relaunch.as_ref()?;
-        let initial_modified = self.initial_modified?;
-        let current_modified = binary_modified_time(&relaunch.binary)?;
-        if current_modified > initial_modified {
-            self.initial_modified = Some(current_modified);
-            return Some(relaunch.clone());
+        let binary = desktop_reload_binary_candidate(&relaunch.binary);
+        let current_modified = binary_modified_time(&binary)?;
+        let observed_modified = self.observed_modified;
+        self.observed_modified = Some(current_modified);
+        if observed_modified.is_some_and(|observed| current_modified > observed) {
+            return Some(relaunch.for_app(app, binary));
         }
         None
     }
@@ -3887,12 +3888,133 @@ impl DesktopRelaunch {
     }
 
     fn spawn(&self) -> Result<()> {
+        desktop_log::info(format_args!(
+            "jcode-desktop: hot reloading into {} with args {:?}",
+            self.binary.display(),
+            self.args
+        ));
         Command::new(&self.binary)
             .args(&self.args)
             .spawn()
             .with_context(|| format!("failed to spawn {}", self.binary.display()))?;
         Ok(())
     }
+
+    fn for_app(&self, app: &DesktopApp, binary: PathBuf) -> Self {
+        let mut args = desktop_args_without_resume(&self.args);
+        if let Some(session_id) = app.single_session_live_id() {
+            args.push(OsString::from("--resume"));
+            args.push(OsString::from(session_id));
+        }
+        Self { binary, args }
+    }
+}
+
+fn desktop_args_without_resume(args: &[OsString]) -> Vec<OsString> {
+    let mut filtered = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--resume" {
+            skip_next = true;
+            continue;
+        }
+        if arg
+            .to_str()
+            .is_some_and(|value| value.starts_with("--resume="))
+        {
+            continue;
+        }
+        filtered.push(arg.clone());
+    }
+    filtered
+}
+
+fn desktop_reload_binary_candidate(invoked_binary: &Path) -> PathBuf {
+    let Some(repo_dir) = find_desktop_repo_dir() else {
+        return invoked_binary.to_path_buf();
+    };
+    desktop_reload_binary_candidate_from(invoked_binary, &repo_dir)
+}
+
+fn desktop_reload_binary_candidate_from(invoked_binary: &Path, repo_dir: &Path) -> PathBuf {
+    let selfdev = desktop_selfdev_binary_path(repo_dir);
+    if paths_refer_to_same_file(invoked_binary, &selfdev)
+        || binary_is_newer_than(&selfdev, invoked_binary)
+    {
+        selfdev
+    } else {
+        invoked_binary.to_path_buf()
+    }
+}
+
+fn desktop_selfdev_binary_path(repo_dir: &Path) -> PathBuf {
+    repo_dir
+        .join("target")
+        .join("selfdev")
+        .join(desktop_binary_name())
+}
+
+fn desktop_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "jcode-desktop.exe"
+    } else {
+        "jcode-desktop"
+    }
+}
+
+fn binary_is_newer_than(candidate: &Path, baseline: &Path) -> bool {
+    let Some(candidate_modified) = binary_modified_time(candidate) else {
+        return false;
+    };
+    match binary_modified_time(baseline) {
+        Some(baseline_modified) => candidate_modified > baseline_modified,
+        None => true,
+    }
+}
+
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn find_desktop_repo_dir() -> Option<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    find_desktop_repo_in_ancestors(&manifest_dir)
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|path| find_desktop_repo_in_ancestors(&path))
+        })
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .and_then(|path| find_desktop_repo_in_ancestors(&path))
+        })
+}
+
+fn find_desktop_repo_in_ancestors(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|candidate| is_jcode_desktop_repo(candidate))
+        .map(Path::to_path_buf)
+}
+
+fn is_jcode_desktop_repo(candidate: &Path) -> bool {
+    if !candidate.join("crates/jcode-desktop/Cargo.toml").is_file() {
+        return false;
+    }
+    std::fs::read_to_string(candidate.join("Cargo.toml"))
+        .map(|cargo_toml| cargo_toml.contains("name = \"jcode\""))
+        .unwrap_or(false)
 }
 
 fn binary_modified_time(path: &Path) -> Option<std::time::SystemTime> {

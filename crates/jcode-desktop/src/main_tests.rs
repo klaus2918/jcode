@@ -50,6 +50,90 @@ fn desktop_platform_warnings_only_fire_for_less_supported_targets() {
 }
 
 #[test]
+fn desktop_hot_reload_rewrites_resume_to_live_session() {
+    let relaunch = DesktopRelaunch {
+        binary: PathBuf::from("/old/jcode-desktop"),
+        args: vec![
+            OsString::from("--fullscreen"),
+            OsString::from("--resume"),
+            OsString::from("stale-session"),
+            OsString::from("--startup-log"),
+        ],
+    };
+    let mut single_session = SingleSessionApp::new(None);
+    single_session.initialize_resumed_session("live-session");
+    let app = DesktopApp::SingleSession(single_session);
+
+    let updated = relaunch.for_app(&app, PathBuf::from("/new/jcode-desktop"));
+
+    assert_eq!(updated.binary, PathBuf::from("/new/jcode-desktop"));
+    assert_eq!(
+        updated.args,
+        vec![
+            OsString::from("--fullscreen"),
+            OsString::from("--startup-log"),
+            OsString::from("--resume"),
+            OsString::from("live-session"),
+        ]
+    );
+}
+
+#[test]
+fn desktop_hot_reload_drops_resume_when_current_app_is_fresh() {
+    let relaunch = DesktopRelaunch {
+        binary: PathBuf::from("/old/jcode-desktop"),
+        args: vec![
+            OsString::from("--resume=stale-session"),
+            OsString::from("--fullscreen"),
+        ],
+    };
+    let app = fresh_single_session_app();
+
+    let updated = relaunch.for_app(&app, PathBuf::from("/new/jcode-desktop"));
+
+    assert_eq!(updated.args, vec![OsString::from("--fullscreen")]);
+}
+
+#[test]
+fn desktop_hot_reload_prefers_newer_selfdev_binary() -> Result<()> {
+    let temp = unique_desktop_test_dir("desktop-hot-reload-candidate")?;
+    let current = temp.join("installed").join(desktop_binary_name());
+    let selfdev = desktop_selfdev_binary_path(&temp);
+    std::fs::create_dir_all(current.parent().unwrap())?;
+    std::fs::write(&current, b"old")?;
+    std::fs::create_dir_all(selfdev.parent().unwrap())?;
+    let current_modified = std::fs::metadata(&current)?.modified()?;
+    for attempt in 0..10 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::write(&selfdev, format!("new-{attempt}"))?;
+        if std::fs::metadata(&selfdev)?.modified()? > current_modified {
+            break;
+        }
+    }
+    assert!(std::fs::metadata(&selfdev)?.modified()? > current_modified);
+
+    assert_eq!(
+        desktop_reload_binary_candidate_from(&current, &temp),
+        selfdev
+    );
+
+    std::fs::remove_dir_all(temp)?;
+    Ok(())
+}
+
+fn unique_desktop_test_dir(name: &str) -> Result<PathBuf> {
+    let dir = std::env::temp_dir().join(format!(
+        "jcode-{name}-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    ));
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+#[test]
 fn primitive_vertex_buffer_capacity_grows_and_shrinks_with_hysteresis() {
     assert_eq!(primitive_vertex_capacity_for_len(0), 0);
     assert_eq!(
