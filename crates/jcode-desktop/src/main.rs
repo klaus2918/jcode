@@ -65,6 +65,10 @@ const STATUS_PREVIEW_PANEL_WIDTH: f32 = 9.0;
 const STATUS_PREVIEW_PANEL_GAP: f32 = 2.0;
 const STATUS_PREVIEW_GROUP_GAP: f32 = 10.0;
 const STATUS_PREVIEW_SIDE_RESERVE: f32 = 74.0;
+const SPACE_HOLD_PROGRESS_HEIGHT: f32 = 7.0;
+const SPACE_HOLD_PROGRESS_WIDTH_FRACTION: f32 = 0.36;
+const SPACE_HOLD_PROGRESS_TRACK_COLOR: [f32; 4] = [0.055, 0.060, 0.075, 0.96];
+const SPACE_HOLD_PROGRESS_FILL_COLOR: [f32; 4] = [0.180, 0.900, 0.470, 1.0];
 const WORKSPACE_NUMBER_LEFT_PADDING: f32 = 14.0;
 const WORKSPACE_NUMBER_DIGIT_WIDTH: f32 = 8.0;
 const WORKSPACE_NUMBER_DIGIT_HEIGHT: f32 = 14.0;
@@ -77,7 +81,6 @@ const PANEL_TITLE_TOP_PADDING: f32 = 12.0;
 const PANEL_BODY_TOP_PADDING: f32 = 38.0;
 const PANEL_BODY_LINE_GAP: f32 = 8.0;
 const SINGLE_SESSION_DRAFT_TOP_OFFSET: f32 = 158.0;
-const SINGLE_SESSION_STATUS_GAP: f32 = 30.0;
 const SINGLE_SESSION_CARET_WIDTH: f32 = 2.0;
 const SINGLE_SESSION_CARET_COLOR: [f32; 4] = [0.130, 0.150, 0.190, 0.92];
 const SESSION_SPAWN_REFRESH_DELAY: Duration = Duration::from_millis(350);
@@ -101,6 +104,8 @@ const SINGLE_SESSION_BODY_TEXT_WINDOW_BEFORE_LINES: usize = 48;
 const SINGLE_SESSION_BODY_TEXT_WINDOW_AFTER_LINES: usize = 96;
 const SINGLE_SESSION_STREAMING_BODY_TEXT_WINDOW_BEFORE_LINES: usize = 2;
 const SINGLE_SESSION_STREAMING_BODY_TEXT_WINDOW_AFTER_LINES: usize = 4;
+const STREAMING_TEXT_FADE_DURATION: Duration = Duration::from_millis(120);
+const STREAMING_TEXT_FADE_START_OPACITY: f32 = 0.4;
 const DESKTOP_120FPS_FRAME_BUDGET: Duration = Duration::from_micros(8_333);
 const DESKTOP_PRESENT_STALL_BUDGET: Duration = Duration::from_millis(33);
 const DESKTOP_INPUT_LATENCY_BUDGET: Duration = Duration::from_millis(25);
@@ -357,6 +362,8 @@ async fn run() -> Result<()> {
     let mut last_backend_redraw_request: Option<Instant> = None;
     let mut pending_backend_redraw_since: Option<Instant> = None;
     let mut pending_resize: Option<PhysicalSize<u32>> = None;
+    let mut space_hold_started_at: Option<Instant> = None;
+    let mut space_hold_consumed = false;
 
     event_loop.run(move |event, target| {
         let event_loop_now = Instant::now();
@@ -370,11 +377,16 @@ async fn run() -> Result<()> {
         let backend_wake = pending_backend_redraw_since
             .and_then(|_| last_backend_redraw_request)
             .map(|last| last + BACKEND_REDRAW_FRAME_INTERVAL);
-        let wake = match (default_wake, backend_wake) {
-            (Some(default_wake), Some(backend_wake)) => Some(default_wake.min(backend_wake)),
-            (Some(wake), None) | (None, Some(wake)) => Some(wake),
-            (None, None) => None,
-        };
+        let space_hold_wake = space_hold_started_at.and_then(|started_at| match &app {
+            DesktopApp::Workspace(workspace) if !space_hold_consumed => {
+                Some(started_at + workspace.space_hold_toggle_duration())
+            }
+            _ => None,
+        });
+        let wake = [default_wake, backend_wake, space_hold_wake]
+            .into_iter()
+            .flatten()
+            .min();
         if let Some(wake) = wake {
             target.set_control_flow(ControlFlow::WaitUntil(wake));
         } else {
@@ -538,6 +550,19 @@ async fn run() -> Result<()> {
                     }
                     }
                 }
+                WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Released => {
+                    if app.is_workspace() && is_space_key(&event.logical_key) {
+                        if space_hold_started_at.take().is_some() && !space_hold_consumed {
+                            if matches!(&app, DesktopApp::Workspace(workspace) if workspace.mode == InputMode::Insert)
+                                && matches!(app.handle_key(KeyInput::Character(" ".to_string())), KeyOutcome::Redraw)
+                            {
+                                window.set_title(&app.status_title());
+                                window.request_redraw();
+                            }
+                        }
+                        space_hold_consumed = false;
+                    }
+                }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed =>
                 {
@@ -555,6 +580,18 @@ async fn run() -> Result<()> {
                     if had_smooth_scroll {
                         window.request_redraw();
                     }
+                    if app.is_workspace()
+                        && is_space_key(&event.logical_key)
+                        && modifiers.is_empty()
+                    {
+                        if space_hold_started_at.is_none() {
+                            space_hold_started_at = Some(keyboard_started);
+                            space_hold_consumed = false;
+                        }
+                        window.request_redraw();
+                        return;
+                    }
+
                     let key_input = to_key_input(&event.logical_key, modifiers);
                     let key_debug = format!("{key_input:?}");
                     interaction_latency.mark("keyboard_input", keyboard_started);
@@ -812,6 +849,7 @@ async fn run() -> Result<()> {
                         &app,
                         window.current_monitor().map(|monitor| monitor.size()),
                         smooth_scroll_lines,
+                        workspace_space_hold_progress(&app, space_hold_started_at, space_hold_consumed),
                     ) {
                     Ok(frame) => {
                         no_paint_watchdog.observe_presented(Instant::now(), &frame);
@@ -1037,6 +1075,18 @@ async fn run() -> Result<()> {
                     scroll_accumulator.reset();
                     scroll_metrics_cache.clear();
                 }
+                if let (DesktopApp::Workspace(workspace), Some(started_at)) = (&mut app, space_hold_started_at)
+                    && !space_hold_consumed
+                {
+                    let now = Instant::now();
+                    if now.saturating_duration_since(started_at) >= workspace.space_hold_toggle_duration() {
+                        space_hold_consumed = true;
+                        if matches!(workspace.handle_key(KeyInput::ToggleInputMode), KeyOutcome::Redraw) {
+                            window.set_title(&app.status_title());
+                        }
+                    }
+                    window.request_redraw();
+                }
                 if let Some(first_pending_backend_redraw) = pending_backend_redraw_since {
                     let now = Instant::now();
                     if last_backend_redraw_request.is_none_or(|last| {
@@ -1206,14 +1256,11 @@ fn spawn_restore_crashed_sessions(event_loop_proxy: EventLoopProxy<DesktopUserEv
                     Err(error) => errors.push(format!("{}: {error:#}", card.session_id)),
                 }
             }
-            if event_loop_proxy
-                .send_event(DesktopUserEvent::CrashedSessionsRestoreFinished {
-                    restored,
-                    errors,
-                    elapsed: started.elapsed(),
-                })
-                .is_err()
-            {
+            if event_loop_proxy.send_event(DesktopUserEvent::CrashedSessionsRestoreFinished {
+                restored,
+                errors,
+                elapsed: started.elapsed(),
+            }).is_err() {
                 desktop_log::warn(format_args!(
                     "jcode-desktop: failed to deliver crashed-session restore result, event loop is closed"
                 ));
@@ -2950,6 +2997,7 @@ fn run_scroll_render_benchmark(frames: usize) -> Result<()> {
                 size,
                 viewport,
                 start_line,
+                1.0,
             ));
         }
         streaming_areas_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
@@ -3346,7 +3394,7 @@ fn run_scroll_render_benchmark(frames: usize) -> Result<()> {
             let key = if frame % 2 == 0 { "l" } else { "h" };
             let _ = workspace_app.handle_key(KeyInput::Character(key.to_string()));
             let layout = workspace_render_layout(&workspace_app, size, Some(size));
-            let vertices = build_vertices(&workspace_app, size, layout, 0.0);
+            let vertices = build_vertices(&workspace_app, size, layout, 0.0, None);
             vertices.len() ^ (workspace_app.focused_id as usize) ^ workspace_app.surfaces.len()
         });
 
@@ -4434,6 +4482,35 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
     }
 }
 
+fn is_space_key(key: &Key) -> bool {
+    matches!(key, Key::Named(NamedKey::Space)) || matches!(key, Key::Character(text) if text == " ")
+}
+
+fn workspace_space_hold_progress(
+    app: &DesktopApp,
+    started_at: Option<Instant>,
+    consumed: bool,
+) -> Option<f32> {
+    let DesktopApp::Workspace(workspace) = app else {
+        return None;
+    };
+    let started_at = started_at?;
+    if consumed {
+        return None;
+    }
+    let threshold = workspace.space_hold_toggle_duration();
+    if threshold.is_zero() {
+        return Some(1.0);
+    }
+    Some(
+        (Instant::now()
+            .saturating_duration_since(started_at)
+            .as_secs_f32()
+            / threshold.as_secs_f32())
+        .clamp(0.0, 1.0),
+    )
+}
+
 fn apply_desktop_session_event_batch(
     app: &mut DesktopApp,
     events: Vec<session_launch::DesktopSessionEvent>,
@@ -4495,18 +4572,6 @@ fn apply_desktop_session_event_batch_with_stats(
     }
 }
 
-fn desktop_session_event_refreshes_session_card(
-    event: &session_launch::DesktopSessionEvent,
-) -> bool {
-    matches!(
-        event,
-        session_launch::DesktopSessionEvent::SessionStarted { .. }
-            | session_launch::DesktopSessionEvent::Reloaded { .. }
-            | session_launch::DesktopSessionEvent::Done
-            | session_launch::DesktopSessionEvent::Error(_)
-    )
-}
-
 fn log_desktop_session_event_error(event: &session_launch::DesktopSessionEvent) {
     match event {
         session_launch::DesktopSessionEvent::Error(error) => {
@@ -4549,6 +4614,18 @@ fn log_desktop_session_event_error(event: &session_launch::DesktopSessionEvent) 
         }
         _ => {}
     }
+}
+
+fn desktop_session_event_refreshes_session_card(
+    event: &session_launch::DesktopSessionEvent,
+) -> bool {
+    matches!(
+        event,
+        session_launch::DesktopSessionEvent::SessionStarted { .. }
+            | session_launch::DesktopSessionEvent::Reloaded { .. }
+            | session_launch::DesktopSessionEvent::Done
+            | session_launch::DesktopSessionEvent::Error(_)
+    )
 }
 
 fn log_desktop_session_event_batch_profile(
@@ -5044,7 +5121,7 @@ fn desktop_spinner_tick(_now: Instant) -> u64 {
 fn single_session_text_buffer_cache_key(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
-    tick: u64,
+    _tick: u64,
     rendered_body_key: u64,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -5057,7 +5134,6 @@ fn single_session_text_buffer_cache_key(
     app.welcome_hero_text().hash(&mut hasher);
     app.inline_widget_styled_lines().hash(&mut hasher);
     app.composer_text().hash(&mut hasher);
-    app.composer_status_line_for_tick(tick).hash(&mut hasher);
     hasher.finish()
 }
 
@@ -5835,6 +5911,8 @@ struct Canvas<'window> {
     single_session_body_lines: Vec<SingleSessionStyledLine>,
     single_session_streaming_base_key: Option<u64>,
     single_session_streaming_base_len: usize,
+    single_session_streaming_response_len: usize,
+    single_session_streaming_fade_started_at: Option<Instant>,
     single_session_streaming_text_key: Option<u64>,
     single_session_streaming_text_start_line: Option<usize>,
     single_session_streaming_text_buffer: Option<Buffer>,
@@ -5935,6 +6013,8 @@ impl<'window> Canvas<'window> {
             single_session_body_lines: Vec::new(),
             single_session_streaming_base_key: None,
             single_session_streaming_base_len: 0,
+            single_session_streaming_response_len: 0,
+            single_session_streaming_fade_started_at: None,
             single_session_streaming_text_key: None,
             single_session_streaming_text_start_line: None,
             single_session_streaming_text_buffer: None,
@@ -5959,6 +6039,8 @@ impl<'window> Canvas<'window> {
         self.single_session_body_key = None;
         self.single_session_streaming_base_key = None;
         self.single_session_streaming_base_len = 0;
+        self.single_session_streaming_response_len = 0;
+        self.single_session_streaming_fade_started_at = None;
         self.single_session_streaming_text_key = None;
         self.single_session_streaming_text_start_line = None;
         self.single_session_streaming_text_buffer = None;
@@ -6149,6 +6231,7 @@ impl<'window> Canvas<'window> {
         app: &SingleSessionApp,
         viewport: &SingleSessionBodyViewport,
     ) {
+        self.update_single_session_streaming_fade(app);
         let Some((start_line, end_line)) =
             self.single_session_streaming_visible_range(app, viewport)
         else {
@@ -6183,6 +6266,38 @@ impl<'window> Canvas<'window> {
             self.single_session_streaming_text_start_line = Some(start_line);
             self.streaming_text_needs_prepare = true;
         }
+    }
+
+    fn update_single_session_streaming_fade(&mut self, app: &SingleSessionApp) {
+        let response_len = app.streaming_response.len();
+        if response_len == 0 {
+            self.single_session_streaming_response_len = 0;
+            self.single_session_streaming_fade_started_at = None;
+            return;
+        }
+
+        if response_len > self.single_session_streaming_response_len {
+            self.single_session_streaming_fade_started_at = Some(Instant::now());
+        }
+        self.single_session_streaming_response_len = response_len;
+    }
+
+    fn single_session_streaming_fade_opacity(&mut self, now: Instant) -> (f32, bool) {
+        let Some(started_at) = self.single_session_streaming_fade_started_at else {
+            return (1.0, false);
+        };
+        let progress = (now.saturating_duration_since(started_at).as_secs_f32()
+            / STREAMING_TEXT_FADE_DURATION.as_secs_f32())
+        .clamp(0.0, 1.0);
+        if progress >= 1.0 {
+            self.single_session_streaming_fade_started_at = None;
+            return (1.0, false);
+        }
+        let eased = animation::ease_out_cubic(progress);
+        (
+            STREAMING_TEXT_FADE_START_OPACITY + (1.0 - STREAMING_TEXT_FADE_START_OPACITY) * eased,
+            true,
+        )
     }
 
     fn single_session_streaming_visible_range(
@@ -6469,6 +6584,7 @@ impl<'window> Canvas<'window> {
         app: &DesktopApp,
         monitor_size: Option<PhysicalSize<u32>>,
         smooth_scroll_lines: f32,
+        workspace_space_hold_progress: Option<f32>,
     ) -> std::result::Result<DesktopRenderFrameResult, SurfaceError> {
         if !self.boot_frame_presented {
             return self.render_boot_frame();
@@ -6546,6 +6662,11 @@ impl<'window> Canvas<'window> {
         frame_profile.checkpoint("text_renderer");
         self.ensure_render_pipeline();
         frame_profile.checkpoint("primitive_pipeline");
+        let (streaming_text_opacity, streaming_text_fade_active) =
+            self.single_session_streaming_fade_opacity(now);
+        if streaming_text_fade_active && self.single_session_streaming_text_buffer.is_some() {
+            self.streaming_text_needs_prepare = true;
+        }
         let text_buffers = &self.single_session_text_buffers;
         let has_text_buffers = !text_buffers.is_empty();
         let has_streaming_text_buffer = self.single_session_streaming_text_buffer.is_some();
@@ -6643,6 +6764,7 @@ impl<'window> Canvas<'window> {
                     self.size,
                     viewport,
                     start_line,
+                    streaming_text_opacity,
                 )]
             } else {
                 Vec::new()
@@ -6692,7 +6814,8 @@ impl<'window> Canvas<'window> {
                 let focus_pulse = self.focus_pulse.frame(1, now);
                 let animation_active = self.focus_pulse.is_animating()
                     || single_session.has_background_work()
-                    || welcome_hero_reveal_active;
+                    || welcome_hero_reveal_active
+                    || streaming_text_fade_active;
                 let geometry_cache_key = single_session_streaming_primitive_geometry_cache_key(
                     single_session,
                     self.size,
@@ -6748,6 +6871,7 @@ impl<'window> Canvas<'window> {
                         self.size,
                         render_layout,
                         focus_pulse,
+                        workspace_space_hold_progress,
                     )),
                     animation_active,
                 )
@@ -7642,6 +7766,7 @@ fn build_vertices(
     size: PhysicalSize<u32>,
     render_layout: WorkspaceRenderLayout,
     focus_pulse: f32,
+    space_hold_progress: Option<f32>,
 ) -> Vec<Vertex> {
     let width = size.width as f32;
     let height = size.height as f32;
@@ -7720,6 +7845,9 @@ fn build_vertices(
                 draft.as_deref(),
             );
         }
+        if let Some(progress) = space_hold_progress {
+            push_space_hold_progress(&mut vertices, progress, size);
+        }
         return vertices;
     }
 
@@ -7769,7 +7897,40 @@ fn build_vertices(
         );
     }
 
+    if let Some(progress) = space_hold_progress {
+        push_space_hold_progress(&mut vertices, progress, size);
+    }
+
     vertices
+}
+
+fn push_space_hold_progress(vertices: &mut Vec<Vertex>, progress: f32, size: PhysicalSize<u32>) {
+    let width = size.width as f32;
+    let bar_width = (width * SPACE_HOLD_PROGRESS_WIDTH_FRACTION).clamp(120.0, 460.0);
+    let rect = Rect {
+        x: (width - bar_width) * 0.5,
+        y: OUTER_PADDING + STATUS_BAR_HEIGHT + 4.0,
+        width: bar_width,
+        height: SPACE_HOLD_PROGRESS_HEIGHT,
+    };
+    push_rounded_rect(
+        vertices,
+        rect,
+        SPACE_HOLD_PROGRESS_HEIGHT * 0.5,
+        SPACE_HOLD_PROGRESS_TRACK_COLOR,
+        size,
+    );
+    let fill = Rect {
+        width: (rect.width * progress.clamp(0.0, 1.0)).max(SPACE_HOLD_PROGRESS_HEIGHT),
+        ..rect
+    };
+    push_rounded_rect(
+        vertices,
+        fill,
+        SPACE_HOLD_PROGRESS_HEIGHT * 0.5,
+        SPACE_HOLD_PROGRESS_FILL_COLOR,
+        size,
+    );
 }
 
 fn workspace_render_layout(

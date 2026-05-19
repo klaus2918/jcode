@@ -1,4 +1,4 @@
-use crate::workspace::{DesktopPreferences, PanelSizePreset};
+use crate::workspace::{DEFAULT_SPACE_HOLD_TOGGLE_MS, DesktopPreferences, PanelSizePreset};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::fs;
@@ -30,6 +30,10 @@ pub fn load_preferences() -> Result<Option<DesktopPreferences>> {
             .and_then(Value::as_i64)
             .and_then(|lane| i32::try_from(lane).ok())
             .unwrap_or_default(),
+        space_hold_toggle_ms: value
+            .get("space_hold_toggle_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(DEFAULT_SPACE_HOLD_TOGGLE_MS),
     }))
 }
 
@@ -44,6 +48,7 @@ pub fn save_preferences(preferences: &DesktopPreferences) -> Result<()> {
         "panel_size": preferences.panel_size.storage_key(),
         "focused_session_id": preferences.focused_session_id,
         "workspace_lane": preferences.workspace_lane,
+        "space_hold_toggle_ms": preferences.space_hold_toggle_ms,
     });
     let bytes = serde_json::to_vec_pretty(&value)?;
     let temp_path = path.with_extension(format!(
@@ -116,6 +121,7 @@ mod tests {
             panel_size: PanelSizePreset::Half,
             focused_session_id: Some("session_cow".to_string()),
             workspace_lane: 2,
+            space_hold_toggle_ms: 300,
         };
         save_preferences(&preferences)?;
         assert_eq!(load_preferences()?, Some(preferences));

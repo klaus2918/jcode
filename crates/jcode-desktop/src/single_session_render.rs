@@ -23,7 +23,6 @@ pub(crate) struct SingleSessionTextKey {
     pub(crate) body: Vec<SingleSessionStyledLine>,
     pub(crate) inline_widget: Vec<SingleSessionStyledLine>,
     pub(crate) draft: String,
-    pub(crate) status: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4190,7 +4189,7 @@ pub(crate) fn push_native_activity_spinner(
     let center_y = if welcome_status_lane_visible(app) {
         draft_top + typography.meta_size * 0.58
     } else {
-        draft_top - SINGLE_SESSION_STATUS_GAP + 7.0
+        draft_top - 23.0
     };
     let center = [
         size.width as f32 - PANEL_TITLE_LEFT_PADDING - 12.0,
@@ -5167,7 +5166,7 @@ pub(crate) fn single_session_text_key_for_tick_with_rendered_body(
 fn single_session_text_key_for_body_lines(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
-    tick: u64,
+    _tick: u64,
     body: Vec<SingleSessionStyledLine>,
     welcome_chrome_visible: bool,
 ) -> SingleSessionTextKey {
@@ -5206,11 +5205,6 @@ fn single_session_text_key_for_body_lines(
             visualize_composer_whitespace(&app.composer_text())
         } else {
             String::new()
-        },
-        status: if welcome_chrome_visible && !app.has_welcome_timeline_transcript() {
-            String::new()
-        } else {
-            app.composer_status_line_for_tick(tick)
         },
     }
 }
@@ -5265,7 +5259,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     } else {
         single_session_draft_top_for_fresh_state(size, false)
     };
-    let prompt_height = (size.height as f32 - draft_top - SINGLE_SESSION_STATUS_GAP - 18.0)
+    let prompt_height = (size.height as f32 - draft_top - 18.0)
         .max(typography.code_size * typography.code_line_height * 2.0);
     let version_font_size = if key.fresh_welcome_visible {
         fresh_welcome_version_font_size()
@@ -5317,9 +5311,16 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
         )
     });
 
+    let inline_widget_width = if key.inline_widget.is_empty() {
+        content_width
+    } else {
+        inline_widget_intrinsic_text_width(&key.inline_widget, size, text_scale)
+            .max(1.0)
+            .min(content_width)
+    };
     let inline_widget_buffer = take_reusable(
         &mut old_buffers,
-        5,
+        4,
         previous.is_some_and(|previous| previous.inline_widget == key.inline_widget),
     )
     .unwrap_or_else(|| {
@@ -5328,7 +5329,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
             &key.inline_widget,
             typography.body_size,
             typography.body_size * typography.body_line_height,
-            content_width,
+            inline_widget_width,
             prompt_height,
         )
     });
@@ -5349,25 +5350,9 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
         )
     });
 
-    let status_buffer = take_reusable(
-        &mut old_buffers,
-        3,
-        previous.is_some_and(|previous| previous.status == key.status),
-    )
-    .unwrap_or_else(|| {
-        single_session_text_buffer(
-            font_system,
-            &key.status,
-            typography.meta_size,
-            typography.meta_size * typography.meta_line_height,
-            content_width,
-            28.0,
-        )
-    });
-
     let version_buffer = take_reusable(
         &mut old_buffers,
-        4,
+        3,
         previous.is_some_and(|previous| previous.version == key.version),
     )
     .unwrap_or_else(|| {
@@ -5387,7 +5372,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let hero_font_size = glyph_welcome_hero_font_size(size, text_scale);
     let hero_buffer = take_reusable(
         &mut old_buffers,
-        6,
+        5,
         previous.is_some_and(|previous| previous.welcome_hero == key.welcome_hero),
     )
     .unwrap_or_else(|| {
@@ -5406,7 +5391,6 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
         title_buffer,
         body_buffer,
         draft_buffer,
-        status_buffer,
         version_buffer,
         inline_widget_buffer,
         hero_buffer,
@@ -5793,7 +5777,7 @@ fn inline_widget_target_top(
 }
 
 pub(crate) fn single_session_body_bottom(size: PhysicalSize<u32>) -> f32 {
-    single_session_draft_top(size) - SINGLE_SESSION_STATUS_GAP - 12.0
+    single_session_draft_top(size) - 12.0
 }
 
 fn clip_rect_to_vertical_bounds(rect: Rect, top: f32, bottom: f32) -> Option<Rect> {
@@ -6724,6 +6708,7 @@ pub(crate) fn single_session_streaming_text_area_for_cached_body_viewport<'a>(
     size: PhysicalSize<u32>,
     viewport: SingleSessionBodyViewport,
     streaming_start_line: usize,
+    opacity: f32,
 ) -> TextArea<'a> {
     let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
@@ -6745,7 +6730,12 @@ pub(crate) fn single_session_streaming_text_area_for_cached_body_viewport<'a>(
             bottom: single_session_body_bottom_for_total_lines(app, size, viewport.total_lines)
                 as i32,
         },
-        default_color: text_color(ASSISTANT_TEXT_COLOR),
+        default_color: text_color([
+            ASSISTANT_TEXT_COLOR[0],
+            ASSISTANT_TEXT_COLOR[1],
+            ASSISTANT_TEXT_COLOR[2],
+            ASSISTANT_TEXT_COLOR[3] * opacity.clamp(0.0, 1.0),
+        ]),
     }
 }
 
@@ -6775,10 +6765,8 @@ pub(crate) fn single_session_text_areas_for_fresh_state(
 }
 
 fn welcome_status_lane_visible(app: &SingleSessionApp) -> bool {
-    app.is_welcome_timeline_visible()
-        && app.has_welcome_timeline_transcript()
-        && app.draft.is_empty()
-        && app.has_activity_indicator()
+    let _ = app;
+    false
 }
 
 pub(crate) fn single_session_text_areas_for_state(
@@ -6799,7 +6787,7 @@ pub(crate) fn single_session_text_areas_for_state(
     welcome_hero_reveal_progress: f32,
     inline_widget_reveal_progress: f32,
 ) -> Vec<TextArea<'_>> {
-    if buffers.len() < 5 {
+    if buffers.len() < 4 {
         return Vec::new();
     }
 
@@ -6865,21 +6853,7 @@ pub(crate) fn single_session_text_areas_for_state(
     // Keep the composer lane first in glyphon preparation order. The visual
     // positions are unchanged, but fresh keystrokes get shaped before the
     // heavier transcript/chrome text on frames where both changed.
-    if status_lane_visible {
-        areas.push(TextArea {
-            buffer: &buffers[3],
-            left,
-            top: draft_top,
-            scale: 1.0,
-            bounds: TextBounds {
-                left: 0,
-                top: draft_top as i32,
-                right,
-                bottom,
-            },
-            default_color: text_color(STATUS_TEXT_ACCENT_COLOR),
-        });
-    } else if !welcome_handoff_visible {
+    if !status_lane_visible && !welcome_handoff_visible {
         areas.push(TextArea {
             buffer: &buffers[2],
             left,
@@ -6890,22 +6864,6 @@ pub(crate) fn single_session_text_areas_for_state(
                 top: draft_top as i32,
                 right,
                 bottom,
-            },
-            default_color: text_color(PANEL_SECTION_COLOR),
-        });
-    }
-
-    if !welcome_chrome_visible && !status_lane_visible {
-        areas.push(TextArea {
-            buffer: &buffers[3],
-            left,
-            top: draft_top - SINGLE_SESSION_STATUS_GAP,
-            scale: 1.0,
-            bounds: TextBounds {
-                left: 0,
-                top: (draft_top - SINGLE_SESSION_STATUS_GAP) as i32,
-                right,
-                bottom: draft_top as i32,
             },
             default_color: text_color(PANEL_SECTION_COLOR),
         });
@@ -6925,7 +6883,7 @@ pub(crate) fn single_session_text_areas_for_state(
         default_color: text_color(PANEL_TITLE_COLOR),
     });
     areas.push(TextArea {
-        buffer: &buffers[4],
+        buffer: &buffers[3],
         left: version_left,
         top: version_top,
         scale: 1.0,
@@ -6954,7 +6912,7 @@ pub(crate) fn single_session_text_areas_for_state(
     if welcome_chrome_visible
         && !welcome_hero_runtime_mask_available
         && !welcome_hero_reveal_is_active(welcome_hero_reveal_progress)
-        && let Some(hero_buffer) = buffers.get(6)
+        && let Some(hero_buffer) = buffers.get(5)
     {
         let (hero_min, hero_max) = glyph_welcome_hero_bounds(size, ui_scale);
         areas.push(TextArea {
@@ -6973,7 +6931,7 @@ pub(crate) fn single_session_text_areas_for_state(
     }
 
     if inline_widget_line_count > 0
-        && let Some(buffer) = buffers.get(5)
+        && let Some(buffer) = buffers.get(4)
         && let Some(layout) = inline_widget_layout
     {
         let inline_bounds_right = layout

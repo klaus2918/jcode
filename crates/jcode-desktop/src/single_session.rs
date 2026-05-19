@@ -176,6 +176,7 @@ pub(crate) enum InlineWidgetKind {
     HotkeyHelp,
     SessionInfo,
     ModelPicker,
+    SessionSwitcher,
 }
 
 impl InlineWidgetKind {
@@ -184,6 +185,7 @@ impl InlineWidgetKind {
             Self::HotkeyHelp | Self::SessionInfo => InlineWidgetMode::ReadOnly,
             Self::ModelPicker if app.model_picker.preview => InlineWidgetMode::ReadOnly,
             Self::ModelPicker => InlineWidgetMode::Interactive,
+            Self::SessionSwitcher => InlineWidgetMode::Interactive,
         }
     }
 }
@@ -893,11 +895,6 @@ impl SingleSessionApp {
     }
 
     #[cfg(test)]
-    pub(crate) fn composer_status_line(&self) -> String {
-        self.composer_status_line_for_tick(0)
-    }
-
-    #[cfg(test)]
     pub(crate) fn queued_draft_count(&self) -> usize {
         self.queued_drafts.len()
     }
@@ -908,52 +905,6 @@ impl SingleSessionApp {
             .iter()
             .map(|(message, _)| message.clone())
             .collect()
-    }
-
-    pub(crate) fn composer_status_line_for_tick(&self, tick: u64) -> String {
-        let _ = tick;
-        let status = self.status.as_deref().unwrap_or("ready");
-        let mode = if self.is_processing {
-            "Esc interrupt"
-        } else {
-            "Enter send · Shift+Enter newline · Ctrl+Enter queue/send"
-        };
-        let scroll = scroll_status_fragment(self.body_scroll_lines);
-        let images = match self.pending_images.len() {
-            0 => String::new(),
-            1 => " · 1 image".to_string(),
-            count => format!(" · {count} images"),
-        };
-        let queued = match self.queued_drafts.len() {
-            0 => String::new(),
-            1 => " · 1 queued".to_string(),
-            count => format!(" · {count} queued"),
-        };
-        let stdin = self
-            .stdin_response
-            .as_ref()
-            .map(|state| {
-                if state.is_password {
-                    " · password input requested".to_string()
-                } else {
-                    " · interactive input requested".to_string()
-                }
-            })
-            .unwrap_or_default();
-        let model = self
-            .model_picker
-            .current_model
-            .as_ref()
-            .map(|model| {
-                self.model_picker
-                    .provider_name
-                    .as_deref()
-                    .filter(|provider| !provider.is_empty())
-                    .map(|provider| format!(" · model {provider}/{model}"))
-                    .unwrap_or_else(|| format!(" · model {model}"))
-            })
-            .unwrap_or_default();
-        format!("{status}{images}{queued}{stdin}{model}{scroll} · {mode}")
     }
 
     #[cfg(test)]
@@ -1262,6 +1213,7 @@ impl SingleSessionApp {
             .open_loading(current_session_id.as_deref());
         self.status = Some("loading recent sessions".to_string());
         self.scroll_body_to_bottom();
+        self.mark_inline_widget_opened();
         KeyOutcome::LoadSessionSwitcher
     }
 
@@ -1338,6 +1290,7 @@ impl SingleSessionApp {
                 self.session_switcher
                     .open_loading(current_session_id.as_deref());
                 self.status = Some("loading recent sessions".to_string());
+                self.mark_inline_widget_opened();
                 KeyOutcome::LoadSessionSwitcher
             }
             KeyInput::ModelPickerMove(delta) => {
@@ -1471,12 +1424,6 @@ impl SingleSessionApp {
         if let Some(stdin_response) = &self.stdin_response {
             return stdin_response_styled_lines(stdin_response);
         }
-        if self.session_switcher.open {
-            return session_switcher_styled_lines(
-                &self.session_switcher,
-                self.current_session_id(),
-            );
-        }
         self.body_styled_lines_without_inline_widgets()
     }
 
@@ -1485,6 +1432,9 @@ impl SingleSessionApp {
             Some(InlineWidgetKind::HotkeyHelp) => hotkey_help_inline_widget().styled_lines(),
             Some(InlineWidgetKind::ModelPicker) => {
                 model_picker_inline_styled_lines(&self.model_picker)
+            }
+            Some(InlineWidgetKind::SessionSwitcher) => {
+                session_switcher_styled_lines(&self.session_switcher, self.current_session_id())
             }
             Some(InlineWidgetKind::SessionInfo) => session_info_inline_styled_lines(self),
             None => Vec::new(),
@@ -1501,6 +1451,9 @@ impl SingleSessionApp {
         }
         if self.model_picker.open {
             return Some(InlineWidgetKind::ModelPicker);
+        }
+        if self.session_switcher.open {
+            return Some(InlineWidgetKind::SessionSwitcher);
         }
         if self.show_session_info {
             return Some(InlineWidgetKind::SessionInfo);
@@ -1653,6 +1606,7 @@ impl SingleSessionApp {
         self.status.hash(&mut hasher);
         self.error.hash(&mut hasher);
         self.show_help.hash(&mut hasher);
+        self.show_session_info.hash(&mut hasher);
         self.model_picker.open.hash(&mut hasher);
         self.model_picker.filter.hash(&mut hasher);
         self.model_picker.selected.hash(&mut hasher);
@@ -1688,6 +1642,7 @@ impl SingleSessionApp {
         self.status.hash(&mut hasher);
         self.error.hash(&mut hasher);
         self.show_help.hash(&mut hasher);
+        self.show_session_info.hash(&mut hasher);
         self.model_picker.open.hash(&mut hasher);
         self.model_picker.filter.hash(&mut hasher);
         self.model_picker.selected.hash(&mut hasher);
@@ -1710,6 +1665,7 @@ impl SingleSessionApp {
     pub(crate) fn is_welcome_timeline_visible(&self) -> bool {
         self.welcome_timeline
             && !self.show_help
+            && !self.show_session_info
             && !self.session_switcher.open
             && self.stdin_response.is_none()
     }

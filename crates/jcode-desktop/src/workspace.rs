@@ -97,6 +97,7 @@ pub enum KeyInput {
     SubmitDraft,
     SpawnPanel,
     HotkeyHelp,
+    ToggleInputMode,
     ToggleSessionInfo,
     RefreshSessions,
     AdjustTextScale(i8),
@@ -159,7 +160,10 @@ pub struct DesktopPreferences {
     pub panel_size: PanelSizePreset,
     pub focused_session_id: Option<String>,
     pub workspace_lane: i32,
+    pub space_hold_toggle_ms: u64,
 }
+
+pub const DEFAULT_SPACE_HOLD_TOGGLE_MS: u64 = 225;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Surface {
@@ -230,6 +234,7 @@ pub struct Workspace {
     pub draft: String,
     pub pending_images: Vec<(String, String)>,
     panel_size: PanelSizePreset,
+    space_hold_toggle_ms: u64,
     next_id: u64,
 }
 
@@ -255,6 +260,7 @@ impl Workspace {
             draft: String::new(),
             pending_images: Vec::new(),
             panel_size: PanelSizePreset::Quarter,
+            space_hold_toggle_ms: DEFAULT_SPACE_HOLD_TOGGLE_MS,
             next_id: 8,
         }
     }
@@ -284,6 +290,7 @@ impl Workspace {
             draft: String::new(),
             pending_images: Vec::new(),
             panel_size: PanelSizePreset::Quarter,
+            space_hold_toggle_ms: DEFAULT_SPACE_HOLD_TOGGLE_MS,
             next_id,
         }
     }
@@ -310,12 +317,17 @@ impl Workspace {
             draft: String::new(),
             pending_images: Vec::new(),
             panel_size: PanelSizePreset::Quarter,
+            space_hold_toggle_ms: DEFAULT_SPACE_HOLD_TOGGLE_MS,
             next_id: 2,
         }
     }
 
     pub fn preferred_panel_screen_fraction(&self) -> f32 {
         self.panel_size.screen_fraction()
+    }
+
+    pub fn space_hold_toggle_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.space_hold_toggle_ms)
     }
 
     pub fn current_workspace(&self) -> i32 {
@@ -397,11 +409,13 @@ impl Workspace {
                 .focused_surface()
                 .and_then(|surface| surface.session_id.clone()),
             workspace_lane: self.current_workspace(),
+            space_hold_toggle_ms: self.space_hold_toggle_ms,
         }
     }
 
     pub fn apply_preferences(&mut self, preferences: DesktopPreferences) {
         self.panel_size = preferences.panel_size;
+        self.space_hold_toggle_ms = preferences.space_hold_toggle_ms;
 
         if let Some(focused_session_id) = preferences.focused_session_id
             && let Some(surface) = self
@@ -483,6 +497,10 @@ impl Workspace {
                 if let Some((session_id, title)) = self.focused_session_target() {
                     return KeyOutcome::OpenSession { session_id, title };
                 }
+                self.mode = InputMode::Insert;
+                return KeyOutcome::Redraw;
+            }
+            KeyInput::ToggleInputMode => {
                 self.mode = InputMode::Insert;
                 return KeyOutcome::Redraw;
             }
@@ -570,6 +588,10 @@ impl Workspace {
             KeyInput::RefreshSessions => KeyOutcome::Redraw,
             KeyInput::SetPanelSize(size) => {
                 self.panel_size = size;
+                KeyOutcome::Redraw
+            }
+            KeyInput::ToggleInputMode => {
+                self.mode = InputMode::Navigation;
                 KeyOutcome::Redraw
             }
             KeyInput::SubmitDraft | KeyInput::QueueDraft => self.submit_draft(),

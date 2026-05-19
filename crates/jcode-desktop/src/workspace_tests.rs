@@ -125,6 +125,22 @@ fn insert_mode_captures_text_and_escape_returns_to_navigation() {
 }
 
 #[test]
+fn toggle_input_mode_switches_between_navigation_and_insert() {
+    let mut workspace = Workspace::fake();
+    assert_eq!(workspace.mode, InputMode::Navigation);
+    assert_eq!(
+        workspace.handle_key(KeyInput::ToggleInputMode),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(workspace.mode, InputMode::Insert);
+    assert_eq!(
+        workspace.handle_key(KeyInput::ToggleInputMode),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(workspace.mode, InputMode::Navigation);
+}
+
+#[test]
 fn navigation_escape_exits() {
     let mut workspace = Workspace::fake();
     assert_eq!(workspace.handle_key(KeyInput::Escape), KeyOutcome::Exit);
