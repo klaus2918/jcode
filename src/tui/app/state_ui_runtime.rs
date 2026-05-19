@@ -215,11 +215,13 @@ impl App {
 
     /// Time since last streaming event (for detecting stale connections)
     pub fn time_since_activity(&self) -> Option<Duration> {
-        Some(
-            self.last_stream_activity
-                .unwrap_or(self.app_started)
-                .elapsed(),
-        )
+        if let Some(last_activity) = self.last_stream_activity {
+            return Some(last_activity.elapsed());
+        }
+        if !self.display_messages.is_empty() && !self.is_processing {
+            return Some(crate::tui::REDRAW_DEEP_IDLE_AFTER + Duration::from_secs(1));
+        }
+        Some(self.app_started.elapsed())
     }
 
     pub(super) fn split_launch_in_flight(&self) -> bool {

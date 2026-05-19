@@ -464,11 +464,18 @@ impl crate::tui::TuiState for App {
     }
 
     fn time_since_activity(&self) -> Option<std::time::Duration> {
-        Some(
-            self.last_stream_activity
-                .unwrap_or(self.app_started)
-                .elapsed(),
-        )
+        if let Some(last_activity) = self.last_stream_activity {
+            return Some(last_activity.elapsed());
+        }
+
+        // Restored/resumed clients often have a full transcript but no stream event in this
+        // process yet. Treat those as already idle so reopening many historical sessions does not
+        // spend the first warm-up window rerendering large static transcripts at idle FPS.
+        if !self.display_messages.is_empty() && !self.is_processing {
+            return Some(crate::tui::REDRAW_DEEP_IDLE_AFTER + std::time::Duration::from_secs(1));
+        }
+
+        Some(self.app_started.elapsed())
     }
 
     fn stream_message_ended(&self) -> bool {
