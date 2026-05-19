@@ -67,6 +67,31 @@ fn desktop_event_parser_maps_streaming_server_events() {
         })
     );
     assert_eq!(
+        desktop_event_from_server_value(&json!({"type": "interrupted"})),
+        Some(DesktopSessionEvent::Status(
+            DesktopSessionStatus::Interrupted
+        ))
+    );
+    assert_eq!(
+        desktop_event_from_server_value(
+            &json!({"type": "connection_phase", "phase": "using tool bash"})
+        ),
+        Some(DesktopSessionEvent::Status(
+            DesktopSessionStatus::External {
+                label: "using tool bash".to_string(),
+                in_flight: true,
+            }
+        ))
+    );
+    assert_eq!(
+        desktop_event_from_server_value(
+            &json!({"type": "reasoning_effort_changed", "effort": "high"})
+        ),
+        Some(DesktopSessionEvent::Status(
+            DesktopSessionStatus::ReasoningEffort("high".to_string())
+        ))
+    );
+    assert_eq!(
         desktop_event_from_server_value(&json!({
             "type": "reloading",
             "new_socket": "/tmp/jcode-new.sock"
@@ -465,8 +490,12 @@ fn drain_session_events_treats_cancel_completion_as_terminal() -> Result<()> {
     let request = server.join().unwrap()?;
     assert_eq!(request["id"], 2);
     let events = event_rx.try_iter().collect::<Vec<_>>();
-    assert!(events.contains(&DesktopSessionEvent::Status("cancelling".to_string())));
-    assert!(events.contains(&DesktopSessionEvent::Status("cancelled".to_string())));
+    assert!(events.contains(&DesktopSessionEvent::Status(
+        DesktopSessionStatus::Cancelling
+    )));
+    assert!(events.contains(&DesktopSessionEvent::Status(
+        DesktopSessionStatus::Cancelled
+    )));
     assert!(events.contains(&DesktopSessionEvent::Done));
     Ok(())
 }

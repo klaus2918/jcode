@@ -704,7 +704,7 @@ fn single_session_info_hotkey_toggles_inline_session_stats() {
         .push(SingleSessionMessage::assistant("a useful answer"));
     app.messages.push(SingleSessionMessage::tool("read file"));
     app.streaming_response = "still streaming".to_string();
-    app.status = Some("receiving".to_string());
+    app.set_status_label("receiving");
     app.model_picker.current_model = Some("claude-sonnet-4-5".to_string());
     app.model_picker.provider_name = Some("Claude".to_string());
 
@@ -1322,6 +1322,63 @@ fn single_session_activity_indicator_appears_only_for_active_work() {
         KeyOutcome::LoadModelCatalog
     );
     assert!(app.activity_indicator_active());
+}
+
+#[test]
+fn single_session_status_kind_drives_activity_indicator() {
+    let mut app = SingleSessionApp::new(None);
+
+    app.apply_session_event(session_launch::DesktopSessionEvent::Status(
+        DesktopSessionStatus::SwitchingModel,
+    ));
+
+    assert_eq!(app.status.as_deref(), Some("switching model"));
+    assert_eq!(
+        app.status_kind(),
+        Some(&SingleSessionStatus::Backend(
+            DesktopSessionStatus::SwitchingModel
+        ))
+    );
+    assert!(app.activity_indicator_active());
+
+    app.apply_session_event(session_launch::DesktopSessionEvent::Done);
+
+    assert_eq!(app.status.as_deref(), Some("ready"));
+    assert_eq!(app.status_kind(), Some(&SingleSessionStatus::Ready));
+    assert!(!app.activity_indicator_active());
+}
+
+#[test]
+fn desktop_session_external_status_preserves_legacy_inflight_classification() {
+    let mut app = SingleSessionApp::new(None);
+
+    app.apply_session_event(session_launch::DesktopSessionEvent::Status(
+        DesktopSessionStatus::external("using tool bash"),
+    ));
+
+    assert_eq!(app.status.as_deref(), Some("using tool bash"));
+    assert!(matches!(
+        app.status_kind(),
+        Some(SingleSessionStatus::Backend(DesktopSessionStatus::External {
+            label,
+            in_flight: true,
+        })) if label == "using tool bash"
+    ));
+    assert!(app.activity_indicator_active());
+
+    app.apply_session_event(session_launch::DesktopSessionEvent::Status(
+        DesktopSessionStatus::external("restored 1 crashed session(s)"),
+    ));
+
+    assert_eq!(app.status.as_deref(), Some("restored 1 crashed session(s)"));
+    assert!(matches!(
+        app.status_kind(),
+        Some(SingleSessionStatus::Backend(DesktopSessionStatus::External {
+            label,
+            in_flight: false,
+        })) if label == "restored 1 crashed session(s)"
+    ));
+    assert!(!app.activity_indicator_active());
 }
 
 #[test]

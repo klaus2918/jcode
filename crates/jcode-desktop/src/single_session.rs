@@ -1,5 +1,7 @@
 use crate::{
-    session_launch::{DesktopModelChoice, DesktopSessionEvent, DesktopSessionHandle},
+    session_launch::{
+        DesktopModelChoice, DesktopSessionEvent, DesktopSessionHandle, DesktopSessionStatus,
+    },
     workspace,
 };
 use pulldown_cmark::{
@@ -104,6 +106,7 @@ pub(crate) struct SingleSessionApp {
     pub(crate) messages: Vec<SingleSessionMessage>,
     pub(crate) streaming_response: String,
     pub(crate) status: Option<String>,
+    status_kind: Option<SingleSessionStatus>,
     pub(crate) error: Option<String>,
     pub(crate) is_processing: bool,
     pub(crate) body_scroll_lines: f32,
@@ -204,6 +207,95 @@ pub(crate) enum SingleSessionOverlay {
         kind: InlineWidgetKind,
         mode: InlineWidgetMode,
     },
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum SingleSessionStatus {
+    LoadingModels,
+    LoadingRecentSessions,
+    Receiving,
+    Connected,
+    SendingInteractiveInput,
+    Cancelling,
+    ServerReloading,
+    ServerReconnected,
+    InteractiveInputRequested,
+    InteractiveInputPending,
+    Ready,
+    Sending,
+    Error,
+    ModelsLoaded,
+    ModelPickerError,
+    ModelSwitchFailed,
+    ModelSelected(String),
+    ToolPreparing(String),
+    ToolUsing(String),
+    ToolFinished { name: String, is_error: bool },
+    AttachedImages(usize),
+    Info(String),
+    Backend(DesktopSessionStatus),
+}
+
+impl SingleSessionStatus {
+    fn label(&self) -> String {
+        match self {
+            Self::LoadingModels => "loading models".to_string(),
+            Self::LoadingRecentSessions => "loading recent sessions".to_string(),
+            Self::Receiving => "receiving".to_string(),
+            Self::Connected => "connected".to_string(),
+            Self::SendingInteractiveInput => "sending interactive input".to_string(),
+            Self::Cancelling => "cancelling".to_string(),
+            Self::ServerReloading => "server reloading, reconnecting".to_string(),
+            Self::ServerReconnected => "server reconnected".to_string(),
+            Self::InteractiveInputRequested => "interactive input requested".to_string(),
+            Self::InteractiveInputPending => {
+                "interactive input pending · Esc to cancel".to_string()
+            }
+            Self::Ready => "ready".to_string(),
+            Self::Sending => "sending".to_string(),
+            Self::Error => "error".to_string(),
+            Self::ModelsLoaded => "models loaded".to_string(),
+            Self::ModelPickerError => "model picker error".to_string(),
+            Self::ModelSwitchFailed => "model switch failed".to_string(),
+            Self::ModelSelected(label) => format!("model: {label}"),
+            Self::ToolPreparing(name) => format!("preparing tool {name}"),
+            Self::ToolUsing(name) => format!("using tool {name}"),
+            Self::ToolFinished { name, is_error } => {
+                format!("tool {name} {}", if *is_error { "failed" } else { "done" })
+            }
+            Self::AttachedImages(count) => format!("attached {count} image(s)"),
+            Self::Info(label) => label.clone(),
+            Self::Backend(status) => status.label(),
+        }
+    }
+
+    fn is_in_flight(&self) -> bool {
+        match self {
+            Self::LoadingModels
+            | Self::LoadingRecentSessions
+            | Self::Receiving
+            | Self::Connected
+            | Self::SendingInteractiveInput
+            | Self::Cancelling
+            | Self::Sending
+            | Self::ToolPreparing(_)
+            | Self::ToolUsing(_)
+            | Self::AttachedImages(_) => true,
+            Self::Backend(status) => status.is_in_flight(),
+            Self::ServerReloading
+            | Self::ServerReconnected
+            | Self::InteractiveInputRequested
+            | Self::InteractiveInputPending
+            | Self::Ready
+            | Self::Error
+            | Self::ModelsLoaded
+            | Self::ModelPickerError
+            | Self::ModelSwitchFailed
+            | Self::ModelSelected(_)
+            | Self::ToolFinished { .. }
+            | Self::Info(_) => false,
+        }
+    }
 }
 
 impl SingleSessionOverlay {
@@ -733,6 +825,7 @@ impl SingleSessionApp {
             messages: Vec::new(),
             streaming_response: String::new(),
             status: None,
+            status_kind: None,
             error: None,
             is_processing: false,
             body_scroll_lines: 0.0,
@@ -784,6 +877,7 @@ impl SingleSessionApp {
         self.detail_scroll = 0;
         self.messages.clear();
         self.streaming_response.clear();
+        self.status_kind = None;
         self.error = None;
         self.stdin_response = None;
         self.body_scroll_lines = 0.0;
@@ -810,6 +904,7 @@ impl SingleSessionApp {
         self.messages.clear();
         self.streaming_response.clear();
         self.status = None;
+        self.status_kind = None;
         self.error = None;
         self.is_processing = false;
         self.body_scroll_lines = 0.0;
@@ -981,7 +1076,28 @@ impl SingleSessionApp {
         self.is_processing
             || self.model_picker.loading
             || self.session_switcher.loading
-            || self.status.as_deref().is_some_and(is_in_flight_status)
+            || self
+                .status_kind
+                .as_ref()
+                .is_some_and(SingleSessionStatus::is_in_flight)
+    }
+
+    fn set_status(&mut self, status: SingleSessionStatus) {
+        self.status = Some(status.label());
+        self.status_kind = Some(status);
+    }
+
+    pub(crate) fn set_status_label(&mut self, label: impl Into<String>) {
+        self.set_status(SingleSessionStatus::Info(label.into()));
+    }
+
+    fn set_backend_status(&mut self, status: DesktopSessionStatus) {
+        self.set_status(SingleSessionStatus::Backend(status));
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn status_kind(&self) -> Option<&SingleSessionStatus> {
+        self.status_kind.as_ref()
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyInput) -> KeyOutcome {
@@ -1173,7 +1289,7 @@ impl SingleSessionApp {
         if !was_open {
             self.mark_inline_widget_opened();
         }
-        self.status = Some("loading models".to_string());
+        self.set_status(SingleSessionStatus::LoadingModels);
         self.scroll_body_to_bottom();
         KeyOutcome::LoadModelCatalog
     }
@@ -1185,7 +1301,7 @@ impl SingleSessionApp {
         if !was_open {
             self.mark_inline_widget_opened();
         }
-        self.status = Some("loading models".to_string());
+        self.set_status(SingleSessionStatus::LoadingModels);
         self.scroll_body_to_bottom();
         KeyOutcome::LoadModelCatalog
     }
@@ -1242,7 +1358,7 @@ impl SingleSessionApp {
             KeyInput::RefreshSessions => {
                 let filter = self.model_picker.filter.clone();
                 self.model_picker.open_preview_loading(filter);
-                self.status = Some("loading models".to_string());
+                self.set_status(SingleSessionStatus::LoadingModels);
                 Some(KeyOutcome::LoadModelCatalog)
             }
             _ => None,
@@ -1254,7 +1370,7 @@ impl SingleSessionApp {
         let current_session_id = self.current_session_id().map(str::to_string);
         self.session_switcher
             .open_loading(current_session_id.as_deref());
-        self.status = Some("loading recent sessions".to_string());
+        self.set_status(SingleSessionStatus::LoadingRecentSessions);
         self.scroll_body_to_bottom();
         self.mark_inline_widget_opened();
         KeyOutcome::LoadSessionSwitcher
@@ -1276,7 +1392,7 @@ impl SingleSessionApp {
             }
             KeyInput::RefreshSessions => {
                 self.model_picker.open_loading();
-                self.status = Some("loading models".to_string());
+                self.set_status(SingleSessionStatus::LoadingModels);
                 KeyOutcome::LoadModelCatalog
             }
             KeyInput::ModelPickerMove(delta) => {
@@ -1330,7 +1446,7 @@ impl SingleSessionApp {
                 let current_session_id = self.current_session_id().map(str::to_string);
                 self.session_switcher
                     .open_loading(current_session_id.as_deref());
-                self.status = Some("loading recent sessions".to_string());
+                self.set_status(SingleSessionStatus::LoadingRecentSessions);
                 self.mark_inline_widget_opened();
                 KeyOutcome::LoadSessionSwitcher
             }
@@ -1368,19 +1484,19 @@ impl SingleSessionApp {
         self.session_switcher
             .apply_sessions(cards, current_session_id.as_deref());
         if self.session_switcher.open {
-            self.status = Some(format!(
+            self.set_status(SingleSessionStatus::Info(format!(
                 "{} recent session(s)",
                 self.session_switcher.sessions.len()
-            ));
+            )));
         }
     }
 
     fn resume_selected_switcher_session(&mut self) -> KeyOutcome {
         if self.is_processing {
-            self.status = Some(
+            self.set_status(SingleSessionStatus::Info(
                 "finish or Esc interrupt the running generation before switching sessions"
                     .to_string(),
-            );
+            ));
             return KeyOutcome::Redraw;
         }
 
@@ -1402,7 +1518,7 @@ impl SingleSessionApp {
         self.show_help = false;
         self.welcome_timeline = false;
         self.session_switcher.close();
-        self.status = Some(format!("resumed {title}"));
+        self.set_status(SingleSessionStatus::Info(format!("resumed {title}")));
         KeyOutcome::Redraw
     }
 
@@ -1412,7 +1528,7 @@ impl SingleSessionApp {
                 let Some(state) = self.stdin_response.take() else {
                     return KeyOutcome::None;
                 };
-                self.status = Some("sending interactive input".to_string());
+                self.set_status(SingleSessionStatus::SendingInteractiveInput);
                 KeyOutcome::SendStdinResponse {
                     request_id: state.request_id,
                     input: state.input,
@@ -1445,7 +1561,7 @@ impl SingleSessionApp {
             }
             KeyInput::CancelGeneration => KeyOutcome::CancelGeneration,
             KeyInput::Escape => {
-                self.status = Some("interactive input pending · Esc to cancel".to_string());
+                self.set_status(SingleSessionStatus::InteractiveInputPending);
                 KeyOutcome::Redraw
             }
             _ => KeyOutcome::None,
@@ -1768,38 +1884,38 @@ impl SingleSessionApp {
 
     pub(crate) fn apply_session_event(&mut self, event: DesktopSessionEvent) {
         match event {
-            DesktopSessionEvent::Status(status) => self.status = Some(status),
+            DesktopSessionEvent::Status(status) => self.set_backend_status(status),
             DesktopSessionEvent::Reloading { .. } => {
-                self.status = Some("server reloading, reconnecting".to_string());
+                self.set_status(SingleSessionStatus::ServerReloading);
                 self.is_processing = true;
                 self.reload_phase = ReloadPhase::AwaitingReconnect;
             }
             DesktopSessionEvent::Reloaded { session_id } => {
                 self.live_session_id = Some(session_id);
-                self.status = Some("server reconnected".to_string());
+                self.set_status(SingleSessionStatus::ServerReconnected);
                 self.is_processing = true;
                 self.reload_phase = ReloadPhase::Stable;
             }
             DesktopSessionEvent::SessionStarted { session_id } => {
                 self.live_session_id = Some(session_id);
-                self.status = Some("connected".to_string());
+                self.set_status(SingleSessionStatus::Connected);
             }
             DesktopSessionEvent::TextDelta(text) => {
                 self.reload_phase = ReloadPhase::Stable;
                 self.streaming_response.push_str(&text);
-                self.status = Some("receiving".to_string());
+                self.set_status(SingleSessionStatus::Receiving);
             }
             DesktopSessionEvent::TextReplace(text) => {
                 self.reload_phase = ReloadPhase::Stable;
                 self.streaming_response = text;
-                self.status = Some("receiving".to_string());
+                self.set_status(SingleSessionStatus::Receiving);
             }
             DesktopSessionEvent::ToolStarted { name } => {
                 self.reload_phase = ReloadPhase::Stable;
                 self.finish_streaming_response();
                 self.collapse_active_tool_message();
                 self.active_tool_input_buffer.clear();
-                self.status = Some(format!("preparing tool {name}"));
+                self.set_status(SingleSessionStatus::ToolPreparing(name.clone()));
                 self.messages
                     .push(SingleSessionMessage::tool(format!("▾ {name} preparing")));
                 self.active_tool_message_index = Some(self.messages.len().saturating_sub(1));
@@ -1807,7 +1923,7 @@ impl SingleSessionApp {
             DesktopSessionEvent::ToolExecuting { name } => {
                 self.reload_phase = ReloadPhase::Stable;
                 self.finish_streaming_response();
-                self.status = Some(format!("using tool {name}"));
+                self.set_status(SingleSessionStatus::ToolUsing(name.clone()));
                 self.replace_active_tool_header(&format!("▾ {name} running"));
             }
             DesktopSessionEvent::ToolInput { delta } => {
@@ -1822,10 +1938,9 @@ impl SingleSessionApp {
             } => {
                 self.reload_phase = ReloadPhase::Stable;
                 self.finish_streaming_response();
-                self.status = Some(if is_error {
-                    format!("tool {name} failed")
-                } else {
-                    format!("tool {name} done")
+                self.set_status(SingleSessionStatus::ToolFinished {
+                    name: name.clone(),
+                    is_error,
                 });
                 let marker = if is_error { "failed" } else { "done" };
                 let line = format!("▾ {name} {marker}: {summary}");
@@ -1847,7 +1962,7 @@ impl SingleSessionApp {
                 error,
             } => {
                 if let Some(error) = error {
-                    self.status = Some("model switch failed".to_string());
+                    self.set_status(SingleSessionStatus::ModelSwitchFailed);
                     self.model_picker.apply_error(error.clone());
                     self.messages.push(SingleSessionMessage::meta(format!(
                         "model switch failed: {error}"
@@ -1861,7 +1976,7 @@ impl SingleSessionApp {
                     .unwrap_or_else(|| model.clone());
                 self.model_picker
                     .apply_model_change(model.clone(), provider_name.clone());
-                self.status = Some(format!("model: {label}"));
+                self.set_status(SingleSessionStatus::ModelSelected(label.clone()));
                 self.messages.push(SingleSessionMessage::meta(format!(
                     "model switched to {label}"
                 )));
@@ -1873,11 +1988,11 @@ impl SingleSessionApp {
             } => {
                 self.model_picker
                     .apply_catalog(current_model, provider_name, models);
-                self.status = Some("models loaded".to_string());
+                self.set_status(SingleSessionStatus::ModelsLoaded);
             }
             DesktopSessionEvent::ModelCatalogError { error } => {
                 self.model_picker.apply_error(error.clone());
-                self.status = Some("model picker error".to_string());
+                self.set_status(SingleSessionStatus::ModelPickerError);
             }
             DesktopSessionEvent::StdinRequest {
                 request_id,
@@ -1886,7 +2001,7 @@ impl SingleSessionApp {
                 tool_call_id,
             } => {
                 self.reload_phase = ReloadPhase::Stable;
-                self.status = Some("interactive input requested".to_string());
+                self.set_status(SingleSessionStatus::InteractiveInputRequested);
                 self.close_inline_widgets();
                 let raw_prompt = prompt.trim();
                 let display_prompt = if raw_prompt.is_empty() {
@@ -1908,7 +2023,7 @@ impl SingleSessionApp {
             }
             DesktopSessionEvent::Done => {
                 if self.reload_phase == ReloadPhase::AwaitingReconnect {
-                    self.status = Some("server reloading, reconnecting".to_string());
+                    self.set_status(SingleSessionStatus::ServerReloading);
                     self.is_processing = true;
                     return;
                 }
@@ -1918,7 +2033,7 @@ impl SingleSessionApp {
                 self.session_handle = None;
                 self.active_tool_message_index = None;
                 self.active_tool_input_buffer.clear();
-                self.status = Some("ready".to_string());
+                self.set_status(SingleSessionStatus::Ready);
             }
             DesktopSessionEvent::Error(error) => {
                 self.reload_phase = ReloadPhase::Stable;
@@ -1928,7 +2043,7 @@ impl SingleSessionApp {
                 self.session_handle = None;
                 self.active_tool_message_index = None;
                 self.active_tool_input_buffer.clear();
-                self.status = Some("error".to_string());
+                self.set_status(SingleSessionStatus::Error);
                 self.error = Some(error);
             }
         }
@@ -1945,7 +2060,7 @@ impl SingleSessionApp {
         match handle.cancel() {
             Ok(()) => {
                 self.stdin_response = None;
-                self.status = Some("cancelling".to_string());
+                self.set_status(SingleSessionStatus::Cancelling);
                 true
             }
             Err(error) => {
@@ -2127,7 +2242,9 @@ impl SingleSessionApp {
                 self.model_picker.close();
                 self.session_switcher.close();
                 self.mark_inline_widget_opened();
-                self.status = Some("showing desktop slash commands".to_string());
+                self.set_status(SingleSessionStatus::Info(
+                    "showing desktop slash commands".to_string(),
+                ));
                 self.scroll_body_to_bottom();
                 KeyOutcome::Redraw
             }
@@ -2139,7 +2256,9 @@ impl SingleSessionApp {
                 self.draft.clear();
                 self.draft_cursor = 0;
                 self.input_undo_stack.clear();
-                self.status = Some("cleared visible transcript".to_string());
+                self.set_status(SingleSessionStatus::Info(
+                    "cleared visible transcript".to_string(),
+                ));
                 self.scroll_body_to_bottom();
                 KeyOutcome::Redraw
             }
@@ -2172,7 +2291,9 @@ impl SingleSessionApp {
                     self.latest_assistant_response()
                         .map(KeyOutcome::CopyLatestResponse)
                         .unwrap_or_else(|| {
-                            self.status = Some("no assistant response to copy".to_string());
+                            self.set_status(SingleSessionStatus::Info(
+                                "no assistant response to copy".to_string(),
+                            ));
                             KeyOutcome::Redraw
                         }),
                 );
@@ -2184,7 +2305,7 @@ impl SingleSessionApp {
                 if self.is_processing {
                     KeyOutcome::CancelGeneration
                 } else {
-                    self.status = Some("nothing is running".to_string());
+                    self.set_status(SingleSessionStatus::Info("nothing is running".to_string()));
                     KeyOutcome::Redraw
                 }
             }
@@ -2197,15 +2318,17 @@ impl SingleSessionApp {
                 self.model_picker.close();
                 self.session_switcher.close();
                 self.mark_inline_widget_opened();
-                self.status = Some("showing session info".to_string());
+                self.set_status(SingleSessionStatus::Info(
+                    "showing session info".to_string(),
+                ));
                 self.scroll_body_to_bottom();
                 KeyOutcome::Redraw
             }
             "/quit" | "/exit" => KeyOutcome::Exit,
             _ => {
-                self.status = Some(format!(
+                self.set_status(SingleSessionStatus::Info(format!(
                     "unknown desktop slash command: {command} · try /help"
-                ));
+                )));
                 KeyOutcome::Redraw
             }
         };
@@ -2215,7 +2338,9 @@ impl SingleSessionApp {
 
     pub(crate) fn attach_image(&mut self, media_type: String, base64_data: String) {
         self.pending_images.push((media_type, base64_data));
-        self.status = Some(format!("attached {} image(s)", self.pending_images.len()));
+        self.set_status(SingleSessionStatus::AttachedImages(
+            self.pending_images.len(),
+        ));
     }
 
     pub(crate) fn clear_attached_images(&mut self) -> bool {
@@ -2223,7 +2348,9 @@ impl SingleSessionApp {
             return false;
         }
         self.pending_images.clear();
-        self.status = Some("cleared image attachments".to_string());
+        self.set_status(SingleSessionStatus::Info(
+            "cleared image attachments".to_string(),
+        ));
         true
     }
 
@@ -2250,7 +2377,9 @@ impl SingleSessionApp {
             anyhow::bail!("no active desktop session to receive interactive input");
         };
         handle.send_stdin_response(request_id, input)?;
-        self.status = Some("interactive input sent".to_string());
+        self.set_status(SingleSessionStatus::Info(
+            "interactive input sent".to_string(),
+        ));
         Ok(())
     }
 
@@ -2267,7 +2396,10 @@ impl SingleSessionApp {
         self.draft.clear();
         self.draft_cursor = 0;
         self.input_undo_stack.clear();
-        self.status = Some(format!("{} prompt(s) queued", self.queued_drafts.len()));
+        self.set_status(SingleSessionStatus::Info(format!(
+            "{} prompt(s) queued",
+            self.queued_drafts.len()
+        )));
         KeyOutcome::Redraw
     }
 
@@ -2279,7 +2411,10 @@ impl SingleSessionApp {
         self.draft = message;
         self.draft_cursor = self.draft.len();
         self.pending_images = images;
-        self.status = Some(format!("{} prompt(s) queued", self.queued_drafts.len()));
+        self.set_status(SingleSessionStatus::Info(format!(
+            "{} prompt(s) queued",
+            self.queued_drafts.len()
+        )));
         KeyOutcome::Redraw
     }
 
@@ -2290,7 +2425,7 @@ impl SingleSessionApp {
         self.remember_input_undo_state();
         let text = std::mem::take(&mut self.draft);
         self.draft_cursor = 0;
-        self.status = Some("cut input line".to_string());
+        self.set_status(SingleSessionStatus::Info("cut input line".to_string()));
         KeyOutcome::CutDraftToClipboard(text)
     }
 
@@ -2518,7 +2653,7 @@ impl SingleSessionApp {
         self.input_undo_stack.clear();
         self.streaming_response.clear();
         self.scroll_body_to_bottom();
-        self.status = Some("sending".to_string());
+        self.set_status(SingleSessionStatus::Sending);
         self.error = None;
         self.is_processing = true;
     }
@@ -2755,21 +2890,6 @@ impl SingleSessionApp {
 
 fn styled_line(text: impl Into<String>, style: SingleSessionLineStyle) -> SingleSessionStyledLine {
     SingleSessionStyledLine::new(text, style)
-}
-
-fn is_in_flight_status(status: &str) -> bool {
-    matches!(
-        status,
-        "loading models"
-            | "loading recent sessions"
-            | "receiving"
-            | "connected"
-            | "sending interactive input"
-            | "switching model"
-            | "cancelling"
-    ) || status.starts_with("using tool ")
-        || status.starts_with("preparing tool ")
-        || status.starts_with("attached ")
 }
 
 fn scroll_status_fragment(scroll_lines: f32) -> String {

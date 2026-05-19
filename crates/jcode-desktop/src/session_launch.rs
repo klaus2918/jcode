@@ -85,9 +85,104 @@ pub struct DesktopModelChoice {
     pub available: bool,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum DesktopSessionStatus {
+    StartingSharedServer,
+    ConnectingSharedServer,
+    SendingMessage,
+    SwitchingModel,
+    LoadingModels,
+    SwitchingReasoningEffort,
+    ServerDisconnectedReconnecting,
+    ServerReloadingReconnecting,
+    Cancelling,
+    Cancelled,
+    SendingInteractiveInput,
+    Interrupted,
+    ReasoningEffort(String),
+    ReasoningEffortFailed(String),
+    External { label: String, in_flight: bool },
+}
+
+impl DesktopSessionStatus {
+    pub fn external(label: impl Into<String>) -> Self {
+        let label = label.into();
+        Self::External {
+            in_flight: desktop_status_label_is_in_flight(&label),
+            label,
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::StartingSharedServer => "starting shared server".to_string(),
+            Self::ConnectingSharedServer => "connecting to shared server".to_string(),
+            Self::SendingMessage => "sending message".to_string(),
+            Self::SwitchingModel => "switching model".to_string(),
+            Self::LoadingModels => "loading models".to_string(),
+            Self::SwitchingReasoningEffort => "switching reasoning effort".to_string(),
+            Self::ServerDisconnectedReconnecting => "server disconnected, reconnecting".to_string(),
+            Self::ServerReloadingReconnecting => "server reloading, reconnecting".to_string(),
+            Self::Cancelling => "cancelling".to_string(),
+            Self::Cancelled => "cancelled".to_string(),
+            Self::SendingInteractiveInput => "sending interactive input".to_string(),
+            Self::Interrupted => "interrupted".to_string(),
+            Self::ReasoningEffort(effort) => format!("effort: {effort}"),
+            Self::ReasoningEffortFailed(error) => format!("effort switch failed: {error}"),
+            Self::External { label, .. } => label.clone(),
+        }
+    }
+
+    pub fn is_in_flight(&self) -> bool {
+        match self {
+            Self::StartingSharedServer
+            | Self::ConnectingSharedServer
+            | Self::SendingMessage
+            | Self::SwitchingModel
+            | Self::LoadingModels
+            | Self::SwitchingReasoningEffort
+            | Self::ServerDisconnectedReconnecting
+            | Self::ServerReloadingReconnecting
+            | Self::Cancelling
+            | Self::SendingInteractiveInput => true,
+            Self::External { in_flight, .. } => *in_flight,
+            Self::Cancelled
+            | Self::Interrupted
+            | Self::ReasoningEffort(_)
+            | Self::ReasoningEffortFailed(_) => false,
+        }
+    }
+
+    pub fn payload_bytes(&self) -> usize {
+        self.label().len()
+    }
+}
+
+fn desktop_status_label_is_in_flight(status: &str) -> bool {
+    matches!(
+        status,
+        "loading models"
+            | "loading recent sessions"
+            | "receiving"
+            | "connected"
+            | "sending"
+            | "sending message"
+            | "sending interactive input"
+            | "switching model"
+            | "switching reasoning effort"
+            | "cancelling"
+            | "starting shared server"
+            | "connecting to shared server"
+            | "server disconnected, reconnecting"
+            | "server reloading, reconnecting"
+    ) || status.starts_with("using tool ")
+        || status.starts_with("preparing tool ")
+        || status.starts_with("attached ")
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DesktopSessionEvent {
-    Status(String),
+    Status(DesktopSessionStatus),
     SessionStarted {
         session_id: String,
     },
@@ -432,7 +527,7 @@ fn cycle_model(
     target_session_id: Option<&str>,
     event_tx: Option<DesktopSessionEventSender>,
 ) -> Result<()> {
-    send_desktop_status(&event_tx, "switching model");
+    send_desktop_status(&event_tx, DesktopSessionStatus::SwitchingModel);
     ensure_server_running()?;
     let stream = connect_server_with_retry(SERVER_START_TIMEOUT)?;
     let mut writer = stream
@@ -469,7 +564,7 @@ fn load_model_catalog(
     target_session_id: Option<&str>,
     event_tx: Option<DesktopSessionEventSender>,
 ) -> Result<()> {
-    send_desktop_status(&event_tx, "loading models");
+    send_desktop_status(&event_tx, DesktopSessionStatus::LoadingModels);
     ensure_server_running()?;
     let stream = connect_server_with_retry(SERVER_START_TIMEOUT)?;
     let mut writer = stream
@@ -506,7 +601,7 @@ fn set_model(
     target_session_id: Option<&str>,
     event_tx: Option<DesktopSessionEventSender>,
 ) -> Result<()> {
-    send_desktop_status(&event_tx, "switching model");
+    send_desktop_status(&event_tx, DesktopSessionStatus::SwitchingModel);
     ensure_server_running()?;
     let stream = connect_server_with_retry(SERVER_START_TIMEOUT)?;
     let mut writer = stream
@@ -546,7 +641,7 @@ fn cycle_reasoning_effort(
 ) -> Result<()> {
     const EFFORTS: [&str; 5] = ["none", "low", "medium", "high", "xhigh"];
 
-    send_desktop_status(&event_tx, "switching reasoning effort");
+    send_desktop_status(&event_tx, DesktopSessionStatus::SwitchingReasoningEffort);
     ensure_server_running()?;
     let stream = connect_server_with_retry(SERVER_START_TIMEOUT)?;
     let mut writer = stream
@@ -613,9 +708,9 @@ fn run_server_session(
     event_tx: Option<DesktopSessionEventSender>,
     command_rx: Receiver<DesktopSessionCommand>,
 ) -> Result<String> {
-    send_desktop_status(&event_tx, "starting shared server");
+    send_desktop_status(&event_tx, DesktopSessionStatus::StartingSharedServer);
     ensure_server_running()?;
-    send_desktop_status(&event_tx, "connecting to shared server");
+    send_desktop_status(&event_tx, DesktopSessionStatus::ConnectingSharedServer);
     let stream = connect_server_with_retry(SERVER_START_TIMEOUT)?;
     let mut writer = stream
         .try_clone()
@@ -641,7 +736,7 @@ fn run_server_session(
         },
     );
 
-    send_desktop_status(&event_tx, "sending message");
+    send_desktop_status(&event_tx, DesktopSessionStatus::SendingMessage);
     let message_request_id = next_request_id;
     write_json_line(
         &mut writer,
@@ -666,13 +761,16 @@ fn run_server_session(
         )? {
             DrainOutcome::Terminal => break,
             DrainOutcome::Disconnected => {
-                send_desktop_status(&event_tx, "server disconnected, reconnecting");
+                send_desktop_status(
+                    &event_tx,
+                    DesktopSessionStatus::ServerDisconnectedReconnecting,
+                );
             }
             DrainOutcome::Reloading { new_socket } => {
                 if let Some(path) = new_socket {
                     current_socket_path = validate_reload_socket_path(&current_socket_path, &path)?;
                 }
-                send_desktop_status(&event_tx, "server reloading, reconnecting");
+                send_desktop_status(&event_tx, DesktopSessionStatus::ServerReloadingReconnecting);
             }
         }
 
@@ -718,8 +816,8 @@ fn run_server_session(
 }
 
 #[cfg(unix)]
-fn send_desktop_status(event_tx: &Option<DesktopSessionEventSender>, status: &str) {
-    send_desktop_event(event_tx, DesktopSessionEvent::Status(status.to_string()));
+fn send_desktop_status(event_tx: &Option<DesktopSessionEventSender>, status: DesktopSessionStatus) {
+    send_desktop_event(event_tx, DesktopSessionEvent::Status(status));
 }
 
 fn send_desktop_event(event_tx: &Option<DesktopSessionEventSender>, event: DesktopSessionEvent) {

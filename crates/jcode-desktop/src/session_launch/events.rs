@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::{DesktopModelChoice, DesktopSessionEvent};
+use super::{DesktopModelChoice, DesktopSessionEvent, DesktopSessionStatus};
 
 pub(super) fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSessionEvent> {
     match value.get("type").and_then(Value::as_str)? {
@@ -21,11 +21,11 @@ pub(super) fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSe
         "connection_phase" => value
             .get("phase")
             .and_then(Value::as_str)
-            .map(|phase| DesktopSessionEvent::Status(phase.to_string())),
+            .map(|phase| DesktopSessionEvent::Status(DesktopSessionStatus::external(phase))),
         "status_detail" => value
             .get("detail")
             .and_then(Value::as_str)
-            .map(|detail| DesktopSessionEvent::Status(detail.to_string())),
+            .map(|detail| DesktopSessionEvent::Status(DesktopSessionStatus::external(detail))),
         "tool_start" => {
             value
                 .get("name")
@@ -58,7 +58,9 @@ pub(super) fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSe
                 is_error: value.get("error").is_some_and(|error| !error.is_null()),
             }
         }),
-        "interrupted" => Some(DesktopSessionEvent::Status("interrupted".to_string())),
+        "interrupted" => Some(DesktopSessionEvent::Status(
+            DesktopSessionStatus::Interrupted,
+        )),
         "model_changed" => value.get("model").and_then(Value::as_str).map(|model| {
             DesktopSessionEvent::ModelChanged {
                 model: model.to_string(),
@@ -78,9 +80,9 @@ pub(super) fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSe
                 .and_then(Value::as_str)
                 .unwrap_or("unchanged");
             let status = if let Some(error) = value.get("error").and_then(Value::as_str) {
-                format!("effort switch failed: {error}")
+                DesktopSessionStatus::ReasoningEffortFailed(error.to_string())
             } else {
-                format!("effort: {effort}")
+                DesktopSessionStatus::ReasoningEffort(effort.to_string())
             };
             Some(DesktopSessionEvent::Status(status))
         }

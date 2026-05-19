@@ -16,7 +16,7 @@ use super::events::{
 };
 use super::terminal::jcode_bin;
 use super::{
-    DesktopSessionCommand, DesktopSessionEvent, DesktopSessionEventSender,
+    DesktopSessionCommand, DesktopSessionEvent, DesktopSessionEventSender, DesktopSessionStatus,
     SERVER_CONNECT_RETRY_DELAY, SERVER_START_TIMEOUT, send_desktop_event_ref, socket_path,
 };
 
@@ -694,7 +694,7 @@ pub(super) fn drain_session_events(
                         Some("done") => {
                             send_desktop_event_ref(
                                 event_tx,
-                                DesktopSessionEvent::Status("cancelled".to_string()),
+                                DesktopSessionEvent::Status(DesktopSessionStatus::Cancelled),
                             );
                             send_desktop_event_ref(event_tx, DesktopSessionEvent::Done);
                             return Ok(DrainOutcome::Terminal);
@@ -841,7 +841,7 @@ pub(super) fn drain_worker_commands(
             DesktopSessionCommand::Cancel => {
                 send_desktop_event_ref(
                     event_tx,
-                    DesktopSessionEvent::Status("cancelling".to_string()),
+                    DesktopSessionEvent::Status(DesktopSessionStatus::Cancelling),
                 );
                 let request_id = *next_request_id;
                 let write_start = Instant::now();
@@ -867,7 +867,7 @@ pub(super) fn drain_worker_commands(
             DesktopSessionCommand::StdinResponse { request_id, input } => {
                 send_desktop_event_ref(
                     event_tx,
-                    DesktopSessionEvent::Status("sending interactive input".to_string()),
+                    DesktopSessionEvent::Status(DesktopSessionStatus::SendingInteractiveInput),
                 );
                 write_json_line(
                     writer,

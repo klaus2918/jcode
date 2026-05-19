@@ -20,6 +20,7 @@ use glyphon::{
 };
 use image::RgbaImage;
 use render_helpers::*;
+use session_launch::DesktopSessionStatus;
 use single_session::{
     SINGLE_SESSION_ASSISTANT_FONT_FAMILY, SINGLE_SESSION_FONT_FAMILY,
     SINGLE_SESSION_WELCOME_FONT_FAMILY, SelectionPoint, SingleSessionApp, SingleSessionLineStyle,
@@ -869,11 +870,9 @@ async fn run() -> Result<()> {
                             ) {
                                 apply_single_session_error(&mut app, error);
                             } else {
-                                app.apply_session_event(
-                                    session_launch::DesktopSessionEvent::Status(
-                                        "switching model".to_string(),
-                                    ),
-                                );
+                                app.apply_session_event(session_launch::DesktopSessionEvent::Status(
+                                    DesktopSessionStatus::SwitchingModel,
+                                ));
                             }
                             window.set_title(&app.status_title());
                             window.request_redraw();
@@ -886,11 +885,9 @@ async fn run() -> Result<()> {
                             ) {
                                 apply_single_session_error(&mut app, error);
                             } else {
-                                app.apply_session_event(
-                                    session_launch::DesktopSessionEvent::Status(
-                                        "switching reasoning effort".to_string(),
-                                    ),
-                                );
+                                app.apply_session_event(session_launch::DesktopSessionEvent::Status(
+                                    DesktopSessionStatus::SwitchingReasoningEffort,
+                                ));
                             }
                             window.set_title(&app.status_title());
                             window.request_redraw();
@@ -927,11 +924,9 @@ async fn run() -> Result<()> {
                             ) {
                                 apply_single_session_error(&mut app, error);
                             } else {
-                                app.apply_session_event(
-                                    session_launch::DesktopSessionEvent::Status(
-                                        "switching model".to_string(),
-                                    ),
-                                );
+                                app.apply_session_event(session_launch::DesktopSessionEvent::Status(
+                                    DesktopSessionStatus::SwitchingModel,
+                                ));
                             }
                             window.set_title(&app.status_title());
                             window.request_redraw();
@@ -1135,9 +1130,7 @@ async fn run() -> Result<()> {
                     apply_single_session_error(&mut app, anyhow::anyhow!(message));
                 } else if let DesktopApp::SingleSession(single_session) = &mut app {
                     single_session.set_recovery_session_count(0);
-                    single_session.apply_session_event(session_launch::DesktopSessionEvent::Status(
-                        format!("restored {restored} crashed session(s)"),
-                    ));
+                    single_session.set_status_label(format!("restored {restored} crashed session(s)"));
                 }
                 window.set_title(&app.status_title());
                 interaction_latency.mark("restore_crashed_sessions", Instant::now());
@@ -2227,8 +2220,8 @@ fn desktop_session_event_can_wait_for_frame_tick(
 
 fn desktop_session_event_payload_bytes(event: &session_launch::DesktopSessionEvent) -> usize {
     match event {
-        session_launch::DesktopSessionEvent::Status(text)
-        | session_launch::DesktopSessionEvent::TextDelta(text)
+        session_launch::DesktopSessionEvent::Status(status) => status.payload_bytes(),
+        session_launch::DesktopSessionEvent::TextDelta(text)
         | session_launch::DesktopSessionEvent::TextReplace(text)
         | session_launch::DesktopSessionEvent::Error(text) => text.len(),
         session_launch::DesktopSessionEvent::ToolInput { delta } => delta.len(),
@@ -2379,6 +2372,7 @@ fn run_headless_chat_smoke(message: String) -> Result<()> {
 
         match event {
             session_launch::DesktopSessionEvent::Status(status) => {
+                let status = status.label();
                 last_status = Some(status.clone());
                 println!(
                     "{}",
@@ -4125,7 +4119,7 @@ fn desktop_scroll_benchmark_app_with_turns(turns: usize) -> SingleSessionApp {
             "Assistant response {turn}: The render path includes markdown wrapping, transcript card geometry, scrollbar geometry, text buffer preparation, and GPU primitive upload. This paragraph is intentionally long enough to wrap across several desktop body lines so the benchmark exercises visible-line virtualization and wrapping behavior.\n\n- Check cached text keys.\n- Check smooth scroll fractional offsets.\n- Check whether geometry can update without reshaping text.\n\n```rust\nfn sample_{turn}() {{ println!(\"benchmark\"); }}\n```"
         )));
     }
-    app.status = Some("benchmark fixture".to_string());
+    app.set_status_label("benchmark fixture");
     app
 }
 
@@ -4157,13 +4151,13 @@ fn initial_single_session_app(resume_session_id: Option<&str>) -> DesktopApp {
             app.replace_session(Some(card));
         }
         Ok(None) => {
-            app.status = Some(format!("resumed session {session_id}"));
+            app.set_status_label(format!("resumed session {session_id}"));
         }
         Err(error) => {
             desktop_log::error(format_args!(
                 "jcode-desktop: failed to load resumed session metadata for {session_id}: {error:#}"
             ));
-            app.status = Some(format!("resumed session {session_id}"));
+            app.set_status_label(format!("resumed session {session_id}"));
             app.error = Some(format!("failed to load session metadata: {error:#}"));
         }
     }
@@ -4356,6 +4350,12 @@ impl DesktopApp {
     fn apply_session_event(&mut self, event: session_launch::DesktopSessionEvent) {
         if let Self::SingleSession(app) = self {
             app.apply_session_event(event);
+        }
+    }
+
+    fn set_single_session_status_label(&mut self, label: impl Into<String>) {
+        if let Self::SingleSession(app) = self {
+            app.set_status_label(label);
         }
     }
 
@@ -5154,9 +5154,7 @@ fn apply_single_session_error(app: &mut DesktopApp, error: anyhow::Error) {
 
 fn copy_text_to_clipboard(text: &str, success_notice: &'static str, app: &mut DesktopApp) {
     match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text.to_string())) {
-        Ok(()) => app.apply_session_event(session_launch::DesktopSessionEvent::Status(
-            success_notice.to_string(),
-        )),
+        Ok(()) => app.set_single_session_status_label(success_notice),
         Err(error) => {
             desktop_log::error(format_args!(
                 "jcode-desktop: failed to update clipboard after {success_notice}: {error}"
