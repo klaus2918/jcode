@@ -901,6 +901,140 @@ impl App {
         }
     }
 
+    pub(in crate::tui::app) fn debug_model_picker_live_json(
+        &mut self,
+        visible_limit: Option<usize>,
+    ) -> String {
+        let previous_inline_view = self.inline_view_state.clone();
+        let previous_inline_interactive = self.inline_interactive_state.clone();
+        let previous_model_picker_cache = self.model_picker_cache.clone();
+        let previous_pending_model_picker_load = self.pending_model_picker_load.take();
+        let previous_model_picker_load_request_id = self.model_picker_load_request_id;
+        let previous_input = self.input.clone();
+        let previous_cursor_pos = self.cursor_pos;
+        let previous_status_notice = self.status_notice.clone();
+
+        let started = std::time::Instant::now();
+        let current_model = if self.is_remote {
+            self.remote_provider_model
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string())
+        } else {
+            self.provider.model().to_string()
+        };
+        let config_default_model = crate::config::config().provider.default_model.clone();
+        let current_effort = if self.is_remote {
+            self.remote_reasoning_effort.clone()
+        } else {
+            self.provider.reasoning_effort()
+        };
+        let available_efforts = if self.is_remote {
+            Vec::new()
+        } else {
+            self.provider.available_efforts()
+        };
+        let signature = self.model_picker_cache_signature(
+            &current_model,
+            config_default_model,
+            current_effort,
+            &available_efforts,
+        );
+
+        let routes_started = std::time::Instant::now();
+        let routes: Vec<crate::provider::ModelRoute> = if self.is_remote {
+            if !self.remote_model_options.is_empty() {
+                self.remote_model_options.clone()
+            } else {
+                self.build_remote_model_routes_fallback()
+            }
+        } else if crate::perf::tui_policy().simplified_model_picker {
+            self.simplified_model_routes_for_picker(&current_model)
+        } else {
+            self.provider.model_routes()
+        };
+        let routes_ms = routes_started.elapsed().as_millis();
+        let raw_route_count = routes.len();
+        let mut raw_static_fallback_by_provider =
+            std::collections::BTreeMap::<String, usize>::new();
+        for route in &routes {
+            if route
+                .detail
+                .contains("fallback: static provider model list")
+            {
+                *raw_static_fallback_by_provider
+                    .entry(route.provider.clone())
+                    .or_default() += 1;
+            }
+        }
+        let raw_static_fallback_count: usize = raw_static_fallback_by_provider.values().sum();
+        let raw_routes = routes
+            .iter()
+            .take(visible_limit.unwrap_or(200))
+            .map(|route| {
+                serde_json::json!({
+                    "model": route.model,
+                    "provider": route.provider,
+                    "api_method": route.api_method,
+                    "available": route.available,
+                    "detail": route.detail,
+                    "estimated_reference_cost_micros": route.estimated_reference_cost_micros(),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        self.open_model_picker_with_routes(signature, started, routes, routes_ms, false, false);
+        let picker_json = self.debug_picker_state_json(visible_limit);
+        let picker_value: serde_json::Value = serde_json::from_str(&picker_json)
+            .unwrap_or_else(|_| serde_json::json!({ "error": "failed to serialize picker" }));
+        let mut picker_static_fallback_by_provider =
+            std::collections::BTreeMap::<String, usize>::new();
+        if let Some(picker) = self.inline_interactive_state.as_ref() {
+            for entry in &picker.entries {
+                if let Some(route) = entry.active_option()
+                    && route
+                        .detail
+                        .contains("fallback: static provider model list")
+                {
+                    *picker_static_fallback_by_provider
+                        .entry(route.provider.clone())
+                        .or_default() += 1;
+                }
+            }
+        }
+        let picker_static_fallback_count: usize = picker_static_fallback_by_provider.values().sum();
+
+        self.inline_view_state = previous_inline_view;
+        self.inline_interactive_state = previous_inline_interactive;
+        self.model_picker_cache = previous_model_picker_cache;
+        self.pending_model_picker_load = previous_pending_model_picker_load;
+        self.model_picker_load_request_id = previous_model_picker_load_request_id;
+        self.input = previous_input;
+        self.cursor_pos = previous_cursor_pos;
+        self.status_notice = previous_status_notice;
+
+        serde_json::to_string_pretty(&serde_json::json!({
+            "source_of_truth": "materialized_tui_model_picker",
+            "remote": self.is_remote,
+            "provider_name": if self.is_remote {
+                self.remote_provider_name.clone().unwrap_or_else(|| "remote".to_string())
+            } else {
+                self.provider.name().to_string()
+            },
+            "current_model": current_model,
+            "raw_route_count": raw_route_count,
+            "raw_route_sample_count": raw_routes.len(),
+            "raw_static_fallback_count": raw_static_fallback_count,
+            "raw_static_fallback_by_provider": raw_static_fallback_by_provider,
+            "picker_static_fallback_count": picker_static_fallback_count,
+            "picker_static_fallback_by_provider": picker_static_fallback_by_provider,
+            "routes_ms": routes_ms,
+            "total_ms": started.elapsed().as_millis(),
+            "raw_routes": raw_routes,
+            "picker": picker_value,
+        }))
+        .unwrap_or_else(|_| "{}".to_string())
+    }
+
     pub(super) fn build_remote_model_routes_fallback(&self) -> Vec<crate::provider::ModelRoute> {
         let auth = crate::auth::AuthStatus::check_fast();
         let mut routes = Vec::new();

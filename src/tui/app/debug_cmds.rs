@@ -1,7 +1,10 @@
 use super::*;
 
 impl App {
-    fn debug_picker_state_json(&self, visible_limit: Option<usize>) -> String {
+    pub(in crate::tui::app) fn debug_picker_state_json(
+        &self,
+        visible_limit: Option<usize>,
+    ) -> String {
         let Some(picker) = self.inline_interactive_state.as_ref() else {
             return serde_json::json!({
                 "open": false,
@@ -187,6 +190,17 @@ impl App {
             .to_string()
         } else if cmd == "picker" || cmd == "picker:state" {
             self.debug_picker_state_json(None)
+        } else if cmd == "model-picker" || cmd == "model-picker:live" {
+            self.debug_model_picker_live_json(None)
+        } else if let Some(raw) = cmd.strip_prefix("model-picker:") {
+            let raw = raw.trim();
+            if raw == "live" || raw == "state" {
+                self.debug_model_picker_live_json(None)
+            } else if let Some(limit_raw) = raw.strip_prefix("live:") {
+                self.debug_model_picker_live_json(limit_raw.trim().parse::<usize>().ok())
+            } else {
+                self.debug_model_picker_live_json(raw.parse::<usize>().ok())
+            }
         } else if let Some(raw) = cmd.strip_prefix("picker:") {
             let raw = raw.trim();
             let limit = raw.parse::<usize>().ok();

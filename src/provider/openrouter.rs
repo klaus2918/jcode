@@ -34,7 +34,7 @@ use jcode_provider_openrouter::{
     KIMI_FALLBACK_PROVIDERS, ModelCatalogRefreshState, ModelsCache, ParsedProvider, PinSource,
     ProviderPin, current_unix_secs, known_providers, load_disk_cache_entry,
     load_endpoints_disk_cache, parse_model_spec, save_disk_cache_with_source,
-    save_endpoints_disk_cache,
+    save_disk_cache_with_source_for_namespace, save_endpoints_disk_cache,
 };
 use reqwest::Client;
 use reqwest::header::HeaderName;
@@ -417,6 +417,7 @@ async fn fetch_models_from_api(
     api_base: String,
     auth: ProviderAuth,
     models_cache: Arc<RwLock<ModelsCache>>,
+    cache_namespace: Option<String>,
 ) -> Result<Vec<ModelInfo>> {
     let url = format!("{}/models", api_base);
     let response =
@@ -456,7 +457,11 @@ async fn fetch_models_from_api(
             )
         })?;
 
-    save_disk_cache_with_source(&models, Some(&api_base));
+    if let Some(namespace) = cache_namespace.as_deref() {
+        save_disk_cache_with_source_for_namespace(namespace, &models, Some(&api_base));
+    } else {
+        save_disk_cache_with_source(&models, Some(&api_base));
+    }
 
     if let Some(now) = current_unix_secs() {
         let mut cache = models_cache.write().await;
@@ -597,6 +602,127 @@ static GLOBAL_ENDPOINT_REFRESH: OnceLock<Mutex<EndpointRefreshTracker>> = OnceLo
 
 fn global_endpoint_refresh() -> &'static Mutex<EndpointRefreshTracker> {
     GLOBAL_ENDPOINT_REFRESH.get_or_init(|| Mutex::new(EndpointRefreshTracker::default()))
+}
+
+#[derive(Debug, Default)]
+struct ProfileCatalogRefreshTracker {
+    in_flight: HashSet<String>,
+    last_attempt_unix: HashMap<String, u64>,
+}
+
+static GLOBAL_PROFILE_CATALOG_REFRESH: OnceLock<Mutex<ProfileCatalogRefreshTracker>> =
+    OnceLock::new();
+
+fn global_profile_catalog_refresh() -> &'static Mutex<ProfileCatalogRefreshTracker> {
+    GLOBAL_PROFILE_CATALOG_REFRESH
+        .get_or_init(|| Mutex::new(ProfileCatalogRefreshTracker::default()))
+}
+
+fn begin_profile_catalog_refresh(profile_id: &str) -> bool {
+    let Some(now) = current_unix_secs() else {
+        return false;
+    };
+    let Ok(mut state) = global_profile_catalog_refresh().lock() else {
+        return false;
+    };
+    if state.in_flight.contains(profile_id) {
+        return false;
+    }
+    if let Some(last) = state.last_attempt_unix.get(profile_id)
+        && now.saturating_sub(*last) < MODEL_CATALOG_REFRESH_RETRY_SECS
+    {
+        return false;
+    }
+    state.in_flight.insert(profile_id.to_string());
+    state.last_attempt_unix.insert(profile_id.to_string(), now);
+    true
+}
+
+fn finish_profile_catalog_refresh(profile_id: &str) {
+    if let Ok(mut state) = global_profile_catalog_refresh().lock() {
+        state.in_flight.remove(profile_id);
+    }
+}
+
+pub(crate) fn maybe_schedule_openai_compatible_profile_catalog_refresh(
+    profile: crate::provider_catalog::OpenAiCompatibleProfile,
+    context: &'static str,
+) -> bool {
+    let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
+    if !begin_profile_catalog_refresh(&resolved.id) {
+        return false;
+    }
+
+    let Some(api_base) = normalize_api_base(&resolved.api_base) else {
+        finish_profile_catalog_refresh(&resolved.id);
+        return false;
+    };
+    let auth = if let Some(key) =
+        load_api_key_from_env_or_config(&resolved.api_key_env, &resolved.env_file)
+    {
+        ProviderAuth::AuthorizationBearer {
+            token: key,
+            label: resolved.api_key_env.clone(),
+        }
+    } else if !resolved.requires_api_key {
+        ProviderAuth::None {
+            label: "local endpoint (no auth)".to_string(),
+        }
+    } else {
+        finish_profile_catalog_refresh(&resolved.id);
+        return false;
+    };
+
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        finish_profile_catalog_refresh(&resolved.id);
+        return false;
+    };
+
+    let profile_id = resolved.id.clone();
+    let display_name = resolved.display_name.clone();
+    let previous_fingerprint =
+        jcode_provider_openrouter::load_disk_cache_entry_for_namespace(&profile_id)
+            .map(|cache| models_fingerprint(&cache.models))
+            .unwrap_or_default();
+    handle.spawn(async move {
+        let models_cache = Arc::new(RwLock::new(ModelsCache::default()));
+        match fetch_models_from_api(
+            crate::provider::shared_http_client(),
+            api_base,
+            auth,
+            models_cache,
+            Some(profile_id.clone()),
+        )
+        .await
+        {
+            Ok(models) => {
+                let updated = models_fingerprint(&models) != previous_fingerprint;
+                if updated {
+                    crate::logging::info(&format!(
+                        "Refreshed OpenAI-compatible profile model catalog in background ({}): {} via {} models",
+                        context,
+                        display_name,
+                        models.len()
+                    ));
+                    crate::bus::Bus::global().publish_models_updated();
+                } else {
+                    crate::logging::info(&format!(
+                        "OpenAI-compatible profile model catalog refresh produced no material change ({}): {} via {} models",
+                        context,
+                        display_name,
+                        models.len()
+                    ));
+                }
+            }
+            Err(error) => crate::logging::info(&format!(
+                "Failed to refresh OpenAI-compatible profile model catalog in background ({}): {} ({})",
+                context, display_name, error
+            )),
+        }
+        finish_profile_catalog_refresh(&profile_id);
+    });
+
+    true
 }
 
 pub struct OpenRouterProvider {
@@ -1183,7 +1309,7 @@ impl OpenRouterProvider {
         let previous_fingerprint = self.cached_model_catalog_fingerprint();
 
         handle.spawn(async move {
-            match fetch_models_from_api(client, api_base, auth, models_cache).await {
+            match fetch_models_from_api(client, api_base, auth, models_cache, None).await {
                 Ok(models) => {
                     let updated = models_fingerprint(&models) != previous_fingerprint;
                     if updated {
@@ -1640,6 +1766,7 @@ impl OpenRouterProvider {
             self.api_base.clone(),
             self.auth.clone(),
             Arc::clone(&self.models_cache),
+            None,
         )
         .await
     }
@@ -1651,6 +1778,7 @@ impl OpenRouterProvider {
             self.api_base.clone(),
             self.auth.clone(),
             Arc::clone(&self.models_cache),
+            None,
         )
         .await
     }

@@ -93,6 +93,10 @@ fn direct_openai_compatible_profile_routes(
         if let Some(models) = cached_live_models_for_openai_compatible_profile(&resolved) {
             (models, true)
         } else {
+            crate::provider::openrouter::maybe_schedule_openai_compatible_profile_catalog_refresh(
+                profile,
+                "inactive direct profile route cache miss",
+            );
             let mut models = static_models;
             if models.is_empty()
                 && let Some(default_model) = resolved.default_model.as_ref()
