@@ -3556,6 +3556,24 @@ fn take_current_inline_spans(
     spans
 }
 
+pub(crate) fn single_session_trimmed_line_end_preserving_inline_code_whitespace(
+    text: &str,
+    inline_spans: &[SingleSessionInlineSpan],
+) -> usize {
+    let trimmed_len = text.trim_end().len();
+    let inline_code_end = inline_spans
+        .iter()
+        .filter(|span| span.kind == SingleSessionInlineSpanKind::Code)
+        .filter_map(|span| {
+            let end = span.end.min(text.len());
+            (end > trimmed_len && text.is_char_boundary(end)).then_some(end)
+        })
+        .max()
+        .unwrap_or(trimmed_len);
+
+    trimmed_len.max(inline_code_end)
+}
+
 fn render_assistant_markdown_lines(content: &str) -> Vec<SingleSessionStyledLine> {
     let markdown_options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
@@ -4229,9 +4247,15 @@ impl AssistantMarkdownRenderer {
     }
 
     fn flush_current_line_as(&mut self, style: SingleSessionLineStyle) {
-        let trimmed = self.current.trim_end();
-        if !trimmed.is_empty() {
-            let trimmed_len = trimmed.len();
+        let trimmed_len = single_session_trimmed_line_end_preserving_inline_code_whitespace(
+            &self.current,
+            &self.current_inline_spans,
+        );
+        if trimmed_len > 0 {
+            let trimmed = self
+                .current
+                .get(..trimmed_len)
+                .expect("trimmed markdown line end should be a UTF-8 boundary");
             let inline_spans =
                 take_current_inline_spans(&mut self.current_inline_spans, trimmed_len);
             self.lines.push(SingleSessionStyledLine::with_inline_spans(

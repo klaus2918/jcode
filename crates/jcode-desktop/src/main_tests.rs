@@ -1712,6 +1712,93 @@ fn assistant_inline_code_runs_and_vertices_draw_code_pills() {
 }
 
 #[test]
+fn assistant_whitespace_only_inline_code_preserves_space_span() {
+    let mut app = SingleSessionApp::new(None);
+    app.messages
+        .push(SingleSessionMessage::assistant("before ` ` after\n\n` `"));
+
+    let body_lines = app.body_styled_lines();
+    let inline_line = body_lines
+        .iter()
+        .find(|line| line.text == "before   after")
+        .expect("inline whitespace code should remain in surrounding prose");
+    assert_eq!(
+        inline_line.inline_spans,
+        vec![SingleSessionInlineSpan {
+            start: 7,
+            end: 8,
+            kind: SingleSessionInlineSpanKind::Code,
+        }]
+    );
+
+    let standalone_line = body_lines
+        .iter()
+        .find(|line| line.text == " ")
+        .expect("standalone whitespace code should render as a one-space line");
+    assert_eq!(
+        standalone_line.inline_spans,
+        vec![SingleSessionInlineSpan {
+            start: 0,
+            end: 1,
+            kind: SingleSessionInlineSpanKind::Code,
+        }]
+    );
+}
+
+#[test]
+fn assistant_whitespace_only_inline_code_draws_exact_pill_at_space_column() {
+    let size = PhysicalSize::new(1000, 720);
+    let mut app = SingleSessionApp::new(None);
+    app.messages
+        .push(SingleSessionMessage::assistant("before ` ` after"));
+
+    let body_lines = single_session_rendered_body_lines_for_tick(&app, size, 0);
+    let inline_line_index = body_lines
+        .iter()
+        .position(|line| line.text == "before   after")
+        .expect("inline whitespace code line should render");
+    let inline_line = &body_lines[inline_line_index];
+    assert_eq!(
+        inline_line.inline_spans,
+        vec![SingleSessionInlineSpan {
+            start: 7,
+            end: 8,
+            kind: SingleSessionInlineSpanKind::Code,
+        }]
+    );
+    assert_eq!(
+        single_session_inline_code_runs_for_line(inline_line)
+            .into_iter()
+            .map(|run| (run.start_column, run.column_count))
+            .collect::<Vec<_>>(),
+        vec![(7, 1)]
+    );
+
+    let vertices = build_single_session_vertices(&app, size, 0.0, 0);
+    let typography = single_session_typography_for_scale(app.text_scale());
+    let line_height = typography.body_size * typography.body_line_height;
+    let char_width = single_session_body_char_width();
+    let card_height = (typography.body_size * 1.10)
+        .min(line_height - 5.0)
+        .max(typography.body_size * 0.85);
+    let horizontal_pad = (3.5 * app.text_scale()).clamp(3.0, 6.0);
+
+    assert_pixel_bounds_close(
+        pixel_bounds_for_color(&vertices, INLINE_CODE_BACKGROUND_COLOR, size)
+            .expect("whitespace inline code pill vertices should be present"),
+        Rect {
+            x: PANEL_TITLE_LEFT_PADDING + 7.0 * char_width - horizontal_pad,
+            y: PANEL_BODY_TOP_PADDING
+                + inline_line_index as f32 * line_height
+                + (line_height - card_height) * 0.5,
+            width: char_width + horizontal_pad * 2.0,
+            height: card_height,
+        },
+        "whitespace inline code pill",
+    );
+}
+
+#[test]
 fn assistant_markdown_inline_segments_style_semantics_and_task_markers() {
     let mut app = SingleSessionApp::new(None);
     app.messages.push(SingleSessionMessage::assistant(

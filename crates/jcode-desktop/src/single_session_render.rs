@@ -1,7 +1,7 @@
 use super::*;
 use crate::single_session::{
     MODEL_PICKER_INLINE_ROW_LIMIT, SingleSessionInlineSpan, SingleSessionInlineSpanKind,
-    SingleSessionTypography,
+    SingleSessionTypography, single_session_trimmed_line_end_preserving_inline_code_whitespace,
 };
 
 pub(crate) const INLINE_MATH_BACKGROUND_COLOR: [f32; 4] = [0.035, 0.220, 0.155, 0.115];
@@ -5689,7 +5689,9 @@ fn wrap_body_line_text_with_spans(
     max_columns: usize,
 ) -> Vec<(String, Vec<SingleSessionInlineSpan>)> {
     let max_columns = max_columns.max(1);
-    let mut remaining = text.trim_end();
+    let trimmed_end =
+        single_session_trimmed_line_end_preserving_inline_code_whitespace(text, inline_spans);
+    let mut remaining = &text[..trimmed_end];
     let mut lines = Vec::new();
     let mut base_byte = 0usize;
 
