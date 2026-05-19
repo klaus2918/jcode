@@ -1395,6 +1395,35 @@ fn glyphon_body_buffer_uses_line_style_colors() {
 }
 
 #[test]
+fn assistant_inline_code_uses_code_text_attrs_inside_prose() {
+    let lines = [SingleSessionStyledLine {
+        text: "Use `cargo test` before `cargo clippy`.".to_string(),
+        style: SingleSessionLineStyle::Assistant,
+    }];
+
+    let segments = single_session_styled_text_segments(&lines);
+
+    assert!(
+        segments.contains(&(
+            "Use ",
+            Attrs::new()
+                .family(Family::Name(SINGLE_SESSION_ASSISTANT_FONT_FAMILY))
+                .color(single_session_line_color(SingleSessionLineStyle::Assistant))
+        ))
+    );
+    for code_segment in ["`", "cargo test", "cargo clippy"] {
+        assert!(
+            segments.contains(&(
+                code_segment,
+                Attrs::new()
+                    .family(Family::Name(SINGLE_SESSION_FONT_FAMILY))
+                    .color(single_session_line_color(SingleSessionLineStyle::Code))
+            ))
+        );
+    }
+}
+
+#[test]
 fn single_session_tool_text_segments_use_stateful_colors() {
     let lines = [
         SingleSessionStyledLine {
