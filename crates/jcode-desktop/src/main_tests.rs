@@ -369,6 +369,77 @@ fn single_session_vertices_include_a_draft_caret() {
 }
 
 #[test]
+fn single_session_caret_visibility_follows_overlay_state() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("abc".to_string()));
+
+    assert_eq!(app.active_overlay_state(), SingleSessionOverlay::None);
+    assert!(single_session_caret_visible_for_frame(&app, 0));
+    assert!(!single_session_caret_visible_for_frame(&app, 3));
+
+    assert_eq!(
+        app.handle_key(KeyInput::OpenModelPicker),
+        KeyOutcome::LoadModelCatalog
+    );
+    assert_eq!(
+        app.active_overlay_state(),
+        SingleSessionOverlay::Inline {
+            kind: InlineWidgetKind::ModelPicker,
+            mode: InlineWidgetMode::Interactive,
+        }
+    );
+    assert!(!single_session_caret_visible_for_frame(&app, 0));
+
+    let mut preview_app = SingleSessionApp::new(None);
+    assert_eq!(
+        preview_app.handle_key(KeyInput::Character("/model opus".to_string())),
+        KeyOutcome::LoadModelCatalog
+    );
+    assert_eq!(
+        preview_app.active_overlay_state(),
+        SingleSessionOverlay::Inline {
+            kind: InlineWidgetKind::ModelPicker,
+            mode: InlineWidgetMode::ReadOnly,
+        }
+    );
+    assert!(single_session_caret_visible_for_frame(&preview_app, 0));
+
+    let mut help_app = SingleSessionApp::new(None);
+    assert_eq!(
+        help_app.handle_key(KeyInput::HotkeyHelp),
+        KeyOutcome::Redraw
+    );
+    assert!(!single_session_caret_visible_for_frame(&help_app, 0));
+}
+
+#[test]
+fn stdin_request_closes_conflicting_inline_overlays() {
+    let mut app = SingleSessionApp::new(None);
+
+    assert_eq!(
+        app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    assert!(app.session_switcher.open);
+    app.apply_session_event(session_launch::DesktopSessionEvent::StdinRequest {
+        request_id: "stdin-1".to_string(),
+        prompt: "Password:".to_string(),
+        is_password: true,
+        tool_call_id: "tool-1".to_string(),
+    });
+
+    assert_eq!(
+        app.active_overlay_state(),
+        SingleSessionOverlay::StdinResponse
+    );
+    assert!(!app.session_switcher.open);
+    assert!(!app.model_picker.open);
+    assert!(!app.show_help);
+    assert!(!app.show_session_info);
+    assert!(!single_session_caret_visible_for_frame(&app, 0));
+}
+
+#[test]
 fn single_session_vertices_do_not_draw_input_underline() {
     let fresh_app = SingleSessionApp::new(None);
     let fresh_vertices =

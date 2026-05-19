@@ -196,6 +196,30 @@ pub(crate) enum InlineWidgetKind {
     SessionSwitcher,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SingleSessionOverlay {
+    None,
+    StdinResponse,
+    Inline {
+        kind: InlineWidgetKind,
+        mode: InlineWidgetMode,
+    },
+}
+
+impl SingleSessionOverlay {
+    pub(crate) fn blocks_composer_caret(self) -> bool {
+        match self {
+            Self::None => false,
+            Self::StdinResponse => true,
+            Self::Inline {
+                kind: InlineWidgetKind::ModelPicker,
+                mode: InlineWidgetMode::ReadOnly,
+            } => false,
+            Self::Inline { .. } => true,
+        }
+    }
+}
+
 impl InlineWidgetKind {
     pub(crate) fn mode(self, app: &SingleSessionApp) -> InlineWidgetMode {
         match self {
@@ -855,6 +879,33 @@ impl SingleSessionApp {
         self.inline_widget_opened_at = Some(Instant::now());
     }
 
+    fn close_inline_widgets(&mut self) {
+        self.show_help = false;
+        self.show_session_info = false;
+        self.model_picker.close();
+        self.session_switcher.close();
+    }
+
+    fn open_read_only_inline_widget(&mut self, kind: InlineWidgetKind) {
+        self.close_inline_widgets();
+        match kind {
+            InlineWidgetKind::HotkeyHelp => self.show_help = true,
+            InlineWidgetKind::SessionInfo => self.show_session_info = true,
+            InlineWidgetKind::ModelPicker | InlineWidgetKind::SessionSwitcher => {}
+        }
+        self.mark_inline_widget_opened();
+    }
+
+    fn toggle_read_only_inline_widget(&mut self, kind: InlineWidgetKind) -> KeyOutcome {
+        let was_active = self.active_inline_widget() == Some(kind);
+        self.close_inline_widgets();
+        if !was_active {
+            self.open_read_only_inline_widget(kind);
+        }
+        self.scroll_body_to_bottom();
+        KeyOutcome::Redraw
+    }
+
     fn inline_widget_reveal_in_progress(&self) -> bool {
         self.active_inline_widget().is_some() && self.inline_widget_reveal_progress() < 1.0
     }
@@ -962,26 +1013,10 @@ impl SingleSessionApp {
             KeyInput::OpenSessionSwitcher => self.open_session_switcher(),
             KeyInput::OpenModelPicker => self.open_model_picker(),
             KeyInput::HotkeyHelp => {
-                self.show_help = !self.show_help;
-                if self.show_help {
-                    self.show_session_info = false;
-                    self.model_picker.close();
-                    self.session_switcher.close();
-                    self.mark_inline_widget_opened();
-                }
-                self.scroll_body_to_bottom();
-                KeyOutcome::Redraw
+                self.toggle_read_only_inline_widget(InlineWidgetKind::HotkeyHelp)
             }
             KeyInput::ToggleSessionInfo => {
-                self.show_session_info = !self.show_session_info;
-                if self.show_session_info {
-                    self.show_help = false;
-                    self.model_picker.close();
-                    self.session_switcher.close();
-                    self.mark_inline_widget_opened();
-                }
-                self.scroll_body_to_bottom();
-                KeyOutcome::Redraw
+                self.toggle_read_only_inline_widget(InlineWidgetKind::SessionInfo)
             }
             KeyInput::RefreshSessions if self.recovery_session_count > 0 => {
                 KeyOutcome::RestoreCrashedSessions
@@ -1133,9 +1168,7 @@ impl SingleSessionApp {
 
     fn open_model_picker(&mut self) -> KeyOutcome {
         let was_open = self.model_picker.open;
-        self.show_help = false;
-        self.show_session_info = false;
-        self.session_switcher.close();
+        self.close_inline_widgets();
         self.model_picker.open_loading();
         if !was_open {
             self.mark_inline_widget_opened();
@@ -1147,9 +1180,7 @@ impl SingleSessionApp {
 
     fn open_model_picker_preview(&mut self, filter: String) -> KeyOutcome {
         let was_open = self.model_picker.open;
-        self.show_help = false;
-        self.show_session_info = false;
-        self.session_switcher.close();
+        self.close_inline_widgets();
         self.model_picker.open_preview_loading(filter);
         if !was_open {
             self.mark_inline_widget_opened();
@@ -1219,9 +1250,7 @@ impl SingleSessionApp {
     }
 
     fn open_session_switcher(&mut self) -> KeyOutcome {
-        self.show_help = false;
-        self.show_session_info = false;
-        self.model_picker.close();
+        self.close_inline_widgets();
         let current_session_id = self.current_session_id().map(str::to_string);
         self.session_switcher
             .open_loading(current_session_id.as_deref());
@@ -1284,9 +1313,7 @@ impl SingleSessionApp {
                 KeyOutcome::Redraw
             }
             KeyInput::HotkeyHelp => {
-                self.model_picker.close();
-                self.show_help = true;
-                self.mark_inline_widget_opened();
+                self.open_read_only_inline_widget(InlineWidgetKind::HotkeyHelp);
                 KeyOutcome::Redraw
             }
             _ => KeyOutcome::None,
@@ -1321,9 +1348,7 @@ impl SingleSessionApp {
                 KeyOutcome::Redraw
             }
             KeyInput::HotkeyHelp => {
-                self.session_switcher.close();
-                self.show_help = true;
-                self.mark_inline_widget_opened();
+                self.open_read_only_inline_widget(InlineWidgetKind::HotkeyHelp);
                 KeyOutcome::Redraw
             }
             KeyInput::OpenModelPicker => {
@@ -1460,23 +1485,52 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn active_inline_widget(&self) -> Option<InlineWidgetKind> {
-        if self.show_help {
-            return Some(InlineWidgetKind::HotkeyHelp);
+        match self.active_overlay_state() {
+            SingleSessionOverlay::Inline { kind, .. } => Some(kind),
+            SingleSessionOverlay::None | SingleSessionOverlay::StdinResponse => None,
         }
-        if self.model_picker.open {
-            return Some(InlineWidgetKind::ModelPicker);
-        }
-        if self.session_switcher.open {
-            return Some(InlineWidgetKind::SessionSwitcher);
-        }
-        if self.show_session_info {
-            return Some(InlineWidgetKind::SessionInfo);
-        }
-        None
     }
 
     pub(crate) fn active_inline_widget_mode(&self) -> Option<InlineWidgetMode> {
-        self.active_inline_widget().map(|kind| kind.mode(self))
+        match self.active_overlay_state() {
+            SingleSessionOverlay::Inline { mode, .. } => Some(mode),
+            SingleSessionOverlay::None | SingleSessionOverlay::StdinResponse => None,
+        }
+    }
+
+    pub(crate) fn active_overlay_state(&self) -> SingleSessionOverlay {
+        if self.stdin_response.is_some() {
+            return SingleSessionOverlay::StdinResponse;
+        }
+        if self.session_switcher.open {
+            return SingleSessionOverlay::Inline {
+                kind: InlineWidgetKind::SessionSwitcher,
+                mode: InlineWidgetMode::Interactive,
+            };
+        }
+        if self.model_picker.open {
+            return SingleSessionOverlay::Inline {
+                kind: InlineWidgetKind::ModelPicker,
+                mode: InlineWidgetKind::ModelPicker.mode(self),
+            };
+        }
+        if self.show_help {
+            return SingleSessionOverlay::Inline {
+                kind: InlineWidgetKind::HotkeyHelp,
+                mode: InlineWidgetMode::ReadOnly,
+            };
+        }
+        if self.show_session_info {
+            return SingleSessionOverlay::Inline {
+                kind: InlineWidgetKind::SessionInfo,
+                mode: InlineWidgetMode::ReadOnly,
+            };
+        }
+        SingleSessionOverlay::None
+    }
+
+    pub(crate) fn should_draw_composer_caret(&self) -> bool {
+        !self.active_overlay_state().blocks_composer_caret()
     }
 
     fn body_styled_lines_without_inline_widgets(&self) -> Vec<SingleSessionStyledLine> {
@@ -1833,8 +1887,7 @@ impl SingleSessionApp {
             } => {
                 self.reload_phase = ReloadPhase::Stable;
                 self.status = Some("interactive input requested".to_string());
-                self.show_help = false;
-                self.model_picker.close();
+                self.close_inline_widgets();
                 let raw_prompt = prompt.trim();
                 let display_prompt = if raw_prompt.is_empty() {
                     "interactive input requested"

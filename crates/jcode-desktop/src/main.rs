@@ -7198,7 +7198,7 @@ impl<'window> Canvas<'window> {
         };
         frame_profile.checkpoint("vertices");
         if let DesktopApp::SingleSession(single_session) = app
-            && spinner_tick % 6 < 3
+            && single_session_caret_visible_for_frame(single_session, spinner_tick)
         {
             if let Cow::Borrowed(base_vertices) = vertices {
                 self.primitive_frame_vertices.clear();
@@ -7421,6 +7421,10 @@ fn streaming_text_renderer_should_release(
     atlas_live: bool,
 ) -> bool {
     !has_streaming_text_buffer && (renderer_live || atlas_live)
+}
+
+fn single_session_caret_visible_for_frame(app: &SingleSessionApp, spinner_tick: u64) -> bool {
+    spinner_tick % 6 < 3 && app.should_draw_composer_caret()
 }
 
 #[repr(C)]
