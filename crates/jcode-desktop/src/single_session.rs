@@ -795,10 +795,7 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn status_title(&self) -> String {
-        let title = self.title();
-        format!(
-            "Jcode Desktop · single session · {title} · Enter send · Shift+Enter newline · Ctrl+Enter queue · Ctrl+P sessions · Ctrl+Shift+M models · Ctrl+Shift+S info · Ctrl+; spawn · Esc interrupt · --workspace for Niri layout"
-        )
+        format!("Jcode · {}", self.title())
     }
 
     pub(crate) fn title(&self) -> String {
