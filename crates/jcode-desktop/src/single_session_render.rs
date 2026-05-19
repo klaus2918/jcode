@@ -23,6 +23,7 @@ pub(crate) struct SingleSessionTextKey {
     pub(crate) activity_active: bool,
     pub(crate) welcome_handoff_visible: bool,
     pub(crate) text_scale_bits: u32,
+    pub(crate) body_top_offset_pixels_bits: u32,
     pub(crate) body: Vec<SingleSessionStyledLine>,
     pub(crate) inline_widget: Vec<SingleSessionStyledLine>,
     pub(crate) draft: String,
@@ -5226,13 +5227,21 @@ pub(crate) fn single_session_text_key_for_tick_with_rendered_body(
     );
     let welcome_chrome_visible =
         welcome_timeline_chrome_visible(app, size, welcome_chrome_offset_pixels);
-    single_session_text_key_for_body_lines(app, size, tick, viewport.lines, welcome_chrome_visible)
+    single_session_text_key_for_body_lines(
+        app,
+        size,
+        tick,
+        viewport.top_offset_pixels,
+        viewport.lines,
+        welcome_chrome_visible,
+    )
 }
 
 fn single_session_text_key_for_body_lines(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
     _tick: u64,
+    body_top_offset_pixels: f32,
     body: Vec<SingleSessionStyledLine>,
     welcome_chrome_visible: bool,
 ) -> SingleSessionTextKey {
@@ -5281,6 +5290,7 @@ fn single_session_text_key_for_body_lines(
         activity_active: app.has_activity_indicator(),
         welcome_handoff_visible,
         text_scale_bits: app.text_scale().to_bits(),
+        body_top_offset_pixels_bits: body_top_offset_pixels.to_bits(),
         body,
         inline_widget: app.inline_widget_styled_lines(),
         draft: if welcome_input_visible {
