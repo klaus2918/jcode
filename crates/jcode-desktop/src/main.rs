@@ -43,6 +43,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{OnceLock, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -108,6 +109,58 @@ const SINGLE_SESSION_STREAMING_BODY_TEXT_WINDOW_BEFORE_LINES: usize = 2;
 const SINGLE_SESSION_STREAMING_BODY_TEXT_WINDOW_AFTER_LINES: usize = 4;
 const STREAMING_TEXT_FADE_DURATION: Duration = Duration::from_millis(120);
 const STREAMING_TEXT_FADE_START_OPACITY: f32 = 0.4;
+const DESKTOP_ASYNC_JOB_LIMIT: usize = 12;
+
+static DESKTOP_ASYNC_JOB_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+struct DesktopAsyncJobPermit<'a> {
+    counter: &'a AtomicUsize,
+}
+
+impl Drop for DesktopAsyncJobPermit<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn try_acquire_desktop_async_job_slot<'a>(
+    counter: &'a AtomicUsize,
+    limit: usize,
+) -> Result<DesktopAsyncJobPermit<'a>> {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        if current >= limit {
+            anyhow::bail!("desktop async job limit reached ({limit})");
+        }
+        match counter.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return Ok(DesktopAsyncJobPermit { counter }),
+            Err(next_current) => current = next_current,
+        }
+    }
+}
+
+fn spawn_bounded_desktop_async_job(
+    name: impl Into<String>,
+    job: impl FnOnce() + Send + 'static,
+) -> Result<()> {
+    let name = name.into();
+    let permit =
+        try_acquire_desktop_async_job_slot(&DESKTOP_ASYNC_JOB_COUNT, DESKTOP_ASYNC_JOB_LIMIT)
+            .with_context(|| format!("failed to start {name}"))?;
+    std::thread::Builder::new()
+        .name(name.clone())
+        .spawn(move || {
+            let _permit = permit;
+            job();
+        })
+        .with_context(|| format!("failed to spawn {name}"))?;
+    Ok(())
+}
 
 #[derive(Clone, Debug, Default)]
 struct SurfaceTimeoutBackoff {
@@ -131,6 +184,18 @@ impl SurfaceTimeoutBackoff {
 
 fn desktop_surface_size_is_renderable(size: PhysicalSize<u32>) -> bool {
     size.width > 0 && size.height > 0
+}
+
+fn desktop_background_wake(
+    now: Instant,
+    surface_renderable: bool,
+    frame_animation_active: bool,
+) -> Option<Instant> {
+    if surface_renderable && frame_animation_active {
+        Some(now + BACKGROUND_POLL_INTERVAL)
+    } else {
+        None
+    }
 }
 
 fn streaming_text_fade_opacity_for_elapsed(elapsed: Duration) -> (f32, bool) {
@@ -426,11 +491,11 @@ async fn run() -> Result<()> {
         let surface_renderable = desktop_surface_size_is_renderable(window.inner_size());
         let has_background_work = app.has_background_work();
         power_inhibitor.set_active(has_background_work);
-        let default_wake = if surface_renderable && (has_background_work || app.has_frame_animation()) {
-            Some(event_loop_now + BACKGROUND_POLL_INTERVAL)
-        } else {
-            None
-        };
+        let default_wake = desktop_background_wake(
+            event_loop_now,
+            surface_renderable,
+            app.has_frame_animation(),
+        );
         let backend_wake = pending_backend_redraw_since
             .and(last_backend_redraw_request)
             .map(|last| last + BACKEND_REDRAW_FRAME_INTERVAL);
@@ -1259,24 +1324,21 @@ fn spawn_recovery_session_count_scan(
     event_loop_proxy: EventLoopProxy<DesktopUserEvent>,
     startup_trace: DesktopStartupTrace,
 ) {
-    if let Err(error) = std::thread::Builder::new()
-        .name("jcode-desktop-recovery-scan".to_string())
-        .spawn(move || {
-            startup_trace.mark("recovery scan started");
-            let recovery_count = load_crashed_session_cards_for_desktop().len();
-            startup_trace.mark(&format!(
-                "recovery scan completed ({recovery_count} crashed)"
+    if let Err(error) = spawn_bounded_desktop_async_job("jcode-desktop-recovery-scan", move || {
+        startup_trace.mark("recovery scan started");
+        let recovery_count = load_crashed_session_cards_for_desktop().len();
+        startup_trace.mark(&format!(
+            "recovery scan completed ({recovery_count} crashed)"
+        ));
+        if event_loop_proxy
+            .send_event(DesktopUserEvent::RecoveryCount(recovery_count))
+            .is_err()
+        {
+            desktop_log::warn(format_args!(
+                "jcode-desktop: failed to deliver recovery count, event loop is closed"
             ));
-            if event_loop_proxy
-                .send_event(DesktopUserEvent::RecoveryCount(recovery_count))
-                .is_err()
-            {
-                desktop_log::warn(format_args!(
-                    "jcode-desktop: failed to deliver recovery count, event loop is closed"
-                ));
-            }
-        })
-    {
+        }
+    }) {
         desktop_log::error(format_args!(
             "jcode-desktop: failed to start recovery scan: {error:#}"
         ));
@@ -1287,9 +1349,8 @@ fn spawn_single_session_card_refresh(
     session_id: String,
     event_loop_proxy: EventLoopProxy<DesktopUserEvent>,
 ) {
-    if let Err(error) = std::thread::Builder::new()
-        .name("jcode-desktop-session-card-refresh".to_string())
-        .spawn(move || {
+    if let Err(error) =
+        spawn_bounded_desktop_async_job("jcode-desktop-session-card-refresh", move || {
             let started = Instant::now();
             let card = load_session_cards_for_desktop()
                 .into_iter()
@@ -1320,9 +1381,9 @@ fn spawn_session_cards_load(
     event_loop_proxy: EventLoopProxy<DesktopUserEvent>,
     delay: Duration,
 ) {
-    if let Err(error) = std::thread::Builder::new()
-        .name(format!("jcode-desktop-session-cards-{purpose:?}"))
-        .spawn(move || {
+    if let Err(error) = spawn_bounded_desktop_async_job(
+        format!("jcode-desktop-session-cards-{purpose:?}"),
+        move || {
             if !delay.is_zero() {
                 std::thread::sleep(delay);
             }
@@ -1341,8 +1402,8 @@ fn spawn_session_cards_load(
                     "jcode-desktop: failed to deliver session cards load, event loop is closed"
                 ));
             }
-        })
-    {
+        },
+    ) {
         desktop_log::error(format_args!(
             "jcode-desktop: failed to start session card load: {error:#}"
         ));
@@ -1350,9 +1411,9 @@ fn spawn_session_cards_load(
 }
 
 fn spawn_restore_crashed_sessions(event_loop_proxy: EventLoopProxy<DesktopUserEvent>) {
-    if let Err(error) = std::thread::Builder::new()
-        .name("jcode-desktop-restore-crashed-sessions".to_string())
-        .spawn(move || {
+    if let Err(error) = spawn_bounded_desktop_async_job(
+        "jcode-desktop-restore-crashed-sessions",
+        move || {
             let started = Instant::now();
             let crashed = load_crashed_session_cards_for_desktop();
             let mut restored = 0usize;
@@ -1364,17 +1425,20 @@ fn spawn_restore_crashed_sessions(event_loop_proxy: EventLoopProxy<DesktopUserEv
                     Err(error) => errors.push(format!("{}: {error:#}", card.session_id)),
                 }
             }
-            if event_loop_proxy.send_event(DesktopUserEvent::CrashedSessionsRestoreFinished {
-                restored,
-                errors,
-                elapsed: started.elapsed(),
-            }).is_err() {
+            if event_loop_proxy
+                .send_event(DesktopUserEvent::CrashedSessionsRestoreFinished {
+                    restored,
+                    errors,
+                    elapsed: started.elapsed(),
+                })
+                .is_err()
+            {
                 desktop_log::warn(format_args!(
                     "jcode-desktop: failed to deliver crashed-session restore result, event loop is closed"
                 ));
             }
-        })
-    {
+        },
+    ) {
         desktop_log::error(format_args!(
             "jcode-desktop: failed to start crashed-session restore: {error:#}"
         ));
@@ -1421,9 +1485,8 @@ fn queue_desktop_preferences_save(
         return;
     }
 
-    if let Err(error) = std::thread::Builder::new()
-        .name("jcode-desktop-preferences-save-once".to_string())
-        .spawn(move || {
+    if let Err(error) =
+        spawn_bounded_desktop_async_job("jcode-desktop-preferences-save-once", move || {
             save_desktop_preferences_off_ui_thread(preferences, 1, Duration::ZERO);
         })
     {

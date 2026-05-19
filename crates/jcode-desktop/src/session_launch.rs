@@ -2,11 +2,66 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::io::BufReader;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(10);
 const SERVER_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(50);
+const DESKTOP_SESSION_WORKER_LIMIT: usize = 12;
+
+static DESKTOP_SESSION_WORKER_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+struct DesktopSessionWorkerPermit<'a> {
+    counter: &'a AtomicUsize,
+}
+
+impl Drop for DesktopSessionWorkerPermit<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn try_acquire_desktop_session_worker_slot<'a>(
+    counter: &'a AtomicUsize,
+    limit: usize,
+) -> Result<DesktopSessionWorkerPermit<'a>> {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        if current >= limit {
+            anyhow::bail!("desktop session worker limit reached ({limit})");
+        }
+        match counter.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return Ok(DesktopSessionWorkerPermit { counter }),
+            Err(next_current) => current = next_current,
+        }
+    }
+}
+
+fn spawn_bounded_desktop_session_worker(
+    name: impl Into<String>,
+    job: impl FnOnce() + Send + 'static,
+) -> Result<()> {
+    let name = name.into();
+    let permit = try_acquire_desktop_session_worker_slot(
+        &DESKTOP_SESSION_WORKER_COUNT,
+        DESKTOP_SESSION_WORKER_LIMIT,
+    )
+    .with_context(|| format!("failed to start {name}"))?;
+    std::thread::Builder::new()
+        .name(name.clone())
+        .spawn(move || {
+            let _permit = permit;
+            job();
+        })
+        .with_context(|| format!("failed to spawn {name}"))?;
+    Ok(())
+}
 
 mod events;
 mod server_io;
@@ -127,19 +182,17 @@ pub fn send_message_to_session(session_id: &str, _title: &str, message: &str) ->
 
     let session_id = session_id.to_string();
     let message = message.to_string();
-    std::thread::Builder::new()
-        .name("jcode-desktop-workspace-message".to_string())
-        .spawn(move || {
-            let (_command_tx, command_rx) = mpsc::channel();
-            if let Err(error) =
-                run_server_session(Some(&session_id), &message, Vec::new(), None, command_rx)
-            {
-                crate::desktop_log::error(format_args!(
-                    "jcode-desktop: workspace server message failed session_id={session_id}: {error:#}"
-                ));
-            }
-        })
-        .context("failed to spawn desktop workspace message worker")?;
+    spawn_bounded_desktop_session_worker("jcode-desktop-workspace-message", move || {
+        let (_command_tx, command_rx) = mpsc::channel();
+        if let Err(error) =
+            run_server_session(Some(&session_id), &message, Vec::new(), None, command_rx)
+        {
+            crate::desktop_log::error(format_args!(
+                "jcode-desktop: workspace server message failed session_id={session_id}: {error:#}"
+            ));
+        }
+    })
+    .context("failed to spawn desktop workspace message worker")?;
 
     Ok(())
 }
@@ -155,22 +208,20 @@ pub fn spawn_fresh_server_session(
 
     let (command_tx, command_rx) = mpsc::channel();
     let handle = DesktopSessionHandle { command_tx };
-    std::thread::Builder::new()
-        .name("jcode-desktop-fresh-session".to_string())
-        .spawn(move || {
-            if let Err(error) =
-                run_server_session(None, &message, images, Some(event_tx.clone()), command_rx)
-            {
-                crate::desktop_log::error(format_args!(
-                    "jcode-desktop: fresh server session failed: {error:#}"
-                ));
-                send_desktop_event_ref(
-                    Some(&event_tx),
-                    DesktopSessionEvent::Error(format!("{error:#}")),
-                );
-            }
-        })
-        .context("failed to spawn desktop session worker")?;
+    spawn_bounded_desktop_session_worker("jcode-desktop-fresh-session", move || {
+        if let Err(error) =
+            run_server_session(None, &message, images, Some(event_tx.clone()), command_rx)
+        {
+            crate::desktop_log::error(format_args!(
+                "jcode-desktop: fresh server session failed: {error:#}"
+            ));
+            send_desktop_event_ref(
+                Some(&event_tx),
+                DesktopSessionEvent::Error(format!("{error:#}")),
+            );
+        }
+    })
+    .context("failed to spawn desktop session worker")?;
     Ok(handle)
 }
 
@@ -187,23 +238,24 @@ pub fn spawn_message_to_session(
 
     let (command_tx, command_rx) = mpsc::channel();
     let handle = DesktopSessionHandle { command_tx };
-    std::thread::Builder::new()
-        .name("jcode-desktop-session-message".to_string())
-        .spawn(move || {
-            if let Err(error) = run_server_session(
-                Some(&session_id),
-                &message,
-                images,
-                Some(event_tx.clone()),
-                command_rx,
-            ) {
-                crate::desktop_log::error(format_args!(
-                    "jcode-desktop: server session message failed session_id={session_id}: {error:#}"
-                ));
-                send_desktop_event_ref(Some(&event_tx), DesktopSessionEvent::Error(format!("{error:#}")));
-            }
-        })
-        .context("failed to spawn desktop session worker")?;
+    spawn_bounded_desktop_session_worker("jcode-desktop-session-message", move || {
+        if let Err(error) = run_server_session(
+            Some(&session_id),
+            &message,
+            images,
+            Some(event_tx.clone()),
+            command_rx,
+        ) {
+            crate::desktop_log::error(format_args!(
+                "jcode-desktop: server session message failed session_id={session_id}: {error:#}"
+            ));
+            send_desktop_event_ref(
+                Some(&event_tx),
+                DesktopSessionEvent::Error(format!("{error:#}")),
+            );
+        }
+    })
+    .context("failed to spawn desktop session worker")?;
     Ok(handle)
 }
 
@@ -213,9 +265,7 @@ pub fn spawn_cycle_model(
     target_session_id: Option<String>,
     event_tx: DesktopSessionEventSender,
 ) -> Result<()> {
-    std::thread::Builder::new()
-        .name("jcode-desktop-cycle-model".to_string())
-        .spawn(move || {
+    spawn_bounded_desktop_session_worker("jcode-desktop-cycle-model", move || {
             if let Err(error) = cycle_model(
                 direction,
                 target_session_id.as_deref(),
@@ -243,9 +293,7 @@ pub fn spawn_cycle_reasoning_effort(
     target_session_id: Option<String>,
     event_tx: DesktopSessionEventSender,
 ) -> Result<()> {
-    std::thread::Builder::new()
-        .name("jcode-desktop-cycle-effort".to_string())
-        .spawn(move || {
+    spawn_bounded_desktop_session_worker("jcode-desktop-cycle-effort", move || {
             if let Err(error) = cycle_reasoning_effort(
                 direction,
                 target_session_id.as_deref(),
@@ -303,25 +351,22 @@ pub fn spawn_load_model_catalog(
     target_session_id: Option<String>,
     event_tx: DesktopSessionEventSender,
 ) -> Result<()> {
-    std::thread::Builder::new()
-        .name("jcode-desktop-load-model-catalog".to_string())
-        .spawn(move || {
-            if let Err(error) =
-                load_model_catalog(target_session_id.as_deref(), Some(event_tx.clone()))
-            {
-                crate::desktop_log::error(format_args!(
-                    "jcode-desktop: model catalog load failed target_session={}: {error:#}",
-                    target_session_id.as_deref().unwrap_or("<current>")
-                ));
-                send_desktop_event_ref(
-                    Some(&event_tx),
-                    DesktopSessionEvent::ModelCatalogError {
-                        error: format!("{error:#}"),
-                    },
-                );
-            }
-        })
-        .context("failed to spawn desktop model catalog worker")?;
+    spawn_bounded_desktop_session_worker("jcode-desktop-load-model-catalog", move || {
+        if let Err(error) = load_model_catalog(target_session_id.as_deref(), Some(event_tx.clone()))
+        {
+            crate::desktop_log::error(format_args!(
+                "jcode-desktop: model catalog load failed target_session={}: {error:#}",
+                target_session_id.as_deref().unwrap_or("<current>")
+            ));
+            send_desktop_event_ref(
+                Some(&event_tx),
+                DesktopSessionEvent::ModelCatalogError {
+                    error: format!("{error:#}"),
+                },
+            );
+        }
+    })
+    .context("failed to spawn desktop model catalog worker")?;
     Ok(())
 }
 
@@ -346,26 +391,23 @@ pub fn spawn_set_model(
     target_session_id: Option<String>,
     event_tx: DesktopSessionEventSender,
 ) -> Result<()> {
-    std::thread::Builder::new()
-        .name("jcode-desktop-set-model".to_string())
-        .spawn(move || {
-            if let Err(error) =
-                set_model(&model, target_session_id.as_deref(), Some(event_tx.clone()))
-            {
-                crate::desktop_log::error(format_args!(
-                    "jcode-desktop: set model failed model={} target_session={}: {error:#}",
-                    crate::desktop_log::truncate_for_log(&model, 256),
-                    target_session_id.as_deref().unwrap_or("<current>")
-                ));
-                send_desktop_event_ref(
-                    Some(&event_tx),
-                    DesktopSessionEvent::ModelCatalogError {
-                        error: format!("{error:#}"),
-                    },
-                );
-            }
-        })
-        .context("failed to spawn desktop set model worker")?;
+    spawn_bounded_desktop_session_worker("jcode-desktop-set-model", move || {
+        if let Err(error) = set_model(&model, target_session_id.as_deref(), Some(event_tx.clone()))
+        {
+            crate::desktop_log::error(format_args!(
+                "jcode-desktop: set model failed model={} target_session={}: {error:#}",
+                crate::desktop_log::truncate_for_log(&model, 256),
+                target_session_id.as_deref().unwrap_or("<current>")
+            ));
+            send_desktop_event_ref(
+                Some(&event_tx),
+                DesktopSessionEvent::ModelCatalogError {
+                    error: format!("{error:#}"),
+                },
+            );
+        }
+    })
+    .context("failed to spawn desktop set model worker")?;
     Ok(())
 }
 

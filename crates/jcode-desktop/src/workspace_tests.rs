@@ -365,6 +365,62 @@ fn replacing_session_cards_preserves_focus_when_possible() {
 }
 
 #[test]
+fn replacing_session_cards_reconciles_without_destroying_manual_layout() {
+    let mut workspace =
+        Workspace::from_session_cards(vec![session_card("a", "alpha"), session_card("b", "bravo")]);
+    workspace.focused_id = 2;
+    workspace.handle_key(KeyInput::Character("J".to_string()));
+    let focused_before = workspace.focused_id;
+    let focused_position_before = workspace
+        .focused_surface()
+        .map(|surface| (surface.lane, surface.column))
+        .unwrap();
+    workspace.handle_key(KeyInput::Character("n".to_string()));
+    let scratch_id = workspace.focused_id;
+    workspace.focused_id = focused_before;
+    workspace.handle_key(KeyInput::HotkeyHelp);
+    let help_id = workspace.focused_id;
+    workspace.focused_id = focused_before;
+
+    workspace.replace_session_cards(vec![
+        session_card("b", "bravo refreshed"),
+        session_card("c", "charlie"),
+    ]);
+
+    assert!(
+        workspace
+            .surfaces
+            .iter()
+            .all(|surface| { surface.session_id.as_deref() != Some("a") })
+    );
+    let refreshed = workspace
+        .surfaces
+        .iter()
+        .find(|surface| surface.session_id.as_deref() == Some("b"))
+        .unwrap();
+    assert_eq!(refreshed.id, focused_before);
+    assert_eq!(refreshed.title, "bravo refreshed");
+    assert_eq!((refreshed.lane, refreshed.column), focused_position_before);
+    assert_eq!(workspace.focused_id, focused_before);
+    assert!(
+        workspace
+            .surfaces
+            .iter()
+            .any(|surface| { surface.id == scratch_id && surface.kind == SurfaceKind::Scratch })
+    );
+    assert!(
+        workspace
+            .surfaces
+            .iter()
+            .any(|surface| { surface.id == help_id && surface.kind == SurfaceKind::HotkeyHelp })
+    );
+    assert!(workspace.surfaces.iter().any(|surface| {
+        surface.session_id.as_deref() == Some("c") && surface.kind == SurfaceKind::Session
+    }));
+    assert_unique_positions(&workspace);
+}
+
+#[test]
 fn o_opens_focused_session_surface() {
     let mut workspace = Workspace::from_session_cards(vec![session_card("a", "alpha")]);
 

@@ -19,6 +19,34 @@ fn desktop_frame_profile_is_opt_in_and_recognizes_trace_modes() {
 }
 
 #[test]
+fn desktop_background_wake_only_tracks_active_frame_animation() {
+    let now = Instant::now();
+
+    assert_eq!(
+        desktop_background_wake(now, true, true),
+        Some(now + BACKGROUND_POLL_INTERVAL)
+    );
+    assert_eq!(desktop_background_wake(now, true, false), None);
+    assert_eq!(desktop_background_wake(now, false, true), None);
+}
+
+#[test]
+fn desktop_async_job_slots_are_bounded_and_released() -> Result<()> {
+    let counter = std::sync::atomic::AtomicUsize::new(0);
+    let first = try_acquire_desktop_async_job_slot(&counter, 2)?;
+    let second = try_acquire_desktop_async_job_slot(&counter, 2)?;
+
+    assert!(try_acquire_desktop_async_job_slot(&counter, 2).is_err());
+    drop(first);
+    let third = try_acquire_desktop_async_job_slot(&counter, 2)?;
+    assert!(try_acquire_desktop_async_job_slot(&counter, 2).is_err());
+    drop(second);
+    drop(third);
+    assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[test]
 fn quarter_size_preset_follows_quarter_screen_width_steps() {
     let monitor_width = Some(2000);
 

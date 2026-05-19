@@ -238,6 +238,15 @@ impl Surface {
         }
     }
 
+    fn apply_session_card(&mut self, card: SessionCard) {
+        let updated = Self::session(self.id, card, self.lane, self.column, self.color_index);
+        self.kind = updated.kind;
+        self.title = updated.title;
+        self.body_lines = updated.body_lines;
+        self.detail_lines = updated.detail_lines;
+        self.session_id = updated.session_id;
+    }
+
     fn workspace_placeholder(id: u64, lane: i32, column: i32, color_index: usize) -> Self {
         Self {
             id,
@@ -444,28 +453,79 @@ impl Workspace {
     }
 
     pub fn replace_session_cards(&mut self, cards: Vec<SessionCard>) {
-        let previous_mode = self.mode;
-        let previous_panel_size = self.panel_size;
+        let previous_focused_id = self.focused_id;
         let previous_session_id = self
             .focused_surface()
             .and_then(|surface| surface.session_id.clone());
+        let previous_lane = self.current_workspace();
+        let mut pending_cards = cards;
+        let old_surfaces = std::mem::take(&mut self.surfaces);
 
-        let mut replacement = Self::from_session_cards(cards);
-        replacement.mode = previous_mode;
-        replacement.panel_size = previous_panel_size;
-        replacement.detail_scroll = self.detail_scroll;
-        replacement.draft = self.draft.clone();
-        replacement.pending_images = self.pending_images.clone();
+        for mut surface in old_surfaces {
+            match surface.session_id.as_deref() {
+                Some(session_id) => {
+                    if let Some(card_index) = pending_cards
+                        .iter()
+                        .position(|card| card.session_id == session_id)
+                    {
+                        let card = pending_cards.remove(card_index);
+                        surface.apply_session_card(card);
+                        self.surfaces.push(surface);
+                    }
+                }
+                None if !matches!(surface.kind, SurfaceKind::Loading | SurfaceKind::Empty) => {
+                    self.surfaces.push(surface);
+                }
+                None => {}
+            }
+        }
+
+        for card in pending_cards {
+            let lane = 0;
+            let column = self.next_available_column(lane);
+            let id = self.allocate_surface_id();
+            self.surfaces
+                .push(Surface::session(id, card, lane, column, id as usize));
+        }
+
+        if self.surfaces.is_empty() {
+            let empty = Self::empty_sessions();
+            self.surfaces = empty.surfaces;
+            self.next_id = self.next_id.max(empty.next_id);
+        } else {
+            self.next_id = self.next_id.max(
+                self.surfaces
+                    .iter()
+                    .map(|surface| surface.id)
+                    .max()
+                    .unwrap_or(0)
+                    + 1,
+            );
+        }
+
         if let Some(previous_session_id) = previous_session_id
-            && let Some(surface) = replacement
+            && let Some(surface) = self
                 .surfaces
                 .iter()
                 .find(|surface| surface.session_id.as_deref() == Some(previous_session_id.as_str()))
         {
-            replacement.focused_id = surface.id;
+            self.focused_id = surface.id;
+        } else if self
+            .surfaces
+            .iter()
+            .any(|surface| surface.id == previous_focused_id)
+        {
+            self.focused_id = previous_focused_id;
+        } else if let Some(surface) = self
+            .surfaces
+            .iter()
+            .filter(|surface| surface.lane == previous_lane)
+            .min_by_key(|surface| (surface.column.abs(), surface.id))
+            .or_else(|| self.surfaces.iter().min_by_key(|surface| surface.id))
+        {
+            self.focused_id = surface.id;
         }
-
-        *self = replacement;
+        self.zoomed = false;
         self.clamp_detail_scroll();
     }
 
@@ -873,8 +933,7 @@ impl Workspace {
             return surface.id;
         }
 
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = self.allocate_surface_id();
         self.surfaces.push(Surface::workspace_placeholder(
             id,
             lane,
@@ -886,16 +945,8 @@ impl Workspace {
 
     fn add_surface(&mut self) {
         let lane = self.current_workspace();
-        let column = self
-            .surfaces
-            .iter()
-            .filter(|surface| surface.lane == lane)
-            .map(|surface| surface.column)
-            .max()
-            .unwrap_or(-1)
-            + 1;
-        let id = self.next_id;
-        self.next_id += 1;
+        let column = self.next_available_column(lane);
+        let id = self.allocate_surface_id();
         self.surfaces.push(Surface::new(
             id,
             format!("new session {id}"),
@@ -923,16 +974,8 @@ impl Workspace {
             return;
         }
 
-        let column = self
-            .surfaces
-            .iter()
-            .filter(|surface| surface.lane == lane)
-            .map(|surface| surface.column)
-            .max()
-            .unwrap_or(-1)
-            + 1;
-        let id = self.next_id;
-        self.next_id += 1;
+        let column = self.next_available_column(lane);
+        let id = self.allocate_surface_id();
         let mut help = Surface::new(id, "hotkey help", lane, column, id as usize);
         help.kind = SurfaceKind::HotkeyHelp;
         help.body_lines = body_lines;
@@ -982,6 +1025,29 @@ impl Workspace {
                 "ctrl slash help".to_string(),
             ],
         }
+    }
+
+    fn next_available_column(&self, lane: i32) -> i32 {
+        self.surfaces
+            .iter()
+            .filter(|surface| surface.lane == lane)
+            .map(|surface| surface.column)
+            .max()
+            .unwrap_or(-1)
+            + 1
+    }
+
+    fn allocate_surface_id(&mut self) -> u64 {
+        while self
+            .surfaces
+            .iter()
+            .any(|surface| surface.id == self.next_id)
+        {
+            self.next_id += 1;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        id
     }
 
     fn close_focused(&mut self) -> bool {

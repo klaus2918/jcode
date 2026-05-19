@@ -6,6 +6,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(unix)]
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(unix)]
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -179,6 +180,22 @@ fn desktop_session_handle_sends_stdin_response_command() {
             input: "secret".to_string()
         })
     );
+}
+
+#[test]
+fn desktop_session_worker_slots_are_bounded_and_released() -> Result<()> {
+    let counter = AtomicUsize::new(0);
+    let first = try_acquire_desktop_session_worker_slot(&counter, 2)?;
+    let second = try_acquire_desktop_session_worker_slot(&counter, 2)?;
+
+    assert!(try_acquire_desktop_session_worker_slot(&counter, 2).is_err());
+    drop(first);
+    let third = try_acquire_desktop_session_worker_slot(&counter, 2)?;
+    assert!(try_acquire_desktop_session_worker_slot(&counter, 2).is_err());
+    drop(second);
+    drop(third);
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
+    Ok(())
 }
 
 #[cfg(unix)]
