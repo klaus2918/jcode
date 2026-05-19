@@ -1841,7 +1841,18 @@ fn assistant_inline_code_pill_matches_glyphon_layout_after_narrow_wrap() {
         .iter()
         .position(|line| line.text == "userName")
         .expect("standalone inline code line should render");
-    let code_span = body_lines[code_line_index]
+    let viewport = single_session_body_viewport_from_lines(&app, size, 0.0, &body_lines);
+    assert!(
+        code_line_index >= viewport.start_line,
+        "code line should be visible in the bottom-aligned narrow viewport"
+    );
+    let viewport_code_line_index = code_line_index - viewport.start_line;
+    let viewport_code_line = viewport
+        .lines
+        .get(viewport_code_line_index)
+        .expect("visible viewport should contain code line");
+    assert_eq!(viewport_code_line.text, "userName");
+    let code_span = viewport_code_line
         .inline_spans
         .iter()
         .find(|span| span.kind == SingleSessionInlineSpanKind::Code)
@@ -1851,23 +1862,23 @@ fn assistant_inline_code_pill_matches_glyphon_layout_after_narrow_wrap() {
     let mut font_system = FontSystem::new();
     let body_buffer = single_session_body_text_buffer_from_lines(
         &mut font_system,
-        &body_lines,
+        &viewport.lines,
         size,
         app.text_scale(),
     );
     let layout_runs = body_buffer.layout_runs().collect::<Vec<_>>();
     assert_eq!(
         layout_runs.len(),
-        body_lines.len(),
+        viewport.lines.len(),
         "body buffer must not glyphon-wrap rows that were already explicitly wrapped"
     );
-    let glyphon_code_run = &layout_runs[code_line_index];
-    assert_eq!(glyphon_code_run.line_i, code_line_index);
+    let glyphon_code_run = &layout_runs[viewport_code_line_index];
+    assert_eq!(glyphon_code_run.line_i, viewport_code_line_index);
     assert_eq!(glyphon_code_run.text, "userName");
     let (glyphon_code_x, glyphon_code_width) = glyphon_code_run
         .highlight(
-            glyphon::Cursor::new(code_line_index, code_span.start),
-            glyphon::Cursor::new(code_line_index, code_span.end),
+            glyphon::Cursor::new(viewport_code_line_index, code_span.start),
+            glyphon::Cursor::new(viewport_code_line_index, code_span.end),
         )
         .expect("glyphon should expose the code span bounds on the same visual row");
     assert!(glyphon_code_x.abs() <= 0.75);
@@ -1881,7 +1892,7 @@ fn assistant_inline_code_pill_matches_glyphon_layout_after_narrow_wrap() {
         .min(line_height - 5.0)
         .max(typography.body_size * 0.85);
     let horizontal_pad = (3.5 * app.text_scale()).clamp(3.0, 6.0);
-    let code_run = single_session_inline_code_runs_for_line(&body_lines[code_line_index])
+    let code_run = single_session_inline_code_runs_for_line(viewport_code_line)
         .into_iter()
         .next()
         .expect("code card run should be detected");
@@ -1893,6 +1904,7 @@ fn assistant_inline_code_pill_matches_glyphon_layout_after_narrow_wrap() {
             x: PANEL_TITLE_LEFT_PADDING + code_run.start_column as f32 * char_width
                 - horizontal_pad,
             y: PANEL_BODY_TOP_PADDING
+                + viewport.top_offset_pixels
                 + glyphon_code_run.line_top
                 + (line_height - card_height) * 0.5,
             width: code_run.column_count as f32 * char_width + horizontal_pad * 2.0,
