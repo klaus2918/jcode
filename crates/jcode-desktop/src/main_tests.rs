@@ -284,10 +284,10 @@ fn fresh_single_session_without_crashes_keeps_refresh_as_redraw() {
 }
 
 #[test]
-fn single_session_active_work_uses_native_spinner_geometry() {
+fn single_session_active_work_uses_streaming_activity_cue_geometry() {
     let mut app = SingleSessionApp::new(None);
     let idle = build_single_session_vertices(&app, PhysicalSize::new(900, 700), 0.0, 0);
-    assert!(!vertices_have_color(&idle, NATIVE_SPINNER_HEAD_COLOR));
+    assert!(!vertices_have_rgb(&idle, NATIVE_SPINNER_HEAD_COLOR));
 
     app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
         "streaming".to_string(),
@@ -295,11 +295,11 @@ fn single_session_active_work_uses_native_spinner_geometry() {
     let tick_zero = build_single_session_vertices(&app, PhysicalSize::new(900, 700), 0.0, 0);
     let tick_one = build_single_session_vertices(&app, PhysicalSize::new(900, 700), 0.0, 1);
 
-    assert!(vertices_have_color(&tick_zero, NATIVE_SPINNER_HEAD_COLOR));
-    assert!(vertices_have_color(&tick_one, NATIVE_SPINNER_HEAD_COLOR));
+    assert!(vertices_have_rgb(&tick_zero, NATIVE_SPINNER_HEAD_COLOR));
+    assert!(vertices_have_rgb(&tick_one, NATIVE_SPINNER_HEAD_COLOR));
     assert_ne!(
-        positions_for_color(&tick_zero, NATIVE_SPINNER_HEAD_COLOR),
-        positions_for_color(&tick_one, NATIVE_SPINNER_HEAD_COLOR)
+        colors_for_rgb(&tick_zero, NATIVE_SPINNER_HEAD_COLOR),
+        colors_for_rgb(&tick_one, NATIVE_SPINNER_HEAD_COLOR)
     );
 }
 
@@ -1879,6 +1879,12 @@ fn vertices_have_color(vertices: &[Vertex], color: [f32; 4]) -> bool {
     vertices.iter().any(|vertex| vertex.color == color)
 }
 
+fn vertices_have_rgb(vertices: &[Vertex], color: [f32; 4]) -> bool {
+    vertices
+        .iter()
+        .any(|vertex| vertex.color[..3] == color[..3])
+}
+
 fn assert_runtime_welcome_hero_available(app: &SingleSessionApp, size: PhysicalSize<u32>) {
     let rendered_body_lines = single_session_rendered_body_lines_for_tick(app, size, 0);
     let spec =
@@ -1911,6 +1917,14 @@ fn positions_for_color(vertices: &[Vertex], color: [f32; 4]) -> Vec<[u32; 2]> {
         .iter()
         .filter(|vertex| vertex.color == color)
         .map(|vertex| vertex.position.map(f32::to_bits))
+        .collect()
+}
+
+fn colors_for_rgb(vertices: &[Vertex], color: [f32; 4]) -> Vec<[u32; 4]> {
+    vertices
+        .iter()
+        .filter(|vertex| vertex.color[..3] == color[..3])
+        .map(|vertex| vertex.color.map(f32::to_bits))
         .collect()
 }
 

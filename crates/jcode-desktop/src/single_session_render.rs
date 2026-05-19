@@ -128,9 +128,6 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         );
     }
 
-    if app.has_activity_indicator() {
-        push_native_activity_spinner(&mut vertices, app, size, spinner_tick);
-    }
     push_single_session_inline_widget_card(
         &mut vertices,
         app,
@@ -159,6 +156,9 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         spinner_tick,
         smooth_scroll_lines,
     );
+    if app.has_activity_indicator() {
+        push_streaming_activity_cue(&mut vertices, app, size, spinner_tick, None);
+    }
     push_single_session_selection(&mut vertices, app, size);
     push_single_session_scrollbar(&mut vertices, app, size, spinner_tick, smooth_scroll_lines);
 
@@ -230,10 +230,6 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         );
     }
 
-    if app.has_activity_indicator() {
-        push_native_activity_spinner(&mut vertices, app, size, spinner_tick);
-    }
-
     push_single_session_inline_widget_card(
         &mut vertices,
         app,
@@ -269,6 +265,9 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         &viewport,
         rendered_body_lines.len(),
     );
+    if app.has_activity_indicator() {
+        push_streaming_activity_cue(&mut vertices, app, size, spinner_tick, Some(&viewport));
+    }
     push_single_session_selection(&mut vertices, app, size);
     push_single_session_scrollbar_for_total_lines(
         &mut vertices,
@@ -4178,76 +4177,79 @@ fn transparent(mut color: [f32; 4]) -> [f32; 4] {
     color
 }
 
-pub(crate) fn push_native_activity_spinner(
+pub(crate) fn push_streaming_activity_cue(
     vertices: &mut Vec<Vertex>,
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
     tick: u64,
+    viewport: Option<&SingleSessionBodyViewport>,
 ) {
     let typography = single_session_typography();
-    let draft_top = single_session_draft_top_for_app(app, size);
-    let center_y = if welcome_status_lane_visible(app) {
-        draft_top + typography.meta_size * 0.58
+    let line_height = typography.body_size * typography.body_line_height;
+    let body_top = single_session_body_top_for_app(app, size);
+    let viewport = viewport
+        .cloned()
+        .unwrap_or_else(|| single_session_body_viewport_for_tick(app, size, tick, 0.0));
+    let active_line_index = if app.streaming_response.is_empty() {
+        None
     } else {
-        draft_top - typography.body_size * 0.78
+        viewport.lines.len().checked_sub(1)
     };
-    let center = [
-        PANEL_TITLE_LEFT_PADDING + typography.body_size * 0.50,
-        center_y,
-    ];
-    let radius = (typography.body_size * 0.46).clamp(8.0, 13.0);
-    let thickness = (radius * 0.28).clamp(2.8, 4.0);
-    let segments = 14;
-    let phase = (tick as usize) % segments;
-    for segment in 0..segments {
-        let age = (segment + segments - phase) % segments;
-        let alpha_scale = if age == 0 {
-            1.0
-        } else {
-            0.18 + (segments - age) as f32 / segments as f32 * 0.52
-        };
-        let mut color = if age == 0 {
-            NATIVE_SPINNER_HEAD_COLOR
-        } else {
-            NATIVE_SPINNER_TRACK_COLOR
-        };
-        color[3] = (color[3] * alpha_scale).clamp(0.08, 1.0);
-        let start =
-            -std::f32::consts::FRAC_PI_2 + segment as f32 / segments as f32 * std::f32::consts::TAU;
-        let end = start + std::f32::consts::TAU / segments as f32 * 0.64;
-        push_spinner_segment(vertices, center, radius, thickness, start, end, color, size);
-    }
-}
 
-fn push_spinner_segment(
-    vertices: &mut Vec<Vertex>,
-    center: [f32; 2],
-    radius: f32,
-    thickness: f32,
-    start: f32,
-    end: f32,
-    color: [f32; 4],
-    size: PhysicalSize<u32>,
-) {
-    let inner_radius = (radius - thickness).max(1.0);
-    let outer_start = [
-        center[0] + radius * start.cos(),
-        center[1] + radius * start.sin(),
-    ];
-    let outer_end = [
-        center[0] + radius * end.cos(),
-        center[1] + radius * end.sin(),
-    ];
-    let inner_start = [
-        center[0] + inner_radius * start.cos(),
-        center[1] + inner_radius * start.sin(),
-    ];
-    let inner_end = [
-        center[0] + inner_radius * end.cos(),
-        center[1] + inner_radius * end.sin(),
-    ];
-    push_pixel_triangle(vertices, outer_start, outer_end, inner_end, color, size);
-    push_pixel_triangle(vertices, outer_start, inner_end, inner_start, color, size);
+    let cue_y = active_line_index
+        .map(|line_index| body_top + viewport.top_offset_pixels + line_index as f32 * line_height)
+        .filter(|y| *y >= PANEL_BODY_TOP_PADDING && *y <= single_session_body_bottom(size))
+        .unwrap_or_else(|| {
+            single_session_draft_top_for_app(app, size) - typography.body_size * 0.82
+        });
+    let cue_x = PANEL_TITLE_LEFT_PADDING + typography.body_size * 0.08;
+    let phase = (tick % 24) as f32 / 24.0;
+    let pulse = 0.5 + 0.5 * (phase * std::f32::consts::TAU).sin();
+
+    let mut beam_color = NATIVE_SPINNER_HEAD_COLOR;
+    beam_color[3] = if app.streaming_response.is_empty() {
+        0.22 + 0.24 * pulse
+    } else {
+        0.36 + 0.34 * pulse
+    };
+    push_rounded_rect(
+        vertices,
+        Rect {
+            x: cue_x,
+            y: cue_y + line_height * 0.16,
+            width: 3.0,
+            height: line_height * 0.68,
+        },
+        1.5,
+        beam_color,
+        size,
+    );
+
+    let dot_radius = (typography.body_size * 0.12).clamp(2.0, 3.5);
+    let dot_y = cue_y + line_height * 0.50 - dot_radius;
+    let dot_start_x = cue_x + typography.body_size * 0.55;
+    for dot in 0..3 {
+        let dot_phase = ((tick + dot as u64 * 3) % 12) as f32 / 12.0;
+        let dot_pulse = 0.5 + 0.5 * (dot_phase * std::f32::consts::TAU).sin();
+        let mut dot_color = if app.streaming_response.is_empty() {
+            NATIVE_SPINNER_TRACK_COLOR
+        } else {
+            NATIVE_SPINNER_HEAD_COLOR
+        };
+        dot_color[3] = (0.30 + 0.58 * dot_pulse).clamp(0.24, 0.92);
+        push_rounded_rect(
+            vertices,
+            Rect {
+                x: dot_start_x + dot as f32 * dot_radius * 2.8,
+                y: dot_y,
+                width: dot_radius * 2.0,
+                height: dot_radius * 2.0,
+            },
+            dot_radius,
+            dot_color,
+            size,
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
