@@ -372,12 +372,15 @@ async fn run() -> Result<()> {
     ));
     startup_trace.mark("window created");
 
+    let mut pending_workspace_startup_load = false;
+    let mut pending_workspace_startup_preferences = None;
     let mut app = if desktop_mode == DesktopMode::WorkspacePrototype {
-        let session_cards = load_session_cards_for_desktop();
-        let mut workspace = Workspace::from_session_cards(session_cards);
+        let mut workspace = Workspace::loading_sessions();
         if let Some(preferences) = load_desktop_preferences() {
-            workspace.apply_preferences(preferences);
+            workspace.apply_preferences(preferences.clone());
+            pending_workspace_startup_preferences = Some(preferences);
         }
+        pending_workspace_startup_load = true;
         DesktopApp::Workspace(workspace)
     } else {
         initial_single_session_app(resume_session_id.as_deref())
@@ -409,6 +412,14 @@ async fn run() -> Result<()> {
     let mut pending_resize: Option<PhysicalSize<u32>> = None;
     let mut space_hold_started_at: Option<Instant> = None;
     let mut space_hold_consumed = false;
+
+    if pending_workspace_startup_load {
+        spawn_session_cards_load(
+            DesktopSessionCardsPurpose::WorkspaceInitialLoad,
+            event_loop_proxy.clone(),
+            Duration::ZERO,
+        );
+    }
 
     event_loop.run(move |event, target| {
         let event_loop_now = Instant::now();
@@ -983,6 +994,15 @@ async fn run() -> Result<()> {
                 let card_count = cards.len();
                 let mut applied = false;
                 match purpose {
+                    DesktopSessionCardsPurpose::WorkspaceInitialLoad => {
+                        if let DesktopApp::Workspace(workspace) = &mut app {
+                            workspace.replace_session_cards(cards);
+                            if let Some(preferences) = pending_workspace_startup_preferences.take() {
+                                workspace.apply_preferences(preferences);
+                            }
+                            applied = true;
+                        }
+                    }
                     DesktopSessionCardsPurpose::WorkspaceRefresh => {
                         if let DesktopApp::Workspace(workspace) = &mut app {
                             workspace.replace_session_cards(cards);
@@ -1867,10 +1887,26 @@ fn stream_e2e_benchmark_raw_events(args: &[String]) -> Option<usize> {
 
 fn env_flag_enabled(value: OsString) -> bool {
     let value = value.to_string_lossy();
+    env_flag_text_enabled(&value)
+}
+
+fn env_flag_text_enabled(value: &str) -> bool {
     !matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "" | "0" | "false" | "off" | "no"
     )
+}
+
+fn desktop_frame_profile_mode() -> Option<String> {
+    std::env::var("JCODE_DESKTOP_FRAME_PROFILE").ok()
+}
+
+fn desktop_frame_profile_enabled(mode: Option<&str>) -> bool {
+    mode.is_some_and(env_flag_text_enabled)
+}
+
+fn desktop_frame_profile_log_all(mode: Option<&str>) -> bool {
+    mode.is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "all" | "trace"))
 }
 
 #[derive(Clone, Copy)]
@@ -1924,6 +1960,7 @@ enum DesktopUserEvent {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DesktopSessionCardsPurpose {
+    WorkspaceInitialLoad,
     WorkspaceRefresh,
     SingleSessionSwitcher,
 }
@@ -5396,9 +5433,9 @@ struct DesktopFrameProfiler {
 
 impl DesktopFrameProfiler {
     fn new() -> Self {
-        let mode = std::env::var("JCODE_DESKTOP_FRAME_PROFILE").ok();
-        let enabled = !matches!(mode.as_deref(), Some("0" | "false" | "off"));
-        let log_all = matches!(mode.as_deref(), Some("all" | "trace"));
+        let mode = desktop_frame_profile_mode();
+        let enabled = desktop_frame_profile_enabled(mode.as_deref());
+        let log_all = desktop_frame_profile_log_all(mode.as_deref());
         let budget = std::env::var("JCODE_DESKTOP_FRAME_BUDGET_MS")
             .ok()
             .and_then(|value| value.parse::<f64>().ok())
@@ -5525,9 +5562,9 @@ struct DesktopInteractionLatencyProfiler {
 
 impl DesktopInteractionLatencyProfiler {
     fn new() -> Self {
-        let mode = std::env::var("JCODE_DESKTOP_FRAME_PROFILE").ok();
-        let enabled = !matches!(mode.as_deref(), Some("0" | "false" | "off"));
-        let log_all = matches!(mode.as_deref(), Some("all" | "trace"));
+        let mode = desktop_frame_profile_mode();
+        let enabled = desktop_frame_profile_enabled(mode.as_deref());
+        let log_all = desktop_frame_profile_log_all(mode.as_deref());
         let budget = std::env::var("JCODE_DESKTOP_INPUT_LATENCY_BUDGET_MS")
             .ok()
             .and_then(|value| value.parse::<f64>().ok())
@@ -5627,9 +5664,13 @@ impl DesktopNoPaintWatchdog {
     }
 
     fn new_with_start(now: Instant) -> Self {
-        let mode = std::env::var("JCODE_DESKTOP_FRAME_PROFILE").ok();
-        let enabled = !matches!(mode.as_deref(), Some("0" | "false" | "off"));
-        let log_all = matches!(mode.as_deref(), Some("all" | "trace"));
+        let mode = desktop_frame_profile_mode();
+        Self::new_with_start_and_mode(now, mode.as_deref())
+    }
+
+    fn new_with_start_and_mode(now: Instant, mode: Option<&str>) -> Self {
+        let enabled = desktop_frame_profile_enabled(mode);
+        let log_all = desktop_frame_profile_log_all(mode);
         let budget = std::env::var("JCODE_DESKTOP_NO_PAINT_BUDGET_MS")
             .ok()
             .and_then(|value| value.parse::<f64>().ok())
@@ -5702,7 +5743,7 @@ mod desktop_no_paint_watchdog_tests {
     #[test]
     fn no_paint_watchdog_requests_redraw_after_active_gap_budget() {
         let start = Instant::now();
-        let mut watchdog = DesktopNoPaintWatchdog::new_with_start(start);
+        let mut watchdog = DesktopNoPaintWatchdog::new_with_start_and_mode(start, Some("1"));
         let context = NoPaintWatchdogContext {
             active: true,
             mode: "single_session",
@@ -5727,7 +5768,7 @@ mod desktop_no_paint_watchdog_tests {
     #[test]
     fn no_paint_watchdog_resets_when_idle_or_presented() {
         let start = Instant::now();
-        let mut watchdog = DesktopNoPaintWatchdog::new_with_start(start);
+        let mut watchdog = DesktopNoPaintWatchdog::new_with_start_and_mode(start, Some("1"));
         let active_context = NoPaintWatchdogContext {
             active: true,
             mode: "single_session",
@@ -5746,6 +5787,23 @@ mod desktop_no_paint_watchdog_tests {
             !watchdog.observe_active_tick(start + watchdog.budget + watchdog.budget, idle_context)
         );
         assert!(watchdog.last_redraw_request_at.is_none());
+    }
+
+    #[test]
+    fn no_paint_watchdog_is_off_without_explicit_frame_profile_mode() {
+        let start = Instant::now();
+        let mut watchdog = DesktopNoPaintWatchdog::new_with_start_and_mode(start, None);
+        let context = NoPaintWatchdogContext {
+            active: true,
+            mode: "single_session",
+            has_background_work: true,
+            frame_animation_active: false,
+            pending_backend_redraw: false,
+            pending_interaction_kind: Some("backend_events"),
+        };
+
+        assert!(!watchdog.enabled);
+        assert!(!watchdog.observe_active_tick(start + DESKTOP_NO_PAINT_BUDGET * 4, context));
     }
 }
 
@@ -5897,10 +5955,8 @@ fn log_desktop_slow_interaction(
     if duration < DESKTOP_120FPS_FRAME_BUDGET {
         return;
     }
-    let enabled = std::env::var("JCODE_DESKTOP_FRAME_PROFILE")
-        .ok()
-        .is_none_or(|value| !matches!(value.as_str(), "0" | "false" | "off"));
-    if !enabled {
+    let mode = desktop_frame_profile_mode();
+    if !desktop_frame_profile_enabled(mode.as_deref()) {
         return;
     }
     emit_desktop_profile_event(

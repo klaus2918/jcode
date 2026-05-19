@@ -3,6 +3,22 @@ use super::single_session::*;
 use super::*;
 
 #[test]
+fn desktop_frame_profile_is_opt_in_and_recognizes_trace_modes() {
+    assert!(!desktop_frame_profile_enabled(None));
+    assert!(!desktop_frame_profile_enabled(Some("")));
+    assert!(!desktop_frame_profile_enabled(Some("off")));
+    assert!(!desktop_frame_profile_enabled(Some("0")));
+    assert!(desktop_frame_profile_enabled(Some("1")));
+    assert!(desktop_frame_profile_enabled(Some("true")));
+    assert!(desktop_frame_profile_enabled(Some("all")));
+    assert!(desktop_frame_profile_enabled(Some("trace")));
+    assert!(!desktop_frame_profile_log_all(None));
+    assert!(!desktop_frame_profile_log_all(Some("1")));
+    assert!(desktop_frame_profile_log_all(Some("all")));
+    assert!(desktop_frame_profile_log_all(Some("TRACE")));
+}
+
+#[test]
 fn quarter_size_preset_follows_quarter_screen_width_steps() {
     let monitor_width = Some(2000);
 

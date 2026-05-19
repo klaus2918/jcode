@@ -5079,6 +5079,11 @@ pub(crate) fn single_session_surface(
     let lines = single_session_lines(session);
     workspace::Surface {
         id: 1,
+        kind: if session.is_some() {
+            workspace::SurfaceKind::Session
+        } else {
+            workspace::SurfaceKind::Scratch
+        },
         title: session
             .map(|session| session.title.clone())
             .unwrap_or_else(|| "new jcode session".to_string()),
