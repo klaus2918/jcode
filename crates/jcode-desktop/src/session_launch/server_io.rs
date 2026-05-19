@@ -590,13 +590,24 @@ pub(super) fn drain_worker_commands(
                     event_tx,
                     DesktopSessionEvent::Status("cancelling".to_string()),
                 );
+                let request_id = *next_request_id;
+                let write_start = Instant::now();
+                crate::desktop_log::info(format_args!(
+                    "DESKTOP_INTERRUPT_SEND_START kind=cancel id={}",
+                    request_id
+                ));
                 write_json_line(
                     writer,
                     json!({
                         "type": "cancel",
-                        "id": *next_request_id,
+                        "id": request_id,
                     }),
                 )?;
+                crate::desktop_log::info(format_args!(
+                    "DESKTOP_INTERRUPT_SEND_OK kind=cancel id={} write_ms={}",
+                    request_id,
+                    write_start.elapsed().as_millis()
+                ));
                 *next_request_id += 1;
             }
             DesktopSessionCommand::StdinResponse { request_id, input } => {
