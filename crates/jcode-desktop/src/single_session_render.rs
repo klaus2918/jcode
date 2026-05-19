@@ -4189,15 +4189,15 @@ pub(crate) fn push_native_activity_spinner(
     let center_y = if welcome_status_lane_visible(app) {
         draft_top + typography.meta_size * 0.58
     } else {
-        draft_top - 23.0
+        draft_top - typography.body_size * 0.78
     };
     let center = [
-        size.width as f32 - PANEL_TITLE_LEFT_PADDING - 12.0,
+        PANEL_TITLE_LEFT_PADDING + typography.body_size * 0.50,
         center_y,
     ];
-    let radius = (typography.meta_size * 0.54).clamp(5.0, 9.0);
-    let thickness = 2.4;
-    let segments = 12;
+    let radius = (typography.body_size * 0.46).clamp(8.0, 13.0);
+    let thickness = (radius * 0.28).clamp(2.8, 4.0);
+    let segments = 14;
     let phase = (tick as usize) % segments;
     for segment in 0..segments {
         let age = (segment + segments - phase) % segments;
