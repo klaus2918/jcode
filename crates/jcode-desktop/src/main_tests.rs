@@ -190,6 +190,15 @@ fn desktop_surface_size_renderable_requires_non_zero_dimensions() {
 }
 
 #[test]
+fn desktop_canvas_uses_owned_static_surface_lifetime() {
+    fn accepts_concrete_canvas_type<T>() {}
+    fn assert_static_surface(_: Option<wgpu::Surface<'static>>) {}
+
+    accepts_concrete_canvas_type::<Canvas>();
+    assert_static_surface(None);
+}
+
+#[test]
 fn surface_timeout_backoff_doubles_until_cap_and_resets() {
     let mut backoff = SurfaceTimeoutBackoff::default();
     let delays = (0..8)

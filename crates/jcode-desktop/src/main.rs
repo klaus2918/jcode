@@ -44,7 +44,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -435,11 +435,11 @@ async fn run() -> Result<()> {
         window_builder = window_builder.with_fullscreen(Some(Fullscreen::Borderless(None)));
     }
 
-    let window: &'static Window = Box::leak(Box::new(
+    let window = Arc::new(
         window_builder
             .build(&event_loop)
             .context("failed to create desktop window")?,
-    ));
+    );
     startup_trace.mark("window created");
 
     let mut pending_workspace_startup_load = false;
@@ -457,7 +457,7 @@ async fn run() -> Result<()> {
     };
     startup_trace.mark("app state initialized");
     window.set_title(&app.status_title());
-    let mut canvas = Canvas::new(window, startup_trace).await?;
+    let mut canvas = Canvas::new(window.clone(), startup_trace).await?;
     startup_trace.mark("canvas ready");
     let mut modifiers = ModifiersState::empty();
     let mut cursor_position = winit::dpi::PhysicalPosition::new(0.0, 0.0);
@@ -4038,11 +4038,11 @@ fn desktop_wgpu_startup_backends() -> Vec<wgpu::Backends> {
     vec![wgpu::Backends::PRIMARY]
 }
 
-async fn request_startup_adapter<'window>(
-    window: &'window Window,
+async fn request_startup_adapter(
+    window: Arc<Window>,
     backend_candidates: Vec<wgpu::Backends>,
     startup_trace: DesktopStartupTrace,
-) -> Result<(wgpu::Surface<'window>, wgpu::Adapter)> {
+) -> Result<(wgpu::Surface<'static>, wgpu::Adapter)> {
     let mut last_error = None;
     for backends in backend_candidates {
         let backend_label = format!("{backends:?}");
@@ -4052,7 +4052,7 @@ async fn request_startup_adapter<'window>(
             ..Default::default()
         });
         startup_trace.mark(&format!("wgpu instance created ({backend_label})"));
-        let surface = match instance.create_surface(window) {
+        let surface = match instance.create_surface(window.clone()) {
             Ok(surface) => surface,
             Err(error) => {
                 last_error = Some(format!(
@@ -6132,8 +6132,8 @@ fn single_session_streaming_primitive_geometry_cache_key(
     Some(hasher.finish())
 }
 
-struct Canvas<'window> {
-    surface: wgpu::Surface<'window>,
+struct Canvas {
+    surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -6182,14 +6182,18 @@ struct Canvas<'window> {
     frame_profiler: DesktopFrameProfiler,
 }
 
-impl<'window> Canvas<'window> {
-    async fn new(window: &'window Window, startup_trace: DesktopStartupTrace) -> Result<Self> {
+impl Canvas {
+    async fn new(window: Arc<Window>, startup_trace: DesktopStartupTrace) -> Result<Self> {
         let initial_window_size = window.inner_size();
         let size = non_zero_size(initial_window_size);
         let font_system_loader = Some(spawn_desktop_font_system_loader());
         startup_trace.mark("font loader spawned");
-        let (surface, adapter) =
-            request_startup_adapter(window, desktop_wgpu_startup_backends(), startup_trace).await?;
+        let (surface, adapter) = request_startup_adapter(
+            window.clone(),
+            desktop_wgpu_startup_backends(),
+            startup_trace,
+        )
+        .await?;
         startup_trace.mark("wgpu adapter ready");
         let (device, queue) = adapter
             .request_device(
