@@ -150,8 +150,7 @@ pub(super) fn read_session_id_from_events(
         match reader.read_line(&mut line) {
             Ok(0) => anyhow::bail!("jcode server disconnected before assigning a session"),
             Ok(_) => {
-                let value: Value = serde_json::from_str(line.trim())
-                    .context("failed to parse jcode server event")?;
+                let value = parse_server_event_line(&line, "waiting for session id")?;
                 if value.get("type").and_then(Value::as_str) == Some("session") {
                     let Some(session_id) = value.get("session_id").and_then(Value::as_str) else {
                         anyhow::bail!("jcode server sent malformed session event");
@@ -168,6 +167,10 @@ pub(super) fn read_session_id_from_events(
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown server error");
+                    crate::desktop_log::error(format_args!(
+                        "jcode-desktop: jcode server rejected fresh session: {}",
+                        crate::desktop_log::truncate_for_log(message, 2048)
+                    ));
                     anyhow::bail!("jcode server rejected fresh session: {message}");
                 }
                 if value.get("type").and_then(Value::as_str) == Some("done")
@@ -207,8 +210,7 @@ pub(super) fn read_session_id_from_state(
         match reader.read_line(&mut line) {
             Ok(0) => anyhow::bail!("jcode server disconnected before returning state"),
             Ok(_) => {
-                let value: Value = serde_json::from_str(line.trim())
-                    .context("failed to parse jcode server event")?;
+                let value = parse_server_event_line(&line, "waiting for server state")?;
                 if value.get("type").and_then(Value::as_str) == Some("state")
                     && value.get("id").and_then(Value::as_u64) == Some(state_request_id)
                 {
@@ -229,6 +231,10 @@ pub(super) fn read_session_id_from_state(
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown server error");
+                    crate::desktop_log::error(format_args!(
+                        "jcode-desktop: jcode server rejected state request id={state_request_id}: {}",
+                        crate::desktop_log::truncate_for_log(message, 2048)
+                    ));
                     anyhow::bail!("jcode server rejected state request: {message}");
                 }
             }
@@ -262,8 +268,7 @@ pub(super) fn read_model_changed(
         match reader.read_line(&mut line) {
             Ok(0) => anyhow::bail!("jcode server disconnected before switching model"),
             Ok(_) => {
-                let value: Value = serde_json::from_str(line.trim())
-                    .context("failed to parse jcode server event")?;
+                let value = parse_server_event_line(&line, "waiting for model switch")?;
                 if value.get("type").and_then(Value::as_str) == Some("model_changed")
                     && value.get("id").and_then(Value::as_u64) == Some(request_id)
                 {
@@ -284,6 +289,10 @@ pub(super) fn read_model_changed(
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown server error");
+                    crate::desktop_log::error(format_args!(
+                        "jcode-desktop: jcode server rejected model switch id={request_id}: {}",
+                        crate::desktop_log::truncate_for_log(message, 2048)
+                    ));
                     anyhow::bail!("jcode server rejected model switch: {message}");
                 }
             }
@@ -317,8 +326,7 @@ pub(super) fn read_history_reasoning_effort(
         match reader.read_line(&mut line) {
             Ok(0) => anyhow::bail!("jcode server disconnected before loading history"),
             Ok(_) => {
-                let value: Value = serde_json::from_str(line.trim())
-                    .context("failed to parse jcode server event")?;
+                let value = parse_server_event_line(&line, "waiting for history")?;
                 if value.get("type").and_then(Value::as_str) == Some("history")
                     && value.get("id").and_then(Value::as_u64) == Some(request_id)
                 {
@@ -336,6 +344,10 @@ pub(super) fn read_history_reasoning_effort(
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown server error");
+                    crate::desktop_log::error(format_args!(
+                        "jcode-desktop: jcode server rejected history request id={request_id}: {}",
+                        crate::desktop_log::truncate_for_log(message, 2048)
+                    ));
                     anyhow::bail!("jcode server rejected history request: {message}");
                 }
             }
@@ -369,8 +381,7 @@ pub(super) fn read_reasoning_effort_changed(
         match reader.read_line(&mut line) {
             Ok(0) => anyhow::bail!("jcode server disconnected before switching reasoning effort"),
             Ok(_) => {
-                let value: Value = serde_json::from_str(line.trim())
-                    .context("failed to parse jcode server event")?;
+                let value = parse_server_event_line(&line, "waiting for reasoning effort switch")?;
                 if value.get("type").and_then(Value::as_str) == Some("reasoning_effort_changed")
                     && value.get("id").and_then(Value::as_u64) == Some(request_id)
                 {
@@ -391,6 +402,10 @@ pub(super) fn read_reasoning_effort_changed(
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown server error");
+                    crate::desktop_log::error(format_args!(
+                        "jcode-desktop: jcode server rejected reasoning effort switch id={request_id}: {}",
+                        crate::desktop_log::truncate_for_log(message, 2048)
+                    ));
                     anyhow::bail!("jcode server rejected reasoning effort switch: {message}");
                 }
             }
@@ -424,8 +439,7 @@ pub(super) fn read_model_catalog(
         match reader.read_line(&mut line) {
             Ok(0) => anyhow::bail!("jcode server disconnected before loading model catalog"),
             Ok(_) => {
-                let value: Value = serde_json::from_str(line.trim())
-                    .context("failed to parse jcode server event")?;
+                let value = parse_server_event_line(&line, "waiting for model catalog")?;
                 if value.get("type").and_then(Value::as_str) == Some("history")
                     && value.get("id").and_then(Value::as_u64) == Some(request_id)
                 {
@@ -447,6 +461,10 @@ pub(super) fn read_model_catalog(
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown server error");
+                    crate::desktop_log::error(format_args!(
+                        "jcode-desktop: jcode server rejected model catalog request id={request_id}: {}",
+                        crate::desktop_log::truncate_for_log(message, 2048)
+                    ));
                     anyhow::bail!("jcode server rejected model catalog request: {message}");
                 }
             }
@@ -507,7 +525,7 @@ pub(super) fn drain_session_events(
             }
             Err(error) => return Err(error).context("failed to read jcode server event"),
             Ok(_) => {
-                if let Ok(value) = serde_json::from_str::<Value>(line.trim()) {
+                if let Ok(value) = parse_server_event_line(&line, "draining session events") {
                     if value.get("type").and_then(Value::as_str) == Some("reloading") {
                         let new_socket = value
                             .get("new_socket")
@@ -541,6 +559,19 @@ pub(super) fn drain_session_events(
                     }
                 }
             }
+        }
+    }
+}
+
+fn parse_server_event_line(line: &str, context: &str) -> Result<Value> {
+    match serde_json::from_str::<Value>(line.trim()) {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            crate::desktop_log::error(format_args!(
+                "jcode-desktop: failed to parse jcode server event while {context}: {error}; line={}",
+                crate::desktop_log::truncate_for_log(line.trim(), 512)
+            ));
+            Err(error).context("failed to parse jcode server event")
         }
     }
 }

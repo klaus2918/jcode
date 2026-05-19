@@ -46,7 +46,9 @@ impl PowerInhibitor {
                 self.child = Some(child);
             }
             Err(error) => {
-                eprintln!("jcode: failed to acquire power inhibitor: {error}");
+                crate::desktop_log::error(format_args!(
+                    "jcode-desktop: failed to acquire power inhibitor: {error}"
+                ));
                 self.available = false;
             }
         }
@@ -54,8 +56,16 @@ impl PowerInhibitor {
 
     fn release(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            if let Err(error) = child.kill() {
+                crate::desktop_log::warn(format_args!(
+                    "jcode-desktop: failed to stop power inhibitor process: {error}"
+                ));
+            }
+            if let Err(error) = child.wait() {
+                crate::desktop_log::warn(format_args!(
+                    "jcode-desktop: failed to reap power inhibitor process: {error}"
+                ));
+            }
         }
     }
 }

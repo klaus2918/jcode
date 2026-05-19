@@ -42,7 +42,16 @@ fn load_recent_session_cards_with_limit(limit: usize) -> Result<Vec<SessionCard>
 
     let mut candidates = fs::read_dir(&sessions_dir)
         .with_context(|| format!("failed to read {}", sessions_dir.display()))?
-        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                crate::desktop_log::warn(format_args!(
+                    "jcode-desktop: failed to read entry in {}: {error}",
+                    sessions_dir.display()
+                ));
+                None
+            }
+        })
         .filter_map(|entry| session_file_candidate(entry.path()))
         .collect::<Vec<_>>();
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.modified));
@@ -52,10 +61,10 @@ fn load_recent_session_cards_with_limit(limit: usize) -> Result<Vec<SessionCard>
         match load_session_card(&candidate.path) {
             Ok(Some(card)) => cards.push(card),
             Ok(None) => {}
-            Err(error) => eprintln!(
+            Err(error) => crate::desktop_log::warn(format_args!(
                 "jcode-desktop: skipped session {}: {error:#}",
                 candidate.path.display()
-            ),
+            )),
         }
         if cards.len() >= limit {
             break;
@@ -77,10 +86,16 @@ fn session_file_candidate(path: PathBuf) -> Option<SessionFileCandidate> {
         return None;
     }
 
-    let modified = path
-        .metadata()
-        .and_then(|metadata| metadata.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let modified = match path.metadata().and_then(|metadata| metadata.modified()) {
+        Ok(modified) => modified,
+        Err(error) => {
+            crate::desktop_log::warn(format_args!(
+                "jcode-desktop: failed to read session file timestamp for {}: {error}",
+                path.display()
+            ));
+            SystemTime::UNIX_EPOCH
+        }
+    };
     Some(SessionFileCandidate { path, modified })
 }
 

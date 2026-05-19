@@ -1,4 +1,5 @@
 mod animation;
+mod desktop_log;
 mod desktop_prefs;
 mod power_inhibit;
 mod render_helpers;
@@ -232,8 +233,32 @@ fn fs_main(in: HeroVertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-fn main() -> Result<()> {
-    pollster::block_on(run())
+fn main() {
+    desktop_log::init();
+    install_desktop_diagnostic_hooks();
+    desktop_log::info(format_args!(
+        "jcode-desktop: starting pid={} version={} build_hash={}",
+        std::process::id(),
+        desktop_header_version_label(),
+        desktop_build_hash_label()
+    ));
+
+    if let Err(error) = pollster::block_on(run()) {
+        desktop_log::error(format_args!("jcode-desktop: fatal error: {error:#}"));
+        std::process::exit(1);
+    }
+}
+
+fn install_desktop_diagnostic_hooks() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        desktop_log::error(format_args!("jcode-desktop: panic: {panic_info}"));
+        desktop_log::error(format_args!(
+            "jcode-desktop: panic backtrace: {}",
+            std::backtrace::Backtrace::force_capture()
+        ));
+        default_hook(panic_info);
+    }));
 }
 
 async fn run() -> Result<()> {
@@ -559,9 +584,9 @@ async fn run() -> Result<()> {
                             if let Err(error) =
                                 session_launch::launch_validated_resume_session(&session_id, &title)
                             {
-                                eprintln!(
+                                desktop_log::error(format_args!(
                                     "jcode-desktop: failed to open session {session_id}: {error:#}"
-                                );
+                                ));
                             }
                         }
                         KeyOutcome::SpawnSession => {
@@ -573,7 +598,9 @@ async fn run() -> Result<()> {
                             }
 
                             if let Err(error) = session_launch::launch_new_session() {
-                                eprintln!("jcode-desktop: failed to spawn session: {error:#}");
+                                desktop_log::error(format_args!(
+                                    "jcode-desktop: failed to spawn session: {error:#}"
+                                ));
                             } else {
                                 spawn_session_cards_load(
                                     DesktopSessionCardsPurpose::WorkspaceRefresh,
@@ -616,18 +643,18 @@ async fn run() -> Result<()> {
                                         );
                                         window.request_redraw();
                                     }
-                                    Err(error) => eprintln!(
+                                    Err(error) => desktop_log::error(format_args!(
                                         "jcode-desktop: failed to send image draft to {session_id}: {error:#}"
-                                    ),
+                                    )),
                                 }
                             } else if let Err(error) = session_launch::send_message_to_session(
                                 &session_id,
                                 &title,
                                 &message,
                             ) {
-                                eprintln!(
+                                desktop_log::error(format_args!(
                                     "jcode-desktop: failed to send draft to {session_id}: {error:#}"
-                                );
+                                ));
                             } else {
                                 spawn_session_cards_load(
                                     DesktopSessionCardsPurpose::WorkspaceRefresh,
@@ -1023,7 +1050,9 @@ async fn run() -> Result<()> {
                 }
                 if let Some(relaunch) = hot_reloader.poll() {
                     if let Err(error) = relaunch.spawn() {
-                        eprintln!("jcode-desktop: failed to hot reload desktop: {error:#}");
+                        desktop_log::error(format_args!(
+                            "jcode-desktop: failed to hot reload desktop: {error:#}"
+                        ));
                     } else {
                         target.exit();
                         return;
@@ -1048,7 +1077,9 @@ fn load_session_cards_for_desktop() -> Vec<workspace::SessionCard> {
     match session_data::load_recent_session_cards() {
         Ok(cards) => cards,
         Err(error) => {
-            eprintln!("jcode-desktop: failed to load session metadata: {error:#}");
+            desktop_log::error(format_args!(
+                "jcode-desktop: failed to load session metadata: {error:#}"
+            ));
             Vec::new()
         }
     }
@@ -1058,7 +1089,9 @@ fn load_crashed_session_cards_for_desktop() -> Vec<workspace::SessionCard> {
     match session_data::load_crashed_session_cards() {
         Ok(cards) => cards,
         Err(error) => {
-            eprintln!("jcode-desktop: failed to load crashed session metadata: {error:#}");
+            desktop_log::error(format_args!(
+                "jcode-desktop: failed to load crashed session metadata: {error:#}"
+            ));
             Vec::new()
         }
     }
@@ -1076,10 +1109,19 @@ fn spawn_recovery_session_count_scan(
             startup_trace.mark(&format!(
                 "recovery scan completed ({recovery_count} crashed)"
             ));
-            let _ = event_loop_proxy.send_event(DesktopUserEvent::RecoveryCount(recovery_count));
+            if event_loop_proxy
+                .send_event(DesktopUserEvent::RecoveryCount(recovery_count))
+                .is_err()
+            {
+                desktop_log::warn(format_args!(
+                    "jcode-desktop: failed to deliver recovery count, event loop is closed"
+                ));
+            }
         })
     {
-        eprintln!("jcode-desktop: failed to start recovery scan: {error:#}");
+        desktop_log::error(format_args!(
+            "jcode-desktop: failed to start recovery scan: {error:#}"
+        ));
     }
 }
 
@@ -1095,14 +1137,23 @@ fn spawn_single_session_card_refresh(
                 .into_iter()
                 .find(|card| card.session_id == session_id);
             let loaded_in = started.elapsed();
-            let _ = event_loop_proxy.send_event(DesktopUserEvent::SessionCardLoaded {
-                session_id,
-                card,
-                loaded_in,
-            });
+            if event_loop_proxy
+                .send_event(DesktopUserEvent::SessionCardLoaded {
+                    session_id,
+                    card,
+                    loaded_in,
+                })
+                .is_err()
+            {
+                desktop_log::warn(format_args!(
+                    "jcode-desktop: failed to deliver session card refresh, event loop is closed"
+                ));
+            }
         })
     {
-        eprintln!("jcode-desktop: failed to start session card refresh: {error:#}");
+        desktop_log::error(format_args!(
+            "jcode-desktop: failed to start session card refresh: {error:#}"
+        ));
     }
 }
 
@@ -1120,14 +1171,23 @@ fn spawn_session_cards_load(
             let started = Instant::now();
             let cards = load_session_cards_for_desktop();
             let loaded_in = started.elapsed();
-            let _ = event_loop_proxy.send_event(DesktopUserEvent::SessionCardsLoaded {
-                purpose,
-                cards,
-                loaded_in,
-            });
+            if event_loop_proxy
+                .send_event(DesktopUserEvent::SessionCardsLoaded {
+                    purpose,
+                    cards,
+                    loaded_in,
+                })
+                .is_err()
+            {
+                desktop_log::warn(format_args!(
+                    "jcode-desktop: failed to deliver session cards load, event loop is closed"
+                ));
+            }
         })
     {
-        eprintln!("jcode-desktop: failed to start session card load: {error:#}");
+        desktop_log::error(format_args!(
+            "jcode-desktop: failed to start session card load: {error:#}"
+        ));
     }
 }
 
@@ -1146,14 +1206,23 @@ fn spawn_restore_crashed_sessions(event_loop_proxy: EventLoopProxy<DesktopUserEv
                     Err(error) => errors.push(format!("{}: {error:#}", card.session_id)),
                 }
             }
-            let _ = event_loop_proxy.send_event(DesktopUserEvent::CrashedSessionsRestoreFinished {
-                restored,
-                errors,
-                elapsed: started.elapsed(),
-            });
+            if event_loop_proxy
+                .send_event(DesktopUserEvent::CrashedSessionsRestoreFinished {
+                    restored,
+                    errors,
+                    elapsed: started.elapsed(),
+                })
+                .is_err()
+            {
+                desktop_log::warn(format_args!(
+                    "jcode-desktop: failed to deliver crashed-session restore result, event loop is closed"
+                ));
+            }
         })
     {
-        eprintln!("jcode-desktop: failed to start crashed-session restore: {error:#}");
+        desktop_log::error(format_args!(
+            "jcode-desktop: failed to start crashed-session restore: {error:#}"
+        ));
     }
 }
 
@@ -1178,7 +1247,9 @@ fn spawn_desktop_preferences_saver() -> Option<mpsc::Sender<workspace::DesktopPr
         }) {
         Ok(_) => Some(tx),
         Err(error) => {
-            eprintln!("jcode-desktop: failed to start preferences saver: {error:#}");
+            desktop_log::error(format_args!(
+                "jcode-desktop: failed to start preferences saver: {error:#}"
+            ));
             None
         }
     }
@@ -1201,7 +1272,9 @@ fn queue_desktop_preferences_save(
             save_desktop_preferences_off_ui_thread(preferences, 1, Duration::ZERO);
         })
     {
-        eprintln!("jcode-desktop: failed to queue preferences save: {error:#}");
+        desktop_log::error(format_args!(
+            "jcode-desktop: failed to queue preferences save: {error:#}"
+        ));
     }
 }
 
@@ -1618,7 +1691,11 @@ async fn render_hero_frame_to_image(
     let buffer_slice = output_buffer.slice(..);
     let (tx, rx) = mpsc::channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = tx.send(result);
+        if tx.send(result).is_err() {
+            desktop_log::warn(format_args!(
+                "jcode-desktop: failed to deliver hero capture readback result"
+            ));
+        }
     });
     device.poll(wgpu::Maintain::Wait);
     rx.recv()
@@ -1681,6 +1758,10 @@ impl DesktopStartupTrace {
                 "jcode-desktop startup +{:>7.2} ms  {milestone}",
                 self.started_at.elapsed().as_secs_f64() * 1000.0
             );
+            desktop_log::info(format_args!(
+                "jcode-desktop: startup +{:>7.2} ms {milestone}",
+                self.started_at.elapsed().as_secs_f64() * 1000.0
+            ));
         }
     }
 }
@@ -1750,12 +1831,17 @@ fn spawn_session_event_forwarder(
                     .send_event(DesktopUserEvent::SessionEvents(batch))
                     .is_err()
                 {
+                    desktop_log::warn(format_args!(
+                        "jcode-desktop: failed to forward session events, event loop is closed"
+                    ));
                     break;
                 }
             }
         })
     {
-        eprintln!("jcode-desktop: failed to start session event forwarder: {error:#}");
+        desktop_log::error(format_args!(
+            "jcode-desktop: failed to start session event forwarder: {error:#}"
+        ));
     }
 }
 
@@ -3752,7 +3838,9 @@ fn load_desktop_preferences() -> Option<workspace::DesktopPreferences> {
     match desktop_prefs::load_preferences() {
         Ok(preferences) => preferences,
         Err(error) => {
-            eprintln!("jcode-desktop: failed to load desktop preferences: {error:#}");
+            desktop_log::error(format_args!(
+                "jcode-desktop: failed to load desktop preferences: {error:#}"
+            ));
             None
         }
     }
@@ -3777,6 +3865,9 @@ fn initial_single_session_app(resume_session_id: Option<&str>) -> DesktopApp {
             app.status = Some(format!("resumed session {session_id}"));
         }
         Err(error) => {
+            desktop_log::error(format_args!(
+                "jcode-desktop: failed to load resumed session metadata for {session_id}: {error:#}"
+            ));
             app.status = Some(format!("resumed session {session_id}"));
             app.error = Some(format!("failed to load session metadata: {error:#}"));
         }
@@ -4378,6 +4469,7 @@ fn apply_desktop_session_event_batch_with_stats(
     let mut visible_changed = false;
     let mut session_card_refresh_requested = false;
     for event in events {
+        log_desktop_session_event_error(&event);
         if let session_launch::DesktopSessionEvent::TextDelta(text) = &event {
             text_delta_bytes += text.len();
         }
@@ -4413,6 +4505,50 @@ fn desktop_session_event_refreshes_session_card(
             | session_launch::DesktopSessionEvent::Done
             | session_launch::DesktopSessionEvent::Error(_)
     )
+}
+
+fn log_desktop_session_event_error(event: &session_launch::DesktopSessionEvent) {
+    match event {
+        session_launch::DesktopSessionEvent::Error(error) => {
+            desktop_log::error(format_args!(
+                "jcode-desktop: session error event: {}",
+                desktop_log::truncate_for_log(error, 2048)
+            ));
+        }
+        session_launch::DesktopSessionEvent::ModelCatalogError { error } => {
+            desktop_log::error(format_args!(
+                "jcode-desktop: model catalog error event: {}",
+                desktop_log::truncate_for_log(error, 2048)
+            ));
+        }
+        session_launch::DesktopSessionEvent::ModelChanged {
+            model,
+            provider_name,
+            error: Some(error),
+        } => {
+            desktop_log::error(format_args!(
+                "jcode-desktop: model switch failed model={} provider={} error={}",
+                desktop_log::truncate_for_log(model, 256),
+                provider_name
+                    .as_deref()
+                    .map(|provider| desktop_log::truncate_for_log(provider, 256))
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+                desktop_log::truncate_for_log(error, 2048)
+            ));
+        }
+        session_launch::DesktopSessionEvent::ToolFinished {
+            name,
+            summary,
+            is_error: true,
+        } => {
+            desktop_log::warn(format_args!(
+                "jcode-desktop: tool failed name={} summary={}",
+                desktop_log::truncate_for_log(name, 256),
+                desktop_log::truncate_for_log(summary, 2048)
+            ));
+        }
+        _ => {}
+    }
 }
 
 fn log_desktop_session_event_batch_profile(
@@ -4687,6 +4823,7 @@ fn apply_pending_session_events(
 }
 
 fn apply_single_session_error(app: &mut DesktopApp, error: anyhow::Error) {
+    desktop_log::error(format_args!("jcode-desktop: UI action failed: {error:#}"));
     app.apply_session_event(session_launch::DesktopSessionEvent::Error(format!(
         "{error:#}"
     )));
@@ -4697,9 +4834,14 @@ fn copy_text_to_clipboard(text: &str, success_notice: &'static str, app: &mut De
         Ok(()) => app.apply_session_event(session_launch::DesktopSessionEvent::Status(
             success_notice.to_string(),
         )),
-        Err(error) => app.apply_session_event(session_launch::DesktopSessionEvent::Error(format!(
-            "failed to update clipboard after {success_notice}: {error}"
-        ))),
+        Err(error) => {
+            desktop_log::error(format_args!(
+                "jcode-desktop: failed to update clipboard after {success_notice}: {error}"
+            ));
+            app.apply_session_event(session_launch::DesktopSessionEvent::Error(format!(
+                "failed to update clipboard after {success_notice}: {error}"
+            )));
+        }
     }
 }
 
@@ -5509,22 +5651,44 @@ fn desktop_profile_log_sender() -> Option<&'static mpsc::Sender<DesktopProfileLo
                 .spawn(move || {
                     let mut file = path.and_then(|path| {
                         if let Some(parent) = path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
+                            if let Err(error) = std::fs::create_dir_all(parent) {
+                                desktop_log::error(format_args!(
+                                    "jcode-desktop: failed to create profile log directory {}: {error}",
+                                    parent.display()
+                                ));
+                                return None;
+                            }
                         }
-                        OpenOptions::new().create(true).append(true).open(path).ok()
+                        match OpenOptions::new().create(true).append(true).open(&path) {
+                            Ok(file) => Some(file),
+                            Err(error) => {
+                                desktop_log::error(format_args!(
+                                    "jcode-desktop: failed to open profile log {}: {error}",
+                                    path.display()
+                                ));
+                                None
+                            }
+                        }
                     });
                     while let Ok(line) = rx.recv() {
                         if stderr_enabled {
                             eprintln!("{}", line.stderr_line);
                         }
-                        if let Some(file) = file.as_mut() {
-                            let _ = writeln!(file, "{}", line.jsonl_line);
+                        if let Some(profile_file) = file.as_mut() {
+                            if let Err(error) = writeln!(profile_file, "{}", line.jsonl_line) {
+                                desktop_log::error(format_args!(
+                                    "jcode-desktop: failed to write profile log: {error}"
+                                ));
+                                file = None;
+                            }
                         }
                     }
                 }) {
                 Ok(_) => Some(tx),
                 Err(error) => {
-                    eprintln!("jcode-desktop: failed to start profile logger: {error:#}");
+                    desktop_log::error(format_args!(
+                        "jcode-desktop: failed to start profile logger: {error:#}"
+                    ));
                     None
                 }
             }
@@ -5548,10 +5712,17 @@ fn emit_desktop_profile_event(event: &'static str, payload: serde_json::Value) {
             "payload": payload,
         })
         .to_string();
-        let _ = tx.send(DesktopProfileLogLine {
-            stderr_line,
-            jsonl_line,
-        });
+        if tx
+            .send(DesktopProfileLogLine {
+                stderr_line,
+                jsonl_line,
+            })
+            .is_err()
+        {
+            desktop_log::warn(format_args!(
+                "jcode-desktop: failed to queue profile event {event}, logger is closed"
+            ));
+        }
     }
 }
 
@@ -6054,7 +6225,15 @@ impl<'window> Canvas<'window> {
         self.font_system = Some(
             self.font_system_loader
                 .take()
-                .and_then(|loader| loader.join().ok())
+                .and_then(|loader| match loader.join() {
+                    Ok(font_system) => Some(font_system),
+                    Err(_) => {
+                        desktop_log::error(format_args!(
+                            "jcode-desktop: font system loader thread panicked"
+                        ));
+                        None
+                    }
+                })
                 .unwrap_or_else(create_desktop_font_system),
         );
     }
@@ -6435,7 +6614,9 @@ impl<'window> Canvas<'window> {
                     text_areas,
                     &mut self.swash_cache,
                 ) {
-                    eprintln!("jcode-desktop: failed to prepare text: {error:?}");
+                    desktop_log::error(format_args!(
+                        "jcode-desktop: failed to prepare text: {error:?}"
+                    ));
                 } else {
                     self.text_needs_prepare = false;
                 }
@@ -6495,7 +6676,9 @@ impl<'window> Canvas<'window> {
                     streaming_text_areas,
                     &mut self.swash_cache,
                 ) {
-                    eprintln!("jcode-desktop: failed to prepare streaming text: {error:?}");
+                    desktop_log::error(format_args!(
+                        "jcode-desktop: failed to prepare streaming text: {error:?}"
+                    ));
                 } else {
                     self.streaming_text_needs_prepare = false;
                 }
@@ -6671,7 +6854,9 @@ impl<'window> Canvas<'window> {
                     (self.text_renderer.as_mut(), self.text_atlas.as_ref())
                 && let Err(error) = text_renderer.render(text_atlas, &mut render_pass)
             {
-                eprintln!("jcode-desktop: failed to render text: {error:?}");
+                desktop_log::error(format_args!(
+                    "jcode-desktop: failed to render text: {error:?}"
+                ));
             }
             if has_streaming_text_buffer
                 && let (Some(text_renderer), Some(text_atlas)) = (
@@ -6680,7 +6865,9 @@ impl<'window> Canvas<'window> {
                 )
                 && let Err(error) = text_renderer.render(text_atlas, &mut render_pass)
             {
-                eprintln!("jcode-desktop: failed to render streaming text: {error:?}");
+                desktop_log::error(format_args!(
+                    "jcode-desktop: failed to render streaming text: {error:?}"
+                ));
             }
         }
         frame_profile.checkpoint("render_pass");

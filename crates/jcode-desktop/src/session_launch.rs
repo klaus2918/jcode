@@ -157,7 +157,13 @@ pub fn spawn_fresh_server_session(
             if let Err(error) =
                 run_server_session(None, &message, images, Some(event_tx.clone()), command_rx)
             {
-                let _ = event_tx.send(DesktopSessionEvent::Error(format!("{error:#}")));
+                crate::desktop_log::error(format_args!(
+                    "jcode-desktop: fresh server session failed: {error:#}"
+                ));
+                send_desktop_event_ref(
+                    Some(&event_tx),
+                    DesktopSessionEvent::Error(format!("{error:#}")),
+                );
             }
         })
         .context("failed to spawn desktop session worker")?;
@@ -187,7 +193,10 @@ pub fn spawn_message_to_session(
                 Some(event_tx.clone()),
                 command_rx,
             ) {
-                let _ = event_tx.send(DesktopSessionEvent::Error(format!("{error:#}")));
+                crate::desktop_log::error(format_args!(
+                    "jcode-desktop: server session message failed session_id={session_id}: {error:#}"
+                ));
+                send_desktop_event_ref(Some(&event_tx), DesktopSessionEvent::Error(format!("{error:#}")));
             }
         })
         .context("failed to spawn desktop session worker")?;
@@ -208,9 +217,16 @@ pub fn spawn_cycle_model(
                 target_session_id.as_deref(),
                 Some(event_tx.clone()),
             ) {
-                let _ = event_tx.send(DesktopSessionEvent::ModelCatalogError {
-                    error: format!("{error:#}"),
-                });
+                crate::desktop_log::error(format_args!(
+                    "jcode-desktop: model cycle failed direction={direction} target_session={}: {error:#}",
+                    target_session_id.as_deref().unwrap_or("<current>")
+                ));
+                send_desktop_event_ref(
+                    Some(&event_tx),
+                    DesktopSessionEvent::ModelCatalogError {
+                        error: format!("{error:#}"),
+                    },
+                );
             }
         })
         .context("failed to spawn desktop model switch worker")?;
@@ -231,9 +247,16 @@ pub fn spawn_cycle_reasoning_effort(
                 target_session_id.as_deref(),
                 Some(event_tx.clone()),
             ) {
-                let _ = event_tx.send(DesktopSessionEvent::ModelCatalogError {
-                    error: format!("{error:#}"),
-                });
+                crate::desktop_log::error(format_args!(
+                    "jcode-desktop: reasoning effort cycle failed direction={direction} target_session={}: {error:#}",
+                    target_session_id.as_deref().unwrap_or("<current>")
+                ));
+                send_desktop_event_ref(
+                    Some(&event_tx),
+                    DesktopSessionEvent::ModelCatalogError {
+                        error: format!("{error:#}"),
+                    },
+                );
             }
         })
         .context("failed to spawn desktop reasoning effort worker")?;
@@ -246,12 +269,13 @@ pub fn spawn_cycle_reasoning_effort(
     _target_session_id: Option<String>,
     event_tx: DesktopSessionEventSender,
 ) -> Result<()> {
-    event_tx
-        .send(DesktopSessionEvent::ModelCatalogError {
+    send_desktop_event_ref(
+        Some(&event_tx),
+        DesktopSessionEvent::ModelCatalogError {
             error: "desktop reasoning effort switching is not implemented on this platform yet"
                 .to_string(),
-        })
-        .ok();
+        },
+    );
     Ok(())
 }
 
@@ -261,11 +285,12 @@ pub fn spawn_cycle_model(
     _target_session_id: Option<String>,
     event_tx: DesktopSessionEventSender,
 ) -> Result<()> {
-    event_tx
-        .send(DesktopSessionEvent::ModelCatalogError {
+    send_desktop_event_ref(
+        Some(&event_tx),
+        DesktopSessionEvent::ModelCatalogError {
             error: "desktop model switching is not implemented on this platform yet".to_string(),
-        })
-        .ok();
+        },
+    );
     Ok(())
 }
 
@@ -280,9 +305,16 @@ pub fn spawn_load_model_catalog(
             if let Err(error) =
                 load_model_catalog(target_session_id.as_deref(), Some(event_tx.clone()))
             {
-                let _ = event_tx.send(DesktopSessionEvent::ModelCatalogError {
-                    error: format!("{error:#}"),
-                });
+                crate::desktop_log::error(format_args!(
+                    "jcode-desktop: model catalog load failed target_session={}: {error:#}",
+                    target_session_id.as_deref().unwrap_or("<current>")
+                ));
+                send_desktop_event_ref(
+                    Some(&event_tx),
+                    DesktopSessionEvent::ModelCatalogError {
+                        error: format!("{error:#}"),
+                    },
+                );
             }
         })
         .context("failed to spawn desktop model catalog worker")?;
@@ -294,12 +326,13 @@ pub fn spawn_load_model_catalog(
     _target_session_id: Option<String>,
     event_tx: DesktopSessionEventSender,
 ) -> Result<()> {
-    event_tx
-        .send(DesktopSessionEvent::ModelCatalogError {
+    send_desktop_event_ref(
+        Some(&event_tx),
+        DesktopSessionEvent::ModelCatalogError {
             error: "desktop model catalog loading is not implemented on this platform yet"
                 .to_string(),
-        })
-        .ok();
+        },
+    );
     Ok(())
 }
 
@@ -315,9 +348,17 @@ pub fn spawn_set_model(
             if let Err(error) =
                 set_model(&model, target_session_id.as_deref(), Some(event_tx.clone()))
             {
-                let _ = event_tx.send(DesktopSessionEvent::ModelCatalogError {
-                    error: format!("{error:#}"),
-                });
+                crate::desktop_log::error(format_args!(
+                    "jcode-desktop: set model failed model={} target_session={}: {error:#}",
+                    crate::desktop_log::truncate_for_log(&model, 256),
+                    target_session_id.as_deref().unwrap_or("<current>")
+                ));
+                send_desktop_event_ref(
+                    Some(&event_tx),
+                    DesktopSessionEvent::ModelCatalogError {
+                        error: format!("{error:#}"),
+                    },
+                );
             }
         })
         .context("failed to spawn desktop set model worker")?;
@@ -330,11 +371,12 @@ pub fn spawn_set_model(
     _target_session_id: Option<String>,
     event_tx: DesktopSessionEventSender,
 ) -> Result<()> {
-    event_tx
-        .send(DesktopSessionEvent::ModelCatalogError {
+    send_desktop_event_ref(
+        Some(&event_tx),
+        DesktopSessionEvent::ModelCatalogError {
             error: "desktop model switching is not implemented on this platform yet".to_string(),
-        })
-        .ok();
+        },
+    );
     Ok(())
 }
 
@@ -638,7 +680,33 @@ pub(super) fn send_desktop_event_ref(
     event: DesktopSessionEvent,
 ) {
     if let Some(event_tx) = event_tx {
-        let _ = event_tx.send(event);
+        let event_kind = desktop_session_event_kind(&event);
+        if event_tx.send(event).is_err() {
+            crate::desktop_log::warn(format_args!(
+                "jcode-desktop: failed to deliver backend event {event_kind}, receiver is closed"
+            ));
+        }
+    }
+}
+
+fn desktop_session_event_kind(event: &DesktopSessionEvent) -> &'static str {
+    match event {
+        DesktopSessionEvent::Status(_) => "status",
+        DesktopSessionEvent::SessionStarted { .. } => "session_started",
+        DesktopSessionEvent::TextDelta(_) => "text_delta",
+        DesktopSessionEvent::TextReplace(_) => "text_replace",
+        DesktopSessionEvent::ToolStarted { .. } => "tool_started",
+        DesktopSessionEvent::ToolExecuting { .. } => "tool_executing",
+        DesktopSessionEvent::ToolInput { .. } => "tool_input",
+        DesktopSessionEvent::ToolFinished { .. } => "tool_finished",
+        DesktopSessionEvent::ModelChanged { .. } => "model_changed",
+        DesktopSessionEvent::ModelCatalog { .. } => "model_catalog",
+        DesktopSessionEvent::ModelCatalogError { .. } => "model_catalog_error",
+        DesktopSessionEvent::StdinRequest { .. } => "stdin_request",
+        DesktopSessionEvent::Reloading { .. } => "reloading",
+        DesktopSessionEvent::Reloaded { .. } => "reloaded",
+        DesktopSessionEvent::Done => "done",
+        DesktopSessionEvent::Error(_) => "error",
     }
 }
 
