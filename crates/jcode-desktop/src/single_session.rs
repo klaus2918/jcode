@@ -4615,12 +4615,34 @@ fn formatted_tool_input_summary(
         }
         "write" | "edit" | "multiedit" => {
             if let Some(path) = string_value("file_path") {
-                lines.push(format!("file {}", compact_tool_text(path, 132)));
+                let mut summary = compact_tool_text(path, 132);
+                if tool_name == "multiedit"
+                    && let Some(count) = map
+                        .get("edits")
+                        .and_then(serde_json::Value::as_array)
+                        .map(Vec::len)
+                {
+                    summary.push_str(&format!(" ({count} edits)"));
+                }
+                lines.push(summary);
+            }
+        }
+        "glob" => {
+            if let Some(pattern) = string_value("pattern") {
+                lines.push(format!("'{}'", compact_tool_text(pattern, 96)));
             }
         }
         "agentgrep" | "grep" => {
-            if let Some(query) = string_value("query").or_else(|| string_value("pattern")) {
-                lines.push(format!("search {}", compact_tool_text(query, 132)));
+            let query = string_value("query").or_else(|| string_value("pattern"));
+            if tool_name == "agentgrep" {
+                let mode = string_value("mode").unwrap_or("grep");
+                if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
+                    lines.push(format!("{mode} '{}'", compact_tool_text(query, 72)));
+                } else {
+                    lines.push(mode.to_string());
+                }
+            } else if let Some(query) = query {
+                lines.push(format!("'{}'", compact_tool_text(query, 72)));
             }
             if let Some(path) = string_value("path") {
                 lines.push(format!("in {}", compact_tool_text(path, 132)));
@@ -4642,12 +4664,57 @@ fn formatted_tool_input_summary(
                 });
             }
         }
+        "open" | "launch" => {
+            let action = string_value("action").unwrap_or("open");
+            if let Some(target) = string_value("target") {
+                lines.push(format!("{action} {}", compact_tool_text(target, 96)));
+            } else {
+                lines.push(action.to_string());
+            }
+        }
+        "todo" => {
+            if let Some(count) = map
+                .get("todos")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+            {
+                lines.push(format!("{count} items"));
+            }
+        }
+        "memory" | "goal" | "side_panel" | "bg" | "mcp" | "selfdev" | "swarm" => {
+            if let Some(action) = string_value("action") {
+                let target = string_value("title")
+                    .or_else(|| string_value("id"))
+                    .or_else(|| string_value("task_id"))
+                    .or_else(|| string_value("server"))
+                    .or_else(|| string_value("server_name"));
+                lines.push(match target {
+                    Some(target) => format!("{action} {}", compact_tool_text(target, 96)),
+                    None => action.to_string(),
+                });
+            }
+        }
+        "batch" => {
+            if let Some(count) = map
+                .get("tool_calls")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+            {
+                lines.push(format!("{count} calls"));
+            }
+        }
+        "subagent" | "task" => {
+            let desc = string_value("description").unwrap_or("task");
+            let agent_type = string_value("subagent_type").unwrap_or("agent");
+            lines.push(format!(
+                "{} ({})",
+                compact_tool_text(desc, 84),
+                compact_tool_text(agent_type, 28)
+            ));
+        }
         _ => {}
     }
 
-    if let Some(intent) = string_value("intent").filter(|intent| !intent.trim().is_empty()) {
-        lines.insert(0, format!("intent: {}", compact_tool_text(intent, 112)));
-    }
     if bool_value("run_in_background") == Some(true) {
         lines.push("background: yes".to_string());
     }
@@ -4657,13 +4724,14 @@ fn formatted_tool_input_summary(
 
 fn tool_input_key_priority(key: &str) -> usize {
     match key {
-        "intent" => 0,
-        "command" => 1,
-        "file_path" | "path" => 2,
-        "query" => 3,
-        "pattern" | "glob" => 4,
-        "url" => 5,
-        "task" | "prompt" => 6,
+        "command" => 0,
+        "file_path" | "path" => 1,
+        "query" => 2,
+        "pattern" | "glob" => 3,
+        "url" => 4,
+        "action" => 5,
+        "task" | "prompt" | "description" => 6,
+        "intent" => 90,
         _ => 100,
     }
 }
@@ -4950,11 +5018,36 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "  ● bash · running · intent: run the desktop tests · $ cargo test -p jcode-desktop · background: yes",
+                "  ● bash · running · $ cargo test -p jcode-desktop · background: yes",
                 "  ╭────────────────────────────────────────────────────────────────────╮",
                 "  │waiting for tool output…                                            │",
                 "  ╰────────────────────────────────────────────────────────────────────╯",
             ]
+        );
+    }
+
+    #[test]
+    fn desktop_tool_metadata_prioritizes_tui_like_summary_over_intent() {
+        assert_eq!(
+            formatted_tool_input_lines(
+                "agentgrep",
+                "{\"intent\":\"Locate rendering code\",\"query\":\"tool call\",\"path\":\"src/tui\"}",
+            ),
+            vec!["grep 'tool call'", "in src/tui"]
+        );
+        assert_eq!(
+            formatted_tool_input_lines(
+                "side_panel",
+                "{\"intent\":\"Show notes\",\"action\":\"write\",\"title\":\"Plan\"}",
+            ),
+            vec!["write Plan"]
+        );
+        assert_eq!(
+            formatted_tool_input_lines(
+                "subagent",
+                "{\"intent\":\"Delegate\",\"description\":\"Inspect parser\",\"subagent_type\":\"agent\"}",
+            ),
+            vec!["Inspect parser (agent)"]
         );
     }
 
@@ -5007,5 +5100,14 @@ mod tests {
             "{\"token\":\"secret\",\"query\":\"tool calls\",\"extra\":42}",
         );
         assert_eq!(lines, vec!["query: tool calls", "extra: 42", "token: ••••"]);
+    }
+
+    #[test]
+    fn unknown_tool_uses_intent_only_as_fallback() {
+        let lines = formatted_tool_input_lines(
+            "custom",
+            "{\"intent\":\"describe action\",\"query\":\"tool calls\"}",
+        );
+        assert_eq!(lines, vec!["query: tool calls", "intent: describe action"]);
     }
 }
