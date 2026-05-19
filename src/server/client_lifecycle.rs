@@ -143,6 +143,129 @@ fn interrupt_request_log_fields(
     }
 }
 
+fn request_type_from_line(line: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(|kind| kind.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn request_type_is_read_only(kind: &str) -> bool {
+    matches!(
+        kind,
+        "ping"
+            | "state"
+            | "get_history"
+            | "get_model_catalog"
+            | "get_compacted_history"
+            | "agent_capabilities"
+            | "agent_context"
+            | "comm_read"
+            | "comm_list"
+            | "comm_list_channels"
+            | "comm_channel_members"
+            | "comm_summary"
+            | "comm_status"
+            | "comm_plan_status"
+            | "comm_read_context"
+            | "comm_await_members"
+    )
+}
+
+fn request_payload_summary(kind: &str, line: &str) -> Vec<(String, String)> {
+    let mut fields = Vec::new();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+        let bytes_chars =
+            |name: &str, value: &serde_json::Value, fields: &mut Vec<(String, String)>| {
+                if let Some(text) = value.get(name).and_then(|v| v.as_str()) {
+                    fields.push((format!("{}_bytes", name), text.len().to_string()));
+                    fields.push((format!("{}_chars", name), text.chars().count().to_string()));
+                }
+            };
+        for name in [
+            "content", "message", "prompt", "task", "command", "input", "value",
+        ] {
+            bytes_chars(name, &value, &mut fields);
+        }
+        if let Some(images) = value.get("images").and_then(|v| v.as_array()) {
+            fields.push(("image_count".to_string(), images.len().to_string()));
+        }
+        if let Some(session_id) = value.get("session_id").and_then(|v| v.as_str()) {
+            fields.push(("request_session_id".to_string(), session_id.to_string()));
+        }
+        if let Some(target_session) = value.get("target_session").and_then(|v| v.as_str()) {
+            fields.push(("target_session".to_string(), target_session.to_string()));
+        }
+        if let Some(client_instance_id) = value.get("client_instance_id").and_then(|v| v.as_str()) {
+            fields.push((
+                "request_client_instance_id".to_string(),
+                client_instance_id.to_string(),
+            ));
+        }
+        if matches!(kind, "set_model" | "set_subagent_model")
+            && let Some(model) = value.get("model").and_then(|v| v.as_str())
+        {
+            fields.push(("model".to_string(), model.to_string()));
+        }
+        if let Some(title) = value.get("title").and_then(|v| v.as_str()) {
+            fields.push(("title_chars".to_string(), title.chars().count().to_string()));
+        }
+    }
+    fields
+}
+
+fn server_request_lifecycle_fields(
+    phase: &str,
+    request_id: u64,
+    request_kind: &str,
+    client_session_id: &str,
+    client_connection_id: &str,
+    client_instance_id: Option<&str>,
+    client_is_processing: bool,
+    message_id: Option<u64>,
+    processing_session_id: Option<&str>,
+    line_bytes: usize,
+) -> Vec<(String, String)> {
+    let mut fields = vec![
+        ("phase".to_string(), phase.to_string()),
+        ("request_id".to_string(), request_id.to_string()),
+        ("request_kind".to_string(), request_kind.to_string()),
+        ("session_id".to_string(), client_session_id.to_string()),
+        (
+            "client_connection_id".to_string(),
+            client_connection_id.to_string(),
+        ),
+        (
+            "client_instance_id".to_string(),
+            client_instance_id.unwrap_or("none").to_string(),
+        ),
+        (
+            "client_processing".to_string(),
+            client_is_processing.to_string(),
+        ),
+        (
+            "message_id".to_string(),
+            message_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        ),
+        (
+            "processing_session_id".to_string(),
+            processing_session_id.unwrap_or("none").to_string(),
+        ),
+        ("line_bytes".to_string(), line_bytes.to_string()),
+    ];
+    if let Some(ctx_session) = crate::logging::current_session() {
+        fields.push(("log_context_session_id".to_string(), ctx_session));
+    }
+    fields
+}
+
 fn server_reload_starting() -> bool {
     matches!(
         crate::server::recent_reload_state(RELOAD_STARTING_GUARD_MAX_AGE),
@@ -946,6 +1069,7 @@ pub(super) async fn handle_client(
     let mut processing_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut processing_message_id: Option<u64> = None;
     let mut processing_session_id: Option<String> = None;
+    let mut current_client_instance_id: Option<String> = None;
     // Client selfdev status is determined by Subscribe request, not server's env
     let mut client_selfdev = false;
 
@@ -1349,6 +1473,26 @@ pub(super) async fn handle_client(
             }
         };
         let request_decoded_at = Instant::now();
+        let request_id = request.id();
+        let request_kind = request_type_from_line(&line);
+        let request_lifecycle_logged = !request_type_is_read_only(&request_kind);
+        let request_lifecycle_start = Instant::now();
+        if request_lifecycle_logged {
+            let mut fields = server_request_lifecycle_fields(
+                "received",
+                request_id,
+                &request_kind,
+                &client_session_id,
+                &client_connection_id,
+                current_client_instance_id.as_deref(),
+                client_is_processing,
+                processing_message_id,
+                processing_session_id.as_deref(),
+                line.len(),
+            );
+            fields.extend(request_payload_summary(&request_kind, &line));
+            crate::logging::event_info("SERVER_REQUEST_LIFECYCLE", fields);
+        }
         if let Some(fields) = interrupt_request_log_fields(
             &request,
             &client_session_id,
@@ -1417,9 +1561,52 @@ pub(super) async fn handle_client(
         let ack = ServerEvent::Ack { id: request.id() };
         let json = encode_event(&ack);
         {
+            let ack_start = Instant::now();
             let mut w = writer.lock().await;
             if w.write_all(json.as_bytes()).await.is_err() {
+                if request_lifecycle_logged {
+                    let mut fields = server_request_lifecycle_fields(
+                        "ack_write_failed",
+                        request_id,
+                        &request_kind,
+                        &client_session_id,
+                        &client_connection_id,
+                        current_client_instance_id.as_deref(),
+                        client_is_processing,
+                        processing_message_id,
+                        processing_session_id.as_deref(),
+                        line.len(),
+                    );
+                    fields.push((
+                        "ack_write_ms".to_string(),
+                        ack_start.elapsed().as_millis().to_string(),
+                    ));
+                    crate::logging::event_warn("SERVER_REQUEST_LIFECYCLE", fields);
+                }
                 break;
+            }
+            if request_lifecycle_logged {
+                let mut fields = server_request_lifecycle_fields(
+                    "acked",
+                    request_id,
+                    &request_kind,
+                    &client_session_id,
+                    &client_connection_id,
+                    current_client_instance_id.as_deref(),
+                    client_is_processing,
+                    processing_message_id,
+                    processing_session_id.as_deref(),
+                    line.len(),
+                );
+                fields.push((
+                    "ack_write_ms".to_string(),
+                    ack_start.elapsed().as_millis().to_string(),
+                ));
+                fields.push((
+                    "since_decode_ms".to_string(),
+                    request_decoded_at.elapsed().as_millis().to_string(),
+                ));
+                crate::logging::event_info("SERVER_REQUEST_LIFECYCLE", fields);
             }
         }
 
@@ -1687,6 +1874,7 @@ pub(super) async fn handle_client(
                 client_has_local_history,
                 allow_session_takeover,
             } => {
+                current_client_instance_id = client_instance_id.clone();
                 {
                     let mut connections = client_connections.write().await;
                     if let Some(info) = connections.get_mut(&client_connection_id) {
@@ -1909,6 +2097,7 @@ pub(super) async fn handle_client(
                 client_has_local_history,
                 allow_session_takeover,
             } => {
+                current_client_instance_id = client_instance_id.clone();
                 {
                     let mut connections = client_connections.write().await;
                     if let Some(info) = connections.get_mut(&client_connection_id) {
@@ -2764,6 +2953,29 @@ pub(super) async fn handle_client(
             Request::ClientDebugResponse { id, output } => {
                 handle_client_debug_response(id, output, &client_debug_response_tx);
             }
+        }
+        if request_lifecycle_logged {
+            let mut fields = server_request_lifecycle_fields(
+                "handled",
+                request_id,
+                &request_kind,
+                &client_session_id,
+                &client_connection_id,
+                current_client_instance_id.as_deref(),
+                client_is_processing,
+                processing_message_id,
+                processing_session_id.as_deref(),
+                line.len(),
+            );
+            fields.push((
+                "handler_total_ms".to_string(),
+                request_lifecycle_start.elapsed().as_millis().to_string(),
+            ));
+            fields.push((
+                "since_decode_ms".to_string(),
+                request_decoded_at.elapsed().as_millis().to_string(),
+            ));
+            crate::logging::event_info("SERVER_REQUEST_LIFECYCLE", fields);
         }
     }
 
