@@ -2498,10 +2498,25 @@ fn single_session_transcript_card_runs_group_card_styles() {
 
     let code = runs
         .iter()
-        .find(|run| run.style == SingleSessionLineStyle::Code)
+        .find(|run| run.style == SingleSessionLineStyle::CodeHeader)
         .expect("code block should have a card run");
     assert_eq!(code.line_count, 2);
     assert_eq!(lines[code.line].text, "  rust");
+    assert_eq!(lines[code.line].style, SingleSessionLineStyle::CodeHeader);
+    assert_eq!(lines[code.line + 1].style, SingleSessionLineStyle::Code);
+
+    // The language chip participates in the same code-card background run, but
+    // is semantically separate from code content so it can be placed/styled as a
+    // header instead of being treated as the first source line.
+    assert_eq!(
+        runs.iter()
+            .filter(|run| {
+                run.style == SingleSessionLineStyle::CodeHeader
+                    || run.style == SingleSessionLineStyle::Code
+            })
+            .count(),
+        1
+    );
 
     // Tool rows are neutral inline transcript rows, not orange card runs.
     assert!(
@@ -2516,6 +2531,68 @@ fn single_session_transcript_card_runs_group_card_styles() {
         .expect("error line should have a card run");
     assert_eq!(error.line_count, 1);
     assert_eq!(lines[error.line].text, "error: boom");
+}
+
+#[test]
+fn code_block_header_placement_is_stable_across_sizes_and_text_scales() {
+    let markdown = "before\n\n```text\njcode-desktop native window input uses winit and renders via wgpu\n  indented code stays code\n```\n\nafter";
+    let sizes = [
+        PhysicalSize::new(520, 420),
+        PhysicalSize::new(900, 640),
+        PhysicalSize::new(1440, 900),
+    ];
+    let scale_steps: [i8; 3] = [-2, 0, 3];
+
+    for size in sizes {
+        for scale_step in scale_steps {
+            let mut app = SingleSessionApp::new(None);
+            for _ in 0..scale_step.unsigned_abs() {
+                app.handle_key(workspace::KeyInput::AdjustTextScale(scale_step.signum()));
+            }
+            app.messages.push(SingleSessionMessage::assistant(markdown));
+
+            let lines = single_session_rendered_body_lines_for_tick(&app, size, 0);
+            let header_index = lines
+                .iter()
+                .position(|line| line.text == "  text")
+                .unwrap_or_else(|| {
+                    panic!("missing code header at size {size:?}, scale {scale_step}")
+                });
+
+            assert_eq!(
+                lines[header_index].style,
+                SingleSessionLineStyle::CodeHeader
+            );
+            assert!(
+                lines[header_index + 1..]
+                    .iter()
+                    .take_while(|line| line.style == SingleSessionLineStyle::Code)
+                    .any(|line| line.text.starts_with("  jcode-desktop")),
+                "first code content line should immediately follow header as code at size {size:?}, scale {scale_step}"
+            );
+
+            let runs = single_session_transcript_card_runs(&lines);
+            let header_run = runs
+                .iter()
+                .find(|run| run.line <= header_index && header_index < run.line + run.line_count)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "header is not covered by a code card at size {size:?}, scale {scale_step}"
+                    )
+                });
+            assert_eq!(header_run.style, SingleSessionLineStyle::CodeHeader);
+            assert!(
+                header_run.line_count >= 3,
+                "language header and code content should be one contiguous card at size {size:?}, scale {scale_step}"
+            );
+            assert!(
+                lines[header_run.line + 1..header_run.line + header_run.line_count]
+                    .iter()
+                    .all(|line| line.style == SingleSessionLineStyle::Code),
+                "only the first line in the card run may be the language header at size {size:?}, scale {scale_step}"
+            );
+        }
+    }
 }
 
 #[test]

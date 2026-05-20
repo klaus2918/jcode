@@ -419,6 +419,7 @@ pub(crate) enum SingleSessionLineStyle {
     AssistantQuote,
     AssistantTable,
     AssistantLink,
+    CodeHeader,
     Code,
     User,
     UserContinuation,
@@ -4141,7 +4142,7 @@ impl AssistantMarkdownRenderer {
             if !language.is_empty() {
                 self.lines.push(styled_line(
                     format!("  {language}"),
-                    SingleSessionLineStyle::Code,
+                    SingleSessionLineStyle::CodeHeader,
                 ));
             }
         }

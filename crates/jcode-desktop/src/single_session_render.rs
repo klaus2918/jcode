@@ -4781,7 +4781,11 @@ pub(crate) fn single_session_transcript_card_runs(
         }
 
         match &mut current {
-            Some(run) if run.style == styled_line.style && run.line + run.line_count == line => {
+            Some(run)
+                if single_session_line_card_color(run.style)
+                    == single_session_line_card_color(styled_line.style)
+                    && run.line + run.line_count == line =>
+            {
                 run.line_count += 1;
             }
             Some(run) => {
@@ -4811,7 +4815,9 @@ pub(crate) fn single_session_transcript_card_runs(
 fn single_session_line_card_color(style: SingleSessionLineStyle) -> Option<[f32; 4]> {
     match style {
         SingleSessionLineStyle::AssistantHeading => Some(MARKDOWN_HEADING_BACKGROUND_COLOR),
-        SingleSessionLineStyle::Code => Some(CODE_BLOCK_BACKGROUND_COLOR),
+        SingleSessionLineStyle::CodeHeader | SingleSessionLineStyle::Code => {
+            Some(CODE_BLOCK_BACKGROUND_COLOR)
+        }
         SingleSessionLineStyle::AssistantQuote => Some(QUOTE_CARD_BACKGROUND_COLOR),
         SingleSessionLineStyle::AssistantTable => Some(TABLE_CARD_BACKGROUND_COLOR),
         SingleSessionLineStyle::Error => Some(ERROR_CARD_BACKGROUND_COLOR),
@@ -6609,6 +6615,7 @@ fn single_session_line_rgba(style: SingleSessionLineStyle) -> [f32; 4] {
         SingleSessionLineStyle::AssistantQuote => ASSISTANT_QUOTE_TEXT_COLOR,
         SingleSessionLineStyle::AssistantTable => ASSISTANT_TABLE_TEXT_COLOR,
         SingleSessionLineStyle::AssistantLink => ASSISTANT_LINK_TEXT_COLOR,
+        SingleSessionLineStyle::CodeHeader => META_TEXT_COLOR,
         SingleSessionLineStyle::Code => CODE_TEXT_COLOR,
         SingleSessionLineStyle::User => USER_TEXT_COLOR,
         SingleSessionLineStyle::UserContinuation => USER_CONTINUATION_TEXT_COLOR,
