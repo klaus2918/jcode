@@ -1,5 +1,6 @@
 mod animation;
 mod desktop_config;
+mod desktop_gallery;
 mod desktop_log;
 mod desktop_prefs;
 mod desktop_rich_text;
@@ -439,7 +440,12 @@ async fn run() -> Result<()> {
     if let Some(raw_events) = stream_e2e_benchmark_raw_events(&args) {
         return run_stream_e2e_benchmark(raw_events);
     }
+    if desktop_gallery::launcher_requested(&args) {
+        return desktop_gallery::launch_temporary_windows();
+    }
     let fullscreen = args.iter().any(|arg| arg == "--fullscreen");
+    let desktop_gallery_state = desktop_gallery::state_from_args(&args);
+    let desktop_gallery = desktop_gallery_state.is_some();
     let desktop_mode = desktop_mode_from_args(args.iter().map(String::as_str));
     let resume_session_id = desktop_resume_session_id_from_args(args.iter().map(String::as_str));
     emit_desktop_profile_event(
@@ -476,7 +482,9 @@ async fn run() -> Result<()> {
 
     let mut pending_workspace_startup_load = false;
     let mut pending_workspace_startup_preferences = None;
-    let mut app = if desktop_mode == DesktopMode::WorkspacePrototype {
+    let mut app = if let Some(gallery_state) = desktop_gallery_state.as_deref() {
+        desktop_gallery::temporary_app(gallery_state)
+    } else if desktop_mode == DesktopMode::WorkspacePrototype {
         let mut workspace = Workspace::loading_sessions();
         if let Some(preferences) = load_desktop_preferences() {
             workspace.apply_preferences(preferences.clone());
@@ -502,7 +510,7 @@ async fn run() -> Result<()> {
     let mut power_inhibitor = power_inhibit::PowerInhibitor::new();
     let (session_event_tx, session_event_rx) = mpsc::channel();
     spawn_session_event_forwarder(session_event_rx, event_loop_proxy.clone());
-    let mut recovery_scan_pending = app.is_single_session();
+    let mut recovery_scan_pending = app.is_single_session() && !desktop_gallery;
     let mut first_frame_presented = false;
     let mut first_content_frame_presented = false;
     let mut interaction_latency = DesktopInteractionLatencyProfiler::new();
