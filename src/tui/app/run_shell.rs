@@ -137,13 +137,13 @@ mod tests {
         let before = buffer.clone();
 
         let status_area = Rect::new(2, 1, 6, 1);
-        assert!(render_status_spinner_into_buffer(&buffer, status_area, "⠋"));
-        render_status_spinner_into_buffer_mut(&mut buffer, status_area, "⠋");
+        assert!(render_status_spinner_into_buffer(&buffer, status_area, "⠂"));
+        render_status_spinner_into_buffer_mut(&mut buffer, status_area, "⠂");
 
         for y in 0..2 {
             for x in 0..8 {
                 if (x, y) == (2, 1) {
-                    assert_eq!(buffer.cell((x, y)).unwrap().symbol(), "⠋");
+                    assert_eq!(buffer.cell((x, y)).unwrap().symbol(), "⠂");
                     assert_eq!(
                         buffer.cell((x, y)).unwrap().fg,
                         jcode_tui_style::theme::ai_color()
