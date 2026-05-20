@@ -5558,9 +5558,25 @@ pub(crate) fn single_session_body_text_buffer_from_lines(
     size: PhysicalSize<u32>,
     text_scale: f32,
 ) -> Buffer {
+    single_session_body_text_buffer_from_lines_with_opacity(
+        font_system,
+        lines,
+        size,
+        text_scale,
+        1.0,
+    )
+}
+
+pub(crate) fn single_session_body_text_buffer_from_lines_with_opacity(
+    font_system: &mut FontSystem,
+    lines: &[SingleSessionStyledLine],
+    size: PhysicalSize<u32>,
+    text_scale: f32,
+    opacity: f32,
+) -> Buffer {
     let typography = single_session_typography_for_scale(text_scale);
     let content_width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(1.0);
-    let mut buffer = single_session_styled_text_buffer(
+    let mut buffer = single_session_styled_text_buffer_with_opacity(
         font_system,
         lines,
         typography.body_size,
@@ -5568,6 +5584,7 @@ pub(crate) fn single_session_body_text_buffer_from_lines(
         content_width,
         (size.height as f32 - 150.0).max(1.0),
         Wrap::None,
+        opacity,
     );
     buffer.shape_until(font_system, i32::MAX);
     buffer
@@ -6041,10 +6058,33 @@ fn single_session_styled_text_buffer(
     height: f32,
     wrap: Wrap,
 ) -> Buffer {
+    single_session_styled_text_buffer_with_opacity(
+        font_system,
+        lines,
+        font_size,
+        line_height,
+        width,
+        height,
+        wrap,
+        1.0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn single_session_styled_text_buffer_with_opacity(
+    font_system: &mut FontSystem,
+    lines: &[SingleSessionStyledLine],
+    font_size: f32,
+    line_height: f32,
+    width: f32,
+    height: f32,
+    wrap: Wrap,
+    opacity: f32,
+) -> Buffer {
     let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_height));
     buffer.set_size(font_system, width, height);
     buffer.set_wrap(font_system, wrap);
-    let segments = single_session_styled_text_segments(lines);
+    let segments = single_session_styled_text_segments_with_opacity(lines, opacity);
     let shaping = if segments
         .iter()
         .any(|(text, _)| text_needs_advanced_shaping(text))
@@ -6091,8 +6131,17 @@ fn char_needs_advanced_shaping(ch: char) -> bool {
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn single_session_styled_text_segments(
     lines: &[SingleSessionStyledLine],
+) -> Vec<(&str, Attrs<'static>)> {
+    single_session_styled_text_segments_with_opacity(lines, 1.0)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn single_session_styled_text_segments_with_opacity(
+    lines: &[SingleSessionStyledLine],
+    opacity: f32,
 ) -> Vec<(&str, Attrs<'static>)> {
     let mut segments = Vec::new();
     let total_user_turns = lines
@@ -6130,7 +6179,27 @@ pub(crate) fn single_session_styled_text_segments(
             single_session_style_attrs(SingleSessionLineStyle::Blank),
         ));
     }
+    let opacity = opacity.clamp(0.0, 1.0);
+    if opacity < 0.999 {
+        for (_, attrs) in &mut segments {
+            *attrs = text_attrs_with_opacity(*attrs, opacity);
+        }
+    }
     segments
+}
+
+fn text_attrs_with_opacity(mut attrs: Attrs<'static>, opacity: f32) -> Attrs<'static> {
+    let Some(color) = attrs.color_opt else {
+        return attrs;
+    };
+    let (r, g, b, a) = color.as_rgba_tuple();
+    attrs.color_opt = Some(TextColor::rgba(
+        r,
+        g,
+        b,
+        (a as f32 * opacity).round().clamp(0.0, 255.0) as u8,
+    ));
+    attrs
 }
 
 fn push_assistant_markdown_inline_segments<'a>(
@@ -6973,6 +7042,7 @@ pub(crate) fn single_session_streaming_text_area_for_cached_body_viewport<'a>(
     viewport: SingleSessionBodyViewport,
     streaming_start_line: usize,
     opacity: f32,
+    y_offset_pixels: f32,
 ) -> TextArea<'a> {
     let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
@@ -6981,7 +7051,8 @@ pub(crate) fn single_session_streaming_text_area_for_cached_body_viewport<'a>(
     let body_top = single_session_body_top_for_app(app, size);
     let top = body_top
         + viewport.top_offset_pixels
-        + streaming_start_line.saturating_sub(viewport.start_line) as f32 * line_height;
+        + streaming_start_line.saturating_sub(viewport.start_line) as f32 * line_height
+        + y_offset_pixels.max(0.0);
     TextArea {
         buffer,
         left,

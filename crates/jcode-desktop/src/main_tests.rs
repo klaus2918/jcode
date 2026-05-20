@@ -714,6 +714,9 @@ fn single_session_streaming_response_does_not_draw_line_reveal_shimmer() {
 
 #[test]
 fn single_session_streaming_text_fades_in() {
+    let start_style = streaming_text_arrival_style_for_elapsed(Duration::from_millis(0));
+    let mid_style = streaming_text_arrival_style_for_elapsed(STREAMING_TEXT_FADE_DURATION / 2);
+    let end_style = streaming_text_arrival_style_for_elapsed(STREAMING_TEXT_FADE_DURATION);
     let (start_opacity, start_active) =
         streaming_text_fade_opacity_for_elapsed(Duration::from_millis(0));
     let (mid_opacity, mid_active) =
@@ -728,6 +731,34 @@ fn single_session_streaming_text_fades_in() {
     assert!(mid_opacity > start_opacity);
     assert!(mid_opacity < 1.0);
     assert!((end_opacity - 1.0).abs() < f32::EPSILON);
+    assert_eq!(start_style.opacity, start_opacity);
+    assert_eq!(
+        start_style.y_offset_pixels,
+        STREAMING_TEXT_RISE_START_OFFSET_PIXELS
+    );
+    assert!(mid_style.y_offset_pixels < start_style.y_offset_pixels);
+    assert!(mid_style.y_offset_pixels > 0.0);
+    assert_eq!(end_style.y_offset_pixels, 0.0);
+    assert!(!end_style.active);
+}
+
+#[test]
+fn single_session_streaming_text_opacity_scales_rich_text_segments() {
+    let lines = vec![SingleSessionStyledLine::new(
+        "streaming answer",
+        SingleSessionLineStyle::Assistant,
+    )];
+    let segments = single_session_styled_text_segments_with_opacity(&lines, 0.5);
+    let (_, attrs) = segments
+        .iter()
+        .find(|(text, _)| *text == "streaming answer")
+        .expect("streaming assistant segment should be present");
+    let (_, _, _, alpha) = attrs
+        .color_opt
+        .expect("assistant segment should have an explicit color")
+        .as_rgba_tuple();
+
+    assert_eq!(alpha, 128);
 }
 
 #[test]
