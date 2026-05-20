@@ -766,7 +766,7 @@ fn single_session_slash_suggestions_filter_select_and_submit() {
         Some(InlineWidgetMode::ReadOnly)
     );
     assert!(app.should_draw_composer_caret());
-    assert!(!app.active_inline_widget_uses_card_chrome());
+    assert!(app.active_inline_widget_uses_card_chrome());
 
     let suggestions = app.inline_widget_styled_lines();
     let suggestion_text = suggestions
@@ -822,7 +822,7 @@ fn single_session_slash_suggestions_escape_dismisses_until_draft_changes() {
 }
 
 #[test]
-fn single_session_slash_suggestions_do_not_add_card_geometry() {
+fn single_session_slash_suggestions_use_inline_card_geometry() {
     let size = PhysicalSize::new(1000, 720);
     let mut base = SingleSessionApp::new(Some(test_session_card(
         "slash_suggestions_geometry",
@@ -838,7 +838,7 @@ fn single_session_slash_suggestions_do_not_add_card_geometry() {
         base.active_inline_widget(),
         Some(InlineWidgetKind::SlashSuggestions)
     );
-    assert!(!base.active_inline_widget_uses_card_chrome());
+    assert!(base.active_inline_widget_uses_card_chrome());
     let suggestion_vertices = build_single_session_vertices(&base, size, 0.0, 0);
     assert!(!suggestion_vertices.is_empty());
 
@@ -849,7 +849,7 @@ fn single_session_slash_suggestions_do_not_add_card_geometry() {
     );
     assert!(base.active_inline_widget_uses_card_chrome());
     let help_vertices = build_single_session_vertices(&base, size, 0.0, 0);
-    assert!(help_vertices.len() > suggestion_vertices.len());
+    assert!(help_vertices.len() >= suggestion_vertices.len());
 }
 
 #[test]
