@@ -5410,8 +5410,13 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
         typography.meta_size
     };
 
-    let layout_compatible = previous_key.is_some_and(|previous| {
+    let exact_layout_compatible = previous_key.is_some_and(|previous| {
         previous.size == key.size && previous.text_scale_bits == key.text_scale_bits
+    });
+    let body_layout_compatible = previous_key.is_some_and(|previous| {
+        previous.text_scale_bits == key.text_scale_bits
+            && single_session_body_text_buffer_layout_bucket(previous.size, text_scale)
+                == single_session_body_text_buffer_layout_bucket(key.size, text_scale)
     });
     let take_reusable =
         |old_buffers: &mut Vec<Option<Buffer>>, index: usize, reusable: bool| -> Option<Buffer> {
@@ -5420,12 +5425,13 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
             }
             old_buffers.get_mut(index).and_then(Option::take)
         };
-    let previous = previous_key.filter(|_| layout_compatible);
+    let exact_previous = previous_key.filter(|_| exact_layout_compatible);
+    let body_previous = previous_key.filter(|_| body_layout_compatible);
 
     let title_buffer = take_reusable(
         &mut old_buffers,
         0,
-        previous.is_some_and(|previous| previous.title == key.title),
+        exact_previous.is_some_and(|previous| previous.title == key.title),
     )
     .unwrap_or_else(|| {
         single_session_text_buffer(
@@ -5441,7 +5447,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let body_buffer = take_reusable(
         &mut old_buffers,
         1,
-        reuse_body_buffer || previous.is_some_and(|previous| previous.body == key.body),
+        reuse_body_buffer || body_previous.is_some_and(|previous| previous.body == key.body),
     )
     .unwrap_or_else(|| {
         single_session_body_text_buffer_from_lines(font_system, &key.body, size, text_scale)
@@ -5457,7 +5463,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let inline_widget_buffer = take_reusable(
         &mut old_buffers,
         4,
-        previous.is_some_and(|previous| previous.inline_widget == key.inline_widget),
+        exact_previous.is_some_and(|previous| previous.inline_widget == key.inline_widget),
     )
     .unwrap_or_else(|| {
         single_session_styled_text_buffer(
@@ -5474,7 +5480,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let draft_buffer = take_reusable(
         &mut old_buffers,
         2,
-        previous.is_some_and(|previous| previous.draft == key.draft),
+        exact_previous.is_some_and(|previous| previous.draft == key.draft),
     )
     .unwrap_or_else(|| {
         single_session_text_buffer(
@@ -5490,7 +5496,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let version_buffer = take_reusable(
         &mut old_buffers,
         3,
-        previous.is_some_and(|previous| previous.version == key.version),
+        exact_previous.is_some_and(|previous| previous.version == key.version),
     )
     .unwrap_or_else(|| {
         single_session_text_buffer(
@@ -5510,7 +5516,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let hero_buffer = take_reusable(
         &mut old_buffers,
         5,
-        previous.is_some_and(|previous| previous.welcome_hero == key.welcome_hero),
+        exact_previous.is_some_and(|previous| previous.welcome_hero == key.welcome_hero),
     )
     .unwrap_or_else(|| {
         single_session_text_buffer_with_family(
@@ -5527,7 +5533,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let welcome_hint_buffer = take_reusable(
         &mut old_buffers,
         6,
-        previous.is_some_and(|previous| previous.welcome_hint == key.welcome_hint),
+        exact_previous.is_some_and(|previous| previous.welcome_hint == key.welcome_hint),
     )
     .unwrap_or_else(|| {
         single_session_styled_text_buffer(
@@ -5582,12 +5588,56 @@ pub(crate) fn single_session_body_text_buffer_from_lines_with_opacity(
         typography.body_size,
         typography.body_size * typography.body_line_height,
         content_width,
-        (size.height as f32 - 150.0).max(1.0),
+        single_session_body_text_buffer_layout_height(size, text_scale),
         Wrap::None,
         opacity,
     );
     buffer.shape_until(font_system, i32::MAX);
     buffer
+}
+
+pub(crate) fn single_session_body_layout_cache_size(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+) -> (u32, u32) {
+    let max_columns =
+        single_session_body_max_columns(size, app.text_scale()).min(u32::MAX as usize) as u32;
+    let welcome_virtual_lines =
+        if app.is_welcome_timeline_visible() && app.has_welcome_timeline_transcript() {
+            welcome_timeline_virtual_body_lines(app, size).min(u32::MAX as usize) as u32
+        } else {
+            0
+        };
+    (max_columns, welcome_virtual_lines)
+}
+
+pub(crate) fn single_session_body_text_buffer_layout_compatible(
+    previous_size: (u32, u32),
+    size: PhysicalSize<u32>,
+    text_scale: f32,
+) -> bool {
+    single_session_body_text_buffer_layout_bucket(previous_size, text_scale)
+        == single_session_body_text_buffer_layout_bucket((size.width, size.height), text_scale)
+}
+
+fn single_session_body_text_buffer_layout_bucket(size: (u32, u32), text_scale: f32) -> (u32, u32) {
+    let physical_size = PhysicalSize::new(size.0, size.1);
+    let height_lines = single_session_body_text_buffer_layout_lines(physical_size, text_scale)
+        .min(u32::MAX as usize) as u32;
+    (0, height_lines)
+}
+
+fn single_session_body_text_buffer_layout_height(size: PhysicalSize<u32>, text_scale: f32) -> f32 {
+    let typography = single_session_typography_for_scale(text_scale);
+    let line_height = typography.body_size * typography.body_line_height;
+    single_session_body_text_buffer_layout_lines(size, text_scale) as f32 * line_height
+}
+
+fn single_session_body_text_buffer_layout_lines(size: PhysicalSize<u32>, text_scale: f32) -> usize {
+    let typography = single_session_typography_for_scale(text_scale);
+    let line_height = typography.body_size * typography.body_line_height;
+    let available_height = (size.height as f32 - 150.0).max(line_height);
+    ((available_height / line_height).floor() as usize).max(1)
 }
 
 pub(crate) fn single_session_visible_body(
@@ -5675,11 +5725,32 @@ pub(crate) fn single_session_rendered_body_lines_for_tick(
     size: PhysicalSize<u32>,
     tick: u64,
 ) -> Vec<SingleSessionStyledLine> {
-    let lines = single_session_wrapped_body_lines(
-        app.body_styled_lines_for_tick(tick),
-        size,
-        app.text_scale(),
-    );
+    single_session_rendered_body_lines_from_raw(app, size, app.body_styled_lines_for_tick(tick))
+}
+
+pub(crate) fn single_session_rendered_body_lines_from_raw(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    raw_lines: Vec<SingleSessionStyledLine>,
+) -> Vec<SingleSessionStyledLine> {
+    let lines = single_session_wrapped_body_lines(raw_lines, size, app.text_scale());
+    single_session_rendered_body_lines_from_wrapped(app, size, lines)
+}
+
+pub(crate) fn single_session_rendered_body_lines_from_raw_ref(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    raw_lines: &[SingleSessionStyledLine],
+) -> Vec<SingleSessionStyledLine> {
+    let lines = single_session_wrapped_body_lines_ref(raw_lines, size, app.text_scale());
+    single_session_rendered_body_lines_from_wrapped(app, size, lines)
+}
+
+fn single_session_rendered_body_lines_from_wrapped(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    lines: Vec<SingleSessionStyledLine>,
+) -> Vec<SingleSessionStyledLine> {
     if !(app.is_welcome_timeline_visible() && app.has_welcome_timeline_transcript()) {
         return lines;
     }
@@ -5761,26 +5832,134 @@ fn single_session_wrapped_body_lines(
     // Glyphon also wraps, but explicit visual rows keep scroll metrics,
     // selection hit-testing, and the rendered text viewport in agreement.
     let max_columns = single_session_body_max_columns(size, text_scale);
+    if should_parallel_wrap_body_lines(lines.len()) {
+        return parallel_wrap_body_lines(&lines, max_columns);
+    }
+
     let mut wrapped = Vec::with_capacity(lines.len());
 
     for line in lines {
-        if line.text.is_empty() || !text_exceeds_columns(&line.text, max_columns) {
-            wrapped.push(line);
-            continue;
-        }
-        let style = line.style;
-        for (text, inline_spans) in
-            wrap_body_line_text_with_spans(&line.text, &line.inline_spans, max_columns)
-        {
-            wrapped.push(SingleSessionStyledLine::with_inline_spans(
-                text,
-                style,
-                inline_spans,
-            ));
-        }
+        push_wrapped_body_line_owned(&mut wrapped, line, max_columns);
     }
 
     wrapped
+}
+
+fn single_session_wrapped_body_lines_ref(
+    lines: &[SingleSessionStyledLine],
+    size: PhysicalSize<u32>,
+    text_scale: f32,
+) -> Vec<SingleSessionStyledLine> {
+    // Glyphon also wraps, but explicit visual rows keep scroll metrics,
+    // selection hit-testing, and the rendered text viewport in agreement.
+    let max_columns = single_session_body_max_columns(size, text_scale);
+    if should_parallel_wrap_body_lines(lines.len()) {
+        return parallel_wrap_body_lines(lines, max_columns);
+    }
+
+    wrap_body_lines_slice(lines, max_columns)
+}
+
+fn should_parallel_wrap_body_lines(line_count: usize) -> bool {
+    line_count >= 512
+        && std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get() > 1)
+            .unwrap_or(false)
+}
+
+fn parallel_wrap_body_lines(
+    lines: &[SingleSessionStyledLine],
+    max_columns: usize,
+) -> Vec<SingleSessionStyledLine> {
+    let available_parallelism = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    let worker_count = available_parallelism
+        .min(lines.len().div_ceil(256).max(1))
+        .max(1);
+    if worker_count <= 1 {
+        return wrap_body_lines_slice(lines, max_columns);
+    }
+
+    let chunk_size = lines.len().div_ceil(worker_count).max(1);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for chunk in lines.chunks(chunk_size) {
+            handles.push(scope.spawn(move || wrap_body_lines_slice(chunk, max_columns)));
+        }
+        let mut wrapped = Vec::with_capacity(lines.len());
+        for handle in handles {
+            wrapped.extend(
+                handle
+                    .join()
+                    .expect("desktop body wrap worker panicked unexpectedly"),
+            );
+        }
+        wrapped
+    })
+}
+
+fn wrap_body_lines_slice(
+    lines: &[SingleSessionStyledLine],
+    max_columns: usize,
+) -> Vec<SingleSessionStyledLine> {
+    let mut wrapped = Vec::with_capacity(lines.len());
+    for line in lines {
+        push_wrapped_body_line_ref(&mut wrapped, line, max_columns);
+    }
+    wrapped
+}
+
+fn push_wrapped_body_line_owned(
+    wrapped: &mut Vec<SingleSessionStyledLine>,
+    line: SingleSessionStyledLine,
+    max_columns: usize,
+) {
+    if line.text.is_empty() || !text_exceeds_columns(&line.text, max_columns) {
+        wrapped.push(line);
+        return;
+    }
+    push_wrapped_body_line_parts(
+        wrapped,
+        &line.text,
+        &line.inline_spans,
+        line.style,
+        max_columns,
+    );
+}
+
+fn push_wrapped_body_line_ref(
+    wrapped: &mut Vec<SingleSessionStyledLine>,
+    line: &SingleSessionStyledLine,
+    max_columns: usize,
+) {
+    if line.text.is_empty() || !text_exceeds_columns(&line.text, max_columns) {
+        wrapped.push(line.clone());
+        return;
+    }
+    push_wrapped_body_line_parts(
+        wrapped,
+        &line.text,
+        &line.inline_spans,
+        line.style,
+        max_columns,
+    );
+}
+
+fn push_wrapped_body_line_parts(
+    wrapped: &mut Vec<SingleSessionStyledLine>,
+    text: &str,
+    inline_spans: &[SingleSessionInlineSpan],
+    style: SingleSessionLineStyle,
+    max_columns: usize,
+) {
+    for (text, inline_spans) in wrap_body_line_text_with_spans(text, inline_spans, max_columns) {
+        wrapped.push(SingleSessionStyledLine::with_inline_spans(
+            text,
+            style,
+            inline_spans,
+        ));
+    }
 }
 
 fn single_session_body_max_columns(size: PhysicalSize<u32>, text_scale: f32) -> usize {
