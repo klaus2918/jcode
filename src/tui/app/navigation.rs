@@ -2,9 +2,128 @@ use super::*;
 use crate::tui::ui::input_ui;
 use ratatui::layout::Rect;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MouseScrollTraceState {
+    chat_offset: usize,
+    auto_scroll_paused: bool,
+    mouse_queue: i16,
+    mouse_target: Option<MouseScrollTarget>,
+    diff_offset: usize,
+    diff_auto_scroll: bool,
+    diagram_focus: bool,
+    diagram_x: i32,
+    diagram_y: i32,
+    diagram_zoom: u8,
+    help_scroll: Option<usize>,
+    changelog_scroll: Option<usize>,
+}
+
+impl MouseScrollTraceState {
+    fn capture(app: &App) -> Self {
+        Self {
+            chat_offset: app.scroll_offset,
+            auto_scroll_paused: app.auto_scroll_paused,
+            mouse_queue: app.mouse_scroll_queue,
+            mouse_target: app.mouse_scroll_target,
+            diff_offset: app.diff_pane_scroll,
+            diff_auto_scroll: app.diff_pane_auto_scroll,
+            diagram_focus: app.diagram_focus,
+            diagram_x: app.diagram_scroll_x,
+            diagram_y: app.diagram_scroll_y,
+            diagram_zoom: app.diagram_zoom,
+            help_scroll: app.help_scroll,
+            changelog_scroll: app.changelog_scroll,
+        }
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "chat={} auto={} queue={} target={:?} diff={} diff_auto={} diagram_focus={} diagram=({},{} @ {}%) help={:?} changelog={:?}",
+            self.chat_offset,
+            self.auto_scroll_paused,
+            self.mouse_queue,
+            self.mouse_target,
+            self.diff_offset,
+            self.diff_auto_scroll,
+            self.diagram_focus,
+            self.diagram_x,
+            self.diagram_y,
+            self.diagram_zoom,
+            self.help_scroll,
+            self.changelog_scroll,
+        )
+    }
+}
+
+fn tui_mouse_scroll_trace_enabled() -> bool {
+    std::env::var_os("JCODE_TUI_SCROLL_TRACE").is_some()
+}
+
+fn is_mouse_scroll_kind(kind: MouseEventKind) -> bool {
+    matches!(
+        kind,
+        MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight
+    )
+}
+
 impl App {
     const MOUSE_SCROLL_INTENT_LINES: i16 = 3;
     const MOUSE_SCROLL_MAX_QUEUE: i16 = 24;
+
+    fn log_mouse_scroll_trace(
+        &self,
+        mouse: MouseEvent,
+        decision: &str,
+        scroll_only: bool,
+        before: Option<&MouseScrollTraceState>,
+    ) {
+        let after = MouseScrollTraceState::capture(self);
+        let before_summary = before
+            .map(MouseScrollTraceState::summary)
+            .unwrap_or_else(|| "unrecorded".to_string());
+        let changed = before.is_some_and(|before| before != &after);
+        let layout = super::super::ui::last_layout_snapshot();
+        let over_messages = layout.as_ref().is_some_and(|layout| {
+            super::super::layout_utils::point_in_rect(mouse.column, mouse.row, layout.messages_area)
+        });
+        let over_diagram = layout
+            .as_ref()
+            .and_then(|layout| layout.diagram_area)
+            .is_some_and(|area| {
+                super::super::layout_utils::point_in_rect(mouse.column, mouse.row, area)
+            });
+        let over_diff = layout
+            .as_ref()
+            .and_then(|layout| layout.diff_pane_area)
+            .is_some_and(|area| {
+                super::super::layout_utils::point_in_rect(mouse.column, mouse.row, area)
+            });
+
+        crate::logging::event_info(
+            "TUI_MOUSE_SCROLL",
+            [
+                ("kind", format!("{:?}", mouse.kind)),
+                ("column", mouse.column.to_string()),
+                ("row", mouse.row.to_string()),
+                ("modifiers", format!("{:?}", mouse.modifiers)),
+                ("decision", decision.to_string()),
+                ("scroll_only", scroll_only.to_string()),
+                ("changed", changed.to_string()),
+                ("over_messages", over_messages.to_string()),
+                ("over_diagram", over_diagram.to_string()),
+                ("over_diff", over_diff.to_string()),
+                (
+                    "side_panel_visible",
+                    self.side_panel.focused_page().is_some().to_string(),
+                ),
+                ("before", before_summary),
+                ("after", after.summary()),
+            ],
+        );
+    }
 
     fn current_visible_diagram_hash(&self) -> Option<u64> {
         if self.diagram_mode != crate::config::DiagramDisplayMode::Pinned
@@ -362,6 +481,9 @@ impl App {
             return;
         }
 
+        let trace_scroll = tui_mouse_scroll_trace_enabled();
+        let before_queue = self.mouse_scroll_queue;
+        let before_target = self.mouse_scroll_target;
         if self.mouse_scroll_target != Some(target) {
             self.mouse_scroll_target = Some(target);
             self.mouse_scroll_queue = 0;
@@ -373,6 +495,20 @@ impl App {
             .mouse_scroll_queue
             .saturating_add(delta)
             .clamp(-Self::MOUSE_SCROLL_MAX_QUEUE, Self::MOUSE_SCROLL_MAX_QUEUE);
+        if trace_scroll {
+            crate::logging::event_info(
+                "TUI_MOUSE_SCROLL_QUEUE",
+                [
+                    ("target", format!("{:?}", target)),
+                    ("direction", direction.to_string()),
+                    ("delta", delta.to_string()),
+                    ("before_queue", before_queue.to_string()),
+                    ("before_target", format!("{:?}", before_target)),
+                    ("after_queue", self.mouse_scroll_queue.to_string()),
+                    ("after_target", format!("{:?}", self.mouse_scroll_target)),
+                ],
+            );
+        }
         self.drain_mouse_scroll_animation(1);
     }
 
@@ -402,11 +538,28 @@ impl App {
 
         let direction = self.mouse_scroll_queue.signum();
         let steps = max_steps.min(self.mouse_scroll_queue.unsigned_abs() as usize);
+        let before_queue = self.mouse_scroll_queue;
+        let before = tui_mouse_scroll_trace_enabled().then(|| MouseScrollTraceState::capture(self));
 
         for _ in 0..steps {
             if !self.apply_mouse_scroll_step(target, direction) {
                 self.mouse_scroll_queue = 0;
                 self.mouse_scroll_target = None;
+                if let Some(before) = before.as_ref() {
+                    crate::logging::event_info(
+                        "TUI_MOUSE_SCROLL_DRAIN",
+                        [
+                            ("target", format!("{:?}", target)),
+                            ("direction", direction.to_string()),
+                            ("steps", steps.to_string()),
+                            ("before_queue", before_queue.to_string()),
+                            ("after_queue", self.mouse_scroll_queue.to_string()),
+                            ("stopped_early", "true".to_string()),
+                            ("before", before.summary()),
+                            ("after", MouseScrollTraceState::capture(self).summary()),
+                        ],
+                    );
+                }
                 return;
             }
         }
@@ -414,6 +567,21 @@ impl App {
         self.mouse_scroll_queue -= direction * steps as i16;
         if self.mouse_scroll_queue == 0 {
             self.mouse_scroll_target = None;
+        }
+        if let Some(before) = before.as_ref() {
+            crate::logging::event_info(
+                "TUI_MOUSE_SCROLL_DRAIN",
+                [
+                    ("target", format!("{:?}", target)),
+                    ("direction", direction.to_string()),
+                    ("steps", steps.to_string()),
+                    ("before_queue", before_queue.to_string()),
+                    ("after_queue", self.mouse_scroll_queue.to_string()),
+                    ("stopped_early", "false".to_string()),
+                    ("before", before.summary()),
+                    ("after", MouseScrollTraceState::capture(self).summary()),
+                ],
+            );
         }
     }
 
@@ -809,17 +977,34 @@ impl App {
 
     /// Returns true if this was a scroll-only event (safe to defer redraw during streaming)
     pub(super) fn handle_mouse_event(&mut self, mouse: MouseEvent) -> bool {
+        let trace_scroll = tui_mouse_scroll_trace_enabled() && is_mouse_scroll_kind(mouse.kind);
+        let trace_before = trace_scroll.then(|| MouseScrollTraceState::capture(self));
+        macro_rules! finish_mouse_event {
+            ($scroll_only:expr, $decision:expr) => {{
+                let scroll_only = $scroll_only;
+                if trace_scroll {
+                    self.log_mouse_scroll_trace(
+                        mouse,
+                        $decision,
+                        scroll_only,
+                        trace_before.as_ref(),
+                    );
+                }
+                return scroll_only;
+            }};
+        }
+
         if self.changelog_scroll.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     self.enqueue_mouse_scroll(MouseScrollTarget::ChangelogOverlay, -1);
-                    return true;
+                    finish_mouse_event!(true, "changelog_overlay_scroll_up");
                 }
                 MouseEventKind::ScrollDown => {
                     self.enqueue_mouse_scroll(MouseScrollTarget::ChangelogOverlay, 1);
-                    return true;
+                    finish_mouse_event!(true, "changelog_overlay_scroll_down");
                 }
-                _ => return false,
+                _ => finish_mouse_event!(false, "changelog_overlay_non_scroll"),
             }
         }
 
@@ -827,27 +1012,27 @@ impl App {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     self.enqueue_mouse_scroll(MouseScrollTarget::HelpOverlay, -1);
-                    return true;
+                    finish_mouse_event!(true, "help_overlay_scroll_up");
                 }
                 MouseEventKind::ScrollDown => {
                     self.enqueue_mouse_scroll(MouseScrollTarget::HelpOverlay, 1);
-                    return true;
+                    finish_mouse_event!(true, "help_overlay_scroll_down");
                 }
-                _ => return false,
+                _ => finish_mouse_event!(false, "help_overlay_non_scroll"),
             }
         }
 
         if let Some(ref picker_cell) = self.session_picker_overlay {
             picker_cell.borrow_mut().handle_overlay_mouse(mouse);
-            return false;
+            finish_mouse_event!(false, "session_picker_overlay");
         }
         if let Some(ref picker_cell) = self.login_picker_overlay {
             picker_cell.borrow_mut().handle_overlay_mouse(mouse);
-            return false;
+            finish_mouse_event!(false, "login_picker_overlay");
         }
         if let Some(ref picker_cell) = self.account_picker_overlay {
             picker_cell.borrow_mut().handle_overlay_mouse(mouse);
-            return false;
+            finish_mouse_event!(false, "account_picker_overlay");
         }
         self.normalize_diagram_state();
         let diagram_available = self.diagram_available();
@@ -912,7 +1097,7 @@ impl App {
         }
 
         if let Some(scroll_only) = self.handle_copy_selection_mouse(mouse) {
-            return scroll_only;
+            finish_mouse_event!(scroll_only, "copy_selection");
         }
 
         let clicked_input_cursor = if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
@@ -932,7 +1117,7 @@ impl App {
         if let Some(cursor_pos) = clicked_input_cursor {
             self.cursor_pos = cursor_pos.min(self.input.len());
             self.reset_tab_completion();
-            return false;
+            finish_mouse_event!(false, "input_cursor_click");
         }
 
         if self.diagram_pane_dragging {
@@ -975,7 +1160,7 @@ impl App {
                 }
                 _ => {}
             }
-            return false;
+            finish_mouse_event!(false, "diagram_dragging");
         }
 
         let mut handled_scroll = false;
@@ -1053,27 +1238,28 @@ impl App {
         }
 
         if handled_scroll {
-            return !immediate_redraw;
+            finish_mouse_event!(!immediate_redraw, "pane_or_focused_diagram_scroll");
         }
 
         if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
             && self.try_open_link_at(mouse.column, mouse.row)
         {
-            return false;
+            finish_mouse_event!(false, "open_link");
         }
 
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.enqueue_mouse_scroll(MouseScrollTarget::Chat, -1);
+                finish_mouse_event!(false, "chat_scroll_up");
             }
             MouseEventKind::ScrollDown => {
                 self.enqueue_mouse_scroll(MouseScrollTarget::Chat, 1);
+                finish_mouse_event!(false, "chat_scroll_down");
             }
             _ => {
-                return false;
+                finish_mouse_event!(false, "unhandled_non_scroll");
             }
         }
-        false
     }
 
     pub(super) fn scroll_up(&mut self, amount: usize) {
