@@ -74,14 +74,46 @@ impl App {
 
     pub(super) fn scroll_max_estimate(&self) -> usize {
         let renderer_max = super::super::ui::last_max_scroll();
-        if renderer_max > 0 {
-            renderer_max
-        } else {
-            self.display_messages
-                .len()
-                .saturating_mul(100)
-                .saturating_add(self.streaming_text.len())
+        let Some(layout) = super::super::ui::last_layout_snapshot() else {
+            return renderer_max.max(
+                self.display_messages
+                    .len()
+                    .saturating_mul(100)
+                    .saturating_add(self.streaming_text.len()),
+            );
+        };
+
+        // While streaming, input can arrive after new text has been appended but before the next
+        // full frame recomputes LAST_MAX_SCROLL.  Using only the stale rendered max makes the first
+        // scroll-up convert from bottom-follow mode to an absolute offset that is too close to the
+        // top, so the viewport appears to jump/shift as the transcript grows.  Keep the renderer's
+        // exact value when available, but never let the estimate fall behind the current transcript.
+        let width = layout.messages_area.width.max(1) as usize;
+        let viewport = layout.messages_area.height as usize;
+        let estimated_lines = self.estimated_chat_wrapped_lines(width);
+        let estimated_max = estimated_lines.saturating_sub(viewport);
+        renderer_max.max(estimated_max)
+    }
+
+    fn estimated_chat_wrapped_lines(&self, width: usize) -> usize {
+        use unicode_width::UnicodeWidthStr;
+
+        fn wrapped_text_lines(text: &str, width: usize) -> usize {
+            if text.is_empty() {
+                return 0;
+            }
+            text.lines()
+                .map(|line| UnicodeWidthStr::width(line).max(1).div_ceil(width))
+                .sum::<usize>()
+                .max(1)
         }
+
+        let message_lines = self
+            .display_messages
+            .iter()
+            .map(|message| wrapped_text_lines(&message.content, width))
+            .sum::<usize>();
+        message_lines.saturating_add(wrapped_text_lines(&self.streaming_text, width))
     }
 
     pub(super) fn diagram_available(&self) -> bool {
