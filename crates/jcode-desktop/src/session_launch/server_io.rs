@@ -43,13 +43,17 @@ pub(super) fn ensure_server_running() -> Result<()> {
 }
 
 fn spawn_jcode_server_with_diagnostics() -> Result<()> {
-    let mut child = Command::new(jcode_bin())
+    let mut command = Command::new(jcode_bin());
+    command
         .arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to spawn jcode serve")?;
+        .stderr(Stdio::piped());
+    if let Some(working_dir) = super::default_desktop_working_dir() {
+        command.current_dir(working_dir);
+    }
+
+    let mut child = command.spawn().context("failed to spawn jcode serve")?;
 
     let pid = child.id();
     if let Some(stdout) = child.stdout.take() {

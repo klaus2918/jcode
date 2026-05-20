@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
@@ -75,6 +75,30 @@ use server_io::{
 };
 use terminal::{compact_title, launch_first_available_terminal, terminal_candidates};
 pub use terminal::{launch_validated_resume_session, validate_resume_session_id};
+
+pub(super) fn default_desktop_working_dir() -> Option<PathBuf> {
+    if let Ok(raw) = std::env::var("JCODE_DESKTOP_WORKING_DIR") {
+        let path = PathBuf::from(raw);
+        if is_usable_directory(&path) {
+            return Some(path);
+        }
+        crate::desktop_log::warn(format_args!(
+            "jcode-desktop: ignoring JCODE_DESKTOP_WORKING_DIR because it is not a directory: {}",
+            path.display()
+        ));
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if is_usable_directory(&manifest_dir) {
+        return Some(manifest_dir);
+    }
+
+    None
+}
+
+fn is_usable_directory(path: &Path) -> bool {
+    path.is_dir()
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DesktopModelChoice {

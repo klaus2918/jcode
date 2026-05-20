@@ -38,7 +38,10 @@ pub(super) fn terminal_candidates(title: &str, jcode_args: &[&str]) -> Vec<Comma
 
     if let Ok(raw_terminal) = std::env::var("JCODE_DESKTOP_TERMINAL") {
         match terminal_env_command(&raw_terminal, jcode_args) {
-            Ok(command) => candidates.push(command),
+            Ok(mut command) => {
+                apply_default_working_dir(&mut command);
+                candidates.push(command);
+            }
             Err(error) => crate::desktop_log::warn(format_args!(
                 "jcode-desktop: ignoring invalid JCODE_DESKTOP_TERMINAL={raw_terminal:?}: {error:#}"
             )),
@@ -161,7 +164,14 @@ fn terminal_command(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    apply_default_working_dir(&mut command);
     command
+}
+
+fn apply_default_working_dir(command: &mut Command) {
+    if let Some(working_dir) = super::default_desktop_working_dir() {
+        command.current_dir(working_dir);
+    }
 }
 
 pub(super) fn jcode_bin() -> String {
