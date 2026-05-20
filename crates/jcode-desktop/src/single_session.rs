@@ -63,6 +63,7 @@ const DESKTOP_SLASH_COMMANDS: &[(&str, &str)] = &[
         "/search <query>",
         "count transcript matches and jump to the first one",
     ),
+    ("/commit", "make logical commits from current changes"),
     ("/stop", "interrupt the running generation"),
     ("/status", "show current desktop session status"),
     ("/quit", "exit the desktop app"),
@@ -76,6 +77,10 @@ pub(crate) const MODEL_PICKER_INLINE_ROW_LIMIT: usize = 5;
 const BODY_CACHE_TEXT_EDGE_BYTES: usize = 256;
 const BODY_CACHE_MESSAGE_EDGE_COUNT: usize = 12;
 const BODY_CACHE_MESSAGE_MIDDLE_SAMPLE_COUNT: usize = 8;
+
+fn desktop_commit_prompt() -> String {
+    "Make interactive, logical commits for the current uncommitted work. Inspect the git state first, including unstaged and staged changes. Group related changes into small coherent commits, staging only the files or hunks that belong together. Preserve unrelated user or agent work, do not discard changes, and do not amend existing commits unless clearly necessary. For each commit, use a concise conventional-style message when possible. Validate as appropriate for the changed files before committing, and report the commits created plus any remaining uncommitted changes.".to_string()
+}
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
@@ -3001,6 +3006,29 @@ impl SingleSessionApp {
                     ));
                     KeyOutcome::Redraw
                 }
+            }
+            "/commit" => {
+                self.draft.clear();
+                self.draft_cursor = 0;
+                self.composer.input_undo_stack.clear();
+                let message = desktop_commit_prompt();
+                let Some(session) = &self.session else {
+                    return Some(KeyOutcome::StartFreshSession {
+                        message,
+                        images: Vec::new(),
+                    });
+                };
+                let session_id = session.session_id.clone();
+                let title = session.title.clone();
+                self.set_status(SingleSessionStatus::Info(
+                    "starting logical commits".to_string(),
+                ));
+                return Some(KeyOutcome::SendDraft {
+                    session_id,
+                    title,
+                    message,
+                    images: Vec::new(),
+                });
             }
             "/rename" => {
                 self.draft.clear();
