@@ -4263,6 +4263,15 @@ pub(crate) struct SingleSessionTranscriptCardRun {
     pub(crate) style: SingleSessionLineStyle,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SingleSessionTranscriptCardGeometry {
+    pub(crate) run: SingleSessionTranscriptCardRun,
+    pub(crate) card_rect: Rect,
+    pub(crate) text_left: f32,
+    pub(crate) line_height: f32,
+}
+
 fn push_single_session_transcript_cards(
     vertices: &mut Vec<Vertex>,
     app: &SingleSessionApp,
@@ -4308,6 +4317,37 @@ fn push_single_session_transcript_cards_from_viewport(
         };
         push_rounded_rect(vertices, rect, 7.0, color, size);
     }
+}
+
+#[cfg(test)]
+pub(crate) fn single_session_transcript_card_geometries(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    rendered_body_lines: &[SingleSessionStyledLine],
+) -> Vec<SingleSessionTranscriptCardGeometry> {
+    let typography = single_session_typography_for_scale(app.text_scale());
+    let line_height = typography.body_size * typography.body_line_height;
+    let width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0 + 12.0).max(1.0);
+    let body_top = single_session_body_top_for_app(app, size);
+
+    single_session_transcript_card_runs(rendered_body_lines)
+        .into_iter()
+        .filter_map(|run| {
+            single_session_line_card_color(run.style)?;
+            let card_rect = Rect {
+                x: PANEL_TITLE_LEFT_PADDING - 6.0,
+                y: body_top + run.line as f32 * line_height + 3.0,
+                width,
+                height: (run.line_count as f32 * line_height - 6.0).max(1.0),
+            };
+            Some(SingleSessionTranscriptCardGeometry {
+                run,
+                card_rect,
+                text_left: PANEL_TITLE_LEFT_PADDING,
+                line_height,
+            })
+        })
+        .collect()
 }
 
 fn push_single_session_inline_code_cards(
@@ -5842,7 +5882,7 @@ pub(crate) fn single_session_body_char_width() -> f32 {
     single_session_body_char_width_for_scale(1.0)
 }
 
-fn single_session_body_char_width_for_scale(text_scale: f32) -> f32 {
+pub(crate) fn single_session_body_char_width_for_scale(text_scale: f32) -> f32 {
     let typography = single_session_typography_for_scale(text_scale);
     typography.body_size * 0.58
 }

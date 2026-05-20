@@ -2657,6 +2657,56 @@ fn code_block_header_placement_is_stable_across_sizes_and_text_scales() {
                     .all(|line| line.style == SingleSessionLineStyle::Code),
                 "only the first line in the card run may be the language header at size {size:?}, scale {scale_step}"
             );
+
+            let geometry = single_session_transcript_card_geometries(&app, size, &lines)
+                .into_iter()
+                .find(|geometry| geometry.run == *header_run)
+                .unwrap_or_else(|| {
+                    panic!("missing code card geometry at size {size:?}, scale {scale_step}")
+                });
+            let typography = single_session_typography_for_scale(app.text_scale());
+            let char_width = single_session_body_char_width_for_scale(app.text_scale());
+            let card_bottom = geometry.card_rect.y + geometry.card_rect.height;
+            let text_glyph_left = geometry.text_left + 2.0 * char_width;
+            assert!(
+                geometry.card_rect.x <= text_glyph_left,
+                "code text must start inside the card at size {size:?}, scale {scale_step}"
+            );
+            assert!(
+                text_glyph_left - geometry.card_rect.x >= 6.0,
+                "code text must keep visible left padding inside the card at size {size:?}, scale {scale_step}"
+            );
+
+            let mut previous_glyph_bottom = None;
+            for line_index in header_run.line..header_run.line + header_run.line_count {
+                let row_offset = line_index - header_run.line;
+                let row_top = geometry.card_rect.y - 3.0 + row_offset as f32 * geometry.line_height;
+                let glyph_top = row_top + (geometry.line_height - typography.body_size) * 0.5;
+                let glyph_bottom = glyph_top + typography.body_size;
+                assert!(
+                    glyph_top >= geometry.card_rect.y,
+                    "line glyph top escaped code card at line {line_index}, size {size:?}, scale {scale_step}"
+                );
+                assert!(
+                    glyph_bottom <= card_bottom,
+                    "line glyph bottom escaped code card at line {line_index}, size {size:?}, scale {scale_step}"
+                );
+                if let Some(previous_glyph_bottom) = previous_glyph_bottom {
+                    assert!(
+                        previous_glyph_bottom < glyph_top,
+                        "code header/content glyph rows overlap at line {line_index}, size {size:?}, scale {scale_step}"
+                    );
+                }
+                previous_glyph_bottom = Some(glyph_bottom);
+
+                let line_text = &lines[line_index].text;
+                let text_glyph_right =
+                    geometry.text_left + line_text.chars().count() as f32 * char_width;
+                assert!(
+                    text_glyph_right <= geometry.card_rect.x + geometry.card_rect.width,
+                    "code text must fit horizontally inside the card at line {line_index}, size {size:?}, scale {scale_step}"
+                );
+            }
         }
     }
 }
