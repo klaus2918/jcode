@@ -48,6 +48,7 @@ const DESKTOP_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/status", "show current desktop session status"),
     ("/quit", "exit the desktop app"),
 ];
+const DESKTOP_SLASH_SUGGESTION_ROW_LIMIT: usize = 7;
 
 #[cfg_attr(test, allow(dead_code))]
 const INLINE_WIDGET_REVEAL_DURATION: Duration = Duration::from_millis(180);
@@ -119,6 +120,7 @@ pub(crate) struct SingleSessionApp {
     pub(crate) model_picker: ModelPickerState,
     pub(crate) session_switcher: SessionSwitcherState,
     pub(crate) stdin_response: Option<StdinResponseState>,
+    slash_suggestions: SlashSuggestionState,
     welcome: SingleSessionWelcomeState,
     composer: SingleSessionComposerState,
     selection: SingleSessionSelectionState,
@@ -159,6 +161,13 @@ impl SingleSessionWelcomeState {
 struct SingleSessionComposerState {
     queued_drafts: Vec<(String, Vec<(String, String)>)>,
     input_undo_stack: Vec<(String, usize)>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SlashSuggestionState {
+    selected: usize,
+    query: String,
+    dismissed_for_draft: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -265,6 +274,7 @@ pub(crate) enum InlineWidgetKind {
     SessionInfo,
     ModelPicker,
     SessionSwitcher,
+    SlashSuggestions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -375,6 +385,10 @@ impl SingleSessionOverlay {
                 kind: InlineWidgetKind::ModelPicker,
                 mode: InlineWidgetMode::ReadOnly,
             } => false,
+            Self::Inline {
+                kind: InlineWidgetKind::SlashSuggestions,
+                mode: InlineWidgetMode::ReadOnly,
+            } => false,
             Self::Inline { .. } => true,
         }
     }
@@ -383,7 +397,9 @@ impl SingleSessionOverlay {
 impl InlineWidgetKind {
     pub(crate) fn mode(self, app: &SingleSessionApp) -> InlineWidgetMode {
         match self {
-            Self::HotkeyHelp | Self::SessionInfo => InlineWidgetMode::ReadOnly,
+            Self::HotkeyHelp | Self::SessionInfo | Self::SlashSuggestions => {
+                InlineWidgetMode::ReadOnly
+            }
             Self::ModelPicker if app.model_picker.preview => InlineWidgetMode::ReadOnly,
             Self::ModelPicker => InlineWidgetMode::Interactive,
             Self::SessionSwitcher => InlineWidgetMode::Interactive,
@@ -949,6 +965,7 @@ impl SingleSessionApp {
             model_picker: ModelPickerState::default(),
             session_switcher: SessionSwitcherState::default(),
             stdin_response: None,
+            slash_suggestions: SlashSuggestionState::default(),
             welcome,
             composer: SingleSessionComposerState::default(),
             selection: SingleSessionSelectionState::default(),
@@ -1084,7 +1101,9 @@ impl SingleSessionApp {
         match kind {
             InlineWidgetKind::HotkeyHelp => self.show_help = true,
             InlineWidgetKind::SessionInfo => self.show_session_info = true,
-            InlineWidgetKind::ModelPicker | InlineWidgetKind::SessionSwitcher => {}
+            InlineWidgetKind::ModelPicker
+            | InlineWidgetKind::SessionSwitcher
+            | InlineWidgetKind::SlashSuggestions => {}
         }
         self.mark_inline_widget_opened();
     }
@@ -1223,6 +1242,12 @@ impl SingleSessionApp {
             return outcome;
         }
 
+        if self.active_inline_widget() == Some(InlineWidgetKind::SlashSuggestions)
+            && let Some(outcome) = self.handle_slash_suggestion_key(&key)
+        {
+            return outcome;
+        }
+
         match key {
             KeyInput::SpawnPanel => KeyOutcome::SpawnSession,
             KeyInput::OpenSessionSwitcher => self.open_session_switcher(),
@@ -1300,64 +1325,74 @@ impl SingleSessionApp {
             }
             KeyInput::Backspace => {
                 self.delete_previous_char();
-                self.sync_model_picker_preview_from_draft()
+                self.sync_inline_previews_from_draft()
                     .unwrap_or(KeyOutcome::Redraw)
             }
             KeyInput::DeletePreviousWord => {
                 self.delete_previous_word();
-                self.sync_model_picker_preview_from_draft()
+                self.sync_inline_previews_from_draft()
                     .unwrap_or(KeyOutcome::Redraw)
             }
             KeyInput::DeleteNextWord => {
                 self.delete_next_word();
+                self.sync_slash_suggestions_from_draft();
                 KeyOutcome::Redraw
             }
             KeyInput::DeleteNextChar => {
                 self.delete_next_char();
+                self.sync_slash_suggestions_from_draft();
                 KeyOutcome::Redraw
             }
             KeyInput::MoveCursorWordLeft => {
                 self.move_cursor_word_left();
+                self.sync_slash_suggestions_from_draft();
                 KeyOutcome::Redraw
             }
             KeyInput::MoveCursorWordRight => {
                 self.move_cursor_word_right();
+                self.sync_slash_suggestions_from_draft();
                 KeyOutcome::Redraw
             }
             KeyInput::MoveCursorLeft => {
                 self.move_cursor_left();
+                self.sync_slash_suggestions_from_draft();
                 KeyOutcome::Redraw
             }
             KeyInput::MoveCursorRight => {
                 self.move_cursor_right();
+                self.sync_slash_suggestions_from_draft();
                 KeyOutcome::Redraw
             }
             KeyInput::MoveToLineStart => {
                 self.move_to_line_start();
+                self.sync_slash_suggestions_from_draft();
                 KeyOutcome::Redraw
             }
             KeyInput::MoveToLineEnd => {
                 self.move_to_line_end();
+                self.sync_slash_suggestions_from_draft();
                 KeyOutcome::Redraw
             }
             KeyInput::DeleteToLineStart => {
                 self.delete_to_line_start();
-                self.sync_model_picker_preview_from_draft()
+                self.sync_inline_previews_from_draft()
                     .unwrap_or(KeyOutcome::Redraw)
             }
             KeyInput::DeleteToLineEnd => {
                 self.delete_to_line_end();
-                self.sync_model_picker_preview_from_draft()
+                self.sync_inline_previews_from_draft()
                     .unwrap_or(KeyOutcome::Redraw)
             }
             KeyInput::CutInputLine => self.cut_input_line(),
             KeyInput::UndoInput => {
                 self.undo_input_change();
+                self.sync_inline_previews_from_draft();
                 KeyOutcome::Redraw
             }
+            KeyInput::Autocomplete => self.autocomplete_draft(),
             KeyInput::Character(text) => {
                 self.insert_draft_text(&text);
-                self.sync_model_picker_preview_from_draft()
+                self.sync_inline_previews_from_draft()
                     .unwrap_or(KeyOutcome::Redraw)
             }
             _ => KeyOutcome::None,
@@ -1420,6 +1455,100 @@ impl SingleSessionApp {
         } else {
             Some(self.open_model_picker_preview(filter))
         }
+    }
+
+    fn sync_inline_previews_from_draft(&mut self) -> Option<KeyOutcome> {
+        self.sync_slash_suggestions_from_draft();
+        self.sync_model_picker_preview_from_draft()
+    }
+
+    fn sync_slash_suggestions_from_draft(&mut self) {
+        let was_visible = self.slash_suggestions_visible();
+        let Some(query) = slash_suggestion_query(&self.draft, self.draft_cursor) else {
+            self.slash_suggestions.query.clear();
+            self.slash_suggestions.selected = 0;
+            return;
+        };
+
+        if self
+            .slash_suggestions
+            .dismissed_for_draft
+            .as_deref()
+            .is_some_and(|dismissed| dismissed != self.draft)
+        {
+            self.slash_suggestions.dismissed_for_draft = None;
+        }
+
+        if self.slash_suggestions.query != query {
+            self.slash_suggestions.query = query;
+            self.slash_suggestions.selected = 0;
+        }
+        let candidate_count = self.slash_suggestion_candidates().len();
+        if candidate_count == 0 {
+            self.slash_suggestions.selected = 0;
+            return;
+        }
+        self.slash_suggestions.selected = self.slash_suggestions.selected.min(candidate_count - 1);
+        if !was_visible {
+            self.mark_inline_widget_opened();
+            self.scroll_body_to_bottom();
+        }
+    }
+
+    fn handle_slash_suggestion_key(&mut self, key: &KeyInput) -> Option<KeyOutcome> {
+        match key {
+            KeyInput::Escape => {
+                self.slash_suggestions.dismissed_for_draft = Some(self.draft.clone());
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::ModelPickerMove(delta) => {
+                self.move_slash_suggestion_selection(*delta);
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::ScrollBodyPages(pages) => {
+                self.move_slash_suggestion_selection(if *pages > 0 { -5 } else { 5 });
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Autocomplete => self.complete_selected_slash_suggestion(),
+            KeyInput::SubmitDraft => {
+                self.complete_selected_slash_suggestion();
+                Some(self.submit_draft())
+            }
+            _ => None,
+        }
+    }
+
+    fn move_slash_suggestion_selection(&mut self, delta: i32) {
+        let count = self.slash_suggestion_candidates().len();
+        if count == 0 {
+            self.slash_suggestions.selected = 0;
+            return;
+        }
+        let selected = self.slash_suggestions.selected as i32 + delta;
+        self.slash_suggestions.selected =
+            selected.clamp(0, count.saturating_sub(1) as i32) as usize;
+    }
+
+    fn complete_selected_slash_suggestion(&mut self) -> Option<KeyOutcome> {
+        let candidates = self.slash_suggestion_candidates();
+        let selected = self
+            .slash_suggestions
+            .selected
+            .min(candidates.len().saturating_sub(1));
+        let (usage, _) = candidates.get(selected).copied()?;
+        let command = usage.split_whitespace().next().unwrap_or(usage);
+        let (start, end) = slash_suggestion_prefix_bounds(&self.draft, self.draft_cursor)?;
+        if self.draft.get(start..end) == Some(command) {
+            return None;
+        }
+        self.remember_input_undo_state();
+        self.draft.replace_range(start..end, command);
+        self.draft_cursor = start + command.len();
+        self.clear_draft_selection();
+        self.slash_suggestions.dismissed_for_draft = None;
+        self.slash_suggestions.query = command.to_string();
+        self.slash_suggestions.selected = selected;
+        Some(KeyOutcome::Redraw)
     }
 
     fn handle_model_picker_preview_key(&mut self, key: &KeyInput) -> Option<KeyOutcome> {
@@ -1691,8 +1820,80 @@ impl SingleSessionApp {
                 session_switcher_styled_lines(&self.session_switcher, self.current_session_id())
             }
             Some(InlineWidgetKind::SessionInfo) => session_info_inline_styled_lines(self),
+            Some(InlineWidgetKind::SlashSuggestions) => self.slash_suggestion_styled_lines(),
             None => Vec::new(),
         }
+    }
+
+    fn slash_suggestions_visible(&self) -> bool {
+        !self.slash_suggestion_candidates().is_empty()
+    }
+
+    fn slash_suggestion_styled_lines(&self) -> Vec<SingleSessionStyledLine> {
+        let candidates = self.slash_suggestion_candidates();
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        let mut lines = vec![styled_line(
+            "slash command suggestions",
+            SingleSessionLineStyle::OverlayTitle,
+        )];
+        let selected = self
+            .slash_suggestions
+            .selected
+            .min(candidates.len().saturating_sub(1));
+        lines.extend(
+            candidates
+                .into_iter()
+                .enumerate()
+                .map(|(index, (usage, description))| {
+                    let style = if index == selected {
+                        SingleSessionLineStyle::OverlaySelection
+                    } else {
+                        SingleSessionLineStyle::Overlay
+                    };
+                    styled_line(format!("  {usage:<24} {description}"), style)
+                }),
+        );
+        lines
+    }
+
+    fn slash_suggestion_candidates(&self) -> Vec<(&'static str, &'static str)> {
+        if self
+            .slash_suggestions
+            .dismissed_for_draft
+            .as_deref()
+            .is_some_and(|draft| draft == self.draft)
+        {
+            return Vec::new();
+        }
+        let cursor = self.draft_cursor.min(self.draft.len());
+        if !self.draft.is_char_boundary(cursor) {
+            return Vec::new();
+        }
+        let prefix = self.draft[..cursor].trim_start();
+        if !prefix.starts_with('/') || prefix.contains(char::is_whitespace) {
+            return Vec::new();
+        }
+        let prefix = if self.slash_suggestions.query.is_empty() {
+            prefix
+        } else {
+            self.slash_suggestions.query.as_str()
+        };
+        let prefix = prefix.to_ascii_lowercase();
+        DESKTOP_SLASH_COMMANDS
+            .iter()
+            .copied()
+            .filter(|(usage, _)| {
+                usage
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(usage)
+                    .starts_with(&prefix)
+            })
+            .take(DESKTOP_SLASH_SUGGESTION_ROW_LIMIT)
+            .collect()
     }
 
     pub(crate) fn inline_widget_line_count(&self) -> usize {
@@ -1741,7 +1942,20 @@ impl SingleSessionApp {
                 mode: InlineWidgetMode::ReadOnly,
             };
         }
+        if self.slash_suggestions_visible() {
+            return SingleSessionOverlay::Inline {
+                kind: InlineWidgetKind::SlashSuggestions,
+                mode: InlineWidgetMode::ReadOnly,
+            };
+        }
         SingleSessionOverlay::None
+    }
+
+    pub(crate) fn active_inline_widget_uses_card_chrome(&self) -> bool {
+        !matches!(
+            self.active_inline_widget(),
+            Some(InlineWidgetKind::SlashSuggestions)
+        )
     }
 
     pub(crate) fn should_draw_composer_caret(&self) -> bool {
@@ -3097,6 +3311,32 @@ impl SingleSessionApp {
             self.remember_input_undo_state();
         }
         self.draft.replace_range(self.draft_cursor..end, "");
+    }
+
+    fn autocomplete_draft(&mut self) -> KeyOutcome {
+        const DESKTOP_SLASH_COMPLETIONS: &[&str] = &[
+            "/help",
+            "/clear",
+            "/new",
+            "/sessions",
+            "/model",
+            "/copy",
+            "/search",
+            "/stop",
+            "/status",
+            "/quit",
+        ];
+        let Some((draft, cursor)) =
+            complete_slash_command(&self.draft, self.draft_cursor, DESKTOP_SLASH_COMPLETIONS)
+        else {
+            return KeyOutcome::None;
+        };
+        self.remember_input_undo_state();
+        self.draft = draft;
+        self.draft_cursor = cursor;
+        self.clear_draft_selection();
+        self.sync_inline_previews_from_draft()
+            .unwrap_or(KeyOutcome::Redraw)
     }
 
     fn remember_input_undo_state(&mut self) {
@@ -5483,6 +5723,63 @@ fn line_end(text: &str, cursor: usize) -> usize {
         .find('\n')
         .map(|offset| cursor + offset)
         .unwrap_or(text.len())
+}
+
+fn slash_suggestion_query(input: &str, cursor: usize) -> Option<String> {
+    let (start, end) = slash_suggestion_prefix_bounds(input, cursor)?;
+    Some(input[start..end].to_string())
+}
+
+fn slash_suggestion_prefix_bounds(input: &str, cursor: usize) -> Option<(usize, usize)> {
+    let cursor = cursor.min(input.len());
+    if !input.is_char_boundary(cursor) {
+        return None;
+    }
+    let prefix = &input[..cursor];
+    let start = prefix.len() - prefix.trim_start().len();
+    let command_prefix = &input[start..cursor];
+    if !command_prefix.starts_with('/') || command_prefix.contains(char::is_whitespace) {
+        return None;
+    }
+    Some((start, cursor))
+}
+
+fn complete_slash_command(
+    input: &str,
+    cursor: usize,
+    completions: &[&'static str],
+) -> Option<(String, usize)> {
+    let (start, end) = slash_suggestion_prefix_bounds(input, cursor)?;
+    let prefix = &input[start..end];
+    let matches = completions
+        .iter()
+        .copied()
+        .filter(|command| command.starts_with(prefix))
+        .collect::<Vec<_>>();
+    let completion = match matches.as_slice() {
+        [] => return None,
+        [only] => *only,
+        _ => longest_common_prefix(&matches)?,
+    };
+    if completion.len() <= prefix.len() {
+        return None;
+    }
+    let mut completed = String::with_capacity(input.len() + completion.len() - prefix.len());
+    completed.push_str(&input[..start]);
+    completed.push_str(completion);
+    completed.push_str(&input[end..]);
+    Some((completed, start + completion.len()))
+}
+
+fn longest_common_prefix<'a>(values: &'a [&'a str]) -> Option<&'a str> {
+    let first = *values.first()?;
+    let mut end = first.len();
+    for value in values.iter().skip(1) {
+        while end > 0 && !value.starts_with(&first[..end]) {
+            end = previous_char_boundary(first, end);
+        }
+    }
+    (end > 0).then_some(&first[..end])
 }
 
 fn short_session_id(session_id: &str) -> &str {

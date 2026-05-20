@@ -723,6 +723,145 @@ fn single_session_cursor_editing_inserts_and_deletes_in_middle() {
 }
 
 #[test]
+fn single_session_tab_autocompletes_desktop_slash_command() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/cop".to_string()));
+
+    assert_eq!(app.handle_key(KeyInput::Autocomplete), KeyOutcome::Redraw);
+    assert_eq!(app.draft, "/copy");
+    assert_eq!(app.draft_cursor, "/copy".len());
+
+    assert_eq!(app.handle_key(KeyInput::UndoInput), KeyOutcome::Redraw);
+    assert_eq!(app.draft, "/cop");
+}
+
+#[test]
+fn single_session_slash_suggestions_filter_select_and_submit() {
+    let mut app = SingleSessionApp::new(None);
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("/c".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::SlashSuggestions)
+    );
+    assert_eq!(
+        app.active_inline_widget_mode(),
+        Some(InlineWidgetMode::ReadOnly)
+    );
+    assert!(app.should_draw_composer_caret());
+    assert!(!app.active_inline_widget_uses_card_chrome());
+
+    let suggestions = app.inline_widget_styled_lines();
+    let suggestion_text = suggestions
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(suggestion_text.contains("slash command suggestions"));
+    assert!(suggestion_text.contains("/clear"));
+    assert!(suggestion_text.contains("/copy [latest|code|transcript]"));
+    assert!(!suggestion_text.contains("/help"));
+    assert!(suggestions.iter().any(|line| {
+        line.style == SingleSessionLineStyle::OverlaySelection && line.text.contains("/clear")
+    }));
+
+    assert_eq!(
+        app.handle_key(KeyInput::ModelPickerMove(1)),
+        KeyOutcome::Redraw
+    );
+    let suggestions = app.inline_widget_styled_lines();
+    assert!(suggestions.iter().any(|line| {
+        line.style == SingleSessionLineStyle::OverlaySelection && line.text.contains("/copy")
+    }));
+
+    assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
+    assert!(app.draft.is_empty());
+    assert_eq!(app.status.as_deref(), Some("no assistant response to copy"));
+    assert!(app.messages.is_empty());
+}
+
+#[test]
+fn single_session_slash_suggestions_escape_dismisses_until_draft_changes() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/m".to_string()));
+
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::SlashSuggestions)
+    );
+    assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::Redraw);
+    assert_eq!(app.draft, "/m");
+    assert_eq!(app.active_inline_widget(), None);
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("o".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.draft, "/mo");
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::SlashSuggestions)
+    );
+}
+
+#[test]
+fn single_session_slash_suggestions_do_not_steal_help_overlay_keys() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/c".to_string()));
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::SlashSuggestions)
+    );
+
+    assert_eq!(app.handle_key(KeyInput::HotkeyHelp), KeyOutcome::Redraw);
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::HotkeyHelp)
+    );
+
+    assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::Redraw);
+    assert_eq!(app.draft, "/c");
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::SlashSuggestions)
+    );
+}
+
+#[test]
+fn single_session_slash_suggestions_do_not_add_card_geometry() {
+    let size = PhysicalSize::new(1000, 720);
+    let mut base = SingleSessionApp::new(Some(test_session_card(
+        "slash_suggestions_geometry",
+        "Slash Geometry",
+        "ready",
+    )));
+
+    assert_eq!(
+        base.handle_key(KeyInput::Character("/c".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(
+        base.active_inline_widget(),
+        Some(InlineWidgetKind::SlashSuggestions)
+    );
+    assert!(!base.active_inline_widget_uses_card_chrome());
+    let suggestion_vertices = build_single_session_vertices(&base, size, 0.0, 0);
+    assert!(!suggestion_vertices.is_empty());
+
+    assert_eq!(base.handle_key(KeyInput::HotkeyHelp), KeyOutcome::Redraw);
+    assert_eq!(
+        base.active_inline_widget(),
+        Some(InlineWidgetKind::HotkeyHelp)
+    );
+    assert!(base.active_inline_widget_uses_card_chrome());
+    let help_vertices = build_single_session_vertices(&base, size, 0.0, 0);
+    assert!(help_vertices.len() > suggestion_vertices.len());
+}
+
+#[test]
 fn single_session_composer_uses_next_prompt_number() {
     let mut app = SingleSessionApp::new(None);
     assert_eq!(app.next_prompt_number(), 1);
@@ -1638,6 +1777,10 @@ fn desktop_maps_terminal_editing_shortcuts_from_tui() {
     assert_eq!(
         to_key_input(&Key::Character("d".into()), ModifiersState::CONTROL),
         KeyInput::CancelGeneration
+    );
+    assert_eq!(
+        to_key_input(&Key::Named(NamedKey::Tab), ModifiersState::empty()),
+        KeyInput::Autocomplete
     );
 }
 

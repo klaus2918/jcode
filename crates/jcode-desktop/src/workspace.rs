@@ -79,6 +79,7 @@ pub enum KeyInput {
     DeleteToLineEnd,
     CutInputLine,
     UndoInput,
+    Autocomplete,
     CancelGeneration,
     ScrollBodyPages(i32),
     JumpPrompt(i32),
@@ -653,7 +654,8 @@ impl Workspace {
             | KeyInput::PasteText
             | KeyInput::QueueDraft
             | KeyInput::RetrieveQueuedDraft
-            | KeyInput::CutInputLine => {
+            | KeyInput::CutInputLine
+            | KeyInput::Autocomplete => {
                 return KeyOutcome::None;
             }
             _ => {}
@@ -771,6 +773,7 @@ impl Workspace {
             | KeyInput::DeleteToLineEnd
             | KeyInput::CutInputLine
             | KeyInput::UndoInput
+            | KeyInput::Autocomplete
             | KeyInput::CancelGeneration
             | KeyInput::ScrollBodyPages(_)
             | KeyInput::JumpPrompt(_)

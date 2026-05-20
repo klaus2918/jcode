@@ -758,28 +758,30 @@ fn push_single_session_inline_widget_card(
         return;
     };
 
-    const INLINE_CARD_BACKGROUND_COLOR: [f32; 4] = [0.972, 0.982, 1.000, 0.54];
-    const INLINE_CARD_BORDER_COLOR: [f32; 4] = [0.180, 0.255, 0.430, 0.18];
-    push_rounded_rect(
-        vertices,
-        layout.card,
-        INLINE_WIDGET_CARD_RADIUS,
-        with_alpha(
-            INLINE_CARD_BORDER_COLOR,
-            INLINE_CARD_BORDER_COLOR[3] * progress,
-        ),
-        size,
-    );
-    push_rounded_rect(
-        vertices,
-        inset_rect(layout.card, 1.0),
-        INLINE_WIDGET_CARD_RADIUS - 1.0,
-        with_alpha(
-            INLINE_CARD_BACKGROUND_COLOR,
-            INLINE_CARD_BACKGROUND_COLOR[3] * progress,
-        ),
-        size,
-    );
+    if app.active_inline_widget_uses_card_chrome() {
+        const INLINE_CARD_BACKGROUND_COLOR: [f32; 4] = [0.972, 0.982, 1.000, 0.54];
+        const INLINE_CARD_BORDER_COLOR: [f32; 4] = [0.180, 0.255, 0.430, 0.18];
+        push_rounded_rect(
+            vertices,
+            layout.card,
+            INLINE_WIDGET_CARD_RADIUS,
+            with_alpha(
+                INLINE_CARD_BORDER_COLOR,
+                INLINE_CARD_BORDER_COLOR[3] * progress,
+            ),
+            size,
+        );
+        push_rounded_rect(
+            vertices,
+            inset_rect(layout.card, 1.0),
+            INLINE_WIDGET_CARD_RADIUS - 1.0,
+            with_alpha(
+                INLINE_CARD_BACKGROUND_COLOR,
+                INLINE_CARD_BACKGROUND_COLOR[3] * progress,
+            ),
+            size,
+        );
+    }
 
     if app.model_picker.open
         && !app.model_picker.loading

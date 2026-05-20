@@ -4329,6 +4329,7 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         Key::Named(NamedKey::Enter) if modifiers.control_key() => KeyInput::QueueDraft,
         Key::Named(NamedKey::Enter) if modifiers.shift_key() => KeyInput::Enter,
         Key::Named(NamedKey::Enter) => KeyInput::SubmitDraft,
+        Key::Named(NamedKey::Tab) => KeyInput::Autocomplete,
         Key::Named(NamedKey::Backspace) if modifiers.control_key() || modifiers.alt_key() => {
             KeyInput::DeletePreviousWord
         }
