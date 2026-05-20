@@ -755,6 +755,18 @@ fn single_session_streaming_text_fade_does_not_restart_for_each_delta() {
 }
 
 #[test]
+fn single_session_streaming_text_fade_restarts_after_previous_fade_finishes() {
+    let first = Instant::now();
+    let later = first + STREAMING_TEXT_FADE_DURATION + Duration::from_millis(1);
+
+    let started = streaming_text_fade_start_after_len_change(0, 5, None, first);
+    assert_eq!(started, Some(first));
+
+    let restarted = streaming_text_fade_start_after_len_change(5, 12, started, later);
+    assert_eq!(restarted, Some(later));
+}
+
+#[test]
 fn single_session_streaming_text_fade_resets_when_streaming_finishes() {
     let first = Instant::now();
     let started = streaming_text_fade_start_after_len_change(0, 5, None, first);

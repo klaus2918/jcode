@@ -255,7 +255,11 @@ fn streaming_text_fade_start_after_len_change(
 ) -> Option<Instant> {
     if next_len == 0 {
         None
-    } else if previous_len == 0 {
+    } else if previous_len == 0
+        || current_started_at.is_some_and(|started_at| {
+            now.saturating_duration_since(started_at) >= STREAMING_TEXT_FADE_DURATION
+        })
+    {
         Some(now)
     } else {
         current_started_at
