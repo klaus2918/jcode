@@ -743,6 +743,28 @@ fn single_session_streaming_text_fades_in() {
 }
 
 #[test]
+fn single_session_streaming_text_fade_does_not_restart_for_each_delta() {
+    let first = Instant::now();
+    let second = first + Duration::from_millis(40);
+
+    let started = streaming_text_fade_start_after_len_change(0, 5, None, first);
+    assert_eq!(started, Some(first));
+
+    let unchanged = streaming_text_fade_start_after_len_change(5, 12, started, second);
+    assert_eq!(unchanged, Some(first));
+}
+
+#[test]
+fn single_session_streaming_text_fade_resets_when_streaming_finishes() {
+    let first = Instant::now();
+    let started = streaming_text_fade_start_after_len_change(0, 5, None, first);
+    assert_eq!(
+        streaming_text_fade_start_after_len_change(5, 0, started, first),
+        None
+    );
+}
+
+#[test]
 fn single_session_streaming_text_opacity_scales_rich_text_segments() {
     let lines = vec![SingleSessionStyledLine::new(
         "streaming answer",

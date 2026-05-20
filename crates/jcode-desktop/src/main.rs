@@ -246,6 +246,21 @@ fn streaming_text_fade_opacity_for_elapsed(elapsed: Duration) -> (f32, bool) {
     let style = streaming_text_arrival_style_for_elapsed(elapsed);
     (style.opacity, style.active)
 }
+
+fn streaming_text_fade_start_after_len_change(
+    previous_len: usize,
+    next_len: usize,
+    current_started_at: Option<Instant>,
+    now: Instant,
+) -> Option<Instant> {
+    if next_len == 0 {
+        None
+    } else if previous_len == 0 {
+        Some(now)
+    } else {
+        current_started_at
+    }
+}
 const DESKTOP_120FPS_FRAME_BUDGET: Duration = Duration::from_micros(8_333);
 const DESKTOP_PRESENT_STALL_BUDGET: Duration = Duration::from_millis(33);
 const DESKTOP_INPUT_LATENCY_BUDGET: Duration = Duration::from_millis(25);
@@ -6725,15 +6740,12 @@ impl Canvas {
 
     fn update_single_session_streaming_fade(&mut self, app: &SingleSessionApp) {
         let response_len = app.streaming_response.len();
-        if response_len == 0 {
-            self.single_session_streaming_response_len = 0;
-            self.single_session_streaming_fade_started_at = None;
-            return;
-        }
-
-        if response_len > self.single_session_streaming_response_len {
-            self.single_session_streaming_fade_started_at = Some(Instant::now());
-        }
+        self.single_session_streaming_fade_started_at = streaming_text_fade_start_after_len_change(
+            self.single_session_streaming_response_len,
+            response_len,
+            self.single_session_streaming_fade_started_at,
+            Instant::now(),
+        );
         self.single_session_streaming_response_len = response_len;
     }
 
