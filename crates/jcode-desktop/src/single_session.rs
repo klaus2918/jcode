@@ -2030,10 +2030,7 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn active_inline_widget_uses_card_chrome(&self) -> bool {
-        !matches!(
-            self.active_inline_widget(),
-            Some(InlineWidgetKind::SlashSuggestions)
-        )
+        self.active_inline_widget().is_some()
     }
 
     pub(crate) fn should_draw_composer_caret(&self) -> bool {
