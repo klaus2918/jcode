@@ -1083,12 +1083,7 @@ impl App {
     }
 
     pub(super) fn scroll_up(&mut self, amount: usize) {
-        let max_scroll = super::super::ui::last_max_scroll();
-        let max = if max_scroll > 0 {
-            max_scroll
-        } else {
-            self.scroll_max_estimate()
-        };
+        let max = self.scroll_max_estimate();
         if !self.auto_scroll_paused {
             let current_abs = max.saturating_sub(self.scroll_offset);
             self.scroll_offset = current_abs.saturating_sub(amount);
@@ -1104,12 +1099,7 @@ impl App {
             return;
         }
 
-        let max_scroll = super::super::ui::last_max_scroll();
-        let max = if max_scroll > 0 {
-            max_scroll
-        } else {
-            self.scroll_max_estimate()
-        };
+        let max = self.scroll_max_estimate();
 
         self.scroll_offset = max.saturating_sub(self.scroll_offset.min(max));
         self.auto_scroll_paused = true;
@@ -1119,12 +1109,7 @@ impl App {
         if !self.auto_scroll_paused {
             return;
         }
-        let max_scroll = super::super::ui::last_max_scroll();
-        let max = if max_scroll > 0 {
-            max_scroll
-        } else {
-            self.scroll_max_estimate()
-        };
+        let max = self.scroll_max_estimate();
         self.scroll_offset = (self.scroll_offset + amount).min(max);
         if self.scroll_offset >= max {
             self.follow_chat_bottom();
