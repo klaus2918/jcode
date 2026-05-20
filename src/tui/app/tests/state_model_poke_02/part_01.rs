@@ -345,7 +345,7 @@ fn test_mouse_scroll_changelog_overlay_updates_changelog_scroll() {
 }
 
 #[test]
-fn test_mouse_scroll_over_unfocused_diagram_does_not_resize_pane() {
+fn test_mouse_scroll_over_unfocused_diagram_scrolls_chat_without_resizing_pane() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
@@ -373,7 +373,8 @@ fn test_mouse_scroll_over_unfocused_diagram_does_not_resize_pane() {
         modifiers: KeyModifiers::empty(),
     });
 
-    assert!(scroll_only);
+    assert!(!scroll_only);
+    assert!(app.auto_scroll_paused);
     assert_eq!(app.diagram_pane_ratio, 40);
     assert_eq!(app.diagram_pane_ratio_from, 40);
     assert_eq!(app.diagram_pane_ratio_target, 40);

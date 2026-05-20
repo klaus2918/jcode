@@ -1007,12 +1007,6 @@ impl App {
                     _ => {}
                 }
                 handled_scroll = true;
-            } else {
-                // Do not resize the pinned diagram pane from plain mouse-wheel
-                // scrolling. That made incidental scrolling over the side pane
-                // unexpectedly change the pane width. Resize remains available
-                // via drag, keyboard shortcuts, and presets.
-                handled_scroll = true;
             }
         }
 
