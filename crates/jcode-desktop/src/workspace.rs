@@ -81,9 +81,15 @@ pub enum KeyInput {
     UndoInput,
     Autocomplete,
     CancelGeneration,
+    ExitApp,
+    ScrollBodyLines(i32),
     ScrollBodyPages(i32),
+    ScrollBodyToTop,
+    ScrollBodyToBottom,
     JumpPrompt(i32),
     CopyLatestResponse,
+    CopyLatestCodeBlock,
+    CopyTranscript,
     OpenModelPicker,
     OpenSessionSwitcher,
     ModelPickerMove(i32),
@@ -294,9 +300,11 @@ pub struct Workspace {
     pub zoomed: bool,
     pub detail_scroll: usize,
     pub draft: String,
+    pub draft_cursor: usize,
     pub pending_images: Vec<(String, String)>,
     panel_size: PanelSizePreset,
     space_hold_toggle_ms: u64,
+    input_undo_stack: Vec<(String, usize)>,
     next_id: u64,
 }
 
@@ -320,9 +328,11 @@ impl Workspace {
             zoomed: false,
             detail_scroll: 0,
             draft: String::new(),
+            draft_cursor: 0,
             pending_images: Vec::new(),
             panel_size: PanelSizePreset::Quarter,
             space_hold_toggle_ms: DEFAULT_SPACE_HOLD_TOGGLE_MS,
+            input_undo_stack: Vec::new(),
             next_id: 8,
         }
     }
@@ -350,9 +360,11 @@ impl Workspace {
             zoomed: false,
             detail_scroll: 0,
             draft: String::new(),
+            draft_cursor: 0,
             pending_images: Vec::new(),
             panel_size: PanelSizePreset::Quarter,
             space_hold_toggle_ms: DEFAULT_SPACE_HOLD_TOGGLE_MS,
+            input_undo_stack: Vec::new(),
             next_id,
         }
     }
@@ -373,9 +385,11 @@ impl Workspace {
             zoomed: false,
             detail_scroll: 0,
             draft: String::new(),
+            draft_cursor: 0,
             pending_images: Vec::new(),
             panel_size: PanelSizePreset::Quarter,
             space_hold_toggle_ms: DEFAULT_SPACE_HOLD_TOGGLE_MS,
+            input_undo_stack: Vec::new(),
             next_id: 2,
         }
     }
@@ -396,9 +410,11 @@ impl Workspace {
             zoomed: false,
             detail_scroll: 0,
             draft: String::new(),
+            draft_cursor: 0,
             pending_images: Vec::new(),
             panel_size: PanelSizePreset::Quarter,
             space_hold_toggle_ms: DEFAULT_SPACE_HOLD_TOGGLE_MS,
+            input_undo_stack: Vec::new(),
             next_id: 2,
         }
     }
@@ -432,7 +448,7 @@ impl Workspace {
 
         match self.mode {
             InputMode::Navigation if self.zoomed => format!(
-                "Jcode Desktop · {mode}{zoom} · workspace {workspace} · panel {panel_size} · {focused} · j/k scroll · g/G top/bottom · z unzoom · o/Enter open · Esc quit"
+                "Jcode Desktop · {mode}{zoom} · workspace {workspace} · panel {panel_size} · {focused} · j/k or Super+J/K scroll · g/G or Ctrl+Home/End top/bottom · z unzoom · o/Enter open · Esc quit"
             ),
             InputMode::Navigation => format!(
                 "Jcode Desktop · {mode}{zoom} · workspace {workspace} · panel {panel_size} · {focused} · h/l columns · j/k workspaces · Ctrl+1-4 panel size · Ctrl+R refresh · Ctrl+; new · Ctrl+? help · z zoom · i insert · Esc quit"
@@ -597,7 +613,7 @@ impl Workspace {
         if self.mode != InputMode::Insert || text.is_empty() {
             return false;
         }
-        self.draft.push_str(text);
+        self.insert_draft_text(text);
         true
     }
 
@@ -626,7 +642,24 @@ impl Workspace {
                 self.open_hotkey_help();
                 return KeyOutcome::Redraw;
             }
+            KeyInput::ExitApp => return KeyOutcome::Exit,
             KeyInput::RefreshSessions => return KeyOutcome::Redraw,
+            KeyInput::ScrollBodyPages(pages)
+                if self.zoomed && self.focused_detail_line_count() > 0 =>
+            {
+                return self.scroll_detail(-(pages as isize) * 12).into();
+            }
+            KeyInput::ScrollBodyLines(lines)
+                if self.zoomed && self.focused_detail_line_count() > 0 =>
+            {
+                return self.scroll_detail(-(lines as isize)).into();
+            }
+            KeyInput::ScrollBodyToTop if self.zoomed && self.focused_detail_line_count() > 0 => {
+                return self.scroll_detail_to_top().into();
+            }
+            KeyInput::ScrollBodyToBottom if self.zoomed && self.focused_detail_line_count() > 0 => {
+                return self.scroll_detail_to_bottom().into();
+            }
             KeyInput::SetPanelSize(size) => {
                 self.panel_size = size;
                 return KeyOutcome::Redraw;
@@ -643,7 +676,6 @@ impl Workspace {
                 return KeyOutcome::Redraw;
             }
             KeyInput::CancelGeneration
-            | KeyInput::ScrollBodyPages(_)
             | KeyInput::CycleModel(_)
             | KeyInput::OpenModelPicker
             | KeyInput::OpenSessionSwitcher
@@ -739,19 +771,19 @@ impl Workspace {
                 KeyOutcome::Redraw
             }
             KeyInput::Enter => {
-                self.draft.push('\n');
+                self.insert_draft_text("\n");
                 KeyOutcome::Redraw
             }
             KeyInput::Backspace => {
-                self.draft.pop();
+                self.delete_previous_char();
                 KeyOutcome::Redraw
             }
             KeyInput::DeletePreviousWord => {
-                delete_previous_word(&mut self.draft);
+                self.delete_previous_word();
                 KeyOutcome::Redraw
             }
             KeyInput::DeleteToLineStart => {
-                self.draft.clear();
+                self.delete_to_line_start();
                 KeyOutcome::Redraw
             }
             KeyInput::AttachClipboardImage => KeyOutcome::AttachClipboardImage,
@@ -762,22 +794,57 @@ impl Workspace {
                     KeyOutcome::None
                 }
             }
-            KeyInput::DeleteNextChar
-            | KeyInput::DeleteNextWord
-            | KeyInput::MoveCursorLeft
-            | KeyInput::MoveCursorRight
-            | KeyInput::MoveCursorWordLeft
-            | KeyInput::MoveCursorWordRight
-            | KeyInput::MoveToLineStart
-            | KeyInput::MoveToLineEnd
-            | KeyInput::DeleteToLineEnd
-            | KeyInput::CutInputLine
-            | KeyInput::UndoInput
-            | KeyInput::Autocomplete
-            | KeyInput::CancelGeneration
+            KeyInput::DeleteNextChar => {
+                self.delete_next_char();
+                KeyOutcome::Redraw
+            }
+            KeyInput::DeleteNextWord => {
+                self.delete_next_word();
+                KeyOutcome::Redraw
+            }
+            KeyInput::MoveCursorLeft => {
+                self.move_cursor_left();
+                KeyOutcome::Redraw
+            }
+            KeyInput::MoveCursorRight => {
+                self.move_cursor_right();
+                KeyOutcome::Redraw
+            }
+            KeyInput::MoveCursorWordLeft => {
+                self.move_cursor_word_left();
+                KeyOutcome::Redraw
+            }
+            KeyInput::MoveCursorWordRight => {
+                self.move_cursor_word_right();
+                KeyOutcome::Redraw
+            }
+            KeyInput::MoveToLineStart => {
+                self.move_to_line_start();
+                KeyOutcome::Redraw
+            }
+            KeyInput::MoveToLineEnd => {
+                self.move_to_line_end();
+                KeyOutcome::Redraw
+            }
+            KeyInput::DeleteToLineEnd => {
+                self.delete_to_line_end();
+                KeyOutcome::Redraw
+            }
+            KeyInput::CutInputLine => self.cut_input_line(),
+            KeyInput::UndoInput => {
+                self.undo_input_change();
+                KeyOutcome::Redraw
+            }
+            KeyInput::Autocomplete => self.autocomplete_draft(),
+            KeyInput::CancelGeneration
+            | KeyInput::ScrollBodyLines(_)
             | KeyInput::ScrollBodyPages(_)
+            | KeyInput::ScrollBodyToTop
+            | KeyInput::ScrollBodyToBottom
             | KeyInput::JumpPrompt(_)
             | KeyInput::CopyLatestResponse
+            | KeyInput::CopyLatestCodeBlock
+            | KeyInput::CopyTranscript
             | KeyInput::OpenModelPicker
             | KeyInput::OpenSessionSwitcher
             | KeyInput::ToggleSessionInfo
@@ -786,13 +853,175 @@ impl Workspace {
             | KeyInput::CycleReasoningEffort(_)
             | KeyInput::AdjustTextScale(_)
             | KeyInput::ResetTextScale => KeyOutcome::None,
+            KeyInput::ExitApp => KeyOutcome::Exit,
             KeyInput::RetrieveQueuedDraft => KeyOutcome::None,
             KeyInput::PasteText => KeyOutcome::PasteText,
             KeyInput::Character(text) => {
-                self.draft.push_str(&text);
+                self.insert_draft_text(&text);
                 KeyOutcome::Redraw
             }
             KeyInput::Other => KeyOutcome::None,
+        }
+    }
+
+    fn insert_draft_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.remember_input_undo_state();
+        self.clamp_draft_cursor();
+        self.draft.insert_str(self.draft_cursor, text);
+        self.draft_cursor += text.len();
+    }
+
+    fn delete_previous_char(&mut self) {
+        self.clamp_draft_cursor();
+        if self.draft_cursor == 0 {
+            return;
+        }
+        self.remember_input_undo_state();
+        let previous = previous_char_boundary(&self.draft, self.draft_cursor);
+        self.draft.replace_range(previous..self.draft_cursor, "");
+        self.draft_cursor = previous;
+    }
+
+    fn delete_next_char(&mut self) {
+        self.clamp_draft_cursor();
+        if self.draft_cursor >= self.draft.len() {
+            return;
+        }
+        self.remember_input_undo_state();
+        let next = next_char_boundary(&self.draft, self.draft_cursor);
+        self.draft.replace_range(self.draft_cursor..next, "");
+    }
+
+    fn delete_previous_word(&mut self) {
+        self.clamp_draft_cursor();
+        let start = previous_word_start(&self.draft, self.draft_cursor);
+        if start < self.draft_cursor {
+            self.remember_input_undo_state();
+        }
+        self.draft.replace_range(start..self.draft_cursor, "");
+        self.draft_cursor = start;
+    }
+
+    fn delete_next_word(&mut self) {
+        self.clamp_draft_cursor();
+        let end = next_word_end(&self.draft, self.draft_cursor);
+        if end > self.draft_cursor {
+            self.remember_input_undo_state();
+        }
+        self.draft.replace_range(self.draft_cursor..end, "");
+    }
+
+    fn move_cursor_left(&mut self) {
+        self.clamp_draft_cursor();
+        self.draft_cursor = previous_char_boundary(&self.draft, self.draft_cursor);
+    }
+
+    fn move_cursor_right(&mut self) {
+        self.clamp_draft_cursor();
+        self.draft_cursor = next_char_boundary(&self.draft, self.draft_cursor);
+    }
+
+    fn move_cursor_word_left(&mut self) {
+        self.clamp_draft_cursor();
+        self.draft_cursor = previous_word_start(&self.draft, self.draft_cursor);
+    }
+
+    fn move_cursor_word_right(&mut self) {
+        self.clamp_draft_cursor();
+        self.draft_cursor = next_word_end(&self.draft, self.draft_cursor);
+    }
+
+    fn move_to_line_start(&mut self) {
+        self.clamp_draft_cursor();
+        self.draft_cursor = line_start(&self.draft, self.draft_cursor);
+    }
+
+    fn move_to_line_end(&mut self) {
+        self.clamp_draft_cursor();
+        self.draft_cursor = line_end(&self.draft, self.draft_cursor);
+    }
+
+    fn delete_to_line_start(&mut self) {
+        self.clamp_draft_cursor();
+        let start = line_start(&self.draft, self.draft_cursor);
+        if start < self.draft_cursor {
+            self.remember_input_undo_state();
+        }
+        self.draft.replace_range(start..self.draft_cursor, "");
+        self.draft_cursor = start;
+    }
+
+    fn delete_to_line_end(&mut self) {
+        self.clamp_draft_cursor();
+        let end = line_end(&self.draft, self.draft_cursor);
+        if end > self.draft_cursor {
+            self.remember_input_undo_state();
+        }
+        self.draft.replace_range(self.draft_cursor..end, "");
+    }
+
+    fn cut_input_line(&mut self) -> KeyOutcome {
+        if self.draft.is_empty() {
+            return KeyOutcome::None;
+        }
+        self.remember_input_undo_state();
+        let text = std::mem::take(&mut self.draft);
+        self.draft_cursor = 0;
+        KeyOutcome::CutDraftToClipboard(text)
+    }
+
+    fn autocomplete_draft(&mut self) -> KeyOutcome {
+        const WORKSPACE_SLASH_COMPLETIONS: &[&str] = &[
+            "/help",
+            "/clear",
+            "/model",
+            "/resume",
+            "/sessions",
+            "/status",
+            "/quit",
+        ];
+        let Some((draft, cursor)) =
+            complete_slash_command(&self.draft, self.draft_cursor, WORKSPACE_SLASH_COMPLETIONS)
+        else {
+            return KeyOutcome::None;
+        };
+        self.remember_input_undo_state();
+        self.draft = draft;
+        self.draft_cursor = cursor;
+        KeyOutcome::Redraw
+    }
+
+    fn remember_input_undo_state(&mut self) {
+        if self
+            .input_undo_stack
+            .last()
+            .is_some_and(|(draft, cursor)| draft == &self.draft && *cursor == self.draft_cursor)
+        {
+            return;
+        }
+        self.input_undo_stack
+            .push((self.draft.clone(), self.draft_cursor));
+        const MAX_UNDO: usize = 64;
+        if self.input_undo_stack.len() > MAX_UNDO {
+            self.input_undo_stack.remove(0);
+        }
+    }
+
+    fn undo_input_change(&mut self) {
+        if let Some((draft, cursor)) = self.input_undo_stack.pop() {
+            self.draft = draft;
+            self.draft_cursor = cursor.min(self.draft.len());
+            self.clamp_draft_cursor();
+        }
+    }
+
+    fn clamp_draft_cursor(&mut self) {
+        self.draft_cursor = self.draft_cursor.min(self.draft.len());
+        while self.draft_cursor > 0 && !self.draft.is_char_boundary(self.draft_cursor) {
+            self.draft_cursor -= 1;
         }
     }
 
@@ -807,6 +1036,8 @@ impl Workspace {
 
         let images = std::mem::take(&mut self.pending_images);
         self.draft.clear();
+        self.draft_cursor = 0;
+        self.input_undo_stack.clear();
         self.mode = InputMode::Navigation;
         KeyOutcome::SendDraft {
             session_id,
@@ -1009,12 +1240,13 @@ impl Workspace {
                 ];
                 if self.focused_session_target().is_some() {
                     lines.push("o or enter open session".to_string());
-                    lines.push("zoomed j k scroll detail".to_string());
-                    lines.push("zoomed g G top bottom".to_string());
+                    lines.push("zoomed j k or super j/k scroll detail".to_string());
+                    lines.push("zoomed g/G or ctrl home/end top bottom".to_string());
+                    lines.push("zoomed page up/down jumps detail".to_string());
                 } else {
                     lines.push("enter insert mode".to_string());
                 }
-                lines.push("i insert  esc quit".to_string());
+                lines.push("i insert  esc or ctrl q quit".to_string());
                 lines
             }
             InputMode::Insert => vec![
@@ -1130,13 +1362,122 @@ impl Workspace {
     }
 }
 
-fn delete_previous_word(text: &mut String) {
-    while text.ends_with(char::is_whitespace) {
-        text.pop();
+fn previous_char_boundary(text: &str, cursor: usize) -> usize {
+    text[..cursor.min(text.len())]
+        .char_indices()
+        .last()
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
+fn next_char_boundary(text: &str, cursor: usize) -> usize {
+    if cursor >= text.len() {
+        return text.len();
     }
-    while text.chars().last().is_some_and(|ch| !ch.is_whitespace()) {
-        text.pop();
+    text[cursor..]
+        .char_indices()
+        .nth(1)
+        .map(|(offset, _)| cursor + offset)
+        .unwrap_or(text.len())
+}
+
+fn previous_word_start(text: &str, cursor: usize) -> usize {
+    let mut start = cursor.min(text.len());
+    while start > 0 {
+        let previous = previous_char_boundary(text, start);
+        let ch = text[previous..start].chars().next().unwrap_or_default();
+        if !ch.is_whitespace() {
+            break;
+        }
+        start = previous;
     }
+    while start > 0 {
+        let previous = previous_char_boundary(text, start);
+        let ch = text[previous..start].chars().next().unwrap_or_default();
+        if ch.is_whitespace() {
+            break;
+        }
+        start = previous;
+    }
+    start
+}
+
+fn next_word_end(text: &str, cursor: usize) -> usize {
+    let mut end = cursor.min(text.len());
+    while end < text.len() {
+        let next = next_char_boundary(text, end);
+        let ch = text[end..next].chars().next().unwrap_or_default();
+        if !ch.is_whitespace() {
+            break;
+        }
+        end = next;
+    }
+    while end < text.len() {
+        let next = next_char_boundary(text, end);
+        let ch = text[end..next].chars().next().unwrap_or_default();
+        if ch.is_whitespace() {
+            break;
+        }
+        end = next;
+    }
+    end
+}
+
+fn line_start(text: &str, cursor: usize) -> usize {
+    text[..cursor.min(text.len())]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0)
+}
+
+fn line_end(text: &str, cursor: usize) -> usize {
+    text[cursor.min(text.len())..]
+        .find('\n')
+        .map(|offset| cursor + offset)
+        .unwrap_or(text.len())
+}
+
+fn complete_slash_command(
+    input: &str,
+    cursor: usize,
+    completions: &[&'static str],
+) -> Option<(String, usize)> {
+    let cursor = cursor.min(input.len());
+    if !input.is_char_boundary(cursor) || !input.starts_with('/') {
+        return None;
+    }
+    let prefix = &input[..cursor];
+    if prefix.contains(char::is_whitespace) {
+        return None;
+    }
+    let suffix = &input[cursor..];
+    let matches = completions
+        .iter()
+        .copied()
+        .filter(|command| command.starts_with(prefix))
+        .collect::<Vec<_>>();
+    let completion = match matches.as_slice() {
+        [] => return None,
+        [only] => *only,
+        _ => longest_common_prefix(&matches)?,
+    };
+    if completion.len() <= prefix.len() {
+        return None;
+    }
+    let mut completed = completion.to_string();
+    completed.push_str(suffix);
+    Some((completed, completion.len()))
+}
+
+fn longest_common_prefix<'a>(values: &'a [&'a str]) -> Option<&'a str> {
+    let first = *values.first()?;
+    let mut end = first.len();
+    for value in values.iter().skip(1) {
+        while end > 0 && !value.starts_with(&first[..end]) {
+            end = previous_char_boundary(first, end);
+        }
+    }
+    (end > 0).then_some(&first[..end])
 }
 
 impl From<bool> for KeyOutcome {

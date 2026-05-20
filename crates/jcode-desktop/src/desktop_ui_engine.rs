@@ -34,7 +34,10 @@ pub(crate) struct LayoutConstraints {
 
 impl LayoutConstraints {
     pub(crate) fn tight(size: UiSize) -> Self {
-        Self { min: size, max: size }
+        Self {
+            min: size,
+            max: size,
+        }
     }
 }
 
@@ -125,7 +128,10 @@ pub(crate) struct RetainedUiTree {
 
 impl RetainedUiTree {
     pub(crate) fn upsert(&mut self, mut node: UiNode) {
-        let existing_key = self.nodes.get(&node.id).and_then(|existing| existing.cache_key);
+        let existing_key = self
+            .nodes
+            .get(&node.id)
+            .and_then(|existing| existing.cache_key);
         if existing_key != node.cache_key {
             node.dirty.mark_all();
         }
@@ -146,9 +152,7 @@ impl RetainedUiTree {
     }
 
     pub(crate) fn dirty_nodes(&self) -> impl Iterator<Item = &UiNode> {
-        self.dirty_nodes
-            .iter()
-            .filter_map(|id| self.nodes.get(id))
+        self.dirty_nodes.iter().filter_map(|id| self.nodes.get(id))
     }
 
     pub(crate) fn clear_dirty(&mut self) {
@@ -258,7 +262,10 @@ pub(crate) struct FontFallbackStack {
 }
 
 impl FontFallbackStack {
-    pub(crate) fn new(primary: impl Into<String>, fallbacks: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub(crate) fn new(
+        primary: impl Into<String>,
+        fallbacks: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         Self {
             primary: primary.into(),
             fallbacks: fallbacks.into_iter().map(Into::into).collect(),
@@ -302,7 +309,11 @@ impl TextEngineConfig {
             shaping: TextShapingMode::UnicodeShaping,
             font_stack: FontFallbackStack::new(
                 "JetBrainsMono Nerd Font",
-                ["JetBrainsMono Nerd Font Mono", "JetBrains Mono", "monospace"],
+                [
+                    "JetBrainsMono Nerd Font Mono",
+                    "JetBrains Mono",
+                    "monospace",
+                ],
             ),
             enable_ligatures: false,
             enable_emoji_fallback: true,
@@ -348,7 +359,11 @@ pub(crate) struct ImeState {
 }
 
 impl ImeState {
-    pub(crate) fn apply_preedit(&mut self, text: impl Into<String>, cursor: Option<(usize, usize)>) {
+    pub(crate) fn apply_preedit(
+        &mut self,
+        text: impl Into<String>,
+        cursor: Option<(usize, usize)>,
+    ) {
         self.active = true;
         self.preedit = text.into();
         self.cursor_byte_range = cursor;
@@ -465,12 +480,17 @@ pub(crate) struct VirtualListState {
 
 impl VirtualListState {
     pub(crate) fn materialized_range(self) -> std::ops::Range<usize> {
-        let start = self.first_visible.saturating_sub(self.overscan).min(self.total_items);
+        let start = self
+            .first_visible
+            .saturating_sub(self.overscan)
+            .min(self.total_items);
         let visible_end = self
             .first_visible
             .saturating_add(self.visible_count)
             .min(self.total_items);
-        let end = visible_end.saturating_add(self.overscan).min(self.total_items);
+        let end = visible_end
+            .saturating_add(self.overscan)
+            .min(self.total_items);
         start..end
     }
 }
@@ -495,7 +515,12 @@ impl SurfaceRenderCache {
         }
     }
 
-    pub(crate) fn update_keys(&mut self, layout_key: u64, display_key: u64, semantic_key: u64) -> DirtyFlags {
+    pub(crate) fn update_keys(
+        &mut self,
+        layout_key: u64,
+        display_key: u64,
+        semantic_key: u64,
+    ) -> DirtyFlags {
         let mut flags = DirtyFlags::default();
         if self.layout_key != layout_key {
             self.layout_key = layout_key;

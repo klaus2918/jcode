@@ -130,7 +130,10 @@ impl RichTranscriptDocument {
         self.blocks.iter().find(|block| &block.id == id)
     }
 
-    pub(crate) fn jump_targets(&self, kind: TranscriptJumpKind) -> impl Iterator<Item = &TranscriptJumpTarget> {
+    pub(crate) fn jump_targets(
+        &self,
+        kind: TranscriptJumpKind,
+    ) -> impl Iterator<Item = &TranscriptJumpTarget> {
         self.jumps.iter().filter(move |target| target.kind == kind)
     }
 }
@@ -519,12 +522,14 @@ pub(crate) fn copy_transcript_text(
         TranscriptCopyMode::Block(block_id) => document
             .block(&block_id)
             .map(|block| block.copy_text.clone()),
-        TranscriptCopyMode::CodeBlock(block_id) => document
-            .block(&block_id)
-            .and_then(|block| match block.kind {
-                TranscriptBlockKind::CodeBlock { .. } => Some(block.copy_text.clone()),
-                _ => None,
-            }),
+        TranscriptCopyMode::CodeBlock(block_id) => {
+            document
+                .block(&block_id)
+                .and_then(|block| match block.kind {
+                    TranscriptBlockKind::CodeBlock { .. } => Some(block.copy_text.clone()),
+                    _ => None,
+                })
+        }
     }
 }
 
@@ -613,11 +618,15 @@ impl TranscriptBuilder {
         match message.role {
             TranscriptRole::Assistant => self.push_assistant_markdown(message),
             TranscriptRole::Tool => self.push_tool_message(message),
-            TranscriptRole::User => self.push_plain_message(message, RichLineStyle::User, "user message"),
+            TranscriptRole::User => {
+                self.push_plain_message(message, RichLineStyle::User, "user message")
+            }
             TranscriptRole::System => {
                 self.push_plain_message(message, RichLineStyle::System, "system message")
             }
-            TranscriptRole::Meta => self.push_plain_message(message, RichLineStyle::Meta, "metadata"),
+            TranscriptRole::Meta => {
+                self.push_plain_message(message, RichLineStyle::Meta, "metadata")
+            }
         }
 
         for attachment in &message.attachments {
@@ -636,7 +645,11 @@ impl TranscriptBuilder {
         }
     }
 
-    fn next_block_id(&mut self, message: &RichTranscriptMessage, suffix: &str) -> TranscriptBlockId {
+    fn next_block_id(
+        &mut self,
+        message: &RichTranscriptMessage,
+        suffix: &str,
+    ) -> TranscriptBlockId {
         let block = self.next_block;
         self.next_block += 1;
         TranscriptBlockId(format!("{}:{block}:{suffix}", message.id.0))
@@ -1047,7 +1060,9 @@ impl<'a, 'b> MarkdownBlockBuilder<'a, 'b> {
         };
         let language = code.language.clone();
         if self.transcript.options.include_markdown_media_surfaces
-            && language.as_deref().is_some_and(|language| language.eq_ignore_ascii_case("mermaid"))
+            && language
+                .as_deref()
+                .is_some_and(|language| language.eq_ignore_ascii_case("mermaid"))
         {
             self.emit_media_surface(RichMediaSurface {
                 kind: RichMediaSurfaceKind::Mermaid,
@@ -1059,7 +1074,9 @@ impl<'a, 'b> MarkdownBlockBuilder<'a, 'b> {
         let block_kind = TranscriptBlockKind::CodeBlock {
             language: language.clone(),
         };
-        let block_id = self.transcript.next_block_id(self.message, block_kind_suffix(&block_kind));
+        let block_id = self
+            .transcript
+            .next_block_id(self.message, block_kind_suffix(&block_kind));
         let mut lines = Vec::new();
         for raw_line in code.text.lines() {
             lines.push(RichLine {
@@ -1169,12 +1186,8 @@ impl<'a, 'b> MarkdownBlockBuilder<'a, 'b> {
             surface.source.clone(),
             format!("{label} output surface"),
         );
-        self.transcript.push_jump(
-            TranscriptJumpKind::Media,
-            self.message,
-            block_id,
-            title,
-        );
+        self.transcript
+            .push_jump(TranscriptJumpKind::Media, self.message, block_id, title);
     }
 
     fn emit_plain_block(
@@ -1186,14 +1199,8 @@ impl<'a, 'b> MarkdownBlockBuilder<'a, 'b> {
         semantic_label: impl Into<String>,
     ) -> TranscriptBlockId {
         self.emitted_any = true;
-        self.transcript.push_block(
-            self.message,
-            kind,
-            style,
-            lines,
-            copy_text,
-            semantic_label,
-        )
+        self.transcript
+            .push_block(self.message, kind, style, lines, copy_text, semantic_label)
     }
 }
 
@@ -1216,7 +1223,12 @@ fn parse_tool_card(
     let rest = parts.next().unwrap_or_default().trim();
     let (state, summary) = rest
         .split_once(':')
-        .map(|(state, summary)| (ToolCardState::from_text(state), Some(summary.trim().to_string())))
+        .map(|(state, summary)| {
+            (
+                ToolCardState::from_text(state),
+                Some(summary.trim().to_string()),
+            )
+        })
         .unwrap_or((ToolCardState::from_text(rest), None));
 
     let mut input_lines = Vec::new();
@@ -1251,7 +1263,12 @@ fn parse_tool_card(
 fn render_tool_card_lines(card: &RichToolCard, ansi_styling: bool) -> Vec<RichLine> {
     let synthetic_block = TranscriptBlockId(format!("{}:tool", card.message_id.0));
     let mut lines = Vec::new();
-    let mut header = format!("{} {} · {}", card.state.icon(), card.name, card.state.label());
+    let mut header = format!(
+        "{} {} · {}",
+        card.state.icon(),
+        card.name,
+        card.state.label()
+    );
     if let Some(summary) = &card.summary {
         header.push_str(" · ");
         header.push_str(summary);
@@ -1355,7 +1372,10 @@ fn ansi_color(code: u16, bright: bool) -> Option<AnsiColor> {
 }
 
 fn push_comment_span(language: &str, line: &str, spans: &mut Vec<RichTextSpan>) {
-    let marker = if matches!(language, "py" | "python" | "sh" | "bash" | "zsh" | "toml" | "yaml" | "yml") {
+    let marker = if matches!(
+        language,
+        "py" | "python" | "sh" | "bash" | "zsh" | "toml" | "yaml" | "yml"
+    ) {
         "#"
     } else {
         "//"
@@ -1469,10 +1489,10 @@ fn identifier_ranges(line: &str) -> Vec<(usize, String)> {
 fn keywords_for_language(language: &str) -> &'static [&'static str] {
     match language {
         "rs" | "rust" => &[
-            "as", "async", "await", "break", "const", "continue", "crate", "else", "enum",
-            "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
-            "pub", "ref", "return", "self", "Self", "static", "struct", "trait", "type",
-            "unsafe", "use", "where", "while",
+            "as", "async", "await", "break", "const", "continue", "crate", "else", "enum", "fn",
+            "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+            "return", "self", "Self", "static", "struct", "trait", "type", "unsafe", "use",
+            "where", "while",
         ],
         "js" | "javascript" | "ts" | "typescript" => &[
             "async", "await", "break", "case", "catch", "class", "const", "continue", "default",
@@ -1608,20 +1628,36 @@ mod tests {
             &RichTranscriptBuildOptions::default(),
         );
 
-        assert!(document.blocks.iter().any(|block| matches!(block.kind, TranscriptBlockKind::Heading { level: 1 })));
+        assert!(
+            document
+                .blocks
+                .iter()
+                .any(|block| matches!(block.kind, TranscriptBlockKind::Heading { level: 1 }))
+        );
         let code = document
             .blocks
             .iter()
             .find(|block| matches!(block.kind, TranscriptBlockKind::CodeBlock { language: Some(ref language) } if language == "rust"))
             .expect("rust code block");
-        assert!(code.lines[0].spans.iter().any(|span| span.style == RichSpanStyle::Syntax(SyntaxTokenKind::Keyword)));
+        assert!(
+            code.lines[0]
+                .spans
+                .iter()
+                .any(|span| span.style == RichSpanStyle::Syntax(SyntaxTokenKind::Keyword))
+        );
         assert_eq!(
-            copy_transcript_text(&document, TranscriptCopyMode::CodeBlock(code.id.clone())).unwrap(),
+            copy_transcript_text(&document, TranscriptCopyMode::CodeBlock(code.id.clone()))
+                .unwrap(),
             "fn main() { let value = 42; }\n"
         );
         assert!(document.blocks.iter().any(|block| matches!(block.kind, TranscriptBlockKind::MediaSurface { ref surface } if surface.kind == RichMediaSurfaceKind::Mermaid)));
         assert!(document.blocks.iter().any(|block| matches!(block.kind, TranscriptBlockKind::MediaSurface { ref surface } if surface.kind == RichMediaSurfaceKind::Image)));
-        assert!(document.jump_targets(TranscriptJumpKind::CodeBlock).next().is_some());
+        assert!(
+            document
+                .jump_targets(TranscriptJumpKind::CodeBlock)
+                .next()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1653,8 +1689,18 @@ mod tests {
             },
         );
         assert_eq!(expanded.blocks.len(), 1);
-        assert!(expanded.blocks[0].lines.iter().any(|line| line.text.contains("ok")));
-        assert!(expanded.blocks[0].lines.iter().any(|line| !line.spans.is_empty()));
+        assert!(
+            expanded.blocks[0]
+                .lines
+                .iter()
+                .any(|line| line.text.contains("ok"))
+        );
+        assert!(
+            expanded.blocks[0]
+                .lines
+                .iter()
+                .any(|line| !line.spans.is_empty())
+        );
 
         let compact = build_rich_transcript(
             &[message],
@@ -1675,7 +1721,12 @@ mod tests {
         let document = build_rich_transcript(&messages, &RichTranscriptBuildOptions::default());
         let matches = search_transcript(&document, "parser", false);
         assert_eq!(matches.len(), 3);
-        assert!(document.jump_targets(TranscriptJumpKind::Prompt).next().is_some());
+        assert!(
+            document
+                .jump_targets(TranscriptJumpKind::Prompt)
+                .next()
+                .is_some()
+        );
         assert_eq!(
             copy_transcript_text(&document, TranscriptCopyMode::LatestAssistant).unwrap(),
             "Parser result one\n\nParser result two"
@@ -1689,9 +1740,24 @@ mod tests {
     #[test]
     fn image_attachments_become_media_blocks() {
         let message = RichTranscriptMessage::new("user-1", TranscriptRole::User, "see attached")
-            .with_attachment(RichAttachment::image("img-1", "image/png", "clipboard", 128));
+            .with_attachment(RichAttachment::image(
+                "img-1",
+                "image/png",
+                "clipboard",
+                128,
+            ));
         let document = build_rich_transcript(&[message], &RichTranscriptBuildOptions::default());
-        assert!(document.blocks.iter().any(|block| matches!(block.kind, TranscriptBlockKind::ImageAttachment { .. })));
-        assert!(document.jump_targets(TranscriptJumpKind::Media).next().is_some());
+        assert!(
+            document
+                .blocks
+                .iter()
+                .any(|block| matches!(block.kind, TranscriptBlockKind::ImageAttachment { .. }))
+        );
+        assert!(
+            document
+                .jump_targets(TranscriptJumpKind::Media)
+                .next()
+                .is_some()
+        );
     }
 }

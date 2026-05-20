@@ -1666,15 +1666,6 @@ impl App {
         self.force_full_redraw = true;
     }
 
-    pub(super) fn redraw_now(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        if self.force_full_redraw {
-            terminal.clear()?;
-            self.force_full_redraw = false;
-        }
-        terminal.draw(|frame| crate::tui::ui::draw(frame, self))?;
-        Ok(())
-    }
-
     pub(super) fn should_redraw_after_resize(&mut self) -> bool {
         const RESIZE_REDRAW_MIN_INTERVAL: std::time::Duration =
             std::time::Duration::from_millis(33);

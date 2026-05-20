@@ -299,7 +299,7 @@ pub(super) fn format_elapsed(secs: f32) -> String {
         let s = (secs % 60.0) as u32;
         format!("{}m {}s", mins, s)
     } else {
-        format!("{:.1}s", secs)
+        format!("{}s", secs as u32)
     }
 }
 
@@ -805,6 +805,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn format_elapsed_uses_whole_seconds_below_one_minute() {
+        assert_eq!(format_elapsed(0.0), "0s");
+        assert_eq!(format_elapsed(1.2), "1s");
+        assert_eq!(format_elapsed(59.9), "59s");
+        assert_eq!(format_elapsed(61.2), "1m 1s");
+    }
+
+    #[test]
     fn fallback_route_details_are_warning_limited() {
         assert!(route_detail_is_limited(
             "https://mkp-api.fptcloud.com; fallback: static provider model list"
@@ -819,11 +827,9 @@ mod tests {
         picker.entries[0].options[0].detail =
             "https://mkp-api.fptcloud.com; fallback: static provider model list".to_string();
 
-        let (notice, warning) = selected_route_notice_text(
-            &picker,
-            picker.entries[0].active_option(),
-        )
-        .expect("fallback model should show a warning notice");
+        let (notice, warning) =
+            selected_route_notice_text(&picker, picker.entries[0].active_option())
+                .expect("fallback model should show a warning notice");
 
         assert!(warning);
         assert!(notice.starts_with("⚠ "));

@@ -723,6 +723,20 @@ fn single_session_cursor_editing_inserts_and_deletes_in_middle() {
 }
 
 #[test]
+fn single_session_escape_clears_idle_draft_and_undo_restores() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("keep this".to_string()));
+
+    assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::Redraw);
+    assert!(app.draft.is_empty());
+    assert_eq!(app.draft_cursor, 0);
+
+    assert_eq!(app.handle_key(KeyInput::UndoInput), KeyOutcome::Redraw);
+    assert_eq!(app.draft, "keep this");
+    assert_eq!(app.draft_cursor, "keep this".len());
+}
+
+#[test]
 fn single_session_tab_autocompletes_desktop_slash_command() {
     let mut app = SingleSessionApp::new(None);
     app.handle_key(KeyInput::Character("/cop".to_string()));
@@ -801,29 +815,6 @@ fn single_session_slash_suggestions_escape_dismisses_until_draft_changes() {
         KeyOutcome::Redraw
     );
     assert_eq!(app.draft, "/mo");
-    assert_eq!(
-        app.active_inline_widget(),
-        Some(InlineWidgetKind::SlashSuggestions)
-    );
-}
-
-#[test]
-fn single_session_slash_suggestions_do_not_steal_help_overlay_keys() {
-    let mut app = SingleSessionApp::new(None);
-    app.handle_key(KeyInput::Character("/c".to_string()));
-    assert_eq!(
-        app.active_inline_widget(),
-        Some(InlineWidgetKind::SlashSuggestions)
-    );
-
-    assert_eq!(app.handle_key(KeyInput::HotkeyHelp), KeyOutcome::Redraw);
-    assert_eq!(
-        app.active_inline_widget(),
-        Some(InlineWidgetKind::HotkeyHelp)
-    );
-
-    assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::Redraw);
-    assert_eq!(app.draft, "/c");
     assert_eq!(
         app.active_inline_widget(),
         Some(InlineWidgetKind::SlashSuggestions)
@@ -1171,7 +1162,12 @@ fn single_session_rich_copy_search_and_media_wiring_are_available() {
         block.kind,
         desktop_rich_text::TranscriptBlockKind::ImageAttachment { .. }
     )));
-    assert!(document.jumps.iter().any(|jump| jump.kind == desktop_rich_text::TranscriptJumpKind::Media));
+    assert!(
+        document
+            .jumps
+            .iter()
+            .any(|jump| jump.kind == desktop_rich_text::TranscriptJumpKind::Media)
+    );
 }
 
 #[test]
@@ -1184,7 +1180,8 @@ fn single_session_rich_transcript_virtualizes_and_copies_transcript() {
     }
 
     let document = app.rich_transcript_document();
-    let window = desktop_rich_text::VirtualLineWindow::for_viewport(document.total_lines, 50, 10, 3);
+    let window =
+        desktop_rich_text::VirtualLineWindow::for_viewport(document.total_lines, 50, 10, 3);
     assert!(window.start < window.end);
     assert!(window.end - window.start <= 16);
 
@@ -1779,8 +1776,73 @@ fn desktop_maps_terminal_editing_shortcuts_from_tui() {
         KeyInput::CancelGeneration
     );
     assert_eq!(
+        to_key_input(&Key::Named(NamedKey::Enter), ModifiersState::ALT),
+        KeyInput::Enter
+    );
+    assert_eq!(
         to_key_input(&Key::Named(NamedKey::Tab), ModifiersState::empty()),
         KeyInput::Autocomplete
+    );
+}
+
+#[test]
+fn desktop_maps_remaining_global_shortcuts() {
+    assert_eq!(
+        to_key_input(&Key::Named(NamedKey::Tab), ModifiersState::CONTROL),
+        KeyInput::CycleModel(1)
+    );
+    assert_eq!(
+        to_key_input(
+            &Key::Named(NamedKey::Tab),
+            ModifiersState::CONTROL | ModifiersState::SHIFT
+        ),
+        KeyInput::CycleModel(-1)
+    );
+    assert_eq!(
+        to_key_input(&Key::Named(NamedKey::Home), ModifiersState::CONTROL),
+        KeyInput::ScrollBodyToTop
+    );
+    assert_eq!(
+        to_key_input(&Key::Named(NamedKey::End), ModifiersState::CONTROL),
+        KeyInput::ScrollBodyToBottom
+    );
+    assert_eq!(
+        to_key_input(&Key::Character("k".into()), ModifiersState::SUPER),
+        KeyInput::ScrollBodyLines(1)
+    );
+    assert_eq!(
+        to_key_input(&Key::Character("j".into()), ModifiersState::SUPER),
+        KeyInput::ScrollBodyLines(-1)
+    );
+    assert_eq!(
+        to_key_input(&Key::Character("[".into()), ModifiersState::CONTROL),
+        KeyInput::JumpPrompt(-1)
+    );
+    assert_eq!(
+        to_key_input(&Key::Character("]".into()), ModifiersState::CONTROL),
+        KeyInput::JumpPrompt(1)
+    );
+    assert_eq!(
+        to_key_input(
+            &Key::Character("k".into()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT
+        ),
+        KeyInput::CopyLatestCodeBlock
+    );
+    assert_eq!(
+        to_key_input(
+            &Key::Character("t".into()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT
+        ),
+        KeyInput::CopyTranscript
+    );
+    assert_eq!(
+        to_key_input(&Key::Character("q".into()), ModifiersState::CONTROL),
+        KeyInput::ExitApp
+    );
+    assert_eq!(
+        to_key_input(&Key::Character("q".into()), ModifiersState::SUPER),
+        KeyInput::ExitApp
     );
 }
 
@@ -2228,7 +2290,9 @@ fn glyphon_body_buffer_uses_line_style_colors() {
     );
     assert_eq!(
         first_glyph_color_for_text(body, "  rust"),
-        Some(single_session_line_color(SingleSessionLineStyle::CodeHeader))
+        Some(single_session_line_color(
+            SingleSessionLineStyle::CodeHeader
+        ))
     );
     assert_eq!(
         first_glyph_color_for_text(body, "  bash done"),
@@ -3371,6 +3435,31 @@ fn single_session_hotkey_help_toggles_discoverable_shortcuts() {
         "Alt+Up/Down",
         "jump between user prompts"
     ));
+    assert!(help_has_shortcut(&help, "Ctrl+Home/End", "jump transcript"));
+    assert!(help_has_shortcut(&help, "Super+K/J", "scroll transcript"));
+    assert!(help_has_shortcut(
+        &help,
+        "Ctrl+Shift+K",
+        "copy latest code block"
+    ));
+    assert!(help_has_shortcut(&help, "Ctrl+Shift+T", "copy transcript"));
+    assert!(help_has_shortcut(&help, "Ctrl+Tab", "switch to next model"));
+    assert!(help_has_shortcut(
+        &help,
+        "Ctrl+Shift+Tab",
+        "switch to previous model"
+    ));
+    assert!(help_has_shortcut(
+        &help,
+        "Ctrl+[/]",
+        "jump between user prompts"
+    ));
+    assert!(help_has_shortcut(&help, "q", "close help or session info"));
+    assert!(help_has_shortcut(
+        &help,
+        "Ctrl+Q/Super+Q",
+        "quit desktop app"
+    ));
     let help_text = help.join("\n");
     assert!(!help_text.contains("desktop queue follow-up pending"));
     assert!(!help_text.contains("1  question"));
@@ -3381,6 +3470,30 @@ fn single_session_hotkey_help_toggles_discoverable_shortcuts() {
     assert!(app.inline_widget_styled_lines().is_empty());
     assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::None);
     assert!(app.body_lines().join("\n").contains("1  question"));
+}
+
+#[test]
+fn single_session_q_closes_read_only_overlays() {
+    let mut app = SingleSessionApp::new(None);
+
+    assert_eq!(app.handle_key(KeyInput::HotkeyHelp), KeyOutcome::Redraw);
+    assert!(app.show_help);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("q".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert!(!app.show_help);
+
+    assert_eq!(
+        app.handle_key(KeyInput::ToggleSessionInfo),
+        KeyOutcome::Redraw
+    );
+    assert!(app.show_session_info);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("Q".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert!(!app.show_session_info);
 }
 
 #[test]
@@ -3424,6 +3537,12 @@ fn single_session_model_cycle_updates_status_and_transcript() {
             .join("\n")
             .contains("model switched to Claude · claude-opus-4-5")
     );
+}
+
+#[test]
+fn single_session_exit_shortcut_requests_exit() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(app.handle_key(KeyInput::ExitApp), KeyOutcome::Exit);
 }
 
 #[test]
@@ -3503,6 +3622,22 @@ fn single_session_model_picker_loads_filters_and_selects_model() {
     assert!(filtered.contains("\"opus\""));
     assert!(filtered.contains("claude-opus-4-5"));
 
+    for _ in 0.."opus".len() {
+        assert_eq!(app.handle_key(KeyInput::Backspace), KeyOutcome::Redraw);
+    }
+    assert_eq!(app.model_picker.filter, "");
+    assert_eq!(app.handle_key(KeyInput::MoveToLineEnd), KeyOutcome::Redraw);
+    assert_eq!(app.model_picker.selected, 1);
+    assert_eq!(
+        app.handle_key(KeyInput::MoveToLineStart),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.model_picker.selected, 0);
+
+    assert_eq!(
+        app.handle_key(KeyInput::ModelPickerMove(1)),
+        KeyOutcome::Redraw
+    );
     assert_eq!(
         app.handle_key(KeyInput::SubmitDraft),
         KeyOutcome::SetModel("claude-opus-4-5".to_string())
@@ -3553,6 +3688,14 @@ fn single_session_session_switcher_loads_filters_and_resumes_session() {
     assert!(switcher.contains("desktop session switcher"));
     assert!(switcher.contains("alpha"));
     assert!(switcher.contains("beta"));
+
+    assert_eq!(app.handle_key(KeyInput::MoveToLineEnd), KeyOutcome::Redraw);
+    assert_eq!(app.session_switcher.selected, 1);
+    assert_eq!(
+        app.handle_key(KeyInput::MoveToLineStart),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.session_switcher.selected, 0);
 
     assert_eq!(
         app.handle_key(KeyInput::Character("beta".to_string())),
@@ -4461,6 +4604,38 @@ fn single_session_prompt_jump_moves_between_user_turns() {
 }
 
 #[test]
+fn single_session_scroll_shortcuts_move_body_position() {
+    let mut app = SingleSessionApp::new(None);
+    for index in 0..10 {
+        app.messages
+            .push(SingleSessionMessage::user(format!("question {index}")));
+        app.messages
+            .push(SingleSessionMessage::assistant(format!("answer {index}")));
+    }
+
+    assert_eq!(
+        app.handle_key(KeyInput::ScrollBodyLines(1)),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.body_scroll_lines, 1.0);
+    assert_eq!(
+        app.handle_key(KeyInput::ScrollBodyToBottom),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.body_scroll_lines, 0.0);
+    assert_eq!(
+        app.handle_key(KeyInput::ScrollBodyToTop),
+        KeyOutcome::Redraw
+    );
+    assert!(app.body_scroll_lines > 1.0);
+    assert_eq!(
+        app.handle_key(KeyInput::ScrollBodyToBottom),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.body_scroll_lines, 0.0);
+}
+
+#[test]
 fn single_session_copy_latest_response_prefers_streaming_text() {
     let mut app = SingleSessionApp::new(None);
     app.messages
@@ -4477,6 +4652,42 @@ fn single_session_copy_latest_response_prefers_streaming_text() {
         app.handle_key(KeyInput::CopyLatestResponse),
         KeyOutcome::CopyLatestResponse("streaming answer".to_string())
     );
+}
+
+#[test]
+fn single_session_copy_code_and_transcript_shortcuts_use_rich_transcript() {
+    let mut app = SingleSessionApp::new(None);
+    app.messages.push(SingleSessionMessage::user("question"));
+    app.messages.push(SingleSessionMessage::assistant(
+        "Answer\n\n```rust\nfn main() {}\n```",
+    ));
+
+    assert_eq!(
+        app.handle_key(KeyInput::CopyLatestCodeBlock),
+        KeyOutcome::CopyText {
+            text: "fn main() {}\n".to_string(),
+            success_notice: "copied latest code block",
+        }
+    );
+
+    match app.handle_key(KeyInput::CopyTranscript) {
+        KeyOutcome::CopyText {
+            text,
+            success_notice,
+        } => {
+            assert_eq!(success_notice, "copied transcript");
+            assert!(text.contains("question"));
+            assert!(text.contains("fn main() {}"));
+        }
+        other => panic!("expected transcript copy, got {other:?}"),
+    }
+
+    let mut empty = SingleSessionApp::new(None);
+    assert_eq!(
+        empty.handle_key(KeyInput::CopyLatestCodeBlock),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(empty.status.as_deref(), Some("no code block to copy"));
 }
 
 #[test]

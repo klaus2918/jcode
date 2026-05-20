@@ -4327,8 +4327,14 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         Key::Named(NamedKey::Escape) => KeyInput::Escape,
         Key::Named(NamedKey::Space) => KeyInput::Character(" ".to_string()),
         Key::Named(NamedKey::Enter) if modifiers.control_key() => KeyInput::QueueDraft,
-        Key::Named(NamedKey::Enter) if modifiers.shift_key() => KeyInput::Enter,
+        Key::Named(NamedKey::Enter) if modifiers.shift_key() || modifiers.alt_key() => {
+            KeyInput::Enter
+        }
         Key::Named(NamedKey::Enter) => KeyInput::SubmitDraft,
+        Key::Named(NamedKey::Tab) if modifiers.control_key() && modifiers.shift_key() => {
+            KeyInput::CycleModel(-1)
+        }
+        Key::Named(NamedKey::Tab) if modifiers.control_key() => KeyInput::CycleModel(1),
         Key::Named(NamedKey::Tab) => KeyInput::Autocomplete,
         Key::Named(NamedKey::Backspace) if modifiers.control_key() || modifiers.alt_key() => {
             KeyInput::DeletePreviousWord
@@ -4354,6 +4360,8 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         }
         Key::Named(NamedKey::ArrowLeft) => KeyInput::MoveCursorLeft,
         Key::Named(NamedKey::ArrowRight) => KeyInput::MoveCursorRight,
+        Key::Named(NamedKey::Home) if modifiers.control_key() => KeyInput::ScrollBodyToTop,
+        Key::Named(NamedKey::End) if modifiers.control_key() => KeyInput::ScrollBodyToBottom,
         Key::Named(NamedKey::Home) => KeyInput::MoveToLineStart,
         Key::Named(NamedKey::End) => KeyInput::MoveToLineEnd,
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("a") => {
@@ -4370,6 +4378,13 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         }
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("u") => {
             KeyInput::DeleteToLineStart
+        }
+        Key::Character(text)
+            if modifiers.control_key()
+                && modifiers.shift_key()
+                && text.eq_ignore_ascii_case("k") =>
+        {
+            KeyInput::CopyLatestCodeBlock
         }
         Key::Character(text) if modifiers.control_key() && text.eq_ignore_ascii_case("k") => {
             KeyInput::DeleteToLineEnd
@@ -4392,6 +4407,13 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         }
         Key::Character(text)
             if modifiers.control_key()
+                && modifiers.shift_key()
+                && text.eq_ignore_ascii_case("t") =>
+        {
+            KeyInput::CopyTranscript
+        }
+        Key::Character(text)
+            if modifiers.control_key()
                 && (text.eq_ignore_ascii_case("c") || text.eq_ignore_ascii_case("d")) =>
         {
             KeyInput::CancelGeneration
@@ -4407,6 +4429,20 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
         }
         Key::Character(text) if modifiers.alt_key() && text.eq_ignore_ascii_case("v") => {
             KeyInput::AttachClipboardImage
+        }
+        Key::Character(text) if modifiers.control_key() && text == "[" => KeyInput::JumpPrompt(-1),
+        Key::Character(text) if modifiers.control_key() && text == "]" => KeyInput::JumpPrompt(1),
+        Key::Character(text) if modifiers.super_key() && text.eq_ignore_ascii_case("k") => {
+            KeyInput::ScrollBodyLines(1)
+        }
+        Key::Character(text) if modifiers.super_key() && text.eq_ignore_ascii_case("j") => {
+            KeyInput::ScrollBodyLines(-1)
+        }
+        Key::Character(text)
+            if (modifiers.control_key() || modifiers.super_key())
+                && text.eq_ignore_ascii_case("q") =>
+        {
+            KeyInput::ExitApp
         }
         Key::Character(text) if modifiers.control_key() && text == ";" => KeyInput::SpawnPanel,
         Key::Character(text) if modifiers.control_key() && (text == "?" || text == "/") => {

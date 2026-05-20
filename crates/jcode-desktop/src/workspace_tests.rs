@@ -145,6 +145,57 @@ fn insert_mode_captures_text_and_escape_returns_to_navigation() {
 }
 
 #[test]
+fn insert_mode_supports_cursor_editing_and_undo() {
+    let mut workspace = Workspace::fake();
+    workspace.handle_key(KeyInput::Character("i".to_string()));
+    workspace.handle_key(KeyInput::Character("helo".to_string()));
+    workspace.handle_key(KeyInput::MoveCursorLeft);
+    workspace.handle_key(KeyInput::Character("l".to_string()));
+
+    assert_eq!(workspace.draft, "hello");
+    assert_eq!(workspace.draft_cursor, 4);
+
+    workspace.handle_key(KeyInput::DeleteNextChar);
+    assert_eq!(workspace.draft, "hell");
+
+    workspace.handle_key(KeyInput::UndoInput);
+    assert_eq!(workspace.draft, "hello");
+    assert_eq!(workspace.draft_cursor, 4);
+}
+
+#[test]
+fn insert_mode_autocompletes_workspace_slash_command() {
+    let mut workspace = Workspace::fake();
+    workspace.handle_key(KeyInput::Character("i".to_string()));
+    workspace.handle_key(KeyInput::Character("/mod".to_string()));
+
+    assert_eq!(
+        workspace.handle_key(KeyInput::Autocomplete),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(workspace.draft, "/model");
+    assert_eq!(workspace.draft_cursor, "/model".len());
+}
+
+#[test]
+fn insert_mode_cuts_input_line_to_clipboard_and_undo_restores() {
+    let mut workspace = Workspace::fake();
+    workspace.handle_key(KeyInput::Character("i".to_string()));
+    workspace.handle_key(KeyInput::Character("copy me".to_string()));
+
+    assert_eq!(
+        workspace.handle_key(KeyInput::CutInputLine),
+        KeyOutcome::CutDraftToClipboard("copy me".to_string())
+    );
+    assert!(workspace.draft.is_empty());
+    assert_eq!(workspace.draft_cursor, 0);
+
+    workspace.handle_key(KeyInput::UndoInput);
+    assert_eq!(workspace.draft, "copy me");
+    assert_eq!(workspace.draft_cursor, "copy me".len());
+}
+
+#[test]
 fn toggle_input_mode_switches_between_navigation_and_insert() {
     let mut workspace = Workspace::fake();
     assert_eq!(workspace.mode, InputMode::Navigation);
@@ -617,6 +668,46 @@ fn zoomed_g_and_shift_g_jump_detail_scroll() {
         KeyOutcome::Redraw
     );
     assert_eq!(workspace.detail_scroll, 0);
+}
+
+#[test]
+fn zoomed_global_scroll_shortcuts_scroll_detail() {
+    let mut workspace = Workspace::from_session_cards(vec![session_card("a", "alpha")]);
+    workspace.surfaces[0].detail_lines = (0..20).map(|index| format!("line {index}")).collect();
+    workspace.handle_key(KeyInput::Character("z".to_string()));
+
+    assert_eq!(
+        workspace.handle_key(KeyInput::ScrollBodyToBottom),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(workspace.detail_scroll, 19);
+
+    assert_eq!(
+        workspace.handle_key(KeyInput::ScrollBodyLines(1)),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(workspace.detail_scroll, 18);
+
+    assert_eq!(
+        workspace.handle_key(KeyInput::ScrollBodyPages(1)),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(workspace.detail_scroll, 6);
+
+    assert_eq!(
+        workspace.handle_key(KeyInput::ScrollBodyToTop),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(workspace.detail_scroll, 0);
+}
+
+#[test]
+fn workspace_exit_shortcut_requests_exit() {
+    let mut workspace = Workspace::from_session_cards(vec![session_card("a", "alpha")]);
+    assert_eq!(workspace.handle_key(KeyInput::ExitApp), KeyOutcome::Exit);
+
+    workspace.handle_key(KeyInput::Character("i".to_string()));
+    assert_eq!(workspace.handle_key(KeyInput::ExitApp), KeyOutcome::Exit);
 }
 
 fn assert_unique_positions(workspace: &Workspace) {
