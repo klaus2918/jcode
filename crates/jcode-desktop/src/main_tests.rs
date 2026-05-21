@@ -4140,6 +4140,42 @@ fn single_session_session_switcher_loads_filters_and_resumes_session() {
 }
 
 #[test]
+fn single_session_resume_switcher_reopens_without_stale_filter_but_refresh_preserves_it() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    app.apply_session_switcher_cards(vec![
+        test_session_card("session_alpha", "alpha", "active"),
+        test_session_card("session_beta", "beta", "closed"),
+    ]);
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("beta".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.session_switcher.filter, "beta");
+
+    assert_eq!(app.handle_key(KeyInput::RefreshSessions), KeyOutcome::LoadSessionSwitcher);
+    assert_eq!(
+        app.session_switcher.filter, "beta",
+        "explicit refresh should keep the user's current filter"
+    );
+
+    assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::Redraw);
+    assert!(!app.session_switcher.open);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    assert_eq!(
+        app.session_switcher.filter, "",
+        "fresh /resume opens must not inherit a stale filter that hides sessions"
+    );
+}
+
+#[test]
 fn single_session_resume_picker_switches_to_preview_pane_and_opens_terminal() {
     let mut app = SingleSessionApp::new(None);
     assert_eq!(

@@ -761,8 +761,18 @@ enum SessionSwitcherPane {
 
 impl SessionSwitcherState {
     fn open_loading(&mut self, current_session_id: Option<&str>) {
+        self.open_loading_with_filter(current_session_id, String::new());
+    }
+
+    fn refresh_loading(&mut self, current_session_id: Option<&str>) {
+        let filter = self.filter.clone();
+        self.open_loading_with_filter(current_session_id, filter);
+    }
+
+    fn open_loading_with_filter(&mut self, current_session_id: Option<&str>, filter: String) {
         self.open = true;
         self.loading = true;
+        self.filter = filter;
         self.focus = SessionSwitcherPane::Sessions;
         self.preview_scroll = 0;
         self.selected = self
@@ -1955,7 +1965,7 @@ impl SingleSessionApp {
             KeyInput::RefreshSessions => {
                 let current_session_id = self.current_session_id().map(str::to_string);
                 self.session_switcher
-                    .open_loading(current_session_id.as_deref());
+                    .refresh_loading(current_session_id.as_deref());
                 self.set_status(SingleSessionStatus::LoadingRecentSessions);
                 self.mark_inline_widget_opened();
                 KeyOutcome::LoadSessionSwitcher
