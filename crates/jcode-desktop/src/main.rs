@@ -254,12 +254,14 @@ fn streaming_text_fade_start_after_len_change(
     now: Instant,
 ) -> Option<Instant> {
     if next_len == 0 {
-        None
-    } else if previous_len == 0
-        || current_started_at.is_some_and(|started_at| {
-            now.saturating_duration_since(started_at) >= STREAMING_TEXT_FADE_DURATION
-        })
-    {
+        return None;
+    }
+
+    let response_changed = previous_len != next_len;
+    let fade_active = current_started_at.is_some_and(|started_at| {
+        now.saturating_duration_since(started_at) < STREAMING_TEXT_FADE_DURATION
+    });
+    if response_changed && !fade_active {
         Some(now)
     } else {
         current_started_at

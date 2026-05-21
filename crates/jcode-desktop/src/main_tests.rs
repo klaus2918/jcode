@@ -767,6 +767,33 @@ fn single_session_streaming_text_fade_restarts_after_previous_fade_finishes() {
 }
 
 #[test]
+fn single_session_streaming_text_fade_restarts_after_renderer_clears_finished_fade() {
+    let later = Instant::now() + STREAMING_TEXT_FADE_DURATION + Duration::from_millis(1);
+
+    let restarted = streaming_text_fade_start_after_len_change(5, 12, None, later);
+    assert_eq!(restarted, Some(later));
+}
+
+#[test]
+fn single_session_streaming_text_fade_stays_idle_without_response_change() {
+    let now = Instant::now();
+
+    assert_eq!(
+        streaming_text_fade_start_after_len_change(5, 5, None, now),
+        None
+    );
+}
+
+#[test]
+fn single_session_streaming_text_fade_keeps_active_fade_without_response_change() {
+    let first = Instant::now();
+    let during = first + Duration::from_millis(40);
+
+    let unchanged = streaming_text_fade_start_after_len_change(5, 5, Some(first), during);
+    assert_eq!(unchanged, Some(first));
+}
+
+#[test]
 fn single_session_streaming_text_fade_resets_when_streaming_finishes() {
     let first = Instant::now();
     let started = streaming_text_fade_start_after_len_change(0, 5, None, first);
