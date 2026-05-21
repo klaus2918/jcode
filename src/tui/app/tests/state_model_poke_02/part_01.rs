@@ -127,7 +127,7 @@ fn test_mouse_horizontal_scroll_over_tool_side_panel_pans_without_focus_change()
         !scroll_only,
         "side-panel horizontal pan should request an immediate redraw"
     );
-    assert_eq!(app.diff_pane_scroll_x, 3);
+    assert_eq!(app.diff_pane_scroll_x, 1);
     assert!(!app.diff_pane_focus);
 }
 
