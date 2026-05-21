@@ -981,6 +981,32 @@ fn single_session_tab_autocompletes_desktop_slash_command() {
 }
 
 #[test]
+fn single_session_slash_suggestions_support_tui_style_fuzzy_abbreviations() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/cp".to_string()));
+
+    assert_eq!(app.active_inline_widget(), Some(InlineWidgetKind::SlashSuggestions));
+    let suggestions = app.inline_widget_styled_lines();
+    assert!(suggestions.iter().any(|line| {
+        line.style == SingleSessionLineStyle::OverlaySelection && line.text.contains("/copy")
+    }));
+
+    assert_eq!(app.handle_key(KeyInput::Autocomplete), KeyOutcome::Redraw);
+    assert_eq!(app.draft, "/copy");
+}
+
+#[test]
+fn single_session_slash_suggestions_keep_prefix_matches_before_fuzzy_matches() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/c".to_string()));
+
+    let suggestions = app.inline_widget_styled_lines();
+    assert!(suggestions.iter().any(|line| {
+        line.style == SingleSessionLineStyle::OverlaySelection && line.text.contains("/commands")
+    }));
+}
+
+#[test]
 fn single_session_slash_suggestions_filter_select_and_submit() {
     let mut app = SingleSessionApp::new(None);
 

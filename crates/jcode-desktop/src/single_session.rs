@@ -2230,16 +2230,32 @@ impl SingleSessionApp {
             self.slash_suggestions.query.as_str()
         };
         let prefix = prefix.to_ascii_lowercase();
-        DESKTOP_SLASH_COMMANDS
-            .iter()
-            .copied()
-            .filter(|(usage, _)| {
-                usage
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or(usage)
-                    .starts_with(&prefix)
-            })
+
+        let mut prefix_matches = Vec::new();
+        let mut fuzzy_matches: Vec<(usize, usize, &'static str, &'static str)> = Vec::new();
+        for (usage, description) in DESKTOP_SLASH_COMMANDS.iter().copied() {
+            let command = usage.split_whitespace().next().unwrap_or(usage);
+            let command_lower = command.to_ascii_lowercase();
+            if command_lower.starts_with(&prefix) {
+                prefix_matches.push((usage, description));
+            } else if let Some(score) = desktop_slash_fuzzy_score(&prefix, &command_lower) {
+                fuzzy_matches.push((score, command.len(), usage, description));
+            }
+        }
+
+        fuzzy_matches.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+
+        prefix_matches
+            .into_iter()
+            .chain(
+                fuzzy_matches
+                    .into_iter()
+                    .map(|(_, _, usage, description)| (usage, description)),
+            )
             .take(DESKTOP_SLASH_SUGGESTION_ROW_LIMIT)
             .collect()
     }
@@ -4749,6 +4765,38 @@ fn model_choice_search_text(choice: &DesktopModelChoice) -> String {
         choice.detail.as_deref().unwrap_or_default()
     )
     .to_lowercase()
+}
+
+fn desktop_slash_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+
+    let needle = needle.strip_prefix('/').unwrap_or(needle);
+    let haystack = haystack.strip_prefix('/').unwrap_or(haystack);
+    if needle.is_empty() {
+        return Some(0);
+    }
+
+    if let Some(first_char) = needle.chars().next()
+        && !haystack.starts_with(&needle[..first_char.len_utf8()])
+    {
+        return None;
+    }
+
+    let mut score = 0usize;
+    let mut position = 0usize;
+    for ch in needle.chars() {
+        let offset = haystack[position..].find(ch)?;
+        score += offset;
+        position += offset + ch.len_utf8();
+    }
+
+    if needle.len() > 1 && score > needle.len() * 3 {
+        return None;
+    }
+
+    Some(score)
 }
 
 fn dedupe_model_choices(choices: Vec<DesktopModelChoice>) -> Vec<DesktopModelChoice> {
