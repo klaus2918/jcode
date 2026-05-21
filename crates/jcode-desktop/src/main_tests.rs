@@ -996,6 +996,19 @@ fn single_session_slash_suggestions_support_tui_style_fuzzy_abbreviations() {
 }
 
 #[test]
+fn single_session_raw_slash_tab_completion_uses_fuzzy_after_suggestions_are_dismissed() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/cp".to_string()));
+    assert_eq!(app.active_inline_widget(), Some(InlineWidgetKind::SlashSuggestions));
+
+    assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::Redraw);
+    assert_eq!(app.active_inline_widget(), None);
+
+    assert_eq!(app.handle_key(KeyInput::Autocomplete), KeyOutcome::Redraw);
+    assert_eq!(app.draft, "/copy");
+}
+
+#[test]
 fn single_session_slash_suggestions_keep_prefix_matches_before_fuzzy_matches() {
     let mut app = SingleSessionApp::new(None);
     app.handle_key(KeyInput::Character("/c".to_string()));
