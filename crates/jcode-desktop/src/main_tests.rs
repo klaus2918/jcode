@@ -182,6 +182,86 @@ fn desktop_hot_reload_prefers_newer_selfdev_binary() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn desktop_reload_window_placement_roundtrips_position_and_size() {
+    let placement = DesktopReloadWindowPlacement {
+        position: Some(PhysicalPosition::new(-24, 48)),
+        inner_size: PhysicalSize::new(1280, 800),
+    };
+
+    let encoded = placement.to_env_value();
+
+    assert_eq!(encoded, "-24,48,1280,800");
+    assert_eq!(
+        DesktopReloadWindowPlacement::from_env_value(&encoded),
+        Some(placement)
+    );
+}
+
+#[test]
+fn desktop_reload_window_placement_allows_size_without_position() {
+    let placement = DesktopReloadWindowPlacement {
+        position: None,
+        inner_size: PhysicalSize::new(1024, 720),
+    };
+
+    let encoded = placement.to_env_value();
+
+    assert_eq!(encoded, "_,_,1024,720");
+    assert_eq!(
+        DesktopReloadWindowPlacement::from_env_value(&encoded),
+        Some(placement)
+    );
+}
+
+#[test]
+fn desktop_reload_window_placement_rejects_invalid_values() {
+    for raw in [
+        "",
+        "1,2,3",
+        "1,2,3,4,5",
+        "_,2,1280,800",
+        "1,_,1280,800",
+        "x,2,1280,800",
+        "1,y,1280,800",
+        "1,2,0,800",
+        "1,2,1280,0",
+        "1,2,32769,800",
+        "1,2,1280,32769",
+        "1,2,width,800",
+        "1,2,1280,height",
+    ] {
+        assert_eq!(
+            DesktopReloadWindowPlacement::from_env_value(raw),
+            None,
+            "expected {raw:?} to be rejected"
+        );
+    }
+}
+
+#[test]
+fn desktop_reload_handoff_watcher_releases_ready_child() -> Result<()> {
+    let dir = desktop_reload_handoff_temp_dir();
+    std::fs::create_dir_all(&dir)?;
+    let ready_file = dir.join("ready");
+    let release_file = dir.join("release");
+    let watcher = DesktopReloadHandoffWatcher {
+        ready_file: ready_file.clone(),
+        release_file: release_file.clone(),
+        spawned_at: Instant::now(),
+    };
+
+    assert_eq!(watcher.poll()?, DesktopReloadHandoffPoll::Waiting);
+    std::fs::write(&ready_file, b"ready")?;
+
+    assert_eq!(watcher.poll()?, DesktopReloadHandoffPoll::Ready);
+    assert!(release_file.exists());
+
+    watcher.cleanup();
+    assert!(!dir.exists());
+    Ok(())
+}
+
 fn unique_desktop_test_dir(name: &str) -> Result<PathBuf> {
     let dir = std::env::temp_dir().join(format!(
         "jcode-{name}-{}-{}",
