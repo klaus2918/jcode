@@ -1009,6 +1009,19 @@ fn single_session_raw_slash_tab_completion_uses_fuzzy_after_suggestions_are_dism
 }
 
 #[test]
+fn single_session_raw_slash_tab_completion_covers_commands_from_help_table() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/ef".to_string()));
+    assert_eq!(app.active_inline_widget(), Some(InlineWidgetKind::SlashSuggestions));
+
+    assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::Redraw);
+    assert_eq!(app.active_inline_widget(), None);
+
+    assert_eq!(app.handle_key(KeyInput::Autocomplete), KeyOutcome::Redraw);
+    assert_eq!(app.draft, "/effort");
+}
+
+#[test]
 fn single_session_slash_suggestions_keep_prefix_matches_before_fuzzy_matches() {
     let mut app = SingleSessionApp::new(None);
     app.handle_key(KeyInput::Character("/c".to_string()));

@@ -3945,23 +3945,12 @@ impl SingleSessionApp {
     }
 
     fn autocomplete_draft(&mut self) -> KeyOutcome {
-        const DESKTOP_SLASH_COMPLETIONS: &[&str] = &[
-            "/help",
-            "/clear",
-            "/new",
-            "/sessions",
-            "/session",
-            "/model",
-            "/copy",
-            "/search",
-            "/stop",
-            "/cancel",
-            "/status",
-            "/quit",
-            "/exit",
-        ];
+        let completions = DESKTOP_SLASH_COMMANDS
+            .iter()
+            .map(|(usage, _)| usage.split_whitespace().next().unwrap_or(*usage))
+            .collect::<Vec<_>>();
         let Some((draft, cursor)) =
-            complete_slash_command(&self.draft, self.draft_cursor, DESKTOP_SLASH_COMPLETIONS)
+            complete_slash_command(&self.draft, self.draft_cursor, &completions)
         else {
             return KeyOutcome::None;
         };
