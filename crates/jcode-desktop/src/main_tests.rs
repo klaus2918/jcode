@@ -1118,6 +1118,48 @@ fn single_session_commands_alias_opens_help_without_sending_prompt() {
 }
 
 #[test]
+fn single_session_slash_resume_opens_session_switcher_without_sending_prompt() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/resume".to_string()));
+
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::SlashSuggestions)
+    );
+    assert_eq!(
+        app.handle_key(KeyInput::SubmitDraft),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    assert!(app.session_switcher.open);
+    assert!(app.session_switcher.loading);
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::SessionSwitcher)
+    );
+    assert_eq!(
+        app.active_inline_widget_mode(),
+        Some(InlineWidgetMode::Interactive)
+    );
+    assert!(app.draft.is_empty());
+    assert!(app.messages.is_empty());
+}
+
+#[test]
+fn single_session_slash_resume_completion_opens_session_switcher() {
+    let mut app = SingleSessionApp::new(None);
+    for ch in ["/", "r", "e", "s"] {
+        app.handle_key(KeyInput::Character(ch.to_string()));
+    }
+
+    assert_eq!(
+        app.handle_key(KeyInput::SubmitDraft),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    assert_eq!(app.draft, "");
+    assert!(app.session_switcher.open);
+}
+
+#[test]
 fn single_session_info_hotkey_toggles_inline_session_stats() {
     let mut app = SingleSessionApp::new(Some(test_session_card(
         "session_info_1234567890",
@@ -4157,7 +4199,10 @@ fn single_session_resume_switcher_reopens_without_stale_filter_but_refresh_prese
     );
     assert_eq!(app.session_switcher.filter, "beta");
 
-    assert_eq!(app.handle_key(KeyInput::RefreshSessions), KeyOutcome::LoadSessionSwitcher);
+    assert_eq!(
+        app.handle_key(KeyInput::RefreshSessions),
+        KeyOutcome::LoadSessionSwitcher
+    );
     assert_eq!(
         app.session_switcher.filter, "beta",
         "explicit refresh should keep the user's current filter"
