@@ -660,16 +660,29 @@ impl ModelPickerState {
 
     fn filtered_indices(&self) -> Vec<usize> {
         let query = self.filter.trim().to_lowercase();
-        self.choices
-            .iter()
-            .enumerate()
-            .filter_map(|(index, choice)| {
-                if query.is_empty() || model_choice_search_text(choice).contains(&query) {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
+        if query.is_empty() {
+            return (0..self.choices.len()).collect();
+        }
+
+        let mut substring_matches = Vec::new();
+        let mut fuzzy_matches = Vec::new();
+        for (index, choice) in self.choices.iter().enumerate() {
+            let search_text = model_choice_search_text(choice);
+            if search_text.contains(&query) {
+                substring_matches.push(index);
+            } else if let Some(score) = model_picker_fuzzy_score(&query, &search_text) {
+                fuzzy_matches.push((score, search_text.len(), index));
+            }
+        }
+        fuzzy_matches.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+
+        substring_matches
+            .into_iter()
+            .chain(fuzzy_matches.into_iter().map(|(_, _, index)| index))
             .collect()
     }
 
@@ -4765,6 +4778,34 @@ fn model_choice_search_text(choice: &DesktopModelChoice) -> String {
         choice.detail.as_deref().unwrap_or_default()
     )
     .to_lowercase()
+}
+
+fn model_picker_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return Some(0);
+    }
+
+    haystack
+        .split_whitespace()
+        .filter_map(|token| model_picker_token_fuzzy_score(needle, token))
+        .min()
+}
+
+fn model_picker_token_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
+    let mut score = 0usize;
+    let mut position = 0usize;
+    for ch in needle.chars() {
+        let offset = haystack[position..].find(ch)?;
+        score += offset;
+        position += offset + ch.len_utf8();
+    }
+
+    if needle.len() > 1 && score > needle.len() * 6 {
+        return None;
+    }
+
+    Some(score)
 }
 
 fn desktop_slash_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {

@@ -4211,6 +4211,53 @@ fn single_session_model_picker_loads_filters_and_selects_model() {
 }
 
 #[test]
+fn single_session_model_picker_filter_supports_fuzzy_abbreviations() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenModelPicker),
+        KeyOutcome::LoadModelCatalog
+    );
+    app.apply_session_event(session_launch::DesktopSessionEvent::ModelCatalog {
+        current_model: None,
+        provider_name: Some("OpenAI".to_string()),
+        models: vec![
+            session_launch::DesktopModelChoice {
+                model: "gpt-5-codex".to_string(),
+                provider: Some("openai".to_string()),
+                api_method: Some("responses".to_string()),
+                detail: Some("coding model".to_string()),
+                available: true,
+            },
+            session_launch::DesktopModelChoice {
+                model: "claude-opus-4-5".to_string(),
+                provider: Some("claude".to_string()),
+                api_method: Some("oauth".to_string()),
+                detail: Some("premium".to_string()),
+                available: true,
+            },
+        ],
+        reasoning_effort: None,
+        service_tier: None,
+        compaction_mode: None,
+    });
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("g5c".to_string())),
+        KeyOutcome::Redraw
+    );
+    let picker = app
+        .inline_widget_styled_lines()
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(picker.contains("filter \"g5c\""));
+    assert!(picker.contains("gpt-5-codex"), "{picker}");
+    assert!(!picker.contains("claude-opus-4-5"), "{picker}");
+}
+
+#[test]
 fn single_session_session_switcher_loads_filters_and_resumes_session() {
     let mut app = SingleSessionApp::new(None);
     app.messages
