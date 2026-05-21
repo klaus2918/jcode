@@ -4372,6 +4372,33 @@ fn single_session_session_switcher_filter_supports_fuzzy_abbreviations() {
 }
 
 #[test]
+fn single_session_session_switcher_filter_reports_visible_match_count() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    app.apply_session_switcher_cards(vec![
+        test_session_card("session_alpha", "alpha", "active"),
+        test_session_card("session_beta", "beta", "closed"),
+    ]);
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("beta".to_string())),
+        KeyOutcome::Redraw
+    );
+    let switcher = app
+        .inline_widget_styled_lines()
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(switcher.contains("filter: beta"), "{switcher}");
+    assert!(switcher.contains("sessions: 1/2"), "{switcher}");
+}
+
+#[test]
 fn single_session_resume_switcher_reopens_without_stale_filter_but_refresh_preserves_it() {
     let mut app = SingleSessionApp::new(None);
     assert_eq!(

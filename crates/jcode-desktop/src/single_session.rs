@@ -4193,6 +4193,12 @@ fn session_switcher_styled_lines(
     switcher: &SessionSwitcherState,
     current_session_id: Option<&str>,
 ) -> Vec<SingleSessionStyledLine> {
+    let visible = switcher.filtered_indices();
+    let session_count = if switcher.filter.trim().is_empty() {
+        switcher.sessions.len().to_string()
+    } else {
+        format!("{}/{}", visible.len(), switcher.sessions.len())
+    };
     let mut lines = vec![
         styled_line(
             "desktop session switcher",
@@ -4211,7 +4217,7 @@ fn session_switcher_styled_lines(
                     switcher.filter.as_str()
                 },
                 session_switcher_focus_label(switcher.focus),
-                switcher.sessions.len()
+                session_count
             ),
             SingleSessionLineStyle::Meta,
         ),
@@ -4224,8 +4230,6 @@ fn session_switcher_styled_lines(
             SingleSessionLineStyle::Status,
         ));
     }
-
-    let visible = switcher.filtered_indices();
     if visible.is_empty() && !switcher.loading {
         let message = if switcher.sessions.is_empty() {
             "no recent sessions found"
