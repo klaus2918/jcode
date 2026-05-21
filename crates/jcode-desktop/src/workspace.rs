@@ -1459,13 +1459,14 @@ fn complete_slash_command(
         return None;
     }
     let suffix = &input[cursor..];
+    let prefix_key = prefix.to_ascii_lowercase();
     let matches = completions
         .iter()
         .copied()
-        .filter(|command| command.starts_with(prefix))
+        .filter(|command| command.starts_with(&prefix_key))
         .collect::<Vec<_>>();
     let completion = match matches.as_slice() {
-        [] => return None,
+        [] => fuzzy_slash_completion(&prefix_key, completions)?,
         [only] => *only,
         _ => longest_common_prefix(&matches)?,
     };
@@ -1475,6 +1476,54 @@ fn complete_slash_command(
     let mut completed = completion.to_string();
     completed.push_str(suffix);
     Some((completed, completion.len()))
+}
+
+fn fuzzy_slash_completion(needle: &str, completions: &[&'static str]) -> Option<&'static str> {
+    let mut matches = completions
+        .iter()
+        .copied()
+        .filter_map(|command| {
+            slash_fuzzy_score(needle, command).map(|score| (score, command.len(), command))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    matches.first().map(|(_, _, command)| *command)
+}
+
+fn slash_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+
+    let needle = needle.strip_prefix('/').unwrap_or(needle);
+    let haystack = haystack.strip_prefix('/').unwrap_or(haystack);
+    if needle.is_empty() {
+        return Some(0);
+    }
+
+    if let Some(first_char) = needle.chars().next()
+        && !haystack.starts_with(&needle[..first_char.len_utf8()])
+    {
+        return None;
+    }
+
+    let mut score = 0usize;
+    let mut position = 0usize;
+    for ch in needle.chars() {
+        let offset = haystack[position..].find(ch)?;
+        score += offset;
+        position += offset + ch.len_utf8();
+    }
+
+    if needle.len() > 1 && score > needle.len() * 3 {
+        return None;
+    }
+
+    Some(score)
 }
 
 fn longest_common_prefix<'a>(values: &'a [&'a str]) -> Option<&'a str> {
