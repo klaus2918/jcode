@@ -981,6 +981,47 @@ fn single_session_slash_suggestions_use_inline_card_geometry() {
 }
 
 #[test]
+fn read_only_inline_widgets_use_per_widget_visible_height_limits() {
+    let mut app = SingleSessionApp::new(None);
+
+    app.show_session_info = true;
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::SessionInfo)
+    );
+    assert_eq!(
+        app.inline_widget_visible_line_count(),
+        app.inline_widget_line_count().min(10)
+    );
+
+    app.show_session_info = false;
+    assert_eq!(app.handle_key(KeyInput::HotkeyHelp), KeyOutcome::Redraw);
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::HotkeyHelp)
+    );
+    assert_eq!(
+        app.inline_widget_visible_line_count(),
+        app.inline_widget_line_count().min(18)
+    );
+
+    app.show_help = false;
+    assert_eq!(
+        app.handle_key(KeyInput::Character("/".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(
+        app.active_inline_widget(),
+        Some(InlineWidgetKind::SlashSuggestions)
+    );
+    assert_eq!(
+        app.inline_widget_visible_line_count(),
+        app.inline_widget_line_count()
+            .min(DESKTOP_SLASH_SUGGESTION_ROW_LIMIT + 1)
+    );
+}
+
+#[test]
 fn single_session_composer_uses_next_prompt_number() {
     let mut app = SingleSessionApp::new(None);
     assert_eq!(app.next_prompt_number(), 1);
@@ -4027,8 +4068,11 @@ fn single_session_session_switcher_loads_filters_and_resumes_session() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(switcher.contains("desktop session switcher"));
+    assert!(switcher.contains("sessions ›"));
+    assert!(switcher.contains("preview"));
     assert!(switcher.contains("alpha"));
     assert!(switcher.contains("beta"));
+    assert!(switcher.contains("assistant alpha response"));
 
     assert_eq!(app.handle_key(KeyInput::MoveToLineEnd), KeyOutcome::Redraw);
     assert_eq!(app.session_switcher.selected, 1);
@@ -4066,6 +4110,67 @@ fn single_session_session_switcher_loads_filters_and_resumes_session() {
     let resumed = app.body_lines().join("\n");
     assert!(resumed.contains("beta status"));
     assert!(!resumed.contains("stale live transcript"));
+}
+
+#[test]
+fn single_session_resume_picker_switches_to_preview_pane_and_opens_terminal() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    app.apply_session_switcher_cards(vec![
+        test_session_card("session_alpha", "alpha", "active"),
+        test_session_card("session_beta", "beta", "closed"),
+    ]);
+
+    assert_eq!(
+        app.handle_key(KeyInput::MoveCursorRight),
+        KeyOutcome::Redraw
+    );
+    let switcher = app
+        .inline_widget_styled_lines()
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(switcher.contains("focus: preview"));
+    assert!(switcher.contains("preview ›"));
+
+    assert_eq!(app.handle_key(KeyInput::MoveCursorLeft), KeyOutcome::Redraw);
+    assert_eq!(
+        app.handle_key(KeyInput::ModelPickerMove(1)),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(
+        app.handle_key(KeyInput::QueueDraft),
+        KeyOutcome::OpenSession {
+            session_id: "session_beta".to_string(),
+            title: "beta".to_string(),
+        }
+    );
+}
+
+#[test]
+fn single_session_resumed_transcript_hydration_replaces_card_preview() {
+    let mut app =
+        SingleSessionApp::new(Some(test_session_card("session_alpha", "alpha", "closed")));
+
+    app.apply_resumed_session_transcript(vec![
+        session_data::SessionTranscriptMessage {
+            role: "user".to_string(),
+            content: "previous prompt".to_string(),
+        },
+        session_data::SessionTranscriptMessage {
+            role: "assistant".to_string(),
+            content: "previous answer".to_string(),
+        },
+    ]);
+
+    let body = app.body_lines().join("\n");
+    assert!(body.contains("previous prompt"));
+    assert!(body.contains("previous answer"));
+    assert!(!body.contains("assistant alpha response"));
 }
 
 #[test]

@@ -4139,9 +4139,11 @@ fn initial_single_session_app(resume_session_id: Option<&str>) -> DesktopApp {
     match session_data::load_session_card_by_id(session_id) {
         Ok(Some(card)) => {
             app.replace_session(Some(card));
+            app.hydrate_resumed_session_from_disk(session_id);
         }
         Ok(None) => {
             app.set_status_label(format!("resumed session {session_id}"));
+            app.hydrate_resumed_session_from_disk(session_id);
         }
         Err(error) => {
             desktop_log::error(format_args!(

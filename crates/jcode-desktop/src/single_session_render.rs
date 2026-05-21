@@ -715,7 +715,7 @@ fn fresh_welcome_inline_widget_visual_offset(
     let visual_bottom = fresh_welcome_visual_bottom_for_scale(size, app.text_scale());
     let gap = fresh_welcome_inline_widget_gap_for_scale(app.text_scale());
     let draft_top = single_session_draft_top_for_app(app, size);
-    let inline_height = inline_widget_text_height(app).max(line_height);
+    let inline_height = inline_widget_visible_text_height(app).max(line_height);
     let available = (draft_top - visual_bottom - gap).max(0.0);
 
     if inline_height <= available {
@@ -732,7 +732,7 @@ fn push_single_session_inline_widget_card(
     welcome_chrome_offset_pixels: f32,
     total_lines: usize,
 ) {
-    let line_count = app.inline_widget_line_count();
+    let line_count = app.inline_widget_visible_line_count();
     if line_count == 0 {
         return;
     }
@@ -949,7 +949,8 @@ fn inline_widget_text_left(size: PhysicalSize<u32>) -> f32 {
 
 fn inline_widget_max_text_width(size: PhysicalSize<u32>) -> f32 {
     let gutter = inline_widget_text_left(size);
-    (size.width as f32 - gutter * 2.0).max(1.0)
+    let available_card_width = (size.width as f32 - gutter * 2.0).max(1.0);
+    (available_card_width - INLINE_WIDGET_CARD_PADDING_X * 2.0).max(1.0)
 }
 
 #[cfg(test)]
@@ -3131,8 +3132,8 @@ pub(crate) fn single_session_body_bottom_for_total_lines(
     .max(single_session_body_top_for_app(app, size))
 }
 
-fn inline_widget_text_height(app: &SingleSessionApp) -> f32 {
-    let lines = app.inline_widget_line_count();
+fn inline_widget_visible_text_height(app: &SingleSessionApp) -> f32 {
+    let lines = app.inline_widget_visible_line_count();
     if lines == 0 {
         return 0.0;
     }
@@ -3144,7 +3145,7 @@ fn inline_widget_reserved_height(app: &SingleSessionApp) -> f32 {
     if app.inline_widget_line_count() == 0 {
         0.0
     } else {
-        (inline_widget_text_height(app)
+        (inline_widget_visible_text_height(app)
             + INLINE_WIDGET_CARD_PADDING_Y * 2.0
             + INLINE_WIDGET_BODY_GAP)
             * app.inline_widget_reveal_progress().clamp(0.0, 1.0)
@@ -4116,7 +4117,7 @@ pub(crate) fn single_session_text_areas_for_app_with_scroll<'a>(
         body_top_offset_pixels,
         single_session_body_top_for_app(app, size),
         text_bounds_bottom(single_session_body_bottom_for_app(app, size)),
-        inline_widget_lines.len(),
+        app.inline_widget_visible_line_count(),
         inline_widget_text_width,
         single_session_draft_top_for_app(app, size),
         welcome_chrome_offset_pixels,
@@ -4199,7 +4200,7 @@ pub(crate) fn single_session_text_areas_for_app_with_cached_body_viewport_and_re
             size,
             viewport.total_lines,
         )),
-        inline_widget_lines.len(),
+        app.inline_widget_visible_line_count(),
         inline_widget_text_width,
         single_session_draft_top_for_total_lines(app, size, viewport.total_lines),
         welcome_chrome_offset_pixels,
