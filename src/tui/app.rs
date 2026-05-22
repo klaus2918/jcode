@@ -96,7 +96,7 @@ pub(crate) fn extract_input_shell_command(input: &str) -> Option<&str> {
     self::input::extract_input_shell_command(input)
 }
 
-pub(crate) const COMMAND_SUGGESTION_VISIBLE_LIMIT: usize = 5;
+pub(crate) const COMMAND_SUGGESTION_VISIBLE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
 struct PendingRemoteMessage {

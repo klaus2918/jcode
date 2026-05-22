@@ -808,6 +808,9 @@ mod tests {
             ("/health".to_string(), "Show health"),
             ("/hide".to_string(), "Hide panel"),
             ("/hello".to_string(), "Say hello"),
+            ("/hold".to_string(), "Hold state"),
+            ("/home".to_string(), "Go home"),
+            ("/hover".to_string(), "Show hover"),
         ];
 
         assert_eq!(
