@@ -513,6 +513,7 @@ impl App {
             auto_server_reload: display.auto_server_reload,
             pending_queued_dispatch: false,
             tab_completion_state: None,
+            command_suggestion_selected: 0,
             app_started: Instant::now(),
             runtime_memory_log,
             client_binary_mtime: std::env::current_exe()
@@ -880,6 +881,7 @@ impl App {
             auto_server_reload: display.auto_server_reload,
             pending_queued_dispatch: false,
             tab_completion_state: None,
+            command_suggestion_selected: 0,
             app_started: Instant::now(),
             runtime_memory_log,
             client_binary_mtime: std::env::current_exe()

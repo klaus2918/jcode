@@ -937,6 +937,8 @@ pub struct App {
     // Tab completion state: (base_input, suggestion_index)
     // base_input is the original input before cycling, suggestion_index is current position
     tab_completion_state: Option<(String, usize)>,
+    // Selected row in the visible command suggestion list.
+    command_suggestion_selected: usize,
     // Time when app started (for startup animations)
     app_started: Instant,
     // Optional client runtime memory logger for low-overhead attribution journaling.

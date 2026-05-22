@@ -1007,6 +1007,47 @@ impl App {
         self.get_suggestions_for(&self.input)
     }
 
+    fn clamp_command_suggestion_selection(&mut self) -> Vec<(String, &'static str)> {
+        let suggestions = self.command_suggestions();
+        if suggestions.is_empty() {
+            self.command_suggestion_selected = 0;
+        } else {
+            self.command_suggestion_selected = self
+                .command_suggestion_selected
+                .min(suggestions.len().saturating_sub(1));
+        }
+        suggestions
+    }
+
+    pub(super) fn move_command_suggestion_selection(&mut self, delta: i32) -> bool {
+        let suggestions = self.clamp_command_suggestion_selection();
+        if suggestions.is_empty() {
+            return false;
+        }
+
+        let len = suggestions.len() as i32;
+        let selected = self.command_suggestion_selected as i32;
+        self.command_suggestion_selected = (selected + delta).rem_euclid(len) as usize;
+        true
+    }
+
+    pub(super) fn accept_selected_command_suggestion(&mut self) -> bool {
+        let suggestions = self.clamp_command_suggestion_selection();
+        let Some((cmd, _)) = suggestions.get(self.command_suggestion_selected).cloned() else {
+            return false;
+        };
+        if cmd == self.input.trim() {
+            return false;
+        }
+
+        self.remember_input_undo_state();
+        self.input = cmd;
+        self.cursor_pos = self.input.len();
+        self.tab_completion_state = None;
+        self.command_suggestion_selected = 0;
+        true
+    }
+
     /// Get suggestion prompts for new users on the initial empty screen.
     /// Returns (label, prompt_text) pairs. Empty once user is experienced or not authenticated.
     pub fn suggestion_prompts(&self) -> Vec<(String, String)> {
@@ -1103,7 +1144,10 @@ impl App {
         }
 
         // Apply first suggestion and start tracking the cycle
-        let (cmd, _) = &current_suggestions[0];
+        let selected = self
+            .command_suggestion_selected
+            .min(current_suggestions.len().saturating_sub(1));
+        let (cmd, _) = &current_suggestions[selected];
         let base = self.input.clone();
         self.remember_input_undo_state();
         self.input = cmd.clone();
@@ -1112,13 +1156,15 @@ impl App {
             self.input.push(' ');
         }
         self.cursor_pos = self.input.len();
-        self.tab_completion_state = Some((base, 0));
+        self.tab_completion_state = Some((base, selected));
+        self.command_suggestion_selected = 0;
         true
     }
 
     /// Reset tab completion state (call when user types/modifies input)
     pub fn reset_tab_completion(&mut self) {
         self.tab_completion_state = None;
+        self.command_suggestion_selected = 0;
     }
 
     pub(super) fn remember_input_undo_state(&mut self) {

@@ -1231,7 +1231,9 @@ pub(super) fn handle_visible_copy_shortcut(
         return false;
     }
 
-    if c.eq_ignore_ascii_case(&'e') && app.diff_mode.is_inline() {
+    if c.eq_ignore_ascii_case(&'e')
+        && (app.diff_mode.is_inline() || app.display_edit_tool_message_count > 0)
+    {
         app.diff_mode = if app.diff_mode.is_full_inline() {
             crate::config::DiffDisplayMode::Inline
         } else {
@@ -1593,12 +1595,40 @@ impl App {
             }
         }
 
-        if handle_pre_control_shortcuts(self, code, modifiers) {
+        if is_next_prompt_new_session_hotkey(code, modifiers) {
+            self.toggle_next_prompt_new_session_routing();
             return Ok(());
         }
 
-        if is_next_prompt_new_session_hotkey(code, modifiers) {
-            self.toggle_next_prompt_new_session_routing();
+        let command_suggestions_visible = !self.command_suggestions().is_empty();
+        if command_suggestions_visible {
+            match code {
+                KeyCode::Down if modifiers.is_empty() => {
+                    self.move_command_suggestion_selection(1);
+                    return Ok(());
+                }
+                KeyCode::Up if modifiers.is_empty() => {
+                    self.move_command_suggestion_selection(-1);
+                    return Ok(());
+                }
+                KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.move_command_suggestion_selection(1);
+                    return Ok(());
+                }
+                KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.move_command_suggestion_selection(-1);
+                    return Ok(());
+                }
+                KeyCode::Enter if modifiers.is_empty() => {
+                    if self.accept_selected_command_suggestion() {
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if handle_pre_control_shortcuts(self, code, modifiers) {
             return Ok(());
         }
 

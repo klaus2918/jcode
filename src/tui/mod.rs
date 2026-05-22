@@ -138,6 +138,9 @@ pub trait TuiState {
     fn elapsed(&self) -> Option<Duration>;
     fn status(&self) -> ProcessingStatus;
     fn command_suggestions(&self) -> Vec<(String, &'static str)>;
+    fn command_suggestion_selected(&self) -> usize {
+        0
+    }
     fn active_skill(&self) -> Option<String>;
     fn subagent_status(&self) -> Option<String>;
     /// Progress of a currently-running batch tool call.

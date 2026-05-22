@@ -545,6 +545,31 @@ fn test_refresh_model_list_command_suggestions() {
 }
 
 #[test]
+fn test_command_suggestion_arrow_and_ctrl_navigation_accepts_highlighted_row() {
+    let mut app = create_test_app();
+    app.input = "/con".to_string();
+    app.cursor_pos = app.input.len();
+    let suggestions = app.command_suggestions();
+    assert!(suggestions.len() >= 2);
+
+    app.handle_key(KeyCode::Down, KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(app.command_suggestion_selected, 1);
+    app.handle_key(KeyCode::Char('k'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert_eq!(app.command_suggestion_selected, 0);
+    app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert_eq!(app.command_suggestion_selected, 1);
+
+    let expected = suggestions[1].0.clone();
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(app.input, expected);
+    assert_eq!(app.cursor_pos, app.input.len());
+}
+
+#[test]
 fn test_registered_command_suggestions_include_aliases_and_hide_secret_commands() {
     let app = create_test_app();
     let suggestions = app.get_suggestions_for("/");

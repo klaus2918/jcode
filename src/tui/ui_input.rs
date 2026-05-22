@@ -1320,7 +1320,7 @@ pub(super) fn draw_input(
         if suggestions.len() == 1 || exact_match.is_some() {
             let (cmd, desc) = exact_match.unwrap_or(&suggestions[0]);
             let mut spans = vec![
-                Span::styled("  ", Style::default().fg(dim_color())),
+                Span::styled("", Style::default().fg(dim_color())),
                 Span::styled(cmd.to_string(), Style::default().fg(rgb(138, 180, 248))),
                 Span::styled(format!(" - {}", desc), Style::default().fg(dim_color())),
             ];
@@ -1339,25 +1339,30 @@ pub(super) fn draw_input(
             let more_count = suggestions
                 .len()
                 .saturating_sub(MAX_VISIBLE_COMMAND_SUGGESTIONS);
+            let selected = app
+                .command_suggestion_selected()
+                .min(limited.len().saturating_sub(1));
 
             for (i, (cmd, desc)) in limited.iter().enumerate() {
+                let is_selected = i == selected;
+                let row_style = if is_selected {
+                    Style::default().fg(rgb(232, 240, 254)).bg(rgb(45, 72, 112))
+                } else {
+                    Style::default().fg(dim_color())
+                };
+                let command_style = if is_selected {
+                    row_style.add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(rgb(128, 203, 196))
+                };
                 let mut spans = vec![Span::styled(
-                    if i == 0 { "  Tab: " } else { "       " },
-                    Style::default().fg(dim_color()),
+                    if is_selected { "▸ " } else { "  " },
+                    row_style,
                 )];
-                spans.push(Span::styled(
-                    cmd.to_string(),
-                    Style::default().fg(rgb(138, 180, 248)),
-                ));
-                spans.push(Span::styled(
-                    format!(" - {}", desc),
-                    Style::default().fg(dim_color()),
-                ));
+                spans.push(Span::styled(cmd.to_string(), command_style));
+                spans.push(Span::styled(format!("  {}", desc), row_style));
                 if i + 1 == limited.len() && more_count > 0 {
-                    spans.push(Span::styled(
-                        format!("  +{} more", more_count),
-                        Style::default().fg(dim_color()),
-                    ));
+                    spans.push(Span::styled(format!("  +{} more", more_count), row_style));
                 }
                 lines.push(Line::from(spans));
             }
