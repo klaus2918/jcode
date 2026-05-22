@@ -57,6 +57,22 @@ fn normalize_repaint_sensitive_notice_text(text: &str) -> String {
     text.replace("⚠️", "⚠")
 }
 
+const MAX_VISIBLE_COMMAND_SUGGESTIONS: usize = 5;
+
+fn command_suggestion_hint_line_count(suggestions: &[(String, &'static str)], input: &str) -> u16 {
+    if suggestions.is_empty() {
+        return 0;
+    }
+
+    let input_trimmed = input.trim();
+    let exact_match = suggestions.iter().any(|(cmd, _)| cmd == input_trimmed);
+    if suggestions.len() == 1 || exact_match {
+        1
+    } else {
+        suggestions.len().min(MAX_VISIBLE_COMMAND_SUGGESTIONS) as u16
+    }
+}
+
 pub(super) fn input_hint_line_height(app: &dyn TuiState) -> u16 {
     let suggestions = app.command_suggestions();
     let mode = composer_mode(app.input(), app.is_remote_mode());
@@ -64,15 +80,15 @@ pub(super) fn input_hint_line_height(app: &dyn TuiState) -> u16 {
         && matches!(mode, ComposerMode::SlashCommand | ComposerMode::Chat)
         && (matches!(mode, ComposerMode::SlashCommand) || !app.is_processing());
 
-    if has_suggestions
-        || shell_mode_hint(mode).is_some()
-        || app.next_prompt_new_session_armed()
-        || (app.is_processing() && !app.input().is_empty())
-    {
-        1
-    } else {
-        0
+    if has_suggestions {
+        return command_suggestion_hint_line_count(&suggestions, app.input());
     }
+
+    u16::from(
+        shell_mode_hint(mode).is_some()
+            || app.next_prompt_new_session_armed()
+            || (app.is_processing() && !app.input().is_empty()),
+    )
 }
 
 pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
@@ -777,6 +793,28 @@ mod tests {
     use ratatui::style::Modifier;
 
     #[test]
+    fn command_suggestion_hint_line_count_reserves_vertical_rows() {
+        let suggestions = vec![
+            ("/help".to_string(), "Show help"),
+            ("/history".to_string(), "Show history"),
+            ("/handoff".to_string(), "Prepare handoff"),
+            ("/health".to_string(), "Show health"),
+            ("/hide".to_string(), "Hide panel"),
+            ("/hello".to_string(), "Say hello"),
+        ];
+
+        assert_eq!(
+            command_suggestion_hint_line_count(&suggestions, "/h"),
+            MAX_VISIBLE_COMMAND_SUGGESTIONS as u16
+        );
+        assert_eq!(command_suggestion_hint_line_count(&suggestions, "/help"), 1);
+        assert_eq!(
+            command_suggestion_hint_line_count(&suggestions[..1], "/he"),
+            1
+        );
+    }
+
+    #[test]
     fn batch_progress_spans_use_batch_chroma_for_initial_count() {
         let mut spans = Vec::new();
         let anim_color = rgb(12, 34, 56);
@@ -1294,33 +1332,35 @@ pub(super) fn draw_input(
             }
             lines.push(Line::from(spans));
         } else {
-            let max_suggestions = 5;
-            let limited: Vec<_> = suggestions.iter().take(max_suggestions).collect();
-            let more_count = suggestions.len().saturating_sub(max_suggestions);
+            let limited: Vec<_> = suggestions
+                .iter()
+                .take(MAX_VISIBLE_COMMAND_SUGGESTIONS)
+                .collect();
+            let more_count = suggestions
+                .len()
+                .saturating_sub(MAX_VISIBLE_COMMAND_SUGGESTIONS);
 
-            let mut spans = vec![Span::styled("  Tab: ", Style::default().fg(dim_color()))];
             for (i, (cmd, desc)) in limited.iter().enumerate() {
-                if i > 0 {
-                    spans.push(Span::styled(" │ ", Style::default().fg(dim_color())));
-                }
+                let mut spans = vec![Span::styled(
+                    if i == 0 { "  Tab: " } else { "       " },
+                    Style::default().fg(dim_color()),
+                )];
                 spans.push(Span::styled(
                     cmd.to_string(),
                     Style::default().fg(rgb(138, 180, 248)),
                 ));
-                if i == 0 {
+                spans.push(Span::styled(
+                    format!(" - {}", desc),
+                    Style::default().fg(dim_color()),
+                ));
+                if i + 1 == limited.len() && more_count > 0 {
                     spans.push(Span::styled(
-                        format!(" ({})", desc),
+                        format!("  +{} more", more_count),
                         Style::default().fg(dim_color()),
                     ));
                 }
+                lines.push(Line::from(spans));
             }
-            if more_count > 0 {
-                spans.push(Span::styled(
-                    format!(" (+{})", more_count),
-                    Style::default().fg(dim_color()),
-                ));
-            }
-            lines.push(Line::from(spans));
         }
     } else if let Some(shell_hint) = shell_mode_hint(mode) {
         hint_shown = true;
