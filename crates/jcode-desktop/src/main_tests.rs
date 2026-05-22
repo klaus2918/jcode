@@ -6466,6 +6466,24 @@ fn single_session_wraps_one_session_card() {
 }
 
 #[test]
+fn workspace_focused_session_promotes_to_single_session_app() {
+    let mut app = DesktopApp::Workspace(Workspace::from_session_cards(vec![workspace::SessionCard {
+        session_id: "session_alpha".to_string(),
+        title: "alpha".to_string(),
+        subtitle: "active".to_string(),
+        detail: "3 msgs".to_string(),
+        preview_lines: vec!["user hello".to_string()],
+        detail_lines: vec!["assistant hi".to_string()],
+    }]));
+
+    assert!(app.promote_focused_workspace_session());
+    let snapshot = app.debug_snapshot();
+    assert_eq!(snapshot.mode, "single_session");
+    assert_eq!(snapshot.live_session_id.as_deref(), Some("session_alpha"));
+    assert!(snapshot.body_text.contains("user hello"));
+}
+
+#[test]
 fn single_session_surface_is_the_panel_primitive() {
     let card = workspace::SessionCard {
         session_id: "session_alpha".to_string(),

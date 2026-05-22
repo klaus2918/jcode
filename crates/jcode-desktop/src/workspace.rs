@@ -613,6 +613,26 @@ impl Workspace {
         })
     }
 
+    pub fn focused_session_card(&self) -> Option<SessionCard> {
+        self.focused_surface().and_then(|surface| {
+            let session_id = surface.session_id.as_ref()?.clone();
+            Some(SessionCard {
+                session_id,
+                title: surface.title.clone(),
+                subtitle: surface.body_lines.first().cloned().unwrap_or_default(),
+                detail: surface.body_lines.get(1).cloned().unwrap_or_default(),
+                preview_lines: surface
+                    .body_lines
+                    .iter()
+                    .skip_while(|line| line.as_str() != "recent transcript")
+                    .skip(1)
+                    .cloned()
+                    .collect(),
+                detail_lines: surface.detail_lines.clone(),
+            })
+        })
+    }
+
     pub fn is_focused(&self, surface_id: u64) -> bool {
         self.focused_id == surface_id
     }
