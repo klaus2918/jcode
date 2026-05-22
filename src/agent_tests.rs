@@ -15,6 +15,17 @@ struct DelayedProvider {
 
 struct NativeAutoCompactionProvider;
 
+fn content_text(content: &[ContentBlock]) -> &str {
+    match content.first() {
+        Some(ContentBlock::Text { text, .. }) => text,
+        _ => "",
+    }
+}
+
+fn message_text(message: &Message) -> &str {
+    content_text(&message.content)
+}
+
 #[async_trait]
 impl Provider for DelayedProvider {
     async fn complete(
@@ -645,6 +656,77 @@ async fn build_memory_prompt_nonblocking_defers_pending_memory_during_tool_loop(
     assert!(!crate::memory::has_pending_memory(&session_id));
 
     crate::memory::clear_all_pending_memory();
+}
+
+#[tokio::test]
+async fn memory_injection_message_defaults_to_ephemeral_history() {
+    let _guard = crate::storage::lock_test_env();
+    let previous = std::env::var_os("JCODE_PERSIST_MEMORY_INJECTIONS");
+    crate::env::set_var("JCODE_PERSIST_MEMORY_INJECTIONS", "false");
+    crate::config::invalidate_config_cache();
+
+    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+    let before = agent.session.messages.len();
+    let memory = crate::memory::PendingMemory {
+        prompt: "# Memory\n\n## Facts\n1. Use ephemeral mode".to_string(),
+        display_prompt: None,
+        computed_at: Instant::now(),
+        count: 1,
+        memory_ids: vec!["mem-ephemeral".to_string()],
+    };
+
+    let (message, persisted) = agent.prepare_memory_injection_message(&memory);
+
+    assert!(!persisted);
+    assert_eq!(agent.session.messages.len(), before);
+    assert!(matches!(message.role, Role::User));
+    assert!(message_text(&message).contains("Use ephemeral mode"));
+
+    match previous {
+        Some(value) => crate::env::set_var("JCODE_PERSIST_MEMORY_INJECTIONS", value),
+        None => crate::env::remove_var("JCODE_PERSIST_MEMORY_INJECTIONS"),
+    }
+    crate::config::invalidate_config_cache();
+}
+
+#[tokio::test]
+async fn memory_injection_message_can_persist_to_history() {
+    let _guard = crate::storage::lock_test_env();
+    let previous = std::env::var_os("JCODE_PERSIST_MEMORY_INJECTIONS");
+    crate::env::set_var("JCODE_PERSIST_MEMORY_INJECTIONS", "true");
+    crate::config::invalidate_config_cache();
+
+    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+    let before = agent.session.messages.len();
+    let memory = crate::memory::PendingMemory {
+        prompt: "# Memory\n\n## Facts\n1. Persist for cache".to_string(),
+        display_prompt: None,
+        computed_at: Instant::now(),
+        count: 1,
+        memory_ids: vec!["mem-persisted".to_string()],
+    };
+
+    let (message, persisted) = agent.prepare_memory_injection_message(&memory);
+
+    assert!(persisted);
+    assert_eq!(agent.session.messages.len(), before + 1);
+    assert_eq!(
+        content_text(&agent.session.messages.last().unwrap().content),
+        message_text(&message)
+    );
+    assert!(
+        content_text(&agent.session.messages.last().unwrap().content).contains("Persist for cache")
+    );
+
+    match previous {
+        Some(value) => crate::env::set_var("JCODE_PERSIST_MEMORY_INJECTIONS", value),
+        None => crate::env::remove_var("JCODE_PERSIST_MEMORY_INJECTIONS"),
+    }
+    crate::config::invalidate_config_cache();
 }
 
 #[tokio::test]

@@ -426,6 +426,30 @@ impl Agent {
         }
     }
 
+    fn memory_injection_message(memory: &crate::memory::PendingMemory) -> Message {
+        Message::user(&format!(
+            "<system-reminder>\n{}\n</system-reminder>",
+            memory.prompt
+        ))
+    }
+
+    pub(super) fn prepare_memory_injection_message(
+        &mut self,
+        memory: &crate::memory::PendingMemory,
+    ) -> (Message, bool) {
+        let message = Self::memory_injection_message(memory);
+        let persist = crate::config::config().features.persist_memory_injections;
+        if persist {
+            self.add_message_with_display_role(
+                Role::User,
+                message.content.clone(),
+                Some(StoredDisplayRole::System),
+            );
+            self.persist_session_best_effort("persisted memory injection message");
+        }
+        (message, persist)
+    }
+
     fn persist_session_best_effort(&mut self, context: &str) {
         if let Err(err) = self.session.save() {
             logging::warn(&format!(

@@ -82,6 +82,36 @@ fn test_expand_badge_shortcut_toggles_inline_diff_and_pulses_key() {
 }
 
 #[test]
+fn test_expand_badge_shortcut_opens_full_inline_from_non_inline_mode() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, _terminal) = create_copy_test_app();
+    app.display_messages.push(DisplayMessage::tool(
+        "Edited demo.txt".to_string(),
+        crate::message::ToolCall {
+            id: "edit_1".to_string(),
+            name: "edit".to_string(),
+            input: serde_json::json!({
+                "file_path": "demo.txt",
+                "old_string": "old line\n",
+                "new_string": "new line\n",
+            }),
+            intent: None,
+        },
+    ));
+    app.bump_display_messages_version();
+    app.diff_mode = crate::config::DiffDisplayMode::Off;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    app.handle_key_event(KeyEvent::new(
+        KeyCode::Char('E'),
+        KeyModifiers::ALT | KeyModifiers::SHIFT,
+    ));
+
+    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
+    assert!(app.copy_badge_ui().key_active.is_some());
+}
+
+#[test]
 fn test_try_open_link_at_opens_clicked_url_and_sets_notice() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();

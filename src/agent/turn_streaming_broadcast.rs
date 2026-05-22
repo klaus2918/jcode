@@ -71,11 +71,12 @@ impl Agent {
                 ));
             }
 
-            let cache_signature_messages = if crate::config::config().features.message_timestamps {
-                Message::with_timestamps(&messages)
-            } else {
-                messages.clone()
-            };
+            let mut cache_signature_messages =
+                if crate::config::config().features.message_timestamps {
+                    Message::with_timestamps(&messages)
+                } else {
+                    messages.clone()
+                };
             let mut ephemeral_signature_messages = Vec::new();
 
             // Inject memory as a user message at the end (preserves cache prefix)
@@ -96,11 +97,12 @@ impl Agent {
                     prompt_chars: memory.prompt.chars().count(),
                     computed_age_ms,
                 });
-                let memory_msg = Message::user(&format!(
-                    "<system-reminder>\n{}\n</system-reminder>",
-                    memory.prompt
-                ));
-                ephemeral_signature_messages.push(memory_msg.clone());
+                let (memory_msg, persisted) = self.prepare_memory_injection_message(memory);
+                if !persisted {
+                    ephemeral_signature_messages.push(memory_msg.clone());
+                } else {
+                    cache_signature_messages.push(memory_msg.clone());
+                }
                 messages_with_memory.push(memory_msg);
             }
 
