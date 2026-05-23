@@ -29,6 +29,10 @@ use desktop_app_driver::{
 };
 use desktop_benchmark::*;
 use desktop_config::*;
+use desktop_scene::{
+    DesktopColor, DesktopDisplayCommand, DesktopRect as DesktopSceneRect, DesktopRectPaint,
+    DesktopScene,
+};
 use desktop_session_events::{
     BACKEND_EVENT_FORWARD_INTERVAL, BACKEND_EVENT_FORWARD_MAX_PAYLOAD_BYTES,
     BACKEND_EVENT_FORWARD_MAX_RAW_EVENTS, DesktopSessionEventBatch,
@@ -8003,6 +8007,97 @@ impl Canvas {
         })
     }
 
+    #[allow(dead_code)]
+    fn render_scene(
+        &mut self,
+        scene: &DesktopScene,
+    ) -> std::result::Result<DesktopRenderFrameResult, SurfaceError> {
+        if !self.boot_frame_presented {
+            return self.render_boot_frame();
+        }
+
+        let mut frame_profile = DesktopFrameProfile::new();
+        let frame = self.surface.get_current_texture()?;
+        frame_profile.checkpoint("surface_acquire");
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("jcode-desktop-scene-render"),
+            });
+        frame_profile.checkpoint("frame_setup");
+
+        self.ensure_render_pipeline();
+        frame_profile.checkpoint("primitive_pipeline");
+        self.primitive_frame_vertices.clear();
+        let clear_color =
+            desktop_scene_vertices(scene, self.size, &mut self.primitive_frame_vertices)
+                .unwrap_or(CLEAR_COLOR);
+        let primitive_vertex_count = self.primitive_frame_vertices.len();
+        upload_primitive_vertices(
+            &self.device,
+            &self.queue,
+            &mut self.primitive_vertex_buffer,
+            &mut self.primitive_vertex_capacity,
+            &self.primitive_frame_vertices,
+        );
+        frame_profile.checkpoint("primitive_upload");
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("jcode-desktop-scene-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(clear_color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if let Some(render_pipeline) = self.render_pipeline.as_ref() {
+                render_pass.set_pipeline(render_pipeline);
+            }
+            if primitive_vertex_count > 0
+                && let Some(vertex_buffer) = self.primitive_vertex_buffer.as_ref()
+            {
+                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                render_pass.draw(0..primitive_vertex_count as u32, 0..1);
+            }
+        }
+        frame_profile.checkpoint("render_pass");
+
+        self.queue.submit(Some(encoder.finish()));
+        frame_profile.checkpoint("queue_submit");
+        frame.present();
+        frame_profile.checkpoint("present");
+        self.first_render_completed = true;
+        let frame_wall = frame_profile.total_duration();
+        let frame_cpu = frame_profile.cpu_duration();
+        let context = DesktopFrameContext {
+            mode: "scene",
+            smooth_scroll_lines: 0.0,
+            text_buffer_count: 0,
+            text_area_count: 0,
+            primitive_vertices: primitive_vertex_count,
+            text_prepared: false,
+            primitive_geometry_cache_hit: false,
+        };
+        self.frame_profiler.observe(frame_profile, context);
+        Ok(DesktopRenderFrameResult {
+            animation_active: scene.metadata.animation_active,
+            content_ready: scene.metadata.content_ready,
+            frame_wall,
+            frame_cpu,
+            context,
+        })
+    }
+
     fn render(
         &mut self,
         app: &DesktopApp,
@@ -8561,6 +8656,82 @@ fn upload_primitive_vertices(
 
     if let Some(vertex_buffer) = primitive_vertex_buffer.as_ref() {
         queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(vertices));
+    }
+}
+
+fn desktop_scene_vertices(
+    scene: &DesktopScene,
+    size: PhysicalSize<u32>,
+    vertices: &mut Vec<Vertex>,
+) -> Option<wgpu::Color> {
+    vertices.clear();
+    let mut clear_color = None;
+    for command in &scene.display_list.commands {
+        match command {
+            DesktopDisplayCommand::Clear(color) => {
+                clear_color = Some(desktop_scene_clear_color(*color));
+                vertices.clear();
+            }
+            DesktopDisplayCommand::Rect(paint) => {
+                push_desktop_scene_rect(vertices, paint, size);
+            }
+            DesktopDisplayCommand::Text(_)
+            | DesktopDisplayCommand::Image(_)
+            | DesktopDisplayCommand::PushClip(_)
+            | DesktopDisplayCommand::PopClip
+            | DesktopDisplayCommand::PushLayer { .. }
+            | DesktopDisplayCommand::PopLayer => {}
+        }
+    }
+    clear_color
+}
+
+fn push_desktop_scene_rect(
+    vertices: &mut Vec<Vertex>,
+    paint: &DesktopRectPaint,
+    size: PhysicalSize<u32>,
+) {
+    if !paint.rect.is_renderable() || paint.fill.a <= 0.0 {
+        return;
+    }
+    let rect = rect_from_desktop_scene_rect(paint.rect);
+    let fill = paint.fill.to_array();
+    let radius = [
+        paint.radii.top_left,
+        paint.radii.top_right,
+        paint.radii.bottom_right,
+        paint.radii.bottom_left,
+    ]
+    .into_iter()
+    .fold(0.0_f32, f32::max);
+    if radius > 0.5 {
+        push_rounded_rect(vertices, rect, radius, fill, size);
+    } else {
+        push_rect(vertices, rect, fill, size);
+    }
+    if let Some(border) = paint.border
+        && border.width > 0.0
+        && border.color.a > 0.0
+    {
+        push_stroked_rect(vertices, rect, border.width, border.color.to_array(), size);
+    }
+}
+
+fn rect_from_desktop_scene_rect(rect: DesktopSceneRect) -> Rect {
+    Rect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
+fn desktop_scene_clear_color(color: DesktopColor) -> wgpu::Color {
+    wgpu::Color {
+        r: color.r as f64,
+        g: color.g as f64,
+        b: color.b as f64,
+        a: color.a as f64,
     }
 }
 

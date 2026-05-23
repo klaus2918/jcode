@@ -51,6 +51,50 @@ fn desktop_platform_warnings_only_fire_for_less_supported_targets() {
 }
 
 #[test]
+fn desktop_scene_vertices_render_rectangles_and_clear_color() {
+    let mut scene = DesktopScene::default();
+    scene.push(DesktopDisplayCommand::Clear(DesktopColor::rgba(
+        0.1, 0.2, 0.3, 1.0,
+    )));
+    scene.push(DesktopDisplayCommand::Rect(DesktopRectPaint::filled(
+        DesktopSceneRect::new(10.0, 20.0, 30.0, 40.0),
+        DesktopColor::rgba(0.8, 0.7, 0.6, 1.0),
+    )));
+
+    let mut vertices = Vec::new();
+    let clear = desktop_scene_vertices(&scene, PhysicalSize::new(100, 100), &mut vertices)
+        .expect("clear color");
+
+    assert!((clear.r - 0.1).abs() < 0.000_001);
+    assert!((clear.g - 0.2).abs() < 0.000_001);
+    assert!((clear.b - 0.3).abs() < 0.000_001);
+    assert_eq!(clear.a, 1.0);
+    assert_eq!(vertices.len(), 6);
+    assert!(
+        vertices
+            .iter()
+            .all(|vertex| vertex.color == [0.8, 0.7, 0.6, 1.0])
+    );
+}
+
+#[test]
+fn desktop_scene_clear_resets_previous_vertices() {
+    let mut scene = DesktopScene::default();
+    scene.push(DesktopDisplayCommand::Rect(DesktopRectPaint::filled(
+        DesktopSceneRect::new(0.0, 0.0, 10.0, 10.0),
+        DesktopColor::rgba(1.0, 0.0, 0.0, 1.0),
+    )));
+    scene.push(DesktopDisplayCommand::Clear(DesktopColor::rgba(
+        0.0, 0.0, 0.0, 1.0,
+    )));
+
+    let mut vertices = Vec::new();
+    desktop_scene_vertices(&scene, PhysicalSize::new(100, 100), &mut vertices);
+
+    assert!(vertices.is_empty());
+}
+
+#[test]
 fn desktop_hot_reload_rewrites_resume_to_live_session() {
     let relaunch = DesktopRelaunch {
         binary: PathBuf::from("/old/jcode-desktop"),
