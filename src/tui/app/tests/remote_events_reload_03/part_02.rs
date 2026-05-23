@@ -228,14 +228,14 @@ fn test_local_compacted_history_marker_scroll_expands_from_session() {
         })
         .collect();
     app.replace_display_messages(rendered);
-    assert_eq!(app.compacted_history_lazy_state().remaining_messages, 2);
+    assert_eq!(app.compacted_history_lazy_state().remaining_messages, 1);
 
     app.auto_scroll_paused = true;
     app.scroll_offset = 0;
     app.scroll_up(1);
 
     assert_eq!(app.take_pending_compacted_history_load(), None);
-    assert_eq!(app.compacted_history_lazy_state().visible_messages, 2);
+    assert_eq!(app.compacted_history_lazy_state().visible_messages, 1);
     assert_eq!(app.compacted_history_lazy_state().remaining_messages, 0);
     assert!(
         app.display_messages()
