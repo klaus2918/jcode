@@ -412,11 +412,29 @@ pub(super) async fn handle_set_reasoning_effort(
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    let result = {
-        let mut agent_guard = agent.lock().await;
+    let result = if let Ok(mut agent_guard) = agent.try_lock() {
         agent_guard.set_reasoning_effort(&effort)
+    } else {
+        crate::logging::warn(&format!(
+            "Deferring reasoning effort change until session is idle; not waiting for busy agent lock (request_id={id}, effort={effort})"
+        ));
+        spawn_deferred_reasoning_effort_change(
+            id,
+            effort,
+            Arc::clone(agent),
+            client_event_tx.clone(),
+        );
+        return;
     };
 
+    send_reasoning_effort_result(id, result, client_event_tx);
+}
+
+fn send_reasoning_effort_result(
+    id: u64,
+    result: anyhow::Result<Option<String>>,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
     match result {
         Ok(effort) => {
             let _ = client_event_tx.send(ServerEvent::ReasoningEffortChanged {
@@ -433,6 +451,25 @@ pub(super) async fn handle_set_reasoning_effort(
             });
         }
     }
+}
+
+fn spawn_deferred_reasoning_effort_change(
+    id: u64,
+    effort: String,
+    agent: Arc<Mutex<Agent>>,
+    client_event_tx: mpsc::UnboundedSender<ServerEvent>,
+) {
+    tokio::spawn(async move {
+        let mut agent_guard = agent.lock().await;
+        let result = agent_guard.set_reasoning_effort(&effort);
+        crate::logging::info(&format!(
+            "Deferred reasoning effort change completed request_id={} requested={} success={}",
+            id,
+            effort,
+            result.is_ok()
+        ));
+        send_reasoning_effort_result(id, result, &client_event_tx);
+    });
 }
 
 pub(super) async fn handle_set_service_tier(
@@ -789,5 +826,131 @@ pub(super) async fn handle_switch_openai_account(
                 retry_after_secs: None,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::{Message, ToolDefinition};
+    use crate::provider::EventStream;
+    use async_trait::async_trait;
+    use std::sync::Mutex as StdMutex;
+    use tokio::time::{Duration, timeout};
+
+    struct IsolatedRuntimeDir {
+        _prev_runtime: Option<std::ffi::OsString>,
+        _temp: tempfile::TempDir,
+    }
+
+    impl IsolatedRuntimeDir {
+        fn new() -> Self {
+            let temp = tempfile::TempDir::new().expect("runtime dir");
+            let prev_runtime = std::env::var_os("JCODE_RUNTIME_DIR");
+            crate::env::set_var("JCODE_RUNTIME_DIR", temp.path());
+            Self {
+                _prev_runtime: prev_runtime,
+                _temp: temp,
+            }
+        }
+    }
+
+    impl Drop for IsolatedRuntimeDir {
+        fn drop(&mut self) {
+            if let Some(prev_runtime) = self._prev_runtime.take() {
+                crate::env::set_var("JCODE_RUNTIME_DIR", prev_runtime);
+            } else {
+                crate::env::remove_var("JCODE_RUNTIME_DIR");
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct TestEffortProvider {
+        effort: StdMutex<Option<String>>,
+    }
+
+    #[async_trait]
+    impl Provider for TestEffortProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> anyhow::Result<EventStream> {
+            panic!("complete should not run in provider control test")
+        }
+
+        fn name(&self) -> &str {
+            "test-effort"
+        }
+
+        fn model(&self) -> String {
+            "test-effort-model".to_string()
+        }
+
+        fn reasoning_effort(&self) -> Option<String> {
+            self.effort.lock().expect("effort lock").clone()
+        }
+
+        fn set_reasoning_effort(&self, effort: &str) -> anyhow::Result<()> {
+            *self.effort.lock().expect("effort lock") = Some(effort.to_string());
+            Ok(())
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(Self {
+                effort: StdMutex::new(self.reasoning_effort()),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn set_reasoning_effort_does_not_wait_for_busy_agent_lock() {
+        let _guard = crate::storage::lock_test_env();
+        let _runtime = IsolatedRuntimeDir::new();
+
+        let provider = Arc::new(TestEffortProvider::default());
+        let provider_dyn: Arc<dyn Provider> = provider.clone();
+        let registry = crate::tool::Registry::new(Arc::clone(&provider_dyn)).await;
+        let mut session = crate::session::Session::create_with_id(
+            "session_busy_reasoning_effort".to_string(),
+            None,
+            None,
+        );
+        session.model = Some("test-effort-model".to_string());
+        let agent = Arc::new(Mutex::new(Agent::new_with_session(
+            Arc::clone(&provider_dyn),
+            registry,
+            session,
+            None,
+        )));
+        let busy_agent_lock = agent.lock().await;
+        let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+
+        timeout(
+            Duration::from_millis(100),
+            handle_set_reasoning_effort(7, "low".to_string(), &agent, &client_event_tx),
+        )
+        .await
+        .expect("reasoning effort changes must not wait for a busy agent mutex");
+
+        assert!(client_event_rx.try_recv().is_err());
+
+        drop(busy_agent_lock);
+
+        let event = timeout(Duration::from_secs(1), client_event_rx.recv())
+            .await
+            .expect("deferred reasoning effort change should finish after agent is idle");
+        assert_eq!(provider.reasoning_effort().as_deref(), Some("low"));
+        assert!(matches!(
+            event,
+            Some(ServerEvent::ReasoningEffortChanged {
+                id: 7,
+                effort: Some(effort),
+                error: None,
+            }) if effort == "low"
+        ));
     }
 }
