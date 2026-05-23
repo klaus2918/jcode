@@ -60,7 +60,49 @@ fn swarm_spawn_mode_rejects_invalid_values() {
 
 #[test]
 fn tool_config_defaults_to_full_toolset() {
-    assert!(ToolConfig::default().allowed_tools().is_none());
+    let selection = ToolConfig::default().selection();
+    assert!(selection.allowed_tools.is_none());
+    assert!(selection.disabled_tools.contains("gmail"));
+}
+
+#[test]
+fn tool_config_explicit_enabled_gmail_opts_in() {
+    let cfg = ToolConfig {
+        enabled: vec!["gmail".to_string()],
+        ..ToolConfig::default()
+    };
+    let selection = cfg.selection();
+    let allowed = selection
+        .allowed_tools
+        .expect("explicit enabled is an allow-list");
+
+    assert!(allowed.contains("gmail"));
+    assert!(!selection.disabled_tools.contains("gmail"));
+}
+
+#[test]
+fn tool_config_all_enabled_sentinel_opts_in_gmail_without_allow_list() {
+    let cfg = ToolConfig {
+        enabled: vec!["*".to_string()],
+        ..ToolConfig::default()
+    };
+    let selection = cfg.selection();
+
+    assert!(selection.allowed_tools.is_none());
+    assert!(!selection.disabled_tools.contains("gmail"));
+}
+
+#[test]
+fn tool_config_explicit_disabled_overrides_all_enabled_sentinel() {
+    let cfg = ToolConfig {
+        enabled: vec!["*".to_string()],
+        disabled: vec!["gmail".to_string()],
+        ..ToolConfig::default()
+    };
+    let selection = cfg.selection();
+
+    assert!(selection.allowed_tools.is_none());
+    assert!(selection.disabled_tools.contains("gmail"));
 }
 
 #[test]
@@ -130,6 +172,7 @@ fn tool_config_disabled_only_keeps_full_profile_with_deny_list() {
     assert!(selection.allowed_tools.is_none());
     assert!(selection.disabled_tools.contains("browser"));
     assert!(selection.disabled_tools.contains("swarm"));
+    assert!(selection.disabled_tools.contains("gmail"));
 }
 
 #[test]
