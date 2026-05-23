@@ -266,6 +266,30 @@ impl Surface {
         self.session_id = updated.session_id;
     }
 
+    pub fn session_card(&self) -> Option<SessionCard> {
+        let session_id = self.session_id.as_ref()?.clone();
+        Some(SessionCard {
+            session_id,
+            title: self.title.clone(),
+            subtitle: self.body_lines.first().cloned().unwrap_or_default(),
+            detail: self.body_lines.get(1).cloned().unwrap_or_default(),
+            preview_lines: self
+                .body_lines
+                .iter()
+                .skip_while(|line| line.as_str() != "recent transcript")
+                .skip(1)
+                .cloned()
+                .collect(),
+            detail_lines: self
+                .detail_lines
+                .iter()
+                .skip_while(|line| line.as_str() != "expanded transcript")
+                .skip(1)
+                .cloned()
+                .collect(),
+        })
+    }
+
     fn workspace_placeholder(id: u64, lane: i32, column: i32, color_index: usize) -> Self {
         Self {
             id,
@@ -614,23 +638,7 @@ impl Workspace {
     }
 
     pub fn focused_session_card(&self) -> Option<SessionCard> {
-        self.focused_surface().and_then(|surface| {
-            let session_id = surface.session_id.as_ref()?.clone();
-            Some(SessionCard {
-                session_id,
-                title: surface.title.clone(),
-                subtitle: surface.body_lines.first().cloned().unwrap_or_default(),
-                detail: surface.body_lines.get(1).cloned().unwrap_or_default(),
-                preview_lines: surface
-                    .body_lines
-                    .iter()
-                    .skip_while(|line| line.as_str() != "recent transcript")
-                    .skip(1)
-                    .cloned()
-                    .collect(),
-                detail_lines: surface.detail_lines.clone(),
-            })
-        })
+        self.focused_surface().and_then(Surface::session_card)
     }
 
     pub fn is_focused(&self, surface_id: u64) -> bool {

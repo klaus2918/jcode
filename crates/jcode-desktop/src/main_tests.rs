@@ -6844,6 +6844,85 @@ fn workspace_focused_session_promotes_to_single_session_app() {
 }
 
 #[test]
+fn workspace_session_panel_app_uses_single_session_body_and_focused_draft() {
+    let mut workspace = Workspace::from_session_cards(vec![workspace::SessionCard {
+        session_id: "session_alpha".to_string(),
+        title: "alpha".to_string(),
+        subtitle: "active".to_string(),
+        detail: "3 msgs".to_string(),
+        preview_lines: vec!["user hello".to_string()],
+        detail_lines: vec!["assistant hi".to_string()],
+    }]);
+    workspace.handle_key(KeyInput::Character("i".to_string()));
+    workspace.handle_key(KeyInput::Character("draft text".to_string()));
+
+    let surface = workspace.focused_surface().expect("focused surface");
+    let app = workspace_single_session_app_for_surface(&workspace, surface)
+        .expect("session surface should become a single-session app");
+    let body = app.body_lines().join("\n");
+
+    assert_eq!(app.live_session_id.as_deref(), Some("session_alpha"));
+    assert_eq!(app.draft, "draft text");
+    assert!(body.contains("single session mode"));
+    assert!(body.contains("user hello"));
+    assert!(body.contains("assistant hi"));
+    assert!(!body.contains("session metadata"));
+}
+
+#[test]
+fn workspace_session_panel_composes_single_session_geometry() {
+    let workspace = Workspace::from_session_cards(vec![workspace::SessionCard {
+        session_id: "session_alpha".to_string(),
+        title: "alpha".to_string(),
+        subtitle: "active".to_string(),
+        detail: "3 msgs".to_string(),
+        preview_lines: vec!["user hello".to_string()],
+        detail_lines: vec!["assistant hi".to_string()],
+    }]);
+    let size = PhysicalSize::new(1280, 800);
+    let render_layout = workspace_render_layout(&workspace, size, None);
+    let focused_id = workspace.focused_id;
+    let mut panel_rect = None;
+    for_each_visible_workspace_surface(
+        &workspace,
+        size,
+        render_layout,
+        0.0,
+        |surface, rect, _, _| {
+            if surface.id == focused_id {
+                panel_rect = Some(rect);
+            }
+        },
+    );
+    let rect = panel_rect.expect("focused panel rect");
+    let panel_app = workspace_single_session_app_for_surface(
+        &workspace,
+        workspace.focused_surface().expect("focused surface"),
+    )
+    .expect("single-session panel app");
+    let panel_size = workspace_panel_size(rect);
+    let rendered_body_lines =
+        single_session_rendered_body_lines_for_tick(&panel_app, panel_size, 0);
+    let child_vertices = build_single_session_vertices_with_cached_body(
+        &panel_app,
+        panel_size,
+        0.0,
+        0,
+        0.0,
+        1.0,
+        &rendered_body_lines,
+    );
+
+    let mut vertices = Vec::new();
+    build_vertices_into(&workspace, size, render_layout, 0.0, None, &mut vertices);
+
+    assert!(
+        vertices.len() >= child_vertices.len() + 6,
+        "workspace should include the child single-session primitive geometry"
+    );
+}
+
+#[test]
 fn single_session_surface_is_the_panel_primitive() {
     let card = workspace::SessionCard {
         session_id: "session_alpha".to_string(),

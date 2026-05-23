@@ -133,7 +133,7 @@ const DESKTOP_ASYNC_JOB_LIMIT: usize = 12;
 const PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY: usize = 1024;
 const PRIMITIVE_VERTEX_BUFFER_SHRINK_RATIO: usize = 4;
 const WORKSPACE_BASE_VERTEX_CAPACITY_HINT: usize = 512;
-const WORKSPACE_SURFACE_VERTEX_CAPACITY_HINT: usize = 384;
+const WORKSPACE_SURFACE_VERTEX_CAPACITY_HINT: usize = 2048;
 
 static DESKTOP_ASYNC_JOB_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -7687,7 +7687,15 @@ impl Canvas {
             };
         frame_profile.checkpoint("welcome_reveal");
 
+        let workspace_render_layout_for_frame = if let DesktopApp::Workspace(workspace) = app {
+            let target_layout = workspace_render_layout(workspace, self.size, monitor_size);
+            Some(self.viewport_animation.frame(target_layout, now))
+        } else {
+            None
+        };
+
         let mut single_session_rendered_body_key = None;
+        let mut workspace_text_panes = Vec::new();
         let defer_text_this_frame = self.defer_initial_text_frame;
         if defer_text_this_frame {
             self.defer_initial_text_frame = false;
@@ -7727,9 +7735,25 @@ impl Canvas {
             self.single_session_body_text_scroll_start = None;
             self.single_session_body_text_window_start = None;
             self.single_session_body_text_window_end = None;
+            if let (DesktopApp::Workspace(workspace), Some(render_layout)) =
+                (app, workspace_render_layout_for_frame)
+            {
+                self.ensure_font_system();
+                if let Some(font_system) = self.font_system.as_mut() {
+                    workspace_text_panes = build_workspace_single_session_text_panes(
+                        workspace,
+                        self.size,
+                        render_layout,
+                        font_system,
+                    );
+                    if !workspace_text_panes.is_empty() {
+                        self.text_needs_prepare = true;
+                    }
+                }
+            }
         }
         frame_profile.checkpoint("text_cache");
-        if !self.single_session_text_buffers.is_empty() {
+        if !self.single_session_text_buffers.is_empty() || !workspace_text_panes.is_empty() {
             self.ensure_text_renderer();
         }
         if self.single_session_streaming_text_buffer.is_some() {
@@ -7753,7 +7777,7 @@ impl Canvas {
         let has_streaming_text_buffer = self.single_session_streaming_text_buffer.is_some();
         self.release_streaming_text_renderer_if_idle(has_streaming_text_buffer);
         let text_buffers = &self.single_session_text_buffers;
-        let has_text_buffers = !text_buffers.is_empty();
+        let has_text_buffers = !text_buffers.is_empty() || !workspace_text_panes.is_empty();
         let mut text_area_count = 0usize;
         let mut text_prepared = false;
         let single_session_viewport = if let DesktopApp::SingleSession(single_session) = app {
@@ -7791,6 +7815,8 @@ impl Canvas {
                     ));
                     Vec::new()
                 }
+            } else if !workspace_text_panes.is_empty() {
+                workspace_single_session_text_areas(&workspace_text_panes)
             } else {
                 single_session_text_areas(text_buffers, self.size)
             };
@@ -7964,8 +7990,8 @@ impl Canvas {
             }
             DesktopApp::Workspace(workspace) => {
                 self.primitive_vertices_cache_key = None;
-                let target_layout = workspace_render_layout(workspace, self.size, monitor_size);
-                let render_layout = self.viewport_animation.frame(target_layout, now);
+                let render_layout = workspace_render_layout_for_frame
+                    .unwrap_or_else(|| workspace_render_layout(workspace, self.size, monitor_size));
                 let focus_pulse = self.focus_pulse.frame(workspace.focused_id, now);
                 let animation_active =
                     self.viewport_animation.is_animating() || self.focus_pulse.is_animating();
@@ -8950,6 +8976,247 @@ fn workspace_vertex_capacity_hint(workspace: &Workspace) -> usize {
             .saturating_mul(WORKSPACE_SURFACE_VERTEX_CAPACITY_HINT)
 }
 
+struct WorkspaceSingleSessionTextPane {
+    app: SingleSessionApp,
+    rect: Rect,
+    size: PhysicalSize<u32>,
+    rendered_body_lines: Vec<SingleSessionStyledLine>,
+    buffers: Vec<Buffer>,
+}
+
+fn workspace_panel_size(rect: Rect) -> PhysicalSize<u32> {
+    PhysicalSize::new(
+        rect.width.round().max(1.0) as u32,
+        rect.height.round().max(1.0) as u32,
+    )
+}
+
+fn workspace_single_session_app_for_surface(
+    workspace: &Workspace,
+    surface: &workspace::Surface,
+) -> Option<SingleSessionApp> {
+    let card = surface.session_card()?;
+    let session_id = card.session_id.clone();
+    let mut app = SingleSessionApp::new(Some(card));
+    app.live_session_id = Some(session_id);
+
+    if workspace.mode == InputMode::Insert && workspace.is_focused(surface.id) {
+        app.draft = workspace.draft.clone();
+        app.draft_cursor = workspace.draft_cursor.min(app.draft.len());
+        app.pending_images = workspace.pending_images.clone();
+    }
+
+    Some(app)
+}
+
+fn push_workspace_single_session_panel(
+    vertices: &mut Vec<Vertex>,
+    app: &SingleSessionApp,
+    rect: Rect,
+    parent_size: PhysicalSize<u32>,
+    focus_pulse: f32,
+) {
+    let panel_size = workspace_panel_size(rect);
+    let rendered_body_lines = single_session_rendered_body_lines_for_tick(app, panel_size, 0);
+    let child_vertices = build_single_session_vertices_with_cached_body(
+        app,
+        panel_size,
+        focus_pulse,
+        0,
+        0.0,
+        1.0,
+        &rendered_body_lines,
+    );
+    append_child_vertices_to_parent(vertices, &child_vertices, panel_size, rect, parent_size);
+}
+
+fn append_child_vertices_to_parent(
+    vertices: &mut Vec<Vertex>,
+    child_vertices: &[Vertex],
+    child_size: PhysicalSize<u32>,
+    rect: Rect,
+    parent_size: PhysicalSize<u32>,
+) {
+    let child_width = child_size.width.max(1) as f32;
+    let child_height = child_size.height.max(1) as f32;
+    vertices.extend(child_vertices.iter().map(|vertex| {
+        let child_x = (vertex.position[0] + 1.0) * 0.5 * child_width;
+        let child_y = (1.0 - vertex.position[1]) * 0.5 * child_height;
+        Vertex {
+            position: pixel_to_ndc([rect.x + child_x, rect.y + child_y], parent_size),
+            color: vertex.color,
+        }
+    }));
+}
+
+fn for_each_visible_workspace_surface(
+    workspace: &Workspace,
+    size: PhysicalSize<u32>,
+    render_layout: WorkspaceRenderLayout,
+    focus_pulse: f32,
+    mut visit: impl FnMut(&workspace::Surface, Rect, bool, f32),
+) {
+    let width = size.width as f32;
+    let height = size.height as f32;
+    let workspace_height = (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0);
+    let workspace_top = STATUS_BAR_HEIGHT + OUTER_PADDING * 2.0;
+    let lane_pitch = workspace_height + GAP;
+    let column_width = render_layout.column_width;
+    let scroll_offset = render_layout.scroll_offset;
+    let vertical_scroll_offset = render_layout.vertical_scroll_offset;
+    let viewport_left = OUTER_PADDING - GAP;
+    let viewport_right = width - OUTER_PADDING + GAP;
+
+    for surface in &workspace.surfaces {
+        let column = surface.column as f32;
+        let y = workspace_top + surface.lane as f32 * lane_pitch - vertical_scroll_offset;
+        if y + workspace_height < workspace_top || y > workspace_top + workspace_height {
+            continue;
+        }
+        let rect = Rect {
+            x: OUTER_PADDING + column * (column_width + GAP) - scroll_offset,
+            y,
+            width: column_width,
+            height: workspace_height,
+        };
+        if rect.x + rect.width < viewport_left || rect.x > viewport_right {
+            continue;
+        }
+        let focused = workspace.is_focused(surface.id);
+        let surface_pulse = if focused { focus_pulse } else { 0.0 };
+        visit(surface, rect, focused, surface_pulse);
+    }
+}
+
+fn build_workspace_single_session_text_panes(
+    workspace: &Workspace,
+    size: PhysicalSize<u32>,
+    render_layout: WorkspaceRenderLayout,
+    font_system: &mut FontSystem,
+) -> Vec<WorkspaceSingleSessionTextPane> {
+    let mut panes = Vec::new();
+    if workspace.zoomed {
+        if let Some(surface) = workspace.focused_surface()
+            && surface.kind == workspace::SurfaceKind::Session
+            && let Some(app) = workspace_single_session_app_for_surface(workspace, surface)
+        {
+            let rect = Rect {
+                x: OUTER_PADDING,
+                y: STATUS_BAR_HEIGHT + OUTER_PADDING * 2.0,
+                width: (size.width as f32 - OUTER_PADDING * 2.0).max(1.0),
+                height: (size.height as f32 - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0),
+            };
+            let panel_size = workspace_panel_size(rect);
+            let rendered_body_lines =
+                single_session_rendered_body_lines_for_tick(&app, panel_size, 0);
+            let key = single_session_text_key_for_tick_with_rendered_body(
+                &app,
+                panel_size,
+                0,
+                0.0,
+                &rendered_body_lines,
+            );
+            let buffers = single_session_text_buffers_from_key(&key, panel_size, font_system);
+            panes.push(WorkspaceSingleSessionTextPane {
+                app,
+                rect,
+                size: panel_size,
+                rendered_body_lines,
+                buffers,
+            });
+        }
+        return panes;
+    }
+
+    for_each_visible_workspace_surface(
+        workspace,
+        size,
+        render_layout,
+        0.0,
+        |surface, rect, _, _| {
+            if surface.kind != workspace::SurfaceKind::Session {
+                return;
+            }
+            let Some(app) = workspace_single_session_app_for_surface(workspace, surface) else {
+                return;
+            };
+            let panel_size = workspace_panel_size(rect);
+            let rendered_body_lines =
+                single_session_rendered_body_lines_for_tick(&app, panel_size, 0);
+            let key = single_session_text_key_for_tick_with_rendered_body(
+                &app,
+                panel_size,
+                0,
+                0.0,
+                &rendered_body_lines,
+            );
+            let buffers = single_session_text_buffers_from_key(&key, panel_size, font_system);
+            panes.push(WorkspaceSingleSessionTextPane {
+                app,
+                rect,
+                size: panel_size,
+                rendered_body_lines,
+                buffers,
+            });
+        },
+    );
+    panes
+}
+
+fn workspace_single_session_text_areas<'a>(
+    panes: &'a [WorkspaceSingleSessionTextPane],
+) -> Vec<TextArea<'a>> {
+    let mut areas = Vec::new();
+    for pane in panes {
+        let viewport = single_session_body_viewport_from_lines(
+            &pane.app,
+            pane.size,
+            0.0,
+            &pane.rendered_body_lines,
+        );
+        let pane_areas = single_session_text_areas_for_app_with_cached_body_viewport_and_reveal(
+            &pane.app,
+            &pane.buffers,
+            pane.size,
+            0.0,
+            viewport,
+            1.0,
+        );
+        areas.extend(pane_areas.into_iter().filter_map(|area| {
+            let area = offset_workspace_text_area(area, pane.rect);
+            (area.bounds.right > area.bounds.left && area.bounds.bottom > area.bounds.top)
+                .then_some(area)
+        }));
+    }
+    areas
+}
+
+fn offset_workspace_text_area<'a>(area: TextArea<'a>, rect: Rect) -> TextArea<'a> {
+    let clip_left = rect.x.floor() as i32;
+    let clip_top = rect.y.floor() as i32;
+    let clip_right = (rect.x + rect.width).ceil() as i32;
+    let clip_bottom = (rect.y + rect.height).ceil() as i32;
+    TextArea {
+        buffer: area.buffer,
+        left: area.left + rect.x,
+        top: area.top + rect.y,
+        scale: area.scale,
+        bounds: TextBounds {
+            left: offset_text_bound(area.bounds.left, rect.x).max(clip_left),
+            top: offset_text_bound(area.bounds.top, rect.y).max(clip_top),
+            right: offset_text_bound(area.bounds.right, rect.x).min(clip_right),
+            bottom: offset_text_bound(area.bounds.bottom, rect.y).min(clip_bottom),
+        },
+        default_color: area.default_color,
+    }
+}
+
+fn offset_text_bound(value: i32, offset: f32) -> i32 {
+    (value as f32 + offset)
+        .round()
+        .clamp(i32::MIN as f32, i32::MAX as f32) as i32
+}
+
 fn build_vertices_into(
     workspace: &Workspace,
     size: PhysicalSize<u32>,
@@ -9010,17 +9277,23 @@ fn build_vertices_into(
                 width: (width - OUTER_PADDING * 2.0).max(1.0),
                 height: (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0),
             };
-            push_surface(vertices, rect, surface.color_index, true, focus_pulse, size);
-            let draft = focused_panel_draft(workspace, surface.id);
-            push_panel_contents(
-                vertices,
-                surface,
-                rect,
-                size,
-                true,
-                workspace.detail_scroll,
-                draft.as_deref(),
-            );
+            if surface.kind == workspace::SurfaceKind::Session
+                && let Some(app) = workspace_single_session_app_for_surface(workspace, surface)
+            {
+                push_workspace_single_session_panel(vertices, &app, rect, size, focus_pulse);
+            } else {
+                push_surface(vertices, rect, surface.color_index, true, focus_pulse, size);
+                let draft = focused_panel_draft(workspace, surface.id);
+                push_panel_contents(
+                    vertices,
+                    surface,
+                    rect,
+                    size,
+                    true,
+                    workspace.detail_scroll,
+                    draft.as_deref(),
+                );
+            }
         }
         if let Some(progress) = space_hold_progress {
             push_space_hold_progress(vertices, progress, size);
@@ -9028,43 +9301,30 @@ fn build_vertices_into(
         return;
     }
 
-    let workspace_height = (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0);
-    let workspace_top = STATUS_BAR_HEIGHT + OUTER_PADDING * 2.0;
-    let lane_pitch = workspace_height + GAP;
-    let column_width = render_layout.column_width;
-    let scroll_offset = render_layout.scroll_offset;
-    let vertical_scroll_offset = render_layout.vertical_scroll_offset;
-    let viewport_left = OUTER_PADDING - GAP;
-    let viewport_right = width - OUTER_PADDING + GAP;
-
-    for surface in &workspace.surfaces {
-        let column = surface.column as f32;
-        let y = workspace_top + surface.lane as f32 * lane_pitch - vertical_scroll_offset;
-        if y + workspace_height < workspace_top || y > workspace_top + workspace_height {
-            continue;
-        }
-        let rect = Rect {
-            x: OUTER_PADDING + column * (column_width + GAP) - scroll_offset,
-            y,
-            width: column_width,
-            height: workspace_height,
-        };
-        if rect.x + rect.width < viewport_left || rect.x > viewport_right {
-            continue;
-        }
-        let focused = workspace.is_focused(surface.id);
-        let surface_pulse = if focused { focus_pulse } else { 0.0 };
-        push_surface(
-            vertices,
-            rect,
-            surface.color_index,
-            focused,
-            surface_pulse,
-            size,
-        );
-        let draft = focused_panel_draft(workspace, surface.id);
-        push_panel_contents(vertices, surface, rect, size, false, 0, draft.as_deref());
-    }
+    for_each_visible_workspace_surface(
+        workspace,
+        size,
+        render_layout,
+        focus_pulse,
+        |surface, rect, focused, surface_pulse| {
+            if surface.kind == workspace::SurfaceKind::Session
+                && let Some(app) = workspace_single_session_app_for_surface(workspace, surface)
+            {
+                push_workspace_single_session_panel(vertices, &app, rect, size, surface_pulse);
+                return;
+            }
+            push_surface(
+                vertices,
+                rect,
+                surface.color_index,
+                focused,
+                surface_pulse,
+                size,
+            );
+            let draft = focused_panel_draft(workspace, surface.id);
+            push_panel_contents(vertices, surface, rect, size, false, 0, draft.as_deref());
+        },
+    );
 
     if let Some(progress) = space_hold_progress {
         push_space_hold_progress(vertices, progress, size);
