@@ -527,6 +527,9 @@ async fn run() -> Result<()> {
             .context("failed to create desktop window")?,
     );
     startup_trace.mark("window created");
+    let mut renderer = DesktopHostRendererState::NoGpuBoot;
+    renderer.start_gpu_init(window.clone(), event_loop_proxy.clone(), startup_trace)?;
+    startup_trace.mark("canvas init spawned");
 
     let mut pending_workspace_startup_load = false;
     let mut pending_workspace_startup_preferences = None;
@@ -545,14 +548,7 @@ async fn run() -> Result<()> {
     };
     startup_trace.mark("app state initialized");
     window.set_title(&app.status_title());
-    let mut canvas = Canvas::new(window.clone(), startup_trace).await?;
-    startup_trace.mark("canvas ready");
-    if let Some(handoff) = desktop_reload_startup.handoff.as_ref() {
-        handoff.signal_ready_and_wait_for_release();
-        window.set_visible(true);
-        window.request_redraw();
-        startup_trace.mark("reload handoff released");
-    }
+    let mut reload_startup_handoff = desktop_reload_startup.handoff;
     let mut modifiers = ModifiersState::empty();
     let mut cursor_position = winit::dpi::PhysicalPosition::new(0.0, 0.0);
     let mut selecting_body = false;
@@ -586,9 +582,15 @@ async fn run() -> Result<()> {
         );
     }
 
+    let mut event_loop_entered = false;
     event_loop.run(move |event, target| {
+        if !event_loop_entered {
+            event_loop_entered = true;
+            startup_trace.mark("event loop entered");
+        }
         let event_loop_now = Instant::now();
         let surface_renderable = desktop_surface_size_is_renderable(window.inner_size());
+        let renderer_ready = renderer.is_gpu_ready();
         let has_background_work = app.has_background_work();
         power_inhibitor.set_active(has_background_work);
         let default_wake = desktop_background_wake(
@@ -626,6 +628,7 @@ async fn run() -> Result<()> {
         let frame_animation_active = app.has_frame_animation();
         let pending_backend_redraw = pending_backend_redraw_since.is_some();
         let no_paint_active = surface_renderable
+            && renderer_ready
             && (!first_frame_presented
                 || has_background_work
                 || frame_animation_active
@@ -1225,6 +1228,9 @@ async fn run() -> Result<()> {
                     );
                 }
                 WindowEvent::RedrawRequested => {
+                    let Some(canvas) = renderer.canvas_mut() else {
+                        return;
+                    };
                     if let Some(size) = pending_resize.take() {
                         canvas.resize(size);
                     }
@@ -1309,6 +1315,33 @@ async fn run() -> Result<()> {
                     window.set_title(&app.status_title());
                     interaction_latency.mark("recovery_count", Instant::now());
                     window.request_redraw();
+                }
+            }
+            Event::UserEvent(DesktopUserEvent::CanvasReady(result)) => {
+                let DesktopCanvasInitResult { canvas, elapsed } = result;
+                match canvas {
+                    Ok(mut ready_canvas) => {
+                        startup_trace.mark(&format!(
+                            "canvas ready (async {}ms)",
+                            elapsed.as_millis()
+                        ));
+                        ready_canvas.resize(window.inner_size());
+                        renderer = DesktopHostRendererState::GpuReady(ready_canvas);
+                        if let Some(handoff) = reload_startup_handoff.as_ref() {
+                            handoff.signal_ready_and_wait_for_release();
+                            window.set_visible(true);
+                            startup_trace.mark("reload handoff released");
+                        }
+                        reload_startup_handoff = None;
+                        window.request_redraw();
+                    }
+                    Err(message) => {
+                        desktop_log::error(format_args!(
+                            "jcode-desktop: failed to initialize desktop renderer: {message}"
+                        ));
+                        renderer = DesktopHostRendererState::GpuFailed { _message: message };
+                        target.exit();
+                    }
                 }
             }
             Event::UserEvent(DesktopUserEvent::SessionCardsLoaded {
@@ -1534,7 +1567,10 @@ async fn run() -> Result<()> {
                     return;
                 }
 
-                if surface_renderable && canvas.needs_initial_frame {
+                if let Some(canvas) = renderer.canvas_mut()
+                    && surface_renderable
+                    && canvas.needs_initial_frame
+                {
                     canvas.needs_initial_frame = false;
                     window.request_redraw();
                 } else if surface_renderable && app.has_frame_animation() {
@@ -2160,8 +2196,8 @@ async fn render_hero_frame_to_image(
     Ok((image, vertices.len()))
 }
 
-#[derive(Debug)]
 enum DesktopUserEvent {
+    CanvasReady(DesktopCanvasInitResult),
     SessionEvents(DesktopSessionEventBatch),
     SessionCardsLoaded {
         purpose: DesktopSessionCardsPurpose,
@@ -2179,6 +2215,68 @@ enum DesktopUserEvent {
         elapsed: Duration,
     },
     RecoveryCount(usize),
+}
+
+struct DesktopCanvasInitResult {
+    canvas: std::result::Result<Canvas, String>,
+    elapsed: Duration,
+}
+
+enum DesktopHostRendererState {
+    NoGpuBoot,
+    GpuInitializing { _started_at: Instant },
+    GpuReady(Canvas),
+    GpuFailed { _message: String },
+}
+
+impl DesktopHostRendererState {
+    fn start_gpu_init(
+        &mut self,
+        window: Arc<Window>,
+        event_loop_proxy: EventLoopProxy<DesktopUserEvent>,
+        startup_trace: DesktopStartupTrace,
+    ) -> Result<()> {
+        if matches!(self, Self::GpuInitializing { .. } | Self::GpuReady(_)) {
+            return Ok(());
+        }
+
+        let started_at = Instant::now();
+        std::thread::Builder::new()
+            .name("jcode-desktop-gpu-init".to_string())
+            .spawn(move || {
+                startup_trace.mark("canvas init started");
+                let canvas = pollster::block_on(Canvas::new(window, startup_trace))
+                    .map_err(|error| format!("{error:#}"));
+                let result = DesktopCanvasInitResult {
+                    canvas,
+                    elapsed: started_at.elapsed(),
+                };
+                if event_loop_proxy
+                    .send_event(DesktopUserEvent::CanvasReady(result))
+                    .is_err()
+                {
+                    desktop_log::warn(format_args!(
+                        "jcode-desktop: failed to deliver async canvas initialization result"
+                    ));
+                }
+            })
+            .context("failed to spawn desktop GPU initialization thread")?;
+        *self = Self::GpuInitializing {
+            _started_at: started_at,
+        };
+        Ok(())
+    }
+
+    fn is_gpu_ready(&self) -> bool {
+        matches!(self, Self::GpuReady(_))
+    }
+
+    fn canvas_mut(&mut self) -> Option<&mut Canvas> {
+        match self {
+            Self::GpuReady(canvas) => Some(canvas),
+            Self::NoGpuBoot | Self::GpuInitializing { .. } | Self::GpuFailed { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
