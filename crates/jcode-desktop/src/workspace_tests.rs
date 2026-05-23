@@ -222,6 +222,18 @@ fn insert_mode_slash_reload_requests_force_reload() {
 }
 
 #[test]
+fn insert_mode_slash_force_reload_alias_requests_force_reload() {
+    let mut workspace = Workspace::fake();
+    workspace.handle_key(KeyInput::Character("i".to_string()));
+    workspace.handle_key(KeyInput::Character("/force-reload".to_string()));
+
+    assert_eq!(
+        workspace.handle_key(KeyInput::SubmitDraft),
+        KeyOutcome::ForceReload
+    );
+}
+
+#[test]
 fn insert_mode_slash_resume_with_image_remains_normal_prompt() {
     let mut workspace = Workspace::from_session_cards(vec![SessionCard {
         session_id: "session_alpha".to_string(),

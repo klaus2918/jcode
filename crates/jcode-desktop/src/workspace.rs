@@ -1015,6 +1015,7 @@ impl Workspace {
             "/help",
             "/clear",
             "/model",
+            "/force-reload",
             "/reload",
             "/resume",
             "/sessions",
@@ -1103,7 +1104,7 @@ impl Workspace {
                 self.clear_draft_after_local_command();
                 KeyOutcome::LoadSessionSwitcher
             }
-            "/reload" => {
+            "/reload" | "/force-reload" => {
                 self.clear_draft_after_local_command();
                 KeyOutcome::ForceReload
             }
