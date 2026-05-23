@@ -70,7 +70,7 @@ use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread::JoinHandle;
@@ -4797,6 +4797,7 @@ struct DesktopHotReloader {
     observed_modified: Option<std::time::SystemTime>,
     last_checked: Instant,
     pending_handoff: Option<DesktopReloadHandoffWatcher>,
+    app_worker: Option<Child>,
 }
 
 impl DesktopHotReloader {
@@ -4813,6 +4814,7 @@ impl DesktopHotReloader {
             observed_modified,
             last_checked: Instant::now(),
             pending_handoff: None,
+            app_worker: None,
         }
     }
 
@@ -4887,8 +4889,39 @@ impl DesktopHotReloader {
                 desktop_log::info(format_args!(
                     "jcode-desktop: {reason} requested app-worker restart; keeping stable host window alive"
                 ));
+                self.restart_app_worker(app, relaunch, binary, reason);
                 false
             }
+        }
+    }
+
+    fn restart_app_worker(
+        &mut self,
+        app: &DesktopApp,
+        relaunch: &DesktopRelaunch,
+        binary: PathBuf,
+        reason: &'static str,
+    ) {
+        if let Some(mut worker) = self.app_worker.take()
+            && let Err(error) = worker.kill()
+        {
+            desktop_log::warn(format_args!(
+                "jcode-desktop: failed to stop previous app worker before {reason}: {error:#}"
+            ));
+        }
+
+        let worker_relaunch = relaunch.for_app(app, binary).for_app_worker();
+        match worker_relaunch.spawn_app_worker() {
+            Ok(worker) => {
+                desktop_log::info(format_args!(
+                    "jcode-desktop: app worker restarted for {reason}; pid={}",
+                    worker.id()
+                ));
+                self.app_worker = Some(worker);
+            }
+            Err(error) => desktop_log::error(format_args!(
+                "jcode-desktop: failed to restart app worker for {reason}: {error:#}"
+            )),
         }
     }
 
@@ -5030,6 +5063,32 @@ impl DesktopRelaunch {
         }
         Self { binary, args }
     }
+
+    fn for_app_worker(&self) -> Self {
+        let mut args = desktop_args_without_process_role(&self.args);
+        args.push(OsString::from("--desktop-process-role"));
+        args.push(OsString::from("app-worker"));
+        Self {
+            binary: self.binary.clone(),
+            args,
+        }
+    }
+
+    fn spawn_app_worker(&self) -> Result<Child> {
+        desktop_log::info(format_args!(
+            "jcode-desktop: spawning app worker {} with args {:?}",
+            self.binary.display(),
+            self.args
+        ));
+        let mut command = Command::new(&self.binary);
+        command.args(&self.args);
+        command.env_remove(DESKTOP_RELOAD_WINDOW_ENV);
+        command.env_remove(DESKTOP_RELOAD_HANDOFF_READY_ENV);
+        command.env_remove(DESKTOP_RELOAD_HANDOFF_RELEASE_ENV);
+        command
+            .spawn()
+            .with_context(|| format!("failed to spawn app worker {}", self.binary.display()))
+    }
 }
 
 fn ensure_desktop_workspace_arg(args: &mut Vec<OsString>) {
@@ -5061,6 +5120,32 @@ fn desktop_args_without_resume(args: &[OsString]) -> Vec<OsString> {
         if arg
             .to_str()
             .is_some_and(|value| value.starts_with("--resume="))
+        {
+            continue;
+        }
+        filtered.push(arg.clone());
+    }
+    filtered
+}
+
+fn desktop_args_without_process_role(args: &[OsString]) -> Vec<OsString> {
+    let mut filtered = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--desktop-process-role" {
+            skip_next = true;
+            continue;
+        }
+        if arg == "--desktop-host" || arg == "--desktop-app-worker" {
+            continue;
+        }
+        if arg
+            .to_str()
+            .is_some_and(|value| value.starts_with("--desktop-process-role="))
         {
             continue;
         }

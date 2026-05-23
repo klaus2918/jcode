@@ -77,6 +77,46 @@ fn desktop_process_role_parses_internal_flags() {
 }
 
 #[test]
+fn desktop_app_worker_relaunch_replaces_existing_process_role() {
+    let relaunch = DesktopRelaunch {
+        binary: PathBuf::from("/tmp/jcode-desktop"),
+        args: vec![
+            OsString::from("--workspace"),
+            OsString::from("--desktop-process-role=stable_host"),
+            OsString::from("--foo"),
+        ],
+    };
+
+    assert_eq!(
+        relaunch.for_app_worker().args,
+        vec![
+            OsString::from("--workspace"),
+            OsString::from("--foo"),
+            OsString::from("--desktop-process-role"),
+            OsString::from("app-worker"),
+        ]
+    );
+
+    let relaunch = DesktopRelaunch {
+        binary: PathBuf::from("/tmp/jcode-desktop"),
+        args: vec![
+            OsString::from("--desktop-process-role"),
+            OsString::from("stable-host"),
+            OsString::from("--desktop-app-worker"),
+            OsString::from("--new"),
+        ],
+    };
+    assert_eq!(
+        relaunch.for_app_worker().args,
+        vec![
+            OsString::from("--new"),
+            OsString::from("--desktop-process-role"),
+            OsString::from("app-worker"),
+        ]
+    );
+}
+
+#[test]
 fn desktop_platform_warnings_only_fire_for_less_supported_targets() {
     assert_eq!(
         desktop_platform_support_warning(DesktopPlatform::Linux),
