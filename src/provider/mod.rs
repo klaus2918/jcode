@@ -1565,7 +1565,14 @@ impl Provider for MultiProvider {
 
     fn reasoning_effort(&self) -> Option<String> {
         match self.active_provider() {
-            ActiveProvider::Claude => None,
+            ActiveProvider::Claude => {
+                if self.use_claude_cli {
+                    None
+                } else {
+                    self.anthropic_provider()
+                        .and_then(|provider| provider.reasoning_effort())
+                }
+            }
             ActiveProvider::OpenAI => self.openai_provider().and_then(|o| o.reasoning_effort()),
             ActiveProvider::Copilot => None,
             ActiveProvider::Antigravity => None,
@@ -1580,6 +1587,10 @@ impl Provider for MultiProvider {
 
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
         match self.active_provider() {
+            ActiveProvider::Claude if !self.use_claude_cli => self
+                .anthropic_provider()
+                .ok_or_else(|| anyhow::anyhow!("Anthropic provider not available"))?
+                .set_reasoning_effort(effort),
             ActiveProvider::OpenAI => self
                 .openai_provider()
                 .ok_or_else(|| anyhow::anyhow!("OpenAI provider not available"))?
@@ -1589,13 +1600,17 @@ impl Provider for MultiProvider {
                 .ok_or_else(|| anyhow::anyhow!("OpenAI-compatible provider not available"))?
                 .set_reasoning_effort(effort),
             _ => Err(anyhow::anyhow!(
-                "Reasoning effort is only supported for OpenAI models"
+                "Reasoning effort is only supported for OpenAI, Anthropic, and compatible reasoning models"
             )),
         }
     }
 
     fn available_efforts(&self) -> Vec<&'static str> {
         match self.active_provider() {
+            ActiveProvider::Claude if !self.use_claude_cli => self
+                .anthropic_provider()
+                .map(|provider| provider.available_efforts())
+                .unwrap_or_default(),
             ActiveProvider::OpenAI => self
                 .openai_provider()
                 .map(|o| o.available_efforts())

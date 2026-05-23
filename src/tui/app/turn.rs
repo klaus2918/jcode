@@ -236,7 +236,8 @@ impl App {
             // Track tool results from provider (already executed by Claude Code CLI)
             let mut sdk_tool_results: std::collections::HashMap<String, (String, bool)> =
                 std::collections::HashMap::new();
-            let store_reasoning_content = self.provider.name() == "openrouter";
+            let store_reasoning_content =
+                matches!(self.provider.name(), "openrouter" | "anthropic");
             let mut reasoning_content = String::new();
             let mut openai_native_compaction: Option<(String, usize)> = None;
 

@@ -696,6 +696,20 @@ fn direct_deepseek_profile_exposes_max_reasoning_effort() {
 }
 
 #[test]
+fn openrouter_profile_exposes_unified_reasoning_effort() {
+    let provider = make_provider();
+
+    assert_eq!(
+        provider.available_efforts(),
+        vec!["none", "low", "medium", "high", "xhigh"]
+    );
+    provider
+        .set_reasoning_effort("max")
+        .expect("OpenRouter max alias should be accepted");
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("xhigh"));
+}
+
+#[test]
 fn non_deepseek_compatible_profile_does_not_expose_reasoning_effort() {
     let provider = make_custom_compatible_provider();
 
@@ -704,8 +718,58 @@ fn non_deepseek_compatible_profile_does_not_expose_reasoning_effort() {
         .set_reasoning_effort("max")
         .expect_err("generic compatible profile should not expose DeepSeek effort UX");
     assert!(
-        error.to_string().contains("DeepSeek direct profiles"),
+        error.to_string().contains("OpenRouter and DeepSeek"),
         "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn openrouter_chat_request_sends_unified_reasoning_effort() {
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let provider = OpenRouterProvider {
+        api_base,
+        model: Arc::new(RwLock::new("anthropic/claude-sonnet-4.6".to_string())),
+        supports_model_catalog: false,
+        ..make_provider()
+    };
+    provider
+        .set_reasoning_effort("high")
+        .expect("OpenRouter unified reasoning should accept high effort");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.contains(r#""reasoning":{"effort":"high"}"#),
+        "OpenRouter request should include unified reasoning effort: {request}"
+    );
+    assert!(
+        !request.contains(r#""thinking":{"type":"enabled"}"#),
+        "unified reasoning should supersede legacy thinking override: {request}"
     );
 }
 

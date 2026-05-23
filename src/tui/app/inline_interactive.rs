@@ -277,7 +277,10 @@ impl App {
             self.provider.reasoning_effort()
         };
         let available_efforts = if self.is_remote {
-            Vec::new()
+            inferred_reasoning_efforts(
+                self.remote_provider_name.as_deref(),
+                self.remote_provider_model.as_deref(),
+            )
         } else {
             self.provider.available_efforts()
         };
@@ -438,7 +441,10 @@ impl App {
             self.provider.reasoning_effort()
         };
         let available_efforts = if self.is_remote {
-            Vec::new()
+            inferred_reasoning_efforts(
+                self.remote_provider_name.as_deref(),
+                self.remote_provider_model.as_deref(),
+            )
         } else {
             self.provider.available_efforts()
         };
@@ -499,7 +505,10 @@ impl App {
             self.provider.reasoning_effort()
         };
         let available_efforts = if self.is_remote {
-            Vec::new()
+            inferred_reasoning_efforts(
+                self.remote_provider_name.as_deref(),
+                self.remote_provider_model.as_deref(),
+            )
         } else {
             self.provider.available_efforts()
         };
@@ -929,7 +938,10 @@ impl App {
             self.provider.reasoning_effort()
         };
         let available_efforts = if self.is_remote {
-            Vec::new()
+            inferred_reasoning_efforts(
+                self.remote_provider_name.as_deref(),
+                self.remote_provider_model.as_deref(),
+            )
         } else {
             self.provider.available_efforts()
         };

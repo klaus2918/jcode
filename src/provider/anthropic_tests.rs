@@ -36,6 +36,161 @@ fn test_oauth_beta_headers_require_explicit_1m_suffix() {
     );
 }
 
+#[test]
+fn test_anthropic_reasoning_effort_request_parts() {
+    let provider = AnthropicProvider::new();
+    provider.set_model("claude-sonnet-4-6").unwrap();
+    provider.set_reasoning_effort("none").unwrap();
+
+    assert_eq!(
+        provider.available_efforts(),
+        vec!["none", "low", "medium", "high"]
+    );
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("none"));
+
+    provider.set_reasoning_effort("max").unwrap();
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+
+    provider.set_reasoning_effort("medium").unwrap();
+    let (thinking, output_config, temperature) =
+        provider.build_reasoning_request_parts("claude-sonnet-4-6", true);
+
+    match thinking.expect("adaptive thinking should be enabled") {
+        ApiThinking::Adaptive { display } => assert_eq!(display, Some("summarized")),
+        ApiThinking::Enabled { .. } => panic!("Claude 4.6 should use adaptive thinking"),
+    }
+    assert_eq!(
+        output_config.expect("output_config should be set").effort,
+        "medium"
+    );
+    assert_eq!(
+        temperature, None,
+        "thinking requests must omit OAuth temperature"
+    );
+}
+
+#[test]
+fn test_anthropic_max_alias_uses_strongest_real_effort() {
+    assert_eq!(
+        AnthropicProvider::actual_effort_for_model("claude-sonnet-4-6", "max"),
+        "high"
+    );
+    assert_eq!(
+        AnthropicProvider::actual_effort_for_model("claude-opus-4-7", "max"),
+        "xhigh"
+    );
+}
+
+#[test]
+fn test_anthropic_manual_thinking_budget_for_opus_45() {
+    let provider = AnthropicProvider::new();
+    provider.set_model("claude-opus-4-5").unwrap();
+    provider.set_reasoning_effort("high").unwrap();
+
+    let (thinking, output_config, temperature) =
+        provider.build_reasoning_request_parts("claude-opus-4-5", false);
+
+    match thinking.expect("manual thinking should be enabled") {
+        ApiThinking::Enabled { budget_tokens } => assert_eq!(budget_tokens, 8_192),
+        ApiThinking::Adaptive { .. } => panic!("Claude Opus 4.5 should use manual thinking"),
+    }
+    assert_eq!(output_config.unwrap().effort, "high");
+    assert_eq!(temperature, None);
+}
+
+#[test]
+fn test_anthropic_thinking_sse_events() {
+    let mut current_tool_use = None;
+    let mut current_thinking_block = false;
+    let mut input_tokens = None;
+    let mut output_tokens = None;
+    let mut cache_read_input_tokens = None;
+    let mut cache_creation_input_tokens = None;
+
+    let start = SseEvent {
+        event_type: "content_block_start".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": "", "signature": "sig"}
+        })
+        .to_string(),
+    };
+    let events = process_sse_event(
+        &start,
+        &mut current_tool_use,
+        &mut current_thinking_block,
+        &mut input_tokens,
+        &mut output_tokens,
+        &mut cache_read_input_tokens,
+        &mut cache_creation_input_tokens,
+        false,
+    );
+    assert!(matches!(events.as_slice(), [StreamEvent::ThinkingStart]));
+    assert!(current_thinking_block);
+
+    let delta = SseEvent {
+        event_type: "content_block_delta".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "reasoning text"}
+        })
+        .to_string(),
+    };
+    let events = process_sse_event(
+        &delta,
+        &mut current_tool_use,
+        &mut current_thinking_block,
+        &mut input_tokens,
+        &mut output_tokens,
+        &mut cache_read_input_tokens,
+        &mut cache_creation_input_tokens,
+        false,
+    );
+    assert!(
+        matches!(events.as_slice(), [StreamEvent::ThinkingDelta(text)] if text == "reasoning text")
+    );
+
+    let signature = SseEvent {
+        event_type: "content_block_delta".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "signature_delta", "signature": "signed"}
+        })
+        .to_string(),
+    };
+    let events = process_sse_event(
+        &signature,
+        &mut current_tool_use,
+        &mut current_thinking_block,
+        &mut input_tokens,
+        &mut output_tokens,
+        &mut cache_read_input_tokens,
+        &mut cache_creation_input_tokens,
+        false,
+    );
+    assert!(events.is_empty());
+
+    let stop = SseEvent {
+        event_type: "content_block_stop".to_string(),
+        data: serde_json::json!({"type": "content_block_stop", "index": 0}).to_string(),
+    };
+    let events = process_sse_event(
+        &stop,
+        &mut current_tool_use,
+        &mut current_thinking_block,
+        &mut input_tokens,
+        &mut output_tokens,
+        &mut cache_read_input_tokens,
+        &mut cache_creation_input_tokens,
+        false,
+    );
+    assert!(matches!(events.as_slice(), [StreamEvent::ThinkingEnd]));
+    assert!(!current_thinking_block);
+}
+
 #[tokio::test]
 async fn test_dangling_tool_use_repair() {
     let provider = AnthropicProvider::new();

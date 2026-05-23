@@ -152,7 +152,8 @@ impl Agent {
             let mut saw_message_end = false;
             let mut stop_reason: Option<String> = None;
             let mut _thinking_start: Option<Instant> = None;
-            let store_reasoning_content = self.provider.name() == "openrouter";
+            let store_reasoning_content =
+                matches!(self.provider.name(), "openrouter" | "anthropic");
             let mut reasoning_content = String::new();
             // Track tool results from provider (already executed by Claude Code CLI)
             let mut sdk_tool_results: std::collections::HashMap<String, (String, bool)> =

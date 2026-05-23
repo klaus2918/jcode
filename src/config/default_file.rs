@@ -188,6 +188,8 @@ disable_base_tools = false
 # default_provider = "copilot"
 # OpenAI reasoning effort (none|low|medium|high|xhigh)
 openai_reasoning_effort = "low"
+# Anthropic reasoning effort for Claude reasoning models (none|low|medium|high; xhigh on Opus 4.7; max aliases to the strongest supported level)
+# anthropic_reasoning_effort = "medium"
 # OpenAI transport mode (auto|websocket|https)
 # openai_transport = "auto"
 # OpenAI service tier override (priority|flex)

@@ -36,7 +36,14 @@ async fn apply_remote_effort_direction(
     remote: &mut RemoteConnection,
     direction: i8,
 ) -> Result<()> {
-    let efforts = ["none", "low", "medium", "high", "xhigh"];
+    let efforts = app_mod::inferred_reasoning_efforts(
+        app.remote_provider_name.as_deref(),
+        app.remote_provider_model.as_deref(),
+    );
+    if efforts.is_empty() {
+        app.set_status_notice("Reasoning effort not available for this provider");
+        return Ok(());
+    }
     let current = app.remote_reasoning_effort.as_deref();
     let current_index = current
         .and_then(|c| efforts.iter().position(|e| *e == c))
@@ -948,7 +955,16 @@ async fn handle_remote_key_internal(
                     let label = current
                         .map(app_mod::effort_display_label)
                         .unwrap_or("default");
-                    let efforts = ["none", "low", "medium", "high", "xhigh"];
+                    let efforts = app_mod::inferred_reasoning_efforts(
+                        app.remote_provider_name.as_deref(),
+                        app.remote_provider_model.as_deref(),
+                    );
+                    if efforts.is_empty() {
+                        app.push_display_message(DisplayMessage::system(
+                            "Reasoning effort not available for this provider.".to_string(),
+                        ));
+                        return Ok(());
+                    }
                     let list: Vec<String> = efforts
                         .iter()
                         .map(|e| {
@@ -973,8 +989,11 @@ async fn handle_remote_key_internal(
                         app.push_display_message(DisplayMessage::error("Usage: /effort <level>"));
                         return Ok(());
                     }
-                    const EFFORTS: [&str; 5] = ["none", "low", "medium", "high", "xhigh"];
-                    if EFFORTS.contains(&level) {
+                    let efforts = app_mod::inferred_reasoning_efforts(
+                        app.remote_provider_name.as_deref(),
+                        app.remote_provider_model.as_deref(),
+                    );
+                    if efforts.contains(&level) {
                         app.remote_reasoning_effort = Some(level.to_string());
                         app.invalidate_model_picker_cache();
                         app.set_status_notice(format!(
