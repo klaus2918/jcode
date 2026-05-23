@@ -182,6 +182,7 @@ pub struct Agent {
     session: Session,
     active_skill: Option<String>,
     allowed_tools: Option<HashSet<String>>,
+    disabled_tools: HashSet<String>,
     /// Provider-specific session ID for conversation resume (e.g., Claude Code CLI session)
     provider_session_id: Option<String>,
     /// Last upstream provider (OpenRouter) observed for this session
@@ -244,16 +245,18 @@ impl Agent {
         registry: Registry,
         session: Session,
         allowed_tools: Option<HashSet<String>>,
+        disabled_tools: HashSet<String>,
     ) -> Self {
         let skills = SkillRegistry::shared_snapshot();
         let initial_provider_model = provider.model();
-        Self {
+        let agent = Self {
             provider,
             registry,
             skills,
             session,
             active_skill: None,
             allowed_tools,
+            disabled_tools,
             provider_session_id: None,
             last_upstream_provider: None,
             last_connection_type: None,
@@ -274,7 +277,13 @@ impl Agent {
             rewind_undo_snapshot: None,
             stdin_request_tx: None,
             provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
-        }
+        };
+        crate::tool::set_session_tool_policy(
+            &agent.session.id,
+            agent.allowed_tools.clone(),
+            agent.disabled_tools.clone(),
+        );
+        agent
     }
 
     fn current_skills_snapshot(&self) -> Arc<SkillRegistry> {
@@ -294,7 +303,14 @@ impl Agent {
     }
 
     pub fn new(provider: Arc<dyn Provider>, registry: Registry) -> Self {
-        let mut agent = Self::build_base(provider, registry, Session::create(None, None), None);
+        let tool_selection = crate::config::config().tools.selection();
+        let mut agent = Self::build_base(
+            provider,
+            registry,
+            Session::create(None, None),
+            tool_selection.allowed_tools,
+            tool_selection.disabled_tools,
+        );
         agent.session.mark_active();
         agent.session.model = Some(agent.provider.model());
         agent.session.provider_key =
@@ -317,7 +333,21 @@ impl Agent {
         session: Session,
         allowed_tools: Option<HashSet<String>>,
     ) -> Self {
-        let mut agent = Self::build_base(provider, registry, session, allowed_tools);
+        let tool_selection = if let Some(allowed_tools) = allowed_tools {
+            crate::config::ToolSelection {
+                allowed_tools: Some(allowed_tools),
+                disabled_tools: HashSet::new(),
+            }
+        } else {
+            crate::config::config().tools.selection()
+        };
+        let mut agent = Self::build_base(
+            provider,
+            registry,
+            session,
+            tool_selection.allowed_tools,
+            tool_selection.disabled_tools,
+        );
         agent.session.mark_active();
         if agent.session.provider_key.is_none() {
             agent.session.provider_key =

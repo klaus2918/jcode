@@ -12,7 +12,7 @@ pub use jcode_config_types::{
     SessionPickerResumeAction, SwarmSpawnMode, UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{LazyLock, RwLock};
@@ -54,7 +54,9 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_DICTATION_TIMEOUT_SECS",
     "JCODE_DIFF_LINE_WRAP",
     "JCODE_DIFF_MODE",
+    "JCODE_DISABLE_BASE_TOOLS",
     "JCODE_DISABLED_ANIMATIONS",
+    "JCODE_DISABLED_TOOLS",
     "JCODE_DISCORD_BOT_TOKEN",
     "JCODE_DISCORD_BOT_USER_ID",
     "JCODE_DISCORD_CHANNEL_ID",
@@ -109,6 +111,8 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_TELEGRAM_BOT_TOKEN",
     "JCODE_TELEGRAM_CHAT_ID",
     "JCODE_TELEGRAM_REPLY_ENABLED",
+    "JCODE_TOOL_PROFILE",
+    "JCODE_TOOLS",
     "JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES",
     "JCODE_UPDATE_CHANNEL",
     "JCODE_WEBSEARCH_ENGINE",
@@ -337,6 +341,9 @@ pub struct Config {
     /// Web search tool configuration
     pub websearch: WebSearchConfig,
 
+    /// Built-in tool exposure configuration
+    pub tools: ToolConfig,
+
     /// Auth trust / consent configuration
     pub auth: AuthConfig,
 
@@ -372,6 +379,106 @@ pub struct Config {
 
     /// Auto-judge configuration
     pub autojudge: AutoJudgeConfig,
+}
+
+/// Controls which tools are sent to the model.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ToolConfig {
+    /// Tool profile: "full" (default), "minimal"/"lite", or "none".
+    pub profile: String,
+    /// Explicit allow-list. When set, only these tools are exposed.
+    pub enabled: Vec<String>,
+    /// Tools to remove after applying profile/enabled.
+    pub disabled: Vec<String>,
+    /// Disable all built-in tools unless `enabled` is provided.
+    pub disable_base_tools: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolSelection {
+    pub allowed_tools: Option<HashSet<String>>,
+    pub disabled_tools: HashSet<String>,
+}
+
+impl ToolConfig {
+    pub fn selection(&self) -> ToolSelection {
+        let mut allowed_tools = self.base_allowed_tools();
+        let disabled_tools: HashSet<String> = self
+            .disabled
+            .iter()
+            .map(|name| normalize_tool_name(name))
+            .filter(|name| !name.is_empty())
+            .collect();
+
+        if let Some(allowed) = allowed_tools.as_mut() {
+            for name in &disabled_tools {
+                allowed.remove(name);
+            }
+        }
+
+        ToolSelection {
+            allowed_tools,
+            disabled_tools,
+        }
+    }
+
+    pub fn allowed_tools(&self) -> Option<HashSet<String>> {
+        self.selection().allowed_tools
+    }
+
+    pub fn apply_to_allowed_set(&self, allowed: &mut HashSet<String>) {
+        let selection = self.selection();
+        if let Some(global_allowed) = selection.allowed_tools {
+            allowed.retain(|name| global_allowed.contains(name));
+        }
+        for disabled in selection.disabled_tools {
+            allowed.remove(&disabled);
+        }
+    }
+
+    fn base_allowed_tools(&self) -> Option<HashSet<String>> {
+        let explicit: Vec<String> = self
+            .enabled
+            .iter()
+            .map(|name| normalize_tool_name(name))
+            .filter(|name| !name.is_empty())
+            .collect();
+
+        let profile = self.profile.trim().to_ascii_lowercase();
+        if !explicit.is_empty() {
+            Some(explicit.into_iter().collect())
+        } else if self.disable_base_tools || matches!(profile.as_str(), "none" | "off" | "disabled")
+        {
+            Some(HashSet::new())
+        } else if matches!(profile.as_str(), "minimal" | "lite" | "small") {
+            Some(
+                [
+                    "bash",
+                    "read",
+                    "write",
+                    "edit",
+                    "multiedit",
+                    "apply_patch",
+                    "patch",
+                    "agentgrep",
+                    "glob",
+                    "grep",
+                    "ls",
+                ]
+                .into_iter()
+                .map(|name| name.to_string())
+                .collect(),
+            )
+        } else {
+            None
+        }
+    }
+}
+
+fn normalize_tool_name(name: &str) -> String {
+    let trimmed = name.trim().trim_matches('"');
+    crate::tool::Registry::resolve_tool_name(trimmed).to_string()
 }
 
 /// External dictation / speech-to-text integration.

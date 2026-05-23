@@ -62,6 +62,12 @@ impl Config {
 - Persist memory injections: {}
 - Update channel: {}
 
+**Tools:**
+- Profile: {}
+- Enabled allow-list: {}
+- Disabled tools: {}
+- Disable base tools: {}
+
 **Provider:**
 - Default model: {}
 - Default provider: {}
@@ -172,6 +178,22 @@ impl Config {
             self.features.message_timestamps,
             self.features.persist_memory_injections,
             self.features.update_channel,
+            if self.tools.profile.trim().is_empty() {
+                "full"
+            } else {
+                self.tools.profile.trim()
+            },
+            if self.tools.enabled.is_empty() {
+                "(none)".to_string()
+            } else {
+                self.tools.enabled.join(", ")
+            },
+            if self.tools.disabled.is_empty() {
+                "(none)".to_string()
+            } else {
+                self.tools.disabled.join(", ")
+            },
+            self.tools.disable_base_tools,
             self.provider
                 .default_model
                 .as_deref()

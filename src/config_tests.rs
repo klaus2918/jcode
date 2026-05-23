@@ -1,6 +1,6 @@
 use super::{
     AmbientConfig, Config, DiffDisplayMode, DisplayConfig, ProviderConfig,
-    SessionPickerResumeAction, SwarmSpawnMode, config_env_fingerprint,
+    SessionPickerResumeAction, SwarmSpawnMode, ToolConfig, config_env_fingerprint,
 };
 use std::ffi::OsString;
 use std::path::Path;
@@ -59,6 +59,80 @@ fn swarm_spawn_mode_rejects_invalid_values() {
 }
 
 #[test]
+fn tool_config_defaults_to_full_toolset() {
+    assert!(ToolConfig::default().allowed_tools().is_none());
+}
+
+#[test]
+fn tool_config_minimal_profile_allows_core_coding_tools() {
+    let cfg = ToolConfig {
+        profile: "minimal".to_string(),
+        ..ToolConfig::default()
+    };
+    let allowed = cfg
+        .allowed_tools()
+        .expect("minimal profile is an allow-list");
+
+    assert!(allowed.contains("bash"));
+    assert!(allowed.contains("read"));
+    assert!(allowed.contains("write"));
+    assert!(allowed.contains("apply_patch"));
+    assert!(allowed.contains("agentgrep"));
+    assert!(!allowed.contains("browser"));
+    assert!(!allowed.contains("swarm"));
+}
+
+#[test]
+fn tool_config_explicit_enabled_and_disabled_lists_compose() {
+    let cfg = ToolConfig {
+        enabled: vec![
+            "shell".to_string(),
+            "read_file".to_string(),
+            "browser".to_string(),
+        ],
+        disabled: vec!["browser".to_string()],
+        ..ToolConfig::default()
+    };
+    let selection = cfg.selection();
+    let allowed = selection
+        .allowed_tools
+        .expect("explicit enabled is an allow-list");
+
+    assert!(allowed.contains("bash"));
+    assert!(allowed.contains("read"));
+    assert!(!allowed.contains("shell"));
+    assert!(!allowed.contains("read_file"));
+    assert!(!allowed.contains("browser"));
+    assert!(selection.disabled_tools.contains("browser"));
+}
+
+#[test]
+fn tool_config_none_profile_disables_all_tools() {
+    let cfg = ToolConfig {
+        profile: "none".to_string(),
+        ..ToolConfig::default()
+    };
+    assert!(
+        cfg.allowed_tools()
+            .expect("none profile is empty")
+            .is_empty()
+    );
+}
+
+#[test]
+fn tool_config_disabled_only_keeps_full_profile_with_deny_list() {
+    let cfg = ToolConfig {
+        disabled: vec!["browser".to_string(), "swarm".to_string()],
+        ..ToolConfig::default()
+    };
+    let selection = cfg.selection();
+
+    assert!(selection.allowed_tools.is_none());
+    assert!(selection.disabled_tools.contains("browser"));
+    assert!(selection.disabled_tools.contains("swarm"));
+}
+
+#[test]
 fn test_generated_default_config_uses_low_openai_reasoning_effort() {
     let _guard = crate::storage::lock_test_env();
     let prev_home = std::env::var_os("JCODE_HOME");
@@ -75,6 +149,10 @@ fn test_generated_default_config_uses_low_openai_reasoning_effort() {
     assert!(
         content.contains("openai_service_tier = \"priority\""),
         "generated default config should enable OpenAI fast mode"
+    );
+    assert!(
+        content.contains("[tools]") && content.contains("profile = \"full\""),
+        "generated default config should document tool profiles"
     );
 
     if let Some(prev) = prev_home {
