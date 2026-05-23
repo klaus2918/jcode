@@ -1362,6 +1362,9 @@ pub(super) fn get_tool_summary_with_budget(
             format!("{} ({})", desc, agent_type)
         }
         "debug_socket" => {
+            if !tool.input.is_object() {
+                return String::new();
+            }
             let cmd = tool
                 .input
                 .get("command")
