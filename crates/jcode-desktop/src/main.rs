@@ -1,4 +1,5 @@
 mod animation;
+mod desktop_app_driver;
 mod desktop_benchmark;
 mod desktop_config;
 mod desktop_gallery;
@@ -21,6 +22,10 @@ use animation::{AnimatedViewport, FocusPulse, VisibleColumnLayout, WorkspaceRend
 use anyhow::{Context, Result};
 use base64::Engine;
 use bytemuck::{Pod, Zeroable};
+use desktop_app_driver::{
+    DESKTOP_UI_SNAPSHOT_VERSION, DesktopAppDriver, DesktopSceneBuildContext,
+    DesktopSnapshotRestoreError, DesktopUiSnapshot,
+};
 use desktop_benchmark::*;
 use desktop_config::*;
 use desktop_session_events::{
@@ -5997,6 +6002,68 @@ fn apply_pending_session_events(
         events.push(event);
     }
     apply_desktop_session_event_batch(app, events)
+}
+
+impl DesktopAppDriver for DesktopApp {
+    type KeyInput = KeyInput;
+    type KeyOutcome = KeyOutcome;
+
+    fn mode(&self) -> &'static str {
+        DesktopApp::mode(self)
+    }
+
+    fn status_title(&self) -> String {
+        DesktopApp::status_title(self)
+    }
+
+    fn live_session_id(&self) -> Option<String> {
+        DesktopApp::single_session_live_id(self)
+    }
+
+    fn has_background_work(&self) -> bool {
+        DesktopApp::has_background_work(self)
+    }
+
+    fn has_frame_animation(&self) -> bool {
+        DesktopApp::has_frame_animation(self)
+    }
+
+    fn handle_key_input(&mut self, key: Self::KeyInput) -> Self::KeyOutcome {
+        DesktopApp::handle_key(self, key)
+    }
+
+    fn apply_session_event(&mut self, event: session_launch::DesktopSessionEvent) {
+        DesktopApp::apply_session_event(self, event);
+    }
+
+    fn build_scene(&self, context: DesktopSceneBuildContext) -> desktop_scene::DesktopScene {
+        context.scene
+    }
+
+    fn snapshot(&self) -> DesktopUiSnapshot {
+        DesktopUiSnapshot::new(
+            DesktopApp::mode(self),
+            DesktopApp::status_title(self),
+            DesktopApp::single_session_live_id(self),
+        )
+    }
+
+    fn restore_snapshot(
+        &mut self,
+        snapshot: DesktopUiSnapshot,
+    ) -> Result<(), DesktopSnapshotRestoreError> {
+        if snapshot.version != DESKTOP_UI_SNAPSHOT_VERSION {
+            return Err(DesktopSnapshotRestoreError::UnsupportedVersion {
+                version: snapshot.version,
+            });
+        }
+        if snapshot.mode != DesktopApp::mode(self) {
+            return Err(DesktopSnapshotRestoreError::UnsupportedMode {
+                mode: snapshot.mode,
+            });
+        }
+        Ok(())
+    }
 }
 
 fn apply_single_session_error(app: &mut DesktopApp, error: anyhow::Error) {
