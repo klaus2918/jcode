@@ -494,6 +494,7 @@ async fn default_disabled_tools_are_not_exposed_or_executable() {
     let registry = Registry::new(provider.clone()).await;
     let mut agent = Agent::new(provider, registry);
     let definitions = agent.tool_definitions().await;
+    let tool_names = agent.tool_names().await;
 
     for tool_name in ["gmail", "lsp"] {
         assert!(
@@ -501,6 +502,10 @@ async fn default_disabled_tools_are_not_exposed_or_executable() {
                 .iter()
                 .any(|definition| definition.name == tool_name),
             "default-disabled {tool_name} tool must not be sent in model-visible tool definitions"
+        );
+        assert!(
+            !tool_names.iter().any(|name| name == tool_name),
+            "default-disabled {tool_name} tool must not be listed as model-visible"
         );
         let err = agent.validate_tool_allowed(tool_name).expect_err(&format!(
             "default-disabled {tool_name} tool must not be executable"
