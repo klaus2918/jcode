@@ -71,6 +71,86 @@ fn collect_recent_session_stems_expands_candidate_window_past_recent_empty_stubs
 }
 
 #[test]
+fn trivial_hidden_only_snapshot_detector_skips_system_stub() {
+    let bytes = br#"{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>boot</system-reminder>"}],"display_role":"system"}]}"#;
+    assert!(snapshot_bytes_look_trivial_hidden_only(bytes));
+}
+
+#[test]
+fn trivial_hidden_only_snapshot_detector_keeps_visible_message() {
+    let bytes = br#"{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}"#;
+    assert!(!snapshot_bytes_look_trivial_hidden_only(bytes));
+}
+
+#[test]
+fn trivial_hidden_only_snapshot_detector_keeps_system_plus_visible_message() {
+    let bytes = br#"{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>boot</system-reminder>"}],"display_role":"system"},{"role":"assistant","content":[{"type":"text","text":"visible"}]}]}"#;
+    assert!(!snapshot_bytes_look_trivial_hidden_only(bytes));
+}
+
+#[test]
+fn cached_grouped_sessions_round_trip_from_disk() {
+    let _env_lock = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("temp dir");
+    let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+    let _scan_limit = EnvVarGuard::set_str("JCODE_SESSION_PICKER_MAX_SESSIONS", "100");
+    let _include_saved = EnvVarGuard::set_str("JCODE_SESSION_PICKER_INCLUDE_OLD_SAVED", "0");
+
+    let sessions_dir = temp.path().join("sessions");
+    std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+    let now = chrono::Utc::now();
+    let session = SessionInfo {
+        id: "session_cache_test_1770000000000".to_string(),
+        parent_id: None,
+        short_name: "cache-test".to_string(),
+        icon: "🧪".to_string(),
+        title: "Cache test".to_string(),
+        message_count: 1,
+        user_message_count: 1,
+        assistant_message_count: 0,
+        created_at: now,
+        last_message_time: now,
+        last_active_at: Some(now),
+        working_dir: Some("/tmp/cache-test".to_string()),
+        model: None,
+        provider_key: None,
+        is_canary: false,
+        is_debug: false,
+        saved: false,
+        save_label: None,
+        status: SessionStatus::Closed,
+        needs_catchup: false,
+        estimated_tokens: 0,
+        messages_preview: Vec::new(),
+        search_index: "cache test".to_string(),
+        server_name: None,
+        server_icon: None,
+        source: SessionSource::Jcode,
+        resume_target: ResumeTarget::JcodeSession {
+            session_id: "session_cache_test_1770000000000".to_string(),
+        },
+        external_path: None,
+    };
+    let cache = GroupedSessionListDiskCache {
+        version: SESSION_LIST_DISK_CACHE_VERSION,
+        generated_at: now,
+        sessions_dir,
+        scan_limit: session_scan_limit(),
+        include_old_saved_sessions: include_old_saved_sessions_on_initial_load(),
+        server_groups: Vec::new(),
+        orphan_sessions: vec![session],
+    };
+
+    let path = session_list_disk_cache_path().expect("cache path");
+    crate::storage::write_json_fast(&path, &cache).expect("write cache");
+
+    let (_groups, orphans) = load_cached_sessions_grouped().expect("load cache");
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(orphans[0].id, "session_cache_test_1770000000000");
+    assert_eq!(orphans[0].title, "Cache test");
+}
+
+#[test]
 fn load_sessions_includes_claude_code_sessions_from_external_home() {
     let _env_lock = crate::storage::lock_test_env();
     let temp = tempfile::tempdir().expect("temp dir");

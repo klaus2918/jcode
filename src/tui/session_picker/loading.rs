@@ -4,8 +4,8 @@ use crate::registry::{self, ServerInfo};
 use crate::session::{self, CrashedSessionsInfo, Session, SessionStatus, StoredDisplayRole};
 use crate::storage;
 use anyhow::Result;
-use serde::Deserialize;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use std::borrow::Cow;
 use std::cmp::Reverse;
@@ -47,6 +47,8 @@ fn include_old_saved_sessions_on_initial_load() -> bool {
 }
 
 const SESSION_LIST_CACHE_TTL: Duration = Duration::from_secs(5);
+const SESSION_LIST_DISK_CACHE_VERSION: u32 = 1;
+const SESSION_LIST_DISK_CACHE_MAX_AGE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const SAVED_METADATA_TAIL_SCAN_BYTES: u64 = 64 * 1024;
 const INITIAL_TRANSCRIPT_SEARCH_BUDGET_BYTES: usize = 64 * 1024;
 const MESSAGE_SEARCH_EXCERPT_BYTES: usize = 8 * 1024;
@@ -59,6 +61,17 @@ struct SessionListCacheEntry {
     sessions: Vec<SessionInfo>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct GroupedSessionListDiskCache {
+    version: u32,
+    generated_at: chrono::DateTime<chrono::Utc>,
+    sessions_dir: PathBuf,
+    scan_limit: usize,
+    include_old_saved_sessions: bool,
+    server_groups: Vec<ServerGroup>,
+    orphan_sessions: Vec<SessionInfo>,
+}
+
 fn session_list_cache() -> &'static Mutex<Option<SessionListCacheEntry>> {
     static CACHE: OnceLock<Mutex<Option<SessionListCacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(None))
@@ -68,6 +81,63 @@ pub fn invalidate_session_list_cache() {
     if let Ok(mut cache) = session_list_cache().lock() {
         *cache = None;
     }
+}
+
+fn session_list_disk_cache_path() -> Result<PathBuf> {
+    Ok(storage::jcode_dir()?.join("cache/session-picker-list-v1.json"))
+}
+
+fn session_list_disk_cache_is_usable(
+    cache: &GroupedSessionListDiskCache,
+    sessions_dir: &Path,
+    scan_limit: usize,
+) -> bool {
+    cache.version == SESSION_LIST_DISK_CACHE_VERSION
+        && cache.sessions_dir == sessions_dir
+        && cache.scan_limit == scan_limit
+        && cache.include_old_saved_sessions == include_old_saved_sessions_on_initial_load()
+        && chrono::Utc::now()
+            .signed_duration_since(cache.generated_at)
+            .num_seconds()
+            <= SESSION_LIST_DISK_CACHE_MAX_AGE_SECONDS
+}
+
+fn write_grouped_session_list_disk_cache(
+    sessions_dir: &Path,
+    scan_limit: usize,
+    server_groups: &[ServerGroup],
+    orphan_sessions: &[SessionInfo],
+) {
+    let Ok(path) = session_list_disk_cache_path() else {
+        return;
+    };
+    let cache = GroupedSessionListDiskCache {
+        version: SESSION_LIST_DISK_CACHE_VERSION,
+        generated_at: chrono::Utc::now(),
+        sessions_dir: sessions_dir.to_path_buf(),
+        scan_limit,
+        include_old_saved_sessions: include_old_saved_sessions_on_initial_load(),
+        server_groups: server_groups.to_vec(),
+        orphan_sessions: orphan_sessions.to_vec(),
+    };
+    if let Err(err) = storage::write_json_fast(&path, &cache) {
+        crate::logging::debug(&format!(
+            "failed to write session picker disk cache {}: {}",
+            path.display(),
+            err
+        ));
+    }
+}
+
+pub fn load_cached_sessions_grouped() -> Option<(Vec<ServerGroup>, Vec<SessionInfo>)> {
+    let sessions_dir = storage::jcode_dir().ok()?.join("sessions");
+    let scan_limit = session_scan_limit();
+    let path = session_list_disk_cache_path().ok()?;
+    let cache: GroupedSessionListDiskCache = storage::read_json(&path).ok()?;
+    if !session_list_disk_cache_is_usable(&cache, &sessions_dir, scan_limit) {
+        return None;
+    }
+    Some((cache.server_groups, cache.orphan_sessions))
 }
 
 fn push_with_byte_budget(dst: &mut String, src: &str, budget: &mut usize) {
@@ -620,6 +690,20 @@ fn snapshot_has_visible_conversation(path: &Path) -> Option<bool> {
     let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
     let messages = value.get("messages")?.as_array()?;
     Some(messages.iter().any(message_value_is_visible_conversation))
+}
+
+#[cfg(test)]
+fn snapshot_bytes_look_trivial_hidden_only(bytes: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+    let Some(messages) = value
+        .get("messages")
+        .and_then(|messages| messages.as_array())
+    else {
+        return false;
+    };
+    !messages.is_empty() && !messages.iter().any(message_value_is_visible_conversation)
 }
 
 #[cfg(test)]
@@ -2243,6 +2327,8 @@ pub fn load_servers() -> Vec<ServerInfo> {
 }
 
 pub fn load_sessions_grouped() -> Result<(Vec<ServerGroup>, Vec<SessionInfo>)> {
+    let sessions_dir = storage::jcode_dir()?.join("sessions");
+    let scan_limit = session_scan_limit();
     let all_sessions = load_sessions()?;
     let servers = load_servers();
 
@@ -2289,6 +2375,8 @@ pub fn load_sessions_grouped() -> Result<(Vec<ServerGroup>, Vec<SessionInfo>)> {
         let b_latest = b.sessions.iter().map(|s| s.last_message_time).max();
         b_latest.cmp(&a_latest)
     });
+
+    write_grouped_session_list_disk_cache(&sessions_dir, scan_limit, &groups, &orphan_sessions);
 
     Ok((groups, orphan_sessions))
 }

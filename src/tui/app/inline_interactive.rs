@@ -1498,10 +1498,19 @@ impl App {
     }
 
     pub(super) fn open_session_picker(&mut self) {
-        let picker = SessionPicker::loading();
+        let (picker, status) = if let Some((server_groups, orphan_sessions)) =
+            session_picker::load_cached_sessions_grouped()
+        {
+            (
+                SessionPicker::new_grouped(server_groups, orphan_sessions),
+                "Refreshing sessions...",
+            )
+        } else {
+            (SessionPicker::loading(), "Loading sessions...")
+        };
         self.session_picker_overlay = Some(RefCell::new(picker));
         self.session_picker_mode = SessionPickerMode::Resume;
-        self.set_status_notice("Loading sessions...");
+        self.set_status_notice(status);
         self.start_session_picker_load();
     }
 
