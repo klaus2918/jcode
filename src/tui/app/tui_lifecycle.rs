@@ -1025,11 +1025,10 @@ impl App {
 
         // Load session to get canary status (for "client self-dev" badge)
         if let Some(ref session_id) = resume_session {
-            if !fresh_spawn {
-                app.restore_remote_startup_history(session_id);
-            } else {
+            app.restore_remote_startup_history(session_id);
+            if fresh_spawn {
                 crate::logging::info(&format!(
-                    "Remote startup fresh-spawn path: skipping local transcript restore for {}",
+                    "Remote startup fresh-spawn path: restored persisted transcript for {} while awaiting server history",
                     session_id
                 ));
             }
