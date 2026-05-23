@@ -23,6 +23,8 @@ pub(crate) const MARKDOWN_TASK_OPEN_COLOR: [f32; 4] = [0.420, 0.320, 0.075, 0.98
 pub(crate) const MARKDOWN_STRIKE_TEXT_COLOR: [f32; 4] = [0.310, 0.330, 0.380, 0.880];
 pub(crate) const COMPOSER_INPUT_BACKGROUND_COLOR: [f32; 4] = [0.985, 0.992, 1.000, 0.46];
 pub(crate) const COMPOSER_INPUT_BORDER_COLOR: [f32; 4] = [0.055, 0.125, 0.270, 0.18];
+pub(crate) const STREAMING_ACTIVITY_PILL_COLOR: [f32; 4] = [0.965, 0.985, 1.000, 0.58];
+pub(crate) const STREAMING_ACTIVITY_PILL_BORDER_COLOR: [f32; 4] = [0.000, 0.260, 0.720, 0.18];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SingleSessionTextKey {
@@ -1314,45 +1316,51 @@ pub(crate) fn push_streaming_activity_cue(
         .unwrap_or_else(|| {
             single_session_draft_top_for_app(app, size) - typography.body_size * 0.82
         });
-    let cue_x = PANEL_TITLE_LEFT_PADDING + typography.body_size * 0.08;
-    let phase = (tick % 24) as f32 / 24.0;
-    let pulse = 0.5 + 0.5 * (phase * std::f32::consts::TAU).sin();
-
-    let mut beam_color = NATIVE_SPINNER_HEAD_COLOR;
-    beam_color[3] = if app.streaming_response.is_empty() {
-        0.22 + 0.24 * pulse
-    } else {
-        0.36 + 0.34 * pulse
+    let pill_width = (typography.body_size * 2.05).clamp(26.0, 34.0);
+    let pill_height = (typography.body_size * 0.82).clamp(11.0, 15.0);
+    let cue_x = PANEL_TITLE_LEFT_PADDING;
+    let cue_y = cue_y + (line_height - pill_height) * 0.5;
+    let cue_rect = Rect {
+        x: cue_x,
+        y: cue_y,
+        width: pill_width,
+        height: pill_height,
     };
     push_rounded_rect(
         vertices,
-        Rect {
-            x: cue_x,
-            y: cue_y + line_height * 0.16,
-            width: 3.0,
-            height: line_height * 0.68,
-        },
-        1.5,
-        beam_color,
+        cue_rect,
+        pill_height * 0.5,
+        STREAMING_ACTIVITY_PILL_COLOR,
+        size,
+    );
+    push_rounded_rect_border(
+        vertices,
+        cue_rect,
+        pill_height * 0.5,
+        1.0,
+        STREAMING_ACTIVITY_PILL_BORDER_COLOR,
         size,
     );
 
-    let dot_radius = (typography.body_size * 0.12).clamp(2.0, 3.5);
-    let dot_y = cue_y + line_height * 0.50 - dot_radius;
-    let dot_start_x = cue_x + typography.body_size * 0.55;
+    let dot_radius = (typography.body_size * 0.105).clamp(1.8, 2.8);
+    let dot_y = cue_rect.y + cue_rect.height * 0.50 - dot_radius;
+    let dot_gap = dot_radius * 2.35;
+    let dot_total_width = dot_radius * 2.0 * 3.0 + dot_gap * 2.0;
+    let dot_start_x = cue_rect.x + (cue_rect.width - dot_total_width) * 0.5;
     for dot in 0..3 {
-        let dot_phase = ((tick + dot as u64 * 3) % 12) as f32 / 12.0;
+        let dot_phase = ((tick + dot as u64 * 4) % 18) as f32 / 18.0;
         let dot_pulse = 0.5 + 0.5 * (dot_phase * std::f32::consts::TAU).sin();
-        let mut dot_color = if app.streaming_response.is_empty() {
-            NATIVE_SPINNER_TRACK_COLOR
+        let mut dot_color = NATIVE_SPINNER_HEAD_COLOR;
+        let base_alpha = if app.streaming_response.is_empty() {
+            0.34
         } else {
-            NATIVE_SPINNER_HEAD_COLOR
+            0.46
         };
-        dot_color[3] = (0.30 + 0.58 * dot_pulse).clamp(0.24, 0.92);
+        dot_color[3] = (base_alpha + 0.38 * dot_pulse).clamp(0.30, 0.86);
         push_rounded_rect(
             vertices,
             Rect {
-                x: dot_start_x + dot as f32 * dot_radius * 2.8,
+                x: dot_start_x + dot as f32 * (dot_radius * 2.0 + dot_gap),
                 y: dot_y,
                 width: dot_radius * 2.0,
                 height: dot_radius * 2.0,

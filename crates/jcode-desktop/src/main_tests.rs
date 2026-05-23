@@ -159,14 +159,16 @@ fn desktop_hot_reload_restarts_default_launched_workspace_as_workspace() {
         binary: PathBuf::from("/old/jcode-desktop"),
         args: Vec::new(),
     };
-    let app = DesktopApp::Workspace(Workspace::from_session_cards(vec![workspace::SessionCard {
-        session_id: "session-visible".to_string(),
-        title: "visible session".to_string(),
-        subtitle: "active".to_string(),
-        detail: "already on screen".to_string(),
-        preview_lines: vec!["same content".to_string()],
-        detail_lines: vec![],
-    }]));
+    let app = DesktopApp::Workspace(Workspace::from_session_cards(vec![
+        workspace::SessionCard {
+            session_id: "session-visible".to_string(),
+            title: "visible session".to_string(),
+            subtitle: "active".to_string(),
+            detail: "already on screen".to_string(),
+            preview_lines: vec!["same content".to_string()],
+            detail_lines: vec![],
+        },
+    ]));
 
     let updated = relaunch.for_app(&app, PathBuf::from("/new/jcode-desktop"));
 
@@ -793,9 +795,29 @@ fn single_session_active_work_uses_streaming_activity_cue_geometry() {
 
     assert!(vertices_have_rgb(&tick_zero, NATIVE_SPINNER_HEAD_COLOR));
     assert!(vertices_have_rgb(&tick_one, NATIVE_SPINNER_HEAD_COLOR));
+    assert!(vertices_have_color(
+        &tick_zero,
+        STREAMING_ACTIVITY_PILL_COLOR
+    ));
     assert_ne!(
         colors_for_rgb(&tick_zero, NATIVE_SPINNER_HEAD_COLOR),
         colors_for_rgb(&tick_one, NATIVE_SPINNER_HEAD_COLOR)
+    );
+
+    let pill_bounds = pixel_bounds_for_color(
+        &tick_zero,
+        STREAMING_ACTIVITY_PILL_COLOR,
+        PhysicalSize::new(900, 700),
+    )
+    .expect("streaming activity cue should draw an inline pill");
+    assert!(
+        (pill_bounds.min_x - PANEL_TITLE_LEFT_PADDING).abs() <= 0.5,
+        "activity cue should align to transcript text, got {pill_bounds:?}"
+    );
+    let pill_width = pill_bounds.max_x - pill_bounds.min_x;
+    assert!(
+        (26.0..=34.1).contains(&pill_width),
+        "activity cue pill should stay compact, got {pill_bounds:?}"
     );
 }
 
