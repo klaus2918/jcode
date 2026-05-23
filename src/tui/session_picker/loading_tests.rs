@@ -443,69 +443,108 @@ fn session_matches_query_searches_external_codex_transcript_contents() {
 #[ignore = "developer benchmark: times real /resume loading phases"]
 fn benchmark_real_resume_loading_phases() {
     invalidate_session_list_cache();
-    let sessions_dir = crate::storage::jcode_dir()
-        .expect("jcode dir")
-        .join("sessions");
+
+    let sessions_dir = storage::jcode_dir().expect("jcode dir").join("sessions");
     let scan_limit = session_scan_limit();
     let candidate_limit = session_candidate_window(scan_limit);
 
-    let candidate_start = std::time::Instant::now();
+    let phase_start = std::time::Instant::now();
     let candidates = if sessions_dir.exists() {
         collect_recent_session_candidates(&sessions_dir, candidate_limit)
-            .expect("collect candidates")
+            .expect("collect recent session candidates")
     } else {
         Vec::new()
     };
-    let candidate_elapsed = candidate_start.elapsed();
+    let collect_candidates_elapsed = phase_start.elapsed();
 
-    let summary_start = std::time::Instant::now();
-    let mut loaded = 0usize;
-    let mut visible = 0usize;
-    let mut local_sessions = Vec::new();
-    for stem in candidates.iter().take(candidate_limit) {
-        if local_sessions.len() >= scan_limit {
-            break;
+    let mut sessions = Vec::new();
+    let mut skipped_empty = 0usize;
+    let mut skipped_imported = 0usize;
+    let mut summary_errors = 0usize;
+    let phase_start = std::time::Instant::now();
+    for stem in &candidates {
+        if sessions.len() >= scan_limit {
+            let saved = sessions_dir.join(format!("{stem}.json"));
+            if !session_snapshot_or_journal_has_saved_metadata(&saved) {
+                continue;
+            }
         }
+        if stem.starts_with("imported_cc_")
+            || stem.starts_with("imported_codex_")
+            || stem.starts_with("imported_pi_")
+            || stem.starts_with("imported_opencode_")
+        {
+            skipped_imported += 1;
+            continue;
+        }
+
         let path = sessions_dir.join(format!("{stem}.json"));
-        let Ok(session) = load_session_summary(&path) else {
-            continue;
-        };
-        loaded += 1;
-        let visible_count = session.messages.visible_message_count;
-        if visible_count == 0 {
-            continue;
+        match load_session_summary(&path) {
+            Ok(summary) if summary.messages.visible_message_count > 0 => {
+                sessions.push((stem.clone(), summary));
+            }
+            Ok(_) => skipped_empty += 1,
+            Err(_) => summary_errors += 1,
         }
-        visible += visible_count;
-        local_sessions.push(stem.clone());
     }
-    let summary_elapsed = summary_start.elapsed();
+    let jcode_summary_elapsed = phase_start.elapsed();
 
-    let claude_start = std::time::Instant::now();
+    let phase_start = std::time::Instant::now();
     let claude = load_external_claude_code_sessions(scan_limit);
-    let claude_elapsed = claude_start.elapsed();
+    let claude_elapsed = phase_start.elapsed();
 
-    let codex_start = std::time::Instant::now();
+    let phase_start = std::time::Instant::now();
     let codex = load_external_codex_sessions(scan_limit);
-    let codex_elapsed = codex_start.elapsed();
+    let codex_elapsed = phase_start.elapsed();
 
-    let pi_start = std::time::Instant::now();
+    let phase_start = std::time::Instant::now();
     let pi = load_external_pi_sessions(scan_limit);
-    let pi_elapsed = pi_start.elapsed();
+    let pi_elapsed = phase_start.elapsed();
 
-    let opencode_start = std::time::Instant::now();
+    let phase_start = std::time::Instant::now();
     let opencode = load_external_opencode_sessions(scan_limit);
-    let opencode_elapsed = opencode_start.elapsed();
+    let opencode_elapsed = phase_start.elapsed();
+
+    let phase_start = std::time::Instant::now();
+    let all_sessions = load_sessions().expect("load sessions");
+    let load_sessions_elapsed = phase_start.elapsed();
+
+    invalidate_session_list_cache();
+    let phase_start = std::time::Instant::now();
+    let (groups, orphans) = load_sessions_grouped().expect("load grouped sessions");
+    let grouped_elapsed = phase_start.elapsed();
+
+    let snapshot_count = std::fs::read_dir(&sessions_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry.file_name().to_str().is_some_and(|name| {
+                        name.ends_with(".json") && !name.ends_with(".journal.json")
+                    })
+                })
+                .count()
+        })
+        .unwrap_or_default();
 
     eprintln!(
-        "real resume phases: scan_limit={} candidate_limit={} candidates={} candidate_scan={}ms local_summary={}ms summaries_loaded={} local_sessions={} visible_messages={} claude={}ms/{} codex={}ms/{} pi={}ms/{} opencode={}ms/{}",
+        concat!(
+            "real resume phases: scan_limit={} candidate_limit={} snapshot_count={} ",
+            "candidate_count={} collect_candidates={}ms ",
+            "jcode_summary={}ms jcode_loaded={} skipped_empty={} skipped_imported={} summary_errors={} ",
+            "external_claude={}ms/{} external_codex={}ms/{} external_pi={}ms/{} external_opencode={}ms/{} ",
+            "load_sessions={}ms/{} load_sessions_grouped={}ms groups={} orphans={}"
+        ),
         scan_limit,
         candidate_limit,
+        snapshot_count,
         candidates.len(),
-        candidate_elapsed.as_millis(),
-        summary_elapsed.as_millis(),
-        loaded,
-        local_sessions.len(),
-        visible,
+        collect_candidates_elapsed.as_millis(),
+        jcode_summary_elapsed.as_millis(),
+        sessions.len(),
+        skipped_empty,
+        skipped_imported,
+        summary_errors,
         claude_elapsed.as_millis(),
         claude.len(),
         codex_elapsed.as_millis(),
@@ -513,7 +552,12 @@ fn benchmark_real_resume_loading_phases() {
         pi_elapsed.as_millis(),
         pi.len(),
         opencode_elapsed.as_millis(),
-        opencode.len()
+        opencode.len(),
+        load_sessions_elapsed.as_millis(),
+        all_sessions.len(),
+        grouped_elapsed.as_millis(),
+        groups.len(),
+        orphans.len(),
     );
 }
 

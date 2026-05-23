@@ -5,7 +5,7 @@ use crate::session::{self, CrashedSessionsInfo, Session, SessionStatus, StoredDi
 use crate::storage;
 use anyhow::Result;
 use serde::Deserialize;
-use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::value::RawValue;
 use std::borrow::Cow;
 use std::cmp::Reverse;
@@ -136,12 +136,15 @@ fn push_raw_search_excerpt(dst: &mut String, raw: &str, budget: &mut usize) {
     push_with_byte_budget(dst, raw, budget);
 }
 
-fn raw_value_search_excerpt(raw: &RawValue) -> String {
+fn raw_value_search_excerpt(raw: &RawValue, budget: usize) -> Option<String> {
+    if budget == 0 {
+        return None;
+    }
     let raw = raw.get();
-    let mut budget = MESSAGE_SEARCH_EXCERPT_BYTES;
+    let mut budget = budget.min(MESSAGE_SEARCH_EXCERPT_BYTES);
     let mut excerpt = String::new();
     push_with_byte_budget(&mut excerpt, raw, &mut budget);
-    excerpt
+    (!excerpt.is_empty()).then_some(excerpt)
 }
 
 #[cfg(test)]
@@ -954,10 +957,36 @@ impl<'de> Visitor<'de> for SessionMessageSummaryDataVisitor {
         A: SeqAccess<'de>,
     {
         let mut counts = SessionMessageSummaryData::default();
-        while let Some(message) = seq.next_element::<SessionMessageSummary>()? {
+        loop {
+            let remaining = INITIAL_TRANSCRIPT_SEARCH_BUDGET_BYTES
+                .saturating_sub(counts.search_text.len())
+                .min(MESSAGE_SEARCH_EXCERPT_BYTES);
+            let Some(message) = seq.next_element_seed(SessionMessageSummarySeed {
+                content_excerpt_budget: remaining,
+            })?
+            else {
+                break;
+            };
             counts.add_message(&message);
         }
         Ok(counts)
+    }
+}
+
+struct SessionMessageSummarySeed {
+    content_excerpt_budget: usize,
+}
+
+impl<'de> DeserializeSeed<'de> for SessionMessageSummarySeed {
+    type Value = SessionMessageSummary;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(SessionMessageSummaryVisitor {
+            content_excerpt_budget: self.content_excerpt_budget,
+        })
     }
 }
 
@@ -978,11 +1007,15 @@ impl<'de> Deserialize<'de> for SessionMessageSummary {
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_map(SessionMessageSummaryVisitor)
+        deserializer.deserialize_map(SessionMessageSummaryVisitor {
+            content_excerpt_budget: MESSAGE_SEARCH_EXCERPT_BYTES,
+        })
     }
 }
 
-struct SessionMessageSummaryVisitor;
+struct SessionMessageSummaryVisitor {
+    content_excerpt_budget: usize,
+}
 
 impl<'de> Visitor<'de> for SessionMessageSummaryVisitor {
     type Value = SessionMessageSummary;
@@ -1024,10 +1057,15 @@ impl<'de> Visitor<'de> for SessionMessageSummaryVisitor {
         let content_starts_with_system_reminder = matches!(role, Role::User)
             && display_role.is_none()
             && content.is_some_and(raw_content_starts_with_system_reminder);
+        let content_raw = if display_role.is_none() && !content_starts_with_system_reminder {
+            content.and_then(|raw| raw_value_search_excerpt(raw, self.content_excerpt_budget))
+        } else {
+            None
+        };
         Ok(SessionMessageSummary {
             role,
             content_starts_with_system_reminder,
-            content_raw: content.map(raw_value_search_excerpt),
+            content_raw,
             display_role,
             token_usage,
         })
