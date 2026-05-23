@@ -107,6 +107,72 @@ pub(crate) trait DesktopAppDriver {
     ) -> Result<(), DesktopSnapshotRestoreError>;
 }
 
+pub(crate) struct DesktopAppRuntime<D: DesktopAppDriver> {
+    driver: D,
+}
+
+impl<D: DesktopAppDriver> DesktopAppRuntime<D> {
+    pub(crate) fn new(driver: D) -> Self {
+        Self { driver }
+    }
+
+    pub(crate) fn driver(&self) -> &D {
+        &self.driver
+    }
+
+    pub(crate) fn driver_mut(&mut self) -> &mut D {
+        &mut self.driver
+    }
+
+    pub(crate) fn into_driver(self) -> D {
+        self.driver
+    }
+
+    pub(crate) fn mode(&self) -> &'static str {
+        self.driver.mode()
+    }
+
+    pub(crate) fn status_title(&self) -> String {
+        self.driver.status_title()
+    }
+
+    pub(crate) fn live_session_id(&self) -> Option<String> {
+        self.driver.live_session_id()
+    }
+
+    pub(crate) fn has_background_work(&self) -> bool {
+        self.driver.has_background_work()
+    }
+
+    pub(crate) fn has_frame_animation(&self) -> bool {
+        self.driver.has_frame_animation()
+    }
+
+    pub(crate) fn handle_key_input(&mut self, key: D::KeyInput) -> D::KeyOutcome {
+        self.driver.handle_key_input(key)
+    }
+
+    pub(crate) fn apply_session_event(&mut self, event: session_launch::DesktopSessionEvent) {
+        self.driver.apply_session_event(event);
+    }
+
+    pub(crate) fn build_scene(&self, scene: DesktopScene) -> DesktopScene {
+        self.driver
+            .build_scene(DesktopSceneBuildContext::new(scene))
+    }
+
+    pub(crate) fn snapshot(&self) -> DesktopUiSnapshot {
+        self.driver.snapshot()
+    }
+
+    pub(crate) fn restore_snapshot(
+        &mut self,
+        snapshot: DesktopUiSnapshot,
+    ) -> Result<(), DesktopSnapshotRestoreError> {
+        self.driver.restore_snapshot(snapshot)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum DesktopSnapshotRestoreError {
     UnsupportedVersion { version: u16 },
@@ -133,6 +199,105 @@ pub(crate) type DesktopKeyDriverOutcome = KeyOutcome;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct FakeDriver {
+        key_count: usize,
+        restored: Option<DesktopUiSnapshot>,
+    }
+
+    impl DesktopAppDriver for FakeDriver {
+        type KeyInput = char;
+        type KeyOutcome = usize;
+
+        fn mode(&self) -> &'static str {
+            "fake"
+        }
+
+        fn status_title(&self) -> String {
+            "Fake".to_string()
+        }
+
+        fn live_session_id(&self) -> Option<String> {
+            Some("fake-session".to_string())
+        }
+
+        fn has_background_work(&self) -> bool {
+            false
+        }
+
+        fn has_frame_animation(&self) -> bool {
+            self.key_count > 0
+        }
+
+        fn handle_key_input(&mut self, _key: Self::KeyInput) -> Self::KeyOutcome {
+            self.key_count += 1;
+            self.key_count
+        }
+
+        fn apply_session_event(&mut self, _event: session_launch::DesktopSessionEvent) {}
+
+        fn build_scene(&self, mut context: DesktopSceneBuildContext) -> DesktopScene {
+            context.scene.metadata.title = Some(self.status_title());
+            context.scene
+        }
+
+        fn snapshot(&self) -> DesktopUiSnapshot {
+            fake_snapshot()
+        }
+
+        fn restore_snapshot(
+            &mut self,
+            snapshot: DesktopUiSnapshot,
+        ) -> Result<(), DesktopSnapshotRestoreError> {
+            self.restored = Some(snapshot);
+            Ok(())
+        }
+    }
+
+    fn fake_snapshot() -> DesktopUiSnapshot {
+        DesktopUiSnapshot::new(
+            "fake",
+            "Fake".to_string(),
+            Some("fake-session".to_string()),
+            DesktopSurfaceSnapshot::SingleSession(DesktopSingleSessionSnapshot {
+                session_title: None,
+                draft: String::new(),
+                draft_cursor: 0,
+                body_scroll_millis: 0,
+                detail_scroll: 0,
+                show_help: false,
+                show_session_info: false,
+                pending_image_count: 0,
+                model_picker_open: false,
+                session_switcher_open: false,
+                stdin_response_active: false,
+            }),
+        )
+    }
+
+    #[test]
+    fn app_runtime_delegates_driver_operations() {
+        let mut runtime = DesktopAppRuntime::new(FakeDriver::default());
+
+        assert_eq!(runtime.mode(), "fake");
+        assert_eq!(runtime.status_title(), "Fake");
+        assert_eq!(runtime.live_session_id(), Some("fake-session".to_string()));
+        assert!(!runtime.has_background_work());
+        assert!(!runtime.has_frame_animation());
+        assert_eq!(runtime.handle_key_input('x'), 1);
+        assert!(runtime.has_frame_animation());
+
+        let scene = runtime.build_scene(DesktopScene::default());
+        assert_eq!(scene.metadata.title, Some("Fake".to_string()));
+
+        let snapshot = runtime.snapshot();
+        runtime
+            .restore_snapshot(snapshot.clone())
+            .expect("restore snapshot");
+        assert_eq!(runtime.driver().restored, Some(snapshot));
+        assert_eq!(runtime.into_driver().key_count, 1);
+    }
 
     #[test]
     fn ui_snapshot_round_trips_single_session_surface() {
