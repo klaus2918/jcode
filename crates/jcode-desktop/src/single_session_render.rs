@@ -2857,6 +2857,14 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
             .max(1.0)
             .min(content_width)
     };
+    let inline_widget_height = if key.inline_widget.is_empty() {
+        prompt_height
+    } else {
+        let inline_widget_line_height = typography.body_size * typography.body_line_height;
+        prompt_height
+            .max(size.height as f32)
+            .max(key.inline_widget.len() as f32 * inline_widget_line_height)
+    };
     let inline_widget_buffer = take_reusable(
         &mut old_buffers,
         4,
@@ -2869,7 +2877,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
             typography.body_size,
             typography.body_size * typography.body_line_height,
             inline_widget_width,
-            prompt_height,
+            inline_widget_height,
             Wrap::Word,
         )
     });
@@ -5032,4 +5040,51 @@ pub(crate) fn text_color(color: [f32; 4]) -> TextColor {
         (color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
         (color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::single_session::SingleSessionApp;
+    use crate::workspace::{KeyInput, KeyOutcome, SessionCard};
+
+    #[test]
+    fn session_switcher_text_buffer_shapes_loaded_session_rows() {
+        let size = PhysicalSize::new(1920, 2048);
+        let mut app = SingleSessionApp::new(None);
+
+        assert_eq!(
+            app.handle_key(KeyInput::OpenSessionSwitcher),
+            KeyOutcome::LoadSessionSwitcher
+        );
+        app.apply_session_switcher_cards(vec![SessionCard {
+            session_id: "session_visible".to_string(),
+            title: "visible resume row".to_string(),
+            subtitle: "active · test-model".to_string(),
+            detail: "3 msgs · just now · jcode".to_string(),
+            preview_lines: vec!["user hello from resume picker".to_string()],
+            detail_lines: vec!["user hello from resume picker".to_string()],
+        }]);
+        assert!(
+            app.inline_widget_styled_lines()
+                .iter()
+                .any(|line| line.text.contains("visible resume row")),
+            "state-level switcher lines should contain the session row"
+        );
+
+        let mut font_system = FontSystem::new();
+        let buffers = single_session_text_buffers(&app, size, &mut font_system);
+        let rendered_inline_text = buffers
+            .get(4)
+            .expect("inline widget buffer should be present")
+            .layout_runs()
+            .map(|run| run.text.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rendered_inline_text.contains("visible resume row"),
+            "desktop text buffer should shape session rows, got:\n{rendered_inline_text}"
+        );
+    }
 }
