@@ -335,6 +335,18 @@ struct SingleSessionRuntimeSettings {
     service_tier: Option<String>,
     transport: Option<String>,
     compaction_mode: Option<String>,
+    connection_type: Option<String>,
+    status_detail: Option<String>,
+    upstream_provider: Option<String>,
+    token_usage: Option<SingleSessionTokenUsage>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SingleSessionTokenUsage {
+    input: u64,
+    output: u64,
+    cache_read_input: Option<u64>,
+    cache_creation_input: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2794,6 +2806,75 @@ impl SingleSessionApp {
                 self.set_status(SingleSessionStatus::ServerReloading);
                 self.is_processing = true;
                 self.runtime.reload_phase = ReloadPhase::AwaitingReconnect;
+            }
+            DesktopSessionEvent::ReloadProgress {
+                step,
+                message,
+                success,
+                output,
+            } => {
+                let marker = match success {
+                    Some(true) => "✓ ",
+                    Some(false) => "✗ ",
+                    None => "",
+                };
+                let mut line = format!("reload {step}: {marker}{message}");
+                if let Some(output) = output.as_deref().filter(|output| !output.trim().is_empty()) {
+                    line.push_str(" — ");
+                    line.push_str(output.trim());
+                }
+                self.messages.push(SingleSessionMessage::meta(line));
+                self.set_status(SingleSessionStatus::Info(format!("reload: {message}")));
+            }
+            DesktopSessionEvent::RuntimeMetadata {
+                connection_type,
+                status_detail,
+                upstream_provider,
+            } => {
+                if let Some(connection_type) = connection_type {
+                    self.runtime_settings.connection_type = Some(connection_type);
+                }
+                if let Some(upstream_provider) = upstream_provider {
+                    self.runtime_settings.upstream_provider = Some(upstream_provider);
+                }
+                if let Some(status_detail) = status_detail {
+                    self.runtime_settings.status_detail = Some(status_detail.clone());
+                    self.set_status(SingleSessionStatus::Info(status_detail));
+                }
+            }
+            DesktopSessionEvent::TokenUsage {
+                input,
+                output,
+                cache_read_input,
+                cache_creation_input,
+            } => {
+                self.runtime_settings.token_usage = Some(SingleSessionTokenUsage {
+                    input,
+                    output,
+                    cache_read_input,
+                    cache_creation_input,
+                });
+            }
+            DesktopSessionEvent::SystemNotice { title, message } => {
+                let line = message
+                    .as_deref()
+                    .filter(|message| !message.trim().is_empty())
+                    .map(|message| format!("{title}: {}", message.trim()))
+                    .unwrap_or(title.clone());
+                self.messages.push(SingleSessionMessage::meta(line));
+                self.set_status(SingleSessionStatus::Info(title));
+            }
+            DesktopSessionEvent::SessionCloseRequested { reason } => {
+                self.finish_streaming_response();
+                self.is_processing = false;
+                self.stdin_response = None;
+                self.runtime.session_handle = None;
+                self.set_status(SingleSessionStatus::Info(
+                    "session close requested".to_string(),
+                ));
+                self.messages.push(SingleSessionMessage::meta(format!(
+                    "session close requested by server: {reason}"
+                )));
             }
             DesktopSessionEvent::Reloaded { session_id } => {
                 self.live_session_id = Some(session_id);

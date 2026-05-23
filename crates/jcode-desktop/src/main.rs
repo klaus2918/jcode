@@ -2395,6 +2395,73 @@ fn run_headless_chat_smoke(message: String) -> Result<()> {
                     })
                 );
             }
+            session_launch::DesktopSessionEvent::ReloadProgress {
+                step,
+                message,
+                success,
+                output,
+            } => {
+                last_status = Some(format!("reload {step}: {message}"));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "reload_progress",
+                        "step": step,
+                        "message": message,
+                        "success": success,
+                        "output": output,
+                    })
+                );
+            }
+            session_launch::DesktopSessionEvent::RuntimeMetadata {
+                connection_type,
+                status_detail,
+                upstream_provider,
+            } => {
+                if let Some(status_detail) = &status_detail {
+                    last_status = Some(status_detail.clone());
+                }
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "runtime_metadata",
+                        "connection_type": connection_type,
+                        "status_detail": status_detail,
+                        "upstream_provider": upstream_provider,
+                    })
+                );
+            }
+            session_launch::DesktopSessionEvent::TokenUsage {
+                input,
+                output,
+                cache_read_input,
+                cache_creation_input,
+            } => {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "tokens",
+                        "input": input,
+                        "output": output,
+                        "cache_read_input": cache_read_input,
+                        "cache_creation_input": cache_creation_input,
+                    })
+                );
+            }
+            session_launch::DesktopSessionEvent::SystemNotice { title, message } => {
+                last_status = Some(title.clone());
+                println!(
+                    "{}",
+                    serde_json::json!({"event": "system_notice", "title": title, "message": message})
+                );
+            }
+            session_launch::DesktopSessionEvent::SessionCloseRequested { reason } => {
+                anyhow::bail!(
+                    "desktop chat smoke session close requested; session_id={}; reason={}",
+                    session_id.as_deref().unwrap_or("unknown"),
+                    reason
+                );
+            }
             session_launch::DesktopSessionEvent::Done => {
                 let response = response.trim().to_string();
                 if response.is_empty() {

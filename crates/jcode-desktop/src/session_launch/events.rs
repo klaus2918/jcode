@@ -33,10 +33,27 @@ pub(super) fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSe
             .get("phase")
             .and_then(Value::as_str)
             .map(|phase| DesktopSessionEvent::Status(DesktopSessionStatus::external(phase))),
-        "status_detail" => value
-            .get("detail")
-            .and_then(Value::as_str)
-            .map(|detail| DesktopSessionEvent::Status(DesktopSessionStatus::external(detail))),
+        "connection_type" => optional_server_str(value, "connection_type")
+            .or_else(|| optional_server_str(value, "connection"))
+            .map(|connection_type| DesktopSessionEvent::RuntimeMetadata {
+                connection_type: Some(connection_type.to_string()),
+                status_detail: None,
+                upstream_provider: None,
+            }),
+        "status_detail" => optional_server_str(value, "detail").map(|detail| {
+            DesktopSessionEvent::RuntimeMetadata {
+                connection_type: None,
+                status_detail: Some(detail.to_string()),
+                upstream_provider: None,
+            }
+        }),
+        "upstream_provider" => optional_server_str(value, "provider")
+            .or_else(|| optional_server_str(value, "provider_name"))
+            .map(|upstream_provider| DesktopSessionEvent::RuntimeMetadata {
+                connection_type: None,
+                status_detail: None,
+                upstream_provider: Some(upstream_provider.to_string()),
+            }),
         "tool_start" => {
             value
                 .get("name")
@@ -181,6 +198,68 @@ pub(super) fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSe
                 .unwrap_or(false),
             tool_call_id: non_empty_server_str(value, "tool_call_id")?.to_string(),
         }),
+        "reload_progress" => Some(DesktopSessionEvent::ReloadProgress {
+            step: optional_server_str(value, "step")
+                .unwrap_or("reload")
+                .to_string(),
+            message: optional_server_str(value, "message")
+                .or_else(|| optional_server_str(value, "detail"))
+                .unwrap_or("server reload progress")
+                .to_string(),
+            success: value.get("success").and_then(Value::as_bool),
+            output: optional_server_str(value, "output").map(ToOwned::to_owned),
+        }),
+        "tokens" => Some(DesktopSessionEvent::TokenUsage {
+            input: server_u64(value, "input").unwrap_or(0),
+            output: server_u64(value, "output").unwrap_or(0),
+            cache_read_input: server_u64(value, "cache_read_input"),
+            cache_creation_input: server_u64(value, "cache_creation_input"),
+        }),
+        "session_close_requested" => Some(DesktopSessionEvent::SessionCloseRequested {
+            reason: optional_server_str(value, "reason")
+                .unwrap_or("server requested the session be closed")
+                .to_string(),
+        }),
+        "message_end" => Some(DesktopSessionEvent::SystemNotice {
+            title: "message complete".to_string(),
+            message: None,
+        }),
+        "generated_image" => Some(DesktopSessionEvent::SystemNotice {
+            title: "generated image".to_string(),
+            message: optional_server_str(value, "path")
+                .or_else(|| optional_server_str(value, "file"))
+                .or_else(|| optional_server_str(value, "output_format"))
+                .map(ToOwned::to_owned),
+        }),
+        "batch_progress"
+        | "kv_cache_request"
+        | "mcp_status"
+        | "memory_injected"
+        | "memory_activity"
+        | "notification"
+        | "compaction"
+        | "soft_interrupt_injected"
+        | "side_panel_state"
+        | "swarm_status"
+        | "swarm_plan"
+        | "swarm_plan_proposal"
+        | "transcript"
+        | "input_shell_result"
+        | "split_response"
+        | "compacted_history"
+        | "comm_request"
+        | "comm_response"
+        | "comm_status"
+        | "comm_presence" => {
+            let event_type = value
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("server event");
+            Some(DesktopSessionEvent::SystemNotice {
+                title: event_type.replace('_', " "),
+                message: server_notice_message(value),
+            })
+        }
         "reloading" => Some(DesktopSessionEvent::Reloading {
             new_socket: value
                 .get("new_socket")
@@ -197,6 +276,16 @@ pub(super) fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSe
         )),
         _ => None,
     }
+}
+
+fn server_u64(value: &Value, field: &str) -> Option<u64> {
+    value.get(field).and_then(Value::as_u64)
+}
+
+fn server_notice_message(value: &Value) -> Option<String> {
+    ["message", "detail", "status", "summary", "result", "path"]
+        .iter()
+        .find_map(|field| optional_server_str(value, field).map(ToOwned::to_owned))
 }
 
 fn non_empty_server_str<'a>(value: &'a Value, field: &str) -> Option<&'a str> {

@@ -280,6 +280,53 @@ fn desktop_event_parser_maps_streaming_server_events() {
         None,
         "malformed stdin requests must not fall back to tool_call_id=unknown"
     );
+    assert_eq!(
+        desktop_event_from_server_value(&json!({
+            "type": "reload_progress",
+            "step": "build",
+            "message": "compiled",
+            "success": true,
+            "output": "ok"
+        })),
+        Some(DesktopSessionEvent::ReloadProgress {
+            step: "build".to_string(),
+            message: "compiled".to_string(),
+            success: Some(true),
+            output: Some("ok".to_string())
+        })
+    );
+    assert_eq!(
+        desktop_event_from_server_value(&json!({
+            "type": "tokens",
+            "input": 12,
+            "output": 34,
+            "cache_read_input": 5
+        })),
+        Some(DesktopSessionEvent::TokenUsage {
+            input: 12,
+            output: 34,
+            cache_read_input: Some(5),
+            cache_creation_input: None
+        })
+    );
+    assert_eq!(
+        desktop_event_from_server_value(
+            &json!({"type": "connection_type", "connection": "websocket"})
+        ),
+        Some(DesktopSessionEvent::RuntimeMetadata {
+            connection_type: Some("websocket".to_string()),
+            status_detail: None,
+            upstream_provider: None
+        })
+    );
+    assert_eq!(
+        desktop_event_from_server_value(
+            &json!({"type": "session_close_requested", "reason": "handoff"})
+        ),
+        Some(DesktopSessionEvent::SessionCloseRequested {
+            reason: "handoff".to_string()
+        })
+    );
 }
 
 #[test]
