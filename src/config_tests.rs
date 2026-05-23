@@ -111,6 +111,32 @@ fn tool_config_explicit_disabled_overrides_all_enabled_sentinel() {
 }
 
 #[test]
+fn tool_config_acp_profile_allows_core_coding_plus_batch() {
+    let cfg = ToolConfig {
+        profile: "acp".to_string(),
+        ..ToolConfig::default()
+    };
+    let allowed = cfg.allowed_tools().expect("acp profile is an allow-list");
+
+    assert!(allowed.contains("bash"));
+    assert!(allowed.contains("read"));
+    assert!(allowed.contains("write"));
+    assert!(allowed.contains("apply_patch"));
+    assert!(allowed.contains("agentgrep"));
+    assert!(allowed.contains("batch"));
+    assert!(!allowed.contains("swarm"));
+    assert!(!allowed.contains("subagent"));
+    assert!(!allowed.contains("side_panel"));
+}
+
+#[test]
+fn acp_config_defaults_to_standard_profile_and_acp_tools() {
+    let cfg = Config::default();
+    assert_eq!(cfg.acp.profile, "standard");
+    assert_eq!(cfg.acp.tool_profile, "acp");
+}
+
+#[test]
 fn tool_config_minimal_profile_allows_core_coding_tools() {
     let cfg = ToolConfig {
         profile: "minimal".to_string(),
@@ -202,6 +228,10 @@ fn test_generated_default_config_uses_low_openai_reasoning_effort() {
     assert!(
         content.contains("[tools]") && content.contains("profile = \"full\""),
         "generated default config should document tool profiles"
+    );
+    assert!(
+        content.contains("[acp]") && content.contains("tool_profile = \"acp\""),
+        "generated default config should document ACP profile settings"
     );
 
     if let Some(prev) = prev_home {
