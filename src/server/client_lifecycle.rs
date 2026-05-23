@@ -189,6 +189,38 @@ fn log_request_lifecycle_handled(
     crate::logging::event_info("SERVER_REQUEST_LIFECYCLE", fields);
 }
 
+fn reject_if_agent_busy_for_request(
+    request_id: u64,
+    request_kind: &'static str,
+    client_session_id: &str,
+    client_is_processing: bool,
+    agent: &Arc<Mutex<Agent>>,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) -> bool {
+    if agent.try_lock().is_ok() {
+        return false;
+    }
+
+    crate::logging::event_warn(
+        "SERVER_REQUEST_BUSY_AGENT_REJECTED",
+        vec![
+            ("request_id", request_id.to_string()),
+            ("request_kind", request_kind.to_string()),
+            ("session_id", client_session_id.to_string()),
+            ("client_processing", client_is_processing.to_string()),
+            ("reason", "agent_busy".to_string()),
+        ],
+    );
+    let _ = client_event_tx.send(ServerEvent::Error {
+        id: request_id,
+        message: format!(
+            "Cannot handle {request_kind} while the session is busy. Try again after the current turn finishes."
+        ),
+        retry_after_secs: Some(1),
+    });
+    true
+}
+
 fn server_reload_starting() -> bool {
     matches!(
         crate::server::recent_reload_state(RELOAD_STARTING_GUARD_MAX_AGE),
@@ -1046,6 +1078,16 @@ pub(super) async fn handle_client(
             }
 
             Request::Clear { id } => {
+                if reject_if_agent_busy_for_request(
+                    id,
+                    "clear",
+                    &client_session_id,
+                    client_is_processing,
+                    &agent,
+                    &client_event_tx,
+                ) {
+                    continue;
+                }
                 handle_clear_session(
                     id,
                     client_selfdev,
@@ -1516,6 +1558,16 @@ pub(super) async fn handle_client(
             }
 
             Request::SetSubagentModel { id, model } => {
+                if reject_if_agent_busy_for_request(
+                    id,
+                    "set_subagent_model",
+                    &client_session_id,
+                    client_is_processing,
+                    &agent,
+                    &client_event_tx,
+                ) {
+                    continue;
+                }
                 handle_set_subagent_model(id, model, &agent, &client_event_tx).await;
             }
 
@@ -1554,6 +1606,16 @@ pub(super) async fn handle_client(
             }
 
             Request::RenameSession { id, title } => {
+                if reject_if_agent_busy_for_request(
+                    id,
+                    "rename_session",
+                    &client_session_id,
+                    client_is_processing,
+                    &agent,
+                    &client_event_tx,
+                ) {
+                    continue;
+                }
                 handle_rename_session(
                     id,
                     title,
@@ -1597,6 +1659,16 @@ pub(super) async fn handle_client(
                 feature,
                 enabled,
             } => {
+                if reject_if_agent_busy_for_request(
+                    id,
+                    "set_feature",
+                    &client_session_id,
+                    client_is_processing,
+                    &agent,
+                    &client_event_tx,
+                ) {
+                    continue;
+                }
                 handle_set_feature(
                     id,
                     feature,
@@ -1621,6 +1693,16 @@ pub(super) async fn handle_client(
             }
 
             Request::Transfer { id } => {
+                if reject_if_agent_busy_for_request(
+                    id,
+                    "transfer",
+                    &client_session_id,
+                    client_is_processing,
+                    &agent,
+                    &client_event_tx,
+                ) {
+                    continue;
+                }
                 handle_transfer(id, &client_session_id, &agent, &client_event_tx).await;
             }
 
@@ -1629,6 +1711,16 @@ pub(super) async fn handle_client(
             }
 
             Request::TriggerMemoryExtraction { id } => {
+                if reject_if_agent_busy_for_request(
+                    id,
+                    "trigger_memory_extraction",
+                    &client_session_id,
+                    client_is_processing,
+                    &agent,
+                    &client_event_tx,
+                ) {
+                    continue;
+                }
                 handle_trigger_memory_extraction(id, &agent, &client_event_tx).await;
             }
 
