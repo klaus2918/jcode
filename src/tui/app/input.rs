@@ -1265,18 +1265,16 @@ fn handle_expand_edit_badge_shortcut(app: &mut App, key: char) -> bool {
         return false;
     }
 
-    app.diff_mode = if app.diff_mode.is_full_inline() {
-        crate::config::DiffDisplayMode::Inline
-    } else {
-        crate::config::DiffDisplayMode::FullInline
-    };
+    if app.diff_mode.is_full_inline() {
+        return false;
+    }
+
+    app.diff_mode = crate::config::DiffDisplayMode::FullInline;
     app.record_copy_badge_key_press('e');
-    let action = if app.diff_mode.is_full_inline() {
-        "Expanded edit diffs"
-    } else {
-        "Collapsed edit diffs"
-    };
-    app.set_status_notice(format!("{} · Diffs: {}", action, app.diff_mode.label()));
+    app.set_status_notice(format!(
+        "Expanded edit diffs · Diffs: {}",
+        app.diff_mode.label()
+    ));
     true
 }
 

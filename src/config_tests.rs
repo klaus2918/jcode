@@ -246,6 +246,21 @@ fn test_native_scrollbars_default_to_enabled() {
 }
 
 #[test]
+fn test_copy_badge_alt_label_defaults_to_auto_and_deserializes() {
+    assert!(DisplayConfig::default().copy_badge_alt_label.is_empty());
+
+    let cfg: Config = toml::from_str(
+        r#"
+        [display]
+        copy_badge_alt_label = "Option"
+        "#,
+    )
+    .expect("config should deserialize");
+
+    assert_eq!(cfg.display.copy_badge_alt_label, "Option");
+}
+
+#[test]
 fn test_session_picker_resume_action_defaults_to_current_terminal() {
     assert_eq!(
         Config::default().keybindings.session_picker_enter,

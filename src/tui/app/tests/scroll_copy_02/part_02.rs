@@ -82,9 +82,10 @@ fn test_expand_badge_shortcut_toggles_inline_diff_and_pulses_key() {
 }
 
 #[test]
-fn test_expand_badge_shortcut_collapses_full_inline_diff() {
+fn test_expand_badge_shortcut_does_not_collapse_full_inline_diff() {
     let _render_lock = scroll_render_test_lock();
     let (mut app, _terminal) = create_copy_test_app();
+    crate::tui::ui::clear_test_render_state_for_tests();
     app.diff_mode = crate::config::DiffDisplayMode::FullInline;
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -93,11 +94,95 @@ fn test_expand_badge_shortcut_collapses_full_inline_diff() {
         KeyModifiers::ALT | KeyModifiers::SHIFT,
     ));
 
-    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::Inline);
-    assert!(app.copy_badge_ui().key_active.is_some());
-    assert_eq!(
-        app.status_notice(),
-        Some("Collapsed edit diffs · Diffs: Inline".to_string())
+    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
+    assert!(
+        app.status_notice().is_none(),
+        "full-inline E shortcut should not run expand/collapse action"
+    );
+}
+
+fn make_edit_badge_test_app(
+    old_line_count: usize,
+) -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    let mut app = create_test_app();
+    let old_string = (0..old_line_count)
+        .map(|idx| format!("old line {idx}\n"))
+        .collect::<String>();
+    let new_string = (0..old_line_count)
+        .map(|idx| format!("new line {idx}\n"))
+        .collect::<String>();
+    app.display_messages = vec![
+        DisplayMessage::user("please edit demo.txt"),
+        DisplayMessage::tool(
+            "Edited demo.txt".to_string(),
+            crate::message::ToolCall {
+                id: "edit_1".to_string(),
+                name: "edit".to_string(),
+                input: serde_json::json!({
+                    "file_path": "demo.txt",
+                    "old_string": old_string,
+                    "new_string": new_string,
+                }),
+                intent: None,
+            },
+        ),
+    ];
+    app.bump_display_messages_version();
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app.scroll_offset = 0;
+    app.auto_scroll_paused = false;
+    app.is_processing = false;
+    app.status = ProcessingStatus::Idle;
+    app.session.short_name = Some("test".to_string());
+
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    (app, terminal)
+}
+
+#[test]
+fn test_expand_badge_renders_only_for_collapsed_edit_diff_and_expands_to_full_diff() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = make_edit_badge_test_app(20);
+
+    let rendered = render_and_snap(&app, &mut terminal);
+    assert!(rendered.contains("more changes"), "expected collapsed diff:\n{rendered}");
+    assert!(
+        rendered.contains("[E] expand"),
+        "expected visible expand badge for collapsed edit diff:\n{rendered}"
+    );
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    app.handle_key_event(KeyEvent::new(
+        KeyCode::Char('E'),
+        KeyModifiers::ALT | KeyModifiers::SHIFT,
+    ));
+    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
+
+    let rendered = render_and_snap(&app, &mut terminal);
+    assert!(
+        !rendered.contains("more changes"),
+        "expanded full inline diff should not be collapsed:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("[E] expand"),
+        "expanded full inline diff should not keep expand badge:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("new line 19"),
+        "expanded diff should include the previously hidden tail:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_expand_badge_does_not_render_for_short_untruncated_edit_diff() {
+    let _render_lock = scroll_render_test_lock();
+    let (app, mut terminal) = make_edit_badge_test_app(2);
+
+    let rendered = render_and_snap(&app, &mut terminal);
+    assert!(
+        !rendered.contains("[E] expand"),
+        "short full-visible edit diff should not show expand badge:\n{rendered}"
     );
 }
 

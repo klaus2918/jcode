@@ -137,6 +137,10 @@ prompt_entry_animation = true
 # Runtime policy may cap this lower on slower environments such as WSL/Windows Terminal.
 # redraw_fps = 60
 
+# Label shown for the Alt/Option modifier in copy badges.
+# Empty = auto ("⌥" on macOS, "Alt" elsewhere). Examples: "Option", "Alt", "⌥".
+# copy_badge_alt_label = ""
+
 [features]
 # Memory: retrieval + extraction sidecar features
 memory = true

@@ -605,7 +605,7 @@ pub(super) fn prepare_body_incremental(
     let mut new_lines: Vec<Line> = Vec::new();
     let mut new_user_line_indices: Vec<usize> = Vec::new();
     let mut new_user_prompt_texts: Vec<String> = Vec::new();
-    let mut new_edit_tool_line_ranges: Vec<(usize, String, usize, usize)> = Vec::new();
+    let mut new_edit_tool_line_ranges: Vec<(usize, String, usize, usize, bool)> = Vec::new();
     let mut new_copy_targets: Vec<RawCopyTarget> = Vec::new();
     let mut new_raw_plain_lines: Vec<String> = Vec::new();
     let mut new_line_raw_overrides: Vec<Option<WrappedLineMap>> = Vec::new();
@@ -731,11 +731,14 @@ pub(super) fn prepare_body_incremental(
                                     })
                             })
                             .unwrap_or_else(|| "unknown".to_string());
+                        let expandable =
+                            messages::edit_tool_inline_diff_is_expandable(tc, &msg.content, width);
                         new_edit_tool_line_ranges.push((
                             prev_msg_count + new_msg_offset,
                             file_path,
                             tool_start_line,
                             new_lines.len(),
+                            expandable,
                         ));
                     }
                 }
@@ -966,6 +969,7 @@ pub(super) fn prepare_body_incremental(
                     file_path: r.file_path,
                     start_line: r.start_line + prev_len,
                     end_line: r.end_line + prev_len,
+                    expandable: r.expandable,
                 }),
         );
     prepared.copy_targets.extend(
@@ -1047,7 +1051,7 @@ pub(super) fn prepare_body(
     let mut line_copy_offsets: Vec<usize> = Vec::new();
     let mut user_line_indices: Vec<usize> = Vec::new();
     let mut user_prompt_texts: Vec<String> = Vec::new();
-    let mut edit_tool_line_ranges: Vec<(usize, String, usize, usize)> = Vec::new();
+    let mut edit_tool_line_ranges: Vec<(usize, String, usize, usize, bool)> = Vec::new();
     let mut copy_targets: Vec<RawCopyTarget> = Vec::new();
     let centered = app.centered_mode();
     markdown::set_center_code_blocks(centered);
@@ -1203,11 +1207,14 @@ pub(super) fn prepare_body(
                                     })
                             })
                             .unwrap_or_else(|| "unknown".to_string());
+                        let expandable =
+                            messages::edit_tool_inline_diff_is_expandable(tc, &msg.content, width);
                         edit_tool_line_ranges.push((
                             msg_idx,
                             file_path,
                             tool_start_line,
                             lines.len(),
+                            expandable,
                         ));
                     }
                 }
@@ -1506,7 +1513,7 @@ fn wrap_lines_with_map(
     user_line_indices: &[usize],
     user_prompt_texts: &[String],
     width: u16,
-    edit_ranges: &[(usize, String, usize, usize)],
+    edit_ranges: &[(usize, String, usize, usize, bool)],
     copy_ranges: &[RawCopyTarget],
 ) -> PreparedMessages {
     let full_width = width.saturating_sub(1) as usize;
@@ -1596,7 +1603,7 @@ fn wrap_lines_with_map(
     }
 
     let mut edit_tool_ranges = Vec::new();
-    for (msg_idx, file_path, raw_start, raw_end) in edit_ranges {
+    for (msg_idx, file_path, raw_start, raw_end, expandable) in edit_ranges {
         let start_line = raw_to_wrapped.get(*raw_start).copied().unwrap_or(0);
         let end_line = raw_to_wrapped
             .get(*raw_end)
@@ -1608,6 +1615,7 @@ fn wrap_lines_with_map(
             file_path: file_path.clone(),
             start_line,
             end_line,
+            expandable: *expandable,
         });
     }
 

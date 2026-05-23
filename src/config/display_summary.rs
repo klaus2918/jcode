@@ -53,6 +53,7 @@ impl Config {
 - Performance tier: {}
 - Animation FPS: {}
 - Redraw FPS: {}
+- Copy badge Alt label: {}
 
 **Features:**
 - Memory: {}
@@ -161,6 +162,11 @@ impl Config {
             },
             self.display.animation_fps,
             self.display.redraw_fps,
+            if self.display.copy_badge_alt_label.trim().is_empty() {
+                "auto"
+            } else {
+                self.display.copy_badge_alt_label.trim()
+            },
             self.features.memory,
             self.features.swarm,
             self.features.message_timestamps,

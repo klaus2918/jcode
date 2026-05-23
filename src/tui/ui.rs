@@ -370,6 +370,7 @@ struct ActiveFileDiffContext {
     file_path: String,
     start_line: usize,
     end_line: usize,
+    expandable: bool,
 }
 
 #[derive(Clone, Debug)]

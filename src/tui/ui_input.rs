@@ -1289,7 +1289,10 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
             };
             spans.push(Span::styled(feedback_text, feedback_style));
         }
-        spans.push(Span::styled("[Alt]", alt_style));
+        spans.push(Span::styled(
+            super::viewport::copy_badge_alt_badge(),
+            alt_style,
+        ));
         spans.push(Span::raw(" "));
         spans.push(Span::styled("[⇧]", shift_style));
         spans.push(Span::raw(" "));

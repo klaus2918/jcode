@@ -184,6 +184,9 @@ impl Config {
                 self.display.redraw_fps = fps.clamp(1, 120);
             }
         }
+        if let Ok(v) = std::env::var("JCODE_COPY_BADGE_ALT_LABEL") {
+            self.display.copy_badge_alt_label = v;
+        }
         if let Ok(v) = std::env::var("JCODE_CHAT_NATIVE_SCROLLBAR") {
             if let Some(parsed) = parse_env_bool(&v) {
                 self.display.native_scrollbars.chat = parsed;
