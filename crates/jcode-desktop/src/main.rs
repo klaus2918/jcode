@@ -569,7 +569,7 @@ async fn run() -> Result<()> {
     let mut selecting_draft = false;
     let mut scroll_accumulator = ScrollLineAccumulator::default();
     let mut scroll_metrics_cache = SingleSessionScrollMetricsCache::default();
-    let mut hot_reloader = DesktopHotReloader::new();
+    let mut hot_reloader = DesktopHotReloader::new(process_role.reload_strategy());
     let preferences_save_tx = spawn_desktop_preferences_saver();
     let mut power_inhibitor = power_inhibit::PowerInhibitor::new();
     let (session_event_tx, session_event_rx) = mpsc::channel();
@@ -4453,12 +4453,25 @@ enum DesktopProcessRole {
     AppWorker,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DesktopReloadStrategy {
+    FullProcessHandoff,
+    AppWorkerRestart,
+}
+
 impl DesktopProcessRole {
     fn as_str(self) -> &'static str {
         match self {
             Self::Standalone => "standalone",
             Self::StableHost => "stable_host",
             Self::AppWorker => "app_worker",
+        }
+    }
+
+    fn reload_strategy(self) -> DesktopReloadStrategy {
+        match self {
+            Self::Standalone | Self::AppWorker => DesktopReloadStrategy::FullProcessHandoff,
+            Self::StableHost => DesktopReloadStrategy::AppWorkerRestart,
         }
     }
 }
@@ -4779,6 +4792,7 @@ fn cleanup_desktop_reload_handoff_files(ready_file: &Path, release_file: &Path) 
 
 struct DesktopHotReloader {
     relaunch: Option<DesktopRelaunch>,
+    strategy: DesktopReloadStrategy,
     observed_modified: Option<std::time::SystemTime>,
     last_checked: Instant,
     pending_handoff: Option<DesktopReloadHandoffWatcher>,
@@ -4787,13 +4801,14 @@ struct DesktopHotReloader {
 impl DesktopHotReloader {
     const CHECK_INTERVAL: Duration = Duration::from_millis(750);
 
-    fn new() -> Self {
+    fn new(strategy: DesktopReloadStrategy) -> Self {
         let relaunch = DesktopRelaunch::from_current_process();
         let observed_modified = relaunch.as_ref().and_then(|relaunch| {
             binary_modified_time(&desktop_reload_binary_candidate(&relaunch.binary))
         });
         Self {
             relaunch,
+            strategy,
             observed_modified,
             last_checked: Instant::now(),
             pending_handoff: None,
@@ -4820,7 +4835,7 @@ impl DesktopHotReloader {
         }
         self.last_checked = Instant::now();
 
-        let Some(relaunch) = self.relaunch.as_ref() else {
+        let Some(relaunch) = self.relaunch.clone() else {
             return false;
         };
         let binary = desktop_reload_binary_candidate(&relaunch.binary);
@@ -4830,18 +4845,7 @@ impl DesktopHotReloader {
         let observed_modified = self.observed_modified;
         self.observed_modified = Some(current_modified);
         if observed_modified.is_some_and(|observed| current_modified > observed) {
-            let relaunch = relaunch.for_app(app, binary);
-            match relaunch.spawn_for_window(window) {
-                Ok(Some(handoff)) => {
-                    self.pending_handoff = Some(handoff);
-                }
-                Ok(None) => return true,
-                Err(error) => {
-                    desktop_log::error(format_args!(
-                        "jcode-desktop: failed to hot reload desktop: {error:#}"
-                    ));
-                }
-            }
+            return self.reload_with_strategy(app, window, &relaunch, binary, "hot reload");
         }
         false
     }
@@ -4856,13 +4860,45 @@ impl DesktopHotReloader {
             ));
             return false;
         }
-        let Some(relaunch) = self.relaunch.as_ref() else {
+        let Some(relaunch) = self.relaunch.clone() else {
             desktop_log::warn(format_args!(
                 "jcode-desktop: force reload requested but current process cannot be relaunched"
             ));
             return false;
         };
         let binary = desktop_reload_binary_candidate(&relaunch.binary);
+        self.reload_with_strategy(app, window, &relaunch, binary, "force reload")
+    }
+
+    fn reload_with_strategy(
+        &mut self,
+        app: &DesktopApp,
+        window: &Window,
+        relaunch: &DesktopRelaunch,
+        binary: PathBuf,
+        reason: &'static str,
+    ) -> bool {
+        match self.strategy {
+            DesktopReloadStrategy::FullProcessHandoff => {
+                self.reload_full_process_handoff(app, window, relaunch, binary, reason)
+            }
+            DesktopReloadStrategy::AppWorkerRestart => {
+                desktop_log::info(format_args!(
+                    "jcode-desktop: {reason} requested app-worker restart; keeping stable host window alive"
+                ));
+                false
+            }
+        }
+    }
+
+    fn reload_full_process_handoff(
+        &mut self,
+        app: &DesktopApp,
+        window: &Window,
+        relaunch: &DesktopRelaunch,
+        binary: PathBuf,
+        reason: &'static str,
+    ) -> bool {
         let relaunch = relaunch.for_app(app, binary);
         match relaunch.spawn_for_window(window) {
             Ok(Some(handoff)) => {
@@ -4872,7 +4908,7 @@ impl DesktopHotReloader {
             Ok(None) => true,
             Err(error) => {
                 desktop_log::error(format_args!(
-                    "jcode-desktop: failed to force reload desktop: {error:#}"
+                    "jcode-desktop: failed to {reason} desktop: {error:#}"
                 ));
                 false
             }

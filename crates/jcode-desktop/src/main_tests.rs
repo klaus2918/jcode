@@ -62,6 +62,18 @@ fn desktop_process_role_parses_internal_flags() {
         ),
         DesktopProcessRole::AppWorker
     );
+    assert_eq!(
+        DesktopProcessRole::Standalone.reload_strategy(),
+        DesktopReloadStrategy::FullProcessHandoff
+    );
+    assert_eq!(
+        DesktopProcessRole::StableHost.reload_strategy(),
+        DesktopReloadStrategy::AppWorkerRestart
+    );
+    assert_eq!(
+        DesktopProcessRole::AppWorker.reload_strategy(),
+        DesktopReloadStrategy::FullProcessHandoff
+    );
 }
 
 #[test]
