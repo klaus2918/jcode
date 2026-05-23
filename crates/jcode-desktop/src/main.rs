@@ -11,6 +11,7 @@ mod desktop_rich_text;
 mod desktop_scene;
 mod desktop_session_events;
 mod desktop_ui_engine;
+mod desktop_worker_host;
 mod power_inhibit;
 mod render_helpers;
 mod session_data;
@@ -41,6 +42,7 @@ use desktop_session_events::{
     coalesce_desktop_session_events, collect_desktop_session_event_batch,
     spawn_session_event_forwarder,
 };
+use desktop_worker_host::DesktopWorkerConnection;
 use glyphon::{
     Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Wrap,
@@ -70,7 +72,7 @@ use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread::JoinHandle;
@@ -4797,7 +4799,7 @@ struct DesktopHotReloader {
     observed_modified: Option<std::time::SystemTime>,
     last_checked: Instant,
     pending_handoff: Option<DesktopReloadHandoffWatcher>,
-    app_worker: Option<Child>,
+    app_worker: Option<DesktopWorkerConnection>,
 }
 
 impl DesktopHotReloader {
@@ -4902,7 +4904,7 @@ impl DesktopHotReloader {
         binary: PathBuf,
         reason: &'static str,
     ) {
-        if let Some(mut worker) = self.app_worker.take()
+        if let Some(worker) = self.app_worker.take()
             && let Err(error) = worker.kill()
         {
             desktop_log::warn(format_args!(
@@ -4915,7 +4917,7 @@ impl DesktopHotReloader {
             Ok(worker) => {
                 desktop_log::info(format_args!(
                     "jcode-desktop: app worker restarted for {reason}; pid={}",
-                    worker.id()
+                    worker.child_id()
                 ));
                 self.app_worker = Some(worker);
             }
@@ -5074,7 +5076,7 @@ impl DesktopRelaunch {
         }
     }
 
-    fn spawn_app_worker(&self) -> Result<Child> {
+    fn spawn_app_worker(&self) -> Result<DesktopWorkerConnection> {
         desktop_log::info(format_args!(
             "jcode-desktop: spawning app worker {} with args {:?}",
             self.binary.display(),
@@ -5085,8 +5087,7 @@ impl DesktopRelaunch {
         command.env_remove(DESKTOP_RELOAD_WINDOW_ENV);
         command.env_remove(DESKTOP_RELOAD_HANDOFF_READY_ENV);
         command.env_remove(DESKTOP_RELOAD_HANDOFF_RELEASE_ENV);
-        command
-            .spawn()
+        DesktopWorkerConnection::spawn(&mut command)
             .with_context(|| format!("failed to spawn app worker {}", self.binary.display()))
     }
 }
