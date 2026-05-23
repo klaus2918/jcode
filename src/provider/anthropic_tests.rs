@@ -266,6 +266,12 @@ async fn live_anthropic_reasoning_smoke() -> Result<()> {
         .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
     let effort = std::env::var("JCODE_LIVE_ANTHROPIC_REASONING_EFFORT")
         .unwrap_or_else(|_| "low".to_string());
+    let prompt = std::env::var("JCODE_LIVE_ANTHROPIC_PROMPT")
+        .unwrap_or_else(|_| "Live smoke test: answer exactly OK.".to_string());
+    let system = std::env::var("JCODE_LIVE_ANTHROPIC_SYSTEM").unwrap_or_else(|_| {
+        "You are a live provider smoke test. Keep the answer tiny.".to_string()
+    });
+    let require_thinking = std::env::var_os("JCODE_LIVE_ANTHROPIC_REQUIRE_THINKING").is_some();
 
     let provider = AnthropicProvider::new();
     provider.set_model(&model)?;
@@ -274,21 +280,14 @@ async fn live_anthropic_reasoning_smoke() -> Result<()> {
     let messages = vec![Message {
         role: Role::User,
         content: vec![ContentBlock::Text {
-            text: "Live smoke test: answer exactly OK.".to_string(),
+            text: prompt,
             cache_control: None,
         }],
         timestamp: None,
         tool_duration_ms: None,
     }];
 
-    let stream = provider
-        .complete(
-            &messages,
-            &[],
-            "You are a live provider smoke test. Keep the answer tiny.",
-            None,
-        )
-        .await?;
+    let stream = provider.complete(&messages, &[], &system, None).await?;
     let (text_bytes, thinking_bytes, saw_message_end) =
         collect_live_smoke_stream(stream, std::time::Duration::from_secs(90)).await?;
 
@@ -299,6 +298,12 @@ async fn live_anthropic_reasoning_smoke() -> Result<()> {
         text_bytes > 0 || thinking_bytes > 0,
         "live Anthropic response contained neither text nor thinking deltas"
     );
+    if require_thinking {
+        assert!(
+            thinking_bytes > 0,
+            "live Anthropic response did not include thinking deltas despite JCODE_LIVE_ANTHROPIC_REQUIRE_THINKING"
+        );
+    }
     Ok(())
 }
 
