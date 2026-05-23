@@ -3,6 +3,7 @@ mod desktop_app_driver;
 mod desktop_benchmark;
 mod desktop_config;
 mod desktop_gallery;
+mod desktop_ipc;
 mod desktop_log;
 mod desktop_prefs;
 mod desktop_protocol;
