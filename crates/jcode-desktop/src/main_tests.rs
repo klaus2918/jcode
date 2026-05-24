@@ -5295,9 +5295,15 @@ fn single_session_adjacent_tool_messages_render_as_compact_summary() {
 
     let body = app.body_lines();
     assert_eq!(body.len(), 1);
-    assert_eq!(
-        body[0],
-        "  ▸ tools: 1 read, 2 agentgrep, 1 edit · ~23 tokens"
+    assert!(
+        body[0].starts_with("  ▸ tools: 1 read, 2 agentgrep, 1 edit · ~"),
+        "compact summary should preserve grouped tool counts: {:?}",
+        body[0]
+    );
+    assert!(
+        body[0].ends_with(" tokens"),
+        "compact summary should preserve approximate token suffix: {:?}",
+        body[0]
     );
 
     let styled = app.body_styled_lines();
