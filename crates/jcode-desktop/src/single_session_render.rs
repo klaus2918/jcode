@@ -40,6 +40,7 @@ pub(crate) const SLASH_SUGGESTIONS_INLINE_SELECTION_BACKGROUND_COLOR: [f32; 4] =
 const SINGLE_SESSION_SCROLLBAR_TRACK_WIDTH: f32 = 3.0;
 const SINGLE_SESSION_SCROLLBAR_GAP: f32 = 8.0;
 const TOOL_CARD_ENTRY_DURATION: Duration = Duration::from_millis(180);
+const TOOL_CARD_EXIT_DURATION: Duration = Duration::from_millis(160);
 const TOOL_CARD_STATE_TRANSITION_DURATION: Duration = Duration::from_millis(160);
 const TOOL_CARD_OUTPUT_REVEAL_DURATION: Duration = Duration::from_millis(180);
 const TOOL_CARD_RESOLUTION_FLASH_DURATION: Duration = Duration::from_millis(320);
@@ -1626,7 +1627,9 @@ struct ToolCardMotionState {
     target_state: SingleSessionToolVisualState,
     target_active: bool,
     detail_line_count: usize,
+    last_run: SingleSessionToolCardRun,
     entered_at: Option<Instant>,
+    exiting_at: Option<Instant>,
     state_transition: Option<ToolCardStateTransition>,
     output_transition: Option<ToolCardOutputTransition>,
     resolution_flash: Option<ToolCardResolutionFlash>,
@@ -1669,6 +1672,7 @@ impl Default for ToolCardVisual {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ToolCardMotionFrame {
     visuals: HashMap<String, ToolCardVisual>,
+    exiting: Vec<(SingleSessionToolCardRun, ToolCardVisual)>,
     active: bool,
     cache_key: u64,
 }
@@ -1684,6 +1688,10 @@ impl ToolCardMotionFrame {
 
     pub(crate) fn cache_key(&self) -> u64 {
         self.cache_key
+    }
+
+    pub(crate) fn exiting(&self) -> &[(SingleSessionToolCardRun, ToolCardVisual)] {
+        &self.exiting
     }
 }
 
@@ -1716,13 +1724,16 @@ impl ToolCardMotionRegistry {
                         target_state: run.state,
                         target_active: run.active,
                         detail_line_count: run.detail_line_count,
+                        last_run: run.clone(),
                         entered_at: animate_new_cards.then_some(now),
+                        exiting_at: None,
                         state_transition: None,
                         output_transition: None,
                         resolution_flash: None,
                         last_seen_generation: generation,
                     });
             state.last_seen_generation = generation;
+            state.exiting_at = None;
 
             if state.target_state != run.state || state.target_active != run.active {
                 let previous_state = state.target_state;
@@ -1757,17 +1768,37 @@ impl ToolCardMotionRegistry {
                 state.detail_line_count = run.detail_line_count;
             }
 
+            state.last_run = run.clone();
+
             let (visual, visual_active) = tool_card_visual_from_state(state, &run, now, tick);
             active |= visual_active || run.active || run.state.is_active();
             visuals.insert(run.call_id, visual);
+        }
+
+        let mut exiting = Vec::new();
+        for state in self.states.values_mut() {
+            if state.last_seen_generation == generation {
+                continue;
+            }
+            let exiting_at = *state.exiting_at.get_or_insert(now);
+            let (progress, running) =
+                timed_animation_progress(exiting_at, now, TOOL_CARD_EXIT_DURATION);
+            if !running {
+                continue;
+            }
+            let visual = exiting_tool_card_visual(&state.last_run, progress, tick);
+            active = true;
+            state.last_seen_generation = generation;
+            exiting.push((state.last_run.clone(), visual));
         }
 
         self.states
             .retain(|_, state| state.last_seen_generation == generation);
 
         ToolCardMotionFrame {
-            cache_key: tool_card_motion_cache_key(&visuals, active),
+            cache_key: tool_card_motion_cache_key(&visuals, &exiting, active),
             visuals,
+            exiting,
             active,
         }
     }
@@ -1877,6 +1908,20 @@ fn tool_card_visual_from_state(
     )
 }
 
+fn exiting_tool_card_visual(
+    run: &SingleSessionToolCardRun,
+    progress: f32,
+    tick: u64,
+) -> ToolCardVisual {
+    let eased = ease_out_cubic_local(progress);
+    let mut visual = default_tool_card_visual(run, active_tool_card_pulse(tick));
+    visual.opacity = 1.0 - eased;
+    visual.y_offset_pixels = -TOOL_CARD_ENTRY_OFFSET_PIXELS * 0.55 * eased;
+    visual.scale = 1.0 - (1.0 - TOOL_CARD_ENTRY_SCALE) * eased;
+    visual.output_reveal = 1.0 - eased * 0.65;
+    visual
+}
+
 fn timed_animation_progress(started_at: Instant, now: Instant, duration: Duration) -> (f32, bool) {
     if duration.is_zero() {
         return (1.0, false);
@@ -1935,7 +1980,11 @@ fn mix_tool_card_palette(
     }
 }
 
-fn tool_card_motion_cache_key(visuals: &HashMap<String, ToolCardVisual>, active: bool) -> u64 {
+fn tool_card_motion_cache_key(
+    visuals: &HashMap<String, ToolCardVisual>,
+    exiting: &[(SingleSessionToolCardRun, ToolCardVisual)],
+    active: bool,
+) -> u64 {
     let mut hasher = DefaultHasher::new();
     active.hash(&mut hasher);
     let mut entries = visuals.iter().collect::<Vec<_>>();
@@ -1952,6 +2001,20 @@ fn tool_card_motion_cache_key(visuals: &HashMap<String, ToolCardVisual>, active:
         hash_f32(visual.output_reveal, &mut hasher);
         hash_color(visual.flash_color, &mut hasher);
         hash_f32(visual.flash_alpha, &mut hasher);
+        hash_f32(visual.active_phase, &mut hasher);
+    }
+    for (run, visual) in exiting {
+        run.call_id.hash(&mut hasher);
+        run.line.hash(&mut hasher);
+        run.line_count.hash(&mut hasher);
+        hash_f32(visual.opacity, &mut hasher);
+        hash_f32(visual.y_offset_pixels, &mut hasher);
+        hash_f32(visual.scale, &mut hasher);
+        hash_color(visual.background, &mut hasher);
+        hash_color(visual.border, &mut hasher);
+        hash_color(visual.rail, &mut hasher);
+        hash_color(visual.chip, &mut hasher);
+        hash_f32(visual.output_reveal, &mut hasher);
         hash_f32(visual.active_phase, &mut hasher);
     }
     hasher.finish()
@@ -2064,6 +2127,21 @@ fn push_single_session_tool_cards_from_viewport(
             .and_then(|motion| motion.visual_for(&run.call_id))
             .unwrap_or_else(|| default_tool_card_visual(&run, pulse));
         push_single_session_tool_card(vertices, &run, rect, line_height, pulse, visual, size);
+    }
+
+    if let Some(tool_motion) = tool_motion {
+        for (run, visual) in tool_motion.exiting() {
+            let rect = Rect {
+                x: PANEL_TITLE_LEFT_PADDING - 10.0,
+                y: body_top + viewport.top_offset_pixels + run.line as f32 * line_height + 2.0,
+                width,
+                height: (run.line_count as f32 * line_height - 4.0).max(1.0),
+            };
+            let Some(rect) = clip_rect_to_vertical_bounds(rect, body_top, body_bottom) else {
+                continue;
+            };
+            push_single_session_tool_card(vertices, run, rect, line_height, pulse, *visual, size);
+        }
     }
 }
 
@@ -6003,6 +6081,66 @@ mod tests {
         let final_visual = final_frame.visual_for("call-a").expect("final visual");
         assert_eq!(final_visual.output_reveal, 1.0);
         assert!(!final_frame.is_active());
+    }
+
+    #[test]
+    fn tool_card_motion_animates_group_summary_replacement() {
+        let mut registry = ToolCardMotionRegistry::default();
+        let now = Instant::now();
+        let first = test_tool_line(
+            "call-a",
+            SingleSessionToolVisualState::Succeeded,
+            false,
+            SingleSessionToolLineKind::Header,
+        );
+        let second = test_tool_line(
+            "call-b",
+            SingleSessionToolVisualState::Succeeded,
+            false,
+            SingleSessionToolLineKind::Header,
+        );
+        let group = test_tool_line(
+            "tool-group",
+            SingleSessionToolVisualState::Group,
+            false,
+            SingleSessionToolLineKind::GroupSummary,
+        );
+
+        registry.frame(&[first, second], now, 0);
+        let replaced = registry.frame(
+            std::slice::from_ref(&group),
+            now + Duration::from_millis(8),
+            1,
+        );
+        assert!(replaced.is_active());
+        assert_eq!(replaced.exiting().len(), 2);
+        assert_eq!(
+            replaced
+                .visual_for("tool-group")
+                .expect("group visual")
+                .opacity,
+            0.0
+        );
+        assert!(
+            replaced
+                .exiting()
+                .iter()
+                .all(|(_, visual)| visual.opacity > 0.0 && visual.scale <= 1.0)
+        );
+
+        let settled = registry.frame(
+            std::slice::from_ref(&group),
+            now + Duration::from_millis(8) + TOOL_CARD_ENTRY_DURATION * 2,
+            2,
+        );
+        assert!(settled.exiting().is_empty());
+        assert_eq!(
+            settled
+                .visual_for("tool-group")
+                .expect("group visual")
+                .opacity,
+            1.0
+        );
     }
 
     fn colors_close(left: [f32; 4], right: [f32; 4], tolerance: f32) -> bool {
