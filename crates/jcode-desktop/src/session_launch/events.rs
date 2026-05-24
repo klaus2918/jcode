@@ -220,10 +220,7 @@ pub(super) fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSe
                 .unwrap_or("server requested the session be closed")
                 .to_string(),
         }),
-        "message_end" => Some(DesktopSessionEvent::SystemNotice {
-            title: "message complete".to_string(),
-            message: None,
-        }),
+        "message_end" | "kv_cache_request" => None,
         "generated_image" => Some(DesktopSessionEvent::SystemNotice {
             title: "generated image".to_string(),
             message: optional_server_str(value, "path")
@@ -232,7 +229,6 @@ pub(super) fn desktop_event_from_server_value(value: &Value) -> Option<DesktopSe
                 .map(ToOwned::to_owned),
         }),
         "batch_progress"
-        | "kv_cache_request"
         | "mcp_status"
         | "memory_injected"
         | "memory_activity"

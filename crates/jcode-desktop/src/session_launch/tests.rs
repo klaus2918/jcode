@@ -310,6 +310,19 @@ fn desktop_event_parser_maps_streaming_server_events() {
         })
     );
     assert_eq!(
+        desktop_event_from_server_value(&json!({"type": "message_end"})),
+        None,
+        "message completion is represented by streaming state and should not add timeline noise"
+    );
+    assert_eq!(
+        desktop_event_from_server_value(&json!({
+            "type": "kv_cache_request",
+            "status": "started"
+        })),
+        None,
+        "KV cache bookkeeping is internal and should not appear as a system notice"
+    );
+    assert_eq!(
         desktop_event_from_server_value(
             &json!({"type": "connection_type", "connection": "websocket"})
         ),
