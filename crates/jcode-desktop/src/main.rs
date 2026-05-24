@@ -604,7 +604,6 @@ async fn run() -> Result<()> {
     let mut space_hold_started_at: Option<Instant> = None;
     let mut space_hold_consumed = false;
     let mut desktop_clipboard = DesktopClipboard::default();
-    let mut latest_worker_scene: Option<DesktopScene> = None;
 
     if pending_workspace_startup_load {
         spawn_session_cards_load(
@@ -681,7 +680,12 @@ async fn run() -> Result<()> {
         }
         let worker_drain = hot_reloader.drain_app_worker_messages();
         if let Some(scene) = worker_drain.latest_scene {
-            latest_worker_scene = Some(scene);
+            // Keep receiving worker scenes so the IPC path stays exercised, but do
+            // not make them primary yet. The worker currently emits only the
+            // display-list skeleton, while the in-process host renderer still owns
+            // the complete desktop UI. Rendering the worker scene here regresses
+            // normal launches to a blank/gray window.
+            drop(scene);
             window.request_redraw();
         }
         if worker_drain.reload_requested && hot_reloader.force_reload(&app, &window) {
@@ -928,7 +932,6 @@ async fn run() -> Result<()> {
                             )),
                         );
                         window.request_redraw();
-                        return;
                     }
                     if key_input == KeyInput::RefreshSessions && app.is_workspace() {
                         spawn_session_cards_load(
@@ -1340,20 +1343,16 @@ async fn run() -> Result<()> {
                         window_size,
                         &mut scroll_metrics_cache,
                     );
-                    let render_result = if let Some(scene) = latest_worker_scene.as_ref() {
-                        canvas.render_scene(scene)
-                    } else {
-                        canvas.render(
+                    let render_result = canvas.render(
+                        &app,
+                        window.current_monitor().map(|monitor| monitor.size()),
+                        smooth_scroll_lines,
+                        workspace_space_hold_progress(
                             &app,
-                            window.current_monitor().map(|monitor| monitor.size()),
-                            smooth_scroll_lines,
-                            workspace_space_hold_progress(
-                                &app,
-                                space_hold_started_at,
-                                space_hold_consumed,
-                            ),
-                        )
-                    };
+                            space_hold_started_at,
+                            space_hold_consumed,
+                        ),
+                    );
                     match render_result {
                     Ok(frame) => {
                         surface_timeout_backoff.reset();
