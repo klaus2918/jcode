@@ -7838,6 +7838,139 @@ fn workspace_session_panel_composes_single_session_geometry() {
         vertices.len() >= child_vertices.len() + 6,
         "workspace should include the child single-session primitive geometry"
     );
+
+    let mut expected_panel_vertices = Vec::new();
+    append_child_vertices_to_parent_with_opacity(
+        &mut expected_panel_vertices,
+        &child_vertices,
+        panel_size,
+        rect,
+        size,
+        1.0,
+    );
+    let actual_panel_vertices = &vertices[vertices.len() - expected_panel_vertices.len()..];
+    assert_eq!(
+        actual_panel_vertices.len(),
+        expected_panel_vertices.len(),
+        "workspace panel should contribute exactly the transformed single-session primitive"
+    );
+    for (index, (actual, expected)) in actual_panel_vertices
+        .iter()
+        .zip(expected_panel_vertices.iter())
+        .enumerate()
+    {
+        assert!(
+            (actual.position[0] - expected.position[0]).abs() < 0.000_01
+                && (actual.position[1] - expected.position[1]).abs() < 0.000_01,
+            "workspace session panel vertex {index} position diverged from transformed single-session primitive: actual={:?} expected={:?}",
+            actual.position,
+            expected.position
+        );
+        assert!(
+            actual
+                .color
+                .iter()
+                .zip(expected.color.iter())
+                .all(|(actual, expected)| (actual - expected).abs() < 0.000_01),
+            "workspace session panel vertex {index} color diverged from transformed single-session primitive: actual={:?} expected={:?}",
+            actual.color,
+            expected.color
+        );
+    }
+}
+
+#[test]
+fn workspace_session_panel_reuses_single_session_primitive_exactly() {
+    let mut workspace = Workspace::from_session_cards(vec![workspace::SessionCard {
+        session_id: "session_alpha".to_string(),
+        title: "alpha".to_string(),
+        subtitle: "active".to_string(),
+        detail: "3 msgs".to_string(),
+        preview_lines: vec!["user hello".to_string()],
+        detail_lines: vec!["assistant hi".to_string()],
+    }]);
+    workspace.handle_key(KeyInput::Character("i".to_string()));
+    workspace.handle_key(KeyInput::Character("draft text".to_string()));
+
+    let size = PhysicalSize::new(1280, 800);
+    let render_layout = workspace_render_layout(&workspace, size, None);
+    let mut panel_rect = None;
+    for_each_visible_workspace_surface(
+        &workspace,
+        size,
+        render_layout,
+        0.0,
+        |surface, rect, _, _| {
+            if workspace.is_focused(surface.id) {
+                panel_rect = Some(rect);
+            }
+        },
+    );
+    let rect = panel_rect.expect("focused panel rect");
+    let app = workspace_single_session_app_for_surface(
+        &workspace,
+        workspace.focused_surface().expect("focused surface"),
+    )
+    .expect("workspace session surface should map to a single-session app");
+    assert_eq!(app.draft, "draft text");
+
+    let panel_size = workspace_panel_size(rect);
+    let rendered_body_lines = single_session_rendered_body_lines_for_tick(&app, panel_size, 0);
+    let single_session_vertices = build_single_session_vertices_with_cached_body(
+        &app,
+        panel_size,
+        0.0,
+        0,
+        0.0,
+        1.0,
+        &rendered_body_lines,
+    );
+    let mut expected_panel_vertices = Vec::new();
+    append_child_vertices_to_parent_with_opacity(
+        &mut expected_panel_vertices,
+        &single_session_vertices,
+        panel_size,
+        rect,
+        size,
+        1.0,
+    );
+
+    let mut workspace_vertices = Vec::new();
+    build_vertices_into(
+        WorkspaceVertexBuildParams {
+            workspace: &workspace,
+            size,
+            render_layout,
+            focus_pulse: 0.0,
+            space_hold_progress: None,
+            surface_frames: None,
+            status_color: workspace_status_bar_target_color(&workspace),
+        },
+        &mut workspace_vertices,
+    );
+
+    let actual_panel_vertices =
+        &workspace_vertices[workspace_vertices.len() - expected_panel_vertices.len()..];
+    assert_eq!(actual_panel_vertices.len(), expected_panel_vertices.len());
+    for (index, (actual, expected)) in actual_panel_vertices
+        .iter()
+        .zip(expected_panel_vertices.iter())
+        .enumerate()
+    {
+        assert!(
+            (actual.position[0] - expected.position[0]).abs() < 0.000_01
+                && (actual.position[1] - expected.position[1]).abs() < 0.000_01,
+            "workspace session panel vertex {index} position diverged from standalone single-session primitive"
+        );
+        assert!(
+            actual
+                .color
+                .iter()
+                .zip(expected.color.iter())
+                .all(|(actual, expected)| (actual - expected).abs() < 0.000_01),
+            "workspace session panel vertex {index} color diverged from standalone single-session primitive"
+        );
+    }
 }
 
 #[test]
