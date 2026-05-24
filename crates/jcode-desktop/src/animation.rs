@@ -1,8 +1,14 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 pub(crate) const VIEWPORT_ANIMATION_DURATION: Duration = Duration::from_millis(150);
 pub(crate) const FOCUS_PULSE_DURATION: Duration = Duration::from_millis(180);
+pub(crate) const SURFACE_TRANSITION_DURATION: Duration = Duration::from_millis(180);
+pub(crate) const STATUS_COLOR_TRANSITION_DURATION: Duration = Duration::from_millis(140);
 const VIEWPORT_ANIMATION_EPSILON: f32 = 0.5;
+const SURFACE_TRANSITION_EPSILON: f32 = 0.5;
+const SURFACE_ENTRY_OFFSET_PIXELS: f32 = 24.0;
+const SURFACE_ENTRY_SCALE: f32 = 0.965;
 
 #[derive(Clone, Copy)]
 pub(crate) struct VisibleColumnLayout {
@@ -102,6 +108,230 @@ impl AnimatedViewport {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct AnimatedRect {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+}
+
+impl AnimatedRect {
+    fn shifted(self, dx: f32, dy: f32) -> Self {
+        Self {
+            x: self.x + dx,
+            y: self.y + dy,
+            ..self
+        }
+    }
+
+    pub(crate) fn scaled_about_center(self, scale: f32) -> Self {
+        let scale = scale.max(0.01);
+        let width = self.width * scale;
+        let height = self.height * scale;
+        Self {
+            x: self.x + (self.width - width) * 0.5,
+            y: self.y + (self.height - height) * 0.5,
+            width,
+            height,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SurfaceVisualTarget {
+    pub(crate) id: u64,
+    pub(crate) rect: AnimatedRect,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SurfaceVisualFrame {
+    pub(crate) id: u64,
+    pub(crate) rect: AnimatedRect,
+    pub(crate) opacity: f32,
+    scale: f32,
+}
+
+impl SurfaceVisualFrame {
+    pub(crate) fn visual_rect(self) -> AnimatedRect {
+        self.rect.scaled_about_center(self.scale)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SurfaceAnimationValues {
+    rect: AnimatedRect,
+    opacity: f32,
+    scale: f32,
+}
+
+impl SurfaceAnimationValues {
+    fn from_target(target: SurfaceVisualTarget) -> Self {
+        Self {
+            rect: target.rect,
+            opacity: 1.0,
+            scale: 1.0,
+        }
+    }
+
+    fn entering_from(target: SurfaceVisualTarget) -> Self {
+        Self {
+            rect: target.rect.shifted(0.0, SURFACE_ENTRY_OFFSET_PIXELS),
+            opacity: 0.0,
+            scale: SURFACE_ENTRY_SCALE,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SurfaceAnimationState {
+    start: SurfaceAnimationValues,
+    current: SurfaceAnimationValues,
+    target: SurfaceAnimationValues,
+    started_at: Option<Instant>,
+    last_seen_generation: u64,
+}
+
+#[derive(Default)]
+pub(crate) struct SurfaceTransitionAnimator {
+    initialized: bool,
+    generation: u64,
+    states: HashMap<u64, SurfaceAnimationState>,
+}
+
+impl SurfaceTransitionAnimator {
+    pub(crate) fn frame(
+        &mut self,
+        targets: impl IntoIterator<Item = SurfaceVisualTarget>,
+        now: Instant,
+    ) -> Vec<SurfaceVisualFrame> {
+        self.generation = self.generation.wrapping_add(1).max(1);
+        let generation = self.generation;
+        let animate_new_surfaces = self.initialized;
+        self.initialized = true;
+
+        let mut frames = Vec::new();
+        for target in targets {
+            let target_values = SurfaceAnimationValues::from_target(target);
+            let state = self.states.entry(target.id).or_insert_with(|| {
+                let start = if animate_new_surfaces {
+                    SurfaceAnimationValues::entering_from(target)
+                } else {
+                    target_values
+                };
+                SurfaceAnimationState {
+                    start,
+                    current: start,
+                    target: target_values,
+                    started_at: animate_new_surfaces.then_some(now),
+                    last_seen_generation: generation,
+                }
+            });
+
+            state.last_seen_generation = generation;
+            if surface_animation_target_changed(state.target, target_values) {
+                if state.started_at.is_none() {
+                    state.start = state.current;
+                    state.started_at = Some(now);
+                }
+                state.target = target_values;
+            }
+
+            update_surface_animation_state(state, now);
+            frames.push(SurfaceVisualFrame {
+                id: target.id,
+                rect: state.current.rect,
+                opacity: state.current.opacity,
+                scale: state.current.scale,
+            });
+        }
+
+        self.states
+            .retain(|_, state| state.last_seen_generation == generation);
+        frames
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.generation = 0;
+        self.states.clear();
+    }
+
+    pub(crate) fn is_animating(&self) -> bool {
+        self.states.values().any(|state| state.started_at.is_some())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ColorTransition {
+    initialized: bool,
+    start: [f32; 4],
+    current: [f32; 4],
+    target: [f32; 4],
+    started_at: Option<Instant>,
+    duration: Duration,
+}
+
+impl Default for ColorTransition {
+    fn default() -> Self {
+        Self::new(STATUS_COLOR_TRANSITION_DURATION)
+    }
+}
+
+impl ColorTransition {
+    pub(crate) fn new(duration: Duration) -> Self {
+        Self {
+            initialized: false,
+            start: [0.0; 4],
+            current: [0.0; 4],
+            target: [0.0; 4],
+            started_at: None,
+            duration,
+        }
+    }
+
+    pub(crate) fn frame(&mut self, target: [f32; 4], now: Instant) -> [f32; 4] {
+        if !self.initialized {
+            self.initialized = true;
+            self.start = target;
+            self.current = target;
+            self.target = target;
+            return target;
+        }
+
+        if color_target_changed(self.target, target) {
+            self.start = self.current;
+            self.target = target;
+            self.started_at = Some(now);
+        }
+
+        let Some(started_at) = self.started_at else {
+            return self.current;
+        };
+        let progress = (now.saturating_duration_since(started_at).as_secs_f32()
+            / self.duration.as_secs_f32())
+        .clamp(0.0, 1.0);
+        let eased = ease_out_cubic(progress);
+        for index in 0..self.current.len() {
+            self.current[index] = lerp(self.start[index], self.target[index], eased);
+        }
+        if progress >= 1.0 {
+            self.current = self.target;
+            self.started_at = None;
+        }
+        self.current
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.started_at = None;
+    }
+
+    pub(crate) fn is_animating(&self) -> bool {
+        self.started_at.is_some()
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct FocusPulse {
     last_focused_id: Option<u64>,
@@ -142,6 +372,66 @@ impl FocusPulse {
 
 fn has_layout_target_changed(previous: f32, next: f32) -> bool {
     (previous - next).abs() > VIEWPORT_ANIMATION_EPSILON
+}
+
+fn update_surface_animation_state(state: &mut SurfaceAnimationState, now: Instant) {
+    let Some(started_at) = state.started_at else {
+        return;
+    };
+
+    let progress = (now.saturating_duration_since(started_at).as_secs_f32()
+        / SURFACE_TRANSITION_DURATION.as_secs_f32())
+    .clamp(0.0, 1.0);
+    let eased = ease_out_cubic(progress);
+    state.current = interpolate_surface_values(state.start, state.target, eased);
+    if progress >= 1.0 {
+        state.current = state.target;
+        state.started_at = None;
+    }
+}
+
+fn interpolate_surface_values(
+    start: SurfaceAnimationValues,
+    end: SurfaceAnimationValues,
+    progress: f32,
+) -> SurfaceAnimationValues {
+    SurfaceAnimationValues {
+        rect: AnimatedRect {
+            x: lerp(start.rect.x, end.rect.x, progress),
+            y: lerp(start.rect.y, end.rect.y, progress),
+            width: lerp(start.rect.width, end.rect.width, progress),
+            height: lerp(start.rect.height, end.rect.height, progress),
+        },
+        opacity: lerp(start.opacity, end.opacity, progress),
+        scale: lerp(start.scale, end.scale, progress),
+    }
+}
+
+fn surface_animation_target_changed(
+    previous: SurfaceAnimationValues,
+    next: SurfaceAnimationValues,
+) -> bool {
+    rect_target_changed(previous.rect, next.rect)
+        || (previous.opacity - next.opacity).abs() > 0.01
+        || (previous.scale - next.scale).abs() > 0.001
+}
+
+fn rect_target_changed(previous: AnimatedRect, next: AnimatedRect) -> bool {
+    has_surface_target_changed(previous.x, next.x)
+        || has_surface_target_changed(previous.y, next.y)
+        || has_surface_target_changed(previous.width, next.width)
+        || has_surface_target_changed(previous.height, next.height)
+}
+
+fn has_surface_target_changed(previous: f32, next: f32) -> bool {
+    (previous - next).abs() > SURFACE_TRANSITION_EPSILON
+}
+
+fn color_target_changed(previous: [f32; 4], next: [f32; 4]) -> bool {
+    previous
+        .iter()
+        .zip(next.iter())
+        .any(|(previous, next)| (previous - next).abs() > 0.001)
 }
 
 pub(crate) fn ease_out_cubic(progress: f32) -> f32 {

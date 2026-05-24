@@ -21,7 +21,10 @@ mod single_session_render;
 mod workspace;
 
 use ab_glyph::{Font, FontArc, Glyph as AbGlyph, PxScale, ScaleFont, point};
-use animation::{AnimatedViewport, FocusPulse, VisibleColumnLayout, WorkspaceRenderLayout};
+use animation::{
+    AnimatedRect, AnimatedViewport, ColorTransition, FocusPulse, SurfaceTransitionAnimator,
+    SurfaceVisualFrame, SurfaceVisualTarget, VisibleColumnLayout, WorkspaceRenderLayout,
+};
 use anyhow::{Context, Result};
 use base64::Engine;
 use bytemuck::{Pod, Zeroable};
@@ -8216,7 +8219,9 @@ struct Canvas {
     size: PhysicalSize<u32>,
     surface_zero_sized: bool,
     viewport_animation: AnimatedViewport,
+    surface_transitions: SurfaceTransitionAnimator,
     focus_pulse: FocusPulse,
+    status_color_transition: ColorTransition,
     primitive_vertex_buffer: Option<wgpu::Buffer>,
     primitive_vertex_capacity: usize,
     primitive_vertices_cache_key: Option<u64>,
@@ -8329,7 +8334,9 @@ impl Canvas {
             size,
             surface_zero_sized: !desktop_surface_size_is_renderable(initial_window_size),
             viewport_animation: AnimatedViewport::default(),
+            surface_transitions: SurfaceTransitionAnimator::default(),
             focus_pulse: FocusPulse::default(),
+            status_color_transition: ColorTransition::default(),
             primitive_vertex_buffer: None,
             primitive_vertex_capacity: 0,
             primitive_vertices_cache_key: None,
@@ -9137,11 +9144,31 @@ impl Canvas {
             };
         frame_profile.checkpoint("welcome_reveal");
 
-        let workspace_render_layout_for_frame = if let DesktopApp::Workspace(workspace) = app {
+        let (
+            workspace_render_layout_for_frame,
+            workspace_surface_frames_for_frame,
+            workspace_status_color_for_frame,
+        ) = if let DesktopApp::Workspace(workspace) = app {
             let target_layout = workspace_render_layout(workspace, self.size, monitor_size);
-            Some(self.viewport_animation.frame(target_layout, now))
+            let render_layout = self.viewport_animation.frame(target_layout, now);
+            let surface_targets =
+                workspace_surface_transition_targets(workspace, self.size, render_layout);
+            let surface_frames = WorkspaceSurfaceTransitionFrames::new(
+                self.surface_transitions.frame(surface_targets, now),
+                self.surface_transitions.is_animating(),
+            );
+            let status_color = self
+                .status_color_transition
+                .frame(workspace_status_bar_target_color(workspace), now);
+            (
+                Some(render_layout),
+                Some(surface_frames),
+                Some(status_color),
+            )
         } else {
-            None
+            self.surface_transitions.clear();
+            self.status_color_transition.clear();
+            (None, None, None)
         };
 
         let mut single_session_rendered_body_key = None;
@@ -9194,6 +9221,7 @@ impl Canvas {
                         workspace,
                         self.size,
                         render_layout,
+                        workspace_surface_frames_for_frame.as_ref(),
                         font_system,
                     );
                     if !workspace_text_panes.is_empty() {
@@ -9443,18 +9471,27 @@ impl Canvas {
                 let render_layout = workspace_render_layout_for_frame
                     .unwrap_or_else(|| workspace_render_layout(workspace, self.size, monitor_size));
                 let focus_pulse = self.focus_pulse.frame(workspace.focused_id, now);
-                let animation_active =
-                    self.viewport_animation.is_animating() || self.focus_pulse.is_animating();
+                let surface_transition_active = workspace_surface_frames_for_frame
+                    .as_ref()
+                    .is_some_and(|frames| frames.animating);
+                let animation_active = self.viewport_animation.is_animating()
+                    || self.focus_pulse.is_animating()
+                    || surface_transition_active
+                    || self.status_color_transition.is_animating();
                 reserve_workspace_vertex_capacity(
                     &mut self.primitive_workspace_vertices,
                     workspace,
                 );
+                let status_color = workspace_status_color_for_frame
+                    .unwrap_or_else(|| workspace_status_bar_target_color(workspace));
                 build_vertices_into(
                     workspace,
                     self.size,
                     render_layout,
                     focus_pulse,
                     workspace_space_hold_progress,
+                    workspace_surface_frames_for_frame.as_ref(),
+                    status_color,
                     &mut self.primitive_workspace_vertices,
                 );
                 (
@@ -10482,6 +10519,8 @@ fn build_vertices(
         render_layout,
         focus_pulse,
         space_hold_progress,
+        None,
+        workspace_status_bar_target_color(workspace),
         &mut vertices,
     );
     vertices
@@ -10508,6 +10547,99 @@ struct WorkspaceSingleSessionTextPane {
     size: PhysicalSize<u32>,
     rendered_body_lines: Vec<SingleSessionStyledLine>,
     buffers: Vec<Buffer>,
+}
+
+struct WorkspaceSurfaceTransitionFrames {
+    frames: Vec<SurfaceVisualFrame>,
+    animating: bool,
+}
+
+impl WorkspaceSurfaceTransitionFrames {
+    fn new(frames: Vec<SurfaceVisualFrame>, animating: bool) -> Self {
+        Self { frames, animating }
+    }
+
+    fn frame_for_surface(&self, surface_id: u64) -> Option<SurfaceVisualFrame> {
+        self.frames
+            .iter()
+            .copied()
+            .find(|frame| frame.id == surface_id)
+    }
+}
+
+fn workspace_transitioned_surface_rect(
+    frames: Option<&WorkspaceSurfaceTransitionFrames>,
+    surface_id: u64,
+    fallback: Rect,
+) -> Rect {
+    frames
+        .and_then(|frames| frames.frame_for_surface(surface_id))
+        .map(|frame| rect_from_animated_rect(frame.visual_rect()))
+        .unwrap_or(fallback)
+}
+
+fn workspace_transitioned_surface_opacity(
+    frames: Option<&WorkspaceSurfaceTransitionFrames>,
+    surface_id: u64,
+) -> f32 {
+    frames
+        .and_then(|frames| frames.frame_for_surface(surface_id))
+        .map(|frame| frame.opacity)
+        .unwrap_or(1.0)
+}
+
+fn animated_rect_from_rect(rect: Rect) -> AnimatedRect {
+    AnimatedRect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
+fn rect_from_animated_rect(rect: AnimatedRect) -> Rect {
+    Rect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
+fn workspace_surface_transition_targets(
+    workspace: &Workspace,
+    size: PhysicalSize<u32>,
+    render_layout: WorkspaceRenderLayout,
+) -> Vec<SurfaceVisualTarget> {
+    let mut targets = Vec::new();
+    if workspace.zoomed {
+        if let Some(surface) = workspace.focused_surface() {
+            targets.push(SurfaceVisualTarget {
+                id: surface.id,
+                rect: animated_rect_from_rect(Rect {
+                    x: OUTER_PADDING,
+                    y: STATUS_BAR_HEIGHT + OUTER_PADDING * 2.0,
+                    width: (size.width as f32 - OUTER_PADDING * 2.0).max(1.0),
+                    height: (size.height as f32 - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0),
+                }),
+            });
+        }
+        return targets;
+    }
+
+    for_each_visible_workspace_surface(
+        workspace,
+        size,
+        render_layout,
+        0.0,
+        |surface, rect, _, _| {
+            targets.push(SurfaceVisualTarget {
+                id: surface.id,
+                rect: animated_rect_from_rect(rect),
+            });
+        },
+    );
+    targets
 }
 
 fn workspace_panel_size(rect: Rect) -> PhysicalSize<u32> {
@@ -10541,6 +10673,7 @@ fn push_workspace_single_session_panel(
     rect: Rect,
     parent_size: PhysicalSize<u32>,
     focus_pulse: f32,
+    opacity: f32,
 ) {
     let panel_size = workspace_panel_size(rect);
     let rendered_body_lines = single_session_rendered_body_lines_for_tick(app, panel_size, 0);
@@ -10553,24 +10686,35 @@ fn push_workspace_single_session_panel(
         1.0,
         &rendered_body_lines,
     );
-    append_child_vertices_to_parent(vertices, &child_vertices, panel_size, rect, parent_size);
+    append_child_vertices_to_parent_with_opacity(
+        vertices,
+        &child_vertices,
+        panel_size,
+        rect,
+        parent_size,
+        opacity,
+    );
 }
 
-fn append_child_vertices_to_parent(
+fn append_child_vertices_to_parent_with_opacity(
     vertices: &mut Vec<Vertex>,
     child_vertices: &[Vertex],
     child_size: PhysicalSize<u32>,
     rect: Rect,
     parent_size: PhysicalSize<u32>,
+    opacity: f32,
 ) {
+    let opacity = opacity.clamp(0.0, 1.0);
     let child_width = child_size.width.max(1) as f32;
     let child_height = child_size.height.max(1) as f32;
     vertices.extend(child_vertices.iter().map(|vertex| {
         let child_x = (vertex.position[0] + 1.0) * 0.5 * child_width;
         let child_y = (1.0 - vertex.position[1]) * 0.5 * child_height;
+        let mut color = vertex.color;
+        color[3] *= opacity;
         Vertex {
             position: pixel_to_ndc([rect.x + child_x, rect.y + child_y], parent_size),
-            color: vertex.color,
+            color,
         }
     }));
 }
@@ -10618,6 +10762,7 @@ fn build_workspace_single_session_text_panes(
     workspace: &Workspace,
     size: PhysicalSize<u32>,
     render_layout: WorkspaceRenderLayout,
+    surface_frames: Option<&WorkspaceSurfaceTransitionFrames>,
     font_system: &mut FontSystem,
 ) -> Vec<WorkspaceSingleSessionTextPane> {
     let mut panes = Vec::new();
@@ -10626,12 +10771,13 @@ fn build_workspace_single_session_text_panes(
             && surface.kind == workspace::SurfaceKind::Session
             && let Some(app) = workspace_single_session_app_for_surface(workspace, surface)
         {
-            let rect = Rect {
+            let target_rect = Rect {
                 x: OUTER_PADDING,
                 y: STATUS_BAR_HEIGHT + OUTER_PADDING * 2.0,
                 width: (size.width as f32 - OUTER_PADDING * 2.0).max(1.0),
                 height: (size.height as f32 - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0),
             };
+            let rect = workspace_transitioned_surface_rect(surface_frames, surface.id, target_rect);
             let panel_size = workspace_panel_size(rect);
             let rendered_body_lines =
                 single_session_rendered_body_lines_for_tick(&app, panel_size, 0);
@@ -10659,13 +10805,14 @@ fn build_workspace_single_session_text_panes(
         size,
         render_layout,
         0.0,
-        |surface, rect, _, _| {
+        |surface, target_rect, _, _| {
             if surface.kind != workspace::SurfaceKind::Session {
                 return;
             }
             let Some(app) = workspace_single_session_app_for_surface(workspace, surface) else {
                 return;
             };
+            let rect = workspace_transitioned_surface_rect(surface_frames, surface.id, target_rect);
             let panel_size = workspace_panel_size(rect);
             let rendered_body_lines =
                 single_session_rendered_body_lines_for_tick(&app, panel_size, 0);
@@ -10749,6 +10896,8 @@ fn build_vertices_into(
     render_layout: WorkspaceRenderLayout,
     focus_pulse: f32,
     space_hold_progress: Option<f32>,
+    surface_frames: Option<&WorkspaceSurfaceTransitionFrames>,
+    status_color: [f32; 4],
     vertices: &mut Vec<Vertex>,
 ) {
     vertices.clear();
@@ -10770,10 +10919,6 @@ fn build_vertices_into(
         size,
     );
 
-    let status_color = match workspace.mode {
-        InputMode::Navigation => NAV_STATUS_COLOR,
-        InputMode::Insert => INSERT_STATUS_COLOR,
-    };
     let status_rect = Rect {
         x: OUTER_PADDING,
         y: OUTER_PADDING,
@@ -10797,16 +10942,26 @@ fn build_vertices_into(
 
     if workspace.zoomed {
         if let Some(surface) = workspace.focused_surface() {
-            let rect = Rect {
+            let target_rect = Rect {
                 x: OUTER_PADDING,
                 y: STATUS_BAR_HEIGHT + OUTER_PADDING * 2.0,
                 width: (width - OUTER_PADDING * 2.0).max(1.0),
                 height: (height - STATUS_BAR_HEIGHT - OUTER_PADDING * 3.0).max(1.0),
             };
+            let rect = workspace_transitioned_surface_rect(surface_frames, surface.id, target_rect);
+            let opacity = workspace_transitioned_surface_opacity(surface_frames, surface.id);
+            let start_index = vertices.len();
             if surface.kind == workspace::SurfaceKind::Session
                 && let Some(app) = workspace_single_session_app_for_surface(workspace, surface)
             {
-                push_workspace_single_session_panel(vertices, &app, rect, size, focus_pulse);
+                push_workspace_single_session_panel(
+                    vertices,
+                    &app,
+                    rect,
+                    size,
+                    focus_pulse,
+                    opacity,
+                );
             } else {
                 push_surface(vertices, rect, surface.color_index, true, focus_pulse, size);
                 let draft = focused_panel_draft(workspace, surface.id);
@@ -10819,6 +10974,7 @@ fn build_vertices_into(
                     workspace.detail_scroll,
                     draft.as_deref(),
                 );
+                multiply_vertex_alpha(&mut vertices[start_index..], opacity);
             }
         }
         if let Some(progress) = space_hold_progress {
@@ -10832,11 +10988,21 @@ fn build_vertices_into(
         size,
         render_layout,
         focus_pulse,
-        |surface, rect, focused, surface_pulse| {
+        |surface, target_rect, focused, surface_pulse| {
+            let rect = workspace_transitioned_surface_rect(surface_frames, surface.id, target_rect);
+            let opacity = workspace_transitioned_surface_opacity(surface_frames, surface.id);
+            let start_index = vertices.len();
             if surface.kind == workspace::SurfaceKind::Session
                 && let Some(app) = workspace_single_session_app_for_surface(workspace, surface)
             {
-                push_workspace_single_session_panel(vertices, &app, rect, size, surface_pulse);
+                push_workspace_single_session_panel(
+                    vertices,
+                    &app,
+                    rect,
+                    size,
+                    surface_pulse,
+                    opacity,
+                );
                 return;
             }
             push_surface(
@@ -10849,6 +11015,7 @@ fn build_vertices_into(
             );
             let draft = focused_panel_draft(workspace, surface.id);
             push_panel_contents(vertices, surface, rect, size, false, 0, draft.as_deref());
+            multiply_vertex_alpha(&mut vertices[start_index..], opacity);
         },
     );
 
@@ -10884,6 +11051,16 @@ fn push_space_hold_progress(vertices: &mut Vec<Vertex>, progress: f32, size: Phy
         SPACE_HOLD_PROGRESS_FILL_COLOR,
         size,
     );
+}
+
+fn multiply_vertex_alpha(vertices: &mut [Vertex], opacity: f32) {
+    let opacity = opacity.clamp(0.0, 1.0);
+    if opacity >= 0.999 {
+        return;
+    }
+    for vertex in vertices {
+        vertex.color[3] *= opacity;
+    }
 }
 
 fn workspace_render_layout(
@@ -10994,6 +11171,13 @@ fn workspace_status_text(workspace: &Workspace) -> String {
     };
     let panel_percent = (workspace.preferred_panel_screen_fraction() * 100.0).round() as u32;
     format!("{mode} P{panel_percent} {}", desktop_build_hash_label())
+}
+
+fn workspace_status_bar_target_color(workspace: &Workspace) -> [f32; 4] {
+    match workspace.mode {
+        InputMode::Navigation => NAV_STATUS_COLOR,
+        InputMode::Insert => INSERT_STATUS_COLOR,
+    }
 }
 
 fn desktop_build_hash_label() -> &'static str {
