@@ -44,6 +44,10 @@ const SINGLE_SESSION_SCROLLBAR_FADE_IDLE_DURATION: Duration = Duration::from_mil
 const SINGLE_SESSION_SCROLLBAR_FADE_DURATION: Duration = Duration::from_millis(260);
 const SINGLE_SESSION_SCROLLBAR_TRACK_COLOR: [f32; 4] = [0.040, 0.055, 0.090, 0.075];
 const SINGLE_SESSION_SCROLLBAR_THUMB_COLOR: [f32; 4] = [0.035, 0.065, 0.145, 0.34];
+const TRANSCRIPT_CARD_ENTRY_DURATION: Duration = Duration::from_millis(170);
+const TRANSCRIPT_CARD_SHIFT_DURATION: Duration = Duration::from_millis(150);
+const TRANSCRIPT_CARD_ENTRY_OFFSET_PIXELS: f32 = 10.0;
+const TRANSCRIPT_CARD_ENTRY_SCALE: f32 = 0.988;
 const TOOL_CARD_ENTRY_DURATION: Duration = Duration::from_millis(180);
 const TOOL_CARD_EXIT_DURATION: Duration = Duration::from_millis(160);
 const TOOL_CARD_STATE_TRANSITION_DURATION: Duration = Duration::from_millis(160);
@@ -246,6 +250,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         rendered_body_lines,
         None,
         None,
+        None,
     )
 }
 
@@ -258,6 +263,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
     smooth_scroll_lines: f32,
     welcome_hero_reveal_progress: f32,
     rendered_body_lines: &[SingleSessionStyledLine],
+    transcript_motion: Option<&TranscriptCardMotionFrame>,
     tool_motion: &ToolCardMotionFrame,
     scrollbar_motion: Option<&SingleSessionScrollbarMotionFrame>,
 ) -> Vec<Vertex> {
@@ -269,6 +275,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
         smooth_scroll_lines,
         welcome_hero_reveal_progress,
         rendered_body_lines,
+        transcript_motion,
         Some(tool_motion),
         scrollbar_motion,
     )
@@ -283,6 +290,7 @@ fn build_single_session_vertices_with_cached_body_internal(
     smooth_scroll_lines: f32,
     welcome_hero_reveal_progress: f32,
     rendered_body_lines: &[SingleSessionStyledLine],
+    transcript_motion: Option<&TranscriptCardMotionFrame>,
     tool_motion: Option<&ToolCardMotionFrame>,
     scrollbar_motion: Option<&SingleSessionScrollbarMotionFrame>,
 ) -> Vec<Vertex> {
@@ -362,6 +370,7 @@ fn build_single_session_vertices_with_cached_body_internal(
         size,
         &viewport,
         rendered_body_lines.len(),
+        transcript_motion,
     );
     push_single_session_tool_cards_from_viewport(
         &mut vertices,
@@ -1585,6 +1594,125 @@ pub(crate) struct SingleSessionTranscriptCardRun {
     pub(crate) style: SingleSessionLineStyle,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TranscriptCardVisual {
+    pub(crate) opacity: f32,
+    pub(crate) y_offset_pixels: f32,
+    pub(crate) scale: f32,
+}
+
+impl Default for TranscriptCardVisual {
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            y_offset_pixels: 0.0,
+            scale: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TranscriptCardLineShift {
+    from_line: usize,
+    started_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TranscriptCardMotionState {
+    line: usize,
+    entered_at: Option<Instant>,
+    line_shift: Option<TranscriptCardLineShift>,
+    last_seen_generation: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TranscriptCardMotionFrame {
+    visuals: HashMap<u64, TranscriptCardVisual>,
+    active: bool,
+    cache_key: u64,
+}
+
+impl TranscriptCardMotionFrame {
+    pub(crate) fn visual_for_key(&self, key: u64) -> Option<TranscriptCardVisual> {
+        self.visuals.get(&key).copied()
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub(crate) fn cache_key(&self) -> u64 {
+        self.cache_key
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct TranscriptCardMotionRegistry {
+    initialized: bool,
+    generation: u64,
+    states: HashMap<u64, TranscriptCardMotionState>,
+}
+
+impl TranscriptCardMotionRegistry {
+    pub(crate) fn frame(
+        &mut self,
+        lines: &[SingleSessionStyledLine],
+        line_height: f32,
+        now: Instant,
+    ) -> TranscriptCardMotionFrame {
+        self.generation = self.generation.wrapping_add(1).max(1);
+        let generation = self.generation;
+        let animate_new_cards =
+            self.initialized && !crate::animation::desktop_reduced_motion_enabled();
+        self.initialized = true;
+
+        let mut visuals = HashMap::new();
+        let mut active = false;
+        let mut occurrences = HashMap::new();
+        for run in single_session_transcript_card_runs(lines) {
+            let key = transcript_card_motion_key(lines, &run, &mut occurrences);
+            let state = self
+                .states
+                .entry(key)
+                .or_insert_with(|| TranscriptCardMotionState {
+                    line: run.line,
+                    entered_at: animate_new_cards.then_some(now),
+                    line_shift: None,
+                    last_seen_generation: generation,
+                });
+            state.last_seen_generation = generation;
+
+            if state.line != run.line {
+                state.line_shift = Some(TranscriptCardLineShift {
+                    from_line: state.line,
+                    started_at: now,
+                });
+                state.line = run.line;
+            }
+
+            let (visual, visual_active) =
+                transcript_card_visual_from_state(state, line_height, now);
+            active |= visual_active;
+            visuals.insert(key, visual);
+        }
+
+        self.states
+            .retain(|_, state| state.last_seen_generation == generation);
+
+        TranscriptCardMotionFrame {
+            cache_key: transcript_card_motion_cache_key(&visuals, active),
+            visuals,
+            active,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.generation = 0;
+        self.states.clear();
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SingleSessionTranscriptCardGeometry {
@@ -2279,6 +2407,106 @@ fn hash_f32(value: f32, hasher: &mut impl Hasher) {
     value.to_bits().hash(hasher);
 }
 
+fn transcript_card_visual_from_state(
+    state: &mut TranscriptCardMotionState,
+    line_height: f32,
+    now: Instant,
+) -> (TranscriptCardVisual, bool) {
+    let mut visual = TranscriptCardVisual::default();
+    let mut active = false;
+
+    if let Some(entered_at) = state.entered_at {
+        let (progress, running) =
+            timed_animation_progress(entered_at, now, TRANSCRIPT_CARD_ENTRY_DURATION);
+        let eased = ease_out_cubic_local(progress);
+        visual.opacity = eased;
+        visual.y_offset_pixels += (1.0 - eased) * TRANSCRIPT_CARD_ENTRY_OFFSET_PIXELS;
+        visual.scale = TRANSCRIPT_CARD_ENTRY_SCALE + (1.0 - TRANSCRIPT_CARD_ENTRY_SCALE) * eased;
+        active |= running;
+        if !running {
+            state.entered_at = None;
+        }
+    }
+
+    if let Some(shift) = state.line_shift {
+        let (progress, running) =
+            timed_animation_progress(shift.started_at, now, TRANSCRIPT_CARD_SHIFT_DURATION);
+        let eased = ease_out_cubic_local(progress);
+        let line_delta = shift.from_line as f32 - state.line as f32;
+        visual.y_offset_pixels += line_delta * line_height * (1.0 - eased);
+        active |= running;
+        if !running {
+            state.line_shift = None;
+        }
+    }
+
+    (visual, active)
+}
+
+fn transcript_card_visual_rect(rect: Rect, visual: TranscriptCardVisual) -> Rect {
+    let scale = visual.scale.clamp(0.01, 1.5);
+    let width = rect.width * scale;
+    let height = rect.height * scale;
+    Rect {
+        x: rect.x + (rect.width - width) * 0.5,
+        y: rect.y + (rect.height - height) * 0.5 + visual.y_offset_pixels,
+        width,
+        height,
+    }
+}
+
+fn transcript_card_alpha(mut color: [f32; 4], opacity: f32) -> [f32; 4] {
+    color[3] *= opacity.clamp(0.0, 1.0);
+    color
+}
+
+fn transcript_card_motion_key(
+    lines: &[SingleSessionStyledLine],
+    run: &SingleSessionTranscriptCardRun,
+    occurrences: &mut HashMap<u64, usize>,
+) -> u64 {
+    let base_key = transcript_card_motion_base_key(lines, run);
+    let occurrence = occurrences.entry(base_key).or_insert(0);
+    let mut hasher = DefaultHasher::new();
+    base_key.hash(&mut hasher);
+    occurrence.hash(&mut hasher);
+    *occurrence += 1;
+    hasher.finish()
+}
+
+fn transcript_card_motion_base_key(
+    lines: &[SingleSessionStyledLine],
+    run: &SingleSessionTranscriptCardRun,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    run.style.hash(&mut hasher);
+    run.line_count.hash(&mut hasher);
+    let end = run.line.saturating_add(run.line_count).min(lines.len());
+    for line in &lines[run.line.min(lines.len())..end] {
+        line.style.hash(&mut hasher);
+        line.text.hash(&mut hasher);
+        line.inline_spans.len().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn transcript_card_motion_cache_key(
+    visuals: &HashMap<u64, TranscriptCardVisual>,
+    active: bool,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    active.hash(&mut hasher);
+    let mut entries = visuals.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|(key, _)| **key);
+    for (key, visual) in entries {
+        key.hash(&mut hasher);
+        hash_f32(visual.opacity, &mut hasher);
+        hash_f32(visual.y_offset_pixels, &mut hasher);
+        hash_f32(visual.scale, &mut hasher);
+    }
+    hasher.finish()
+}
+
 fn push_single_session_transcript_cards(
     vertices: &mut Vec<Vertex>,
     app: &SingleSessionApp,
@@ -2293,6 +2521,7 @@ fn push_single_session_transcript_cards(
         size,
         &viewport,
         viewport.total_lines,
+        None,
     );
 }
 
@@ -2302,6 +2531,7 @@ fn push_single_session_transcript_cards_from_viewport(
     size: PhysicalSize<u32>,
     viewport: &SingleSessionBodyViewport,
     total_lines: usize,
+    transcript_motion: Option<&TranscriptCardMotionFrame>,
 ) {
     let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
@@ -2309,20 +2539,35 @@ fn push_single_session_transcript_cards_from_viewport(
     let body_top = single_session_body_top_for_app(app, size);
     let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
 
+    let mut occurrences = HashMap::new();
     for run in single_session_transcript_card_runs(&viewport.lines) {
         let Some(color) = single_session_line_card_color(run.style) else {
             continue;
         };
+        let motion_key = transcript_card_motion_key(&viewport.lines, &run, &mut occurrences);
+        let visual = transcript_motion
+            .and_then(|motion| motion.visual_for_key(motion_key))
+            .unwrap_or_default();
+        if visual.opacity <= 0.001 {
+            continue;
+        }
         let rect = Rect {
             x: PANEL_TITLE_LEFT_PADDING - 6.0,
             y: body_top + viewport.top_offset_pixels + run.line as f32 * line_height + 3.0,
             width,
             height: (run.line_count as f32 * line_height - 6.0).max(1.0),
         };
+        let rect = transcript_card_visual_rect(rect, visual);
         let Some(rect) = clip_rect_to_vertical_bounds(rect, body_top, body_bottom) else {
             continue;
         };
-        push_rounded_rect(vertices, rect, 7.0, color, size);
+        push_rounded_rect(
+            vertices,
+            rect,
+            7.0,
+            transcript_card_alpha(color, visual.opacity),
+            size,
+        );
     }
 }
 
@@ -6212,6 +6457,109 @@ mod tests {
                 expanded: matches!(kind, SingleSessionToolLineKind::Detail),
                 stdin_prompt: None,
             })
+    }
+
+    fn test_transcript_card_visual_for_line(
+        frame: &TranscriptCardMotionFrame,
+        lines: &[SingleSessionStyledLine],
+        target_line: usize,
+    ) -> TranscriptCardVisual {
+        let mut occurrences = HashMap::new();
+        for run in single_session_transcript_card_runs(lines) {
+            let key = transcript_card_motion_key(lines, &run, &mut occurrences);
+            if run.line == target_line {
+                return frame.visual_for_key(key).expect("transcript card visual");
+            }
+        }
+        panic!("missing transcript card run at line {target_line}");
+    }
+
+    #[test]
+    fn transcript_card_motion_animates_new_card_entry() {
+        let mut registry = TranscriptCardMotionRegistry::default();
+        let now = Instant::now();
+        let line_height = 28.0;
+        let first = SingleSessionStyledLine::new("```rust", SingleSessionLineStyle::Code);
+        let spacer = SingleSessionStyledLine::new("between", SingleSessionLineStyle::Assistant);
+        let second = SingleSessionStyledLine::new("```text", SingleSessionLineStyle::Code);
+
+        let initial = registry.frame(std::slice::from_ref(&first), line_height, now);
+        let initial_visual =
+            test_transcript_card_visual_for_line(&initial, std::slice::from_ref(&first), 0);
+        assert_eq!(initial_visual.opacity, 1.0);
+        assert!(!initial.is_active());
+
+        let lines = vec![first.clone(), spacer, second];
+        let entry = registry.frame(&lines, line_height, now + Duration::from_millis(5));
+        let entry_visual = test_transcript_card_visual_for_line(&entry, &lines, 2);
+        assert_eq!(entry_visual.opacity, 0.0);
+        assert!(entry_visual.y_offset_pixels > 0.0);
+        assert!(entry_visual.scale < 1.0);
+        assert!(entry.is_active());
+
+        let settled = registry.frame(
+            &lines,
+            line_height,
+            now + Duration::from_millis(5) + TRANSCRIPT_CARD_ENTRY_DURATION * 2,
+        );
+        let settled_visual = test_transcript_card_visual_for_line(&settled, &lines, 2);
+        assert_eq!(settled_visual.opacity, 1.0);
+        assert_eq!(settled_visual.y_offset_pixels, 0.0);
+        assert_eq!(settled_visual.scale, 1.0);
+    }
+
+    #[test]
+    fn transcript_card_motion_animates_layout_shift() {
+        let mut registry = TranscriptCardMotionRegistry::default();
+        let now = Instant::now();
+        let line_height = 30.0;
+        let code = SingleSessionStyledLine::new("```rust", SingleSessionLineStyle::Code);
+        let intro = SingleSessionStyledLine::new("intro", SingleSessionLineStyle::Assistant);
+
+        registry.frame(std::slice::from_ref(&code), line_height, now);
+        let shifted_lines = vec![intro, code];
+        let shift_start =
+            registry.frame(&shifted_lines, line_height, now + Duration::from_millis(4));
+        let shift_visual = test_transcript_card_visual_for_line(&shift_start, &shifted_lines, 1);
+        assert!(shift_start.is_active());
+        assert!(shift_visual.y_offset_pixels < -line_height * 0.9);
+
+        let shift_middle = registry.frame(
+            &shifted_lines,
+            line_height,
+            now + Duration::from_millis(4) + TRANSCRIPT_CARD_SHIFT_DURATION / 2,
+        );
+        let shift_middle_visual =
+            test_transcript_card_visual_for_line(&shift_middle, &shifted_lines, 1);
+        assert!(shift_middle_visual.y_offset_pixels < 0.0);
+        assert!(shift_middle_visual.y_offset_pixels > -line_height);
+
+        let settled = registry.frame(
+            &shifted_lines,
+            line_height,
+            now + Duration::from_millis(4) + TRANSCRIPT_CARD_SHIFT_DURATION * 2,
+        );
+        let settled_visual = test_transcript_card_visual_for_line(&settled, &shifted_lines, 1);
+        assert_eq!(settled_visual.y_offset_pixels, 0.0);
+        assert!(!settled.is_active());
+    }
+
+    #[test]
+    fn reduced_motion_snaps_transcript_card_motion() {
+        let _guard = crate::animation::DesktopReducedMotionEnvGuard::set(true);
+        let mut registry = TranscriptCardMotionRegistry::default();
+        let now = Instant::now();
+        let line_height = 28.0;
+        let first = SingleSessionStyledLine::new("```rust", SingleSessionLineStyle::Code);
+        let second = SingleSessionStyledLine::new("```text", SingleSessionLineStyle::Code);
+        let spacer = SingleSessionStyledLine::new("between", SingleSessionLineStyle::Assistant);
+
+        registry.frame(std::slice::from_ref(&first), line_height, now);
+        let lines = vec![first, spacer, second];
+        let frame = registry.frame(&lines, line_height, now + Duration::from_millis(5));
+        let visual = test_transcript_card_visual_for_line(&frame, &lines, 2);
+        assert_eq!(visual, TranscriptCardVisual::default());
+        assert!(!frame.is_active());
     }
 
     #[test]

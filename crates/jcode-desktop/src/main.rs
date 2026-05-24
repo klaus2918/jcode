@@ -8180,6 +8180,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
     smooth_scroll_lines: f32,
     welcome_hero_reveal_progress: f32,
     tool_motion_cache_key: u64,
+    transcript_motion_cache_key: u64,
     scrollbar_motion_cache_key: u64,
     body_key: Option<u64>,
     body_line_count: usize,
@@ -8206,6 +8207,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
     focus_pulse.to_bits().hash(&mut hasher);
     welcome_hero_reveal_progress.to_bits().hash(&mut hasher);
     tool_motion_cache_key.hash(&mut hasher);
+    transcript_motion_cache_key.hash(&mut hasher);
     scrollbar_motion_cache_key.hash(&mut hasher);
     spinner_tick.hash(&mut hasher);
     app.is_processing.hash(&mut hasher);
@@ -8248,6 +8250,7 @@ struct Canvas {
     workspace_surface_exit_cache: HashMap<u64, workspace::Surface>,
     focus_pulse: FocusPulse,
     status_color_transition: ColorTransition,
+    transcript_card_motion: TranscriptCardMotionRegistry,
     tool_card_motion: ToolCardMotionRegistry,
     single_session_scrollbar_motion: SingleSessionScrollbarMotionRegistry,
     primitive_vertex_buffer: Option<wgpu::Buffer>,
@@ -8366,6 +8369,7 @@ impl Canvas {
             workspace_surface_exit_cache: HashMap::new(),
             focus_pulse: FocusPulse::default(),
             status_color_transition: ColorTransition::default(),
+            transcript_card_motion: TranscriptCardMotionRegistry::default(),
             tool_card_motion: ToolCardMotionRegistry::default(),
             single_session_scrollbar_motion: SingleSessionScrollbarMotionRegistry::default(),
             primitive_vertex_buffer: None,
@@ -9458,6 +9462,16 @@ impl Canvas {
         let (mut vertices, animation_active): (Cow<'_, [Vertex]>, bool) = match app {
             DesktopApp::SingleSession(single_session) => {
                 let focus_pulse = self.focus_pulse.frame(1, now);
+                let transcript_line_height = {
+                    let typography =
+                        single_session_typography_for_scale(single_session.text_scale());
+                    typography.body_size * typography.body_line_height
+                };
+                let transcript_motion = self.transcript_card_motion.frame(
+                    &self.single_session_body_lines,
+                    transcript_line_height,
+                    now,
+                );
                 let tool_motion =
                     self.tool_card_motion
                         .frame(&self.single_session_body_lines, now, spinner_tick);
@@ -9470,6 +9484,7 @@ impl Canvas {
                 );
                 let animation_active = self.focus_pulse.is_animating()
                     || single_session.has_background_work()
+                    || transcript_motion.is_active()
                     || tool_motion.is_active()
                     || scrollbar_motion.is_active()
                     || welcome_hero_reveal_active
@@ -9482,6 +9497,7 @@ impl Canvas {
                     smooth_scroll_lines,
                     welcome_hero_reveal_progress,
                     tool_motion.cache_key(),
+                    transcript_motion.cache_key(),
                     scrollbar_motion.cache_key(),
                     single_session_rendered_body_key,
                     self.single_session_body_lines.len(),
@@ -9500,6 +9516,7 @@ impl Canvas {
                                 smooth_scroll_lines,
                                 welcome_hero_reveal_progress,
                                 &self.single_session_body_lines,
+                                Some(&transcript_motion),
                                 &tool_motion,
                                 Some(&scrollbar_motion),
                             );
@@ -9518,6 +9535,7 @@ impl Canvas {
                             smooth_scroll_lines,
                             welcome_hero_reveal_progress,
                             &self.single_session_body_lines,
+                            Some(&transcript_motion),
                             &tool_motion,
                             Some(&scrollbar_motion),
                         ),
@@ -9526,6 +9544,7 @@ impl Canvas {
                 (vertices, animation_active)
             }
             DesktopApp::Workspace(workspace) => {
+                self.transcript_card_motion.clear();
                 self.single_session_scrollbar_motion.clear();
                 self.primitive_vertices_cache_key = None;
                 let render_layout = workspace_render_layout_for_frame
