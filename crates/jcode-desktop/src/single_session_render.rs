@@ -56,6 +56,10 @@ const INLINE_MARKDOWN_PILL_EXIT_DURATION: Duration = Duration::from_millis(125);
 const INLINE_MARKDOWN_PILL_ENTRY_OFFSET_PIXELS: f32 = 4.0;
 const INLINE_MARKDOWN_PILL_ENTRY_SCALE: f32 = 0.94;
 const INLINE_WIDGET_SELECTION_TRANSITION_DURATION: Duration = Duration::from_millis(135);
+const INLINE_WIDGET_LIST_REFLOW_ENTRY_DURATION: Duration = Duration::from_millis(145);
+const INLINE_WIDGET_LIST_REFLOW_SHIFT_DURATION: Duration = Duration::from_millis(145);
+const INLINE_WIDGET_LIST_REFLOW_EXIT_DURATION: Duration = Duration::from_millis(120);
+const INLINE_WIDGET_LIST_REFLOW_COLOR: [f32; 4] = [0.105, 0.355, 0.950, 0.110];
 const TOOL_CARD_ENTRY_DURATION: Duration = Duration::from_millis(180);
 const TOOL_CARD_EXIT_DURATION: Duration = Duration::from_millis(160);
 const TOOL_CARD_STATE_TRANSITION_DURATION: Duration = Duration::from_millis(160);
@@ -194,6 +198,7 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         welcome_chrome_offset,
         welcome_timeline_total_body_lines(app, size),
         None,
+        None,
     );
     push_single_session_transcript_cards(
         &mut vertices,
@@ -262,6 +267,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -275,6 +281,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
     welcome_hero_reveal_progress: f32,
     rendered_body_lines: &[SingleSessionStyledLine],
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
+    inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     inline_markdown_motion: Option<&InlineMarkdownPillMotionFrame>,
     tool_motion: &ToolCardMotionFrame,
@@ -289,6 +296,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
         welcome_hero_reveal_progress,
         rendered_body_lines,
         inline_selection_motion,
+        inline_list_reflow_motion,
         transcript_motion,
         inline_markdown_motion,
         Some(tool_motion),
@@ -306,6 +314,7 @@ fn build_single_session_vertices_with_cached_body_internal(
     welcome_hero_reveal_progress: f32,
     rendered_body_lines: &[SingleSessionStyledLine],
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
+    inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     inline_markdown_motion: Option<&InlineMarkdownPillMotionFrame>,
     tool_motion: Option<&ToolCardMotionFrame>,
@@ -374,6 +383,7 @@ fn build_single_session_vertices_with_cached_body_internal(
         welcome_chrome_offset,
         rendered_body_lines.len(),
         inline_selection_motion,
+        inline_list_reflow_motion,
     );
 
     let viewport = single_session_body_viewport_from_lines(
@@ -888,6 +898,7 @@ fn push_single_session_inline_widget_card(
     welcome_chrome_offset_pixels: f32,
     total_lines: usize,
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
+    inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
 ) {
     let line_count = app.render_inline_widget_visible_line_count();
     if line_count == 0 {
@@ -985,6 +996,18 @@ fn push_single_session_inline_widget_card(
         );
     }
 
+    push_single_session_inline_widget_list_reflow(
+        vertices,
+        app.render_inline_widget_kind(),
+        &inline_lines,
+        line_count,
+        &typography,
+        &layout,
+        progress,
+        inline_list_reflow_motion,
+        size,
+    );
+
     push_single_session_inline_widget_selection(
         vertices,
         app.render_inline_widget_kind(),
@@ -994,6 +1017,87 @@ fn push_single_session_inline_widget_card(
         &layout,
         progress,
         inline_selection_motion,
+        size,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_single_session_inline_widget_list_reflow(
+    vertices: &mut Vec<Vertex>,
+    kind: Option<InlineWidgetKind>,
+    inline_lines: &[SingleSessionStyledLine],
+    line_count: usize,
+    typography: &SingleSessionTypography,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
+    size: PhysicalSize<u32>,
+) {
+    let Some(motion) = inline_list_reflow_motion else {
+        return;
+    };
+    let line_height = inline_widget_line_height(kind, typography);
+    for run in inline_widget_list_row_runs(kind, inline_lines, line_count) {
+        if let Some(visual) = motion.visual_for_key(run.key) {
+            push_single_session_inline_widget_reflow_row(
+                vertices,
+                run,
+                visual,
+                line_height,
+                layout,
+                reveal_progress,
+                size,
+            );
+        }
+    }
+    for (run, visual) in motion.exiting() {
+        push_single_session_inline_widget_reflow_row(
+            vertices,
+            *run,
+            *visual,
+            line_height,
+            layout,
+            reveal_progress,
+            size,
+        );
+    }
+}
+
+fn push_single_session_inline_widget_reflow_row(
+    vertices: &mut Vec<Vertex>,
+    run: InlineWidgetListRowRun,
+    visual: InlineWidgetListReflowVisual,
+    line_height: f32,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    size: PhysicalSize<u32>,
+) {
+    if visual.opacity <= 0.001 || visual.line_span <= 0.05 {
+        return;
+    }
+    let row_top = layout.text_top
+        + (run.line as f32 + visual.y_offset_lines) * line_height
+        + inline_widget_selection_top_offset(Some(run.kind));
+    let row_height =
+        visual.line_span * line_height + inline_widget_selection_extra_height(Some(run.kind));
+    let row_visible_height = (layout.visible_text_bottom - row_top).min(row_height);
+    let row_width = (layout.card.width - layout.padding_x).max(0.0);
+    if row_visible_height <= 3.0 || row_width <= 6.0 {
+        return;
+    }
+    push_rounded_rect(
+        vertices,
+        Rect {
+            x: layout.card.x + layout.padding_x * 0.5,
+            y: row_top,
+            width: row_width,
+            height: row_visible_height.max(1.0),
+        },
+        layout.selection_radius,
+        with_alpha(
+            INLINE_WIDGET_LIST_REFLOW_COLOR,
+            INLINE_WIDGET_LIST_REFLOW_COLOR[3] * reveal_progress * visual.opacity,
+        ),
         size,
     );
 }
@@ -1744,6 +1848,191 @@ impl InlineWidgetSelectionMotionRegistry {
         self.initialized = false;
         self.current = None;
         self.transition = None;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InlineWidgetListRowRun {
+    kind: InlineWidgetKind,
+    key: u64,
+    line: usize,
+    line_span: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct InlineWidgetListReflowVisual {
+    opacity: f32,
+    y_offset_lines: f32,
+    line_span: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InlineWidgetListReflowShift {
+    from_line: usize,
+    from_line_span: usize,
+    started_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InlineWidgetListReflowState {
+    run: InlineWidgetListRowRun,
+    entered_at: Option<Instant>,
+    exiting_at: Option<Instant>,
+    shift: Option<InlineWidgetListReflowShift>,
+    last_seen_generation: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct InlineWidgetListReflowMotionFrame {
+    visuals: HashMap<u64, InlineWidgetListReflowVisual>,
+    exiting: Vec<(InlineWidgetListRowRun, InlineWidgetListReflowVisual)>,
+    active: bool,
+    cache_key: u64,
+}
+
+impl InlineWidgetListReflowMotionFrame {
+    fn visual_for_key(&self, key: u64) -> Option<InlineWidgetListReflowVisual> {
+        self.visuals.get(&key).copied()
+    }
+
+    fn exiting(&self) -> &[(InlineWidgetListRowRun, InlineWidgetListReflowVisual)] {
+        &self.exiting
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub(crate) fn cache_key(&self) -> u64 {
+        self.cache_key
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct InlineWidgetListReflowMotionRegistry {
+    initialized: bool,
+    kind: Option<InlineWidgetKind>,
+    generation: u64,
+    states: HashMap<u64, InlineWidgetListReflowState>,
+}
+
+impl InlineWidgetListReflowMotionRegistry {
+    pub(crate) fn frame(
+        &mut self,
+        app: &SingleSessionApp,
+        now: Instant,
+    ) -> InlineWidgetListReflowMotionFrame {
+        let kind = app.render_inline_widget_kind();
+        let lines = app.render_inline_widget_styled_lines();
+        let visible_line_count = app.render_inline_widget_visible_line_count();
+        self.frame_for_rows(kind, &lines, visible_line_count, now)
+    }
+
+    fn frame_for_rows(
+        &mut self,
+        kind: Option<InlineWidgetKind>,
+        lines: &[SingleSessionStyledLine],
+        visible_line_count: usize,
+        now: Instant,
+    ) -> InlineWidgetListReflowMotionFrame {
+        let Some(kind) = kind else {
+            self.clear();
+            return InlineWidgetListReflowMotionFrame::default();
+        };
+
+        if self.kind != Some(kind) {
+            self.clear();
+            self.kind = Some(kind);
+        }
+
+        self.generation = self.generation.wrapping_add(1).max(1);
+        let generation = self.generation;
+        let reduced_motion = crate::animation::desktop_reduced_motion_enabled();
+        let animate_new_rows = self.initialized && !reduced_motion;
+        self.initialized = true;
+
+        let runs = inline_widget_list_row_runs(Some(kind), lines, visible_line_count);
+        let mut visuals = HashMap::new();
+        let mut active = false;
+        for run in runs {
+            let state = self
+                .states
+                .entry(run.key)
+                .or_insert_with(|| InlineWidgetListReflowState {
+                    run,
+                    entered_at: animate_new_rows.then_some(now),
+                    exiting_at: None,
+                    shift: None,
+                    last_seen_generation: generation,
+                });
+            state.last_seen_generation = generation;
+            state.exiting_at = None;
+
+            if reduced_motion {
+                state.entered_at = None;
+                state.shift = None;
+            }
+
+            if state.run.line != run.line || state.run.line_span != run.line_span {
+                if reduced_motion {
+                    state.shift = None;
+                } else {
+                    state.shift = Some(InlineWidgetListReflowShift {
+                        from_line: state.run.line,
+                        from_line_span: state.run.line_span,
+                        started_at: now,
+                    });
+                }
+            }
+            state.run = run;
+
+            let (visual, visual_active) = inline_widget_list_reflow_visual_from_state(state, now);
+            active |= visual_active;
+            if visual.opacity > 0.001 {
+                visuals.insert(run.key, visual);
+            }
+        }
+
+        let mut exiting = Vec::new();
+        if !reduced_motion {
+            for state in self.states.values_mut() {
+                if state.last_seen_generation == generation {
+                    continue;
+                }
+                let exiting_at = *state.exiting_at.get_or_insert(now);
+                let (progress, running) = timed_animation_progress(
+                    exiting_at,
+                    now,
+                    INLINE_WIDGET_LIST_REFLOW_EXIT_DURATION,
+                );
+                if !running {
+                    continue;
+                }
+                state.last_seen_generation = generation;
+                active = true;
+                exiting.push((
+                    state.run,
+                    exiting_inline_widget_list_reflow_visual(progress),
+                ));
+            }
+        }
+
+        self.states
+            .retain(|_, state| state.last_seen_generation == generation);
+
+        InlineWidgetListReflowMotionFrame {
+            cache_key: inline_widget_list_reflow_cache_key(&visuals, &exiting, active),
+            visuals,
+            exiting,
+            active,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.kind = None;
+        self.generation = 0;
+        self.states.clear();
     }
 }
 
@@ -2714,6 +3003,132 @@ fn inline_widget_selection_target(
     })
 }
 
+fn inline_widget_list_row_runs(
+    kind: Option<InlineWidgetKind>,
+    lines: &[SingleSessionStyledLine],
+    visible_line_count: usize,
+) -> Vec<InlineWidgetListRowRun> {
+    let Some(kind) = kind else {
+        return Vec::new();
+    };
+    let visible_len = visible_line_count.min(lines.len());
+    let mut runs = Vec::new();
+    let mut occurrences = HashMap::new();
+
+    match kind {
+        InlineWidgetKind::SlashSuggestions => {
+            for line in 1..visible_len {
+                if matches!(
+                    lines[line].style,
+                    SingleSessionLineStyle::OverlaySelection | SingleSessionLineStyle::Overlay
+                ) {
+                    push_inline_widget_list_row_run(
+                        &mut runs,
+                        &mut occurrences,
+                        kind,
+                        lines,
+                        line,
+                        1,
+                    );
+                }
+            }
+        }
+        InlineWidgetKind::ModelPicker => {
+            let mut line = 2;
+            while line < visible_len {
+                let primary_style = lines[line].style;
+                let looks_like_primary = matches!(
+                    primary_style,
+                    SingleSessionLineStyle::OverlaySelection | SingleSessionLineStyle::Overlay
+                ) && line + 1 < visible_len
+                    && lines[line + 1].style == SingleSessionLineStyle::Meta
+                    && lines[line + 1].text.trim_start().contains('·');
+                if looks_like_primary {
+                    push_inline_widget_list_row_run(
+                        &mut runs,
+                        &mut occurrences,
+                        kind,
+                        lines,
+                        line,
+                        2,
+                    );
+                    line += 2;
+                } else {
+                    line += 1;
+                }
+            }
+        }
+        InlineWidgetKind::SessionSwitcher => {
+            for line in 0..visible_len {
+                if lines[line].text.starts_with("│ ")
+                    && lines[line].style != SingleSessionLineStyle::OverlayTitle
+                {
+                    push_inline_widget_list_row_run(
+                        &mut runs,
+                        &mut occurrences,
+                        kind,
+                        lines,
+                        line,
+                        1,
+                    );
+                }
+            }
+        }
+        InlineWidgetKind::HotkeyHelp | InlineWidgetKind::SessionInfo => {}
+    }
+
+    runs
+}
+
+fn push_inline_widget_list_row_run(
+    runs: &mut Vec<InlineWidgetListRowRun>,
+    occurrences: &mut HashMap<u64, usize>,
+    kind: InlineWidgetKind,
+    lines: &[SingleSessionStyledLine],
+    line: usize,
+    line_span: usize,
+) {
+    let base_key = inline_widget_list_row_base_key(kind, lines, line, line_span);
+    let occurrence = occurrences.entry(base_key).or_insert(0);
+    let mut hasher = DefaultHasher::new();
+    base_key.hash(&mut hasher);
+    occurrence.hash(&mut hasher);
+    let key = hasher.finish();
+    *occurrence += 1;
+    runs.push(InlineWidgetListRowRun {
+        kind,
+        key,
+        line,
+        line_span,
+    });
+}
+
+fn inline_widget_list_row_base_key(
+    kind: InlineWidgetKind,
+    lines: &[SingleSessionStyledLine],
+    line: usize,
+    line_span: usize,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    kind.hash(&mut hasher);
+    line_span.hash(&mut hasher);
+    let end = line.saturating_add(line_span).min(lines.len());
+    for styled_line in &lines[line.min(lines.len())..end] {
+        styled_line.style.hash(&mut hasher);
+        normalized_inline_widget_list_row_text(&styled_line.text).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn normalized_inline_widget_list_row_text(text: &str) -> String {
+    text.chars()
+        .map(|ch| match ch {
+            '›' | '▶' => ' ',
+            _ => ch,
+        })
+        .collect()
+}
+
 fn inline_widget_selection_visual_from_transition(
     transition: &mut Option<InlineWidgetSelectionTransition>,
     target: InlineWidgetSelectionTarget,
@@ -2742,6 +3157,86 @@ fn inline_widget_selection_visual_from_transition(
         *transition = None;
     }
     (visual, running)
+}
+
+fn inline_widget_list_reflow_visual_from_state(
+    state: &mut InlineWidgetListReflowState,
+    now: Instant,
+) -> (InlineWidgetListReflowVisual, bool) {
+    let mut visual = InlineWidgetListReflowVisual {
+        opacity: 0.0,
+        y_offset_lines: 0.0,
+        line_span: state.run.line_span as f32,
+    };
+    let mut active = false;
+
+    if let Some(entered_at) = state.entered_at {
+        let (progress, running) =
+            timed_animation_progress(entered_at, now, INLINE_WIDGET_LIST_REFLOW_ENTRY_DURATION);
+        let eased = ease_out_cubic_local(progress);
+        visual.opacity = visual.opacity.max(1.0 - eased);
+        visual.y_offset_lines += 0.45 * (1.0 - eased);
+        active |= running;
+        if !running {
+            state.entered_at = None;
+        }
+    }
+
+    if let Some(shift) = state.shift {
+        let (progress, running) = timed_animation_progress(
+            shift.started_at,
+            now,
+            INLINE_WIDGET_LIST_REFLOW_SHIFT_DURATION,
+        );
+        let eased = ease_out_cubic_local(progress);
+        let line_delta = shift.from_line as f32 - state.run.line as f32;
+        let span_delta = shift.from_line_span as f32 - state.run.line_span as f32;
+        visual.opacity = visual.opacity.max(1.0 - eased * 0.15);
+        visual.y_offset_lines += line_delta * (1.0 - eased);
+        visual.line_span = state.run.line_span as f32 + span_delta * (1.0 - eased);
+        active |= running;
+        if !running {
+            state.shift = None;
+        }
+    }
+
+    (visual, active)
+}
+
+fn exiting_inline_widget_list_reflow_visual(progress: f32) -> InlineWidgetListReflowVisual {
+    let eased = ease_out_cubic_local(progress);
+    InlineWidgetListReflowVisual {
+        opacity: 1.0 - eased,
+        y_offset_lines: -0.35 * eased,
+        line_span: 1.0,
+    }
+}
+
+fn inline_widget_list_reflow_cache_key(
+    visuals: &HashMap<u64, InlineWidgetListReflowVisual>,
+    exiting: &[(InlineWidgetListRowRun, InlineWidgetListReflowVisual)],
+    active: bool,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    active.hash(&mut hasher);
+    let mut entries = visuals.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|(key, _)| **key);
+    for (key, visual) in entries {
+        key.hash(&mut hasher);
+        hash_f32(visual.opacity, &mut hasher);
+        hash_f32(visual.y_offset_lines, &mut hasher);
+        hash_f32(visual.line_span, &mut hasher);
+    }
+    for (run, visual) in exiting {
+        run.kind.hash(&mut hasher);
+        run.key.hash(&mut hasher);
+        run.line.hash(&mut hasher);
+        run.line_span.hash(&mut hasher);
+        hash_f32(visual.opacity, &mut hasher);
+        hash_f32(visual.y_offset_lines, &mut hasher);
+        hash_f32(visual.line_span, &mut hasher);
+    }
+    hasher.finish()
 }
 
 fn tool_card_palette(state: SingleSessionToolVisualState, active: bool) -> ToolCardPalette {
@@ -7289,6 +7784,26 @@ mod tests {
         panic!("missing inline markdown pill run at line {target_line}");
     }
 
+    fn test_inline_widget_reflow_visual_for_text(
+        frame: &InlineWidgetListReflowMotionFrame,
+        kind: InlineWidgetKind,
+        lines: &[SingleSessionStyledLine],
+        needle: &str,
+    ) -> InlineWidgetListReflowVisual {
+        for run in inline_widget_list_row_runs(Some(kind), lines, lines.len()) {
+            let end = run.line.saturating_add(run.line_span).min(lines.len());
+            if lines[run.line..end]
+                .iter()
+                .any(|line| line.text.contains(needle))
+            {
+                return frame
+                    .visual_for_key(run.key)
+                    .expect("inline widget reflow visual");
+            }
+        }
+        panic!("missing inline widget reflow row containing {needle}");
+    }
+
     #[test]
     fn inline_widget_selection_target_detects_widget_row_shapes() {
         let model_lines = vec![
@@ -7383,6 +7898,97 @@ mod tests {
         assert_eq!(
             settled.visual_for_target(next_target),
             Some(InlineWidgetSelectionVisual::settled(next_target))
+        );
+    }
+
+    #[test]
+    fn inline_widget_list_reflow_motion_animates_filter_insert_shift_and_exit() {
+        let mut registry = InlineWidgetListReflowMotionRegistry::default();
+        let now = Instant::now();
+        let kind = InlineWidgetKind::SlashSuggestions;
+        let first = vec![
+            SingleSessionStyledLine::new(
+                "slash command suggestions",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new(
+                " /copy       copy latest",
+                SingleSessionLineStyle::Overlay,
+            ),
+            SingleSessionStyledLine::new(
+                " /model      switch model",
+                SingleSessionLineStyle::Overlay,
+            ),
+        ];
+
+        let initial = registry.frame_for_rows(Some(kind), &first, first.len(), now);
+        assert!(!initial.is_active());
+
+        let filtered = vec![
+            SingleSessionStyledLine::new(
+                "slash command suggestions",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new(
+                " /commands   show commands",
+                SingleSessionLineStyle::Overlay,
+            ),
+            SingleSessionStyledLine::new(
+                " /copy       copy latest",
+                SingleSessionLineStyle::Overlay,
+            ),
+            SingleSessionStyledLine::new(
+                " /model      switch model",
+                SingleSessionLineStyle::Overlay,
+            ),
+        ];
+        let reflow = registry.frame_for_rows(
+            Some(kind),
+            &filtered,
+            filtered.len(),
+            now + Duration::from_millis(4),
+        );
+        assert!(reflow.is_active());
+        let inserted =
+            test_inline_widget_reflow_visual_for_text(&reflow, kind, &filtered, "/commands");
+        assert!(inserted.opacity > 0.9);
+        assert!(inserted.y_offset_lines > 0.4);
+        let shifted = test_inline_widget_reflow_visual_for_text(&reflow, kind, &filtered, "/copy");
+        assert!(shifted.opacity > 0.8);
+        assert!(shifted.y_offset_lines < -0.9);
+
+        let settled = registry.frame_for_rows(
+            Some(kind),
+            &filtered,
+            filtered.len(),
+            now + Duration::from_millis(4) + INLINE_WIDGET_LIST_REFLOW_SHIFT_DURATION * 2,
+        );
+        assert!(!settled.is_active());
+
+        let removed = vec![
+            SingleSessionStyledLine::new(
+                "slash command suggestions",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new(
+                " /copy       copy latest",
+                SingleSessionLineStyle::Overlay,
+            ),
+        ];
+        let exit = registry.frame_for_rows(
+            Some(kind),
+            &removed,
+            removed.len(),
+            now + Duration::from_millis(4)
+                + INLINE_WIDGET_LIST_REFLOW_SHIFT_DURATION * 2
+                + Duration::from_millis(4),
+        );
+        assert!(exit.is_active());
+        assert_eq!(exit.exiting().len(), 2);
+        assert!(
+            exit.exiting()
+                .iter()
+                .all(|(_, visual)| visual.opacity > 0.9)
         );
     }
 
