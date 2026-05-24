@@ -10,10 +10,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock, mpsc::Receiver};
 use std::time::{Duration, Instant};
 
-use super::events::{
-    desktop_event_from_server_value, history_reasoning_effort_from_server_value,
-    model_catalog_event_from_server_value,
-};
+use super::events::{desktop_event_from_server_value, model_catalog_event_from_server_value};
 use super::terminal::jcode_bin;
 use super::{
     DesktopSessionCommand, DesktopSessionEvent, DesktopSessionEventSender, DesktopSessionStatus,
@@ -479,111 +476,6 @@ pub(super) fn read_model_changed(
     }
 
     anyhow::bail!("timed out waiting for jcode server model switch")
-}
-
-#[cfg(unix)]
-pub(super) fn read_history_reasoning_effort(
-    reader: &mut BufReader<UnixStream>,
-    timeout: Duration,
-    event_tx: Option<&DesktopSessionEventSender>,
-    request_id: u64,
-) -> Result<Option<String>> {
-    reader
-        .get_ref()
-        .set_read_timeout(Some(SERVER_CONNECT_RETRY_DELAY))
-        .context("failed to configure server socket timeout")?;
-    let started = Instant::now();
-    let mut line = String::new();
-    while started.elapsed() < timeout {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => anyhow::bail!("jcode server disconnected before loading history"),
-            Ok(_) => {
-                let value = parse_server_event_line(&line, "waiting for history")?;
-                if value.get("type").and_then(Value::as_str) == Some("history")
-                    && value.get("id").and_then(Value::as_u64) == Some(request_id)
-                {
-                    return Ok(history_reasoning_effort_from_server_value(&value));
-                }
-                forward_non_done_server_event(event_tx, &value);
-                if value.get("type").and_then(Value::as_str) == Some("error")
-                    && value.get("id").and_then(Value::as_u64) == Some(request_id)
-                {
-                    let message = value
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown server error");
-                    crate::desktop_log::error(format_args!(
-                        "jcode-desktop: jcode server rejected history request id={request_id}: {}",
-                        crate::desktop_log::truncate_for_log(message, 2048)
-                    ));
-                    anyhow::bail!("jcode server rejected history request: {message}");
-                }
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => return Err(error).context("failed to read jcode server event"),
-        }
-    }
-
-    anyhow::bail!("timed out waiting for jcode server history")
-}
-
-#[cfg(unix)]
-pub(super) fn read_reasoning_effort_changed(
-    reader: &mut BufReader<UnixStream>,
-    timeout: Duration,
-    event_tx: Option<&DesktopSessionEventSender>,
-    request_id: u64,
-) -> Result<()> {
-    reader
-        .get_ref()
-        .set_read_timeout(Some(SERVER_CONNECT_RETRY_DELAY))
-        .context("failed to configure server socket timeout")?;
-    let started = Instant::now();
-    let mut line = String::new();
-    while started.elapsed() < timeout {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => anyhow::bail!("jcode server disconnected before switching reasoning effort"),
-            Ok(_) => {
-                let value = parse_server_event_line(&line, "waiting for reasoning effort switch")?;
-                if value.get("type").and_then(Value::as_str) == Some("reasoning_effort_changed")
-                    && value.get("id").and_then(Value::as_u64) == Some(request_id)
-                {
-                    if let Some(event) = desktop_event_from_server_value(&value) {
-                        send_desktop_event_ref(event_tx, event);
-                    }
-                    return Ok(());
-                }
-                forward_non_done_server_event(event_tx, &value);
-                if value.get("type").and_then(Value::as_str) == Some("error")
-                    && value.get("id").and_then(Value::as_u64) == Some(request_id)
-                {
-                    let message = value
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown server error");
-                    crate::desktop_log::error(format_args!(
-                        "jcode-desktop: jcode server rejected reasoning effort switch id={request_id}: {}",
-                        crate::desktop_log::truncate_for_log(message, 2048)
-                    ));
-                    anyhow::bail!("jcode server rejected reasoning effort switch: {message}");
-                }
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => return Err(error).context("failed to read jcode server event"),
-        }
-    }
-
-    anyhow::bail!("timed out waiting for jcode server reasoning effort switch")
 }
 
 #[cfg(unix)]

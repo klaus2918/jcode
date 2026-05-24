@@ -318,21 +318,6 @@ pub(super) fn model_catalog_event_from_server_value(value: &Value) -> Option<Des
     })
 }
 
-pub(super) fn history_reasoning_effort_from_server_value(value: &Value) -> Option<String> {
-    value
-        .get("reasoning_effort")
-        .and_then(Value::as_str)
-        .or_else(|| value.get("openai_reasoning_effort").and_then(Value::as_str))
-        .or_else(|| {
-            value
-                .get("provider_config")
-                .and_then(|config| config.get("openai_reasoning_effort"))
-                .and_then(Value::as_str)
-        })
-        .filter(|effort| !effort.trim().is_empty())
-        .map(ToOwned::to_owned)
-}
-
 pub(super) fn model_choices_from_server_value(value: &Value) -> Vec<DesktopModelChoice> {
     let mut choices = Vec::new();
     if let Some(routes) = value

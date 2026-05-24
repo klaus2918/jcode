@@ -69,9 +69,8 @@ mod terminal;
 
 use server_io::{
     DrainOutcome, connect_server_with_retry, connect_server_with_retry_path, drain_session_events,
-    ensure_server_running, establish_session_id, read_control_response,
-    read_history_reasoning_effort, read_model_catalog, read_model_changed,
-    read_reasoning_effort_changed, subscribe_and_establish_session, subscribe_to_server,
+    ensure_server_running, establish_session_id, read_control_response, read_model_catalog,
+    read_model_changed, subscribe_and_establish_session, subscribe_to_server,
     validate_reload_socket_path, write_json_line,
 };
 use terminal::{compact_title, launch_first_available_terminal, terminal_candidates};
@@ -117,7 +116,6 @@ pub enum DesktopSessionStatus {
     SendingMessage,
     SwitchingModel,
     LoadingModels,
-    SwitchingReasoningEffort,
     ServerDisconnectedReconnecting,
     ServerReloadingReconnecting,
     Cancelling,
@@ -152,14 +150,13 @@ impl DesktopSessionStatus {
             Self::SendingMessage => "sending message".to_string(),
             Self::SwitchingModel => "switching model".to_string(),
             Self::LoadingModels => "loading models".to_string(),
-            Self::SwitchingReasoningEffort => "switching reasoning effort".to_string(),
             Self::ServerDisconnectedReconnecting => "server disconnected, reconnecting".to_string(),
             Self::ServerReloadingReconnecting => "server reloading, reconnecting".to_string(),
             Self::Cancelling => "cancelling".to_string(),
             Self::Cancelled => "cancelled".to_string(),
             Self::SendingInteractiveInput => "sending interactive input".to_string(),
             Self::Interrupted => "interrupted".to_string(),
-            Self::ReasoningEffort(effort) => format!("effort: {effort}"),
+            Self::ReasoningEffort(effort) => format!("thinking level: {effort}"),
             Self::ReasoningEffortFailed(error) => format!("effort switch failed: {error}"),
             Self::ServiceTier(tier) => format!("fast mode: {tier}"),
             Self::ServiceTierFailed(error) => format!("fast mode failed: {error}"),
@@ -185,7 +182,6 @@ impl DesktopSessionStatus {
             | Self::SendingMessage
             | Self::SwitchingModel
             | Self::LoadingModels
-            | Self::SwitchingReasoningEffort
             | Self::ServerDisconnectedReconnecting
             | Self::ServerReloadingReconnecting
             | Self::Cancelling
@@ -476,50 +472,6 @@ pub fn spawn_cycle_model(
     Ok(())
 }
 
-#[cfg(unix)]
-pub fn spawn_cycle_reasoning_effort(
-    direction: i8,
-    target_session_id: Option<String>,
-    event_tx: DesktopSessionEventSender,
-) -> Result<()> {
-    spawn_bounded_desktop_session_worker("jcode-desktop-cycle-effort", move || {
-            if let Err(error) = cycle_reasoning_effort(
-                direction,
-                target_session_id.as_deref(),
-                Some(event_tx.clone()),
-            ) {
-                crate::desktop_log::error(format_args!(
-                    "jcode-desktop: reasoning effort cycle failed direction={direction} target_session={}: {error:#}",
-                    target_session_id.as_deref().unwrap_or("<current>")
-                ));
-                send_desktop_event_ref(
-                    Some(&event_tx),
-                    DesktopSessionEvent::ModelCatalogError {
-                        error: format!("{error:#}"),
-                    },
-                );
-            }
-        })
-        .context("failed to spawn desktop reasoning effort worker")?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub fn spawn_cycle_reasoning_effort(
-    _direction: i8,
-    _target_session_id: Option<String>,
-    event_tx: DesktopSessionEventSender,
-) -> Result<()> {
-    send_desktop_event_ref(
-        Some(&event_tx),
-        DesktopSessionEvent::ModelCatalogError {
-            error: "desktop reasoning effort switching is not implemented on this platform yet"
-                .to_string(),
-        },
-    );
-    Ok(())
-}
-
 #[cfg(not(unix))]
 pub fn spawn_cycle_model(
     _direction: i8,
@@ -641,39 +593,6 @@ pub fn spawn_refresh_models(
         DesktopSessionEvent::ModelCatalogError {
             error: "desktop model refresh is not implemented on this platform yet".to_string(),
         },
-    );
-    Ok(())
-}
-
-#[cfg(unix)]
-pub fn spawn_set_reasoning_effort(
-    effort: String,
-    target_session_id: Option<String>,
-    event_tx: DesktopSessionEventSender,
-) -> Result<()> {
-    spawn_control_request(
-        "jcode-desktop-set-effort",
-        target_session_id,
-        event_tx,
-        DesktopSessionStatus::SwitchingReasoningEffort,
-        move |id| json!({ "type": "set_reasoning_effort", "id": id, "effort": effort }),
-        &["reasoning_effort_changed"],
-        "setting reasoning effort",
-    )
-}
-
-#[cfg(not(unix))]
-pub fn spawn_set_reasoning_effort(
-    _effort: String,
-    _target_session_id: Option<String>,
-    event_tx: DesktopSessionEventSender,
-) -> Result<()> {
-    send_desktop_event_ref(
-        Some(&event_tx),
-        DesktopSessionEvent::Status(DesktopSessionStatus::ReasoningEffortFailed(
-            "desktop reasoning effort switching is not implemented on this platform yet"
-                .to_string(),
-        )),
     );
     Ok(())
 }
@@ -945,6 +864,61 @@ where
 }
 
 #[cfg(unix)]
+pub fn set_reasoning_effort(
+    effort: &str,
+    target_session_id: Option<&str>,
+    event_tx: Option<DesktopSessionEventSender>,
+) -> Result<()> {
+    ensure_server_running()?;
+    let stream = connect_server_with_retry(SERVER_START_TIMEOUT)?;
+    let mut writer = stream
+        .try_clone()
+        .context("failed to clone server socket writer")?;
+    let mut reader = BufReader::new(stream);
+    let mut next_request_id = 1_u64;
+    subscribe_and_establish_session(
+        &mut reader,
+        &mut writer,
+        &mut next_request_id,
+        target_session_id,
+        event_tx.as_ref(),
+    )?;
+    let request_id = next_request_id;
+    write_json_line(
+        &mut writer,
+        json!({
+            "type": "set_reasoning_effort",
+            "id": request_id,
+            "effort": effort,
+        }),
+    )?;
+    read_control_response(
+        &mut reader,
+        SERVER_START_TIMEOUT,
+        event_tx.as_ref(),
+        request_id,
+        &["reasoning_effort_changed"],
+        "setting reasoning effort",
+    )
+}
+
+#[cfg(not(unix))]
+pub fn set_reasoning_effort(
+    _effort: &str,
+    _target_session_id: Option<&str>,
+    event_tx: Option<DesktopSessionEventSender>,
+) -> Result<()> {
+    send_desktop_event_ref(
+        event_tx.as_ref(),
+        DesktopSessionEvent::Status(DesktopSessionStatus::ReasoningEffortFailed(
+            "desktop reasoning effort switching is not implemented on this platform yet"
+                .to_string(),
+        )),
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
 fn cycle_model(
     direction: i8,
     target_session_id: Option<&str>,
@@ -1049,73 +1023,6 @@ fn set_model(
         }),
     )?;
     read_model_changed(
-        &mut reader,
-        SERVER_START_TIMEOUT,
-        event_tx.as_ref(),
-        request_id,
-    )
-}
-
-#[cfg(unix)]
-fn cycle_reasoning_effort(
-    direction: i8,
-    target_session_id: Option<&str>,
-    event_tx: Option<DesktopSessionEventSender>,
-) -> Result<()> {
-    const EFFORTS: [&str; 5] = ["none", "low", "medium", "high", "xhigh"];
-
-    send_desktop_status(&event_tx, DesktopSessionStatus::SwitchingReasoningEffort);
-    ensure_server_running()?;
-    let stream = connect_server_with_retry(SERVER_START_TIMEOUT)?;
-    let mut writer = stream
-        .try_clone()
-        .context("failed to clone server socket writer")?;
-    let mut reader = BufReader::new(stream);
-    let mut next_request_id = 1_u64;
-    subscribe_and_establish_session(
-        &mut reader,
-        &mut writer,
-        &mut next_request_id,
-        target_session_id,
-        event_tx.as_ref(),
-    )?;
-
-    let history_request_id = next_request_id;
-    write_json_line(
-        &mut writer,
-        json!({
-            "type": "get_history",
-            "id": history_request_id,
-        }),
-    )?;
-    next_request_id += 1;
-    let current = read_history_reasoning_effort(
-        &mut reader,
-        SERVER_START_TIMEOUT,
-        event_tx.as_ref(),
-        history_request_id,
-    )?;
-    let current_index = current
-        .as_deref()
-        .and_then(|effort| EFFORTS.iter().position(|candidate| *candidate == effort))
-        .unwrap_or(EFFORTS.len() - 1);
-    let next_index = if direction > 0 {
-        (current_index + 1).min(EFFORTS.len() - 1)
-    } else {
-        current_index.saturating_sub(1)
-    };
-    let next_effort = EFFORTS[next_index];
-
-    let request_id = next_request_id;
-    write_json_line(
-        &mut writer,
-        json!({
-            "type": "set_reasoning_effort",
-            "id": request_id,
-            "effort": next_effort,
-        }),
-    )?;
-    read_reasoning_effort_changed(
         &mut reader,
         SERVER_START_TIMEOUT,
         event_tx.as_ref(),

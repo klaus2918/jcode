@@ -1827,6 +1827,10 @@ fn single_session_slash_server_setting_commands_return_control_outcomes() {
         submit("/effort high"),
         KeyOutcome::SetReasoningEffort("high".to_string())
     );
+    assert_eq!(
+        submit("/effort max"),
+        KeyOutcome::SetReasoningEffort("max".to_string())
+    );
 
     assert_eq!(
         submit("/fast on"),
@@ -1878,7 +1882,7 @@ fn single_session_slash_setting_status_uses_runtime_metadata() {
     assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
     assert_eq!(
         app.status.as_deref(),
-        Some("effort: high · use /effort <none|low|medium|high|xhigh>")
+        Some("effort: high · use /effort <none|low|medium|high|xhigh|max>")
     );
 
     app.handle_key(KeyInput::Character("/fast status".to_string()));
@@ -4805,6 +4809,85 @@ fn single_session_model_cycle_updates_status_and_transcript() {
             .join("\n")
             .contains("model switched to Claude · claude-opus-4-5")
     );
+}
+
+#[test]
+fn single_session_reasoning_cycle_updates_visible_thinking_status_and_transcript() {
+    let mut app = SingleSessionApp::new(None);
+
+    assert_eq!(
+        app.handle_key(KeyInput::CycleReasoningEffort(1)),
+        KeyOutcome::CycleReasoningEffort(1)
+    );
+    app.apply_session_event(session_launch::DesktopSessionEvent::Status(
+        session_launch::DesktopSessionStatus::ReasoningEffort("high".to_string()),
+    ));
+
+    assert_eq!(app.status.as_deref(), Some("thinking level: high"));
+    assert_eq!(app.reasoning_effort(), Some("high"));
+    assert!(
+        app.body_lines()
+            .join("\n")
+            .contains("thinking level set to high")
+    );
+}
+
+#[test]
+fn single_session_reasoning_cycle_previews_locally_without_backend_roundtrip() {
+    let mut app = SingleSessionApp::new(None);
+    app.apply_session_event(session_launch::DesktopSessionEvent::ModelCatalog {
+        current_model: Some("gpt-5-codex".to_string()),
+        provider_name: Some("OpenAI".to_string()),
+        models: Vec::new(),
+        reasoning_effort: Some("medium".to_string()),
+        service_tier: None,
+        compaction_mode: None,
+    });
+
+    assert_eq!(
+        app.preview_reasoning_effort_cycle(1),
+        ReasoningEffortCycleOutcome::Set("high".to_string())
+    );
+    assert_eq!(app.status.as_deref(), Some("thinking level: high"));
+    assert_eq!(app.reasoning_effort(), Some("high"));
+
+    assert_eq!(
+        app.preview_reasoning_effort_cycle(-1),
+        ReasoningEffortCycleOutcome::Set("medium".to_string())
+    );
+    assert_eq!(app.status.as_deref(), Some("thinking level: medium"));
+    assert_eq!(app.reasoning_effort(), Some("medium"));
+}
+
+#[test]
+fn single_session_reasoning_cycle_clamps_and_normalizes_max_aliases() {
+    let mut app = SingleSessionApp::new(None);
+    app.apply_session_event(session_launch::DesktopSessionEvent::ModelCatalog {
+        current_model: Some("gpt-5-codex".to_string()),
+        provider_name: Some("OpenAI".to_string()),
+        models: Vec::new(),
+        reasoning_effort: Some("xhigh".to_string()),
+        service_tier: None,
+        compaction_mode: None,
+    });
+
+    assert_eq!(
+        app.preview_reasoning_effort_cycle(1),
+        ReasoningEffortCycleOutcome::AlreadyAtLimit {
+            effort: "xhigh".to_string(),
+            limit: "max",
+        }
+    );
+    assert_eq!(
+        app.status.as_deref(),
+        Some("thinking level: xhigh (already at max)")
+    );
+
+    assert_eq!(
+        app.preview_reasoning_effort_set("max"),
+        Some("xhigh".to_string())
+    );
+    assert_eq!(app.status.as_deref(), Some("thinking level: xhigh"));
 }
 
 #[test]

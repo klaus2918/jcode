@@ -180,6 +180,10 @@ const DESKTOP_SLASH_COMMANDS: &[(&str, &str)] = &[
 ];
 pub(crate) const DESKTOP_SLASH_SUGGESTION_ROW_LIMIT: usize = 7;
 
+const DESKTOP_REASONING_EFFORTS_OPENAI: &[&str] = &["none", "low", "medium", "high", "xhigh"];
+const DESKTOP_REASONING_EFFORTS_ANTHROPIC_STANDARD: &[&str] = &["none", "low", "medium", "high"];
+const DESKTOP_REASONING_EFFORTS_DEEPSEEK: &[&str] = &["none", "low", "medium", "high", "max"];
+
 #[cfg_attr(test, allow(dead_code))]
 const INLINE_WIDGET_REVEAL_DURATION: Duration = Duration::from_millis(180);
 pub(crate) const MODEL_PICKER_INLINE_ROW_LIMIT: usize = 5;
@@ -515,6 +519,13 @@ pub(crate) enum SingleSessionOverlay {
         kind: InlineWidgetKind,
         mode: InlineWidgetMode,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReasoningEffortCycleOutcome {
+    Set(String),
+    AlreadyAtLimit { effort: String, limit: &'static str },
+    Unavailable,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1404,6 +1415,83 @@ impl SingleSessionApp {
         self.detail_scroll = 0;
     }
 
+    #[cfg(test)]
+    pub(crate) fn reasoning_effort(&self) -> Option<&str> {
+        self.runtime_settings.reasoning_effort.as_deref()
+    }
+
+    pub(crate) fn preview_reasoning_effort_set(&mut self, effort: &str) -> Option<String> {
+        let normalized = self.normalize_reasoning_effort_for_current_context(effort)?;
+        self.runtime_settings.reasoning_effort = Some(normalized.clone());
+        self.set_status_label(format!("thinking level: {normalized}"));
+        Some(normalized)
+    }
+
+    pub(crate) fn preview_reasoning_effort_cycle(
+        &mut self,
+        direction: i8,
+    ) -> ReasoningEffortCycleOutcome {
+        let efforts = self.available_reasoning_efforts_for_current_context();
+        if efforts.is_empty() {
+            self.set_status_label("thinking level is not available for this model");
+            return ReasoningEffortCycleOutcome::Unavailable;
+        }
+
+        let current = self.runtime_settings.reasoning_effort.as_deref();
+        let current_index = current
+            .and_then(|effort| efforts.iter().position(|candidate| *candidate == effort))
+            .unwrap_or(efforts.len() - 1);
+        let next_index = if direction > 0 {
+            (current_index + 1).min(efforts.len() - 1)
+        } else {
+            current_index.saturating_sub(1)
+        };
+        let next_effort = efforts[next_index];
+        if next_index == current_index {
+            let limit = if direction > 0 { "max" } else { "min" };
+            self.set_status_label(format!(
+                "thinking level: {next_effort} (already at {limit})"
+            ));
+            return ReasoningEffortCycleOutcome::AlreadyAtLimit {
+                effort: next_effort.to_string(),
+                limit,
+            };
+        }
+
+        self.runtime_settings.reasoning_effort = Some(next_effort.to_string());
+        self.set_status_label(format!("thinking level: {next_effort}"));
+        ReasoningEffortCycleOutcome::Set(next_effort.to_string())
+    }
+
+    fn normalize_reasoning_effort_for_current_context(&self, raw: &str) -> Option<String> {
+        let requested = raw.trim().to_ascii_lowercase();
+        if requested.is_empty() {
+            return None;
+        }
+        let efforts = self.available_reasoning_efforts_for_current_context();
+        if efforts.is_empty() {
+            return None;
+        }
+        if efforts.contains(&requested.as_str()) {
+            return Some(requested);
+        }
+        if requested == "max" && efforts.contains(&"xhigh") {
+            return Some("xhigh".to_string());
+        }
+        if requested == "xhigh" && efforts.contains(&"max") {
+            return Some("max".to_string());
+        }
+        efforts.last().map(|effort| (*effort).to_string())
+    }
+
+    fn available_reasoning_efforts_for_current_context(&self) -> &'static [&'static str] {
+        inferred_desktop_reasoning_efforts(
+            self.model_picker.provider_name.as_deref(),
+            self.model_picker.current_model.as_deref(),
+            self.runtime_settings.reasoning_effort.as_deref(),
+        )
+    }
+
     pub(crate) fn initialize_resumed_session(&mut self, session_id: &str) {
         self.live_session_id = Some(session_id.to_string());
         self.detail_scroll = 0;
@@ -1655,7 +1743,7 @@ impl SingleSessionApp {
             DesktopSessionStatus::ReasoningEffort(effort) => {
                 self.runtime_settings.reasoning_effort = Some(effort.clone());
                 self.messages.push(SingleSessionMessage::meta(format!(
-                    "reasoning effort set to {effort}"
+                    "thinking level set to {effort}"
                 )));
             }
             DesktopSessionStatus::ServiceTier(service_tier) => {
@@ -1790,6 +1878,9 @@ impl SingleSessionApp {
             KeyInput::CopyTranscript => self.copy_transcript(),
             KeyInput::ModelPickerMove(_) => KeyOutcome::None,
             KeyInput::CycleModel(direction) => KeyOutcome::CycleModel(direction),
+            KeyInput::CycleReasoningEffort(direction) => {
+                KeyOutcome::CycleReasoningEffort(direction)
+            }
             KeyInput::AttachClipboardImage => KeyOutcome::AttachClipboardImage,
             KeyInput::ClearAttachedImages => {
                 if self.clear_attached_images() {
@@ -3480,14 +3571,14 @@ impl SingleSessionApp {
                         .as_deref()
                         .unwrap_or("default");
                     self.set_status(SingleSessionStatus::Info(format!(
-                        "effort: {current} · use /effort <none|low|medium|high|xhigh>"
+                        "effort: {current} · use /effort <none|low|medium|high|xhigh|max>"
                     )));
                     KeyOutcome::Redraw
-                } else if matches!(args, "none" | "low" | "medium" | "high" | "xhigh") {
+                } else if matches!(args, "none" | "low" | "medium" | "high" | "xhigh" | "max") {
                     KeyOutcome::SetReasoningEffort(args.to_string())
                 } else {
                     self.set_status(SingleSessionStatus::Info(
-                        "usage: /effort <none|low|medium|high|xhigh>".to_string(),
+                        "usage: /effort <none|low|medium|high|xhigh|max>".to_string(),
                     ));
                     KeyOutcome::Redraw
                 }
@@ -5346,6 +5437,43 @@ fn model_picker_current_label(provider_name: Option<&str>, current_model: Option
     }
 }
 
+fn inferred_desktop_reasoning_efforts(
+    provider_name: Option<&str>,
+    model_name: Option<&str>,
+    current_effort: Option<&str>,
+) -> &'static [&'static str] {
+    let provider = provider_name.unwrap_or_default().to_ascii_lowercase();
+    let model = model_name.unwrap_or_default().to_ascii_lowercase();
+    let current = current_effort.unwrap_or_default().to_ascii_lowercase();
+
+    if provider.contains("openrouter") {
+        if model.contains("deepseek") || current == "max" {
+            return DESKTOP_REASONING_EFFORTS_DEEPSEEK;
+        }
+        return DESKTOP_REASONING_EFFORTS_OPENAI;
+    }
+
+    if provider.contains("deepseek") || model.contains("deepseek") || current == "max" {
+        return DESKTOP_REASONING_EFFORTS_DEEPSEEK;
+    }
+
+    let is_anthropic = provider.contains("anthropic")
+        || provider.contains("claude")
+        || model.starts_with("claude-")
+        || model.contains("/claude-");
+    if is_anthropic {
+        if model.contains("claude-opus-4-7") || current == "xhigh" {
+            return DESKTOP_REASONING_EFFORTS_OPENAI;
+        }
+        return DESKTOP_REASONING_EFFORTS_ANTHROPIC_STANDARD;
+    }
+
+    // Before the model catalog arrives, the desktop may only know the current
+    // runtime setting. Keep the shortcut responsive by falling back to the
+    // common OpenAI/Anthropic order instead of doing a blocking history lookup.
+    DESKTOP_REASONING_EFFORTS_OPENAI
+}
+
 fn model_choice_search_text(choice: &DesktopModelChoice) -> String {
     format!(
         "{} {} {} {}",
@@ -5459,6 +5587,7 @@ const SINGLE_SESSION_HELP_SECTIONS: &[HelpSection] = &[
             ("Ctrl+M/N", "switch to next/previous model"),
             ("Ctrl+Tab", "switch to next model"),
             ("Ctrl+Shift+Tab", "switch to previous model"),
+            ("Alt+←/→", "change thinking level"),
             ("Ctrl+P/O", "open recent session switcher"),
             ("Ctrl+Shift+S", "toggle inline session info/stats"),
         ],
@@ -5482,7 +5611,7 @@ const SINGLE_SESSION_HELP_SECTIONS: &[HelpSection] = &[
             ("Ctrl+U/K", "delete to line start/end"),
             ("Ctrl+W/Ctrl+Backspace", "delete previous word"),
             ("Alt+Backspace", "delete previous word, terminal-style"),
-            ("Ctrl/Alt+←/→, Ctrl+B/F", "move by word"),
+            ("Ctrl+←/→, Ctrl+B/F", "move by word"),
             ("Alt+B/F", "move by word, terminal-style"),
             ("Alt+D", "delete next word"),
             ("Tab", "complete slash command suggestion"),

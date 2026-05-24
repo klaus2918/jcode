@@ -59,10 +59,10 @@ use image::RgbaImage;
 use render_helpers::*;
 use session_launch::DesktopSessionStatus;
 use single_session::{
-    SINGLE_SESSION_FONT_FAMILY, SINGLE_SESSION_WELCOME_FONT_FAMILY, SelectionPoint,
-    SingleSessionApp, SingleSessionLineStyle, SingleSessionMessage, SingleSessionStyledLine,
-    handwritten_welcome_phrase, single_session_surface, single_session_typography,
-    single_session_typography_for_scale,
+    ReasoningEffortCycleOutcome, SINGLE_SESSION_FONT_FAMILY, SINGLE_SESSION_WELCOME_FONT_FAMILY,
+    SelectionPoint, SingleSessionApp, SingleSessionLineStyle, SingleSessionMessage,
+    SingleSessionStyledLine, handwritten_welcome_phrase, single_session_surface,
+    single_session_typography, single_session_typography_for_scale,
 };
 use single_session_render::*;
 use wgpu::{CompositeAlphaMode, PresentMode, SurfaceError, TextureUsages};
@@ -81,7 +81,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -153,6 +153,7 @@ const STREAMING_TEXT_FADE_DURATION: Duration = Duration::from_millis(150);
 const STREAMING_TEXT_FADE_START_OPACITY: f32 = 0.4;
 const STREAMING_TEXT_RISE_START_OFFSET_PIXELS: f32 = 3.5;
 const DESKTOP_ASYNC_JOB_LIMIT: usize = 12;
+const DESKTOP_REASONING_EFFORT_DEBOUNCE: Duration = Duration::from_millis(45);
 const PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY: usize = 1024;
 const PRIMITIVE_VERTEX_BUFFER_SHRINK_RATIO: usize = 4;
 const WORKSPACE_BASE_VERTEX_CAPACITY_HINT: usize = 512;
@@ -207,6 +208,129 @@ fn spawn_bounded_desktop_async_job(
         })
         .with_context(|| format!("failed to spawn {name}"))?;
     Ok(())
+}
+
+#[derive(Clone)]
+struct DesktopReasoningEffortRequestQueue {
+    request_tx: mpsc::Sender<DesktopReasoningEffortRequest>,
+    latest_generation: Arc<AtomicU64>,
+}
+
+struct DesktopReasoningEffortRequest {
+    generation: u64,
+    effort: String,
+    target_session_id: Option<String>,
+    event_tx: session_launch::DesktopSessionEventSender,
+}
+
+impl DesktopReasoningEffortRequestQueue {
+    fn request(
+        &self,
+        effort: String,
+        target_session_id: Option<String>,
+        event_tx: session_launch::DesktopSessionEventSender,
+    ) -> Result<()> {
+        let generation = self.latest_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        self.request_tx
+            .send(DesktopReasoningEffortRequest {
+                generation,
+                effort,
+                target_session_id,
+                event_tx,
+            })
+            .context("failed to queue desktop reasoning effort change")
+    }
+}
+
+fn spawn_desktop_reasoning_effort_request_queue() -> Result<DesktopReasoningEffortRequestQueue> {
+    let (request_tx, request_rx) = mpsc::channel();
+    let latest_generation = Arc::new(AtomicU64::new(0));
+    let worker_latest_generation = Arc::clone(&latest_generation);
+    std::thread::Builder::new()
+        .name("jcode-desktop-effort-queue".to_string())
+        .spawn(move || {
+            run_desktop_reasoning_effort_request_queue(request_rx, worker_latest_generation);
+        })
+        .context("failed to spawn desktop reasoning effort queue")?;
+    Ok(DesktopReasoningEffortRequestQueue {
+        request_tx,
+        latest_generation,
+    })
+}
+
+fn run_desktop_reasoning_effort_request_queue(
+    request_rx: mpsc::Receiver<DesktopReasoningEffortRequest>,
+    latest_generation: Arc<AtomicU64>,
+) {
+    while let Ok(mut request) = request_rx.recv() {
+        let mut coalesced = 0usize;
+        let mut disconnected = false;
+        loop {
+            match request_rx.recv_timeout(DESKTOP_REASONING_EFFORT_DEBOUNCE) {
+                Ok(next_request) => {
+                    request = next_request;
+                    coalesced += 1;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        if coalesced > 0 {
+            desktop_log::info(format_args!(
+                "jcode-desktop: coalesced {coalesced} superseded reasoning effort request(s); applying {}",
+                desktop_log::truncate_for_log(&request.effort, 64)
+            ));
+        }
+        apply_desktop_reasoning_effort_request(request, &latest_generation);
+        if disconnected {
+            break;
+        }
+    }
+}
+
+fn apply_desktop_reasoning_effort_request(
+    request: DesktopReasoningEffortRequest,
+    latest_generation: &AtomicU64,
+) {
+    let (response_tx, response_rx) = mpsc::channel();
+    let result = session_launch::set_reasoning_effort(
+        &request.effort,
+        request.target_session_id.as_deref(),
+        Some(response_tx),
+    );
+    let still_latest = latest_generation.load(Ordering::Acquire) == request.generation;
+    if still_latest {
+        for event in response_rx.try_iter() {
+            let _ = request.event_tx.send(event);
+        }
+        if let Err(error) = result {
+            desktop_log::error(format_args!(
+                "jcode-desktop: reasoning effort sync failed generation={} target_session={}: {error:#}",
+                request.generation,
+                request.target_session_id.as_deref().unwrap_or("<current>")
+            ));
+            let _ = request
+                .event_tx
+                .send(session_launch::DesktopSessionEvent::Status(
+                    DesktopSessionStatus::ReasoningEffortFailed(format!("{error:#}")),
+                ));
+        }
+    } else if let Err(error) = result {
+        desktop_log::warn(format_args!(
+            "jcode-desktop: stale reasoning effort sync failed generation={} target_session={}: {error:#}",
+            request.generation,
+            request.target_session_id.as_deref().unwrap_or("<current>")
+        ));
+    } else {
+        let dropped = response_rx.try_iter().count();
+        desktop_log::info(format_args!(
+            "jcode-desktop: dropped stale reasoning effort response generation={} event_count={dropped}",
+            request.generation
+        ));
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -591,6 +715,7 @@ async fn run() -> Result<()> {
     let mut power_inhibitor = power_inhibit::PowerInhibitor::new();
     let (session_event_tx, session_event_rx) = mpsc::channel();
     spawn_session_event_forwarder(session_event_rx, event_loop_proxy.clone());
+    let reasoning_effort_queue = spawn_desktop_reasoning_effort_request_queue()?;
     let mut recovery_scan_pending = app.is_single_session() && !desktop_gallery;
     let mut first_frame_presented = false;
     let mut first_content_frame_presented = false;
@@ -1115,16 +1240,20 @@ async fn run() -> Result<()> {
                             window.request_redraw();
                         }
                         KeyOutcome::CycleReasoningEffort(direction) => {
-                            if let Err(error) = session_launch::spawn_cycle_reasoning_effort(
-                                direction,
-                                app.single_session_live_id(),
-                                session_event_tx.clone(),
-                            ) {
-                                apply_single_session_error(&mut app, error);
-                            } else {
-                                app.apply_session_event(session_launch::DesktopSessionEvent::Status(
-                                    DesktopSessionStatus::SwitchingReasoningEffort,
-                                ));
+                            let target_session_id = app.single_session_live_id();
+                            let outcome = app.preview_single_session_reasoning_effort_cycle(direction);
+                            match outcome {
+                                ReasoningEffortCycleOutcome::Set(effort) => {
+                                    if let Err(error) = reasoning_effort_queue.request(
+                                        effort,
+                                        target_session_id,
+                                        session_event_tx.clone(),
+                                    ) {
+                                        apply_single_session_error(&mut app, error);
+                                    }
+                                }
+                                ReasoningEffortCycleOutcome::AlreadyAtLimit { .. }
+                                | ReasoningEffortCycleOutcome::Unavailable => {}
                             }
                             window.set_title(&app.status_title());
                             window.request_redraw();
@@ -1184,16 +1313,20 @@ async fn run() -> Result<()> {
                             window.request_redraw();
                         }
                         KeyOutcome::SetReasoningEffort(effort) => {
-                            if let Err(error) = session_launch::spawn_set_reasoning_effort(
-                                effort,
-                                app.single_session_live_id(),
-                                session_event_tx.clone(),
-                            ) {
-                                apply_single_session_error(&mut app, error);
-                            } else {
-                                app.apply_session_event(session_launch::DesktopSessionEvent::Status(
-                                    DesktopSessionStatus::SwitchingReasoningEffort,
-                                ));
+                            let target_session_id = app.single_session_live_id();
+                            match app.preview_single_session_reasoning_effort_set(&effort) {
+                                Some(effort) => {
+                                    if let Err(error) = reasoning_effort_queue.request(
+                                        effort,
+                                        target_session_id,
+                                        session_event_tx.clone(),
+                                    ) {
+                                        apply_single_session_error(&mut app, error);
+                                    }
+                                }
+                                None => app.set_single_session_status_label(
+                                    "thinking level is not available for this model",
+                                ),
                             }
                             window.set_title(&app.status_title());
                             window.request_redraw();
@@ -6001,6 +6134,23 @@ impl DesktopApp {
     fn set_single_session_status_label(&mut self, label: impl Into<String>) {
         if let Self::SingleSession(app) = self {
             app.set_status_label(label);
+        }
+    }
+
+    fn preview_single_session_reasoning_effort_cycle(
+        &mut self,
+        direction: i8,
+    ) -> ReasoningEffortCycleOutcome {
+        match self {
+            Self::SingleSession(app) => app.preview_reasoning_effort_cycle(direction),
+            Self::Workspace(_) => ReasoningEffortCycleOutcome::Unavailable,
+        }
+    }
+
+    fn preview_single_session_reasoning_effort_set(&mut self, effort: &str) -> Option<String> {
+        match self {
+            Self::SingleSession(app) => app.preview_reasoning_effort_set(effort),
+            Self::Workspace(_) => None,
         }
     }
 
