@@ -39,6 +39,11 @@ pub(crate) const SLASH_SUGGESTIONS_INLINE_SELECTION_BACKGROUND_COLOR: [f32; 4] =
     [0.215, 0.420, 0.900, 0.155];
 const SINGLE_SESSION_SCROLLBAR_TRACK_WIDTH: f32 = 3.0;
 const SINGLE_SESSION_SCROLLBAR_GAP: f32 = 8.0;
+const SINGLE_SESSION_SCROLLBAR_THUMB_TRANSITION_DURATION: Duration = Duration::from_millis(140);
+const SINGLE_SESSION_SCROLLBAR_FADE_IDLE_DURATION: Duration = Duration::from_millis(620);
+const SINGLE_SESSION_SCROLLBAR_FADE_DURATION: Duration = Duration::from_millis(260);
+const SINGLE_SESSION_SCROLLBAR_TRACK_COLOR: [f32; 4] = [0.040, 0.055, 0.090, 0.075];
+const SINGLE_SESSION_SCROLLBAR_THUMB_COLOR: [f32; 4] = [0.035, 0.065, 0.145, 0.34];
 const TOOL_CARD_ENTRY_DURATION: Duration = Duration::from_millis(180);
 const TOOL_CARD_EXIT_DURATION: Duration = Duration::from_millis(160);
 const TOOL_CARD_STATE_TRANSITION_DURATION: Duration = Duration::from_millis(160);
@@ -210,7 +215,14 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         push_streaming_activity_cue(&mut vertices, app, size, spinner_tick, None);
     }
     push_single_session_selection(&mut vertices, app, size);
-    push_single_session_scrollbar(&mut vertices, app, size, spinner_tick, smooth_scroll_lines);
+    push_single_session_scrollbar(
+        &mut vertices,
+        app,
+        size,
+        spinner_tick,
+        smooth_scroll_lines,
+        None,
+    );
 
     vertices
 }
@@ -233,6 +245,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         welcome_hero_reveal_progress,
         rendered_body_lines,
         None,
+        None,
     )
 }
 
@@ -246,6 +259,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
     welcome_hero_reveal_progress: f32,
     rendered_body_lines: &[SingleSessionStyledLine],
     tool_motion: &ToolCardMotionFrame,
+    scrollbar_motion: Option<&SingleSessionScrollbarMotionFrame>,
 ) -> Vec<Vertex> {
     build_single_session_vertices_with_cached_body_internal(
         app,
@@ -256,6 +270,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
         welcome_hero_reveal_progress,
         rendered_body_lines,
         Some(tool_motion),
+        scrollbar_motion,
     )
 }
 
@@ -269,6 +284,7 @@ fn build_single_session_vertices_with_cached_body_internal(
     welcome_hero_reveal_progress: f32,
     rendered_body_lines: &[SingleSessionStyledLine],
     tool_motion: Option<&ToolCardMotionFrame>,
+    scrollbar_motion: Option<&SingleSessionScrollbarMotionFrame>,
 ) -> Vec<Vertex> {
     let width = size.width as f32;
     let height = size.height as f32;
@@ -380,6 +396,7 @@ fn build_single_session_vertices_with_cached_body_internal(
         size,
         smooth_scroll_lines,
         rendered_body_lines.len(),
+        scrollbar_motion,
     );
 
     vertices
@@ -1810,6 +1827,215 @@ impl ToolCardMotionRegistry {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SingleSessionScrollbarGeometry {
+    thumb_y: f32,
+    thumb_height: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SingleSessionScrollbarVisual {
+    pub(crate) thumb_y: f32,
+    pub(crate) thumb_height: f32,
+    pub(crate) opacity: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SingleSessionScrollbarMotionFrame {
+    visual: Option<SingleSessionScrollbarVisual>,
+    active: bool,
+    cache_key: u64,
+}
+
+impl SingleSessionScrollbarMotionFrame {
+    pub(crate) fn visual(&self) -> Option<SingleSessionScrollbarVisual> {
+        self.visual
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub(crate) fn cache_key(&self) -> u64 {
+        self.cache_key
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct SingleSessionScrollbarMotionRegistry {
+    initialized: bool,
+    start_geometry: Option<SingleSessionScrollbarGeometry>,
+    current_geometry: Option<SingleSessionScrollbarGeometry>,
+    target_geometry: Option<SingleSessionScrollbarGeometry>,
+    transition_started_at: Option<Instant>,
+    last_activity_at: Option<Instant>,
+}
+
+impl SingleSessionScrollbarMotionRegistry {
+    pub(crate) fn frame(
+        &mut self,
+        app: &SingleSessionApp,
+        size: PhysicalSize<u32>,
+        total_lines: usize,
+        smooth_scroll_lines: f32,
+        now: Instant,
+    ) -> SingleSessionScrollbarMotionFrame {
+        let metrics = single_session_body_scroll_metrics_for_total_lines(app, size, total_lines);
+        self.frame_for_metrics(size, smooth_scroll_lines, metrics, now)
+    }
+
+    fn frame_for_metrics(
+        &mut self,
+        size: PhysicalSize<u32>,
+        smooth_scroll_lines: f32,
+        metrics: Option<SingleSessionBodyScrollMetrics>,
+        now: Instant,
+    ) -> SingleSessionScrollbarMotionFrame {
+        let Some(metrics) = metrics else {
+            self.clear();
+            return SingleSessionScrollbarMotionFrame::default();
+        };
+        let target_geometry = single_session_scrollbar_geometry(size, smooth_scroll_lines, metrics);
+
+        if !self.initialized {
+            self.initialized = true;
+            self.start_geometry = Some(target_geometry);
+            self.current_geometry = Some(target_geometry);
+            self.target_geometry = Some(target_geometry);
+            self.transition_started_at = None;
+            self.last_activity_at = Some(now);
+        } else if self
+            .target_geometry
+            .is_none_or(|previous| scrollbar_geometry_changed(previous, target_geometry))
+        {
+            let start_geometry = self.current_geometry.unwrap_or(target_geometry);
+            self.start_geometry = Some(start_geometry);
+            self.current_geometry = Some(start_geometry);
+            self.target_geometry = Some(target_geometry);
+            self.transition_started_at = Some(now);
+            self.last_activity_at = Some(now);
+        }
+
+        let transition_active = self.update_transition(now);
+        let (opacity, fade_active) = self.opacity_for_frame(now);
+        let active = transition_active || fade_active;
+        let visual = (opacity > 0.001 || transition_active).then(|| {
+            let geometry = self.current_geometry.unwrap_or(target_geometry);
+            SingleSessionScrollbarVisual {
+                thumb_y: geometry.thumb_y,
+                thumb_height: geometry.thumb_height,
+                opacity,
+            }
+        });
+        SingleSessionScrollbarMotionFrame {
+            visual,
+            active,
+            cache_key: scrollbar_motion_cache_key(visual, active),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.start_geometry = None;
+        self.current_geometry = None;
+        self.target_geometry = None;
+        self.transition_started_at = None;
+        self.last_activity_at = None;
+    }
+
+    fn update_transition(&mut self, now: Instant) -> bool {
+        let Some(started_at) = self.transition_started_at else {
+            return false;
+        };
+        let Some(start) = self.start_geometry else {
+            self.transition_started_at = None;
+            return false;
+        };
+        let Some(target) = self.target_geometry else {
+            self.transition_started_at = None;
+            return false;
+        };
+        let (progress, running) = timed_animation_progress(
+            started_at,
+            now,
+            SINGLE_SESSION_SCROLLBAR_THUMB_TRANSITION_DURATION,
+        );
+        let eased = ease_out_cubic_local(progress);
+        self.current_geometry = Some(SingleSessionScrollbarGeometry {
+            thumb_y: lerp_f32(start.thumb_y, target.thumb_y, eased),
+            thumb_height: lerp_f32(start.thumb_height, target.thumb_height, eased),
+        });
+        if !running {
+            self.current_geometry = Some(target);
+            self.transition_started_at = None;
+        }
+        running
+    }
+
+    fn opacity_for_frame(&self, now: Instant) -> (f32, bool) {
+        let Some(last_activity_at) = self.last_activity_at else {
+            return (0.0, false);
+        };
+        let elapsed = now.saturating_duration_since(last_activity_at);
+        if elapsed <= SINGLE_SESSION_SCROLLBAR_FADE_IDLE_DURATION {
+            return (1.0, true);
+        }
+        let fade_elapsed = elapsed - SINGLE_SESSION_SCROLLBAR_FADE_IDLE_DURATION;
+        let (progress, running) = timed_animation_progress(
+            last_activity_at + SINGLE_SESSION_SCROLLBAR_FADE_IDLE_DURATION,
+            last_activity_at + SINGLE_SESSION_SCROLLBAR_FADE_IDLE_DURATION + fade_elapsed,
+            SINGLE_SESSION_SCROLLBAR_FADE_DURATION,
+        );
+        let opacity = 1.0 - ease_out_cubic_local(progress);
+        (opacity, running)
+    }
+}
+
+fn scrollbar_geometry_changed(
+    previous: SingleSessionScrollbarGeometry,
+    next: SingleSessionScrollbarGeometry,
+) -> bool {
+    (previous.thumb_y - next.thumb_y).abs() > 0.25
+        || (previous.thumb_height - next.thumb_height).abs() > 0.25
+}
+
+fn single_session_scrollbar_geometry(
+    size: PhysicalSize<u32>,
+    smooth_scroll_lines: f32,
+    metrics: SingleSessionBodyScrollMetrics,
+) -> SingleSessionScrollbarGeometry {
+    let track_top = single_session_scrollbar_track_top();
+    let track_bottom = single_session_scrollbar_track_bottom(size);
+    let track_height = (track_bottom - track_top).max(1.0);
+    let thumb_height = (metrics.visible_lines as f32 / metrics.total_lines as f32 * track_height)
+        .clamp(28.0, track_height);
+    let travel = (track_height - thumb_height).max(0.0);
+    let smooth_scroll_lines =
+        (metrics.scroll_lines + smooth_scroll_lines).clamp(0.0, metrics.max_scroll_lines as f32);
+    let scroll_fraction = smooth_scroll_lines / metrics.max_scroll_lines.max(1) as f32;
+    let thumb_y = track_top + (1.0 - scroll_fraction.clamp(0.0, 1.0)) * travel;
+    SingleSessionScrollbarGeometry {
+        thumb_y,
+        thumb_height,
+    }
+}
+
+fn scrollbar_motion_cache_key(visual: Option<SingleSessionScrollbarVisual>, active: bool) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    active.hash(&mut hasher);
+    visual.is_some().hash(&mut hasher);
+    if let Some(visual) = visual {
+        hash_f32(visual.thumb_y, &mut hasher);
+        hash_f32(visual.thumb_height, &mut hasher);
+        hash_f32(visual.opacity, &mut hasher);
+    }
+    hasher.finish()
+}
+
+fn lerp_f32(start: f32, end: f32, progress: f32) -> f32 {
+    start + (end - start) * progress
+}
+
 fn tool_card_visual_from_state(
     state: &mut ToolCardMotionState,
     run: &SingleSessionToolCardRun,
@@ -2928,11 +3154,12 @@ fn push_single_session_scrollbar(
     size: PhysicalSize<u32>,
     tick: u64,
     smooth_scroll_lines: f32,
+    motion: Option<&SingleSessionScrollbarMotionFrame>,
 ) {
     let Some(metrics) = single_session_body_scroll_metrics(app, size, tick) else {
         return;
     };
-    push_single_session_scrollbar_for_metrics(vertices, size, smooth_scroll_lines, metrics);
+    push_single_session_scrollbar_for_metrics(vertices, size, smooth_scroll_lines, metrics, motion);
 }
 
 fn push_single_session_scrollbar_for_total_lines(
@@ -2941,12 +3168,13 @@ fn push_single_session_scrollbar_for_total_lines(
     size: PhysicalSize<u32>,
     smooth_scroll_lines: f32,
     total_lines: usize,
+    motion: Option<&SingleSessionScrollbarMotionFrame>,
 ) {
     let Some(metrics) = single_session_body_scroll_metrics_for_total_lines(app, size, total_lines)
     else {
         return;
     };
-    push_single_session_scrollbar_for_metrics(vertices, size, smooth_scroll_lines, metrics);
+    push_single_session_scrollbar_for_metrics(vertices, size, smooth_scroll_lines, metrics, motion);
 }
 
 fn push_single_session_scrollbar_for_metrics(
@@ -2954,18 +3182,27 @@ fn push_single_session_scrollbar_for_metrics(
     size: PhysicalSize<u32>,
     smooth_scroll_lines: f32,
     metrics: SingleSessionBodyScrollMetrics,
+    motion: Option<&SingleSessionScrollbarMotionFrame>,
 ) {
-    let track_top = PANEL_BODY_TOP_PADDING + 4.0;
-    let track_bottom = single_session_body_bottom(size) - 4.0;
+    let track_top = single_session_scrollbar_track_top();
+    let track_bottom = single_session_scrollbar_track_bottom(size);
     let track_height = (track_bottom - track_top).max(1.0);
     let x = single_session_scrollbar_track_x(size);
-    let thumb_height = (metrics.visible_lines as f32 / metrics.total_lines as f32 * track_height)
-        .clamp(28.0, track_height);
-    let travel = (track_height - thumb_height).max(0.0);
-    let smooth_scroll_lines =
-        (metrics.scroll_lines + smooth_scroll_lines).clamp(0.0, metrics.max_scroll_lines as f32);
-    let scroll_fraction = smooth_scroll_lines / metrics.max_scroll_lines.max(1) as f32;
-    let thumb_y = track_top + (1.0 - scroll_fraction.clamp(0.0, 1.0)) * travel;
+    let fallback_geometry = single_session_scrollbar_geometry(size, smooth_scroll_lines, metrics);
+    let visual = match motion {
+        Some(motion) => match motion.visual() {
+            Some(visual) => visual,
+            None => return,
+        },
+        None => SingleSessionScrollbarVisual {
+            thumb_y: fallback_geometry.thumb_y,
+            thumb_height: fallback_geometry.thumb_height,
+            opacity: 1.0,
+        },
+    };
+    if visual.opacity <= 0.001 {
+        return;
+    }
 
     push_rounded_rect(
         vertices,
@@ -2976,21 +3213,35 @@ fn push_single_session_scrollbar_for_metrics(
             height: track_height,
         },
         2.0,
-        [0.040, 0.055, 0.090, 0.075],
+        with_alpha(
+            SINGLE_SESSION_SCROLLBAR_TRACK_COLOR,
+            SINGLE_SESSION_SCROLLBAR_TRACK_COLOR[3] * visual.opacity,
+        ),
         size,
     );
     push_rounded_rect(
         vertices,
         Rect {
             x: x - 0.5,
-            y: thumb_y,
+            y: visual.thumb_y,
             width: 4.0,
-            height: thumb_height,
+            height: visual.thumb_height,
         },
         2.0,
-        [0.035, 0.065, 0.145, 0.34],
+        with_alpha(
+            SINGLE_SESSION_SCROLLBAR_THUMB_COLOR,
+            SINGLE_SESSION_SCROLLBAR_THUMB_COLOR[3] * visual.opacity,
+        ),
         size,
     );
+}
+
+fn single_session_scrollbar_track_top() -> f32 {
+    PANEL_BODY_TOP_PADDING + 4.0
+}
+
+fn single_session_scrollbar_track_bottom(size: PhysicalSize<u32>) -> f32 {
+    single_session_body_bottom(size) - 4.0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -6141,6 +6392,113 @@ mod tests {
                 .opacity,
             1.0
         );
+    }
+
+    #[test]
+    fn scrollbar_motion_animates_thumb_position() {
+        let mut registry = SingleSessionScrollbarMotionRegistry::default();
+        let size = PhysicalSize::new(900, 720);
+        let now = Instant::now();
+        let top = test_scroll_metrics(120, 30, 0.0, 90);
+        let bottom = test_scroll_metrics(120, 30, 90.0, 90);
+
+        let first = registry.frame_for_metrics(size, 0.0, Some(top), now);
+        let first_visual = first.visual().expect("initial visual");
+        assert_eq!(first_visual.opacity, 1.0);
+        assert_eq!(
+            first_visual.thumb_y,
+            single_session_scrollbar_geometry(size, 0.0, top).thumb_y
+        );
+
+        let start =
+            registry.frame_for_metrics(size, 0.0, Some(bottom), now + Duration::from_millis(5));
+        let start_visual = start.visual().expect("start visual");
+        assert!(start.is_active());
+        assert_eq!(start_visual.thumb_y, first_visual.thumb_y);
+
+        let middle = registry.frame_for_metrics(
+            size,
+            0.0,
+            Some(bottom),
+            now + Duration::from_millis(5) + SINGLE_SESSION_SCROLLBAR_THUMB_TRANSITION_DURATION / 2,
+        );
+        let middle_visual = middle.visual().expect("middle visual");
+        let target_y = single_session_scrollbar_geometry(size, 0.0, bottom).thumb_y;
+        assert!(middle_visual.thumb_y < first_visual.thumb_y);
+        assert!(middle_visual.thumb_y > target_y);
+
+        let settled = registry.frame_for_metrics(
+            size,
+            0.0,
+            Some(bottom),
+            now + Duration::from_millis(5) + SINGLE_SESSION_SCROLLBAR_THUMB_TRANSITION_DURATION * 2,
+        );
+        let settled_visual = settled.visual().expect("settled visual");
+        assert_eq!(settled_visual.thumb_y, target_y);
+    }
+
+    #[test]
+    fn scrollbar_motion_fades_after_idle() {
+        let mut registry = SingleSessionScrollbarMotionRegistry::default();
+        let size = PhysicalSize::new(900, 720);
+        let now = Instant::now();
+        let metrics = test_scroll_metrics(120, 30, 0.0, 90);
+
+        let initial = registry.frame_for_metrics(size, 0.0, Some(metrics), now);
+        assert_eq!(initial.visual().expect("initial visual").opacity, 1.0);
+
+        let fading = registry.frame_for_metrics(
+            size,
+            0.0,
+            Some(metrics),
+            now + SINGLE_SESSION_SCROLLBAR_FADE_IDLE_DURATION
+                + SINGLE_SESSION_SCROLLBAR_FADE_DURATION / 2,
+        );
+        let fading_visual = fading.visual().expect("fading visual");
+        assert!(fading.is_active());
+        assert!(fading_visual.opacity > 0.0 && fading_visual.opacity < 1.0);
+
+        let faded = registry.frame_for_metrics(
+            size,
+            0.0,
+            Some(metrics),
+            now + SINGLE_SESSION_SCROLLBAR_FADE_IDLE_DURATION
+                + SINGLE_SESSION_SCROLLBAR_FADE_DURATION * 2,
+        );
+        assert!(faded.visual().is_none());
+        assert!(!faded.is_active());
+    }
+
+    #[test]
+    fn scrollbar_motion_clears_when_not_scrollable() {
+        let mut registry = SingleSessionScrollbarMotionRegistry::default();
+        let size = PhysicalSize::new(900, 720);
+        let now = Instant::now();
+        let metrics = test_scroll_metrics(120, 30, 0.0, 90);
+
+        assert!(
+            registry
+                .frame_for_metrics(size, 0.0, Some(metrics), now)
+                .visual()
+                .is_some()
+        );
+        let cleared = registry.frame_for_metrics(size, 0.0, None, now + Duration::from_millis(16));
+        assert!(cleared.visual().is_none());
+        assert!(!cleared.is_active());
+    }
+
+    fn test_scroll_metrics(
+        total_lines: usize,
+        visible_lines: usize,
+        scroll_lines: f32,
+        max_scroll_lines: usize,
+    ) -> SingleSessionBodyScrollMetrics {
+        SingleSessionBodyScrollMetrics {
+            total_lines,
+            visible_lines,
+            scroll_lines,
+            max_scroll_lines,
+        }
     }
 
     fn colors_close(left: [f32; 4], right: [f32; 4], tolerance: f32) -> bool {
