@@ -1448,6 +1448,47 @@ fn single_session_vertices_do_not_draw_input_underline() {
     ));
 }
 
+#[test]
+fn single_session_vertices_draw_composer_chrome_and_submit_affordance() {
+    let size = PhysicalSize::new(900, 700);
+    let empty_app = SingleSessionApp::new(None);
+    let empty_vertices = build_single_session_vertices(&empty_app, size, 0.0, 0);
+
+    assert!(vertices_have_color(
+        &empty_vertices,
+        COMPOSER_CARD_BACKGROUND_COLOR
+    ));
+    assert!(vertices_have_rgb(
+        &empty_vertices,
+        COMPOSER_FOCUS_RING_COLOR
+    ));
+    assert!(vertices_have_color(
+        &empty_vertices,
+        COMPOSER_PLACEHOLDER_RAIL_COLOR
+    ));
+    assert!(!vertices_have_color(
+        &empty_vertices,
+        COMPOSER_SUBMIT_READY_COLOR
+    ));
+
+    let mut typed_app = SingleSessionApp::new(None);
+    typed_app.handle_key(KeyInput::Character("ship it".to_string()));
+    let typed_vertices = build_single_session_vertices(&typed_app, size, 0.0, 0);
+
+    assert!(vertices_have_color(
+        &typed_vertices,
+        COMPOSER_CARD_BACKGROUND_COLOR
+    ));
+    assert!(vertices_have_color(
+        &typed_vertices,
+        COMPOSER_SUBMIT_READY_COLOR
+    ));
+    assert!(!vertices_have_color(
+        &typed_vertices,
+        COMPOSER_PLACEHOLDER_RAIL_COLOR
+    ));
+}
+
 fn vertices_have_bottom_center_rule(vertices: &[Vertex], color: [f32; 4]) -> bool {
     vertices.iter().any(|vertex| {
         vertex.color == color && vertex.position[1] <= -0.99 && vertex.position[0].abs() < 0.85

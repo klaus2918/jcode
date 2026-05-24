@@ -60,6 +60,12 @@ const INLINE_WIDGET_LIST_REFLOW_ENTRY_DURATION: Duration = Duration::from_millis
 const INLINE_WIDGET_LIST_REFLOW_SHIFT_DURATION: Duration = Duration::from_millis(145);
 const INLINE_WIDGET_LIST_REFLOW_EXIT_DURATION: Duration = Duration::from_millis(120);
 const INLINE_WIDGET_LIST_REFLOW_COLOR: [f32; 4] = [0.105, 0.355, 0.950, 0.110];
+const COMPOSER_MOTION_DURATION: Duration = Duration::from_millis(165);
+pub(crate) const COMPOSER_CARD_BACKGROUND_COLOR: [f32; 4] = [0.990, 0.994, 1.000, 0.420];
+pub(crate) const COMPOSER_FOCUS_RING_COLOR: [f32; 4] = [0.090, 0.250, 0.680, 0.185];
+pub(crate) const COMPOSER_PLACEHOLDER_RAIL_COLOR: [f32; 4] = [0.105, 0.185, 0.360, 0.185];
+pub(crate) const COMPOSER_SUBMIT_READY_COLOR: [f32; 4] = [0.105, 0.355, 0.950, 0.700];
+pub(crate) const COMPOSER_SUBMIT_BUSY_COLOR: [f32; 4] = [0.055, 0.540, 0.360, 0.700];
 const TOOL_CARD_ENTRY_DURATION: Duration = Duration::from_millis(180);
 const TOOL_CARD_EXIT_DURATION: Duration = Duration::from_millis(160);
 const TOOL_CARD_STATE_TRANSITION_DURATION: Duration = Duration::from_millis(160);
@@ -174,6 +180,8 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         size,
     );
 
+    push_single_session_composer_chrome(&mut vertices, app, size, None);
+
     let welcome_chrome_offset = if app.is_welcome_timeline_visible() {
         welcome_timeline_visual_offset_pixels(app, size, smooth_scroll_lines)
     } else {
@@ -268,6 +276,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -282,6 +291,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
     rendered_body_lines: &[SingleSessionStyledLine],
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
     inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
+    composer_motion: Option<&ComposerMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     inline_markdown_motion: Option<&InlineMarkdownPillMotionFrame>,
     tool_motion: &ToolCardMotionFrame,
@@ -297,6 +307,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
         rendered_body_lines,
         inline_selection_motion,
         inline_list_reflow_motion,
+        composer_motion,
         transcript_motion,
         inline_markdown_motion,
         Some(tool_motion),
@@ -315,6 +326,7 @@ fn build_single_session_vertices_with_cached_body_internal(
     rendered_body_lines: &[SingleSessionStyledLine],
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
     inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
+    composer_motion: Option<&ComposerMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     inline_markdown_motion: Option<&InlineMarkdownPillMotionFrame>,
     tool_motion: Option<&ToolCardMotionFrame>,
@@ -353,6 +365,8 @@ fn build_single_session_vertices_with_cached_body_internal(
         focus_pulse,
         size,
     );
+
+    push_single_session_composer_chrome(&mut vertices, app, size, composer_motion);
 
     let welcome_chrome_offset = if app.is_welcome_timeline_visible() {
         welcome_timeline_visual_offset_pixels_for_total_lines(
@@ -683,6 +697,141 @@ fn push_top_and_side_surface_outline(
         color,
         size,
     );
+}
+
+fn push_single_session_composer_chrome(
+    vertices: &mut Vec<Vertex>,
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    composer_motion: Option<&ComposerMotionFrame>,
+) {
+    if welcome_status_lane_visible(app) {
+        return;
+    }
+
+    let typography = single_session_typography_for_scale(app.text_scale());
+    let line_height = typography.code_size * typography.code_line_height;
+    let target = composer_motion_target(app);
+    let visual = composer_motion
+        .map(|frame| frame.visual())
+        .unwrap_or_else(|| ComposerMotionVisual::settled(target));
+    let height = (visual.height_lines.max(1.0) * line_height + 18.0)
+        .min((size.height as f32 * 0.34).max(line_height + 18.0));
+    let draft_top = single_session_draft_top_for_app(app, size);
+    let content_width = single_session_content_width(size);
+    let rect = Rect {
+        x: PANEL_TITLE_LEFT_PADDING - 10.0,
+        y: draft_top - 9.0,
+        width: content_width + 20.0,
+        height,
+    };
+    if rect.width <= 12.0 || rect.height <= 10.0 {
+        return;
+    }
+
+    let radius = 13.0;
+    let focus_alpha = COMPOSER_FOCUS_RING_COLOR[3]
+        * (0.38 + 0.62 * visual.focus_opacity)
+        * (1.0 - visual.blocked_progress * 0.42);
+    let halo_inset = -2.0 - 2.0 * visual.focus_opacity;
+    push_rounded_rect(
+        vertices,
+        inset_rect(rect, halo_inset),
+        radius + 3.0,
+        with_alpha(COMPOSER_FOCUS_RING_COLOR, focus_alpha),
+        size,
+    );
+
+    let card_color = mix_color(
+        COMPOSER_CARD_BACKGROUND_COLOR,
+        [0.970, 0.984, 1.000, COMPOSER_CARD_BACKGROUND_COLOR[3]],
+        visual.blocked_progress * 0.35,
+    );
+    push_rounded_rect(vertices, rect, radius, card_color, size);
+
+    let accent_alpha =
+        (0.18 + 0.22 * visual.focus_opacity) * (1.0 - visual.blocked_progress * 0.55);
+    push_rounded_rect(
+        vertices,
+        Rect {
+            x: rect.x + 7.0,
+            y: rect.y + 7.0,
+            width: 3.0,
+            height: (rect.height - 14.0).max(1.0),
+        },
+        2.0,
+        with_alpha(COMPOSER_SUBMIT_READY_COLOR, accent_alpha),
+        size,
+    );
+
+    if visual.placeholder_opacity > 0.001 {
+        let prompt_width =
+            app.composer_prompt().chars().count() as f32 * typography.code_size * 0.58;
+        let rail_width = (content_width * 0.32).clamp(96.0, 260.0);
+        push_rounded_rect(
+            vertices,
+            Rect {
+                x: PANEL_TITLE_LEFT_PADDING + prompt_width + 8.0,
+                y: draft_top + line_height * 0.50,
+                width: rail_width,
+                height: 4.0,
+            },
+            2.0,
+            with_alpha(
+                COMPOSER_PLACEHOLDER_RAIL_COLOR,
+                COMPOSER_PLACEHOLDER_RAIL_COLOR[3] * visual.placeholder_opacity,
+            ),
+            size,
+        );
+    }
+
+    if visual.submit_opacity > 0.001 {
+        let pill_height = 22.0 * visual.submit_scale.max(0.72);
+        let pill_width = 36.0 * visual.submit_scale.max(0.72);
+        let pill_x = single_session_content_right(size) - pill_width;
+        let pill_y = draft_top + (line_height - pill_height) * 0.5;
+        let submit_color = mix_color(
+            COMPOSER_SUBMIT_READY_COLOR,
+            COMPOSER_SUBMIT_BUSY_COLOR,
+            visual.processing_progress,
+        );
+        push_rounded_rect(
+            vertices,
+            Rect {
+                x: pill_x,
+                y: pill_y,
+                width: pill_width,
+                height: pill_height,
+            },
+            pill_height * 0.5,
+            with_alpha(submit_color, submit_color[3] * visual.submit_opacity),
+            size,
+        );
+        let arrow_alpha = (0.54 + 0.26 * visual.focus_opacity) * visual.submit_opacity;
+        let arrow_y = pill_y + pill_height * 0.5 - 1.0;
+        push_rect(
+            vertices,
+            Rect {
+                x: pill_x + pill_width * 0.30,
+                y: arrow_y,
+                width: pill_width * 0.36,
+                height: 2.0,
+            },
+            [1.0, 1.0, 1.0, arrow_alpha],
+            size,
+        );
+        push_rect(
+            vertices,
+            Rect {
+                x: pill_x + pill_width * 0.55,
+                y: arrow_y - 4.0,
+                width: 2.0,
+                height: 10.0,
+            },
+            [1.0, 1.0, 1.0, arrow_alpha],
+            size,
+        );
+    }
 }
 
 fn push_fresh_welcome_ambient(
@@ -2036,6 +2185,186 @@ impl InlineWidgetListReflowMotionRegistry {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ComposerMotionTarget {
+    line_count: usize,
+    empty: bool,
+    blocked: bool,
+    processing: bool,
+    ready_to_submit: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ComposerMotionVisual {
+    height_lines: f32,
+    placeholder_opacity: f32,
+    focus_opacity: f32,
+    blocked_progress: f32,
+    submit_opacity: f32,
+    submit_scale: f32,
+    processing_progress: f32,
+}
+
+impl ComposerMotionVisual {
+    fn settled(target: ComposerMotionTarget) -> Self {
+        Self {
+            height_lines: target.line_count.max(1) as f32,
+            placeholder_opacity: if target.empty && !target.processing {
+                1.0
+            } else {
+                0.0
+            },
+            focus_opacity: if target.blocked { 0.28 } else { 1.0 },
+            blocked_progress: if target.blocked { 1.0 } else { 0.0 },
+            submit_opacity: if target.ready_to_submit || target.processing {
+                1.0
+            } else {
+                0.0
+            },
+            submit_scale: if target.ready_to_submit || target.processing {
+                1.0
+            } else {
+                0.82
+            },
+            processing_progress: if target.processing { 1.0 } else { 0.0 },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ComposerMotionTransition {
+    from: ComposerMotionVisual,
+    to: ComposerMotionVisual,
+    started_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ComposerMotionFrame {
+    visual: ComposerMotionVisual,
+    active: bool,
+    cache_key: u64,
+}
+
+impl ComposerMotionFrame {
+    pub(crate) fn visual(&self) -> ComposerMotionVisual {
+        self.visual
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub(crate) fn cache_key(&self) -> u64 {
+        self.cache_key
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct ComposerMotionRegistry {
+    initialized: bool,
+    target: Option<ComposerMotionTarget>,
+    visual: Option<ComposerMotionVisual>,
+    transition: Option<ComposerMotionTransition>,
+}
+
+impl ComposerMotionRegistry {
+    pub(crate) fn frame(&mut self, app: &SingleSessionApp, now: Instant) -> ComposerMotionFrame {
+        self.frame_for_target(composer_motion_target(app), now)
+    }
+
+    fn frame_for_target(
+        &mut self,
+        target: ComposerMotionTarget,
+        now: Instant,
+    ) -> ComposerMotionFrame {
+        let target_visual = ComposerMotionVisual::settled(target);
+        let reduced_motion = crate::animation::desktop_reduced_motion_enabled();
+        if reduced_motion || !self.initialized {
+            self.initialized = true;
+            self.target = Some(target);
+            self.visual = Some(target_visual);
+            self.transition = None;
+            return ComposerMotionFrame {
+                visual: target_visual,
+                active: false,
+                cache_key: composer_motion_cache_key(target, target_visual, false),
+            };
+        }
+
+        if self.target != Some(target) {
+            let from = self.current_visual(now);
+            self.transition = Some(ComposerMotionTransition {
+                from,
+                to: target_visual,
+                started_at: now,
+            });
+            self.target = Some(target);
+        }
+
+        let mut active = false;
+        let visual = if let Some(transition) = self.transition {
+            let (progress, running) =
+                timed_animation_progress(transition.started_at, now, COMPOSER_MOTION_DURATION);
+            let eased = ease_out_cubic_local(progress);
+            let visual = composer_motion_visual_lerp(transition.from, transition.to, eased);
+            active = running;
+            if !running {
+                self.transition = None;
+            }
+            visual
+        } else {
+            target_visual
+        };
+        self.visual = Some(visual);
+
+        ComposerMotionFrame {
+            visual,
+            active,
+            cache_key: composer_motion_cache_key(target, visual, active),
+        }
+    }
+
+    fn current_visual(&mut self, now: Instant) -> ComposerMotionVisual {
+        if let Some(transition) = self.transition {
+            let (progress, running) =
+                timed_animation_progress(transition.started_at, now, COMPOSER_MOTION_DURATION);
+            if !running {
+                self.transition = None;
+                transition.to
+            } else {
+                composer_motion_visual_lerp(
+                    transition.from,
+                    transition.to,
+                    ease_out_cubic_local(progress),
+                )
+            }
+        } else {
+            self.visual
+                .or_else(|| self.target.map(ComposerMotionVisual::settled))
+                .unwrap_or_else(|| ComposerMotionVisual::settled(ComposerMotionTarget::default()))
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.target = None;
+        self.visual = None;
+        self.transition = None;
+    }
+}
+
+impl Default for ComposerMotionTarget {
+    fn default() -> Self {
+        Self {
+            line_count: 1,
+            empty: true,
+            blocked: false,
+            processing: false,
+            ready_to_submit: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TranscriptCardVisual {
     pub(crate) opacity: f32,
@@ -3236,6 +3565,52 @@ fn inline_widget_list_reflow_cache_key(
         hash_f32(visual.y_offset_lines, &mut hasher);
         hash_f32(visual.line_span, &mut hasher);
     }
+    hasher.finish()
+}
+
+fn composer_motion_target(app: &SingleSessionApp) -> ComposerMotionTarget {
+    let line_count = app.composer_text().split('\n').count().max(1);
+    let ready_to_submit = !app.draft.trim().is_empty();
+    ComposerMotionTarget {
+        line_count,
+        empty: app.draft.is_empty(),
+        blocked: !app.should_draw_composer_caret(),
+        processing: app.is_processing,
+        ready_to_submit,
+    }
+}
+
+fn composer_motion_visual_lerp(
+    from: ComposerMotionVisual,
+    to: ComposerMotionVisual,
+    progress: f32,
+) -> ComposerMotionVisual {
+    ComposerMotionVisual {
+        height_lines: lerp_f32(from.height_lines, to.height_lines, progress),
+        placeholder_opacity: lerp_f32(from.placeholder_opacity, to.placeholder_opacity, progress),
+        focus_opacity: lerp_f32(from.focus_opacity, to.focus_opacity, progress),
+        blocked_progress: lerp_f32(from.blocked_progress, to.blocked_progress, progress),
+        submit_opacity: lerp_f32(from.submit_opacity, to.submit_opacity, progress),
+        submit_scale: lerp_f32(from.submit_scale, to.submit_scale, progress),
+        processing_progress: lerp_f32(from.processing_progress, to.processing_progress, progress),
+    }
+}
+
+fn composer_motion_cache_key(
+    target: ComposerMotionTarget,
+    visual: ComposerMotionVisual,
+    active: bool,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    target.hash(&mut hasher);
+    active.hash(&mut hasher);
+    hash_f32(visual.height_lines, &mut hasher);
+    hash_f32(visual.placeholder_opacity, &mut hasher);
+    hash_f32(visual.focus_opacity, &mut hasher);
+    hash_f32(visual.blocked_progress, &mut hasher);
+    hash_f32(visual.submit_opacity, &mut hasher);
+    hash_f32(visual.submit_scale, &mut hasher);
+    hash_f32(visual.processing_progress, &mut hasher);
     hasher.finish()
 }
 
@@ -7990,6 +8365,62 @@ mod tests {
                 .iter()
                 .all(|(_, visual)| visual.opacity > 0.9)
         );
+    }
+
+    #[test]
+    fn composer_motion_animates_height_placeholder_focus_and_submit_affordance() {
+        let mut registry = ComposerMotionRegistry::default();
+        let now = Instant::now();
+        let empty = ComposerMotionTarget::default();
+
+        let initial = registry.frame_for_target(empty, now);
+        assert!(!initial.is_active());
+        assert_eq!(initial.visual().height_lines, 1.0);
+        assert_eq!(initial.visual().placeholder_opacity, 1.0);
+        assert_eq!(initial.visual().submit_opacity, 0.0);
+
+        let typed = ComposerMotionTarget {
+            line_count: 3,
+            empty: false,
+            blocked: false,
+            processing: false,
+            ready_to_submit: true,
+        };
+        let entry_start_time = now + Duration::from_millis(5);
+        let entry_start = registry.frame_for_target(typed, entry_start_time);
+        assert!(entry_start.is_active());
+        assert_eq!(entry_start.visual().height_lines, 1.0);
+        let entry_mid =
+            registry.frame_for_target(typed, entry_start_time + COMPOSER_MOTION_DURATION / 2);
+        assert!(entry_mid.is_active());
+        assert!(entry_mid.visual().height_lines > 1.0);
+        assert!(entry_mid.visual().height_lines < 3.0);
+        assert!(entry_mid.visual().placeholder_opacity < 1.0);
+        assert!(entry_mid.visual().submit_opacity > 0.0);
+        assert!(entry_mid.visual().submit_opacity < 1.0);
+        assert!(entry_mid.visual().submit_scale > 0.82);
+        assert!(entry_mid.visual().submit_scale < 1.0);
+
+        let settled = registry.frame_for_target(typed, now + COMPOSER_MOTION_DURATION * 2);
+        assert!(!settled.is_active());
+        assert_eq!(settled.visual(), ComposerMotionVisual::settled(typed));
+
+        let blocked = ComposerMotionTarget {
+            line_count: 3,
+            empty: false,
+            blocked: true,
+            processing: true,
+            ready_to_submit: true,
+        };
+        let blocked_start_time = now + COMPOSER_MOTION_DURATION * 2 + Duration::from_millis(5);
+        let blocked_start = registry.frame_for_target(blocked, blocked_start_time);
+        assert!(blocked_start.is_active());
+        let blocked_mid =
+            registry.frame_for_target(blocked, blocked_start_time + COMPOSER_MOTION_DURATION / 2);
+        assert!(blocked_mid.is_active());
+        assert!(blocked_mid.visual().focus_opacity < 1.0);
+        assert!(blocked_mid.visual().blocked_progress > 0.0);
+        assert!(blocked_mid.visual().processing_progress > 0.0);
     }
 
     #[test]

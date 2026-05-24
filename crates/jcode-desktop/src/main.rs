@@ -8186,6 +8186,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
     welcome_hero_reveal_progress: f32,
     tool_motion_cache_key: u64,
     inline_widget_list_reflow_cache_key: u64,
+    composer_motion_cache_key: u64,
     transcript_motion_cache_key: u64,
     inline_markdown_motion_cache_key: u64,
     scrollbar_motion_cache_key: u64,
@@ -8216,6 +8217,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
     welcome_hero_reveal_progress.to_bits().hash(&mut hasher);
     tool_motion_cache_key.hash(&mut hasher);
     inline_widget_list_reflow_cache_key.hash(&mut hasher);
+    composer_motion_cache_key.hash(&mut hasher);
     transcript_motion_cache_key.hash(&mut hasher);
     inline_markdown_motion_cache_key.hash(&mut hasher);
     scrollbar_motion_cache_key.hash(&mut hasher);
@@ -8262,6 +8264,7 @@ struct Canvas {
     status_color_transition: ColorTransition,
     inline_widget_selection_motion: InlineWidgetSelectionMotionRegistry,
     inline_widget_list_reflow_motion: InlineWidgetListReflowMotionRegistry,
+    composer_motion: ComposerMotionRegistry,
     transcript_card_motion: TranscriptCardMotionRegistry,
     inline_markdown_pill_motion: InlineMarkdownPillMotionRegistry,
     tool_card_motion: ToolCardMotionRegistry,
@@ -8384,6 +8387,7 @@ impl Canvas {
             status_color_transition: ColorTransition::default(),
             inline_widget_selection_motion: InlineWidgetSelectionMotionRegistry::default(),
             inline_widget_list_reflow_motion: InlineWidgetListReflowMotionRegistry::default(),
+            composer_motion: ComposerMotionRegistry::default(),
             transcript_card_motion: TranscriptCardMotionRegistry::default(),
             inline_markdown_pill_motion: InlineMarkdownPillMotionRegistry::default(),
             tool_card_motion: ToolCardMotionRegistry::default(),
@@ -9491,6 +9495,7 @@ impl Canvas {
                 let inline_list_reflow_motion = self
                     .inline_widget_list_reflow_motion
                     .frame(single_session, now);
+                let composer_motion = self.composer_motion.frame(single_session, now);
                 let tool_motion_lines = single_session_viewport
                     .as_ref()
                     .map(|viewport| viewport.lines.as_slice())
@@ -9525,6 +9530,7 @@ impl Canvas {
                     || single_session.has_background_work()
                     || inline_selection_motion.is_active()
                     || inline_list_reflow_motion.is_active()
+                    || composer_motion.is_active()
                     || transcript_motion.is_active()
                     || inline_markdown_motion.is_active()
                     || tool_motion.is_active()
@@ -9540,6 +9546,7 @@ impl Canvas {
                     welcome_hero_reveal_progress,
                     tool_motion.cache_key(),
                     inline_list_reflow_motion.cache_key(),
+                    composer_motion.cache_key(),
                     transcript_motion.cache_key(),
                     inline_markdown_motion.cache_key(),
                     scrollbar_motion.cache_key(),
@@ -9562,6 +9569,7 @@ impl Canvas {
                                 &self.single_session_body_lines,
                                 Some(&inline_selection_motion),
                                 Some(&inline_list_reflow_motion),
+                                Some(&composer_motion),
                                 Some(&transcript_motion),
                                 Some(&inline_markdown_motion),
                                 &tool_motion,
@@ -9584,6 +9592,7 @@ impl Canvas {
                             &self.single_session_body_lines,
                             Some(&inline_selection_motion),
                             Some(&inline_list_reflow_motion),
+                            Some(&composer_motion),
                             Some(&transcript_motion),
                             Some(&inline_markdown_motion),
                             &tool_motion,
@@ -9597,6 +9606,7 @@ impl Canvas {
             DesktopApp::Workspace(workspace) => {
                 self.inline_widget_selection_motion.clear();
                 self.inline_widget_list_reflow_motion.clear();
+                self.composer_motion.clear();
                 self.transcript_card_motion.clear();
                 self.inline_markdown_pill_motion.clear();
                 self.single_session_scrollbar_motion.clear();
