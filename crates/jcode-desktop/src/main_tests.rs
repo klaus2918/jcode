@@ -89,6 +89,46 @@ fn desktop_modes_map_to_worker_modes() {
 }
 
 #[test]
+fn desktop_worker_init_builds_initial_scene_from_snapshot_and_window() {
+    let init = DesktopWorkerInit {
+        mode: DesktopWorkerMode::Workspace,
+        snapshot: Some(DesktopUiSnapshot::new(
+            "workspace",
+            "Workspace Title".to_string(),
+            None,
+            DesktopSurfaceSnapshot::Workspace(DesktopWorkspaceSnapshot {
+                input_mode: "normal".to_string(),
+                focused_surface_id: 1,
+                focused_session_id: None,
+                zoomed: false,
+                detail_scroll: 0,
+                draft: String::new(),
+                draft_cursor: 0,
+                pending_image_count: 0,
+                surfaces: Vec::new(),
+            }),
+        )),
+        window: DesktopWindowState {
+            width: 800,
+            height: 600,
+            scale_factor: 1.5,
+            focused: true,
+        },
+    };
+
+    let scene = desktop_scene_for_worker_init(&init);
+    assert_eq!(scene.viewport.size.width, 800.0);
+    assert_eq!(scene.viewport.size.height, 600.0);
+    assert_eq!(scene.viewport.scale_factor, 1.5);
+    assert_eq!(scene.metadata.title.as_deref(), Some("Workspace Title"));
+    assert!(scene.metadata.content_ready);
+    assert!(matches!(
+        scene.display_list.commands.as_slice(),
+        [DesktopDisplayCommand::Clear(_)]
+    ));
+}
+
+#[test]
 fn desktop_app_worker_relaunch_replaces_existing_process_role() {
     let relaunch = DesktopRelaunch {
         binary: PathBuf::from("/tmp/jcode-desktop"),

@@ -34,12 +34,13 @@ use desktop_benchmark::*;
 use desktop_config::*;
 use desktop_ipc::{DesktopHostToWorkerEnvelope, write_desktop_ipc_frame};
 use desktop_protocol::{
-    DesktopHostToWorkerMessage, DesktopProtocolEnvelope, DesktopWindowState, DesktopWorkerInit,
-    DesktopWorkerMode, DesktopWorkerReady, DesktopWorkerShutdownReason, DesktopWorkerToHostMessage,
+    DesktopHostToWorkerMessage, DesktopProtocolEnvelope, DesktopSceneUpdate, DesktopWindowState,
+    DesktopWorkerInit, DesktopWorkerMode, DesktopWorkerReady, DesktopWorkerShutdownReason,
+    DesktopWorkerToHostMessage,
 };
 use desktop_scene::{
     DesktopColor, DesktopDisplayCommand, DesktopRect as DesktopSceneRect, DesktopRectPaint,
-    DesktopScene,
+    DesktopScene, DesktopSceneViewport,
 };
 use desktop_session_events::{
     BACKEND_EVENT_FORWARD_INTERVAL, BACKEND_EVENT_FORWARD_MAX_PAYLOAD_BYTES,
@@ -4521,6 +4522,7 @@ fn run_desktop_app_worker_process(desktop_mode: DesktopMode) -> Result<()> {
 
     let stdin = std::io::stdin();
     let mut reader = BufReader::new(stdin.lock());
+    let mut next_worker_sequence = 2;
     loop {
         let frame: Option<DesktopHostToWorkerEnvelope> =
             desktop_ipc::read_desktop_ipc_frame(&mut reader)
@@ -4531,19 +4533,55 @@ fn run_desktop_app_worker_process(desktop_mode: DesktopMode) -> Result<()> {
         frame
             .validate_version()
             .context("host sent incompatible protocol frame")?;
-        if matches!(
-            frame.payload,
-            desktop_protocol::DesktopHostToWorkerMessage::Shutdown {
-                reason: DesktopWorkerShutdownReason::HostExit
-                    | DesktopWorkerShutdownReason::Reload
-                    | DesktopWorkerShutdownReason::ProtocolMismatch
+        match frame.payload {
+            DesktopHostToWorkerMessage::Initialize(init) => {
+                let scene = desktop_scene_for_worker_init(&init);
+                let scene_update = DesktopProtocolEnvelope::new(
+                    next_worker_sequence,
+                    DesktopWorkerToHostMessage::Scene(DesktopSceneUpdate {
+                        animation_active: scene.metadata.animation_active,
+                        scene,
+                    }),
+                );
+                next_worker_sequence += 1;
+                write_desktop_ipc_frame(&mut stdout, &scene_update)
+                    .context("failed to write worker initial scene")?;
             }
-        ) {
-            break;
+            DesktopHostToWorkerMessage::SnapshotRequest { request_id } => {
+                desktop_log::info(format_args!(
+                    "jcode-desktop: app worker received snapshot request {request_id} before full runtime is attached"
+                ));
+            }
+            DesktopHostToWorkerMessage::Shutdown {
+                reason:
+                    DesktopWorkerShutdownReason::HostExit
+                    | DesktopWorkerShutdownReason::Reload
+                    | DesktopWorkerShutdownReason::ProtocolMismatch,
+            } => break,
+            DesktopHostToWorkerMessage::Input(_)
+            | DesktopHostToWorkerMessage::SessionEvents(_)
+            | DesktopHostToWorkerMessage::MetricsAck { .. } => {}
         }
     }
 
     Ok(())
+}
+
+fn desktop_scene_for_worker_init(init: &DesktopWorkerInit) -> DesktopScene {
+    let mut scene = DesktopScene::new(DesktopSceneViewport::new(
+        init.window.width as f32,
+        init.window.height as f32,
+        init.window.scale_factor,
+    ));
+    scene.metadata.title = init
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.title.clone());
+    scene.metadata.content_ready = init.snapshot.is_some();
+    scene.push(DesktopDisplayCommand::Clear(DesktopColor::rgba(
+        0.02, 0.024, 0.03, 1.0,
+    )));
+    scene
 }
 
 fn desktop_mode_from_args<'a>(args: impl IntoIterator<Item = &'a str>) -> DesktopMode {
