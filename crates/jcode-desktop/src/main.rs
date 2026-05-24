@@ -584,6 +584,9 @@ async fn run() -> Result<()> {
     let mut scroll_accumulator = ScrollLineAccumulator::default();
     let mut scroll_metrics_cache = SingleSessionScrollMetricsCache::default();
     let mut hot_reloader = DesktopHotReloader::new(process_role.reload_strategy());
+    if process_role == DesktopProcessRole::StableHost {
+        hot_reloader.start_app_worker_for_current_binary(&app, &window, "stable host startup");
+    }
     let preferences_save_tx = spawn_desktop_preferences_saver();
     let mut power_inhibitor = power_inhibit::PowerInhibitor::new();
     let (session_event_tx, session_event_rx) = mpsc::channel();
@@ -5264,6 +5267,22 @@ impl DesktopHotReloader {
             return Ok(());
         };
         worker.send(message)
+    }
+
+    fn start_app_worker_for_current_binary(
+        &mut self,
+        app: &DesktopApp,
+        window: &Window,
+        reason: &'static str,
+    ) {
+        let Some(relaunch) = self.relaunch.clone() else {
+            desktop_log::warn(format_args!(
+                "jcode-desktop: cannot start app worker for {reason}; current process cannot be relaunched"
+            ));
+            return;
+        };
+        let binary = desktop_reload_binary_candidate(&relaunch.binary);
+        self.restart_app_worker(app, window, &relaunch, binary, reason);
     }
 
     fn poll(&mut self, app: &DesktopApp, window: &Window) -> bool {
