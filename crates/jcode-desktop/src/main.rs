@@ -599,6 +599,7 @@ async fn run() -> Result<()> {
     let mut space_hold_started_at: Option<Instant> = None;
     let mut space_hold_consumed = false;
     let mut desktop_clipboard = DesktopClipboard::default();
+    let mut latest_worker_scene: Option<DesktopScene> = None;
 
     if pending_workspace_startup_load {
         spawn_session_cards_load(
@@ -671,6 +672,10 @@ async fn run() -> Result<()> {
                 pending_interaction_kind,
             },
         ) {
+            window.request_redraw();
+        }
+        if let Some(scene) = hot_reloader.drain_app_worker_messages() {
+            latest_worker_scene = Some(scene);
             window.request_redraw();
         }
 
@@ -1272,12 +1277,21 @@ async fn run() -> Result<()> {
                         window_size,
                         &mut scroll_metrics_cache,
                     );
-                    match canvas.render(
-                        &app,
-                        window.current_monitor().map(|monitor| monitor.size()),
-                        smooth_scroll_lines,
-                        workspace_space_hold_progress(&app, space_hold_started_at, space_hold_consumed),
-                    ) {
+                    let render_result = if let Some(scene) = latest_worker_scene.as_ref() {
+                        canvas.render_scene(scene)
+                    } else {
+                        canvas.render(
+                            &app,
+                            window.current_monitor().map(|monitor| monitor.size()),
+                            smooth_scroll_lines,
+                            workspace_space_hold_progress(
+                                &app,
+                                space_hold_started_at,
+                                space_hold_consumed,
+                            ),
+                        )
+                    };
+                    match render_result {
                     Ok(frame) => {
                         surface_timeout_backoff.reset();
                         surface_timeout_redraw_at = None;
@@ -4920,8 +4934,62 @@ impl DesktopHotReloader {
         if self.pending_handoff.is_some() {
             return Some(now + DESKTOP_RELOAD_HANDOFF_POLL_INTERVAL);
         }
+        if self.app_worker.is_some() {
+            return Some(now + DESKTOP_RELOAD_HANDOFF_POLL_INTERVAL);
+        }
         self.relaunch.as_ref()?;
         Some(std::cmp::max(now, self.last_checked + Self::CHECK_INTERVAL))
+    }
+
+    fn drain_app_worker_messages(&mut self) -> Option<DesktopScene> {
+        let Some(worker) = self.app_worker.as_ref() else {
+            return None;
+        };
+        let mut latest_scene = None;
+        while let Some(message) = worker.try_recv() {
+            match message {
+                Ok(DesktopWorkerToHostMessage::Ready(ready)) => {
+                    desktop_log::info(format_args!(
+                        "jcode-desktop: app worker ready; pid={} mode={:?}",
+                        ready.worker_pid, ready.mode
+                    ));
+                }
+                Ok(DesktopWorkerToHostMessage::Scene(scene_update)) => {
+                    latest_scene = Some(scene_update.scene);
+                }
+                Ok(DesktopWorkerToHostMessage::Snapshot(snapshot)) => {
+                    desktop_log::info(format_args!(
+                        "jcode-desktop: app worker snapshot response {}; mode={}",
+                        snapshot.request_id, snapshot.snapshot.mode
+                    ));
+                }
+                Ok(DesktopWorkerToHostMessage::Metrics(metrics)) => {
+                    desktop_log::info(format_args!(
+                        "jcode-desktop: app worker reported {} metric(s)",
+                        metrics.metrics.len()
+                    ));
+                }
+                Ok(DesktopWorkerToHostMessage::Log(log)) => {
+                    desktop_log::info(format_args!(
+                        "jcode-desktop: app worker log {:?}: {}",
+                        log.level, log.message
+                    ));
+                }
+                Ok(DesktopWorkerToHostMessage::Exited(exit)) => {
+                    desktop_log::warn(format_args!(
+                        "jcode-desktop: app worker exited code={:?} reason={:?}",
+                        exit.code, exit.reason
+                    ));
+                }
+                Err(error) => {
+                    desktop_log::error(format_args!(
+                        "jcode-desktop: failed to read app worker message: {error:#}"
+                    ));
+                    break;
+                }
+            }
+        }
+        latest_scene
     }
 
     fn poll(&mut self, app: &DesktopApp, window: &Window) -> bool {
