@@ -117,6 +117,7 @@ struct TestState {
     display_messages: Vec<DisplayMessage>,
     messages_version: u64,
     streaming_text: String,
+    streaming_tool_calls: Vec<ToolCall>,
     batch_progress: Option<crate::bus::BatchProgress>,
     queued_messages: Vec<String>,
     pending_soft_interrupts: Vec<String>,
@@ -218,7 +219,7 @@ impl crate::tui::TuiState for TestState {
         None
     }
     fn streaming_tool_calls(&self) -> Vec<ToolCall> {
-        Vec::new()
+        self.streaming_tool_calls.clone()
     }
     fn elapsed(&self) -> Option<Duration> {
         None

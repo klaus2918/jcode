@@ -28,3 +28,17 @@ pub(super) fn animated_tool_color(elapsed: f32) -> Color {
         crate::perf::tui_policy().enable_decorative_animations,
     )
 }
+
+pub(super) fn animated_tool_halo_frame_index(elapsed: f32) -> usize {
+    jcode_tui_style::theme::animated_tool_halo_frame_index(
+        elapsed,
+        crate::perf::tui_policy().enable_decorative_animations,
+    )
+}
+
+pub(super) fn animated_tool_halo_segments(elapsed: f32) -> (String, String) {
+    jcode_tui_style::theme::animated_tool_halo_segments(
+        elapsed,
+        crate::perf::tui_policy().enable_decorative_animations,
+    )
+}
