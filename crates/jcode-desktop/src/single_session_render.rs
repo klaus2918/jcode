@@ -3,9 +3,9 @@ use crate::desktop_rich_text::{
     AnsiColor, AnsiStyle, RichLine, RichLineStyle, RichSpanStyle, SyntaxTokenKind,
 };
 use crate::single_session::{
-    MODEL_PICKER_INLINE_ROW_LIMIT, SingleSessionInlineSpan, SingleSessionInlineSpanKind,
-    SingleSessionToolLineKind, SingleSessionToolLineMetadata, SingleSessionToolVisualState,
-    SingleSessionTypography, single_session_assistant_font_family,
+    InlineWidgetKind, MODEL_PICKER_INLINE_ROW_LIMIT, SingleSessionInlineSpan,
+    SingleSessionInlineSpanKind, SingleSessionToolLineKind, SingleSessionToolLineMetadata,
+    SingleSessionToolVisualState, SingleSessionTypography, single_session_assistant_font_family,
     single_session_trimmed_line_end_preserving_inline_code_whitespace,
     single_session_user_font_family,
 };
@@ -21,10 +21,22 @@ pub(crate) const MARKDOWN_LIST_MARKER_COLOR: [f32; 4] = [0.060, 0.110, 0.240, 0.
 pub(crate) const MARKDOWN_TASK_DONE_COLOR: [f32; 4] = [0.025, 0.350, 0.190, 1.000];
 pub(crate) const MARKDOWN_TASK_OPEN_COLOR: [f32; 4] = [0.420, 0.320, 0.075, 0.980];
 pub(crate) const MARKDOWN_STRIKE_TEXT_COLOR: [f32; 4] = [0.310, 0.330, 0.380, 0.880];
-pub(crate) const COMPOSER_INPUT_BACKGROUND_COLOR: [f32; 4] = [0.985, 0.992, 1.000, 0.46];
-pub(crate) const COMPOSER_INPUT_BORDER_COLOR: [f32; 4] = [0.055, 0.125, 0.270, 0.18];
 pub(crate) const STREAMING_ACTIVITY_PILL_COLOR: [f32; 4] = [0.965, 0.985, 1.000, 0.58];
 pub(crate) const STREAMING_ACTIVITY_PILL_BORDER_COLOR: [f32; 4] = [0.000, 0.260, 0.720, 0.18];
+const INLINE_WIDGET_CARD_SHADOW_COLOR: [f32; 4] = [0.020, 0.035, 0.070, 0.080];
+pub(crate) const INLINE_WIDGET_CARD_BACKGROUND_COLOR: [f32; 4] = [0.992, 0.996, 1.000, 0.72];
+const INLINE_WIDGET_CARD_BORDER_COLOR: [f32; 4] = [0.105, 0.185, 0.360, 0.20];
+const INLINE_WIDGET_CARD_HIGHLIGHT_COLOR: [f32; 4] = [1.000, 1.000, 1.000, 0.52];
+const INLINE_WIDGET_CARD_ACCENT_COLOR: [f32; 4] = [0.125, 0.420, 0.920, 0.34];
+pub(crate) const SLASH_SUGGESTIONS_INLINE_CARD_BACKGROUND_COLOR: [f32; 4] =
+    [0.948, 0.966, 1.000, 0.90];
+const SLASH_SUGGESTIONS_INLINE_CARD_BORDER_COLOR: [f32; 4] = [0.090, 0.230, 0.620, 0.32];
+const SLASH_SUGGESTIONS_INLINE_CARD_HIGHLIGHT_COLOR: [f32; 4] = [1.000, 1.000, 1.000, 0.62];
+const SLASH_SUGGESTIONS_INLINE_CARD_ACCENT_COLOR: [f32; 4] = [0.105, 0.355, 0.950, 0.48];
+pub(crate) const SLASH_SUGGESTIONS_INLINE_SELECTION_BACKGROUND_COLOR: [f32; 4] =
+    [0.215, 0.420, 0.900, 0.155];
+const SINGLE_SESSION_SCROLLBAR_TRACK_WIDTH: f32 = 3.0;
+const SINGLE_SESSION_SCROLLBAR_GAP: f32 = 8.0;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SingleSessionTextKey {
@@ -41,6 +53,7 @@ pub(crate) struct SingleSessionTextKey {
     pub(crate) user_font_family: &'static str,
     pub(crate) assistant_font_family: &'static str,
     pub(crate) body: Vec<SingleSessionStyledLine>,
+    pub(crate) inline_widget_kind: Option<InlineWidgetKind>,
     pub(crate) inline_widget: Vec<SingleSessionStyledLine>,
     pub(crate) draft: String,
 }
@@ -180,7 +193,6 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
     if app.has_activity_indicator() {
         push_streaming_activity_cue(&mut vertices, app, size, spinner_tick, None);
     }
-    push_single_session_composer_input_box(&mut vertices, app, size);
     push_single_session_selection(&mut vertices, app, size);
     push_single_session_scrollbar(&mut vertices, app, size, spinner_tick, smooth_scroll_lines);
 
@@ -298,7 +310,6 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
     if app.has_activity_indicator() {
         push_streaming_activity_cue(&mut vertices, app, size, spinner_tick, Some(&viewport));
     }
-    push_single_session_composer_input_box(&mut vertices, app, size);
     push_single_session_selection(&mut vertices, app, size);
     push_single_session_scrollbar_for_total_lines(
         &mut vertices,
@@ -311,42 +322,17 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
     vertices
 }
 
-fn push_single_session_composer_input_box(
-    vertices: &mut Vec<Vertex>,
-    app: &SingleSessionApp,
-    size: PhysicalSize<u32>,
-) {
-    if app.stdin_response.is_some() {
-        return;
-    }
+fn single_session_scrollbar_track_x(size: PhysicalSize<u32>) -> f32 {
+    size.width as f32 - PANEL_TITLE_LEFT_PADDING - 4.0
+}
 
-    let typography = single_session_typography_for_scale(app.text_scale());
-    let line_height = typography.code_size * typography.code_line_height;
-    let draft_top = single_session_draft_top_for_app(app, size);
-    let max_bottom = (size.height as f32 - PANEL_TITLE_TOP_PADDING).max(draft_top);
-    let padding_x = 13.0 * app.text_scale().clamp(0.65, 1.35);
-    let padding_y = 7.0 * app.text_scale().clamp(0.65, 1.35);
-    let left = PANEL_TITLE_LEFT_PADDING - padding_x;
-    let right = size.width as f32 - PANEL_TITLE_LEFT_PADDING + padding_x;
-    let rect = Rect {
-        x: left.max(6.0),
-        y: (draft_top - padding_y).max(4.0),
-        width: (right - left).max(1.0),
-        height: (line_height + padding_y * 2.0).min(max_bottom - draft_top + padding_y),
-    };
-    if rect.width <= 1.0 || rect.height <= 1.0 {
-        return;
-    }
+fn single_session_content_right(size: PhysicalSize<u32>) -> f32 {
+    (single_session_scrollbar_track_x(size) - SINGLE_SESSION_SCROLLBAR_GAP)
+        .max(PANEL_TITLE_LEFT_PADDING + 1.0)
+}
 
-    let radius = (rect.height * 0.42).clamp(8.0, 18.0);
-    push_rounded_rect(vertices, rect, radius, COMPOSER_INPUT_BORDER_COLOR, size);
-    push_rounded_rect(
-        vertices,
-        inset_rect(rect, 1.2),
-        (radius - 1.2).max(1.0),
-        COMPOSER_INPUT_BACKGROUND_COLOR,
-        size,
-    );
+fn single_session_content_width(size: PhysicalSize<u32>) -> f32 {
+    (single_session_content_right(size) - PANEL_TITLE_LEFT_PADDING).max(1.0)
 }
 
 #[cfg(test)]
@@ -814,9 +800,15 @@ fn push_single_session_inline_widget_card(
     let inline_lines = app.inline_widget_styled_lines();
     let Some(layout) = inline_widget_card_layout(
         size,
+        app.active_inline_widget(),
         &typography,
         line_count,
-        inline_widget_intrinsic_text_width(&inline_lines, size, app.text_scale()),
+        inline_widget_text_width_for_lines(
+            app.active_inline_widget(),
+            &inline_lines,
+            size,
+            app.text_scale(),
+        ),
         target_top,
         progress,
     ) else {
@@ -824,11 +816,7 @@ fn push_single_session_inline_widget_card(
     };
 
     if app.active_inline_widget_uses_card_chrome() {
-        const INLINE_CARD_SHADOW_COLOR: [f32; 4] = [0.020, 0.035, 0.070, 0.080];
-        const INLINE_CARD_BACKGROUND_COLOR: [f32; 4] = [0.992, 0.996, 1.000, 0.72];
-        const INLINE_CARD_BORDER_COLOR: [f32; 4] = [0.105, 0.185, 0.360, 0.20];
-        const INLINE_CARD_HIGHLIGHT_COLOR: [f32; 4] = [1.000, 1.000, 1.000, 0.52];
-        const INLINE_CARD_ACCENT_COLOR: [f32; 4] = [0.125, 0.420, 0.920, 0.34];
+        let card_style = inline_widget_card_style(app.active_inline_widget());
         push_rounded_rect(
             vertices,
             Rect {
@@ -837,31 +825,25 @@ fn push_single_session_inline_widget_card(
                 width: layout.card.width,
                 height: layout.card.height,
             },
-            INLINE_WIDGET_CARD_RADIUS + 2.0,
+            layout.radius + 2.0,
             with_alpha(
-                INLINE_CARD_SHADOW_COLOR,
-                INLINE_CARD_SHADOW_COLOR[3] * progress,
+                INLINE_WIDGET_CARD_SHADOW_COLOR,
+                INLINE_WIDGET_CARD_SHADOW_COLOR[3] * progress,
             ),
             size,
         );
         push_rounded_rect(
             vertices,
             layout.card,
-            INLINE_WIDGET_CARD_RADIUS,
-            with_alpha(
-                INLINE_CARD_BORDER_COLOR,
-                INLINE_CARD_BORDER_COLOR[3] * progress,
-            ),
+            layout.radius,
+            with_alpha(card_style.border, card_style.border[3] * progress),
             size,
         );
         push_rounded_rect(
             vertices,
             inset_rect(layout.card, 1.0),
-            INLINE_WIDGET_CARD_RADIUS - 1.0,
-            with_alpha(
-                INLINE_CARD_BACKGROUND_COLOR,
-                INLINE_CARD_BACKGROUND_COLOR[3] * progress,
-            ),
+            (layout.radius - 1.0).max(1.0),
+            with_alpha(card_style.background, card_style.background[3] * progress),
             size,
         );
         push_rounded_rect(
@@ -873,10 +855,7 @@ fn push_single_session_inline_widget_card(
                 height: (layout.card.height - 3.0).max(0.0),
             },
             2.0,
-            with_alpha(
-                INLINE_CARD_ACCENT_COLOR,
-                INLINE_CARD_ACCENT_COLOR[3] * progress,
-            ),
+            with_alpha(card_style.accent, card_style.accent[3] * progress),
             size,
         );
         push_rounded_rect(
@@ -888,12 +867,39 @@ fn push_single_session_inline_widget_card(
                 height: 1.0,
             },
             0.5,
-            with_alpha(
-                INLINE_CARD_HIGHLIGHT_COLOR,
-                INLINE_CARD_HIGHLIGHT_COLOR[3] * progress,
-            ),
+            with_alpha(card_style.highlight, card_style.highlight[3] * progress),
             size,
         );
+    }
+
+    if app.active_inline_widget() == Some(InlineWidgetKind::SlashSuggestions) {
+        let line_height = inline_widget_line_height(app.active_inline_widget(), &typography);
+        for (line_index, line) in inline_lines.iter().take(line_count).enumerate() {
+            if line.style != SingleSessionLineStyle::OverlaySelection {
+                continue;
+            }
+            let row_top = layout.text_top + line_index as f32 * line_height - 1.0;
+            let row_visible_height = (layout.visible_text_bottom - row_top).min(line_height + 2.0);
+            let row_width = (layout.card.width - layout.padding_x).max(0.0);
+            if row_visible_height <= 3.0 || row_width <= 6.0 {
+                continue;
+            }
+            push_rounded_rect(
+                vertices,
+                Rect {
+                    x: layout.card.x + layout.padding_x * 0.5,
+                    y: row_top,
+                    width: row_width,
+                    height: row_visible_height.max(1.0),
+                },
+                layout.selection_radius,
+                with_alpha(
+                    SLASH_SUGGESTIONS_INLINE_SELECTION_BACKGROUND_COLOR,
+                    SLASH_SUGGESTIONS_INLINE_SELECTION_BACKGROUND_COLOR[3] * progress,
+                ),
+                size,
+            );
+        }
     }
 
     if app.model_picker.open
@@ -905,23 +911,23 @@ fn push_single_session_inline_widget_card(
     {
         let selected_line = 2 + row * 2;
         if selected_line < line_count {
-            let line_height = typography.body_size * typography.body_line_height;
+            let line_height = inline_widget_line_height(app.active_inline_widget(), &typography);
             let row_top = layout.text_top + selected_line as f32 * line_height - 2.0;
             let row_visible_height =
                 (layout.visible_text_bottom - row_top).min(line_height * 2.0 + 2.0);
-            let row_width = (layout.card.width - INLINE_WIDGET_CARD_PADDING_X).max(0.0);
+            let row_width = (layout.card.width - layout.padding_x).max(0.0);
             if row_visible_height <= 3.0 || row_width <= 6.0 {
                 return;
             }
             push_rounded_rect(
                 vertices,
                 Rect {
-                    x: layout.card.x + 6.0,
+                    x: layout.card.x + layout.padding_x * 0.5,
                     y: row_top,
                     width: row_width,
                     height: row_visible_height.max(1.0),
                 },
-                INLINE_WIDGET_SELECTION_RADIUS,
+                layout.selection_radius,
                 with_alpha(
                     OVERLAY_SELECTION_BACKGROUND_COLOR,
                     OVERLAY_SELECTION_BACKGROUND_COLOR[3] * progress,
@@ -938,10 +944,26 @@ const INLINE_WIDGET_CARD_PADDING_Y: f32 = 8.0;
 const INLINE_WIDGET_BODY_GAP: f32 = 8.0;
 const INLINE_WIDGET_CARD_RADIUS: f32 = 18.0;
 const INLINE_WIDGET_SELECTION_RADIUS: f32 = 10.0;
+const SLASH_SUGGESTIONS_INLINE_CARD_PADDING_X: f32 = 8.0;
+const SLASH_SUGGESTIONS_INLINE_CARD_PADDING_Y: f32 = 5.0;
+const SLASH_SUGGESTIONS_INLINE_CARD_RADIUS: f32 = 13.0;
+const SLASH_SUGGESTIONS_INLINE_SELECTION_RADIUS: f32 = 7.0;
+const SLASH_SUGGESTIONS_INLINE_FONT_SCALE: f32 = 0.88;
+
+#[derive(Clone, Copy, Debug)]
+struct InlineWidgetCardStyle {
+    background: [f32; 4],
+    border: [f32; 4],
+    highlight: [f32; 4],
+    accent: [f32; 4],
+}
 
 #[derive(Clone, Copy, Debug)]
 struct InlineWidgetCardLayout {
     card: Rect,
+    radius: f32,
+    padding_x: f32,
+    selection_radius: f32,
     text_left: f32,
     text_top: f32,
     visible_text_right: f32,
@@ -950,6 +972,7 @@ struct InlineWidgetCardLayout {
 
 fn inline_widget_card_layout(
     size: PhysicalSize<u32>,
+    kind: Option<InlineWidgetKind>,
     typography: &SingleSessionTypography,
     line_count: usize,
     text_width: f32,
@@ -965,18 +988,20 @@ fn inline_widget_card_layout(
         return None;
     }
 
-    let line_height = typography.body_size * typography.body_line_height;
-    let text_left = inline_widget_text_left(size);
+    let line_height = inline_widget_line_height(kind, typography);
+    let padding_x = inline_widget_card_padding_x(kind);
+    let padding_y = inline_widget_card_padding_y(kind);
+    let text_left = inline_widget_text_left_for_kind(kind, size);
     let text_width = text_width
         .max(line_height * 8.0)
-        .min(inline_widget_max_text_width(size))
+        .min(inline_widget_max_text_width_for_kind(kind, size))
         .max(1.0);
     let text_height = line_count as f32 * line_height;
     let final_card = Rect {
-        x: (text_left - INLINE_WIDGET_CARD_PADDING_X).max(0.0),
-        y: (text_top - INLINE_WIDGET_CARD_PADDING_Y).max(PANEL_TITLE_TOP_PADDING),
-        width: text_width + INLINE_WIDGET_CARD_PADDING_X * 2.0,
-        height: text_height + INLINE_WIDGET_CARD_PADDING_Y * 2.0,
+        x: (text_left - padding_x).max(0.0),
+        y: (text_top - padding_y).max(PANEL_TITLE_TOP_PADDING),
+        width: text_width + padding_x * 2.0,
+        height: text_height + padding_y * 2.0,
     };
     let start_width = (line_height * 2.0).min(final_card.width);
     let start_height = (line_height * 0.72).min(final_card.height);
@@ -986,15 +1011,18 @@ fn inline_widget_card_layout(
         width: start_width + (final_card.width - start_width) * progress,
         height: start_height + (final_card.height - start_height) * progress,
     };
-    let visible_text_right = (card.x + card.width - INLINE_WIDGET_CARD_PADDING_X)
+    let visible_text_right = (card.x + card.width - padding_x)
         .max(text_left)
         .min(text_left + text_width);
-    let visible_text_bottom = (card.y + card.height - INLINE_WIDGET_CARD_PADDING_Y)
+    let visible_text_bottom = (card.y + card.height - padding_y)
         .max(text_top)
         .min(text_top + text_height);
 
     Some(InlineWidgetCardLayout {
         card,
+        radius: inline_widget_card_radius(kind),
+        padding_x,
+        selection_radius: inline_widget_selection_radius(kind),
         text_left,
         text_top,
         visible_text_right,
@@ -1002,13 +1030,26 @@ fn inline_widget_card_layout(
     })
 }
 
-fn inline_widget_intrinsic_text_width(
+fn inline_widget_line_height(
+    kind: Option<InlineWidgetKind>,
+    typography: &SingleSessionTypography,
+) -> f32 {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => {
+            inline_widget_font_size(kind, typography) * typography.meta_line_height
+        }
+        _ => typography.body_size * typography.body_line_height,
+    }
+}
+
+fn inline_widget_text_width_for_lines(
+    kind: Option<InlineWidgetKind>,
     lines: &[SingleSessionStyledLine],
     size: PhysicalSize<u32>,
     ui_scale: f32,
 ) -> f32 {
     let typography = single_session_typography_for_scale(ui_scale);
-    let average_char_width = typography.body_size * 0.57;
+    let average_char_width = inline_widget_font_size(kind, &typography) * 0.57;
     let max_columns = lines
         .iter()
         .map(|line| inline_widget_visual_columns(&line.text))
@@ -1016,7 +1057,64 @@ fn inline_widget_intrinsic_text_width(
         .unwrap_or_default() as f32;
     (max_columns * average_char_width)
         .ceil()
-        .min(inline_widget_max_text_width(size))
+        .min(inline_widget_max_text_width_for_kind(kind, size))
+}
+
+fn inline_widget_font_size(
+    kind: Option<InlineWidgetKind>,
+    typography: &SingleSessionTypography,
+) -> f32 {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => {
+            (typography.meta_size * SLASH_SUGGESTIONS_INLINE_FONT_SCALE).max(12.0)
+        }
+        _ => typography.body_size,
+    }
+}
+
+fn inline_widget_card_padding_x(kind: Option<InlineWidgetKind>) -> f32 {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => SLASH_SUGGESTIONS_INLINE_CARD_PADDING_X,
+        _ => INLINE_WIDGET_CARD_PADDING_X,
+    }
+}
+
+fn inline_widget_card_padding_y(kind: Option<InlineWidgetKind>) -> f32 {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => SLASH_SUGGESTIONS_INLINE_CARD_PADDING_Y,
+        _ => INLINE_WIDGET_CARD_PADDING_Y,
+    }
+}
+
+fn inline_widget_card_radius(kind: Option<InlineWidgetKind>) -> f32 {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => SLASH_SUGGESTIONS_INLINE_CARD_RADIUS,
+        _ => INLINE_WIDGET_CARD_RADIUS,
+    }
+}
+
+fn inline_widget_selection_radius(kind: Option<InlineWidgetKind>) -> f32 {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => SLASH_SUGGESTIONS_INLINE_SELECTION_RADIUS,
+        _ => INLINE_WIDGET_SELECTION_RADIUS,
+    }
+}
+
+fn inline_widget_card_style(kind: Option<InlineWidgetKind>) -> InlineWidgetCardStyle {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => InlineWidgetCardStyle {
+            background: SLASH_SUGGESTIONS_INLINE_CARD_BACKGROUND_COLOR,
+            border: SLASH_SUGGESTIONS_INLINE_CARD_BORDER_COLOR,
+            highlight: SLASH_SUGGESTIONS_INLINE_CARD_HIGHLIGHT_COLOR,
+            accent: SLASH_SUGGESTIONS_INLINE_CARD_ACCENT_COLOR,
+        },
+        _ => InlineWidgetCardStyle {
+            background: INLINE_WIDGET_CARD_BACKGROUND_COLOR,
+            border: INLINE_WIDGET_CARD_BORDER_COLOR,
+            highlight: INLINE_WIDGET_CARD_HIGHLIGHT_COLOR,
+            accent: INLINE_WIDGET_CARD_ACCENT_COLOR,
+        },
+    }
 }
 
 fn inline_widget_visual_columns(text: &str) -> usize {
@@ -1053,10 +1151,34 @@ fn inline_widget_text_left(size: PhysicalSize<u32>) -> f32 {
     preferred.min(responsive_max).max(PANEL_TITLE_LEFT_PADDING)
 }
 
+fn inline_widget_text_left_for_kind(
+    kind: Option<InlineWidgetKind>,
+    size: PhysicalSize<u32>,
+) -> f32 {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => PANEL_TITLE_LEFT_PADDING + 4.0,
+        _ => inline_widget_text_left(size),
+    }
+}
+
 fn inline_widget_max_text_width(size: PhysicalSize<u32>) -> f32 {
     let gutter = inline_widget_text_left(size);
     let available_card_width = (size.width as f32 - gutter * 2.0).max(1.0);
     (available_card_width - INLINE_WIDGET_CARD_PADDING_X * 2.0).max(1.0)
+}
+
+fn inline_widget_max_text_width_for_kind(
+    kind: Option<InlineWidgetKind>,
+    size: PhysicalSize<u32>,
+) -> f32 {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => {
+            let left = inline_widget_text_left_for_kind(kind, size);
+            let padding_x = inline_widget_card_padding_x(kind);
+            (single_session_content_right(size) - left - padding_x).max(1.0)
+        }
+        _ => inline_widget_max_text_width(size),
+    }
 }
 
 #[cfg(test)]
@@ -1436,7 +1558,7 @@ fn push_single_session_transcript_cards_from_viewport(
 ) {
     let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
-    let width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0 + 12.0).max(1.0);
+    let width = (single_session_content_right(size) - (PANEL_TITLE_LEFT_PADDING - 6.0)).max(1.0);
     let body_top = single_session_body_top_for_app(app, size);
     let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
 
@@ -1485,7 +1607,7 @@ fn push_single_session_tool_cards_from_viewport(
 ) {
     let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
-    let width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0 + 16.0).max(1.0);
+    let width = (single_session_content_right(size) - (PANEL_TITLE_LEFT_PADDING - 10.0)).max(1.0);
     let body_top = single_session_body_top_for_app(app, size);
     let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
     let pulse = active_tool_card_pulse(tick);
@@ -1599,7 +1721,7 @@ pub(crate) fn single_session_tool_card_geometries(
 ) -> Vec<SingleSessionToolCardGeometry> {
     let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
-    let width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0 + 16.0).max(1.0);
+    let width = (single_session_content_right(size) - (PANEL_TITLE_LEFT_PADDING - 10.0)).max(1.0);
     let body_top = single_session_body_top_for_app(app, size);
 
     single_session_tool_card_runs(rendered_body_lines)
@@ -1727,7 +1849,7 @@ pub(crate) fn single_session_transcript_card_geometries(
 ) -> Vec<SingleSessionTranscriptCardGeometry> {
     let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
-    let width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0 + 12.0).max(1.0);
+    let width = (single_session_content_right(size) - (PANEL_TITLE_LEFT_PADDING - 6.0)).max(1.0);
     let body_top = single_session_body_top_for_app(app, size);
 
     single_session_transcript_card_runs(rendered_body_lines)
@@ -1780,24 +1902,64 @@ fn push_single_session_inline_code_cards_from_viewport(
     let char_width = single_session_body_char_width_for_scale(text_scale);
     let body_top = single_session_body_top_for_app(app, size);
     let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
-    let right = (size.width as f32 - PANEL_TITLE_LEFT_PADDING + 3.0).max(PANEL_TITLE_LEFT_PADDING);
-    let card_height = (typography.body_size * 1.10)
-        .min(line_height - 5.0)
-        .max(typography.body_size * 0.85);
+    let card_height = inline_code_card_height(&typography);
     let radius = (5.0 * text_scale).clamp(4.0, 8.0);
     let horizontal_pad = (3.5 * text_scale).clamp(3.0, 6.0);
+    let mut font_system = FontSystem::new();
+    let body_buffer = single_session_body_text_buffer_from_lines(
+        &mut font_system,
+        &viewport.lines,
+        size,
+        text_scale,
+    );
+    let layout_runs = body_buffer.layout_runs().collect::<Vec<_>>();
 
     for (line_index, line) in viewport.lines.iter().enumerate() {
         if !single_session_line_style_supports_inline_code_cards(line.style) {
             continue;
         }
-        let line_y = body_top + viewport.top_offset_pixels + line_index as f32 * line_height;
+        let line_y = layout_runs
+            .get(line_index)
+            .map(|run| body_top + viewport.top_offset_pixels + run.line_top)
+            .unwrap_or(body_top + viewport.top_offset_pixels + line_index as f32 * line_height);
         let code_runs = single_session_inline_code_runs_for_line(line);
-        for run in &code_runs {
-            let x =
-                PANEL_TITLE_LEFT_PADDING + run.start_column as f32 * char_width - horizontal_pad;
-            let width = run.column_count as f32 * char_width + horizontal_pad * 2.0;
-            let clipped_right = (x + width).min(right);
+        for (run_index, run) in code_runs.iter().enumerate() {
+            let glyph_bounds = layout_runs.get(line_index).and_then(|layout_run| {
+                line.inline_spans
+                    .iter()
+                    .filter(|span| span.kind == SingleSessionInlineSpanKind::Code)
+                    .nth(run_index)
+                    .and_then(|span| {
+                        let mut left: Option<f32> = None;
+                        let mut right: Option<f32> = None;
+                        for glyph in layout_run
+                            .glyphs
+                            .iter()
+                            .enumerate()
+                            .filter(|(glyph_index, _)| {
+                                span.start <= *glyph_index && *glyph_index < span.end
+                            })
+                            .map(|(_, glyph)| glyph)
+                        {
+                            left = Some(left.map_or(glyph.x, |current| current.min(glyph.x)));
+                            right = Some(right.map_or(glyph.x + glyph.w, |current| {
+                                current.max(glyph.x + glyph.w)
+                            }));
+                        }
+                        left.zip(right)
+                    })
+            });
+            let (x, width) = if let Some((glyph_left, glyph_right)) = glyph_bounds {
+                let x = PANEL_TITLE_LEFT_PADDING + glyph_left - horizontal_pad;
+                (x, glyph_right - glyph_left + horizontal_pad * 2.0)
+            } else {
+                (
+                    PANEL_TITLE_LEFT_PADDING + run.start_column as f32 * char_width
+                        - horizontal_pad,
+                    run.column_count as f32 * char_width + horizontal_pad * 2.0,
+                )
+            };
+            let clipped_right = (x + width).min(size.width as f32);
             if clipped_right <= x {
                 continue;
             }
@@ -1826,7 +1988,7 @@ fn push_single_session_inline_code_cards_from_viewport(
             let x =
                 PANEL_TITLE_LEFT_PADDING + run.start_column as f32 * char_width - horizontal_pad;
             let width = run.column_count as f32 * char_width + horizontal_pad * 2.0;
-            let clipped_right = (x + width).min(right);
+            let clipped_right = (x + width).min(size.width as f32);
             if clipped_right <= x {
                 continue;
             }
@@ -1842,6 +2004,11 @@ fn push_single_session_inline_code_cards_from_viewport(
             push_rounded_rect(vertices, rect, radius, INLINE_MATH_BACKGROUND_COLOR, size);
         }
     }
+}
+
+fn inline_code_card_height(typography: &SingleSessionTypography) -> f32 {
+    let line_height = typography.body_size * typography.body_line_height;
+    line_height + 2.0
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2065,7 +2232,7 @@ fn push_single_session_markdown_rule_lines_from_viewport(
     let body_top = single_session_body_top_for_app(app, size);
     let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
     let left = PANEL_TITLE_LEFT_PADDING - 2.0;
-    let right = (size.width as f32 - PANEL_TITLE_LEFT_PADDING + 3.0).max(left + 1.0);
+    let right = single_session_content_right(size).max(left + 1.0);
     let thickness = (1.7 * app.text_scale()).clamp(1.0, 3.0);
 
     for (line_index, line) in viewport.lines.iter().enumerate() {
@@ -2133,7 +2300,7 @@ fn push_single_session_scrollbar_for_metrics(
     let track_top = PANEL_BODY_TOP_PADDING + 4.0;
     let track_bottom = single_session_body_bottom(size) - 4.0;
     let track_height = (track_bottom - track_top).max(1.0);
-    let x = size.width as f32 - PANEL_TITLE_LEFT_PADDING - 4.0;
+    let x = single_session_scrollbar_track_x(size);
     let thumb_height = (metrics.visible_lines as f32 / metrics.total_lines as f32 * track_height)
         .clamp(28.0, track_height);
     let travel = (track_height - thumb_height).max(0.0);
@@ -2147,7 +2314,7 @@ fn push_single_session_scrollbar_for_metrics(
         Rect {
             x,
             y: track_top,
-            width: 3.0,
+            width: SINGLE_SESSION_SCROLLBAR_TRACK_WIDTH,
             height: track_height,
         },
         2.0,
@@ -2428,7 +2595,7 @@ fn approximate_draft_caret_position(
     };
     let x = PANEL_TITLE_LEFT_PADDING
         + ((prompt_column + cursor_column) as f32 * char_width)
-            .min((size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(0.0));
+            .min((single_session_content_width(size)).max(0.0));
     let y = draft_top + cursor_line as f32 * line_height;
     CaretPosition {
         x,
@@ -2740,6 +2907,7 @@ fn single_session_text_key_for_body_lines(
         user_font_family: single_session_user_font_family(),
         assistant_font_family: single_session_assistant_font_family(),
         body,
+        inline_widget_kind: app.active_inline_widget(),
         inline_widget: app.inline_widget_styled_lines(),
         draft: if welcome_input_visible {
             visualize_composer_whitespace(&app.composer_text())
@@ -2792,7 +2960,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
 ) -> Vec<Buffer> {
     let text_scale = f32::from_bits(key.text_scale_bits);
     let typography = single_session_typography_for_scale(text_scale);
-    let content_width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(1.0);
+    let content_width = single_session_content_width(size);
 
     let draft_top = if key.fresh_welcome_visible {
         fresh_welcome_draft_top_for_scale(size, text_scale)
@@ -2861,14 +3029,20 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let inline_widget_width = if key.inline_widget.is_empty() {
         content_width
     } else {
-        inline_widget_intrinsic_text_width(&key.inline_widget, size, text_scale)
-            .max(1.0)
-            .min(content_width)
+        inline_widget_text_width_for_lines(
+            key.inline_widget_kind,
+            &key.inline_widget,
+            size,
+            text_scale,
+        )
+        .max(1.0)
+        .min(content_width)
     };
     let inline_widget_height = if key.inline_widget.is_empty() {
         prompt_height
     } else {
-        let inline_widget_line_height = typography.body_size * typography.body_line_height;
+        let inline_widget_line_height =
+            inline_widget_line_height(key.inline_widget_kind, &typography);
         prompt_height
             .max(size.height as f32)
             .max(key.inline_widget.len() as f32 * inline_widget_line_height)
@@ -2876,17 +3050,29 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let inline_widget_buffer = take_reusable(
         &mut old_buffers,
         4,
-        exact_previous.is_some_and(|previous| previous.inline_widget == key.inline_widget),
+        exact_previous.is_some_and(|previous| {
+            previous.inline_widget == key.inline_widget
+                && previous.inline_widget_kind == key.inline_widget_kind
+        }),
     )
     .unwrap_or_else(|| {
+        let inline_widget_font_size = inline_widget_font_size(key.inline_widget_kind, &typography);
+        let inline_widget_line_height =
+            inline_widget_line_height(key.inline_widget_kind, &typography);
+        let inline_widget_wrap =
+            if key.inline_widget_kind == Some(InlineWidgetKind::SlashSuggestions) {
+                Wrap::None
+            } else {
+                Wrap::Word
+            };
         single_session_styled_text_buffer(
             font_system,
             &key.inline_widget,
-            typography.body_size,
-            typography.body_size * typography.body_line_height,
+            inline_widget_font_size,
+            inline_widget_line_height,
             inline_widget_width,
             inline_widget_height,
-            Wrap::Word,
+            inline_widget_wrap,
         )
     });
 
@@ -2995,7 +3181,7 @@ pub(crate) fn single_session_body_text_buffer_from_lines_with_opacity(
     opacity: f32,
 ) -> Buffer {
     let typography = single_session_typography_for_scale(text_scale);
-    let content_width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(1.0);
+    let content_width = single_session_content_width(size);
     let mut buffer = single_session_styled_text_buffer_with_opacity(
         font_system,
         lines,
@@ -3380,7 +3566,7 @@ fn push_wrapped_body_line_parts(
 }
 
 fn single_session_body_max_columns(size: PhysicalSize<u32>, text_scale: f32) -> usize {
-    let content_width = (size.width as f32 - PANEL_TITLE_LEFT_PADDING * 2.0).max(1.0);
+    let content_width = single_session_content_width(size);
     (content_width / single_session_body_char_width_for_scale(text_scale))
         .floor()
         .max(20.0) as usize
@@ -3556,16 +3742,15 @@ fn inline_widget_visible_text_height(app: &SingleSessionApp) -> f32 {
         return 0.0;
     }
     let typography = single_session_typography_for_scale(app.text_scale());
-    lines as f32 * typography.body_size * typography.body_line_height
+    lines as f32 * inline_widget_line_height(app.active_inline_widget(), &typography)
 }
 
 fn inline_widget_reserved_height(app: &SingleSessionApp) -> f32 {
     if app.inline_widget_line_count() == 0 {
         0.0
     } else {
-        (inline_widget_visible_text_height(app)
-            + INLINE_WIDGET_CARD_PADDING_Y * 2.0
-            + INLINE_WIDGET_BODY_GAP)
+        let padding_y = inline_widget_card_padding_y(app.active_inline_widget());
+        (inline_widget_visible_text_height(app) + padding_y * 2.0 + INLINE_WIDGET_BODY_GAP)
             * app.inline_widget_reveal_progress().clamp(0.0, 1.0)
     }
 }
@@ -4599,9 +4784,14 @@ pub(crate) fn single_session_text_areas_for_app_with_scroll<'a>(
     tick: u64,
     smooth_scroll_lines: f32,
 ) -> Vec<TextArea<'a>> {
+    let inline_widget_kind = app.active_inline_widget();
     let inline_widget_lines = app.inline_widget_styled_lines();
-    let inline_widget_text_width =
-        inline_widget_intrinsic_text_width(&inline_widget_lines, size, app.text_scale());
+    let inline_widget_text_width = inline_widget_text_width_for_lines(
+        inline_widget_kind,
+        &inline_widget_lines,
+        size,
+        app.text_scale(),
+    );
     let body_top_offset_pixels =
         single_session_body_viewport_for_tick(app, size, tick, smooth_scroll_lines)
             .top_offset_pixels;
@@ -4618,6 +4808,7 @@ pub(crate) fn single_session_text_areas_for_app_with_scroll<'a>(
         single_session_body_top_for_app(app, size),
         text_bounds_bottom(single_session_body_bottom_for_app(app, size)),
         app.inline_widget_visible_line_count(),
+        inline_widget_kind,
         inline_widget_text_width,
         single_session_draft_top_for_app(app, size),
         welcome_chrome_offset_pixels,
@@ -4677,9 +4868,14 @@ pub(crate) fn single_session_text_areas_for_app_with_cached_body_viewport_and_re
     viewport: SingleSessionBodyViewport,
     welcome_hero_reveal_progress: f32,
 ) -> Vec<TextArea<'a>> {
+    let inline_widget_kind = app.active_inline_widget();
     let inline_widget_lines = app.inline_widget_styled_lines();
-    let inline_widget_text_width =
-        inline_widget_intrinsic_text_width(&inline_widget_lines, size, app.text_scale());
+    let inline_widget_text_width = inline_widget_text_width_for_lines(
+        inline_widget_kind,
+        &inline_widget_lines,
+        size,
+        app.text_scale(),
+    );
     let welcome_chrome_offset_pixels = welcome_timeline_visual_offset_pixels_for_total_lines(
         app,
         size,
@@ -4701,6 +4897,7 @@ pub(crate) fn single_session_text_areas_for_app_with_cached_body_viewport_and_re
             viewport.total_lines,
         )),
         app.inline_widget_visible_line_count(),
+        inline_widget_kind,
         inline_widget_text_width,
         single_session_draft_top_for_total_lines(app, size, viewport.total_lines),
         welcome_chrome_offset_pixels,
@@ -4725,7 +4922,7 @@ pub(crate) fn single_session_streaming_text_area_for_cached_body_viewport<'a>(
     let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
     let left = PANEL_TITLE_LEFT_PADDING;
-    let right = size.width.saturating_sub(PANEL_TITLE_LEFT_PADDING as u32) as i32;
+    let right = single_session_content_right(size) as i32;
     let body_top = single_session_body_top_for_app(app, size);
     let top = body_top
         + viewport.top_offset_pixels
@@ -4769,6 +4966,7 @@ pub(crate) fn single_session_text_areas_for_fresh_state(
         PANEL_BODY_TOP_PADDING,
         text_bounds_bottom(single_session_body_bottom(size)),
         0,
+        None,
         0.0,
         single_session_draft_top_for_fresh_state(size, fresh_welcome_visible),
         0.0,
@@ -4796,6 +4994,7 @@ pub(crate) fn single_session_text_areas_for_state(
     body_top: f32,
     body_bottom: i32,
     inline_widget_line_count: usize,
+    inline_widget_kind: Option<InlineWidgetKind>,
     inline_widget_text_width: f32,
     draft_top: f32,
     welcome_chrome_offset_pixels: f32,
@@ -4811,7 +5010,7 @@ pub(crate) fn single_session_text_areas_for_state(
     }
 
     let left = PANEL_TITLE_LEFT_PADDING;
-    let right = size.width.saturating_sub(PANEL_TITLE_LEFT_PADDING as u32) as i32;
+    let right = single_session_content_right(size) as i32;
     let bottom = size.height.saturating_sub(PANEL_TITLE_TOP_PADDING as u32) as i32;
     let body_top = if welcome_handoff_visible {
         draft_top
@@ -4857,6 +5056,7 @@ pub(crate) fn single_session_text_areas_for_state(
         );
         inline_widget_card_layout(
             size,
+            inline_widget_kind,
             &typography,
             inline_widget_line_count,
             inline_widget_text_width,

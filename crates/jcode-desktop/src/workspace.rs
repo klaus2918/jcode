@@ -94,7 +94,6 @@ pub enum KeyInput {
     OpenSessionSwitcher,
     ModelPickerMove(i32),
     CycleModel(i8),
-    #[allow(dead_code)]
     CycleReasoningEffort(i8),
     AttachClipboardImage,
     ClearAttachedImages,
@@ -149,7 +148,6 @@ pub enum KeyOutcome {
     RenameSession(Option<String>),
     ClearServerSession,
     CycleModel(i8),
-    #[allow(dead_code)]
     CycleReasoningEffort(i8),
     SendStdinResponse {
         request_id: String,
