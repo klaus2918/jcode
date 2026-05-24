@@ -8171,6 +8171,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
     spinner_tick: u64,
     smooth_scroll_lines: f32,
     welcome_hero_reveal_progress: f32,
+    tool_motion_cache_key: u64,
     body_key: Option<u64>,
     body_line_count: usize,
 ) -> Option<u64> {
@@ -8195,6 +8196,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
     smooth_scroll_lines.to_bits().hash(&mut hasher);
     focus_pulse.to_bits().hash(&mut hasher);
     welcome_hero_reveal_progress.to_bits().hash(&mut hasher);
+    tool_motion_cache_key.hash(&mut hasher);
     spinner_tick.hash(&mut hasher);
     app.is_processing.hash(&mut hasher);
     app.status.hash(&mut hasher);
@@ -8235,6 +8237,7 @@ struct Canvas {
     surface_transitions: SurfaceTransitionAnimator,
     focus_pulse: FocusPulse,
     status_color_transition: ColorTransition,
+    tool_card_motion: ToolCardMotionRegistry,
     primitive_vertex_buffer: Option<wgpu::Buffer>,
     primitive_vertex_capacity: usize,
     primitive_vertices_cache_key: Option<u64>,
@@ -8350,6 +8353,7 @@ impl Canvas {
             surface_transitions: SurfaceTransitionAnimator::default(),
             focus_pulse: FocusPulse::default(),
             status_color_transition: ColorTransition::default(),
+            tool_card_motion: ToolCardMotionRegistry::default(),
             primitive_vertex_buffer: None,
             primitive_vertex_capacity: 0,
             primitive_vertices_cache_key: None,
@@ -9216,6 +9220,7 @@ impl Canvas {
             self.single_session_text_cache_key = None;
             self.single_session_text_key = None;
             self.single_session_text_buffers.clear();
+            self.tool_card_motion.clear();
             self.single_session_streaming_text_key = None;
             self.single_session_streaming_text_start_line = None;
             self.single_session_streaming_text_end_line = None;
@@ -9433,8 +9438,12 @@ impl Canvas {
         let (mut vertices, animation_active): (Cow<'_, [Vertex]>, bool) = match app {
             DesktopApp::SingleSession(single_session) => {
                 let focus_pulse = self.focus_pulse.frame(1, now);
+                let tool_motion =
+                    self.tool_card_motion
+                        .frame(&self.single_session_body_lines, now, spinner_tick);
                 let animation_active = self.focus_pulse.is_animating()
                     || single_session.has_background_work()
+                    || tool_motion.is_active()
                     || welcome_hero_reveal_active
                     || streaming_text_arrival_style.active;
                 let geometry_cache_key = single_session_streaming_primitive_geometry_cache_key(
@@ -9444,6 +9453,7 @@ impl Canvas {
                     spinner_tick,
                     smooth_scroll_lines,
                     welcome_hero_reveal_progress,
+                    tool_motion.cache_key(),
                     single_session_rendered_body_key,
                     self.single_session_body_lines.len(),
                 );
@@ -9452,7 +9462,25 @@ impl Canvas {
                         primitive_geometry_cache_hit = true;
                         Cow::Borrowed(self.primitive_vertices_cache.as_slice())
                     } else {
-                        let vertices = build_single_session_vertices_with_cached_body(
+                        let vertices =
+                            build_single_session_vertices_with_cached_body_and_tool_motion(
+                                single_session,
+                                self.size,
+                                focus_pulse,
+                                spinner_tick,
+                                smooth_scroll_lines,
+                                welcome_hero_reveal_progress,
+                                &self.single_session_body_lines,
+                                &tool_motion,
+                            );
+                        self.primitive_vertices_cache_key = Some(cache_key);
+                        self.primitive_vertices_cache = vertices;
+                        Cow::Borrowed(self.primitive_vertices_cache.as_slice())
+                    }
+                } else {
+                    self.primitive_vertices_cache_key = None;
+                    Cow::Owned(
+                        build_single_session_vertices_with_cached_body_and_tool_motion(
                             single_session,
                             self.size,
                             focus_pulse,
@@ -9460,22 +9488,9 @@ impl Canvas {
                             smooth_scroll_lines,
                             welcome_hero_reveal_progress,
                             &self.single_session_body_lines,
-                        );
-                        self.primitive_vertices_cache_key = Some(cache_key);
-                        self.primitive_vertices_cache = vertices;
-                        Cow::Borrowed(self.primitive_vertices_cache.as_slice())
-                    }
-                } else {
-                    self.primitive_vertices_cache_key = None;
-                    Cow::Owned(build_single_session_vertices_with_cached_body(
-                        single_session,
-                        self.size,
-                        focus_pulse,
-                        spinner_tick,
-                        smooth_scroll_lines,
-                        welcome_hero_reveal_progress,
-                        &self.single_session_body_lines,
-                    ))
+                            &tool_motion,
+                        ),
+                    )
                 };
                 (vertices, animation_active)
             }
