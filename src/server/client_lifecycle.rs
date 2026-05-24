@@ -1589,8 +1589,26 @@ pub(super) async fn handle_client(
                 );
             }
 
-            Request::SetReasoningEffort { id, effort } => {
-                handle_set_reasoning_effort(id, effort, &agent, &client_event_tx).await;
+            Request::SetReasoningEffort {
+                id,
+                effort,
+                target_session_id,
+            } => {
+                if let Some(target_session_id) = target_session_id {
+                    let target_agent = { sessions.read().await.get(&target_session_id).cloned() };
+                    if let Some(target_agent) = target_agent {
+                        handle_set_reasoning_effort(id, effort, &target_agent, &client_event_tx)
+                            .await;
+                    } else {
+                        let _ = client_event_tx.send(ServerEvent::ReasoningEffortChanged {
+                            id,
+                            effort: None,
+                            error: Some(format!("target session not found: {target_session_id}")),
+                        });
+                    }
+                } else {
+                    handle_set_reasoning_effort(id, effort, &agent, &client_event_tx).await;
+                }
             }
 
             Request::SetServiceTier { id, service_tier } => {

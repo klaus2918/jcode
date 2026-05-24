@@ -156,7 +156,6 @@ const STREAMING_TEXT_FADE_DURATION: Duration = Duration::from_millis(150);
 const STREAMING_TEXT_FADE_START_OPACITY: f32 = 0.4;
 const STREAMING_TEXT_RISE_START_OFFSET_PIXELS: f32 = 3.5;
 const DESKTOP_ASYNC_JOB_LIMIT: usize = 12;
-const DESKTOP_REASONING_EFFORT_DEBOUNCE: Duration = Duration::from_millis(45);
 const PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY: usize = 1024;
 const PRIMITIVE_VERTEX_BUFFER_SHRINK_RATIO: usize = 4;
 const WORKSPACE_BASE_VERTEX_CAPACITY_HINT: usize = 512;
@@ -269,13 +268,13 @@ fn run_desktop_reasoning_effort_request_queue(
         let mut coalesced = 0usize;
         let mut disconnected = false;
         loop {
-            match request_rx.recv_timeout(DESKTOP_REASONING_EFFORT_DEBOUNCE) {
+            match request_rx.try_recv() {
                 Ok(next_request) => {
                     request = next_request;
                     coalesced += 1;
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
                     disconnected = true;
                     break;
                 }

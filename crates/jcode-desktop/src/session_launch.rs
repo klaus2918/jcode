@@ -882,21 +882,14 @@ pub fn set_reasoning_effort(
         .try_clone()
         .context("failed to clone server socket writer")?;
     let mut reader = BufReader::new(stream);
-    let mut next_request_id = 1_u64;
-    subscribe_and_establish_session(
-        &mut reader,
-        &mut writer,
-        &mut next_request_id,
-        target_session_id,
-        event_tx.as_ref(),
-    )?;
-    let request_id = next_request_id;
+    let request_id = 1_u64;
     write_json_line(
         &mut writer,
         json!({
             "type": "set_reasoning_effort",
             "id": request_id,
             "effort": effort,
+            "target_session_id": target_session_id,
         }),
     )?;
     read_control_response(

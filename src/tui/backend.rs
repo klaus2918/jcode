@@ -641,6 +641,7 @@ impl RemoteConnection {
         let request = Request::SetReasoningEffort {
             id: self.next_request_id,
             effort: effort.to_string(),
+            target_session_id: None,
         };
         self.next_request_id += 1;
         self.send_request(request).await
