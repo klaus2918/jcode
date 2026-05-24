@@ -35,8 +35,9 @@ use desktop_config::*;
 use desktop_ipc::{DesktopHostToWorkerEnvelope, write_desktop_ipc_frame};
 use desktop_protocol::{
     DesktopHostToWorkerMessage, DesktopInputEvent, DesktopKeyEvent, DesktopKeyModifiers,
-    DesktopProtocolEnvelope, DesktopSceneUpdate, DesktopWindowState, DesktopWorkerInit,
-    DesktopWorkerMode, DesktopWorkerReady, DesktopWorkerShutdownReason, DesktopWorkerToHostMessage,
+    DesktopMouseButton, DesktopMouseEvent, DesktopProtocolEnvelope, DesktopSceneUpdate,
+    DesktopWindowEvent, DesktopWindowState, DesktopWorkerInit, DesktopWorkerMode,
+    DesktopWorkerReady, DesktopWorkerShutdownReason, DesktopWorkerToHostMessage,
 };
 use desktop_scene::{
     DesktopColor, DesktopDisplayCommand, DesktopRect as DesktopSceneRect, DesktopRectPaint,
@@ -684,16 +685,43 @@ async fn run() -> Result<()> {
                 WindowEvent::CloseRequested => target.exit(),
                 WindowEvent::Resized(size) => {
                     pending_resize = Some(size);
+                    forward_app_worker_input(
+                        &mut hot_reloader,
+                        DesktopInputEvent::Window(DesktopWindowEvent::Resized {
+                            width: size.width,
+                            height: size.height,
+                            scale_factor: window.scale_factor() as f32,
+                        }),
+                    );
                     window.request_redraw();
                 }
                 WindowEvent::ScaleFactorChanged { .. } => {
                     pending_resize = Some(window.inner_size());
+                    let size = window.inner_size();
+                    forward_app_worker_input(
+                        &mut hot_reloader,
+                        DesktopInputEvent::Window(DesktopWindowEvent::Resized {
+                            width: size.width,
+                            height: size.height,
+                            scale_factor: window.scale_factor() as f32,
+                        }),
+                    );
                     window.request_redraw();
+                }
+                WindowEvent::Focused(focused) => {
+                    forward_app_worker_input(
+                        &mut hot_reloader,
+                        DesktopInputEvent::Window(DesktopWindowEvent::Focused(focused)),
+                    );
                 }
                 WindowEvent::ModifiersChanged(new_modifiers) => {
                     modifiers = new_modifiers.state();
                 }
                 WindowEvent::MouseWheel { delta, phase, .. } => {
+                    forward_app_worker_input(
+                        &mut hot_reloader,
+                        DesktopInputEvent::Mouse(desktop_mouse_wheel_event(delta)),
+                    );
                     let size = window.inner_size();
                     let now = Instant::now();
                     let previous_smooth_scroll = app.single_session_smooth_scroll_lines(
@@ -727,6 +755,13 @@ async fn run() -> Result<()> {
                 WindowEvent::CursorMoved { position, .. } => {
                     let cursor_started = Instant::now();
                     cursor_position = position;
+                    forward_app_worker_input(
+                        &mut hot_reloader,
+                        DesktopInputEvent::Mouse(DesktopMouseEvent::Move {
+                            x: cursor_position.x as f32,
+                            y: cursor_position.y as f32,
+                        }),
+                    );
                     if selecting_draft
                         && app.update_single_session_draft_selection_at(
                             cursor_position.x as f32,
@@ -753,6 +788,13 @@ async fn run() -> Result<()> {
                     ..
                 } => {
                     let mouse_started = Instant::now();
+                    forward_app_worker_input(
+                        &mut hot_reloader,
+                        DesktopInputEvent::Mouse(DesktopMouseEvent::Button {
+                            button: DesktopMouseButton::Left,
+                            pressed: state == ElementState::Pressed,
+                        }),
+                    );
                     match state {
                         ElementState::Pressed => {
                         if app.begin_single_session_draft_selection_at(
@@ -868,13 +910,14 @@ async fn run() -> Result<()> {
                     let key_debug = format!("{key_input:?}");
                     interaction_latency.mark("keyboard_input", keyboard_started);
                     if hot_reloader.has_app_worker() {
-                        if let Err(error) = hot_reloader.send_app_worker_input(DesktopInputEvent::Key(
-                            desktop_key_event_from_winit(&event.logical_key, modifiers, true),
-                        )) {
-                            desktop_log::error(format_args!(
-                                "jcode-desktop: failed to forward key input to app worker: {error:#}"
-                            ));
-                        }
+                        forward_app_worker_input(
+                            &mut hot_reloader,
+                            DesktopInputEvent::Key(desktop_key_event_from_winit(
+                                &event.logical_key,
+                                modifiers,
+                                true,
+                            )),
+                        );
                         window.request_redraw();
                         return;
                     }
@@ -5410,6 +5453,22 @@ fn desktop_key_modifiers(modifiers: ModifiersState) -> DesktopKeyModifiers {
         ctrl: modifiers.control_key(),
         alt: modifiers.alt_key(),
         super_key: modifiers.super_key(),
+    }
+}
+
+fn desktop_mouse_wheel_event(delta: MouseScrollDelta) -> DesktopMouseEvent {
+    let (delta_x, delta_y) = match delta {
+        MouseScrollDelta::LineDelta(x, y) => (x, y),
+        MouseScrollDelta::PixelDelta(position) => (position.x as f32, position.y as f32),
+    };
+    DesktopMouseEvent::Wheel { delta_x, delta_y }
+}
+
+fn forward_app_worker_input(hot_reloader: &mut DesktopHotReloader, input: DesktopInputEvent) {
+    if let Err(error) = hot_reloader.send_app_worker_input(input) {
+        desktop_log::error(format_args!(
+            "jcode-desktop: failed to forward input to app worker: {error:#}"
+        ));
     }
 }
 

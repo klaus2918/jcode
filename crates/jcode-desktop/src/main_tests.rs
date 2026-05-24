@@ -3,6 +3,8 @@ use super::single_session::*;
 use super::*;
 use std::sync::Mutex;
 
+static DESKTOP_PREFS_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 #[test]
 fn desktop_frame_profile_is_opt_in_and_recognizes_trace_modes() {
     assert!(!desktop_frame_profile_enabled(None));
@@ -147,6 +149,26 @@ fn desktop_key_events_preserve_text_and_modifiers_for_worker_input() {
         desktop_key_event_from_winit(&Key::Named(NamedKey::Enter), ModifiersState::empty(), true);
     assert_eq!(enter.key, "Enter");
     assert_eq!(enter.text, None);
+}
+
+#[test]
+fn desktop_mouse_wheel_events_convert_line_and_pixel_delta() {
+    assert_eq!(
+        desktop_mouse_wheel_event(MouseScrollDelta::LineDelta(1.0, -2.0)),
+        DesktopMouseEvent::Wheel {
+            delta_x: 1.0,
+            delta_y: -2.0,
+        }
+    );
+    assert_eq!(
+        desktop_mouse_wheel_event(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+            3.0, -4.0
+        ))),
+        DesktopMouseEvent::Wheel {
+            delta_x: 3.0,
+            delta_y: -4.0,
+        }
+    );
 }
 
 #[test]
@@ -326,8 +348,7 @@ fn desktop_hot_reload_drops_resume_when_current_app_is_fresh() {
 
 #[test]
 fn desktop_hot_reload_persists_workspace_focus_before_spawn() -> Result<()> {
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-    let Ok(_guard) = ENV_LOCK.lock() else {
+    let Ok(_guard) = DESKTOP_PREFS_ENV_LOCK.lock() else {
         anyhow::bail!("desktop hot reload env lock poisoned");
     };
     let temp = unique_desktop_test_dir("desktop-hot-reload-workspace-state")?;
@@ -383,7 +404,15 @@ fn desktop_hot_reload_persists_workspace_focus_before_spawn() -> Result<()> {
 }
 
 #[test]
-fn desktop_hot_reload_restarts_default_launched_workspace_as_workspace() {
+fn desktop_hot_reload_restarts_default_launched_workspace_as_workspace() -> Result<()> {
+    let Ok(_guard) = DESKTOP_PREFS_ENV_LOCK.lock() else {
+        anyhow::bail!("desktop hot reload env lock poisoned");
+    };
+    let temp = unique_desktop_test_dir("desktop-hot-reload-default-workspace")?;
+    let state_path = temp.join("desktop-state.json");
+    unsafe {
+        std::env::set_var("JCODE_DESKTOP_STATE", &state_path);
+    }
     let relaunch = DesktopRelaunch {
         binary: PathBuf::from("/old/jcode-desktop"),
         args: Vec::new(),
@@ -403,6 +432,12 @@ fn desktop_hot_reload_restarts_default_launched_workspace_as_workspace() {
 
     assert_eq!(updated.binary, PathBuf::from("/new/jcode-desktop"));
     assert_eq!(updated.args, vec![OsString::from("--workspace")]);
+
+    unsafe {
+        std::env::remove_var("JCODE_DESKTOP_STATE");
+    }
+    std::fs::remove_dir_all(temp)?;
+    Ok(())
 }
 
 #[test]
