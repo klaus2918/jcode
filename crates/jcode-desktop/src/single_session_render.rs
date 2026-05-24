@@ -3,9 +3,9 @@ use crate::desktop_rich_text::{
     AnsiColor, AnsiStyle, RichLine, RichLineStyle, RichSpanStyle, SyntaxTokenKind,
 };
 use crate::single_session::{
-    InlineWidgetKind, MODEL_PICKER_INLINE_ROW_LIMIT, SingleSessionInlineSpan,
-    SingleSessionInlineSpanKind, SingleSessionToolLineKind, SingleSessionToolLineMetadata,
-    SingleSessionToolVisualState, SingleSessionTypography, single_session_assistant_font_family,
+    InlineWidgetKind, SingleSessionInlineSpan, SingleSessionInlineSpanKind,
+    SingleSessionToolLineKind, SingleSessionToolLineMetadata, SingleSessionToolVisualState,
+    SingleSessionTypography, single_session_assistant_font_family,
     single_session_trimmed_line_end_preserving_inline_code_whitespace,
     single_session_user_font_family,
 };
@@ -48,6 +48,7 @@ const TRANSCRIPT_CARD_ENTRY_DURATION: Duration = Duration::from_millis(170);
 const TRANSCRIPT_CARD_SHIFT_DURATION: Duration = Duration::from_millis(150);
 const TRANSCRIPT_CARD_ENTRY_OFFSET_PIXELS: f32 = 10.0;
 const TRANSCRIPT_CARD_ENTRY_SCALE: f32 = 0.988;
+const INLINE_WIDGET_SELECTION_TRANSITION_DURATION: Duration = Duration::from_millis(135);
 const TOOL_CARD_ENTRY_DURATION: Duration = Duration::from_millis(180);
 const TOOL_CARD_EXIT_DURATION: Duration = Duration::from_millis(160);
 const TOOL_CARD_STATE_TRANSITION_DURATION: Duration = Duration::from_millis(160);
@@ -185,6 +186,7 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         size,
         welcome_chrome_offset,
         welcome_timeline_total_body_lines(app, size),
+        None,
     );
     push_single_session_transcript_cards(
         &mut vertices,
@@ -251,6 +253,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -263,6 +266,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
     smooth_scroll_lines: f32,
     welcome_hero_reveal_progress: f32,
     rendered_body_lines: &[SingleSessionStyledLine],
+    inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     tool_motion: &ToolCardMotionFrame,
     scrollbar_motion: Option<&SingleSessionScrollbarMotionFrame>,
@@ -275,6 +279,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
         smooth_scroll_lines,
         welcome_hero_reveal_progress,
         rendered_body_lines,
+        inline_selection_motion,
         transcript_motion,
         Some(tool_motion),
         scrollbar_motion,
@@ -290,6 +295,7 @@ fn build_single_session_vertices_with_cached_body_internal(
     smooth_scroll_lines: f32,
     welcome_hero_reveal_progress: f32,
     rendered_body_lines: &[SingleSessionStyledLine],
+    inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     tool_motion: Option<&ToolCardMotionFrame>,
     scrollbar_motion: Option<&SingleSessionScrollbarMotionFrame>,
@@ -356,6 +362,7 @@ fn build_single_session_vertices_with_cached_body_internal(
         size,
         welcome_chrome_offset,
         rendered_body_lines.len(),
+        inline_selection_motion,
     );
 
     let viewport = single_session_body_viewport_from_lines(
@@ -868,6 +875,7 @@ fn push_single_session_inline_widget_card(
     size: PhysicalSize<u32>,
     welcome_chrome_offset_pixels: f32,
     total_lines: usize,
+    inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
 ) {
     let line_count = app.inline_widget_visible_line_count();
     if line_count == 0 {
@@ -965,70 +973,65 @@ fn push_single_session_inline_widget_card(
         );
     }
 
-    if app.active_inline_widget() == Some(InlineWidgetKind::SlashSuggestions) {
-        let line_height = inline_widget_line_height(app.active_inline_widget(), &typography);
-        for (line_index, line) in inline_lines.iter().take(line_count).enumerate() {
-            if line.style != SingleSessionLineStyle::OverlaySelection {
-                continue;
-            }
-            let row_top = layout.text_top + line_index as f32 * line_height - 1.0;
-            let row_visible_height = (layout.visible_text_bottom - row_top).min(line_height + 2.0);
-            let row_width = (layout.card.width - layout.padding_x).max(0.0);
-            if row_visible_height <= 3.0 || row_width <= 6.0 {
-                continue;
-            }
-            push_rounded_rect(
-                vertices,
-                Rect {
-                    x: layout.card.x + layout.padding_x * 0.5,
-                    y: row_top,
-                    width: row_width,
-                    height: row_visible_height.max(1.0),
-                },
-                layout.selection_radius,
-                with_alpha(
-                    SLASH_SUGGESTIONS_INLINE_SELECTION_BACKGROUND_COLOR,
-                    SLASH_SUGGESTIONS_INLINE_SELECTION_BACKGROUND_COLOR[3] * progress,
-                ),
-                size,
-            );
-        }
+    push_single_session_inline_widget_selection(
+        vertices,
+        app.active_inline_widget(),
+        &inline_lines,
+        line_count,
+        &typography,
+        &layout,
+        progress,
+        inline_selection_motion,
+        size,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_single_session_inline_widget_selection(
+    vertices: &mut Vec<Vertex>,
+    kind: Option<InlineWidgetKind>,
+    inline_lines: &[SingleSessionStyledLine],
+    line_count: usize,
+    typography: &SingleSessionTypography,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
+    size: PhysicalSize<u32>,
+) {
+    let Some(target) = inline_widget_selection_target(kind, inline_lines, line_count) else {
+        return;
+    };
+    let visual = inline_selection_motion
+        .and_then(|motion| motion.visual_for_target(target))
+        .unwrap_or_else(|| InlineWidgetSelectionVisual::settled(target));
+    if visual.opacity <= 0.001 || visual.line_span <= 0.05 {
+        return;
     }
 
-    if app.model_picker.open
-        && !app.model_picker.loading
-        && app.model_picker.error.is_none()
-        && let Some(row) = app
-            .model_picker
-            .selected_row_in_window(MODEL_PICKER_INLINE_ROW_LIMIT)
-    {
-        let selected_line = 2 + row * 2;
-        if selected_line < line_count {
-            let line_height = inline_widget_line_height(app.active_inline_widget(), &typography);
-            let row_top = layout.text_top + selected_line as f32 * line_height - 2.0;
-            let row_visible_height =
-                (layout.visible_text_bottom - row_top).min(line_height * 2.0 + 2.0);
-            let row_width = (layout.card.width - layout.padding_x).max(0.0);
-            if row_visible_height <= 3.0 || row_width <= 6.0 {
-                return;
-            }
-            push_rounded_rect(
-                vertices,
-                Rect {
-                    x: layout.card.x + layout.padding_x * 0.5,
-                    y: row_top,
-                    width: row_width,
-                    height: row_visible_height.max(1.0),
-                },
-                layout.selection_radius,
-                with_alpha(
-                    OVERLAY_SELECTION_BACKGROUND_COLOR,
-                    OVERLAY_SELECTION_BACKGROUND_COLOR[3] * progress,
-                ),
-                size,
-            );
-        }
+    let line_height = inline_widget_line_height(kind, typography);
+    let row_top = layout.text_top
+        + (target.line as f32 + visual.y_offset_lines) * line_height
+        + inline_widget_selection_top_offset(kind);
+    let row_height = visual.line_span * line_height + inline_widget_selection_extra_height(kind);
+    let row_visible_height = (layout.visible_text_bottom - row_top).min(row_height);
+    let row_width = (layout.card.width - layout.padding_x).max(0.0);
+    if row_visible_height <= 3.0 || row_width <= 6.0 {
+        return;
     }
+
+    let color = inline_widget_selection_background_color(kind);
+    push_rounded_rect(
+        vertices,
+        Rect {
+            x: layout.card.x + layout.padding_x * 0.5,
+            y: row_top,
+            width: row_width,
+            height: row_visible_height.max(1.0),
+        },
+        layout.selection_radius,
+        with_alpha(color, color[3] * reveal_progress * visual.opacity),
+        size,
+    );
 }
 
 const INLINE_WIDGET_SIDE_GUTTER_EXTRA: f32 = 24.0;
@@ -1190,6 +1193,29 @@ fn inline_widget_selection_radius(kind: Option<InlineWidgetKind>) -> f32 {
     match kind {
         Some(InlineWidgetKind::SlashSuggestions) => SLASH_SUGGESTIONS_INLINE_SELECTION_RADIUS,
         _ => INLINE_WIDGET_SELECTION_RADIUS,
+    }
+}
+
+fn inline_widget_selection_top_offset(kind: Option<InlineWidgetKind>) -> f32 {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => -1.0,
+        _ => -2.0,
+    }
+}
+
+fn inline_widget_selection_extra_height(kind: Option<InlineWidgetKind>) -> f32 {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => 2.0,
+        _ => 2.0,
+    }
+}
+
+fn inline_widget_selection_background_color(kind: Option<InlineWidgetKind>) -> [f32; 4] {
+    match kind {
+        Some(InlineWidgetKind::SlashSuggestions) => {
+            SLASH_SUGGESTIONS_INLINE_SELECTION_BACKGROUND_COLOR
+        }
+        _ => OVERLAY_SELECTION_BACKGROUND_COLOR,
     }
 }
 
@@ -1592,6 +1618,121 @@ pub(crate) struct SingleSessionTranscriptCardRun {
     pub(crate) line: usize,
     pub(crate) line_count: usize,
     pub(crate) style: SingleSessionLineStyle,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InlineWidgetSelectionTarget {
+    kind: InlineWidgetKind,
+    line: usize,
+    line_span: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct InlineWidgetSelectionVisual {
+    pub(crate) opacity: f32,
+    pub(crate) y_offset_lines: f32,
+    pub(crate) line_span: f32,
+}
+
+impl InlineWidgetSelectionVisual {
+    fn settled(target: InlineWidgetSelectionTarget) -> Self {
+        Self {
+            opacity: 1.0,
+            y_offset_lines: 0.0,
+            line_span: target.line_span as f32,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InlineWidgetSelectionTransition {
+    from_line: usize,
+    from_line_span: usize,
+    started_at: Instant,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct InlineWidgetSelectionMotionFrame {
+    target: Option<InlineWidgetSelectionTarget>,
+    visual: Option<InlineWidgetSelectionVisual>,
+    active: bool,
+}
+
+impl InlineWidgetSelectionMotionFrame {
+    fn visual_for_target(
+        &self,
+        target: InlineWidgetSelectionTarget,
+    ) -> Option<InlineWidgetSelectionVisual> {
+        (self.target == Some(target)).then_some(self.visual?)
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct InlineWidgetSelectionMotionRegistry {
+    initialized: bool,
+    current: Option<InlineWidgetSelectionTarget>,
+    transition: Option<InlineWidgetSelectionTransition>,
+}
+
+impl InlineWidgetSelectionMotionRegistry {
+    pub(crate) fn frame(
+        &mut self,
+        app: &SingleSessionApp,
+        now: Instant,
+    ) -> InlineWidgetSelectionMotionFrame {
+        let kind = app.active_inline_widget();
+        let lines = app.inline_widget_styled_lines();
+        let visible_line_count = kind
+            .map(|kind| lines.len().min(kind.visible_line_limit()))
+            .unwrap_or(0);
+        let target = inline_widget_selection_target(kind, &lines, visible_line_count);
+        self.frame_for_target(target, now)
+    }
+
+    fn frame_for_target(
+        &mut self,
+        target: Option<InlineWidgetSelectionTarget>,
+        now: Instant,
+    ) -> InlineWidgetSelectionMotionFrame {
+        let Some(target) = target else {
+            self.clear();
+            return InlineWidgetSelectionMotionFrame::default();
+        };
+
+        if !self.initialized {
+            self.initialized = true;
+            self.current = Some(target);
+            self.transition = None;
+        } else if self.current != Some(target) {
+            self.transition = self.current.and_then(|current| {
+                (current.kind == target.kind && !crate::animation::desktop_reduced_motion_enabled())
+                    .then_some(InlineWidgetSelectionTransition {
+                        from_line: current.line,
+                        from_line_span: current.line_span,
+                        started_at: now,
+                    })
+            });
+            self.current = Some(target);
+        }
+
+        let (visual, active) =
+            inline_widget_selection_visual_from_transition(&mut self.transition, target, now);
+        InlineWidgetSelectionMotionFrame {
+            target: Some(target),
+            visual: Some(visual),
+            active,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.current = None;
+        self.transition = None;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2311,6 +2452,76 @@ fn timed_animation_progress(started_at: Instant, now: Instant, duration: Duratio
 
 fn ease_out_cubic_local(progress: f32) -> f32 {
     1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
+}
+
+fn inline_widget_selection_target(
+    kind: Option<InlineWidgetKind>,
+    lines: &[SingleSessionStyledLine],
+    visible_line_count: usize,
+) -> Option<InlineWidgetSelectionTarget> {
+    let kind = kind?;
+    let visible_len = visible_line_count.min(lines.len());
+    let visible_lines = &lines[..visible_len];
+    let selected_line = visible_lines
+        .iter()
+        .position(|line| line.style == SingleSessionLineStyle::OverlaySelection)?;
+    let line_span = match kind {
+        InlineWidgetKind::ModelPicker => {
+            // Model rows use a selected primary line followed by a metadata
+            // detail line. Keep the highlight as one two-line target so the
+            // keyboard selection feels like a card moving through the list.
+            if selected_line + 1 < visible_len {
+                2
+            } else {
+                1
+            }
+        }
+        InlineWidgetKind::SessionSwitcher => visible_lines[selected_line..]
+            .iter()
+            .take_while(|line| line.style == SingleSessionLineStyle::OverlaySelection)
+            .count()
+            .max(1),
+        InlineWidgetKind::SlashSuggestions => 1,
+        InlineWidgetKind::HotkeyHelp | InlineWidgetKind::SessionInfo => return None,
+    };
+
+    Some(InlineWidgetSelectionTarget {
+        kind,
+        line: selected_line,
+        line_span: line_span
+            .min(visible_len.saturating_sub(selected_line))
+            .max(1),
+    })
+}
+
+fn inline_widget_selection_visual_from_transition(
+    transition: &mut Option<InlineWidgetSelectionTransition>,
+    target: InlineWidgetSelectionTarget,
+    now: Instant,
+) -> (InlineWidgetSelectionVisual, bool) {
+    let Some(active_transition) = *transition else {
+        return (InlineWidgetSelectionVisual::settled(target), false);
+    };
+
+    let (progress, running) = timed_animation_progress(
+        active_transition.started_at,
+        now,
+        INLINE_WIDGET_SELECTION_TRANSITION_DURATION,
+    );
+    let eased = ease_out_cubic_local(progress);
+    let from_line = active_transition.from_line as f32;
+    let to_line = target.line as f32;
+    let from_span = active_transition.from_line_span as f32;
+    let to_span = target.line_span as f32;
+    let visual = InlineWidgetSelectionVisual {
+        opacity: 1.0,
+        y_offset_lines: (from_line - to_line) * (1.0 - eased),
+        line_span: from_span + (to_span - from_span) * eased,
+    };
+    if !running {
+        *transition = None;
+    }
+    (visual, running)
 }
 
 fn tool_card_palette(state: SingleSessionToolVisualState, active: bool) -> ToolCardPalette {
@@ -3059,6 +3270,14 @@ fn push_single_session_inline_code_cards_from_viewport(
     viewport: &SingleSessionBodyViewport,
     total_lines: usize,
 ) {
+    if !viewport
+        .lines
+        .iter()
+        .any(single_session_line_has_inline_code_or_math)
+    {
+        return;
+    }
+
     let text_scale = app.text_scale();
     let typography = single_session_typography_for_scale(text_scale);
     let line_height = typography.body_size * typography.body_line_height;
@@ -3156,6 +3375,15 @@ fn push_single_session_inline_code_cards_from_viewport(
             push_rounded_rect(vertices, rect, radius, INLINE_MATH_BACKGROUND_COLOR, size);
         }
     }
+}
+
+fn single_session_line_has_inline_code_or_math(line: &SingleSessionStyledLine) -> bool {
+    line.inline_spans.iter().any(|span| {
+        matches!(
+            span.kind,
+            SingleSessionInlineSpanKind::Code | SingleSessionInlineSpanKind::Math
+        )
+    }) || line.text.contains('$')
 }
 
 fn inline_code_card_height(typography: &SingleSessionTypography) -> f32 {
@@ -6436,7 +6664,7 @@ pub(crate) fn text_color(color: [f32; 4]) -> TextColor {
 mod tests {
     use super::*;
     use crate::single_session::{
-        SingleSessionApp, SingleSessionLineStyle, SingleSessionStyledLine,
+        InlineWidgetKind, SingleSessionApp, SingleSessionLineStyle, SingleSessionStyledLine,
         SingleSessionToolLineKind, SingleSessionToolLineMetadata, SingleSessionToolVisualState,
     };
     use crate::workspace::{KeyInput, KeyOutcome, SessionCard};
@@ -6472,6 +6700,103 @@ mod tests {
             }
         }
         panic!("missing transcript card run at line {target_line}");
+    }
+
+    #[test]
+    fn inline_widget_selection_target_detects_widget_row_shapes() {
+        let model_lines = vec![
+            SingleSessionStyledLine::new("title", SingleSessionLineStyle::OverlayTitle),
+            SingleSessionStyledLine::new("filter", SingleSessionLineStyle::Overlay),
+            SingleSessionStyledLine::new("› gpt", SingleSessionLineStyle::OverlaySelection),
+            SingleSessionStyledLine::new("  provider · detail", SingleSessionLineStyle::Meta),
+            SingleSessionStyledLine::new("footer", SingleSessionLineStyle::Overlay),
+        ];
+        assert_eq!(
+            inline_widget_selection_target(
+                Some(InlineWidgetKind::ModelPicker),
+                &model_lines,
+                model_lines.len()
+            ),
+            Some(InlineWidgetSelectionTarget {
+                kind: InlineWidgetKind::ModelPicker,
+                line: 2,
+                line_span: 2,
+            })
+        );
+
+        let session_lines = vec![
+            SingleSessionStyledLine::new("header", SingleSessionLineStyle::OverlayTitle),
+            SingleSessionStyledLine::new("body", SingleSessionLineStyle::Overlay),
+            SingleSessionStyledLine::new("› session", SingleSessionLineStyle::OverlaySelection),
+            SingleSessionStyledLine::new("  model", SingleSessionLineStyle::OverlaySelection),
+            SingleSessionStyledLine::new("  detail", SingleSessionLineStyle::OverlaySelection),
+            SingleSessionStyledLine::new("  preview", SingleSessionLineStyle::OverlaySelection),
+            SingleSessionStyledLine::new("next", SingleSessionLineStyle::Overlay),
+        ];
+        assert_eq!(
+            inline_widget_selection_target(
+                Some(InlineWidgetKind::SessionSwitcher),
+                &session_lines,
+                session_lines.len()
+            ),
+            Some(InlineWidgetSelectionTarget {
+                kind: InlineWidgetKind::SessionSwitcher,
+                line: 2,
+                line_span: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn inline_widget_selection_motion_animates_row_changes() {
+        let mut registry = InlineWidgetSelectionMotionRegistry::default();
+        let now = Instant::now();
+        let first_target = InlineWidgetSelectionTarget {
+            kind: InlineWidgetKind::SlashSuggestions,
+            line: 1,
+            line_span: 1,
+        };
+        let next_target = InlineWidgetSelectionTarget {
+            kind: InlineWidgetKind::SlashSuggestions,
+            line: 3,
+            line_span: 1,
+        };
+
+        let initial = registry.frame_for_target(Some(first_target), now);
+        assert!(!initial.is_active());
+        assert_eq!(
+            initial.visual_for_target(first_target),
+            Some(InlineWidgetSelectionVisual::settled(first_target))
+        );
+
+        let start = registry.frame_for_target(Some(next_target), now + Duration::from_millis(5));
+        let start_visual = start
+            .visual_for_target(next_target)
+            .expect("selection visual");
+        assert!(start.is_active());
+        assert!(start_visual.y_offset_lines < -1.9);
+        assert_eq!(start_visual.line_span, 1.0);
+
+        let middle = registry.frame_for_target(
+            Some(next_target),
+            now + Duration::from_millis(5) + INLINE_WIDGET_SELECTION_TRANSITION_DURATION / 2,
+        );
+        let middle_visual = middle
+            .visual_for_target(next_target)
+            .expect("selection visual");
+        assert!(middle.is_active());
+        assert!(middle_visual.y_offset_lines < 0.0);
+        assert!(middle_visual.y_offset_lines > -2.0);
+
+        let settled = registry.frame_for_target(
+            Some(next_target),
+            now + Duration::from_millis(5) + INLINE_WIDGET_SELECTION_TRANSITION_DURATION * 2,
+        );
+        assert!(!settled.is_active());
+        assert_eq!(
+            settled.visual_for_target(next_target),
+            Some(InlineWidgetSelectionVisual::settled(next_target))
+        );
     }
 
     #[test]

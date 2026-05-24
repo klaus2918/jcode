@@ -148,8 +148,8 @@ const SCROLL_MOMENTUM_DECAY_PER_SECOND: f32 = 7.0;
 const SCROLL_MOMENTUM_MAX_VELOCITY: f32 = 72.0;
 const SCROLL_MOMENTUM_STOP_VELOCITY: f32 = 0.08;
 const SCROLL_FRAME_MAX_DT_SECONDS: f32 = 0.050;
-const SINGLE_SESSION_BODY_TEXT_WINDOW_BEFORE_LINES: usize = 48;
-const SINGLE_SESSION_BODY_TEXT_WINDOW_AFTER_LINES: usize = 96;
+const SINGLE_SESSION_BODY_TEXT_WINDOW_BEFORE_LINES: usize = 8;
+const SINGLE_SESSION_BODY_TEXT_WINDOW_AFTER_LINES: usize = 16;
 const SINGLE_SESSION_STREAMING_BODY_TEXT_WINDOW_BEFORE_LINES: usize = 2;
 const SINGLE_SESSION_STREAMING_BODY_TEXT_WINDOW_AFTER_LINES: usize = 4;
 const STREAMING_TEXT_FADE_DURATION: Duration = Duration::from_millis(150);
@@ -7609,13 +7609,14 @@ struct DesktopFrameContext {
     primitive_geometry_cache_hit: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct DesktopRenderFrameResult {
     animation_active: bool,
     content_ready: bool,
     frame_wall: Duration,
     frame_cpu: Duration,
     context: DesktopFrameContext,
+    stages: Vec<DesktopFrameStageProfile>,
 }
 
 #[derive(Clone)]
@@ -7838,6 +7839,10 @@ impl DesktopInteractionLatencyProfiler {
                 "text_area_count": frame.context.text_area_count,
                 "primitive_vertices": frame.context.primitive_vertices,
                 "text_prepared": frame.context.text_prepared,
+                "stages": frame.stages.iter().map(|stage| serde_json::json!({
+                    "name": stage.name,
+                    "ms": duration_ms(stage.duration),
+                })).collect::<Vec<_>>(),
             })
         );
     }
@@ -8250,6 +8255,7 @@ struct Canvas {
     workspace_surface_exit_cache: HashMap<u64, workspace::Surface>,
     focus_pulse: FocusPulse,
     status_color_transition: ColorTransition,
+    inline_widget_selection_motion: InlineWidgetSelectionMotionRegistry,
     transcript_card_motion: TranscriptCardMotionRegistry,
     tool_card_motion: ToolCardMotionRegistry,
     single_session_scrollbar_motion: SingleSessionScrollbarMotionRegistry,
@@ -8369,6 +8375,7 @@ impl Canvas {
             workspace_surface_exit_cache: HashMap::new(),
             focus_pulse: FocusPulse::default(),
             status_color_transition: ColorTransition::default(),
+            inline_widget_selection_motion: InlineWidgetSelectionMotionRegistry::default(),
             transcript_card_motion: TranscriptCardMotionRegistry::default(),
             tool_card_motion: ToolCardMotionRegistry::default(),
             single_session_scrollbar_motion: SingleSessionScrollbarMotionRegistry::default(),
@@ -9042,6 +9049,7 @@ impl Canvas {
             text_prepared: false,
             primitive_geometry_cache_hit: false,
         };
+        let stages = frame_profile.stages.clone();
         self.frame_profiler.observe(frame_profile, context);
         Ok(DesktopRenderFrameResult {
             animation_active: true,
@@ -9049,6 +9057,7 @@ impl Canvas {
             frame_wall,
             frame_cpu,
             context,
+            stages,
         })
     }
 
@@ -9133,6 +9142,7 @@ impl Canvas {
             text_prepared: false,
             primitive_geometry_cache_hit: false,
         };
+        let stages = frame_profile.stages.clone();
         self.frame_profiler.observe(frame_profile, context);
         Ok(DesktopRenderFrameResult {
             animation_active: scene.metadata.animation_active,
@@ -9140,6 +9150,7 @@ impl Canvas {
             frame_wall,
             frame_cpu,
             context,
+            stages,
         })
     }
 
@@ -9232,7 +9243,9 @@ impl Canvas {
             let (rendered_body_key, rendered_body_changed) =
                 self.cached_single_session_body_lines(single_session, spinner_tick);
             single_session_rendered_body_key = Some(rendered_body_key);
+            frame_profile.checkpoint("body_lines_cache");
             self.ensure_font_system();
+            frame_profile.checkpoint("font_system");
             self.refresh_cached_single_session_text_buffers(
                 single_session,
                 now,
@@ -9240,6 +9253,7 @@ impl Canvas {
                 rendered_body_key,
                 rendered_body_changed,
             );
+            frame_profile.checkpoint("text_buffers_cache");
         } else {
             self.single_session_text_cache_key = None;
             self.single_session_text_key = None;
@@ -9462,19 +9476,26 @@ impl Canvas {
         let (mut vertices, animation_active): (Cow<'_, [Vertex]>, bool) = match app {
             DesktopApp::SingleSession(single_session) => {
                 let focus_pulse = self.focus_pulse.frame(1, now);
+                let inline_selection_motion = self
+                    .inline_widget_selection_motion
+                    .frame(single_session, now);
+                let tool_motion_lines = single_session_viewport
+                    .as_ref()
+                    .map(|viewport| viewport.lines.as_slice())
+                    .unwrap_or(self.single_session_body_lines.as_slice());
                 let transcript_line_height = {
                     let typography =
                         single_session_typography_for_scale(single_session.text_scale());
                     typography.body_size * typography.body_line_height
                 };
                 let transcript_motion = self.transcript_card_motion.frame(
-                    &self.single_session_body_lines,
+                    tool_motion_lines,
                     transcript_line_height,
                     now,
                 );
-                let tool_motion =
-                    self.tool_card_motion
-                        .frame(&self.single_session_body_lines, now, spinner_tick);
+                let tool_motion = self
+                    .tool_card_motion
+                    .frame(tool_motion_lines, now, spinner_tick);
                 let scrollbar_motion = self.single_session_scrollbar_motion.frame(
                     single_session,
                     self.size,
@@ -9482,8 +9503,10 @@ impl Canvas {
                     smooth_scroll_lines,
                     now,
                 );
+                frame_profile.checkpoint("vertices_tool_motion");
                 let animation_active = self.focus_pulse.is_animating()
                     || single_session.has_background_work()
+                    || inline_selection_motion.is_active()
                     || transcript_motion.is_active()
                     || tool_motion.is_active()
                     || scrollbar_motion.is_active()
@@ -9516,6 +9539,7 @@ impl Canvas {
                                 smooth_scroll_lines,
                                 welcome_hero_reveal_progress,
                                 &self.single_session_body_lines,
+                                Some(&inline_selection_motion),
                                 Some(&transcript_motion),
                                 &tool_motion,
                                 Some(&scrollbar_motion),
@@ -9535,15 +9559,18 @@ impl Canvas {
                             smooth_scroll_lines,
                             welcome_hero_reveal_progress,
                             &self.single_session_body_lines,
+                            Some(&inline_selection_motion),
                             Some(&transcript_motion),
                             &tool_motion,
                             Some(&scrollbar_motion),
                         ),
                     )
                 };
+                frame_profile.checkpoint("vertices_geometry");
                 (vertices, animation_active)
             }
             DesktopApp::Workspace(workspace) => {
+                self.inline_widget_selection_motion.clear();
                 self.transcript_card_motion.clear();
                 self.single_session_scrollbar_motion.clear();
                 self.primitive_vertices_cache_key = None;
@@ -9576,6 +9603,7 @@ impl Canvas {
                     },
                     &mut self.primitive_workspace_vertices,
                 );
+                frame_profile.checkpoint("vertices_geometry");
                 (
                     Cow::Borrowed(self.primitive_workspace_vertices.as_slice()),
                     animation_active,
@@ -9740,6 +9768,7 @@ impl Canvas {
             text_prepared,
             primitive_geometry_cache_hit,
         };
+        let stages = frame_profile.stages.clone();
         self.frame_profiler.observe(frame_profile, context);
         Ok(DesktopRenderFrameResult {
             animation_active: animation_active
@@ -9749,6 +9778,7 @@ impl Canvas {
             frame_wall,
             frame_cpu,
             context,
+            stages,
         })
     }
 }

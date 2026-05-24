@@ -924,15 +924,6 @@ impl ModelPickerState {
         (start, visible[start..end].to_vec())
     }
 
-    pub(crate) fn selected_row_in_window(&self, limit: usize) -> Option<usize> {
-        let (start, visible) = self.visible_row_window(limit);
-        if visible.is_empty() {
-            None
-        } else {
-            Some(self.selected.saturating_sub(start).min(visible.len() - 1))
-        }
-    }
-
     fn current_choice_index(&self) -> Option<usize> {
         let current = self.current_model.as_deref()?;
         self.choices
@@ -1654,6 +1645,9 @@ impl SingleSessionApp {
     pub(crate) fn inline_widget_reveal_progress(&self) -> f32 {
         if self.active_inline_widget().is_none() {
             return 0.0;
+        }
+        if crate::animation::desktop_reduced_motion_enabled() {
+            return 1.0;
         }
 
         #[cfg(test)]
@@ -5945,15 +5939,27 @@ fn append_user_lines(lines: &mut Vec<SingleSessionStyledLine>, turn: usize, cont
         return;
     };
     lines.push(styled_line(
-        format!("{turn}  {first}"),
+        format!("{turn}  {}", compact_single_session_visible_line(first)),
         SingleSessionLineStyle::User,
     ));
     for line in content_lines {
         lines.push(styled_line(
-            format!("   {line}"),
+            format!("   {}", compact_single_session_visible_line(line)),
             SingleSessionLineStyle::UserContinuation,
         ));
     }
+}
+
+fn compact_single_session_visible_line(line: &str) -> String {
+    const MAX_VISIBLE_BYTES: usize = 512;
+
+    if line.len() <= MAX_VISIBLE_BYTES {
+        return line.to_string();
+    }
+
+    let prefix_len = safe_utf8_prefix_len(line, MAX_VISIBLE_BYTES);
+    let omitted = line.len().saturating_sub(prefix_len);
+    format!("{}… <{} bytes omitted>", &line[..prefix_len], omitted)
 }
 
 fn is_user_prompt_line(line: &str) -> bool {
@@ -7142,6 +7148,8 @@ fn append_tool_group_summary(
     lines: &mut Vec<SingleSessionStyledLine>,
     tool_messages: &[SingleSessionMessage],
 ) {
+    const TOOL_GROUP_SUMMARY_VISIBLE_FRAGMENT_LIMIT: usize = 6;
+
     if tool_messages.is_empty() {
         return;
     }
@@ -7151,7 +7159,12 @@ fn append_tool_group_summary(
     let mut approx_tokens = 0usize;
 
     for message in tool_messages {
-        approx_tokens += message.content().chars().count().div_ceil(4);
+        // This is only a collapsed-card estimate. Counting Unicode scalar
+        // values scans every byte of large tool outputs and made first content
+        // frames visibly stall for transcripts with huge tool groups. Use the
+        // byte length's O(1) metadata instead; it is a good enough token proxy
+        // for a summary that is intentionally approximate.
+        approx_tokens += message.content().len().div_ceil(4);
         let name = tool_summary_name(message.content());
         if let Some(index) = names.iter().position(|existing| existing == &name) {
             counts[index] += 1;
@@ -7161,18 +7174,32 @@ fn append_tool_group_summary(
         }
     }
 
-    let fragments = names
+    let total_distinct_tools = names.len();
+    let mut summary_hasher = DefaultHasher::new();
+    names.hash(&mut summary_hasher);
+    counts.hash(&mut summary_hasher);
+    approx_tokens.hash(&mut summary_hasher);
+    let summary_hash = summary_hasher.finish();
+
+    let mut fragments = names
         .into_iter()
         .zip(counts)
+        .take(TOOL_GROUP_SUMMARY_VISIBLE_FRAGMENT_LIMIT)
         .map(|(name, count)| format!("{count} {name}"))
-        .collect::<Vec<_>>()
-        .join(", ");
+        .collect::<Vec<_>>();
+    if total_distinct_tools > TOOL_GROUP_SUMMARY_VISIBLE_FRAGMENT_LIMIT {
+        fragments.push(format!(
+            "{} more kinds",
+            total_distinct_tools - TOOL_GROUP_SUMMARY_VISIBLE_FRAGMENT_LIMIT
+        ));
+    }
+    let fragments = fragments.join(", ");
     let token_fragment = format_approx_tokens(approx_tokens);
     let line = format!("  ▸ tools: {fragments} · ~{token_fragment} tokens");
     lines.push(
         styled_line(line.clone(), SingleSessionLineStyle::Tool).with_tool_metadata(
             SingleSessionToolLineMetadata {
-                call_id: format!("tool-group:{fragments}:{token_fragment}"),
+                call_id: format!("tool-group:{summary_hash:016x}"),
                 name: "tools".to_string(),
                 state: SingleSessionToolVisualState::Group,
                 kind: SingleSessionToolLineKind::GroupSummary,
