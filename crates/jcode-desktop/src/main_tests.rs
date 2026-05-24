@@ -129,6 +129,27 @@ fn desktop_worker_init_builds_initial_scene_from_snapshot_and_window() {
 }
 
 #[test]
+fn desktop_key_events_preserve_text_and_modifiers_for_worker_input() {
+    let key = desktop_key_event_from_winit(
+        &Key::Character("x".into()),
+        ModifiersState::SHIFT | ModifiersState::CONTROL,
+        true,
+    );
+    assert_eq!(key.key, "x");
+    assert_eq!(key.text.as_deref(), Some("x"));
+    assert!(key.pressed);
+    assert!(key.modifiers.shift);
+    assert!(key.modifiers.ctrl);
+    assert!(!key.modifiers.alt);
+    assert!(!key.modifiers.super_key);
+
+    let enter =
+        desktop_key_event_from_winit(&Key::Named(NamedKey::Enter), ModifiersState::empty(), true);
+    assert_eq!(enter.key, "Enter");
+    assert_eq!(enter.text, None);
+}
+
+#[test]
 fn desktop_app_worker_relaunch_replaces_existing_process_role() {
     let relaunch = DesktopRelaunch {
         binary: PathBuf::from("/tmp/jcode-desktop"),

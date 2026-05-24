@@ -34,9 +34,9 @@ use desktop_benchmark::*;
 use desktop_config::*;
 use desktop_ipc::{DesktopHostToWorkerEnvelope, write_desktop_ipc_frame};
 use desktop_protocol::{
-    DesktopHostToWorkerMessage, DesktopProtocolEnvelope, DesktopSceneUpdate, DesktopWindowState,
-    DesktopWorkerInit, DesktopWorkerMode, DesktopWorkerReady, DesktopWorkerShutdownReason,
-    DesktopWorkerToHostMessage,
+    DesktopHostToWorkerMessage, DesktopInputEvent, DesktopKeyEvent, DesktopKeyModifiers,
+    DesktopProtocolEnvelope, DesktopSceneUpdate, DesktopWindowState, DesktopWorkerInit,
+    DesktopWorkerMode, DesktopWorkerReady, DesktopWorkerShutdownReason, DesktopWorkerToHostMessage,
 };
 use desktop_scene::{
     DesktopColor, DesktopDisplayCommand, DesktopRect as DesktopSceneRect, DesktopRectPaint,
@@ -867,6 +867,17 @@ async fn run() -> Result<()> {
                     let key_input = to_key_input(&event.logical_key, modifiers);
                     let key_debug = format!("{key_input:?}");
                     interaction_latency.mark("keyboard_input", keyboard_started);
+                    if hot_reloader.has_app_worker() {
+                        if let Err(error) = hot_reloader.send_app_worker_input(DesktopInputEvent::Key(
+                            desktop_key_event_from_winit(&event.logical_key, modifiers, true),
+                        )) {
+                            desktop_log::error(format_args!(
+                                "jcode-desktop: failed to forward key input to app worker: {error:#}"
+                            ));
+                        }
+                        window.request_redraw();
+                        return;
+                    }
                     if key_input == KeyInput::RefreshSessions && app.is_workspace() {
                         spawn_session_cards_load(
                             DesktopSessionCardsPurpose::WorkspaceRefresh,
@@ -4992,6 +5003,17 @@ impl DesktopHotReloader {
         latest_scene
     }
 
+    fn has_app_worker(&self) -> bool {
+        self.app_worker.is_some()
+    }
+
+    fn send_app_worker_input(&mut self, input: DesktopInputEvent) -> Result<()> {
+        let Some(worker) = self.app_worker.as_mut() else {
+            return Ok(());
+        };
+        worker.send(DesktopHostToWorkerMessage::Input(input))
+    }
+
     fn poll(&mut self, app: &DesktopApp, window: &Window) -> bool {
         if self.poll_pending_handoff() {
             return true;
@@ -5352,6 +5374,43 @@ fn desktop_args_without_process_role(args: &[OsString]) -> Vec<OsString> {
         filtered.push(arg.clone());
     }
     filtered
+}
+
+fn desktop_key_event_from_winit(
+    key: &Key,
+    modifiers: ModifiersState,
+    pressed: bool,
+) -> DesktopKeyEvent {
+    DesktopKeyEvent {
+        key: desktop_key_name(key),
+        text: desktop_key_text(key),
+        pressed,
+        modifiers: desktop_key_modifiers(modifiers),
+    }
+}
+
+fn desktop_key_name(key: &Key) -> String {
+    match key {
+        Key::Character(value) => value.to_string(),
+        Key::Named(named) => format!("{named:?}"),
+        other => format!("{other:?}"),
+    }
+}
+
+fn desktop_key_text(key: &Key) -> Option<String> {
+    match key {
+        Key::Character(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn desktop_key_modifiers(modifiers: ModifiersState) -> DesktopKeyModifiers {
+    DesktopKeyModifiers {
+        shift: modifiers.shift_key(),
+        ctrl: modifiers.control_key(),
+        alt: modifiers.alt_key(),
+        super_key: modifiers.super_key(),
+    }
 }
 
 fn desktop_reload_binary_candidate(invoked_binary: &Path) -> PathBuf {
