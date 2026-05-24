@@ -952,12 +952,13 @@ fn openai_compatible_model_catalog_refresh_calls_models_endpoint_and_updates_dis
         r#"{
             "object": "list",
             "data": [
-                {"id": "live-login-flow-model", "object": "model"}
+                {"id": "live-login-flow-model", "object": "model", "context_length": 131072}
             ]
         }"#,
     );
     let provider = OpenRouterProvider {
         api_base,
+        model: Arc::new(RwLock::new("live-login-flow-model".to_string())),
         auth: ProviderAuth::AuthorizationBearer {
             token: "sk-live-catalog".to_string(),
             label: "OPENAI_COMPAT_API_KEY".to_string(),
@@ -978,6 +979,7 @@ fn openai_compatible_model_catalog_refresh_calls_models_endpoint_and_updates_dis
         .block_on(provider.refresh_models())
         .expect("refresh fake model catalog");
     assert_eq!(fetched[0].id, "live-login-flow-model");
+    assert_eq!(provider.context_window(), 131_072);
 
     let request = request_rx
         .recv_timeout(Duration::from_secs(2))
@@ -1005,6 +1007,18 @@ fn openai_compatible_model_catalog_refresh_calls_models_endpoint_and_updates_dis
             .any(|model| model == "static-login-flow-fallback"),
         "static fallback/default models should remain visible alongside live catalog models: {display:?}"
     );
+
+    let fresh_provider = OpenRouterProvider {
+        api_base: provider.api_base.clone(),
+        model: Arc::new(RwLock::new("live-login-flow-model".to_string())),
+        auth: provider.auth.clone(),
+        supports_provider_features: false,
+        supports_model_catalog: true,
+        profile_id: None,
+        send_openrouter_headers: false,
+        ..make_custom_compatible_provider()
+    };
+    assert_eq!(fresh_provider.context_window(), 131_072);
 }
 
 #[test]

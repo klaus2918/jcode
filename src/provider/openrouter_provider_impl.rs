@@ -1003,6 +1003,16 @@ impl Provider for OpenRouterProvider {
         {
             return ctx as usize;
         }
+        // A background/profile catalog refresh may have already persisted live
+        // /models metadata before this provider instance has hydrated its
+        // in-memory cache. Use that live catalog context length before falling
+        // back to static defaults.
+        if let Some(cache_entry) = self.load_usable_model_disk_cache_entry()
+            && let Some(model) = cache_entry.models.iter().find(|m| m.id == model_id)
+            && let Some(ctx) = model.context_length
+        {
+            return ctx as usize;
+        }
         let normalized_model_id = model_id.trim().to_ascii_lowercase();
         if let Some(limit) = self.static_context_limits.get(&normalized_model_id) {
             return *limit;
