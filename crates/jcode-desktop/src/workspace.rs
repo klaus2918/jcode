@@ -1552,7 +1552,7 @@ fn fuzzy_slash_completion(needle: &str, completions: &[&'static str]) -> Option<
     matches.sort_by(|a, b| {
         a.0.cmp(&b.0)
             .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.2.cmp(b.2))
     });
     matches.first().map(|(_, _, command)| *command)
 }

@@ -4673,8 +4673,7 @@ fn text_contains_codeish_token(text: &str) -> bool {
             || (token.contains('/') && token.chars().any(|ch| ch.is_ascii_alphabetic()))
             || token
                 .split('_')
-                .skip(1)
-                .next()
+                .nth(1)
                 .is_some_and(|_| token.chars().any(|ch| ch.is_ascii_alphabetic()))
     })
 }

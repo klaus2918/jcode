@@ -1561,7 +1561,7 @@ async fn run() -> Result<()> {
                 }
             }
             Event::UserEvent(DesktopUserEvent::CanvasReady(result)) => {
-                let DesktopCanvasInitResult { canvas, elapsed } = result;
+                let DesktopCanvasInitResult { canvas, elapsed } = *result;
                 match canvas {
                     Ok(mut ready_canvas) => {
                         startup_trace.mark(&format!(
@@ -1569,7 +1569,7 @@ async fn run() -> Result<()> {
                             elapsed.as_millis()
                         ));
                         ready_canvas.resize(window.inner_size());
-                        renderer = DesktopHostRendererState::GpuReady(ready_canvas);
+                        renderer = DesktopHostRendererState::GpuReady(Box::new(ready_canvas));
                         if let Some(handoff) = reload_startup_handoff.as_ref() {
                             handoff.signal_ready_and_wait_for_release();
                             window.set_visible(true);
@@ -2444,7 +2444,7 @@ async fn render_hero_frame_to_image(
 }
 
 enum DesktopUserEvent {
-    CanvasReady(DesktopCanvasInitResult),
+    CanvasReady(Box<DesktopCanvasInitResult>),
     SessionEvents(DesktopSessionEventBatch),
     SessionCardsLoaded {
         purpose: DesktopSessionCardsPurpose,
@@ -2472,7 +2472,7 @@ struct DesktopCanvasInitResult {
 enum DesktopHostRendererState {
     NoGpuBoot,
     GpuInitializing { _started_at: Instant },
-    GpuReady(Canvas),
+    GpuReady(Box<Canvas>),
     GpuFailed { _message: String },
 }
 
@@ -2499,7 +2499,7 @@ impl DesktopHostRendererState {
                     elapsed: started_at.elapsed(),
                 };
                 if event_loop_proxy
-                    .send_event(DesktopUserEvent::CanvasReady(result))
+                    .send_event(DesktopUserEvent::CanvasReady(Box::new(result)))
                     .is_err()
                 {
                     desktop_log::warn(format_args!(
@@ -2520,7 +2520,7 @@ impl DesktopHostRendererState {
 
     fn canvas_mut(&mut self) -> Option<&mut Canvas> {
         match self {
-            Self::GpuReady(canvas) => Some(canvas),
+            Self::GpuReady(canvas) => Some(canvas.as_mut()),
             Self::NoGpuBoot | Self::GpuInitializing { .. } | Self::GpuFailed { .. } => None,
         }
     }
@@ -9485,13 +9485,15 @@ impl Canvas {
                 let status_color = workspace_status_color_for_frame
                     .unwrap_or_else(|| workspace_status_bar_target_color(workspace));
                 build_vertices_into(
-                    workspace,
-                    self.size,
-                    render_layout,
-                    focus_pulse,
-                    workspace_space_hold_progress,
-                    workspace_surface_frames_for_frame.as_ref(),
-                    status_color,
+                    WorkspaceVertexBuildParams {
+                        workspace,
+                        size: self.size,
+                        render_layout,
+                        focus_pulse,
+                        space_hold_progress: workspace_space_hold_progress,
+                        surface_frames: workspace_surface_frames_for_frame.as_ref(),
+                        status_color,
+                    },
                     &mut self.primitive_workspace_vertices,
                 );
                 (
@@ -10514,13 +10516,15 @@ fn build_vertices(
 ) -> Vec<Vertex> {
     let mut vertices = Vec::with_capacity(workspace_vertex_capacity_hint(workspace));
     build_vertices_into(
-        workspace,
-        size,
-        render_layout,
-        focus_pulse,
-        space_hold_progress,
-        None,
-        workspace_status_bar_target_color(workspace),
+        WorkspaceVertexBuildParams {
+            workspace,
+            size,
+            render_layout,
+            focus_pulse,
+            space_hold_progress,
+            surface_frames: None,
+            status_color: workspace_status_bar_target_color(workspace),
+        },
         &mut vertices,
     );
     vertices
@@ -10890,16 +10894,26 @@ fn offset_text_bound(value: i32, offset: f32) -> i32 {
         .clamp(i32::MIN as f32, i32::MAX as f32) as i32
 }
 
-fn build_vertices_into(
-    workspace: &Workspace,
+struct WorkspaceVertexBuildParams<'a> {
+    workspace: &'a Workspace,
     size: PhysicalSize<u32>,
     render_layout: WorkspaceRenderLayout,
     focus_pulse: f32,
     space_hold_progress: Option<f32>,
-    surface_frames: Option<&WorkspaceSurfaceTransitionFrames>,
+    surface_frames: Option<&'a WorkspaceSurfaceTransitionFrames>,
     status_color: [f32; 4],
-    vertices: &mut Vec<Vertex>,
-) {
+}
+
+fn build_vertices_into(params: WorkspaceVertexBuildParams<'_>, vertices: &mut Vec<Vertex>) {
+    let WorkspaceVertexBuildParams {
+        workspace,
+        size,
+        render_layout,
+        focus_pulse,
+        space_hold_progress,
+        surface_frames,
+        status_color,
+    } = params;
     vertices.clear();
     let width = size.width as f32;
     let height = size.height as f32;

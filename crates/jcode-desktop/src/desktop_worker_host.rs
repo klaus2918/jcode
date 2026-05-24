@@ -136,22 +136,23 @@ mod tests {
     #[test]
     fn worker_ipc_writer_assigns_monotonic_sequences() {
         let mut bytes = Vec::new();
-        let mut writer = DesktopWorkerIpcWriter::new(&mut bytes);
+        {
+            let mut writer = DesktopWorkerIpcWriter::new(&mut bytes);
 
-        writer
-            .send(DesktopHostToWorkerMessage::Input(DesktopInputEvent::Key(
-                DesktopKeyEvent {
-                    key: "a".to_string(),
-                    text: Some("a".to_string()),
-                    pressed: true,
-                    modifiers: DesktopKeyModifiers::default(),
-                },
-            )))
-            .expect("first frame");
-        writer
-            .send(DesktopHostToWorkerMessage::SnapshotRequest { request_id: 99 })
-            .expect("second frame");
-        drop(writer);
+            writer
+                .send(DesktopHostToWorkerMessage::Input(DesktopInputEvent::Key(
+                    DesktopKeyEvent {
+                        key: "a".to_string(),
+                        text: Some("a".to_string()),
+                        pressed: true,
+                        modifiers: DesktopKeyModifiers::default(),
+                    },
+                )))
+                .expect("first frame");
+            writer
+                .send(DesktopHostToWorkerMessage::SnapshotRequest { request_id: 99 })
+                .expect("second frame");
+        }
 
         let encoded = String::from_utf8(bytes).expect("utf8 frames");
         let mut lines = encoded.lines();

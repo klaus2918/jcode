@@ -2587,7 +2587,7 @@ impl SingleSessionApp {
         fuzzy_matches.sort_by(|a, b| {
             a.0.cmp(&b.0)
                 .then_with(|| a.1.cmp(&b.1))
-                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.2.cmp(b.2))
         });
 
         prefix_matches
@@ -4981,9 +4981,7 @@ fn session_switcher_styled_lines(
         );
         let style = if list_row.style == SingleSessionLineStyle::OverlaySelection {
             SingleSessionLineStyle::OverlaySelection
-        } else if preview_has_semantic_style {
-            preview_cell.style
-        } else if row >= list_rows.len() {
+        } else if preview_has_semantic_style || row >= list_rows.len() {
             preview_cell.style
         } else {
             list_row.style
@@ -5136,7 +5134,7 @@ fn session_switcher_preview_lines_for_session(
     ];
     if !session.subtitle.is_empty() {
         lines.push(SessionSwitcherRenderedLine::new(
-            format!("{}", session.subtitle),
+            session.subtitle.to_string(),
             SingleSessionLineStyle::Status,
         ));
     }
@@ -7613,7 +7611,7 @@ fn fuzzy_slash_completion(needle: &str, completions: &[&'static str]) -> Option<
     matches.sort_by(|a, b| {
         a.0.cmp(&b.0)
             .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.2.cmp(b.2))
     });
     matches.first().map(|(_, _, command)| *command)
 }

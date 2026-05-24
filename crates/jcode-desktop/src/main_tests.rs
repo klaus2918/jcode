@@ -7822,13 +7822,15 @@ fn workspace_session_panel_composes_single_session_geometry() {
 
     let mut vertices = Vec::new();
     build_vertices_into(
-        &workspace,
-        size,
-        render_layout,
-        0.0,
-        None,
-        None,
-        workspace_status_bar_target_color(&workspace),
+        WorkspaceVertexBuildParams {
+            workspace: &workspace,
+            size,
+            render_layout,
+            focus_pulse: 0.0,
+            space_hold_progress: None,
+            surface_frames: None,
+            status_color: workspace_status_bar_target_color(&workspace),
+        },
         &mut vertices,
     );
 
