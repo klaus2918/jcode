@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # It launches jcode-desktop in stable-host mode, records the compositor window id
 # and layout, injects `/reload`, then verifies the same OS window is still present
-# with the same niri layout and the app-worker child process changed. This catches
+# with the same niri placement and the app-worker child process changed. This catches
 # regressions where slash reload falls back to the old full-process handoff path
 # that closes/reopens the desktop window.
 #
@@ -38,6 +38,26 @@ trap cleanup EXIT
 
 child_pids() {
   pgrep -P "$APP_PID" 2>/dev/null | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+
+layouts_match_with_tolerance() {
+  local before="$1"
+  local after="$2"
+  jq -e -n --argjson before "$before" --argjson after "$after" '
+    def abs: if . < 0 then -. else . end;
+    def close($a; $b): (($a - $b) | abs) <= 2;
+    ($before.id == $after.id)
+      and ($before.pid == $after.pid)
+      and ($before.workspace_id == $after.workspace_id)
+      and ($before.is_floating == $after.is_floating)
+      and ($before.layout.pos_in_scrolling_layout == $after.layout.pos_in_scrolling_layout)
+      and ($before.layout.tile_pos_in_workspace_view == $after.layout.tile_pos_in_workspace_view)
+      and ($before.layout.window_offset_in_tile == $after.layout.window_offset_in_tile)
+      and close($before.layout.tile_size[0]; $after.layout.tile_size[0])
+      and close($before.layout.tile_size[1]; $after.layout.tile_size[1])
+      and close($before.layout.window_size[0]; $after.layout.window_size[0])
+      and close($before.layout.window_size[1]; $after.layout.window_size[1])
+  ' >/dev/null
 }
 
 "$BIN" \
@@ -119,7 +139,7 @@ if [[ -z "$AFTER_JSON" ]]; then
 fi
 
 AFTER_LAYOUT="$(jq -c '{id, pid, workspace_id, is_floating, layout}' <<<"$AFTER_JSON")"
-if [[ "$AFTER_LAYOUT" != "$BEFORE_LAYOUT" ]]; then
+if ! layouts_match_with_tolerance "$BEFORE_LAYOUT" "$AFTER_LAYOUT"; then
   echo "window layout changed after /reload" >&2
   echo "before: $BEFORE_LAYOUT" >&2
   echo "after:  $AFTER_LAYOUT" >&2

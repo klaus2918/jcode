@@ -688,9 +688,14 @@ async fn run() -> Result<()> {
             drop(scene);
             window.request_redraw();
         }
-        if worker_drain.reload_requested && hot_reloader.force_reload(&app, &window) {
-            target.exit();
-            return;
+        if worker_drain.reload_requested {
+            show_desktop_reload_notice(&mut app);
+            window.set_title(&app.status_title());
+            window.request_redraw();
+            if hot_reloader.force_reload(&app, &window) {
+                target.exit();
+                return;
+            }
         }
 
         match event {
@@ -6205,6 +6210,10 @@ impl DesktopApp {
             },
         }
     }
+}
+
+fn show_desktop_reload_notice(app: &mut DesktopApp) {
+    app.set_single_session_status_label("desktop UI reloaded");
 }
 
 fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {

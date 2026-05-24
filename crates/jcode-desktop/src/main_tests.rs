@@ -6312,6 +6312,18 @@ fn desktop_app_drains_session_events_into_visible_debug_snapshot() {
 }
 
 #[test]
+fn desktop_reload_notice_is_visible_without_replacing_window() {
+    let mut app = fresh_single_session_app();
+
+    show_desktop_reload_notice(&mut app);
+
+    let snapshot = app.debug_snapshot();
+    assert_eq!(snapshot.mode, "single_session");
+    assert_eq!(snapshot.status.as_deref(), Some("desktop UI reloaded"));
+    assert!(snapshot.body_text.contains("desktop UI reloaded"));
+}
+
+#[test]
 fn headless_chat_smoke_message_parses_hidden_flag() {
     assert_eq!(
         headless_chat_smoke_message(&[
