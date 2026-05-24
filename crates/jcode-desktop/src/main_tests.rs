@@ -5458,6 +5458,42 @@ fn single_session_hotkey_help_toggles_discoverable_shortcuts() {
 }
 
 #[test]
+fn single_session_inline_widget_close_keeps_render_snapshot_until_exit_finishes() {
+    let mut app = SingleSessionApp::new(None);
+
+    assert_eq!(app.handle_key(KeyInput::HotkeyHelp), KeyOutcome::Redraw);
+    assert_eq!(
+        app.render_inline_widget_kind(),
+        Some(InlineWidgetKind::HotkeyHelp)
+    );
+    assert!(
+        app.render_inline_widget_styled_lines()
+            .iter()
+            .any(|line| line.text == "desktop shortcuts")
+    );
+
+    assert_eq!(app.handle_key(KeyInput::Escape), KeyOutcome::Redraw);
+    assert_eq!(app.active_inline_widget(), None);
+    assert!(app.inline_widget_styled_lines().is_empty());
+    assert_eq!(
+        app.render_inline_widget_kind(),
+        Some(InlineWidgetKind::HotkeyHelp)
+    );
+    assert!(app.render_inline_widget_reveal_progress() > 0.0);
+    assert!(app.has_frame_animation());
+    assert!(
+        app.render_inline_widget_styled_lines()
+            .iter()
+            .any(|line| line.text == "desktop shortcuts")
+    );
+
+    app.finish_inline_widget_exit_animation_for_test();
+    assert_eq!(app.render_inline_widget_kind(), None);
+    assert!(app.render_inline_widget_styled_lines().is_empty());
+    assert!(!app.has_frame_animation());
+}
+
+#[test]
 fn single_session_q_closes_read_only_overlays() {
     let mut app = SingleSessionApp::new(None);
 

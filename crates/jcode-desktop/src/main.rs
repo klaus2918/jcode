@@ -8197,6 +8197,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
         || app.model_picker.loading
         || app.session_switcher.open
         || app.session_switcher.loading
+        || app.render_inline_widget_line_count() > 0
         || app.stdin_response.is_some()
         || app.has_active_selection()
         || app.is_welcome_timeline_visible()

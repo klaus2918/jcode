@@ -850,7 +850,7 @@ fn fresh_welcome_inline_widget_visual_offset(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
 ) -> f32 {
-    if app.inline_widget_line_count() == 0 {
+    if app.render_inline_widget_line_count() == 0 {
         return 0.0;
     }
 
@@ -877,12 +877,12 @@ fn push_single_session_inline_widget_card(
     total_lines: usize,
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
 ) {
-    let line_count = app.inline_widget_visible_line_count();
+    let line_count = app.render_inline_widget_visible_line_count();
     if line_count == 0 {
         return;
     }
 
-    let progress = app.inline_widget_reveal_progress().clamp(0.0, 1.0);
+    let progress = app.render_inline_widget_reveal_progress().clamp(0.0, 1.0);
     if progress <= 0.001 {
         return;
     }
@@ -898,14 +898,14 @@ fn push_single_session_inline_widget_card(
         welcome_chrome_visible,
         welcome_chrome_offset_pixels,
     );
-    let inline_lines = app.inline_widget_styled_lines();
+    let inline_lines = app.render_inline_widget_styled_lines();
     let Some(layout) = inline_widget_card_layout(
         size,
-        app.active_inline_widget(),
+        app.render_inline_widget_kind(),
         &typography,
         line_count,
         inline_widget_text_width_for_lines(
-            app.active_inline_widget(),
+            app.render_inline_widget_kind(),
             &inline_lines,
             size,
             app.text_scale(),
@@ -916,8 +916,8 @@ fn push_single_session_inline_widget_card(
         return;
     };
 
-    if app.active_inline_widget_uses_card_chrome() {
-        let card_style = inline_widget_card_style(app.active_inline_widget());
+    if app.render_inline_widget_kind().is_some() {
+        let card_style = inline_widget_card_style(app.render_inline_widget_kind());
         push_rounded_rect(
             vertices,
             Rect {
@@ -975,7 +975,7 @@ fn push_single_session_inline_widget_card(
 
     push_single_session_inline_widget_selection(
         vertices,
-        app.active_inline_widget(),
+        app.render_inline_widget_kind(),
         &inline_lines,
         line_count,
         &typography,
@@ -1684,8 +1684,8 @@ impl InlineWidgetSelectionMotionRegistry {
         app: &SingleSessionApp,
         now: Instant,
     ) -> InlineWidgetSelectionMotionFrame {
-        let kind = app.active_inline_widget();
-        let lines = app.inline_widget_styled_lines();
+        let kind = app.render_inline_widget_kind();
+        let lines = app.render_inline_widget_styled_lines();
         let visible_line_count = kind
             .map(|kind| lines.len().min(kind.visible_line_limit()))
             .unwrap_or(0);
@@ -4052,7 +4052,7 @@ pub(crate) fn single_session_draft_top_for_app(
     size: PhysicalSize<u32>,
 ) -> f32 {
     if app.is_welcome_timeline_visible() {
-        if app.inline_widget_line_count() > 0 {
+        if app.render_inline_widget_line_count() > 0 {
             return single_session_draft_top(size);
         }
         if app.has_welcome_timeline_transcript() {
@@ -4096,7 +4096,7 @@ fn single_session_draft_top_for_total_lines(
     total_lines: usize,
 ) -> f32 {
     if app.is_welcome_timeline_visible() {
-        if app.inline_widget_line_count() > 0 {
+        if app.render_inline_widget_line_count() > 0 {
             return single_session_draft_top(size);
         }
         if app.has_welcome_timeline_transcript() {
@@ -4312,8 +4312,8 @@ fn single_session_text_key_for_body_lines(
         user_font_family: single_session_user_font_family(),
         assistant_font_family: single_session_assistant_font_family(),
         body,
-        inline_widget_kind: app.active_inline_widget(),
-        inline_widget: app.inline_widget_styled_lines(),
+        inline_widget_kind: app.render_inline_widget_kind(),
+        inline_widget: app.render_inline_widget_styled_lines(),
         draft: if welcome_input_visible {
             visualize_composer_whitespace(&app.composer_text())
         } else {
@@ -5142,21 +5142,21 @@ pub(crate) fn single_session_body_bottom_for_total_lines(
 }
 
 fn inline_widget_visible_text_height(app: &SingleSessionApp) -> f32 {
-    let lines = app.inline_widget_visible_line_count();
+    let lines = app.render_inline_widget_visible_line_count();
     if lines == 0 {
         return 0.0;
     }
     let typography = single_session_typography_for_scale(app.text_scale());
-    lines as f32 * inline_widget_line_height(app.active_inline_widget(), &typography)
+    lines as f32 * inline_widget_line_height(app.render_inline_widget_kind(), &typography)
 }
 
 fn inline_widget_reserved_height(app: &SingleSessionApp) -> f32 {
-    if app.inline_widget_line_count() == 0 {
+    if app.render_inline_widget_line_count() == 0 {
         0.0
     } else {
-        let padding_y = inline_widget_card_padding_y(app.active_inline_widget());
+        let padding_y = inline_widget_card_padding_y(app.render_inline_widget_kind());
         (inline_widget_visible_text_height(app) + padding_y * 2.0 + INLINE_WIDGET_BODY_GAP)
-            * app.inline_widget_reveal_progress().clamp(0.0, 1.0)
+            * app.render_inline_widget_reveal_progress().clamp(0.0, 1.0)
     }
 }
 
@@ -6192,8 +6192,8 @@ pub(crate) fn single_session_text_areas_for_app_with_scroll<'a>(
     tick: u64,
     smooth_scroll_lines: f32,
 ) -> Vec<TextArea<'a>> {
-    let inline_widget_kind = app.active_inline_widget();
-    let inline_widget_lines = app.inline_widget_styled_lines();
+    let inline_widget_kind = app.render_inline_widget_kind();
+    let inline_widget_lines = app.render_inline_widget_styled_lines();
     let inline_widget_text_width = inline_widget_text_width_for_lines(
         inline_widget_kind,
         &inline_widget_lines,
@@ -6215,7 +6215,7 @@ pub(crate) fn single_session_text_areas_for_app_with_scroll<'a>(
         body_top_offset_pixels,
         single_session_body_top_for_app(app, size),
         text_bounds_bottom(single_session_body_bottom_for_app(app, size)),
-        app.inline_widget_visible_line_count(),
+        app.render_inline_widget_visible_line_count(),
         inline_widget_kind,
         inline_widget_text_width,
         single_session_draft_top_for_app(app, size),
@@ -6225,7 +6225,7 @@ pub(crate) fn single_session_text_areas_for_app_with_scroll<'a>(
         app.text_scale(),
         welcome_hero_runtime_mask_supported(&app.welcome_hero_text()),
         1.0,
-        app.inline_widget_reveal_progress(),
+        app.render_inline_widget_reveal_progress(),
     )
 }
 
@@ -6276,8 +6276,8 @@ pub(crate) fn single_session_text_areas_for_app_with_cached_body_viewport_and_re
     viewport: SingleSessionBodyViewport,
     welcome_hero_reveal_progress: f32,
 ) -> Vec<TextArea<'a>> {
-    let inline_widget_kind = app.active_inline_widget();
-    let inline_widget_lines = app.inline_widget_styled_lines();
+    let inline_widget_kind = app.render_inline_widget_kind();
+    let inline_widget_lines = app.render_inline_widget_styled_lines();
     let inline_widget_text_width = inline_widget_text_width_for_lines(
         inline_widget_kind,
         &inline_widget_lines,
@@ -6304,7 +6304,7 @@ pub(crate) fn single_session_text_areas_for_app_with_cached_body_viewport_and_re
             size,
             viewport.total_lines,
         )),
-        app.inline_widget_visible_line_count(),
+        app.render_inline_widget_visible_line_count(),
         inline_widget_kind,
         inline_widget_text_width,
         single_session_draft_top_for_total_lines(app, size, viewport.total_lines),
@@ -6314,7 +6314,7 @@ pub(crate) fn single_session_text_areas_for_app_with_cached_body_viewport_and_re
         app.text_scale(),
         welcome_hero_runtime_mask_supported(&app.welcome_hero_text()),
         welcome_hero_reveal_progress,
-        app.inline_widget_reveal_progress(),
+        app.render_inline_widget_reveal_progress(),
     )
 }
 
