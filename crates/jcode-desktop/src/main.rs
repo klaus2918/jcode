@@ -4667,32 +4667,64 @@ fn run_desktop_app_worker_process(desktop_mode: DesktopMode) -> Result<()> {
                     | DesktopWorkerShutdownReason::ProtocolMismatch,
             } => break,
             DesktopHostToWorkerMessage::Input(input) => {
-                if let DesktopInputEvent::Window(DesktopWindowEvent::Resized {
-                    width,
-                    height,
-                    scale_factor,
-                }) = input
-                {
-                    latest_window.width = width;
-                    latest_window.height = height;
-                    latest_window.scale_factor = scale_factor;
-                    if let Some(runtime) = runtime.as_ref() {
-                        let scene = desktop_scene_for_worker_runtime(runtime, &latest_window);
-                        let scene_update = DesktopProtocolEnvelope::new(
-                            next_worker_sequence,
-                            DesktopWorkerToHostMessage::Scene(DesktopSceneUpdate {
-                                animation_active: scene.metadata.animation_active,
-                                scene,
-                            }),
-                        );
-                        next_worker_sequence += 1;
-                        write_desktop_ipc_frame(&mut stdout, &scene_update)
-                            .context("failed to write worker resize scene")?;
+                let mut changed = false;
+                match input {
+                    DesktopInputEvent::Key(key) => {
+                        if key.pressed
+                            && let Some(runtime) = runtime.as_mut()
+                        {
+                            runtime.handle_key_input(desktop_key_event_to_key_input(&key));
+                            changed = true;
+                        }
                     }
+                    DesktopInputEvent::Window(DesktopWindowEvent::Resized {
+                        width,
+                        height,
+                        scale_factor,
+                    }) => {
+                        latest_window.width = width;
+                        latest_window.height = height;
+                        latest_window.scale_factor = scale_factor;
+                        changed = true;
+                    }
+                    DesktopInputEvent::Window(DesktopWindowEvent::Focused(focused)) => {
+                        latest_window.focused = focused;
+                    }
+                    DesktopInputEvent::Mouse(_) => {}
+                }
+                if changed && let Some(runtime) = runtime.as_ref() {
+                    write_worker_scene_update(
+                        &mut stdout,
+                        &mut next_worker_sequence,
+                        runtime,
+                        &latest_window,
+                    )
+                    .context("failed to write worker input scene")?;
                 }
             }
-            DesktopHostToWorkerMessage::SessionEvents(_)
-            | DesktopHostToWorkerMessage::MetricsAck { .. } => {}
+            DesktopHostToWorkerMessage::SessionEvents(batch) => {
+                let mut changed = false;
+                if let Some(runtime) = runtime.as_mut() {
+                    for event in batch.events {
+                        if let Some(session_event) =
+                            desktop_wire_session_event_to_runtime_event(event)
+                        {
+                            runtime.apply_session_event(session_event);
+                            changed = true;
+                        }
+                    }
+                }
+                if changed && let Some(runtime) = runtime.as_ref() {
+                    write_worker_scene_update(
+                        &mut stdout,
+                        &mut next_worker_sequence,
+                        runtime,
+                        &latest_window,
+                    )
+                    .context("failed to write worker session event scene")?;
+                }
+            }
+            DesktopHostToWorkerMessage::MetricsAck { .. } => {}
         }
     }
 
@@ -4730,6 +4762,99 @@ fn desktop_scene_for_worker_runtime(
         0.02, 0.024, 0.03, 1.0,
     )));
     runtime.build_scene(scene)
+}
+
+fn write_worker_scene_update(
+    stdout: &mut impl Write,
+    next_worker_sequence: &mut u64,
+    runtime: &DesktopAppRuntime<DesktopApp>,
+    window: &DesktopWindowState,
+) -> Result<()> {
+    let scene = desktop_scene_for_worker_runtime(runtime, window);
+    let scene_update = DesktopProtocolEnvelope::new(
+        *next_worker_sequence,
+        DesktopWorkerToHostMessage::Scene(DesktopSceneUpdate {
+            animation_active: scene.metadata.animation_active,
+            scene,
+        }),
+    );
+    *next_worker_sequence += 1;
+    write_desktop_ipc_frame(stdout, &scene_update)?;
+    Ok(())
+}
+
+fn desktop_key_event_to_key_input(event: &DesktopKeyEvent) -> KeyInput {
+    let modifiers = desktop_key_modifiers_to_winit(event.modifiers);
+    let key = desktop_key_string_to_winit_key(&event.key, event.text.as_deref());
+    to_key_input(&key, modifiers)
+}
+
+fn desktop_key_modifiers_to_winit(modifiers: DesktopKeyModifiers) -> ModifiersState {
+    let mut state = ModifiersState::empty();
+    if modifiers.shift {
+        state |= ModifiersState::SHIFT;
+    }
+    if modifiers.ctrl {
+        state |= ModifiersState::CONTROL;
+    }
+    if modifiers.alt {
+        state |= ModifiersState::ALT;
+    }
+    if modifiers.super_key {
+        state |= ModifiersState::SUPER;
+    }
+    state
+}
+
+fn desktop_key_string_to_winit_key(key: &str, text: Option<&str>) -> Key {
+    match key {
+        "Escape" => Key::Named(NamedKey::Escape),
+        "Enter" => Key::Named(NamedKey::Enter),
+        "Tab" => Key::Named(NamedKey::Tab),
+        "Backspace" => Key::Named(NamedKey::Backspace),
+        "Delete" => Key::Named(NamedKey::Delete),
+        "PageUp" => Key::Named(NamedKey::PageUp),
+        "PageDown" => Key::Named(NamedKey::PageDown),
+        "ArrowUp" => Key::Named(NamedKey::ArrowUp),
+        "ArrowDown" => Key::Named(NamedKey::ArrowDown),
+        "ArrowLeft" => Key::Named(NamedKey::ArrowLeft),
+        "ArrowRight" => Key::Named(NamedKey::ArrowRight),
+        "Home" => Key::Named(NamedKey::Home),
+        "End" => Key::Named(NamedKey::End),
+        "Space" => Key::Named(NamedKey::Space),
+        _ => Key::Character(text.unwrap_or(key).to_string().into()),
+    }
+}
+
+fn desktop_wire_session_event_to_runtime_event(
+    event: DesktopSessionEventWire,
+) -> Option<session_launch::DesktopSessionEvent> {
+    match event {
+        DesktopSessionEventWire::Status { message } => Some(
+            session_launch::DesktopSessionEvent::Status(DesktopSessionStatus::external(message)),
+        ),
+        DesktopSessionEventWire::AssistantTextDelta { text } => {
+            Some(session_launch::DesktopSessionEvent::TextDelta(text))
+        }
+        DesktopSessionEventWire::ToolStarted { id, title } => {
+            Some(session_launch::DesktopSessionEvent::ToolStarted {
+                id: (!id.is_empty()).then_some(id),
+                name: title,
+            })
+        }
+        DesktopSessionEventWire::ToolFinished { id, title, success } => {
+            Some(session_launch::DesktopSessionEvent::ToolFinished {
+                id: (!id.is_empty()).then_some(id),
+                name: title,
+                summary: String::new(),
+                is_error: !success,
+            })
+        }
+        DesktopSessionEventWire::Error { message } => {
+            Some(session_launch::DesktopSessionEvent::Error(message))
+        }
+        DesktopSessionEventWire::RawJson { .. } => None,
+    }
 }
 
 fn desktop_mode_from_args<'a>(args: impl IntoIterator<Item = &'a str>) -> DesktopMode {
