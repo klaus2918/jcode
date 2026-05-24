@@ -1930,23 +1930,12 @@ fn push_single_session_inline_code_cards_from_viewport(
                     .filter(|span| span.kind == SingleSessionInlineSpanKind::Code)
                     .nth(run_index)
                     .and_then(|span| {
-                        let mut left: Option<f32> = None;
-                        let mut right: Option<f32> = None;
-                        for glyph in layout_run
-                            .glyphs
-                            .iter()
-                            .enumerate()
-                            .filter(|(glyph_index, _)| {
-                                span.start <= *glyph_index && *glyph_index < span.end
-                            })
-                            .map(|(_, glyph)| glyph)
-                        {
-                            left = Some(left.map_or(glyph.x, |current| current.min(glyph.x)));
-                            right = Some(right.map_or(glyph.x + glyph.w, |current| {
-                                current.max(glyph.x + glyph.w)
-                            }));
-                        }
-                        left.zip(right)
+                        layout_run
+                            .highlight(
+                                glyphon::Cursor::new(layout_run.line_i, span.start),
+                                glyphon::Cursor::new(layout_run.line_i, span.end),
+                            )
+                            .and_then(|(left, width)| (width > 0.0).then_some((left, left + width)))
                     })
             });
             let (x, width) = if let Some((glyph_left, glyph_right)) = glyph_bounds {
@@ -3866,9 +3855,13 @@ fn single_session_styled_text_buffer_with_opacity(
     buffer.set_size(font_system, width, height);
     buffer.set_wrap(font_system, wrap);
     let segments = single_session_styled_text_segments_with_opacity(lines, opacity);
-    let shaping = if segments
-        .iter()
-        .any(|(text, _)| text_needs_advanced_shaping(text))
+    // Inline span geometry uses glyphon cursors with byte offsets. Basic shaping
+    // reports glyph clusters relative to each styled run, so spans after a
+    // multi-byte marker or a style boundary can shift their pills into prose.
+    let shaping = if lines.iter().any(|line| !line.inline_spans.is_empty())
+        || segments
+            .iter()
+            .any(|(text, _)| text_needs_advanced_shaping(text))
     {
         Shaping::Advanced
     } else {

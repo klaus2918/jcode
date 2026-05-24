@@ -3890,33 +3890,22 @@ fn assistant_inline_code_pills_enclose_glyphon_highlights_across_resizes() {
                 });
                 let line_y =
                     PANEL_BODY_TOP_PADDING + viewport.top_offset_pixels + layout_run.line_top;
-                let mut glyph_left: Option<f32> = None;
-                let mut glyph_right: Option<f32> = None;
-                for glyph in layout_run
-                    .glyphs
-                    .iter()
-                    .enumerate()
-                    .filter(|(glyph_index, _)| {
-                        span.start <= *glyph_index && *glyph_index < span.end
-                    })
-                    .map(|(_, glyph)| glyph)
-                {
-                    let left = PANEL_TITLE_LEFT_PADDING + glyph.x;
-                    let right = left + glyph.w;
-                    glyph_left = Some(glyph_left.map_or(left, |current| current.min(left)));
-                    glyph_right = Some(glyph_right.map_or(right, |current| current.max(right)));
-                }
-                let glyph_left = glyph_left.unwrap_or_else(|| {
-                    panic!(
-                        "glyphon glyph bounds missing for inline code span {span:?} in line {:?} at size {:?}; layout_run text={:?}, glyph_count={}",
-                        line.text,
-                        size,
-                        layout_run.text,
-                        layout_run.glyphs.len()
+                let (glyph_x, glyph_width) = layout_run
+                    .highlight(
+                        glyphon::Cursor::new(layout_run.line_i, span.start),
+                        glyphon::Cursor::new(layout_run.line_i, span.end),
                     )
-                });
-                let glyph_right =
-                    glyph_right.expect("glyph right bound should accompany left bound");
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "glyphon highlight missing for inline code span {span:?} in line {:?} at size {:?}; layout_run text={:?}, glyph_count={}",
+                            line.text,
+                            size,
+                            layout_run.text,
+                            layout_run.glyphs.len()
+                        )
+                    });
+                let glyph_left = PANEL_TITLE_LEFT_PADDING + glyph_x;
+                let glyph_right = glyph_left + glyph_width;
                 let glyph_width = (glyph_right - glyph_left).min(size.width as f32 - pill.min_x);
                 assert!(
                     pill.min_x <= glyph_left - horizontal_pad + 0.75,
@@ -3948,6 +3937,87 @@ fn assistant_inline_code_pills_enclose_glyphon_highlights_across_resizes() {
             "inline-code pill count must match glyphon-visible code spans at size {size:?}"
         );
     }
+}
+
+#[test]
+fn assistant_inline_code_pills_align_after_unicode_list_markers() {
+    let size = PhysicalSize::new(1000, 720);
+    let mut app = SingleSessionApp::new(None);
+    app.messages.push(SingleSessionMessage::assistant(
+        "- `crates/`: shared modules\n- `jcode-provider-*`: model/provider integrations.",
+    ));
+
+    let body_lines = single_session_rendered_body_lines_for_tick(&app, size, 0);
+    let viewport = single_session_body_viewport_from_lines(&app, size, 0.0, &body_lines);
+    let mut font_system = FontSystem::new();
+    let body_buffer = single_session_body_text_buffer_from_lines(
+        &mut font_system,
+        &viewport.lines,
+        size,
+        app.text_scale(),
+    );
+    let layout_runs = body_buffer.layout_runs().collect::<Vec<_>>();
+    let vertices = build_single_session_vertices(&app, size, 0.0, 0);
+    let pill_bounds = pixel_bounds_list_for_color(&vertices, INLINE_CODE_BACKGROUND_COLOR, size);
+
+    let horizontal_pad = (3.5 * app.text_scale()).clamp(3.0, 6.0);
+    let mut expected_index = 0;
+    let mut unicode_prefixed_spans = 0;
+
+    for (line_index, line) in viewport.lines.iter().enumerate() {
+        let Some(layout_run) = layout_runs.get(line_index) else {
+            continue;
+        };
+        for span in line
+            .inline_spans
+            .iter()
+            .filter(|span| span.kind == SingleSessionInlineSpanKind::Code)
+        {
+            let pill = pill_bounds.get(expected_index).unwrap_or_else(|| {
+                panic!(
+                    "missing inline-code pill {expected_index} for line {:?}; found {} pills",
+                    line.text,
+                    pill_bounds.len()
+                )
+            });
+            let prefix = &line.text[..span.start];
+            assert!(
+                prefix.chars().any(|ch| ch.len_utf8() > 1),
+                "regression fixture should place the code span after a multi-byte list marker: line={:?}, span={span:?}",
+                line.text
+            );
+            let (glyph_x, glyph_width) = layout_run
+                .highlight(
+                    glyphon::Cursor::new(layout_run.line_i, span.start),
+                    glyphon::Cursor::new(layout_run.line_i, span.end),
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "glyphon highlight missing for unicode-prefixed inline code span {span:?} in line {:?}",
+                        line.text
+                    )
+                });
+            let expected_left = PANEL_TITLE_LEFT_PADDING + glyph_x - horizontal_pad;
+            let expected_right =
+                (PANEL_TITLE_LEFT_PADDING + glyph_x + glyph_width + horizontal_pad)
+                    .min(size.width as f32);
+            assert!(
+                (pill.min_x - expected_left).abs() <= 1.25,
+                "inline-code pill should start at the highlighted code run, not shifted by UTF-8 bytes: line={:?}, pill={pill:?}, expected_left={expected_left:.2}",
+                line.text
+            );
+            assert!(
+                (pill.max_x - expected_right).abs() <= 1.25,
+                "inline-code pill should end at the highlighted code run, not bleed into following text: line={:?}, pill={pill:?}, expected_right={expected_right:.2}",
+                line.text
+            );
+            expected_index += 1;
+            unicode_prefixed_spans += 1;
+        }
+    }
+
+    assert_eq!(pill_bounds.len(), expected_index);
+    assert_eq!(unicode_prefixed_spans, 2);
 }
 
 #[test]
