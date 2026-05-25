@@ -1489,6 +1489,34 @@ fn single_session_vertices_draw_composer_chrome_and_submit_affordance() {
     ));
 }
 
+#[test]
+fn single_session_vertices_draw_attachment_chips_near_composer() {
+    let size = PhysicalSize::new(900, 700);
+    let empty_app = SingleSessionApp::new(None);
+    let empty_vertices = build_single_session_vertices(&empty_app, size, 0.0, 0);
+    assert!(!vertices_have_color(
+        &empty_vertices,
+        ATTACHMENT_CHIP_BACKGROUND_COLOR
+    ));
+
+    let mut app = SingleSessionApp::new(None);
+    app.attach_image("image/png".to_string(), "abc123".to_string());
+    let vertices = build_single_session_vertices(&app, size, 0.0, 0);
+
+    assert!(vertices_have_color(
+        &vertices,
+        ATTACHMENT_CHIP_BACKGROUND_COLOR
+    ));
+    assert!(vertices_have_color(&vertices, ATTACHMENT_CHIP_ACCENT_COLOR));
+
+    app.clear_attached_images();
+    let cleared_vertices = build_single_session_vertices(&app, size, 0.0, 0);
+    assert!(!vertices_have_color(
+        &cleared_vertices,
+        ATTACHMENT_CHIP_BACKGROUND_COLOR
+    ));
+}
+
 fn vertices_have_bottom_center_rule(vertices: &[Vertex], color: [f32; 4]) -> bool {
     vertices.iter().any(|vertex| {
         vertex.color == color && vertex.position[1] <= -0.99 && vertex.position[0].abs() < 0.85

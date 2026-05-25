@@ -66,6 +66,16 @@ pub(crate) const COMPOSER_FOCUS_RING_COLOR: [f32; 4] = [0.090, 0.250, 0.680, 0.1
 pub(crate) const COMPOSER_PLACEHOLDER_RAIL_COLOR: [f32; 4] = [0.105, 0.185, 0.360, 0.185];
 pub(crate) const COMPOSER_SUBMIT_READY_COLOR: [f32; 4] = [0.105, 0.355, 0.950, 0.700];
 pub(crate) const COMPOSER_SUBMIT_BUSY_COLOR: [f32; 4] = [0.055, 0.540, 0.360, 0.700];
+const ATTACHMENT_CHIP_ENTRY_DURATION: Duration = Duration::from_millis(150);
+const ATTACHMENT_CHIP_SHIFT_DURATION: Duration = Duration::from_millis(140);
+const ATTACHMENT_CHIP_EXIT_DURATION: Duration = Duration::from_millis(130);
+const ATTACHMENT_CHIP_WIDTH: f32 = 42.0;
+const ATTACHMENT_CHIP_HEIGHT: f32 = 20.0;
+const ATTACHMENT_CHIP_GAP: f32 = 6.0;
+const ATTACHMENT_CHIP_VISIBLE_LIMIT: usize = 4;
+pub(crate) const ATTACHMENT_CHIP_BACKGROUND_COLOR: [f32; 4] = [0.940, 0.972, 1.000, 0.720];
+pub(crate) const ATTACHMENT_CHIP_ACCENT_COLOR: [f32; 4] = [0.090, 0.355, 0.900, 0.620];
+pub(crate) const ATTACHMENT_CHIP_EXIT_COLOR: [f32; 4] = [0.530, 0.590, 0.690, 0.430];
 const TOOL_CARD_ENTRY_DURATION: Duration = Duration::from_millis(180);
 const TOOL_CARD_EXIT_DURATION: Duration = Duration::from_millis(160);
 const TOOL_CARD_STATE_TRANSITION_DURATION: Duration = Duration::from_millis(160);
@@ -180,7 +190,7 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         size,
     );
 
-    push_single_session_composer_chrome(&mut vertices, app, size, None);
+    push_single_session_composer_chrome(&mut vertices, app, size, None, None);
 
     let welcome_chrome_offset = if app.is_welcome_timeline_visible() {
         welcome_timeline_visual_offset_pixels(app, size, smooth_scroll_lines)
@@ -277,6 +287,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -292,6 +303,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
     inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
     composer_motion: Option<&ComposerMotionFrame>,
+    attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     inline_markdown_motion: Option<&InlineMarkdownPillMotionFrame>,
     tool_motion: &ToolCardMotionFrame,
@@ -308,6 +320,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
         inline_selection_motion,
         inline_list_reflow_motion,
         composer_motion,
+        attachment_chip_motion,
         transcript_motion,
         inline_markdown_motion,
         Some(tool_motion),
@@ -327,6 +340,7 @@ fn build_single_session_vertices_with_cached_body_internal(
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
     inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
     composer_motion: Option<&ComposerMotionFrame>,
+    attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     inline_markdown_motion: Option<&InlineMarkdownPillMotionFrame>,
     tool_motion: Option<&ToolCardMotionFrame>,
@@ -366,7 +380,13 @@ fn build_single_session_vertices_with_cached_body_internal(
         size,
     );
 
-    push_single_session_composer_chrome(&mut vertices, app, size, composer_motion);
+    push_single_session_composer_chrome(
+        &mut vertices,
+        app,
+        size,
+        composer_motion,
+        attachment_chip_motion,
+    );
 
     let welcome_chrome_offset = if app.is_welcome_timeline_visible() {
         welcome_timeline_visual_offset_pixels_for_total_lines(
@@ -704,6 +724,7 @@ fn push_single_session_composer_chrome(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
     composer_motion: Option<&ComposerMotionFrame>,
+    attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
 ) {
     if welcome_status_lane_visible(app) {
         return;
@@ -748,6 +769,8 @@ fn push_single_session_composer_chrome(
         visual.blocked_progress * 0.35,
     );
     push_rounded_rect(vertices, rect, radius, card_color, size);
+
+    push_single_session_attachment_chips(vertices, app, size, rect, attachment_chip_motion);
 
     let accent_alpha =
         (0.18 + 0.22 * visual.focus_opacity) * (1.0 - visual.blocked_progress * 0.55);
@@ -832,6 +855,108 @@ fn push_single_session_composer_chrome(
             size,
         );
     }
+}
+
+fn push_single_session_attachment_chips(
+    vertices: &mut Vec<Vertex>,
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    composer_rect: Rect,
+    attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
+) {
+    let runs = attachment_chip_runs(&app.pending_images);
+    if runs.is_empty() && attachment_chip_motion.is_none_or(|motion| motion.exiting().is_empty()) {
+        return;
+    }
+
+    for run in runs {
+        let visual = attachment_chip_motion
+            .and_then(|motion| motion.visual_for_key(run.key))
+            .unwrap_or_else(AttachmentChipVisual::settled);
+        push_single_session_attachment_chip(vertices, composer_rect, run, visual, false, size);
+    }
+
+    if let Some(motion) = attachment_chip_motion {
+        for (run, visual) in motion.exiting() {
+            push_single_session_attachment_chip(vertices, composer_rect, *run, *visual, true, size);
+        }
+    }
+}
+
+fn push_single_session_attachment_chip(
+    vertices: &mut Vec<Vertex>,
+    composer_rect: Rect,
+    run: AttachmentChipRun,
+    visual: AttachmentChipVisual,
+    exiting: bool,
+    size: PhysicalSize<u32>,
+) {
+    if visual.opacity <= 0.001 || visual.scale <= 0.05 {
+        return;
+    }
+    let scaled_width = ATTACHMENT_CHIP_WIDTH * visual.scale;
+    let scaled_height = ATTACHMENT_CHIP_HEIGHT * visual.scale;
+    let step = ATTACHMENT_CHIP_WIDTH + ATTACHMENT_CHIP_GAP;
+    let x = composer_rect.x
+        + 18.0
+        + run.index as f32 * step
+        + visual.x_offset_pixels
+        + (ATTACHMENT_CHIP_WIDTH - scaled_width) * 0.5;
+    let y = (composer_rect.y - ATTACHMENT_CHIP_HEIGHT - 8.0).max(PANEL_BODY_TOP_PADDING + 8.0)
+        + visual.y_offset_pixels
+        + (ATTACHMENT_CHIP_HEIGHT - scaled_height) * 0.5;
+    let max_right = composer_rect.x + composer_rect.width - 16.0;
+    if x >= max_right || y >= composer_rect.y + composer_rect.height {
+        return;
+    }
+    let chip_rect = Rect {
+        x,
+        y,
+        width: scaled_width.min((max_right - x).max(0.0)),
+        height: scaled_height,
+    };
+    if chip_rect.width <= 5.0 || chip_rect.height <= 5.0 {
+        return;
+    }
+    let fill = if exiting {
+        ATTACHMENT_CHIP_EXIT_COLOR
+    } else {
+        ATTACHMENT_CHIP_BACKGROUND_COLOR
+    };
+    push_rounded_rect(
+        vertices,
+        chip_rect,
+        chip_rect.height * 0.5,
+        with_alpha(fill, fill[3] * visual.opacity),
+        size,
+    );
+    let accent_width = (chip_rect.height * 0.34).clamp(5.0, 8.0);
+    push_rounded_rect(
+        vertices,
+        Rect {
+            x: chip_rect.x + 5.0 * visual.scale,
+            y: chip_rect.y + (chip_rect.height - accent_width) * 0.5,
+            width: accent_width,
+            height: accent_width,
+        },
+        2.5 * visual.scale,
+        with_alpha(
+            ATTACHMENT_CHIP_ACCENT_COLOR,
+            ATTACHMENT_CHIP_ACCENT_COLOR[3] * visual.opacity,
+        ),
+        size,
+    );
+    push_rect(
+        vertices,
+        Rect {
+            x: chip_rect.x + chip_rect.width * 0.45,
+            y: chip_rect.y + chip_rect.height * 0.43,
+            width: chip_rect.width * 0.32,
+            height: 2.0 * visual.scale,
+        },
+        with_alpha(COMPOSER_FOCUS_RING_COLOR, 0.42 * visual.opacity),
+        size,
+    );
 }
 
 fn push_fresh_welcome_ambient(
@@ -2353,6 +2478,170 @@ impl ComposerMotionRegistry {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AttachmentChipRun {
+    key: u64,
+    index: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct AttachmentChipVisual {
+    opacity: f32,
+    x_offset_pixels: f32,
+    y_offset_pixels: f32,
+    scale: f32,
+}
+
+impl AttachmentChipVisual {
+    fn settled() -> Self {
+        Self {
+            opacity: 1.0,
+            x_offset_pixels: 0.0,
+            y_offset_pixels: 0.0,
+            scale: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AttachmentChipShift {
+    from_index: usize,
+    started_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AttachmentChipState {
+    run: AttachmentChipRun,
+    entered_at: Option<Instant>,
+    exiting_at: Option<Instant>,
+    shift: Option<AttachmentChipShift>,
+    last_seen_generation: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AttachmentChipMotionFrame {
+    visuals: HashMap<u64, AttachmentChipVisual>,
+    exiting: Vec<(AttachmentChipRun, AttachmentChipVisual)>,
+    active: bool,
+    cache_key: u64,
+}
+
+impl AttachmentChipMotionFrame {
+    fn visual_for_key(&self, key: u64) -> Option<AttachmentChipVisual> {
+        self.visuals.get(&key).copied()
+    }
+
+    fn exiting(&self) -> &[(AttachmentChipRun, AttachmentChipVisual)] {
+        &self.exiting
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub(crate) fn cache_key(&self) -> u64 {
+        self.cache_key
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct AttachmentChipMotionRegistry {
+    initialized: bool,
+    generation: u64,
+    states: HashMap<u64, AttachmentChipState>,
+}
+
+impl AttachmentChipMotionRegistry {
+    pub(crate) fn frame(
+        &mut self,
+        app: &SingleSessionApp,
+        now: Instant,
+    ) -> AttachmentChipMotionFrame {
+        self.frame_for_images(&app.pending_images, now)
+    }
+
+    fn frame_for_images(
+        &mut self,
+        images: &[(String, String)],
+        now: Instant,
+    ) -> AttachmentChipMotionFrame {
+        self.generation = self.generation.wrapping_add(1).max(1);
+        let generation = self.generation;
+        let reduced_motion = crate::animation::desktop_reduced_motion_enabled();
+        let animate_new_chips = self.initialized && !reduced_motion;
+        self.initialized = true;
+
+        let runs = attachment_chip_runs(images);
+        let mut visuals = HashMap::new();
+        let mut active = false;
+        for run in runs {
+            let state = self
+                .states
+                .entry(run.key)
+                .or_insert_with(|| AttachmentChipState {
+                    run,
+                    entered_at: animate_new_chips.then_some(now),
+                    exiting_at: None,
+                    shift: None,
+                    last_seen_generation: generation,
+                });
+            state.last_seen_generation = generation;
+            state.exiting_at = None;
+
+            if reduced_motion {
+                state.entered_at = None;
+                state.shift = None;
+            } else if state.run.index != run.index {
+                state.shift = Some(AttachmentChipShift {
+                    from_index: state.run.index,
+                    started_at: now,
+                });
+            }
+            state.run = run;
+
+            let (visual, visual_active) = attachment_chip_visual_from_state(state, now);
+            active |= visual_active;
+            if visual.opacity > 0.001 {
+                visuals.insert(run.key, visual);
+            }
+        }
+
+        let mut exiting = Vec::new();
+        if !reduced_motion {
+            for state in self.states.values_mut() {
+                if state.last_seen_generation == generation {
+                    continue;
+                }
+                let exiting_at = *state.exiting_at.get_or_insert(now);
+                let (progress, running) =
+                    timed_animation_progress(exiting_at, now, ATTACHMENT_CHIP_EXIT_DURATION);
+                if !running {
+                    continue;
+                }
+                state.last_seen_generation = generation;
+                active = true;
+                exiting.push((state.run, exiting_attachment_chip_visual(progress)));
+            }
+        }
+
+        self.states
+            .retain(|_, state| state.last_seen_generation == generation);
+
+        AttachmentChipMotionFrame {
+            cache_key: attachment_chip_motion_cache_key(&visuals, &exiting, active),
+            visuals,
+            exiting,
+            active,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.generation = 0;
+        self.states.clear();
+    }
+}
+
 impl Default for ComposerMotionTarget {
     fn default() -> Self {
         Self {
@@ -3611,6 +3900,114 @@ fn composer_motion_cache_key(
     hash_f32(visual.submit_opacity, &mut hasher);
     hash_f32(visual.submit_scale, &mut hasher);
     hash_f32(visual.processing_progress, &mut hasher);
+    hasher.finish()
+}
+
+fn attachment_chip_runs(images: &[(String, String)]) -> Vec<AttachmentChipRun> {
+    let mut runs = Vec::new();
+    let mut occurrences = HashMap::new();
+    for (index, (media_type, base64_data)) in images
+        .iter()
+        .take(ATTACHMENT_CHIP_VISIBLE_LIMIT)
+        .enumerate()
+    {
+        let base_key = attachment_chip_base_key(media_type, base64_data);
+        let occurrence = occurrences.entry(base_key).or_insert(0usize);
+        let mut hasher = DefaultHasher::new();
+        base_key.hash(&mut hasher);
+        occurrence.hash(&mut hasher);
+        runs.push(AttachmentChipRun {
+            key: hasher.finish(),
+            index,
+        });
+        *occurrence += 1;
+    }
+    runs
+}
+
+fn attachment_chip_base_key(media_type: &str, base64_data: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    media_type.hash(&mut hasher);
+    base64_data.len().hash(&mut hasher);
+    let bytes = base64_data.as_bytes();
+    let sample = bytes.len().min(48);
+    bytes[..sample].hash(&mut hasher);
+    if bytes.len() > sample {
+        bytes[bytes.len() - sample..].hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn attachment_chip_visual_from_state(
+    state: &mut AttachmentChipState,
+    now: Instant,
+) -> (AttachmentChipVisual, bool) {
+    let mut visual = AttachmentChipVisual::settled();
+    let mut active = false;
+
+    if let Some(entered_at) = state.entered_at {
+        let (progress, running) =
+            timed_animation_progress(entered_at, now, ATTACHMENT_CHIP_ENTRY_DURATION);
+        let eased = ease_out_cubic_local(progress);
+        visual.opacity = eased;
+        visual.y_offset_pixels += 5.0 * (1.0 - eased);
+        visual.scale *= 0.90 + 0.10 * eased;
+        active |= running;
+        if !running {
+            state.entered_at = None;
+        }
+    }
+
+    if let Some(shift) = state.shift {
+        let (progress, running) =
+            timed_animation_progress(shift.started_at, now, ATTACHMENT_CHIP_SHIFT_DURATION);
+        let eased = ease_out_cubic_local(progress);
+        let index_delta = shift.from_index as f32 - state.run.index as f32;
+        visual.x_offset_pixels +=
+            index_delta * (ATTACHMENT_CHIP_WIDTH + ATTACHMENT_CHIP_GAP) * (1.0 - eased);
+        active |= running;
+        if !running {
+            state.shift = None;
+        }
+    }
+
+    (visual, active)
+}
+
+fn exiting_attachment_chip_visual(progress: f32) -> AttachmentChipVisual {
+    let eased = ease_out_cubic_local(progress);
+    AttachmentChipVisual {
+        opacity: 1.0 - eased,
+        x_offset_pixels: 0.0,
+        y_offset_pixels: -5.0 * eased,
+        scale: 1.0 - 0.08 * eased,
+    }
+}
+
+fn attachment_chip_motion_cache_key(
+    visuals: &HashMap<u64, AttachmentChipVisual>,
+    exiting: &[(AttachmentChipRun, AttachmentChipVisual)],
+    active: bool,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    active.hash(&mut hasher);
+    let mut entries = visuals.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|(key, _)| **key);
+    for (key, visual) in entries {
+        key.hash(&mut hasher);
+        hash_f32(visual.opacity, &mut hasher);
+        hash_f32(visual.x_offset_pixels, &mut hasher);
+        hash_f32(visual.y_offset_pixels, &mut hasher);
+        hash_f32(visual.scale, &mut hasher);
+    }
+    for (run, visual) in exiting {
+        run.key.hash(&mut hasher);
+        run.index.hash(&mut hasher);
+        hash_f32(visual.opacity, &mut hasher);
+        hash_f32(visual.x_offset_pixels, &mut hasher);
+        hash_f32(visual.y_offset_pixels, &mut hasher);
+        hash_f32(visual.scale, &mut hasher);
+    }
     hasher.finish()
 }
 
@@ -8179,6 +8576,20 @@ mod tests {
         panic!("missing inline widget reflow row containing {needle}");
     }
 
+    fn test_attachment_chip_visual_for_index(
+        frame: &AttachmentChipMotionFrame,
+        images: &[(String, String)],
+        index: usize,
+    ) -> AttachmentChipVisual {
+        let run = attachment_chip_runs(images)
+            .into_iter()
+            .find(|run| run.index == index)
+            .expect("attachment chip run");
+        frame
+            .visual_for_key(run.key)
+            .expect("attachment chip visual")
+    }
+
     #[test]
     fn inline_widget_selection_target_detects_widget_row_shapes() {
         let model_lines = vec![
@@ -8421,6 +8832,49 @@ mod tests {
         assert!(blocked_mid.visual().focus_opacity < 1.0);
         assert!(blocked_mid.visual().blocked_progress > 0.0);
         assert!(blocked_mid.visual().processing_progress > 0.0);
+    }
+
+    #[test]
+    fn attachment_chip_motion_animates_entry_shift_and_exit() {
+        let mut registry = AttachmentChipMotionRegistry::default();
+        let now = Instant::now();
+        let empty: Vec<(String, String)> = Vec::new();
+        let first = vec![("image/png".to_string(), "aaa111".to_string())];
+        let second = ("image/jpeg".to_string(), "bbb222".to_string());
+        let two = vec![first[0].clone(), second.clone()];
+        let remaining = vec![second];
+
+        let initial = registry.frame_for_images(&empty, now);
+        assert!(!initial.is_active());
+
+        let entry_start_time = now + Duration::from_millis(5);
+        let entry_start = registry.frame_for_images(&first, entry_start_time);
+        assert!(entry_start.is_active());
+        let entry_mid = registry.frame_for_images(
+            &first,
+            entry_start_time + ATTACHMENT_CHIP_ENTRY_DURATION / 2,
+        );
+        let entry_visual = test_attachment_chip_visual_for_index(&entry_mid, &first, 0);
+        assert!(entry_mid.is_active());
+        assert!(entry_visual.opacity > 0.0 && entry_visual.opacity < 1.0);
+        assert!(entry_visual.y_offset_pixels > 0.0);
+        assert!(entry_visual.scale > 0.90 && entry_visual.scale < 1.0);
+
+        let settled_time = entry_start_time + ATTACHMENT_CHIP_ENTRY_DURATION * 2;
+        let settled = registry.frame_for_images(&two, settled_time);
+        assert!(settled.is_active());
+        let settled =
+            registry.frame_for_images(&two, settled_time + ATTACHMENT_CHIP_ENTRY_DURATION * 2);
+        assert!(!settled.is_active());
+
+        let remove_time =
+            settled_time + ATTACHMENT_CHIP_ENTRY_DURATION * 2 + Duration::from_millis(5);
+        let removal = registry.frame_for_images(&remaining, remove_time);
+        assert!(removal.is_active());
+        assert_eq!(removal.exiting().len(), 1);
+        assert!(removal.exiting()[0].1.opacity > 0.9);
+        let shifted = test_attachment_chip_visual_for_index(&removal, &remaining, 0);
+        assert!(shifted.x_offset_pixels > (ATTACHMENT_CHIP_WIDTH + ATTACHMENT_CHIP_GAP) * 0.9);
     }
 
     #[test]
