@@ -803,10 +803,65 @@ fn cache_ratio_pct(numerator: u64, denominator: u64) -> u8 {
     }
 }
 
-fn opt_u64(value: Option<u64>) -> String {
+fn grouped_u64(value: u64) -> String {
+    let raw = value.to_string();
+    let mut grouped = String::with_capacity(raw.len() + raw.len() / 3);
+    for (index, ch) in raw.chars().enumerate() {
+        if index > 0 && (raw.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    grouped
+}
+
+fn trim_decimal_zeros(mut value: String) -> String {
+    if value.contains('.') {
+        while value.ends_with('0') {
+            value.pop();
+        }
+        if value.ends_with('.') {
+            value.pop();
+        }
+    }
     value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "None".to_string())
+}
+
+fn compact_count(value: u64) -> String {
+    let Some((unit, suffix)) = [(1_000_000_000_u64, "b"), (1_000_000, "m"), (1_000, "k")]
+        .into_iter()
+        .find(|(unit, _)| value >= *unit)
+    else {
+        return value.to_string();
+    };
+
+    let scaled = value as f64 / unit as f64;
+    let decimals = if scaled >= 10.0 { 1 } else { 2 };
+    format!(
+        "{}{}",
+        trim_decimal_zeros(format!("{scaled:.decimals$}")),
+        suffix
+    )
+}
+
+fn human_count(value: u64) -> String {
+    if value < 1_000 {
+        value.to_string()
+    } else {
+        format!("{} ({})", compact_count(value), grouped_u64(value))
+    }
+}
+
+fn bold_count(value: u64) -> String {
+    format!("**{}**", human_count(value))
+}
+
+fn bold_count_usize(value: usize) -> String {
+    bold_count(value as u64)
+}
+
+fn opt_u64(value: Option<u64>) -> String {
+    value.map(human_count).unwrap_or_else(|| "None".to_string())
 }
 
 fn opt_usize(value: Option<usize>) -> String {
@@ -853,16 +908,19 @@ fn push_cache_signature(
             label, signature.tool_count
         ));
         lines.push(format!(
-            "- {}.system_static_chars: **{}**",
-            label, signature.system_static_chars
+            "- {}.system_static_chars: {}",
+            label,
+            bold_count(signature.system_static_chars as u64)
         ));
         lines.push(format!(
-            "- {}.tools_json_chars: **{}**",
-            label, signature.tools_json_chars
+            "- {}.tools_json_chars: {}",
+            label,
+            bold_count(signature.tools_json_chars as u64)
         ));
         lines.push(format!(
-            "- {}.messages_json_chars: **{}**",
-            label, signature.messages_json_chars
+            "- {}.messages_json_chars: {}",
+            label,
+            bold_count(signature.messages_json_chars as u64)
         ));
         lines.push(format!(
             "- {}.ephemeral_hash: {}",
@@ -873,8 +931,9 @@ fn push_cache_signature(
                 .unwrap_or_else(|| "None".to_string())
         ));
         lines.push(format!(
-            "- {}.ephemeral_chars: **{}**",
-            label, signature.ephemeral_chars
+            "- {}.ephemeral_chars: {}",
+            label,
+            bold_count(signature.ephemeral_chars as u64)
         ));
         lines.push(format!(
             "- {}.ephemeral_message_count: **{}**",
@@ -888,8 +947,9 @@ fn push_cache_signature(
 fn push_cache_baseline(lines: &mut Vec<String>, label: &str, baseline: Option<&KvCacheBaseline>) {
     if let Some(baseline) = baseline {
         lines.push(format!(
-            "- {}.input_tokens: **{}**",
-            label, baseline.input_tokens
+            "- {}.input_tokens: {}",
+            label,
+            bold_count(baseline.input_tokens)
         ));
         lines.push(format!(
             "- {}.age_secs: **{}**",
@@ -1114,28 +1174,28 @@ fn format_cache_stats(app: &App) -> String {
     lines.push("**Session token totals**".to_string());
     lines.push(format!("- total_tokens_source: `{}`", totals_source));
     lines.push(format!(
-        "- total_input_tokens: **{}**",
-        history_input_tokens
+        "- total_input_tokens: {}",
+        bold_count(history_input_tokens)
     ));
     lines.push(format!(
-        "- total_output_tokens: **{}**",
-        history_output_tokens
+        "- total_output_tokens: {}",
+        bold_count(history_output_tokens)
     ));
     lines.push(format!(
-        "- total_input_tokens_including_unrecorded_live: **{}**",
-        history_input_tokens.saturating_add(live_unrecorded_input_tokens)
+        "- total_input_tokens_including_unrecorded_live: {}",
+        bold_count(history_input_tokens.saturating_add(live_unrecorded_input_tokens))
     ));
     lines.push(format!(
-        "- total_output_tokens_including_unrecorded_live: **{}**",
-        history_output_tokens.saturating_add(live_unrecorded_output_tokens)
+        "- total_output_tokens_including_unrecorded_live: {}",
+        bold_count(history_output_tokens.saturating_add(live_unrecorded_output_tokens))
     ));
     lines.push(format!(
-        "- client_observed_completed_input_tokens: **{}**",
-        app.total_input_tokens
+        "- client_observed_completed_input_tokens: {}",
+        bold_count(app.total_input_tokens)
     ));
     lines.push(format!(
-        "- client_observed_completed_output_tokens: **{}**",
-        app.total_output_tokens
+        "- client_observed_completed_output_tokens: {}",
+        bold_count(app.total_output_tokens)
     ));
     lines.push(format!("- total_cost_usd: **{:.6}**", app.total_cost));
     lines.push(format!(
@@ -1150,7 +1210,10 @@ fn format_cache_stats(app: &App) -> String {
             .map(|price| format!("{:.6}", price))
             .unwrap_or_else(|| "None".to_string())
     ));
-    lines.push(format!("- context_limit: **{}**", app.context_limit));
+    lines.push(format!(
+        "- context_limit: {}",
+        bold_count(app.context_limit)
+    ));
     lines.push(format!(
         "- last_turn_input_tokens: {}",
         opt_u64(app.last_turn_input_tokens)
@@ -1174,14 +1237,17 @@ fn format_cache_stats(app: &App) -> String {
     lines.push("**Provider cache telemetry totals**".to_string());
     lines.push(format!("- cache_totals_source: `{}`", cache_totals_source));
     lines.push(format!(
-        "- total_cache_reported_input_tokens: **{}**",
-        reported
+        "- total_cache_reported_input_tokens: {}",
+        bold_count(reported)
     ));
-    lines.push(format!("- total_cache_read_tokens: **{}**", read));
-    lines.push(format!("- total_cache_creation_tokens: **{}**", write));
+    lines.push(format!("- total_cache_read_tokens: {}", bold_count(read)));
     lines.push(format!(
-        "- total_cache_optimal_input_tokens: **{}**",
-        optimal
+        "- total_cache_creation_tokens: {}",
+        bold_count(write)
+    ));
+    lines.push(format!(
+        "- total_cache_optimal_input_tokens: {}",
+        bold_count(optimal)
     ));
     lines.push(format!(
         "- cache_read_pct_of_reported_input: **{}%**",
@@ -1192,16 +1258,16 @@ fn format_cache_stats(app: &App) -> String {
         write_pct
     ));
     lines.push(format!(
-        "- total_cache_reported_input_tokens_including_unrecorded_live: **{}**",
-        reported_including_live
+        "- total_cache_reported_input_tokens_including_unrecorded_live: {}",
+        bold_count(reported_including_live)
     ));
     lines.push(format!(
-        "- total_cache_read_tokens_including_unrecorded_live: **{}**",
-        read_including_live
+        "- total_cache_read_tokens_including_unrecorded_live: {}",
+        bold_count(read_including_live)
     ));
     lines.push(format!(
-        "- total_cache_creation_tokens_including_unrecorded_live: **{}**",
-        write_including_live
+        "- total_cache_creation_tokens_including_unrecorded_live: {}",
+        bold_count(write_including_live)
     ));
     lines.push(format!(
         "- cache_read_pct_of_reported_input_including_unrecorded_live: **{}%**",
@@ -1237,16 +1303,16 @@ fn format_cache_stats(app: &App) -> String {
 
     lines.push("**Current / live stream counters**".to_string());
     lines.push(format!(
-        "- streaming_input_tokens: **{}**",
-        app.streaming_input_tokens
+        "- streaming_input_tokens: {}",
+        bold_count(app.streaming_input_tokens)
     ));
     lines.push(format!(
-        "- streaming_output_tokens: **{}**",
-        app.streaming_output_tokens
+        "- streaming_output_tokens: {}",
+        bold_count(app.streaming_output_tokens)
     ));
     lines.push(format!(
-        "- streaming_total_output_tokens: **{}**",
-        app.streaming_total_output_tokens
+        "- streaming_total_output_tokens: {}",
+        bold_count(app.streaming_total_output_tokens)
     ));
     lines.push(format!(
         "- streaming_cache_read_tokens: {}",
@@ -1342,13 +1408,13 @@ fn format_cache_stats(app: &App) -> String {
         persisted_source
     ));
     lines.push(format!(
-        "- local_client_session.messages_len: **{}**",
-        app.session.messages.len()
+        "- local_client_session.messages_len: {}",
+        bold_count_usize(app.session.messages.len())
     ));
     lines.push(format!(
         "- persisted_messages_len: {}",
         persisted_messages_len
-            .map(|value| format!("**{}**", value))
+            .map(bold_count_usize)
             .unwrap_or_else(|| "None".to_string())
     ));
     lines.push(format!(
@@ -1356,24 +1422,24 @@ fn format_cache_stats(app: &App) -> String {
         persisted_messages_with_usage
     ));
     lines.push(format!(
-        "- persisted_input_tokens: **{}**",
-        persisted_input_tokens
+        "- persisted_input_tokens: {}",
+        bold_count(persisted_input_tokens)
     ));
     lines.push(format!(
-        "- persisted_output_tokens: **{}**",
-        persisted_output_tokens
+        "- persisted_output_tokens: {}",
+        bold_count(persisted_output_tokens)
     ));
     lines.push(format!(
-        "- persisted_cache_reported_input_tokens: **{}**",
-        persisted_cache_reported_input_tokens
+        "- persisted_cache_reported_input_tokens: {}",
+        bold_count(persisted_cache_reported_input_tokens)
     ));
     lines.push(format!(
-        "- persisted_cache_read_input_tokens: **{}**",
-        persisted_cache_read_input_tokens
+        "- persisted_cache_read_input_tokens: {}",
+        bold_count(persisted_cache_read_input_tokens)
     ));
     lines.push(format!(
-        "- persisted_cache_creation_input_tokens: **{}**",
-        persisted_cache_creation_input_tokens
+        "- persisted_cache_creation_input_tokens: {}",
+        bold_count(persisted_cache_creation_input_tokens)
     ));
     lines.push(String::new());
 
@@ -1386,7 +1452,7 @@ fn format_cache_stats(app: &App) -> String {
                 "- turn={} call={} missed_tokens={} reason=`{}`",
                 sample.turn_number,
                 sample.call_index,
-                sample.missed_tokens,
+                human_count(sample.missed_tokens),
                 sample.reason.label()
             ));
         }

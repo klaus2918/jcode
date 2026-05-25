@@ -163,7 +163,11 @@ fn remote_token_usage_records_cache_stats_before_done_and_dedupes_snapshots() {
     ));
     let stats = app.display_messages().last().unwrap().content.clone();
     assert!(
-        stats.contains("- total_cache_reported_input_tokens: **63762**"),
+        stats.contains("- total_cache_reported_input_tokens: **63.8k (63,762)**"),
+        "{stats}"
+    );
+    assert!(
+        stats.contains("- baseline.signature.messages_json_chars: **198.6k (198,612)**"),
         "{stats}"
     );
     assert!(
@@ -176,14 +180,14 @@ fn remote_token_usage_records_cache_stats_before_done_and_dedupes_snapshots() {
 fn cache_stats_uses_remote_history_token_usage_totals() {
     let mut app = create_test_app();
     app.is_remote = true;
-    app.remote_total_tokens = Some((1_000, 200));
+    app.remote_total_tokens = Some((1_250_000, 200_000));
     app.remote_token_usage_totals = Some(crate::protocol::TokenUsageTotals {
         messages_with_token_usage: 3,
-        input_tokens: 1_000,
-        output_tokens: 200,
-        cache_reported_input_tokens: 900,
-        cache_read_input_tokens: 600,
-        cache_creation_input_tokens: 50,
+        input_tokens: 1_250_000,
+        output_tokens: 200_000,
+        cache_reported_input_tokens: 1_000_000,
+        cache_read_input_tokens: 600_000,
+        cache_creation_input_tokens: 50_000,
     });
 
     assert!(super::state_ui::handle_info_command(
@@ -195,13 +199,16 @@ fn cache_stats_uses_remote_history_token_usage_totals() {
         stats.contains("- total_tokens_source: `remote_history`"),
         "{stats}"
     );
-    assert!(stats.contains("- total_input_tokens: **1000**"), "{stats}");
+    assert!(
+        stats.contains("- total_input_tokens: **1.25m (1,250,000)**"),
+        "{stats}"
+    );
     assert!(
         stats.contains("- cache_totals_source: `remote_history`"),
         "{stats}"
     );
     assert!(
-        stats.contains("- total_cache_reported_input_tokens: **900**"),
+        stats.contains("- total_cache_reported_input_tokens: **1m (1,000,000)**"),
         "{stats}"
     );
     assert!(
