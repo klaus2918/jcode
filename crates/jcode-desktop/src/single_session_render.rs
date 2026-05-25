@@ -3709,13 +3709,13 @@ impl Default for ComposerMotionTarget {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TranscriptCardVisual {
+pub(crate) struct SurfaceMotionVisual {
     pub(crate) opacity: f32,
     pub(crate) y_offset_pixels: f32,
     pub(crate) scale: f32,
 }
 
-impl Default for TranscriptCardVisual {
+impl Default for SurfaceMotionVisual {
     fn default() -> Self {
         Self {
             opacity: 1.0,
@@ -3724,6 +3724,46 @@ impl Default for TranscriptCardVisual {
         }
     }
 }
+
+impl SurfaceMotionVisual {
+    fn entry(entry_offset_pixels: f32, entry_scale: f32, progress: f32) -> Self {
+        let eased = ease_out_cubic_local(progress);
+        Self {
+            opacity: eased,
+            y_offset_pixels: (1.0 - eased) * entry_offset_pixels,
+            scale: lerp_f32(entry_scale, 1.0, eased),
+        }
+    }
+
+    fn exit(
+        entry_offset_pixels: f32,
+        entry_scale: f32,
+        exit_offset_multiplier: f32,
+        exit_scale_multiplier: f32,
+        progress: f32,
+    ) -> Self {
+        let eased = ease_out_cubic_local(progress);
+        Self {
+            opacity: 1.0 - eased,
+            y_offset_pixels: -entry_offset_pixels * exit_offset_multiplier * eased,
+            scale: 1.0 - (1.0 - entry_scale) * exit_scale_multiplier * eased,
+        }
+    }
+
+    fn apply_line_shift(
+        &mut self,
+        from_line: usize,
+        to_line: usize,
+        line_height: f32,
+        progress: f32,
+    ) {
+        let eased = ease_out_cubic_local(progress);
+        let line_delta = from_line as f32 - to_line as f32;
+        self.y_offset_pixels += line_delta * line_height * (1.0 - eased);
+    }
+}
+
+pub(crate) type TranscriptCardVisual = SurfaceMotionVisual;
 
 #[derive(Clone, Copy, Debug)]
 struct TranscriptCardLineShift {
@@ -3782,22 +3822,7 @@ pub(crate) struct TranscriptMessageRun {
     role: TranscriptMessageRole,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TranscriptMessageVisual {
-    opacity: f32,
-    y_offset_pixels: f32,
-    scale: f32,
-}
-
-impl Default for TranscriptMessageVisual {
-    fn default() -> Self {
-        Self {
-            opacity: 1.0,
-            y_offset_pixels: 0.0,
-            scale: 1.0,
-        }
-    }
-}
+pub(crate) type TranscriptMessageVisual = SurfaceMotionVisual;
 
 #[derive(Clone, Copy, Debug)]
 struct TranscriptMessageLineShift {
@@ -3862,22 +3887,7 @@ struct InlineMarkdownPillRun {
     kind: InlineMarkdownPillKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct InlineMarkdownPillVisual {
-    opacity: f32,
-    y_offset_pixels: f32,
-    scale: f32,
-}
-
-impl Default for InlineMarkdownPillVisual {
-    fn default() -> Self {
-        Self {
-            opacity: 1.0,
-            y_offset_pixels: 0.0,
-            scale: 1.0,
-        }
-    }
-}
+pub(crate) type InlineMarkdownPillVisual = SurfaceMotionVisual;
 
 #[derive(Clone, Copy, Debug)]
 struct InlineMarkdownPillLineShift {
@@ -5001,12 +5011,7 @@ fn push_inline_widget_list_row_run(
     line_span: usize,
 ) {
     let base_key = inline_widget_list_row_base_key(kind, lines, line, line_span);
-    let occurrence = occurrences.entry(base_key).or_insert(0);
-    let mut hasher = DefaultHasher::new();
-    base_key.hash(&mut hasher);
-    occurrence.hash(&mut hasher);
-    let key = hasher.finish();
-    *occurrence += 1;
+    let key = motion_occurrence_key(base_key, occurrences);
     runs.push(InlineWidgetListRowRun {
         kind,
         key,
@@ -5131,9 +5136,7 @@ fn inline_widget_list_reflow_cache_key(
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     active.hash(&mut hasher);
-    let mut entries = visuals.iter().collect::<Vec<_>>();
-    entries.sort_by_key(|(key, _)| **key);
-    for (key, visual) in entries {
+    for (key, visual) in sorted_u64_visual_entries(visuals) {
         key.hash(&mut hasher);
         hash_f32(visual.opacity, &mut hasher);
         hash_f32(visual.y_offset_lines, &mut hasher);
@@ -5206,15 +5209,8 @@ fn attachment_chip_runs(images: &[(String, String)]) -> Vec<AttachmentChipRun> {
         .enumerate()
     {
         let base_key = attachment_chip_base_key(media_type, base64_data);
-        let occurrence = occurrences.entry(base_key).or_insert(0usize);
-        let mut hasher = DefaultHasher::new();
-        base_key.hash(&mut hasher);
-        occurrence.hash(&mut hasher);
-        runs.push(AttachmentChipRun {
-            key: hasher.finish(),
-            index,
-        });
-        *occurrence += 1;
+        let key = motion_occurrence_key(base_key, &mut occurrences);
+        runs.push(AttachmentChipRun { key, index });
     }
     runs
 }
@@ -5285,9 +5281,7 @@ fn attachment_chip_motion_cache_key(
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     active.hash(&mut hasher);
-    let mut entries = visuals.iter().collect::<Vec<_>>();
-    entries.sort_by_key(|(key, _)| **key);
-    for (key, visual) in entries {
+    for (key, visual) in sorted_u64_visual_entries(visuals) {
         key.hash(&mut hasher);
         hash_f32(visual.opacity, &mut hasher);
         hash_f32(visual.x_offset_pixels, &mut hasher);
@@ -5491,6 +5485,46 @@ fn hash_f32(value: f32, hasher: &mut impl Hasher) {
     value.to_bits().hash(hasher);
 }
 
+fn motion_occurrence_key(base_key: u64, occurrences: &mut HashMap<u64, usize>) -> u64 {
+    let occurrence = occurrences.entry(base_key).or_insert(0);
+    let occurrence_index = *occurrence;
+    *occurrence += 1;
+
+    let mut hasher = DefaultHasher::new();
+    base_key.hash(&mut hasher);
+    occurrence_index.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn sorted_u64_visual_entries<V>(visuals: &HashMap<u64, V>) -> Vec<(&u64, &V)> {
+    let mut entries = visuals.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|(key, _)| **key);
+    entries
+}
+
+fn hash_surface_motion_visual(visual: SurfaceMotionVisual, hasher: &mut impl Hasher) {
+    hash_f32(visual.opacity, hasher);
+    hash_f32(visual.y_offset_pixels, hasher);
+    hash_f32(visual.scale, hasher);
+}
+
+fn surface_motion_visual_rect(rect: Rect, visual: SurfaceMotionVisual) -> Rect {
+    let scale = visual.scale.clamp(0.01, 1.5);
+    let width = rect.width * scale;
+    let height = rect.height * scale;
+    Rect {
+        x: rect.x + (rect.width - width) * 0.5,
+        y: rect.y + (rect.height - height) * 0.5 + visual.y_offset_pixels,
+        width,
+        height,
+    }
+}
+
+fn surface_motion_alpha(mut color: [f32; 4], opacity: f32) -> [f32; 4] {
+    color[3] *= opacity.clamp(0.0, 1.0);
+    color
+}
+
 fn transcript_card_visual_from_state(
     state: &mut TranscriptCardMotionState,
     line_height: f32,
@@ -5502,10 +5536,11 @@ fn transcript_card_visual_from_state(
     if let Some(entered_at) = state.entered_at {
         let (progress, running) =
             timed_animation_progress(entered_at, now, TRANSCRIPT_CARD_ENTRY_DURATION);
-        let eased = ease_out_cubic_local(progress);
-        visual.opacity = eased;
-        visual.y_offset_pixels += (1.0 - eased) * TRANSCRIPT_CARD_ENTRY_OFFSET_PIXELS;
-        visual.scale = TRANSCRIPT_CARD_ENTRY_SCALE + (1.0 - TRANSCRIPT_CARD_ENTRY_SCALE) * eased;
+        visual = SurfaceMotionVisual::entry(
+            TRANSCRIPT_CARD_ENTRY_OFFSET_PIXELS,
+            TRANSCRIPT_CARD_ENTRY_SCALE,
+            progress,
+        );
         active |= running;
         if !running {
             state.entered_at = None;
@@ -5515,9 +5550,7 @@ fn transcript_card_visual_from_state(
     if let Some(shift) = state.line_shift {
         let (progress, running) =
             timed_animation_progress(shift.started_at, now, TRANSCRIPT_CARD_SHIFT_DURATION);
-        let eased = ease_out_cubic_local(progress);
-        let line_delta = shift.from_line as f32 - state.line as f32;
-        visual.y_offset_pixels += line_delta * line_height * (1.0 - eased);
+        visual.apply_line_shift(shift.from_line, state.line, line_height, progress);
         active |= running;
         if !running {
             state.line_shift = None;
@@ -5538,11 +5571,11 @@ fn transcript_message_visual_from_state(
     if let Some(entered_at) = state.entered_at {
         let (progress, running) =
             timed_animation_progress(entered_at, now, TRANSCRIPT_MESSAGE_ENTRY_DURATION);
-        let eased = ease_out_cubic_local(progress);
-        visual.opacity = eased;
-        visual.y_offset_pixels += (1.0 - eased) * TRANSCRIPT_MESSAGE_ENTRY_OFFSET_PIXELS;
-        visual.scale =
-            TRANSCRIPT_MESSAGE_ENTRY_SCALE + (1.0 - TRANSCRIPT_MESSAGE_ENTRY_SCALE) * eased;
+        visual = SurfaceMotionVisual::entry(
+            TRANSCRIPT_MESSAGE_ENTRY_OFFSET_PIXELS,
+            TRANSCRIPT_MESSAGE_ENTRY_SCALE,
+            progress,
+        );
         active |= running;
         if !running {
             state.entered_at = None;
@@ -5552,9 +5585,7 @@ fn transcript_message_visual_from_state(
     if let Some(shift) = state.line_shift {
         let (progress, running) =
             timed_animation_progress(shift.started_at, now, TRANSCRIPT_MESSAGE_SHIFT_DURATION);
-        let eased = ease_out_cubic_local(progress);
-        let line_delta = shift.from_line as f32 - state.run.line as f32;
-        visual.y_offset_pixels += line_delta * line_height * (1.0 - eased);
+        visual.apply_line_shift(shift.from_line, state.run.line, line_height, progress);
         active |= running;
         if !running {
             state.line_shift = None;
@@ -5565,12 +5596,13 @@ fn transcript_message_visual_from_state(
 }
 
 fn exiting_transcript_card_visual(progress: f32) -> TranscriptCardVisual {
-    let eased = ease_out_cubic_local(progress);
-    TranscriptCardVisual {
-        opacity: 1.0 - eased,
-        y_offset_pixels: -TRANSCRIPT_CARD_ENTRY_OFFSET_PIXELS * 0.42 * eased,
-        scale: 1.0 - (1.0 - TRANSCRIPT_CARD_ENTRY_SCALE) * 1.35 * eased,
-    }
+    SurfaceMotionVisual::exit(
+        TRANSCRIPT_CARD_ENTRY_OFFSET_PIXELS,
+        TRANSCRIPT_CARD_ENTRY_SCALE,
+        0.42,
+        1.35,
+        progress,
+    )
 }
 
 fn inline_markdown_pill_visual_from_state(
@@ -5584,11 +5616,11 @@ fn inline_markdown_pill_visual_from_state(
     if let Some(entered_at) = state.entered_at {
         let (progress, running) =
             timed_animation_progress(entered_at, now, INLINE_MARKDOWN_PILL_ENTRY_DURATION);
-        let eased = ease_out_cubic_local(progress);
-        visual.opacity = eased;
-        visual.y_offset_pixels += (1.0 - eased) * INLINE_MARKDOWN_PILL_ENTRY_OFFSET_PIXELS;
-        visual.scale =
-            INLINE_MARKDOWN_PILL_ENTRY_SCALE + (1.0 - INLINE_MARKDOWN_PILL_ENTRY_SCALE) * eased;
+        visual = SurfaceMotionVisual::entry(
+            INLINE_MARKDOWN_PILL_ENTRY_OFFSET_PIXELS,
+            INLINE_MARKDOWN_PILL_ENTRY_SCALE,
+            progress,
+        );
         active |= running;
         if !running {
             state.entered_at = None;
@@ -5598,9 +5630,7 @@ fn inline_markdown_pill_visual_from_state(
     if let Some(shift) = state.line_shift {
         let (progress, running) =
             timed_animation_progress(shift.started_at, now, INLINE_MARKDOWN_PILL_SHIFT_DURATION);
-        let eased = ease_out_cubic_local(progress);
-        let line_delta = shift.from_line as f32 - state.run.line as f32;
-        visual.y_offset_pixels += line_delta * line_height * (1.0 - eased);
+        visual.apply_line_shift(shift.from_line, state.run.line, line_height, progress);
         active |= running;
         if !running {
             state.line_shift = None;
@@ -5611,46 +5641,29 @@ fn inline_markdown_pill_visual_from_state(
 }
 
 fn exiting_inline_markdown_pill_visual(progress: f32) -> InlineMarkdownPillVisual {
-    let eased = ease_out_cubic_local(progress);
-    InlineMarkdownPillVisual {
-        opacity: 1.0 - eased,
-        y_offset_pixels: -INLINE_MARKDOWN_PILL_ENTRY_OFFSET_PIXELS * 0.55 * eased,
-        scale: 1.0 - (1.0 - INLINE_MARKDOWN_PILL_ENTRY_SCALE) * eased,
-    }
+    SurfaceMotionVisual::exit(
+        INLINE_MARKDOWN_PILL_ENTRY_OFFSET_PIXELS,
+        INLINE_MARKDOWN_PILL_ENTRY_SCALE,
+        0.55,
+        1.0,
+        progress,
+    )
 }
 
 fn transcript_card_visual_rect(rect: Rect, visual: TranscriptCardVisual) -> Rect {
-    let scale = visual.scale.clamp(0.01, 1.5);
-    let width = rect.width * scale;
-    let height = rect.height * scale;
-    Rect {
-        x: rect.x + (rect.width - width) * 0.5,
-        y: rect.y + (rect.height - height) * 0.5 + visual.y_offset_pixels,
-        width,
-        height,
-    }
+    surface_motion_visual_rect(rect, visual)
 }
 
-fn transcript_card_alpha(mut color: [f32; 4], opacity: f32) -> [f32; 4] {
-    color[3] *= opacity.clamp(0.0, 1.0);
-    color
+fn transcript_card_alpha(color: [f32; 4], opacity: f32) -> [f32; 4] {
+    surface_motion_alpha(color, opacity)
 }
 
 fn inline_markdown_pill_visual_rect(rect: Rect, visual: InlineMarkdownPillVisual) -> Rect {
-    let scale = visual.scale.clamp(0.01, 1.5);
-    let width = rect.width * scale;
-    let height = rect.height * scale;
-    Rect {
-        x: rect.x + (rect.width - width) * 0.5,
-        y: rect.y + (rect.height - height) * 0.5 + visual.y_offset_pixels,
-        width,
-        height,
-    }
+    surface_motion_visual_rect(rect, visual)
 }
 
-fn inline_markdown_pill_alpha(mut color: [f32; 4], opacity: f32) -> [f32; 4] {
-    color[3] *= opacity.clamp(0.0, 1.0);
-    color
+fn inline_markdown_pill_alpha(color: [f32; 4], opacity: f32) -> [f32; 4] {
+    surface_motion_alpha(color, opacity)
 }
 
 fn transcript_message_motion_key(
@@ -5659,12 +5672,7 @@ fn transcript_message_motion_key(
     occurrences: &mut HashMap<u64, usize>,
 ) -> u64 {
     let base_key = transcript_message_motion_base_key(lines, run);
-    let occurrence = occurrences.entry(base_key).or_insert(0);
-    let mut hasher = DefaultHasher::new();
-    base_key.hash(&mut hasher);
-    occurrence.hash(&mut hasher);
-    *occurrence += 1;
-    hasher.finish()
+    motion_occurrence_key(base_key, occurrences)
 }
 
 fn transcript_message_motion_base_key(
@@ -5690,13 +5698,9 @@ fn transcript_message_motion_cache_key(
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     active.hash(&mut hasher);
-    let mut entries = visuals.iter().collect::<Vec<_>>();
-    entries.sort_by_key(|(key, _)| **key);
-    for (key, visual) in entries {
+    for (key, visual) in sorted_u64_visual_entries(visuals) {
         key.hash(&mut hasher);
-        hash_f32(visual.opacity, &mut hasher);
-        hash_f32(visual.y_offset_pixels, &mut hasher);
-        hash_f32(visual.scale, &mut hasher);
+        hash_surface_motion_visual(*visual, &mut hasher);
     }
     hasher.finish()
 }
@@ -5707,12 +5711,7 @@ fn transcript_card_motion_key(
     occurrences: &mut HashMap<u64, usize>,
 ) -> u64 {
     let base_key = transcript_card_motion_base_key(lines, run);
-    let occurrence = occurrences.entry(base_key).or_insert(0);
-    let mut hasher = DefaultHasher::new();
-    base_key.hash(&mut hasher);
-    occurrence.hash(&mut hasher);
-    *occurrence += 1;
-    hasher.finish()
+    motion_occurrence_key(base_key, occurrences)
 }
 
 fn transcript_card_motion_base_key(
@@ -5738,21 +5737,15 @@ fn transcript_card_motion_cache_key(
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     active.hash(&mut hasher);
-    let mut entries = visuals.iter().collect::<Vec<_>>();
-    entries.sort_by_key(|(key, _)| **key);
-    for (key, visual) in entries {
+    for (key, visual) in sorted_u64_visual_entries(visuals) {
         key.hash(&mut hasher);
-        hash_f32(visual.opacity, &mut hasher);
-        hash_f32(visual.y_offset_pixels, &mut hasher);
-        hash_f32(visual.scale, &mut hasher);
+        hash_surface_motion_visual(*visual, &mut hasher);
     }
     for (run, visual) in exiting {
         run.line.hash(&mut hasher);
         run.line_count.hash(&mut hasher);
         run.style.hash(&mut hasher);
-        hash_f32(visual.opacity, &mut hasher);
-        hash_f32(visual.y_offset_pixels, &mut hasher);
-        hash_f32(visual.scale, &mut hasher);
+        hash_surface_motion_visual(*visual, &mut hasher);
     }
     hasher.finish()
 }
@@ -5763,12 +5756,7 @@ fn inline_markdown_pill_motion_key(
     occurrences: &mut HashMap<u64, usize>,
 ) -> u64 {
     let base_key = inline_markdown_pill_motion_base_key(lines, run);
-    let occurrence = occurrences.entry(base_key).or_insert(0);
-    let mut hasher = DefaultHasher::new();
-    base_key.hash(&mut hasher);
-    occurrence.hash(&mut hasher);
-    *occurrence += 1;
-    hasher.finish()
+    motion_occurrence_key(base_key, occurrences)
 }
 
 fn inline_markdown_pill_motion_base_key(
@@ -5794,19 +5782,13 @@ fn inline_markdown_pill_motion_cache_key(
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     active.hash(&mut hasher);
-    let mut entries = visuals.iter().collect::<Vec<_>>();
-    entries.sort_by_key(|(key, _)| **key);
-    for (key, visual) in entries {
+    for (key, visual) in sorted_u64_visual_entries(visuals) {
         key.hash(&mut hasher);
-        hash_f32(visual.opacity, &mut hasher);
-        hash_f32(visual.y_offset_pixels, &mut hasher);
-        hash_f32(visual.scale, &mut hasher);
+        hash_surface_motion_visual(*visual, &mut hasher);
     }
     for (run, visual) in exiting {
         run.hash(&mut hasher);
-        hash_f32(visual.opacity, &mut hasher);
-        hash_f32(visual.y_offset_pixels, &mut hasher);
-        hash_f32(visual.scale, &mut hasher);
+        hash_surface_motion_visual(*visual, &mut hasher);
     }
     hasher.finish()
 }
@@ -5981,20 +5963,11 @@ fn transcript_message_highlight_color(role: TranscriptMessageRole) -> Option<[f3
 }
 
 fn transcript_message_visual_rect(rect: Rect, visual: TranscriptMessageVisual) -> Rect {
-    let scale = visual.scale.clamp(0.01, 1.5);
-    let width = rect.width * scale;
-    let height = rect.height * scale;
-    Rect {
-        x: rect.x + (rect.width - width) * 0.5,
-        y: rect.y + (rect.height - height) * 0.5 + visual.y_offset_pixels,
-        width,
-        height,
-    }
+    surface_motion_visual_rect(rect, visual)
 }
 
-fn transcript_message_alpha(mut color: [f32; 4], opacity: f32) -> [f32; 4] {
-    color[3] *= opacity.clamp(0.0, 1.0);
-    color
+fn transcript_message_alpha(color: [f32; 4], opacity: f32) -> [f32; 4] {
+    surface_motion_alpha(color, opacity)
 }
 
 #[derive(Clone, Copy)]
