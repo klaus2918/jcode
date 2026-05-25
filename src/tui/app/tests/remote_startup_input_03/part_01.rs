@@ -508,6 +508,110 @@ fn test_background_rebuild_status_uses_compact_rebuild_card() {
 }
 
 #[test]
+fn test_startup_update_status_uses_compact_update_card() {
+    let mut app = create_test_app();
+
+    app.handle_update_status(UpdateStatus::Checking);
+
+    let message = app
+        .display_messages()
+        .last()
+        .expect("expected update display message");
+    assert_eq!(message.title.as_deref(), Some("Update"));
+    assert!(message.content.contains("**Status:** checking for updates"));
+    assert_eq!(
+        app.status_notice(),
+        Some("Checking for updates...".to_string())
+    );
+
+    app.handle_update_status(UpdateStatus::Downloading {
+        version: "v1.2.3".to_string(),
+    });
+
+    let update_cards = app
+        .display_messages()
+        .iter()
+        .filter(|message| message.title.as_deref() == Some("Update"))
+        .count();
+    assert_eq!(update_cards, 1, "update statuses should update one card");
+    let message = app
+        .display_messages()
+        .last()
+        .expect("expected update display message");
+    assert!(message.content.contains("**Status:** downloading v1.2.3"));
+    assert!(message.content.contains("restart automatically"));
+    assert_eq!(
+        app.status_notice(),
+        Some("Updating to v1.2.3...".to_string())
+    );
+
+    app.handle_update_status(UpdateStatus::Installed {
+        version: "v1.2.3".to_string(),
+    });
+
+    let message = app
+        .display_messages()
+        .last()
+        .expect("expected update display message");
+    assert!(message.content.contains("**Status:** updated to v1.2.3"));
+    assert!(message.content.contains("Restarting now."));
+    assert_eq!(
+        app.status_notice(),
+        Some("Updated to v1.2.3; restarting...".to_string())
+    );
+}
+
+#[test]
+fn test_startup_update_up_to_date_removes_transient_card() {
+    let mut app = create_test_app();
+
+    app.handle_update_status(UpdateStatus::Checking);
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|message| message.title.as_deref() == Some("Update"))
+    );
+
+    app.handle_update_status(UpdateStatus::UpToDate);
+
+    assert!(
+        app.display_messages()
+            .iter()
+            .all(|message| message.title.as_deref() != Some("Update")),
+        "no-update startup checks should not leave a persistent update card"
+    );
+    assert!(app.background_client_action.is_none());
+    assert!(app.pending_background_client_reload.is_none());
+}
+
+#[test]
+fn test_startup_update_error_replaces_checking_card() {
+    let mut app = create_test_app();
+
+    app.handle_update_status(UpdateStatus::Checking);
+    app.handle_update_status(UpdateStatus::Error("Check failed: offline".to_string()));
+
+    let message = app
+        .display_messages()
+        .last()
+        .expect("expected update display message");
+    assert_eq!(message.title.as_deref(), Some("Update"));
+    assert!(message.content.contains("**Status:** failed"));
+    assert!(message.content.contains("Check failed: offline"));
+    assert!(
+        message
+            .content
+            .contains("Continuing with the current version.")
+    );
+    assert_eq!(
+        app.status_notice(),
+        Some("Update failed; continuing current version".to_string())
+    );
+    assert!(app.background_client_action.is_none());
+    assert!(app.pending_background_client_reload.is_none());
+}
+
+#[test]
 fn test_selfdev_command_spawns_session_in_test_mode() {
     let _guard = crate::storage::lock_test_env();
     let temp_home = tempfile::TempDir::new().expect("temp home");

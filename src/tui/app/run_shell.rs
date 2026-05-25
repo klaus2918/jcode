@@ -137,6 +137,9 @@ impl App {
             super::handterm_native_scroll::HandtermNativeScrollClient::connect_from_env();
         // Subscribe to bus for background task completion notifications
         let mut bus_receiver = Bus::global().subscribe();
+        if let Some(status) = Bus::global().latest_update_status() {
+            self.handle_update_status(status);
+        }
 
         loop {
             let desired_redraw = crate::tui::redraw_interval(&self);
@@ -282,6 +285,10 @@ impl App {
             needs_redraw = true;
 
             let mut bus_receiver_remote = Bus::global().subscribe();
+            if let Some(status) = Bus::global().latest_update_status() {
+                self.handle_update_status(status);
+                needs_redraw = true;
+            }
 
             // Main event loop
             loop {
