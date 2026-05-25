@@ -44,7 +44,7 @@ impl App {
 
             self.status = ProcessingStatus::Sending;
             status_spinner_renderer.draw_full(self, terminal)?;
-            status_spinner_interval.reset();
+            super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
             self.flush_pending_session_save();
 
             let repaired = self.repair_missing_tool_outputs();
@@ -143,26 +143,26 @@ impl App {
                                     }
                                     if !scroll_only {
                                         status_spinner_renderer.draw_full(self, terminal)?;
-                                        status_spinner_interval.reset();
+                                        super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
                                     }
                                 }
                             }
                             Some(Ok(Event::Paste(text))) => {
                                 self.handle_paste(text);
                                 status_spinner_renderer.draw_full(self, terminal)?;
-                                status_spinner_interval.reset();
+                                super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
                             }
                             Some(Ok(Event::Mouse(mouse))) => {
                                 let scroll_only = self.handle_mouse_event(mouse);
                                 if !scroll_only {
                                     status_spinner_renderer.draw_full(self, terminal)?;
-                                    status_spinner_interval.reset();
+                                    super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
                                 }
                             }
                             Some(Ok(Event::Resize(_, _))) => {
                                 if self.should_redraw_after_resize() {
                                     status_spinner_renderer.draw_full(self, terminal)?;
-                                    status_spinner_interval.reset();
+                                    super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
                                 }
                             }
                             _ => {}
@@ -172,12 +172,12 @@ impl App {
                     _ = status_spinner_interval.tick(), if super::run_shell::status_spinner_only_symbol(self).is_some() => {
                         if !status_spinner_renderer.draw_status_spinner_only(self, terminal)? {
                             status_spinner_renderer.draw_full(self, terminal)?;
-                            status_spinner_interval.reset();
+                            super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
                         }
                     }
                     _ = redraw_interval.tick() => {
                         status_spinner_renderer.draw_full(self, terminal)?;
-                        status_spinner_interval.reset();
+                        super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
                     }
                     bus_event = async {
                         match bus_receiver.as_mut() {
@@ -187,7 +187,7 @@ impl App {
                     } => {
                         if super::local::handle_bus_event(self, bus_event) {
                             status_spinner_renderer.draw_full(self, terminal)?;
-                            status_spinner_interval.reset();
+                            super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
                         }
                     }
                     // Poll API call
@@ -205,7 +205,7 @@ impl App {
                                         listener: plan.listener_summary.clone(),
                                     };
                                     status_spinner_renderer.draw_full(self, terminal)?;
-                                    status_spinner_interval.reset();
+                                    super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
                                     crate::network_retry::wait_until_probably_online().await;
                                     self.push_display_message(DisplayMessage::system(
                                         "Network connectivity looks restored; retrying request.".to_string(),
