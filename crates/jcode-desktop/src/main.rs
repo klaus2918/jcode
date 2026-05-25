@@ -11164,6 +11164,7 @@ fn build_vertices_into(params: WorkspaceVertexBuildParams<'_>, vertices: &mut Ve
         render_layout,
         surface_frames,
         exiting_surfaces,
+        focus_pulse,
         status_rect,
         size,
     );

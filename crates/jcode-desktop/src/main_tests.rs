@@ -927,6 +927,7 @@ fn workspace_status_preview_viewport_uses_animated_scroll_offset() {
         },
         None,
         &HashMap::new(),
+        0.0,
         status_rect,
         size,
     );
@@ -947,6 +948,7 @@ fn workspace_status_preview_viewport_uses_animated_scroll_offset() {
         },
         None,
         &HashMap::new(),
+        0.0,
         status_rect,
         size,
     );
@@ -957,6 +959,59 @@ fn workspace_status_preview_viewport_uses_animated_scroll_offset() {
     assert!(
         animated_viewport.min_x < target_viewport.min_x - 8.0,
         "status preview viewport should track the animated scroll offset instead of jumping to the target column: animated={animated_viewport:?}, target={target_viewport:?}"
+    );
+}
+
+#[test]
+fn workspace_status_preview_focused_tick_uses_focus_pulse() {
+    let workspace = Workspace::fake();
+    let size = PhysicalSize::new(900, 600);
+    let status_rect = Rect {
+        x: OUTER_PADDING,
+        y: OUTER_PADDING,
+        width: size.width as f32 - OUTER_PADDING * 2.0,
+        height: STATUS_BAR_HEIGHT,
+    };
+    let render_layout = workspace_render_layout(&workspace, size, None);
+    let focused_color = status_preview_surface_color(0, true, true);
+
+    let mut idle_vertices = Vec::new();
+    push_status_preview(
+        &mut idle_vertices,
+        &workspace,
+        workspace.current_workspace(),
+        render_layout,
+        None,
+        &HashMap::new(),
+        0.0,
+        status_rect,
+        size,
+    );
+    let idle_bounds = pixel_bounds_for_color(&idle_vertices, focused_color, size)
+        .expect("focused preview tick should be visible without a pulse");
+
+    let mut pulsed_vertices = Vec::new();
+    push_status_preview(
+        &mut pulsed_vertices,
+        &workspace,
+        workspace.current_workspace(),
+        render_layout,
+        None,
+        &HashMap::new(),
+        1.0,
+        status_rect,
+        size,
+    );
+    let pulsed_bounds = pixel_bounds_for_color(&pulsed_vertices, focused_color, size)
+        .expect("focused preview tick should be visible with a pulse");
+
+    assert!(
+        pulsed_bounds.max_x - pulsed_bounds.min_x > idle_bounds.max_x - idle_bounds.min_x + 1.0,
+        "focus pulse should widen the focused minimap tick: idle={idle_bounds:?}, pulsed={pulsed_bounds:?}"
+    );
+    assert!(
+        pulsed_bounds.max_y - pulsed_bounds.min_y > idle_bounds.max_y - idle_bounds.min_y + 1.0,
+        "focus pulse should thicken the focused minimap tick: idle={idle_bounds:?}, pulsed={pulsed_bounds:?}"
     );
 }
 
@@ -1004,6 +1059,7 @@ fn workspace_status_preview_draws_exiting_surface_with_fade() {
         updated_layout,
         Some(&frames),
         &exit_cache,
+        0.0,
         status_rect,
         size,
     );

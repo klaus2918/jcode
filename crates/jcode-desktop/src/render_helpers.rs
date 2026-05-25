@@ -509,6 +509,7 @@ pub(crate) fn push_status_preview(
     render_layout: WorkspaceRenderLayout,
     surface_frames: Option<&WorkspaceSurfaceTransitionFrames>,
     exiting_surfaces: &HashMap<u64, workspace::Surface>,
+    focus_pulse: f32,
     status_rect: Rect,
     size: PhysicalSize<u32>,
 ) {
@@ -612,6 +613,7 @@ pub(crate) fn push_status_preview(
                 strip_y,
                 strip_height,
                 focused,
+                focus_pulse,
                 lane.is_active,
             );
         }
@@ -637,6 +639,7 @@ pub(crate) fn push_status_preview(
                     strip_y,
                     strip_height,
                     false,
+                    0.0,
                     lane.is_active,
                 );
             }
@@ -685,6 +688,7 @@ fn push_status_preview_surface_tick(
     strip_y: f32,
     strip_height: f32,
     focused: bool,
+    focus_pulse: f32,
     active_lane: bool,
 ) {
     let opacity = frame.map(|frame| frame.opacity).unwrap_or(1.0);
@@ -699,19 +703,27 @@ fn push_status_preview_surface_tick(
     let surface_x = cursor_x + column_offset * (panel_width + panel_gap);
     let mut color = status_preview_surface_color(surface.color_index, focused, active_lane);
     color[3] *= opacity.clamp(0.0, 1.0);
-    let tick_width = if focused {
+    let focus_pulse = if focused {
+        focus_pulse.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let base_tick_width = if focused {
         panel_width
     } else {
         panel_width * 0.56
     };
+    let tick_width = base_tick_width + panel_width * 0.22 * focus_pulse;
+    let tick_height = strip_height + 4.0 * focus_pulse;
     let tick_x = surface_x + (panel_width - tick_width) / 2.0;
+    let tick_y = strip_y - (tick_height - strip_height) / 2.0;
     push_rounded_rect(
         vertices,
         Rect {
             x: tick_x,
-            y: strip_y,
+            y: tick_y,
             width: tick_width.max(2.0),
-            height: strip_height,
+            height: tick_height,
         },
         2.0,
         color,
