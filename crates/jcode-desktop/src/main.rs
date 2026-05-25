@@ -5,6 +5,7 @@ mod desktop_config;
 mod desktop_gallery;
 mod desktop_ipc;
 mod desktop_issue_browser;
+mod desktop_issue_cache;
 mod desktop_log;
 mod desktop_prefs;
 mod desktop_protocol;

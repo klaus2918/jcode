@@ -1942,15 +1942,43 @@ impl SingleSessionApp {
         } else {
             DesktopSidePanelFocus::Chat
         };
+        let cache_status = visible
+            .then(|| self.refresh_issue_browser_from_cache())
+            .flatten();
         self.draft.clear();
         self.draft_cursor = 0;
         self.composer.input_undo_stack.clear();
-        self.set_status(SingleSessionStatus::Info(if visible {
-            "showing local GitHub issue browser".to_string()
-        } else {
-            "hid local GitHub issue browser".to_string()
-        }));
+        self.set_status(SingleSessionStatus::Info(cache_status.unwrap_or_else(
+            || {
+                if visible {
+                    "showing local GitHub issue browser".to_string()
+                } else {
+                    "hid local GitHub issue browser".to_string()
+                }
+            },
+        )));
         KeyOutcome::Redraw
+    }
+
+    #[cfg(not(test))]
+    fn refresh_issue_browser_from_cache(&mut self) -> Option<String> {
+        match crate::desktop_issue_cache::load_current_repo_issue_browser() {
+            Ok(Some(browser)) => {
+                let repo = browser.repo.clone();
+                let count = browser.issues.len();
+                self.side_panel.github_issues = browser;
+                Some(format!("showing {count} cached GitHub issues for {repo}"))
+            }
+            Ok(None) => None,
+            Err(error) => Some(format!(
+                "showing sample issues; cache unavailable: {error:#}"
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    fn refresh_issue_browser_from_cache(&mut self) -> Option<String> {
+        None
     }
 
     fn handle_issue_browser_key(&mut self, key: &KeyInput) -> Option<KeyOutcome> {
