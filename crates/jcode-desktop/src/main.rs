@@ -158,6 +158,8 @@ const SINGLE_SESSION_STREAMING_BODY_TEXT_WINDOW_AFTER_LINES: usize = 4;
 const STREAMING_TEXT_FADE_DURATION: Duration = Duration::from_millis(150);
 const STREAMING_TEXT_FADE_START_OPACITY: f32 = 0.4;
 const STREAMING_TEXT_RISE_START_OFFSET_PIXELS: f32 = 3.5;
+const STREAMING_TEXT_HANDOFF_DURATION: Duration = Duration::from_millis(135);
+const STREAMING_TEXT_HANDOFF_START_OPACITY: f32 = 0.18;
 const DESKTOP_ASYNC_JOB_LIMIT: usize = 12;
 const PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY: usize = 1024;
 const PRIMITIVE_VERTEX_BUFFER_SHRINK_RATIO: usize = 4;
@@ -433,6 +435,53 @@ fn streaming_text_fade_start_after_len_change(
     } else {
         current_started_at
     }
+}
+
+fn streaming_text_handoff_style_for_elapsed(elapsed: Duration) -> StreamingTextArrivalStyle {
+    if animation::desktop_reduced_motion_enabled() {
+        return StreamingTextArrivalStyle {
+            opacity: 0.0,
+            y_offset_pixels: 0.0,
+            active: false,
+        };
+    }
+
+    let progress =
+        (elapsed.as_secs_f32() / STREAMING_TEXT_HANDOFF_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+    if progress >= 1.0 {
+        return StreamingTextArrivalStyle {
+            opacity: 0.0,
+            y_offset_pixels: 0.0,
+            active: false,
+        };
+    }
+
+    let eased = animation::ease_out_cubic(progress);
+    StreamingTextArrivalStyle {
+        opacity: STREAMING_TEXT_HANDOFF_START_OPACITY * (1.0 - eased),
+        y_offset_pixels: 0.0,
+        active: true,
+    }
+}
+
+fn streaming_text_handoff_start_after_len_change(
+    previous_len: usize,
+    next_len: usize,
+    has_visible_streaming_buffer: bool,
+    current_started_at: Option<Instant>,
+    now: Instant,
+) -> Option<Instant> {
+    if animation::desktop_reduced_motion_enabled() || next_len > 0 {
+        return None;
+    }
+
+    if previous_len > 0 && has_visible_streaming_buffer {
+        return Some(now);
+    }
+
+    current_started_at.filter(|started_at| {
+        now.saturating_duration_since(*started_at) < STREAMING_TEXT_HANDOFF_DURATION
+    })
 }
 const DESKTOP_120FPS_FRAME_BUDGET: Duration = Duration::from_micros(8_333);
 const DESKTOP_PRESENT_STALL_BUDGET: Duration = Duration::from_millis(33);
@@ -8502,6 +8551,7 @@ struct Canvas {
     single_session_streaming_base_len: usize,
     single_session_streaming_response_len: usize,
     single_session_streaming_fade_started_at: Option<Instant>,
+    single_session_streaming_handoff_started_at: Option<Instant>,
     single_session_streaming_text_key: Option<u64>,
     single_session_streaming_text_start_line: Option<usize>,
     single_session_streaming_text_end_line: Option<usize>,
@@ -8632,6 +8682,7 @@ impl Canvas {
             single_session_streaming_base_len: 0,
             single_session_streaming_response_len: 0,
             single_session_streaming_fade_started_at: None,
+            single_session_streaming_handoff_started_at: None,
             single_session_streaming_text_key: None,
             single_session_streaming_text_start_line: None,
             single_session_streaming_text_end_line: None,
@@ -8683,6 +8734,7 @@ impl Canvas {
         self.app_mode_transition_vertices.clear();
         self.single_session_scroll_motion.clear();
         self.transcript_message_motion.clear();
+        self.single_session_streaming_handoff_started_at = None;
         self.first_render_completed = false;
         self.text_needs_prepare = true;
         if self.single_session_streaming_text_buffer.is_some() {
@@ -8883,11 +8935,19 @@ impl Canvas {
         let Some((start_line, end_line)) =
             self.single_session_streaming_visible_range(app, viewport)
         else {
+            if app.streaming_response.is_empty()
+                && self.single_session_streaming_handoff_started_at.is_some()
+                && self.single_session_streaming_text_buffer.is_some()
+            {
+                self.streaming_text_needs_prepare = true;
+                return;
+            }
             self.single_session_streaming_text_key = None;
             self.single_session_streaming_text_start_line = None;
             self.single_session_streaming_text_end_line = None;
             self.single_session_streaming_text_opacity_bits = None;
             self.single_session_streaming_text_buffer = None;
+            self.single_session_streaming_handoff_started_at = None;
             self.streaming_text_needs_prepare = false;
             return;
         };
@@ -8922,12 +8982,25 @@ impl Canvas {
     }
 
     fn update_single_session_streaming_fade(&mut self, app: &SingleSessionApp) {
+        let now = Instant::now();
+        let previous_len = self.single_session_streaming_response_len;
         let response_len = app.streaming_response.len();
+        let has_visible_streaming_buffer = self.single_session_streaming_text_buffer.is_some()
+            && self.single_session_streaming_text_start_line.is_some()
+            && self.single_session_streaming_text_end_line.is_some();
+        self.single_session_streaming_handoff_started_at =
+            streaming_text_handoff_start_after_len_change(
+                previous_len,
+                response_len,
+                has_visible_streaming_buffer,
+                self.single_session_streaming_handoff_started_at,
+                now,
+            );
         self.single_session_streaming_fade_started_at = streaming_text_fade_start_after_len_change(
-            self.single_session_streaming_response_len,
+            previous_len,
             response_len,
             self.single_session_streaming_fade_started_at,
-            Instant::now(),
+            now,
         );
         self.single_session_streaming_response_len = response_len;
     }
@@ -8936,6 +9009,22 @@ impl Canvas {
         &mut self,
         now: Instant,
     ) -> StreamingTextArrivalStyle {
+        if let Some(started_at) = self.single_session_streaming_handoff_started_at {
+            let style =
+                streaming_text_handoff_style_for_elapsed(now.saturating_duration_since(started_at));
+            if style.active {
+                return style;
+            }
+            self.single_session_streaming_handoff_started_at = None;
+            self.single_session_streaming_text_key = None;
+            self.single_session_streaming_text_start_line = None;
+            self.single_session_streaming_text_end_line = None;
+            self.single_session_streaming_text_opacity_bits = None;
+            self.single_session_streaming_text_buffer = None;
+            self.streaming_text_needs_prepare = false;
+            return style;
+        }
+
         let Some(started_at) = self.single_session_streaming_fade_started_at else {
             return StreamingTextArrivalStyle {
                 opacity: 1.0,
@@ -9491,6 +9580,7 @@ impl Canvas {
             self.single_session_streaming_text_end_line = None;
             self.single_session_streaming_text_opacity_bits = None;
             self.single_session_streaming_text_buffer = None;
+            self.single_session_streaming_handoff_started_at = None;
             self.streaming_text_needs_prepare = false;
             self.single_session_body_text_scroll_start = None;
             self.single_session_body_text_window_start = None;
@@ -9520,6 +9610,7 @@ impl Canvas {
             self.single_session_streaming_text_end_line = None;
             self.single_session_streaming_text_opacity_bits = None;
             self.single_session_streaming_text_buffer = None;
+            self.single_session_streaming_handoff_started_at = None;
             self.streaming_text_needs_prepare = false;
             self.single_session_body_text_scroll_start = None;
             self.single_session_body_text_window_start = None;

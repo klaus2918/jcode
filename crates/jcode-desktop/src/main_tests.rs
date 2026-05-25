@@ -1626,6 +1626,15 @@ fn reduced_motion_snaps_color_and_streaming_text_arrival() {
     assert_eq!(style.opacity, 1.0);
     assert_eq!(style.y_offset_pixels, 0.0);
     assert!(!style.active);
+
+    let handoff_style = streaming_text_handoff_style_for_elapsed(Duration::ZERO);
+    assert_eq!(handoff_style.opacity, 0.0);
+    assert_eq!(handoff_style.y_offset_pixels, 0.0);
+    assert!(!handoff_style.active);
+    assert_eq!(
+        streaming_text_handoff_start_after_len_change(10, 0, true, None, now),
+        None
+    );
 }
 
 fn surface_visual_frame(frames: &[SurfaceVisualFrame], id: u64) -> SurfaceVisualFrame {
@@ -2074,6 +2083,51 @@ fn single_session_streaming_text_fades_in() {
     assert!(mid_style.y_offset_pixels > 0.0);
     assert_eq!(end_style.y_offset_pixels, 0.0);
     assert!(!end_style.active);
+}
+
+#[test]
+fn single_session_streaming_handoff_fades_out_after_finish() {
+    let start_style = streaming_text_handoff_style_for_elapsed(Duration::ZERO);
+    let mid_style = streaming_text_handoff_style_for_elapsed(STREAMING_TEXT_HANDOFF_DURATION / 2);
+    let end_style = streaming_text_handoff_style_for_elapsed(STREAMING_TEXT_HANDOFF_DURATION);
+
+    assert!(start_style.active);
+    assert_eq!(start_style.y_offset_pixels, 0.0);
+    assert!((start_style.opacity - STREAMING_TEXT_HANDOFF_START_OPACITY).abs() < f32::EPSILON);
+    assert!(mid_style.active);
+    assert!(mid_style.opacity > 0.0);
+    assert!(mid_style.opacity < start_style.opacity);
+    assert_eq!(end_style.opacity, 0.0);
+    assert_eq!(end_style.y_offset_pixels, 0.0);
+    assert!(!end_style.active);
+}
+
+#[test]
+fn single_session_streaming_handoff_starts_only_when_visible_stream_finishes() {
+    let now = Instant::now();
+    let active = streaming_text_handoff_start_after_len_change(48, 0, true, None, now);
+    assert_eq!(active, Some(now));
+
+    assert_eq!(
+        streaming_text_handoff_start_after_len_change(48, 0, false, None, now),
+        None
+    );
+    assert_eq!(
+        streaming_text_handoff_start_after_len_change(48, 64, true, Some(now), now),
+        None
+    );
+
+    let during = now + STREAMING_TEXT_HANDOFF_DURATION / 2;
+    assert_eq!(
+        streaming_text_handoff_start_after_len_change(0, 0, true, active, during),
+        active
+    );
+
+    let after = now + STREAMING_TEXT_HANDOFF_DURATION + Duration::from_millis(1);
+    assert_eq!(
+        streaming_text_handoff_start_after_len_change(0, 0, true, active, after),
+        None
+    );
 }
 
 #[test]
