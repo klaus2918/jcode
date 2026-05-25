@@ -8270,6 +8270,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
     composer_motion_cache_key: u64,
     attachment_chip_motion_cache_key: u64,
     stdin_overlay_motion_cache_key: u64,
+    transcript_message_motion_cache_key: u64,
     transcript_motion_cache_key: u64,
     inline_markdown_motion_cache_key: u64,
     scrollbar_motion_cache_key: u64,
@@ -8303,6 +8304,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
     composer_motion_cache_key.hash(&mut hasher);
     attachment_chip_motion_cache_key.hash(&mut hasher);
     stdin_overlay_motion_cache_key.hash(&mut hasher);
+    transcript_message_motion_cache_key.hash(&mut hasher);
     transcript_motion_cache_key.hash(&mut hasher);
     inline_markdown_motion_cache_key.hash(&mut hasher);
     scrollbar_motion_cache_key.hash(&mut hasher);
@@ -8483,6 +8485,7 @@ struct Canvas {
     app_mode_transition: AppModeTransitionState,
     app_mode_transition_vertices: Vec<Vertex>,
     single_session_scroll_motion: SingleSessionScrollMotion,
+    transcript_message_motion: TranscriptMessageMotionRegistry,
     needs_initial_frame: bool,
     boot_frame_presented: bool,
     first_render_completed: bool,
@@ -8612,6 +8615,7 @@ impl Canvas {
             app_mode_transition: AppModeTransitionState::default(),
             app_mode_transition_vertices: Vec::new(),
             single_session_scroll_motion: SingleSessionScrollMotion::default(),
+            transcript_message_motion: TranscriptMessageMotionRegistry::default(),
             needs_initial_frame: true,
             boot_frame_presented: false,
             first_render_completed: false,
@@ -8677,6 +8681,7 @@ impl Canvas {
         self.app_mode_transition.clear();
         self.app_mode_transition_vertices.clear();
         self.single_session_scroll_motion.clear();
+        self.transcript_message_motion.clear();
         self.first_render_completed = false;
         self.text_needs_prepare = true;
         if self.single_session_streaming_text_buffer.is_some() {
@@ -9753,6 +9758,11 @@ impl Canvas {
                     transcript_line_height,
                     now,
                 );
+                let transcript_message_motion = self.transcript_message_motion.frame(
+                    tool_motion_lines,
+                    transcript_line_height,
+                    now,
+                );
                 let inline_markdown_motion = self.inline_markdown_pill_motion.frame(
                     tool_motion_lines,
                     transcript_line_height,
@@ -9776,6 +9786,7 @@ impl Canvas {
                     || composer_motion.is_active()
                     || attachment_chip_motion.is_active()
                     || stdin_overlay_motion.is_active()
+                    || transcript_message_motion.is_active()
                     || transcript_motion.is_active()
                     || inline_markdown_motion.is_active()
                     || tool_motion.is_active()
@@ -9795,6 +9806,7 @@ impl Canvas {
                     composer_motion.cache_key(),
                     attachment_chip_motion.cache_key(),
                     stdin_overlay_motion.cache_key(),
+                    transcript_message_motion.cache_key(),
                     transcript_motion.cache_key(),
                     inline_markdown_motion.cache_key(),
                     scrollbar_motion.cache_key(),
@@ -9820,6 +9832,7 @@ impl Canvas {
                                 Some(&composer_motion),
                                 Some(&attachment_chip_motion),
                                 Some(&stdin_overlay_motion),
+                                Some(&transcript_message_motion),
                                 Some(&transcript_motion),
                                 Some(&inline_markdown_motion),
                                 &tool_motion,
@@ -9845,6 +9858,7 @@ impl Canvas {
                             Some(&composer_motion),
                             Some(&attachment_chip_motion),
                             Some(&stdin_overlay_motion),
+                            Some(&transcript_message_motion),
                             Some(&transcript_motion),
                             Some(&inline_markdown_motion),
                             &tool_motion,
@@ -9861,6 +9875,7 @@ impl Canvas {
                 self.composer_motion.clear();
                 self.attachment_chip_motion.clear();
                 self.stdin_overlay_motion.clear();
+                self.transcript_message_motion.clear();
                 self.transcript_card_motion.clear();
                 self.inline_markdown_pill_motion.clear();
                 self.single_session_scrollbar_motion.clear();

@@ -50,6 +50,15 @@ const TRANSCRIPT_CARD_SHIFT_DURATION: Duration = Duration::from_millis(150);
 const TRANSCRIPT_CARD_EXIT_DURATION: Duration = Duration::from_millis(145);
 const TRANSCRIPT_CARD_ENTRY_OFFSET_PIXELS: f32 = 10.0;
 const TRANSCRIPT_CARD_ENTRY_SCALE: f32 = 0.988;
+const TRANSCRIPT_MESSAGE_ENTRY_DURATION: Duration = Duration::from_millis(150);
+const TRANSCRIPT_MESSAGE_SHIFT_DURATION: Duration = Duration::from_millis(135);
+const TRANSCRIPT_MESSAGE_ENTRY_OFFSET_PIXELS: f32 = 7.0;
+const TRANSCRIPT_MESSAGE_ENTRY_SCALE: f32 = 0.992;
+const TRANSCRIPT_MESSAGE_ASSISTANT_HIGHLIGHT_COLOR: [f32; 4] = [0.070, 0.125, 0.260, 0.038];
+const TRANSCRIPT_MESSAGE_USER_HIGHLIGHT_COLOR: [f32; 4] = [0.060, 0.210, 0.650, 0.058];
+const TRANSCRIPT_MESSAGE_META_HIGHLIGHT_COLOR: [f32; 4] = [0.075, 0.160, 0.260, 0.046];
+const TRANSCRIPT_MESSAGE_ERROR_HIGHLIGHT_COLOR: [f32; 4] = [0.700, 0.080, 0.100, 0.060];
+const TRANSCRIPT_MESSAGE_ACCENT_ALPHA_MULTIPLIER: f32 = 2.8;
 const INLINE_MARKDOWN_PILL_ENTRY_DURATION: Duration = Duration::from_millis(145);
 const INLINE_MARKDOWN_PILL_SHIFT_DURATION: Duration = Duration::from_millis(130);
 const INLINE_MARKDOWN_PILL_EXIT_DURATION: Duration = Duration::from_millis(125);
@@ -230,6 +239,20 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
     );
     let rendered_body_lines = single_session_rendered_body_lines_for_tick(app, size, spinner_tick);
     push_single_session_stdin_overlay(&mut vertices, app, size, &rendered_body_lines, None);
+    let viewport = single_session_body_viewport_from_lines(
+        app,
+        size,
+        smooth_scroll_lines,
+        &rendered_body_lines,
+    );
+    push_single_session_transcript_message_highlights_from_viewport(
+        &mut vertices,
+        app,
+        size,
+        &viewport,
+        rendered_body_lines.len(),
+        None,
+    );
     push_single_session_transcript_cards(
         &mut vertices,
         app,
@@ -301,6 +324,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -318,6 +342,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
     composer_motion: Option<&ComposerMotionFrame>,
     attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
     stdin_overlay_motion: Option<&StdinOverlayMotionFrame>,
+    transcript_message_motion: Option<&TranscriptMessageMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     inline_markdown_motion: Option<&InlineMarkdownPillMotionFrame>,
     tool_motion: &ToolCardMotionFrame,
@@ -336,6 +361,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
         composer_motion,
         attachment_chip_motion,
         stdin_overlay_motion,
+        transcript_message_motion,
         transcript_motion,
         inline_markdown_motion,
         Some(tool_motion),
@@ -357,6 +383,7 @@ fn build_single_session_vertices_with_cached_body_internal(
     composer_motion: Option<&ComposerMotionFrame>,
     attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
     stdin_overlay_motion: Option<&StdinOverlayMotionFrame>,
+    transcript_message_motion: Option<&TranscriptMessageMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     inline_markdown_motion: Option<&InlineMarkdownPillMotionFrame>,
     tool_motion: Option<&ToolCardMotionFrame>,
@@ -449,6 +476,14 @@ fn build_single_session_vertices_with_cached_body_internal(
         size,
         smooth_scroll_lines,
         rendered_body_lines,
+    );
+    push_single_session_transcript_message_highlights_from_viewport(
+        &mut vertices,
+        app,
+        size,
+        &viewport,
+        rendered_body_lines.len(),
+        transcript_message_motion,
     );
     push_single_session_transcript_cards_from_viewport(
         &mut vertices,
@@ -3163,6 +3198,80 @@ impl TranscriptCardMotionFrame {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum TranscriptMessageRole {
+    User,
+    Assistant,
+    Meta,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct TranscriptMessageRun {
+    line: usize,
+    line_count: usize,
+    role: TranscriptMessageRole,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TranscriptMessageVisual {
+    opacity: f32,
+    y_offset_pixels: f32,
+    scale: f32,
+}
+
+impl Default for TranscriptMessageVisual {
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            y_offset_pixels: 0.0,
+            scale: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TranscriptMessageLineShift {
+    from_line: usize,
+    started_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TranscriptMessageMotionState {
+    run: TranscriptMessageRun,
+    entered_at: Option<Instant>,
+    line_shift: Option<TranscriptMessageLineShift>,
+    last_seen_generation: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TranscriptMessageMotionFrame {
+    visuals: HashMap<u64, TranscriptMessageVisual>,
+    active: bool,
+    cache_key: u64,
+}
+
+impl TranscriptMessageMotionFrame {
+    pub(crate) fn visual_for_key(&self, key: u64) -> Option<TranscriptMessageVisual> {
+        self.visuals.get(&key).copied()
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub(crate) fn cache_key(&self) -> u64 {
+        self.cache_key
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct TranscriptMessageMotionRegistry {
+    initialized: bool,
+    generation: u64,
+    states: HashMap<u64, TranscriptMessageMotionState>,
+}
+
 #[derive(Default)]
 pub(crate) struct TranscriptCardMotionRegistry {
     initialized: bool,
@@ -3247,6 +3356,75 @@ pub(crate) struct InlineMarkdownPillMotionRegistry {
     initialized: bool,
     generation: u64,
     states: HashMap<u64, InlineMarkdownPillMotionState>,
+}
+
+impl TranscriptMessageMotionRegistry {
+    pub(crate) fn frame(
+        &mut self,
+        lines: &[SingleSessionStyledLine],
+        line_height: f32,
+        now: Instant,
+    ) -> TranscriptMessageMotionFrame {
+        self.generation = self.generation.wrapping_add(1).max(1);
+        let generation = self.generation;
+        let reduced_motion = crate::animation::desktop_reduced_motion_enabled();
+        let animate_new_messages = self.initialized && !reduced_motion;
+        self.initialized = true;
+
+        let mut visuals = HashMap::new();
+        let mut active = false;
+        let mut occurrences = HashMap::new();
+        for run in single_session_transcript_message_runs(lines) {
+            let key = transcript_message_motion_key(lines, &run, &mut occurrences);
+            let state = self
+                .states
+                .entry(key)
+                .or_insert_with(|| TranscriptMessageMotionState {
+                    run,
+                    entered_at: animate_new_messages.then_some(now),
+                    line_shift: None,
+                    last_seen_generation: generation,
+                });
+            state.last_seen_generation = generation;
+
+            if reduced_motion {
+                state.entered_at = None;
+                state.line_shift = None;
+            }
+
+            if state.run.line != run.line {
+                if reduced_motion {
+                    state.line_shift = None;
+                } else {
+                    state.line_shift = Some(TranscriptMessageLineShift {
+                        from_line: state.run.line,
+                        started_at: now,
+                    });
+                }
+            }
+            state.run = run;
+
+            let (visual, visual_active) =
+                transcript_message_visual_from_state(state, line_height, now);
+            active |= visual_active;
+            visuals.insert(key, visual);
+        }
+
+        self.states
+            .retain(|_, state| state.last_seen_generation == generation);
+
+        TranscriptMessageMotionFrame {
+            cache_key: transcript_message_motion_cache_key(&visuals, active),
+            visuals,
+            active,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.generation = 0;
+        self.states.clear();
+    }
 }
 
 impl TranscriptCardMotionRegistry {
@@ -4683,6 +4861,43 @@ fn transcript_card_visual_from_state(
     (visual, active)
 }
 
+fn transcript_message_visual_from_state(
+    state: &mut TranscriptMessageMotionState,
+    line_height: f32,
+    now: Instant,
+) -> (TranscriptMessageVisual, bool) {
+    let mut visual = TranscriptMessageVisual::default();
+    let mut active = false;
+
+    if let Some(entered_at) = state.entered_at {
+        let (progress, running) =
+            timed_animation_progress(entered_at, now, TRANSCRIPT_MESSAGE_ENTRY_DURATION);
+        let eased = ease_out_cubic_local(progress);
+        visual.opacity = eased;
+        visual.y_offset_pixels += (1.0 - eased) * TRANSCRIPT_MESSAGE_ENTRY_OFFSET_PIXELS;
+        visual.scale =
+            TRANSCRIPT_MESSAGE_ENTRY_SCALE + (1.0 - TRANSCRIPT_MESSAGE_ENTRY_SCALE) * eased;
+        active |= running;
+        if !running {
+            state.entered_at = None;
+        }
+    }
+
+    if let Some(shift) = state.line_shift {
+        let (progress, running) =
+            timed_animation_progress(shift.started_at, now, TRANSCRIPT_MESSAGE_SHIFT_DURATION);
+        let eased = ease_out_cubic_local(progress);
+        let line_delta = shift.from_line as f32 - state.run.line as f32;
+        visual.y_offset_pixels += line_delta * line_height * (1.0 - eased);
+        active |= running;
+        if !running {
+            state.line_shift = None;
+        }
+    }
+
+    (visual, active)
+}
+
 fn exiting_transcript_card_visual(progress: f32) -> TranscriptCardVisual {
     let eased = ease_out_cubic_local(progress);
     TranscriptCardVisual {
@@ -4770,6 +4985,54 @@ fn inline_markdown_pill_visual_rect(rect: Rect, visual: InlineMarkdownPillVisual
 fn inline_markdown_pill_alpha(mut color: [f32; 4], opacity: f32) -> [f32; 4] {
     color[3] *= opacity.clamp(0.0, 1.0);
     color
+}
+
+fn transcript_message_motion_key(
+    lines: &[SingleSessionStyledLine],
+    run: &TranscriptMessageRun,
+    occurrences: &mut HashMap<u64, usize>,
+) -> u64 {
+    let base_key = transcript_message_motion_base_key(lines, run);
+    let occurrence = occurrences.entry(base_key).or_insert(0);
+    let mut hasher = DefaultHasher::new();
+    base_key.hash(&mut hasher);
+    occurrence.hash(&mut hasher);
+    *occurrence += 1;
+    hasher.finish()
+}
+
+fn transcript_message_motion_base_key(
+    lines: &[SingleSessionStyledLine],
+    run: &TranscriptMessageRun,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    run.role.hash(&mut hasher);
+    run.line_count.hash(&mut hasher);
+    let end = run.line.saturating_add(run.line_count).min(lines.len());
+    for line in &lines[run.line.min(lines.len())..end] {
+        line.style.hash(&mut hasher);
+        line.text.hash(&mut hasher);
+        line.inline_spans.hash(&mut hasher);
+        line.tool.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn transcript_message_motion_cache_key(
+    visuals: &HashMap<u64, TranscriptMessageVisual>,
+    active: bool,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    active.hash(&mut hasher);
+    let mut entries = visuals.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|(key, _)| **key);
+    for (key, visual) in entries {
+        key.hash(&mut hasher);
+        hash_f32(visual.opacity, &mut hasher);
+        hash_f32(visual.y_offset_pixels, &mut hasher);
+        hash_f32(visual.scale, &mut hasher);
+    }
+    hasher.finish()
 }
 
 fn transcript_card_motion_key(
@@ -4952,6 +5215,120 @@ fn push_single_session_transcript_cards_from_viewport(
             );
         }
     }
+}
+
+fn push_single_session_transcript_message_highlights_from_viewport(
+    vertices: &mut Vec<Vertex>,
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    viewport: &SingleSessionBodyViewport,
+    total_lines: usize,
+    message_motion: Option<&TranscriptMessageMotionFrame>,
+) {
+    if app.messages.is_empty() && app.streaming_response.is_empty() && app.error.is_none() {
+        return;
+    }
+
+    let typography = single_session_typography_for_scale(app.text_scale());
+    let line_height = typography.body_size * typography.body_line_height;
+    let width = (single_session_content_right(size) - (PANEL_TITLE_LEFT_PADDING - 7.0)).max(1.0);
+    let body_top = single_session_body_top_for_app(app, size);
+    let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
+
+    let mut occurrences = HashMap::new();
+    for run in single_session_transcript_message_runs(&viewport.lines) {
+        let motion_key = transcript_message_motion_key(&viewport.lines, &run, &mut occurrences);
+        let visual = message_motion
+            .and_then(|motion| motion.visual_for_key(motion_key))
+            .unwrap_or_default();
+        push_single_session_transcript_message_highlight(
+            vertices,
+            run,
+            visual,
+            TranscriptCardGeometryContext {
+                size,
+                line_height,
+                width,
+                body_top,
+                body_bottom,
+                top_offset_pixels: viewport.top_offset_pixels,
+            },
+        );
+    }
+}
+
+fn push_single_session_transcript_message_highlight(
+    vertices: &mut Vec<Vertex>,
+    run: TranscriptMessageRun,
+    visual: TranscriptMessageVisual,
+    context: TranscriptCardGeometryContext,
+) {
+    if visual.opacity <= 0.001 {
+        return;
+    }
+    let Some(color) = transcript_message_highlight_color(run.role) else {
+        return;
+    };
+    let rect = Rect {
+        x: PANEL_TITLE_LEFT_PADDING - 7.0,
+        y: context.body_top
+            + context.top_offset_pixels
+            + run.line as f32 * context.line_height
+            + 2.0,
+        width: context.width,
+        height: (run.line_count as f32 * context.line_height - 4.0).max(1.0),
+    };
+    let rect = transcript_message_visual_rect(rect, visual);
+    let Some(rect) = clip_rect_to_vertical_bounds(rect, context.body_top, context.body_bottom)
+    else {
+        return;
+    };
+    let opacity = visual.opacity.clamp(0.0, 1.0);
+    push_rounded_rect(
+        vertices,
+        rect,
+        8.0,
+        transcript_message_alpha(color, opacity),
+        context.size,
+    );
+    push_rounded_rect(
+        vertices,
+        Rect {
+            x: rect.x,
+            y: rect.y + 2.0,
+            width: 2.2,
+            height: (rect.height - 4.0).max(1.0),
+        },
+        1.1,
+        transcript_message_alpha(color, opacity * TRANSCRIPT_MESSAGE_ACCENT_ALPHA_MULTIPLIER),
+        context.size,
+    );
+}
+
+fn transcript_message_highlight_color(role: TranscriptMessageRole) -> Option<[f32; 4]> {
+    Some(match role {
+        TranscriptMessageRole::User => TRANSCRIPT_MESSAGE_USER_HIGHLIGHT_COLOR,
+        TranscriptMessageRole::Assistant => TRANSCRIPT_MESSAGE_ASSISTANT_HIGHLIGHT_COLOR,
+        TranscriptMessageRole::Meta => TRANSCRIPT_MESSAGE_META_HIGHLIGHT_COLOR,
+        TranscriptMessageRole::Error => TRANSCRIPT_MESSAGE_ERROR_HIGHLIGHT_COLOR,
+    })
+}
+
+fn transcript_message_visual_rect(rect: Rect, visual: TranscriptMessageVisual) -> Rect {
+    let scale = visual.scale.clamp(0.01, 1.5);
+    let width = rect.width * scale;
+    let height = rect.height * scale;
+    Rect {
+        x: rect.x + (rect.width - width) * 0.5,
+        y: rect.y + (rect.height - height) * 0.5 + visual.y_offset_pixels,
+        width,
+        height,
+    }
+}
+
+fn transcript_message_alpha(mut color: [f32; 4], opacity: f32) -> [f32; 4] {
+    color[3] *= opacity.clamp(0.0, 1.0);
+    color
 }
 
 #[derive(Clone, Copy)]
@@ -6195,6 +6572,75 @@ pub(crate) fn single_session_transcript_card_runs(
         runs.push(run);
     }
     runs
+}
+
+pub(crate) fn single_session_transcript_message_runs(
+    lines: &[SingleSessionStyledLine],
+) -> Vec<TranscriptMessageRun> {
+    let mut runs = Vec::new();
+    let mut current: Option<TranscriptMessageRun> = None;
+
+    for (line, styled_line) in lines.iter().enumerate() {
+        let Some(role) = transcript_message_role_for_style(styled_line.style) else {
+            if let Some(run) = current.take() {
+                runs.push(run);
+            }
+            continue;
+        };
+
+        match &mut current {
+            Some(run) if run.role == role && run.line + run.line_count == line => {
+                run.line_count += 1;
+            }
+            Some(run) => {
+                runs.push(*run);
+                current = Some(TranscriptMessageRun {
+                    line,
+                    line_count: 1,
+                    role,
+                });
+            }
+            None => {
+                current = Some(TranscriptMessageRun {
+                    line,
+                    line_count: 1,
+                    role,
+                });
+            }
+        }
+    }
+
+    if let Some(run) = current {
+        runs.push(run);
+    }
+    runs
+}
+
+fn transcript_message_role_for_style(
+    style: SingleSessionLineStyle,
+) -> Option<TranscriptMessageRole> {
+    match style {
+        SingleSessionLineStyle::User | SingleSessionLineStyle::UserContinuation => {
+            Some(TranscriptMessageRole::User)
+        }
+        SingleSessionLineStyle::Assistant
+        | SingleSessionLineStyle::AssistantHeading
+        | SingleSessionLineStyle::AssistantQuote
+        | SingleSessionLineStyle::AssistantTable
+        | SingleSessionLineStyle::AssistantLink
+        | SingleSessionLineStyle::AssistantMedia
+        | SingleSessionLineStyle::CodeHeader
+        | SingleSessionLineStyle::Code => Some(TranscriptMessageRole::Assistant),
+        SingleSessionLineStyle::Meta | SingleSessionLineStyle::Status => {
+            Some(TranscriptMessageRole::Meta)
+        }
+        SingleSessionLineStyle::Error => Some(TranscriptMessageRole::Error),
+        SingleSessionLineStyle::Tool
+        | SingleSessionLineStyle::OverlayTitle
+        | SingleSessionLineStyle::Overlay
+        | SingleSessionLineStyle::OverlaySelection
+        | SingleSessionLineStyle::Blank => None,
+    }
 }
 
 fn single_session_line_card_color(style: SingleSessionLineStyle) -> Option<[f32; 4]> {
@@ -9092,6 +9538,23 @@ mod tests {
         panic!("missing transcript card run at line {target_line}");
     }
 
+    fn test_transcript_message_visual_for_line(
+        frame: &TranscriptMessageMotionFrame,
+        lines: &[SingleSessionStyledLine],
+        target_line: usize,
+    ) -> TranscriptMessageVisual {
+        let mut occurrences = HashMap::new();
+        for run in single_session_transcript_message_runs(lines) {
+            let key = transcript_message_motion_key(lines, &run, &mut occurrences);
+            if run.line == target_line {
+                return frame
+                    .visual_for_key(key)
+                    .expect("transcript message visual");
+            }
+        }
+        panic!("missing transcript message run at line {target_line}");
+    }
+
     fn test_inline_markdown_pill_visual_for_line(
         frame: &InlineMarkdownPillMotionFrame,
         lines: &[SingleSessionStyledLine],
@@ -9501,6 +9964,85 @@ mod tests {
         assert!(exit_mid.is_active());
         assert!(exit_mid_visual.opacity > 0.0 && exit_mid_visual.opacity < 1.0);
         assert!(exit_mid_visual.y_offset_pixels < 0.0);
+    }
+
+    #[test]
+    fn transcript_message_motion_animates_entry_and_layout_shift() {
+        let mut registry = TranscriptMessageMotionRegistry::default();
+        let now = Instant::now();
+        let line_height = 26.0;
+        let user = SingleSessionStyledLine::new("1  hello", SingleSessionLineStyle::User);
+        let spacer = SingleSessionStyledLine::new("", SingleSessionLineStyle::Blank);
+        let assistant = SingleSessionStyledLine::new("answer", SingleSessionLineStyle::Assistant);
+        let intro = SingleSessionStyledLine::new("notice", SingleSessionLineStyle::Meta);
+
+        let initial = registry.frame(std::slice::from_ref(&user), line_height, now);
+        let initial_visual =
+            test_transcript_message_visual_for_line(&initial, std::slice::from_ref(&user), 0);
+        assert_eq!(initial_visual, TranscriptMessageVisual::default());
+        assert!(!initial.is_active());
+
+        let lines = vec![user.clone(), spacer.clone(), assistant];
+        let entry = registry.frame(&lines, line_height, now + Duration::from_millis(5));
+        let entry_visual = test_transcript_message_visual_for_line(&entry, &lines, 2);
+        assert!(entry.is_active());
+        assert_eq!(entry_visual.opacity, 0.0);
+        assert!(entry_visual.y_offset_pixels > 0.0);
+        assert!(entry_visual.scale < 1.0);
+
+        let shifted_lines = vec![intro, user.clone(), spacer];
+        let shift = registry.frame(&shifted_lines, line_height, now + Duration::from_millis(10));
+        let shift_visual = test_transcript_message_visual_for_line(&shift, &shifted_lines, 1);
+        assert!(shift.is_active());
+        assert!(shift_visual.y_offset_pixels < -line_height * 0.9);
+
+        let settled = registry.frame(
+            &shifted_lines,
+            line_height,
+            now + Duration::from_millis(10) + TRANSCRIPT_MESSAGE_SHIFT_DURATION * 2,
+        );
+        let settled_visual = test_transcript_message_visual_for_line(&settled, &shifted_lines, 1);
+        assert_eq!(settled_visual.y_offset_pixels, 0.0);
+        assert_eq!(settled_visual.opacity, 1.0);
+        assert!(!settled.is_active());
+    }
+
+    #[test]
+    fn transcript_message_runs_group_roles_and_skip_tool_chrome() {
+        let lines = vec![
+            SingleSessionStyledLine::new("1  hello", SingleSessionLineStyle::User),
+            SingleSessionStyledLine::new("   again", SingleSessionLineStyle::UserContinuation),
+            SingleSessionStyledLine::new("tool", SingleSessionLineStyle::Tool),
+            SingleSessionStyledLine::new("answer", SingleSessionLineStyle::Assistant),
+            SingleSessionStyledLine::new("meta", SingleSessionLineStyle::Meta),
+        ];
+
+        let runs = single_session_transcript_message_runs(&lines);
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].line, 0);
+        assert_eq!(runs[0].line_count, 2);
+        assert_eq!(runs[0].role, TranscriptMessageRole::User);
+        assert_eq!(runs[1].line, 3);
+        assert_eq!(runs[1].role, TranscriptMessageRole::Assistant);
+        assert_eq!(runs[2].line, 4);
+        assert_eq!(runs[2].role, TranscriptMessageRole::Meta);
+    }
+
+    #[test]
+    fn reduced_motion_snaps_transcript_message_motion() {
+        let _guard = crate::animation::DesktopReducedMotionEnvGuard::set(true);
+        let mut registry = TranscriptMessageMotionRegistry::default();
+        let now = Instant::now();
+        let user = SingleSessionStyledLine::new("1  hello", SingleSessionLineStyle::User);
+        let assistant = SingleSessionStyledLine::new("answer", SingleSessionLineStyle::Assistant);
+
+        registry.frame(std::slice::from_ref(&user), 24.0, now);
+        let lines = vec![user, assistant];
+        let frame = registry.frame(&lines, 24.0, now + Duration::from_millis(5));
+        let visual = test_transcript_message_visual_for_line(&frame, &lines, 1);
+
+        assert_eq!(visual, TranscriptMessageVisual::default());
+        assert!(!frame.is_active());
     }
 
     #[test]
