@@ -2161,8 +2161,8 @@ pub(super) fn handle_mission_command(app: &mut App, trimmed: &str) -> bool {
 fn build_mission_dispatch_prompt(mission: &crate::mission::Mission, is_new: bool) -> String {
     let action = if is_new { "Start" } else { "Continue" };
     format!(
-        "{action} the active mission now.\n\nObjective: {}\n\nLong-horizon intent: {}\n\nOperate autonomously: create or refresh todos, expand semantically adjacent work, validate progress, and continue until complete, blocked, unsafe, paused, budget-limited, or a user decision is required. Before reporting completion, run maximum reasonable verification and provide evidence plus remaining gaps.",
-        mission.objective, mission.long_horizon_intent
+        "{action} the active mission now.\n\n{}",
+        crate::mission::render_mission_continuation_prompt(mission)
     )
 }
 
