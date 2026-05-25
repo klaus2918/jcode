@@ -17,6 +17,22 @@ use std::time::{Duration, Instant};
 
 const INPUT_SHELL_MAX_OUTPUT_LEN: usize = 30_000;
 
+fn mission_turn_reminder(session_id: &str) -> Option<String> {
+    crate::mission::active_system_reminder(session_id)
+        .map_err(|err| crate::logging::warn(&format!("failed to load active mission: {err}")))
+        .ok()
+        .flatten()
+}
+
+fn merge_turn_reminders(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(format!("{}\n\n{}", a, b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
 pub(super) fn extract_input_shell_command(input: &str) -> Option<&str> {
     input.trim().strip_prefix('!').map(str::trim)
 }
@@ -2095,6 +2111,7 @@ impl App {
             ));
         }
         if images.is_empty() {
+            self.current_turn_system_reminder = mission_turn_reminder(&self.session.id);
             self.add_provider_message(Message::user(&input));
             self.session.add_message(
                 Role::User,
@@ -2104,6 +2121,7 @@ impl App {
                 }],
             );
         } else {
+            self.current_turn_system_reminder = mission_turn_reminder(&self.session.id);
             self.add_provider_message(Message::user_with_images(&input, images.clone()));
             let mut blocks: Vec<ContentBlock> = images
                 .into_iter()
@@ -2174,7 +2192,8 @@ impl App {
                 }
             }
 
-            self.current_turn_system_reminder = reminder;
+            self.current_turn_system_reminder =
+                merge_turn_reminders(reminder, mission_turn_reminder(&self.session.id));
 
             if has_combined {
                 self.add_provider_message(Message::user(&combined));

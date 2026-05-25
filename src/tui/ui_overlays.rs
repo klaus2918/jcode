@@ -254,6 +254,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(Line::from(""));
     lines.push(help_entry("/memory [on|off]", "Toggle memory features"));
     lines.push(help_entry(
+        "/mission <objective>",
+        "Start/show an autonomous mission (/goal alias)",
+    ));
+    lines.push(help_entry(
         "/initiatives",
         "Open initiatives overview / resume an initiative",
     ));
