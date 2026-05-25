@@ -232,69 +232,31 @@ fn active_batch_progress(app: &dyn TuiState) -> Option<crate::bus::BatchProgress
     }
 }
 
-fn active_tool_call(app: &dyn TuiState) -> Option<ToolCall> {
-    let ProcessingStatus::RunningTool(name) = app.status() else {
-        return None;
-    };
-
-    let calls = app.streaming_tool_calls();
-    calls
-        .iter()
-        .rev()
-        .find(|tc| tc.name == name)
-        .cloned()
-        .or_else(|| calls.last().cloned())
-        .or_else(|| {
-            Some(ToolCall {
-                id: String::new(),
-                name,
-                input: serde_json::Value::Null,
-                intent: None,
-            })
-        })
-}
-
 pub(super) fn active_batch_progress_hash(app: &dyn TuiState) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-
-    if let Some(progress) = active_batch_progress(app) {
-        0u8.hash(&mut hasher);
-        if progress.completed < progress.total {
-            super::activity_indicator_frame_index(app.animation_elapsed(), 12.5).hash(&mut hasher);
-            super::animated_tool_halo_frame_index(app.animation_elapsed()).hash(&mut hasher);
-        }
-        progress.total.hash(&mut hasher);
-        progress.completed.hash(&mut hasher);
-        progress.last_completed.hash(&mut hasher);
-        for subcall in &progress.subcalls {
-            subcall.index.hash(&mut hasher);
-            subcall.tool_call.id.hash(&mut hasher);
-            subcall.tool_call.name.hash(&mut hasher);
-            match subcall.state {
-                crate::bus::BatchSubcallState::Running => 0u8,
-                crate::bus::BatchSubcallState::Succeeded => 1u8,
-                crate::bus::BatchSubcallState::Failed => 2u8,
-            }
-            .hash(&mut hasher);
-            if let Ok(input) = serde_json::to_string(&subcall.tool_call.input) {
-                input.hash(&mut hasher);
-            }
-        }
-        return hasher.finish();
-    }
-
-    let Some(tool_call) = active_tool_call(app) else {
+    let Some(progress) = active_batch_progress(app) else {
         return 0;
     };
 
-    1u8.hash(&mut hasher);
-    super::activity_indicator_frame_index(app.animation_elapsed(), 12.5).hash(&mut hasher);
-    super::animated_tool_halo_frame_index(app.animation_elapsed()).hash(&mut hasher);
-    tool_call.id.hash(&mut hasher);
-    tool_call.name.hash(&mut hasher);
-    tool_call.intent.hash(&mut hasher);
-    if let Ok(input) = serde_json::to_string(&tool_call.input) {
-        input.hash(&mut hasher);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if progress.completed < progress.total {
+        super::activity_indicator_frame_index(app.animation_elapsed(), 12.5).hash(&mut hasher);
+    }
+    progress.total.hash(&mut hasher);
+    progress.completed.hash(&mut hasher);
+    progress.last_completed.hash(&mut hasher);
+    for subcall in &progress.subcalls {
+        subcall.index.hash(&mut hasher);
+        subcall.tool_call.id.hash(&mut hasher);
+        subcall.tool_call.name.hash(&mut hasher);
+        match subcall.state {
+            crate::bus::BatchSubcallState::Running => 0u8,
+            crate::bus::BatchSubcallState::Succeeded => 1u8,
+            crate::bus::BatchSubcallState::Failed => 2u8,
+        }
+        .hash(&mut hasher);
+        if let Ok(input) = serde_json::to_string(&subcall.tool_call.input) {
+            input.hash(&mut hasher);
+        }
     }
     hasher.finish()
 }
@@ -311,8 +273,6 @@ fn prepare_active_batch_progress(
     let centered = app.centered_mode();
     let accent = rgb(255, 193, 94);
     let spinner = super::activity_indicator(app.animation_elapsed(), 12.5);
-    let (left_halo, right_halo) = super::animated_tool_halo_segments(app.animation_elapsed());
-    let halo_style = Style::default().fg(super::animated_tool_color(app.animation_elapsed()));
     let block_width = if centered {
         super::centered_content_block_width(width, 96)
     } else {
@@ -326,8 +286,7 @@ fn prepare_active_batch_progress(
     }
 
     let mut header = vec![
-        Span::styled(format!("  {} ", left_halo), halo_style),
-        Span::styled(format!("{} ", spinner), Style::default().fg(accent)),
+        Span::styled(format!("  {} ", spinner), Style::default().fg(accent)),
         Span::styled("batch", Style::default().fg(tool_color())),
         Span::styled(
             format!(" · {}/{} done", progress.completed, progress.total),
@@ -344,10 +303,9 @@ fn prepare_active_batch_progress(
             Style::default().fg(dim_color()),
         ));
     }
-    header.push(Span::styled(format!(" {}", right_halo), halo_style));
     lines.push(super::truncate_line_with_ellipsis_to_width(
         &Line::from(header),
-        row_width,
+        width.saturating_sub(1) as usize,
     ));
 
     let mut hidden_completed = 0usize;
@@ -377,93 +335,6 @@ fn prepare_active_batch_progress(
             Style::default().fg(dim_color()),
         )));
     }
-
-    if centered {
-        super::left_pad_lines_to_block_width(&mut lines, width, block_width);
-    }
-
-    wrap_lines_with_map(lines, &[], &[], &[], &[], &[], width, &[], &[])
-}
-
-fn prepare_active_tool_progress(
-    app: &dyn TuiState,
-    width: u16,
-    prefix_blank: bool,
-) -> PreparedMessages {
-    if active_batch_progress(app).is_some() {
-        return prepare_active_batch_progress(app, width, prefix_blank);
-    }
-
-    let Some(tool_call) = active_tool_call(app) else {
-        return empty_prepared_messages();
-    };
-
-    let centered = app.centered_mode();
-    let elapsed = app.animation_elapsed();
-    let spinner = super::activity_indicator(elapsed, 12.5);
-    let (left_halo, right_halo) = super::animated_tool_halo_segments(elapsed);
-    let halo_color = super::animated_tool_color(elapsed);
-    let halo_style = Style::default().fg(halo_color);
-    let block_width = if centered {
-        super::centered_content_block_width(width, 96)
-    } else {
-        width as usize
-    };
-    let row_width = block_width.saturating_sub(1);
-    let display_name = tools_ui::resolve_display_tool_name(&tool_call.name).to_string();
-    let reserved_width = unicode_width::UnicodeWidthStr::width(
-        format!(
-            "  {} {} {} {}",
-            left_halo, spinner, display_name, right_halo
-        )
-        .as_str(),
-    )
-    .saturating_add(6);
-    let summary_budget = row_width.saturating_sub(reserved_width);
-    let mut summary = tools_ui::get_tool_summary_with_budget(&tool_call, 80, Some(summary_budget));
-    if summary.trim().is_empty() && tool_call.input.is_null() {
-        summary = "preparing input…".to_string();
-    }
-
-    let intent = tool_call
-        .intent
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    if prefix_blank {
-        lines.push(Line::from(""));
-    }
-
-    let mut spans = vec![
-        Span::styled(format!("  {} ", left_halo), halo_style),
-        Span::styled(format!("{} ", spinner), halo_style),
-        Span::styled(display_name, Style::default().fg(halo_color).bold()),
-    ];
-
-    if let Some(intent) = intent {
-        spans.push(Span::styled(" · ", Style::default().fg(dim_color())));
-        spans.push(Span::styled(
-            intent.to_string(),
-            Style::default().fg(tool_color()),
-        ));
-        if !summary.is_empty() && summary != intent {
-            spans.push(Span::styled(" · ", Style::default().fg(dim_color())));
-            spans.push(Span::styled(summary, Style::default().fg(dim_color())));
-        }
-    } else if !summary.is_empty() {
-        spans.push(Span::styled(
-            format!(" {}", summary),
-            Style::default().fg(dim_color()),
-        ));
-    }
-    spans.push(Span::styled(format!(" {}", right_halo), halo_style));
-
-    lines.push(super::truncate_line_with_ellipsis_to_width(
-        &Line::from(spans),
-        row_width,
-    ));
 
     if centered {
         super::left_pad_lines_to_block_width(&mut lines, width, block_width);
@@ -542,11 +413,14 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
     let body_ms = body_start.elapsed().as_secs_f64() * 1000.0;
 
     let batch_start = Instant::now();
-    let has_batch_progress =
-        active_batch_progress(app).is_some() || active_tool_call(app).is_some();
+    let has_batch_progress = active_batch_progress(app).is_some();
     let batch_prefix_blank = has_batch_progress && !body_prepared.wrapped_lines.is_empty();
     let batch_progress_prepared = if has_batch_progress {
-        Arc::new(prepare_active_tool_progress(app, width, batch_prefix_blank))
+        Arc::new(prepare_active_batch_progress(
+            app,
+            width,
+            batch_prefix_blank,
+        ))
     } else {
         Arc::new(empty_prepared_messages())
     };
