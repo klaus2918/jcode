@@ -1517,6 +1517,49 @@ fn single_session_vertices_draw_attachment_chips_near_composer() {
     ));
 }
 
+#[test]
+fn single_session_vertices_draw_stdin_overlay_chrome_and_submit_affordance() {
+    let size = PhysicalSize::new(900, 700);
+    let empty_app = SingleSessionApp::new(None);
+    let empty_vertices = build_single_session_vertices(&empty_app, size, 0.0, 0);
+    assert!(!vertices_have_color(
+        &empty_vertices,
+        STDIN_OVERLAY_BACKGROUND_COLOR
+    ));
+
+    let mut app = SingleSessionApp::new(None);
+    app.apply_session_event(session_launch::DesktopSessionEvent::StdinRequest {
+        request_id: "stdin-1".to_string(),
+        prompt: "code:".to_string(),
+        is_password: false,
+        tool_call_id: "tool-1".to_string(),
+    });
+    let requested_vertices = build_single_session_vertices(&app, size, 0.0, 0);
+    assert!(vertices_have_color(
+        &requested_vertices,
+        STDIN_OVERLAY_BACKGROUND_COLOR
+    ));
+    assert!(vertices_have_color(
+        &requested_vertices,
+        STDIN_OVERLAY_BORDER_COLOR
+    ));
+    assert!(vertices_have_rgb(
+        &requested_vertices,
+        STDIN_OVERLAY_INPUT_RAIL_COLOR
+    ));
+    assert!(!vertices_have_color(
+        &requested_vertices,
+        STDIN_OVERLAY_SUBMIT_COLOR
+    ));
+
+    app.handle_key(KeyInput::Character("ready".to_string()));
+    let typed_vertices = build_single_session_vertices(&app, size, 0.0, 0);
+    assert!(vertices_have_color(
+        &typed_vertices,
+        STDIN_OVERLAY_SUBMIT_COLOR
+    ));
+}
+
 fn vertices_have_bottom_center_rule(vertices: &[Vertex], color: [f32; 4]) -> bool {
     vertices.iter().any(|vertex| {
         vertex.color == color && vertex.position[1] <= -0.99 && vertex.position[0].abs() < 0.85

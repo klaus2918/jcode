@@ -8188,6 +8188,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
     inline_widget_list_reflow_cache_key: u64,
     composer_motion_cache_key: u64,
     attachment_chip_motion_cache_key: u64,
+    stdin_overlay_motion_cache_key: u64,
     transcript_motion_cache_key: u64,
     inline_markdown_motion_cache_key: u64,
     scrollbar_motion_cache_key: u64,
@@ -8220,6 +8221,7 @@ fn single_session_streaming_primitive_geometry_cache_key(
     inline_widget_list_reflow_cache_key.hash(&mut hasher);
     composer_motion_cache_key.hash(&mut hasher);
     attachment_chip_motion_cache_key.hash(&mut hasher);
+    stdin_overlay_motion_cache_key.hash(&mut hasher);
     transcript_motion_cache_key.hash(&mut hasher);
     inline_markdown_motion_cache_key.hash(&mut hasher);
     scrollbar_motion_cache_key.hash(&mut hasher);
@@ -8268,6 +8270,7 @@ struct Canvas {
     inline_widget_list_reflow_motion: InlineWidgetListReflowMotionRegistry,
     composer_motion: ComposerMotionRegistry,
     attachment_chip_motion: AttachmentChipMotionRegistry,
+    stdin_overlay_motion: StdinOverlayMotionRegistry,
     transcript_card_motion: TranscriptCardMotionRegistry,
     inline_markdown_pill_motion: InlineMarkdownPillMotionRegistry,
     tool_card_motion: ToolCardMotionRegistry,
@@ -8392,6 +8395,7 @@ impl Canvas {
             inline_widget_list_reflow_motion: InlineWidgetListReflowMotionRegistry::default(),
             composer_motion: ComposerMotionRegistry::default(),
             attachment_chip_motion: AttachmentChipMotionRegistry::default(),
+            stdin_overlay_motion: StdinOverlayMotionRegistry::default(),
             transcript_card_motion: TranscriptCardMotionRegistry::default(),
             inline_markdown_pill_motion: InlineMarkdownPillMotionRegistry::default(),
             tool_card_motion: ToolCardMotionRegistry::default(),
@@ -9501,6 +9505,11 @@ impl Canvas {
                     .frame(single_session, now);
                 let composer_motion = self.composer_motion.frame(single_session, now);
                 let attachment_chip_motion = self.attachment_chip_motion.frame(single_session, now);
+                let stdin_overlay_motion = self.stdin_overlay_motion.frame(
+                    single_session,
+                    &self.single_session_body_lines,
+                    now,
+                );
                 let tool_motion_lines = single_session_viewport
                     .as_ref()
                     .map(|viewport| viewport.lines.as_slice())
@@ -9537,6 +9546,7 @@ impl Canvas {
                     || inline_list_reflow_motion.is_active()
                     || composer_motion.is_active()
                     || attachment_chip_motion.is_active()
+                    || stdin_overlay_motion.is_active()
                     || transcript_motion.is_active()
                     || inline_markdown_motion.is_active()
                     || tool_motion.is_active()
@@ -9554,6 +9564,7 @@ impl Canvas {
                     inline_list_reflow_motion.cache_key(),
                     composer_motion.cache_key(),
                     attachment_chip_motion.cache_key(),
+                    stdin_overlay_motion.cache_key(),
                     transcript_motion.cache_key(),
                     inline_markdown_motion.cache_key(),
                     scrollbar_motion.cache_key(),
@@ -9578,6 +9589,7 @@ impl Canvas {
                                 Some(&inline_list_reflow_motion),
                                 Some(&composer_motion),
                                 Some(&attachment_chip_motion),
+                                Some(&stdin_overlay_motion),
                                 Some(&transcript_motion),
                                 Some(&inline_markdown_motion),
                                 &tool_motion,
@@ -9602,6 +9614,7 @@ impl Canvas {
                             Some(&inline_list_reflow_motion),
                             Some(&composer_motion),
                             Some(&attachment_chip_motion),
+                            Some(&stdin_overlay_motion),
                             Some(&transcript_motion),
                             Some(&inline_markdown_motion),
                             &tool_motion,
@@ -9617,6 +9630,7 @@ impl Canvas {
                 self.inline_widget_list_reflow_motion.clear();
                 self.composer_motion.clear();
                 self.attachment_chip_motion.clear();
+                self.stdin_overlay_motion.clear();
                 self.transcript_card_motion.clear();
                 self.inline_markdown_pill_motion.clear();
                 self.single_session_scrollbar_motion.clear();

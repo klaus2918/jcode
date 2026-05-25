@@ -76,6 +76,16 @@ const ATTACHMENT_CHIP_VISIBLE_LIMIT: usize = 4;
 pub(crate) const ATTACHMENT_CHIP_BACKGROUND_COLOR: [f32; 4] = [0.940, 0.972, 1.000, 0.720];
 pub(crate) const ATTACHMENT_CHIP_ACCENT_COLOR: [f32; 4] = [0.090, 0.355, 0.900, 0.620];
 pub(crate) const ATTACHMENT_CHIP_EXIT_COLOR: [f32; 4] = [0.530, 0.590, 0.690, 0.430];
+const STDIN_OVERLAY_ENTRY_DURATION: Duration = Duration::from_millis(165);
+const STDIN_OVERLAY_RESIZE_DURATION: Duration = Duration::from_millis(155);
+const STDIN_OVERLAY_EXIT_DURATION: Duration = Duration::from_millis(145);
+const STDIN_OVERLAY_ENTRY_OFFSET_PIXELS: f32 = 9.0;
+const STDIN_OVERLAY_ENTRY_SCALE: f32 = 0.985;
+pub(crate) const STDIN_OVERLAY_BACKGROUND_COLOR: [f32; 4] = [0.966, 0.982, 1.000, 0.640];
+pub(crate) const STDIN_OVERLAY_BORDER_COLOR: [f32; 4] = [0.085, 0.270, 0.760, 0.250];
+pub(crate) const STDIN_OVERLAY_INPUT_RAIL_COLOR: [f32; 4] = [0.115, 0.410, 0.940, 0.300];
+pub(crate) const STDIN_OVERLAY_SUBMIT_COLOR: [f32; 4] = [0.060, 0.500, 0.340, 0.660];
+pub(crate) const STDIN_OVERLAY_EXIT_COLOR: [f32; 4] = [0.500, 0.570, 0.680, 0.420];
 const TOOL_CARD_ENTRY_DURATION: Duration = Duration::from_millis(180);
 const TOOL_CARD_EXIT_DURATION: Duration = Duration::from_millis(160);
 const TOOL_CARD_STATE_TRANSITION_DURATION: Duration = Duration::from_millis(160);
@@ -218,6 +228,8 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         None,
         None,
     );
+    let rendered_body_lines = single_session_rendered_body_lines_for_tick(app, size, spinner_tick);
+    push_single_session_stdin_overlay(&mut vertices, app, size, &rendered_body_lines, None);
     push_single_session_transcript_cards(
         &mut vertices,
         app,
@@ -288,6 +300,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -304,6 +317,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
     inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
     composer_motion: Option<&ComposerMotionFrame>,
     attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
+    stdin_overlay_motion: Option<&StdinOverlayMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     inline_markdown_motion: Option<&InlineMarkdownPillMotionFrame>,
     tool_motion: &ToolCardMotionFrame,
@@ -321,6 +335,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
         inline_list_reflow_motion,
         composer_motion,
         attachment_chip_motion,
+        stdin_overlay_motion,
         transcript_motion,
         inline_markdown_motion,
         Some(tool_motion),
@@ -341,6 +356,7 @@ fn build_single_session_vertices_with_cached_body_internal(
     inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
     composer_motion: Option<&ComposerMotionFrame>,
     attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
+    stdin_overlay_motion: Option<&StdinOverlayMotionFrame>,
     transcript_motion: Option<&TranscriptCardMotionFrame>,
     inline_markdown_motion: Option<&InlineMarkdownPillMotionFrame>,
     tool_motion: Option<&ToolCardMotionFrame>,
@@ -418,6 +434,14 @@ fn build_single_session_vertices_with_cached_body_internal(
         rendered_body_lines.len(),
         inline_selection_motion,
         inline_list_reflow_motion,
+    );
+
+    push_single_session_stdin_overlay(
+        &mut vertices,
+        app,
+        size,
+        rendered_body_lines,
+        stdin_overlay_motion,
     );
 
     let viewport = single_session_body_viewport_from_lines(
@@ -957,6 +981,191 @@ fn push_single_session_attachment_chip(
         with_alpha(COMPOSER_FOCUS_RING_COLOR, 0.42 * visual.opacity),
         size,
     );
+}
+
+fn push_single_session_stdin_overlay(
+    vertices: &mut Vec<Vertex>,
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    rendered_body_lines: &[SingleSessionStyledLine],
+    stdin_overlay_motion: Option<&StdinOverlayMotionFrame>,
+) {
+    let settled_current = stdin_overlay_target(app, rendered_body_lines)
+        .map(|target| (target, StdinOverlayVisual::settled(target)));
+    let current = stdin_overlay_motion
+        .and_then(|motion| motion.current)
+        .or(settled_current);
+    if let Some((target, visual)) = current {
+        push_single_session_stdin_overlay_visual(vertices, app, size, target, visual, false);
+    }
+    if let Some((target, visual)) = stdin_overlay_motion.and_then(|motion| motion.exiting) {
+        push_single_session_stdin_overlay_visual(vertices, app, size, target, visual, true);
+    }
+}
+
+fn push_single_session_stdin_overlay_visual(
+    vertices: &mut Vec<Vertex>,
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    target: StdinOverlayTarget,
+    visual: StdinOverlayVisual,
+    exiting: bool,
+) {
+    if visual.opacity <= 0.001 || visual.scale <= 0.05 {
+        return;
+    }
+    let typography = single_session_typography_for_scale(app.text_scale());
+    let line_height = typography.body_size * typography.body_line_height;
+    let left = PANEL_TITLE_LEFT_PADDING - 10.0;
+    let width = single_session_content_width(size) + 20.0;
+    let body_top = single_session_body_top_for_app(app, size);
+    let body_bottom = single_session_body_bottom_for_total_lines(app, size, target.line_count);
+    let height = (visual.height_lines.max(1.0) * line_height + 18.0)
+        .min((body_bottom - body_top + 20.0).max(line_height + 18.0));
+    let rect = scaled_rect(
+        Rect {
+            x: left,
+            y: body_top - 8.0 + visual.y_offset_pixels,
+            width,
+            height,
+        },
+        visual.scale,
+    );
+    if rect.width <= 12.0 || rect.height <= 10.0 {
+        return;
+    }
+
+    let background = if exiting {
+        mix_color(
+            STDIN_OVERLAY_BACKGROUND_COLOR,
+            STDIN_OVERLAY_EXIT_COLOR,
+            0.42,
+        )
+    } else if target.password {
+        mix_color(
+            STDIN_OVERLAY_BACKGROUND_COLOR,
+            [0.990, 0.968, 1.000, 0.660],
+            0.36,
+        )
+    } else {
+        STDIN_OVERLAY_BACKGROUND_COLOR
+    };
+    push_rounded_rect(
+        vertices,
+        inset_rect(rect, 2.0),
+        15.0,
+        stdin_overlay_alpha([0.020, 0.035, 0.080, 0.070], visual.opacity),
+        size,
+    );
+    push_rounded_rect(
+        vertices,
+        rect,
+        14.0,
+        stdin_overlay_alpha(background, visual.opacity),
+        size,
+    );
+    push_rounded_rect(
+        vertices,
+        Rect {
+            x: rect.x + 7.0,
+            y: rect.y + 7.0,
+            width: 4.0,
+            height: (rect.height - 14.0).max(1.0),
+        },
+        2.0,
+        stdin_overlay_alpha(STDIN_OVERLAY_BORDER_COLOR, visual.opacity * 1.35),
+        size,
+    );
+    push_top_and_side_surface_outline(
+        vertices,
+        rect,
+        1.25,
+        stdin_overlay_alpha(STDIN_OVERLAY_BORDER_COLOR, visual.opacity),
+        size,
+    );
+
+    let input_top = body_top
+        + target.input_line_start as f32 * line_height
+        + visual.y_offset_pixels
+        + line_height * 0.12;
+    let input_height = (target.input_line_count as f32 * line_height - line_height * 0.24).max(8.0);
+    let input_rect = Rect {
+        x: rect.x + 16.0,
+        y: input_top.max(rect.y + 8.0).min(rect.y + rect.height - 10.0),
+        width: (rect.width - 32.0).max(1.0),
+        height: input_height.min((rect.y + rect.height - input_top - 8.0).max(8.0)),
+    };
+    push_rounded_rect(
+        vertices,
+        input_rect,
+        8.0,
+        stdin_overlay_alpha(
+            STDIN_OVERLAY_INPUT_RAIL_COLOR,
+            visual.opacity * (0.55 + 0.45 * visual.input_glow),
+        ),
+        size,
+    );
+
+    if visual.submit_opacity > 0.001 {
+        let pill_width = 44.0;
+        let pill_height = 20.0;
+        let pill = Rect {
+            x: rect.x + rect.width - pill_width - 13.0,
+            y: rect.y + rect.height - pill_height - 10.0,
+            width: pill_width,
+            height: pill_height,
+        };
+        push_rounded_rect(
+            vertices,
+            pill,
+            pill_height * 0.5,
+            stdin_overlay_alpha(
+                STDIN_OVERLAY_SUBMIT_COLOR,
+                visual.opacity * visual.submit_opacity,
+            ),
+            size,
+        );
+        let mark_alpha = visual.opacity * visual.submit_opacity * 0.74;
+        push_rect(
+            vertices,
+            Rect {
+                x: pill.x + pill.width * 0.30,
+                y: pill.y + pill.height * 0.50,
+                width: pill.width * 0.36,
+                height: 2.0,
+            },
+            [1.0, 1.0, 1.0, mark_alpha],
+            size,
+        );
+        push_rect(
+            vertices,
+            Rect {
+                x: pill.x + pill.width * 0.55,
+                y: pill.y + pill.height * 0.30,
+                width: 2.0,
+                height: pill.height * 0.42,
+            },
+            [1.0, 1.0, 1.0, mark_alpha],
+            size,
+        );
+    }
+}
+
+fn stdin_overlay_alpha(mut color: [f32; 4], opacity: f32) -> [f32; 4] {
+    color[3] = (color[3] * opacity.clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    color
+}
+
+fn scaled_rect(rect: Rect, scale: f32) -> Rect {
+    let scale = scale.clamp(0.01, 1.5);
+    let width = rect.width * scale;
+    let height = rect.height * scale;
+    Rect {
+        x: rect.x + (rect.width - width) * 0.5,
+        y: rect.y + (rect.height - height) * 0.5,
+        width,
+        height,
+    }
 }
 
 fn push_fresh_welcome_ambient(
@@ -2624,6 +2833,15 @@ impl AttachmentChipMotionRegistry {
             }
         }
 
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.generation = 0;
+        self.states.clear();
+    }
+}
+
         self.states
             .retain(|_, state| state.last_seen_generation == generation);
 
@@ -2633,12 +2851,253 @@ impl AttachmentChipMotionRegistry {
             exiting,
             active,
         }
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct StdinOverlayTarget {
+    key: u64,
+    line_count: usize,
+    input_line_start: usize,
+    input_line_count: usize,
+    password: bool,
+    has_input: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StdinOverlayVisual {
+    opacity: f32,
+    y_offset_pixels: f32,
+    scale: f32,
+    height_lines: f32,
+    input_glow: f32,
+    submit_opacity: f32,
+}
+
+impl StdinOverlayVisual {
+    fn settled(target: StdinOverlayTarget) -> Self {
+        Self {
+            opacity: 1.0,
+            y_offset_pixels: 0.0,
+            scale: 1.0,
+            height_lines: target.line_count.max(1) as f32,
+            input_glow: if target.has_input { 1.0 } else { 0.22 },
+            submit_opacity: if target.has_input { 1.0 } else { 0.0 },
+        }
+    }
+
+    fn entry(target: StdinOverlayTarget) -> Self {
+        let mut visual = Self::settled(target);
+        visual.opacity = 0.0;
+        visual.y_offset_pixels = STDIN_OVERLAY_ENTRY_OFFSET_PIXELS;
+        visual.scale = STDIN_OVERLAY_ENTRY_SCALE;
+        visual.input_glow = 0.0;
+        visual.submit_opacity = 0.0;
+        visual
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StdinOverlayTransition {
+    from: StdinOverlayVisual,
+    to: StdinOverlayVisual,
+    started_at: Instant,
+    duration: Duration,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StdinOverlayExit {
+    target: StdinOverlayTarget,
+    from: StdinOverlayVisual,
+    started_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StdinOverlayMotionFrame {
+    current: Option<(StdinOverlayTarget, StdinOverlayVisual)>,
+    exiting: Option<(StdinOverlayTarget, StdinOverlayVisual)>,
+    active: bool,
+    cache_key: u64,
+}
+
+impl StdinOverlayMotionFrame {
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub(crate) fn cache_key(&self) -> u64 {
+        self.cache_key
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct StdinOverlayMotionRegistry {
+    initialized: bool,
+    target: Option<StdinOverlayTarget>,
+    visual: Option<StdinOverlayVisual>,
+    transition: Option<StdinOverlayTransition>,
+    exit: Option<StdinOverlayExit>,
+}
+
+impl StdinOverlayMotionRegistry {
+    pub(crate) fn frame(
+        &mut self,
+        app: &SingleSessionApp,
+        rendered_body_lines: &[SingleSessionStyledLine],
+        now: Instant,
+    ) -> StdinOverlayMotionFrame {
+        self.frame_for_target(stdin_overlay_target(app, rendered_body_lines), now)
+    }
+
+    fn frame_for_target(
+        &mut self,
+        target: Option<StdinOverlayTarget>,
+        now: Instant,
+    ) -> StdinOverlayMotionFrame {
+        let reduced_motion = crate::animation::desktop_reduced_motion_enabled();
+        if reduced_motion || !self.initialized {
+            self.initialized = true;
+            self.target = target;
+            self.visual = target.map(StdinOverlayVisual::settled);
+            self.transition = None;
+            self.exit = None;
+            return self.frame_from_state(false, now);
+        }
+
+        if self.target != target {
+            let from = self
+                .current_visual(now)
+                .or_else(|| {
+                    self.exit
+                        .map(|exit| stdin_overlay_exit_visual(exit.from, 0.0))
+                })
+                .unwrap_or_else(|| {
+                    target.map_or_else(
+                        || StdinOverlayVisual::entry(StdinOverlayTarget::empty()),
+                        StdinOverlayVisual::entry,
+                    )
+                });
+            match (self.target, target) {
+                (Some(previous), None) => {
+                    self.exit = Some(StdinOverlayExit {
+                        target: previous,
+                        from,
+                        started_at: now,
+                    });
+                    self.transition = None;
+                    self.visual = None;
+                    self.target = None;
+                }
+                (_, Some(next)) => {
+                    let entering = self.target.is_none() && self.exit.is_none();
+                    let entry_from = if entering {
+                        StdinOverlayVisual::entry(next)
+                    } else {
+                        from
+                    };
+                    self.exit = None;
+                    self.transition = Some(StdinOverlayTransition {
+                        from: entry_from,
+                        to: StdinOverlayVisual::settled(next),
+                        started_at: now,
+                        duration: if entering {
+                            STDIN_OVERLAY_ENTRY_DURATION
+                        } else {
+                            STDIN_OVERLAY_RESIZE_DURATION
+                        },
+                    });
+                    self.target = Some(next);
+                }
+                (None, None) => {}
+            }
+        }
+
+        self.frame_from_state(false, now)
+    }
+
+    fn frame_from_state(&mut self, mut active: bool, now: Instant) -> StdinOverlayMotionFrame {
+        let current = if let Some(target) = self.target {
+            let visual = if let Some(transition) = self.transition {
+                let (progress, running) =
+                    timed_animation_progress(transition.started_at, now, transition.duration);
+                active |= running;
+                if !running {
+                    self.transition = None;
+                    transition.to
+                } else {
+                    stdin_overlay_visual_lerp(
+                        transition.from,
+                        transition.to,
+                        ease_out_cubic_local(progress),
+                    )
+                }
+            } else {
+                self.visual
+                    .unwrap_or_else(|| StdinOverlayVisual::settled(target))
+            };
+            self.visual = Some(visual);
+            Some((target, visual))
+        } else {
+            None
+        };
+
+        let exiting = if let Some(exit) = self.exit {
+            let (progress, running) =
+                timed_animation_progress(exit.started_at, now, STDIN_OVERLAY_EXIT_DURATION);
+            if running {
+                active = true;
+                Some((exit.target, stdin_overlay_exit_visual(exit.from, progress)))
+            } else {
+                self.exit = None;
+                None
+            }
+        } else {
+            None
+        };
+
+        StdinOverlayMotionFrame {
+            current,
+            exiting,
+            active,
+            cache_key: stdin_overlay_motion_cache_key(current, exiting, active),
+        }
+    }
+
+    fn current_visual(&mut self, now: Instant) -> Option<StdinOverlayVisual> {
+        if let Some(transition) = self.transition {
+            let (progress, running) =
+                timed_animation_progress(transition.started_at, now, transition.duration);
+            if !running {
+                self.transition = None;
+                Some(transition.to)
+            } else {
+                Some(stdin_overlay_visual_lerp(
+                    transition.from,
+                    transition.to,
+                    ease_out_cubic_local(progress),
+                ))
+            }
+        } else {
+            self.visual
+        }
     }
 
     pub(crate) fn clear(&mut self) {
         self.initialized = false;
-        self.generation = 0;
-        self.states.clear();
+        self.target = None;
+        self.visual = None;
+        self.transition = None;
+        self.exit = None;
+    }
+}
+
+impl StdinOverlayTarget {
+    fn empty() -> Self {
+        Self {
+            key: 0,
+            line_count: 1,
+            input_line_start: 0,
+            input_line_count: 1,
+            password: false,
+            has_input: false,
+        }
     }
 }
 
@@ -3993,6 +4452,15 @@ fn attachment_chip_motion_cache_key(
     active.hash(&mut hasher);
     let mut entries = visuals.iter().collect::<Vec<_>>();
     entries.sort_by_key(|(key, _)| **key);
+        run.index.hash(&mut hasher);
+        hash_f32(visual.opacity, &mut hasher);
+        hash_f32(visual.x_offset_pixels, &mut hasher);
+        hash_f32(visual.y_offset_pixels, &mut hasher);
+        hash_f32(visual.scale, &mut hasher);
+    }
+    hasher.finish()
+}
+
     for (key, visual) in entries {
         key.hash(&mut hasher);
         hash_f32(visual.opacity, &mut hasher);
@@ -4002,13 +4470,96 @@ fn attachment_chip_motion_cache_key(
     }
     for (run, visual) in exiting {
         run.key.hash(&mut hasher);
-        run.index.hash(&mut hasher);
-        hash_f32(visual.opacity, &mut hasher);
-        hash_f32(visual.x_offset_pixels, &mut hasher);
-        hash_f32(visual.y_offset_pixels, &mut hasher);
-        hash_f32(visual.scale, &mut hasher);
+fn stdin_overlay_target(
+    app: &SingleSessionApp,
+    rendered_body_lines: &[SingleSessionStyledLine],
+) -> Option<StdinOverlayTarget> {
+    let state = app.stdin_response.as_ref()?;
+    let mut hasher = DefaultHasher::new();
+    state.request_id.hash(&mut hasher);
+    state.prompt.hash(&mut hasher);
+    state.tool_call_id.hash(&mut hasher);
+    state.is_password.hash(&mut hasher);
+    let key = hasher.finish();
+    let input_line_start = rendered_body_lines
+        .iter()
+        .position(|line| line.style == SingleSessionLineStyle::OverlaySelection)
+        .unwrap_or_else(|| rendered_body_lines.len().saturating_sub(1));
+    let input_line_count = rendered_body_lines
+        .get(input_line_start..)
+        .unwrap_or_default()
+        .iter()
+        .take_while(|line| line.style == SingleSessionLineStyle::OverlaySelection)
+        .count()
+        .max(1);
+    Some(StdinOverlayTarget {
+        key,
+        line_count: rendered_body_lines.len().max(1),
+        input_line_start,
+        input_line_count,
+        password: state.is_password,
+        has_input: !state.input.is_empty(),
+    })
+}
+
+fn stdin_overlay_visual_lerp(
+    from: StdinOverlayVisual,
+    to: StdinOverlayVisual,
+    progress: f32,
+) -> StdinOverlayVisual {
+    StdinOverlayVisual {
+        opacity: lerp_f32(from.opacity, to.opacity, progress),
+        y_offset_pixels: lerp_f32(from.y_offset_pixels, to.y_offset_pixels, progress),
+        scale: lerp_f32(from.scale, to.scale, progress),
+        height_lines: lerp_f32(from.height_lines, to.height_lines, progress),
+        input_glow: lerp_f32(from.input_glow, to.input_glow, progress),
+        submit_opacity: lerp_f32(from.submit_opacity, to.submit_opacity, progress),
+    }
+}
+
+fn stdin_overlay_exit_visual(from: StdinOverlayVisual, progress: f32) -> StdinOverlayVisual {
+    let eased = ease_out_cubic_local(progress);
+    StdinOverlayVisual {
+        opacity: from.opacity * (1.0 - eased),
+        y_offset_pixels: from.y_offset_pixels - STDIN_OVERLAY_ENTRY_OFFSET_PIXELS * 0.55 * eased,
+        scale: from.scale * (1.0 - (1.0 - STDIN_OVERLAY_ENTRY_SCALE) * eased),
+        height_lines: from.height_lines,
+        input_glow: from.input_glow * (1.0 - eased * 0.45),
+        submit_opacity: (from.submit_opacity + 0.35 * (1.0 - eased)).clamp(0.0, 1.0),
+    }
+}
+
+fn stdin_overlay_motion_cache_key(
+    current: Option<(StdinOverlayTarget, StdinOverlayVisual)>,
+    exiting: Option<(StdinOverlayTarget, StdinOverlayVisual)>,
+    active: bool,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    active.hash(&mut hasher);
+    current.is_some().hash(&mut hasher);
+    if let Some((target, visual)) = current {
+        stdin_overlay_target_hash(target, &mut hasher);
+        stdin_overlay_visual_hash(visual, &mut hasher);
+    }
+    exiting.is_some().hash(&mut hasher);
+    if let Some((target, visual)) = exiting {
+        stdin_overlay_target_hash(target, &mut hasher);
+        stdin_overlay_visual_hash(visual, &mut hasher);
     }
     hasher.finish()
+}
+
+fn stdin_overlay_target_hash(target: StdinOverlayTarget, hasher: &mut impl Hasher) {
+    target.hash(hasher);
+}
+
+fn stdin_overlay_visual_hash(visual: StdinOverlayVisual, hasher: &mut impl Hasher) {
+    hash_f32(visual.opacity, hasher);
+    hash_f32(visual.y_offset_pixels, hasher);
+    hash_f32(visual.scale, hasher);
+    hash_f32(visual.height_lines, hasher);
+    hash_f32(visual.input_glow, hasher);
+    hash_f32(visual.submit_opacity, hasher);
 }
 
 fn tool_card_palette(state: SingleSessionToolVisualState, active: bool) -> ToolCardPalette {
@@ -8878,11 +9429,83 @@ mod tests {
     }
 
     #[test]
-    fn transcript_card_motion_animates_new_card_entry() {
-        let mut registry = TranscriptCardMotionRegistry::default();
+    fn stdin_overlay_motion_animates_entry_resize_and_exit() {
+        let mut registry = StdinOverlayMotionRegistry::default();
+        let now = Instant::now();
+        let empty = registry.frame_for_target(None, now);
+        assert!(!empty.is_active());
+        assert!(empty.current.is_none());
+        assert!(empty.exiting.is_none());
+
+        let requested = StdinOverlayTarget {
+            key: 42,
+            line_count: 8,
+            input_line_start: 5,
+            input_line_count: 1,
+            password: true,
+            has_input: false,
+        };
+        let entry_at = now + Duration::from_millis(5);
+        let entry = registry.frame_for_target(Some(requested), entry_at);
+        assert!(entry.is_active());
+        let (_, entry_visual) = entry.current.expect("entry overlay visual");
+        assert_eq!(entry_visual.opacity, 0.0);
+        assert!(entry_visual.y_offset_pixels > 0.0);
+        assert!(entry_visual.scale < 1.0);
+
+        let entry_mid =
+            registry.frame_for_target(Some(requested), entry_at + STDIN_OVERLAY_ENTRY_DURATION / 2);
+        let (_, entry_mid_visual) = entry_mid.current.expect("mid entry overlay visual");
+        assert!(entry_mid.is_active());
+        assert!(entry_mid_visual.opacity > 0.0 && entry_mid_visual.opacity < 1.0);
+        assert!(entry_mid_visual.y_offset_pixels > 0.0);
+
+        let settled =
+            registry.frame_for_target(Some(requested), entry_at + STDIN_OVERLAY_ENTRY_DURATION * 2);
+        assert!(!settled.is_active());
+        assert_eq!(
+            settled.current.expect("settled overlay visual").1,
+            StdinOverlayVisual::settled(requested)
+        );
+
+        let resized = StdinOverlayTarget {
+            line_count: 11,
+            input_line_count: 3,
+            has_input: true,
+            ..requested
+        };
+        let resize_at = entry_at + STDIN_OVERLAY_ENTRY_DURATION * 2 + Duration::from_millis(5);
+        let resize = registry.frame_for_target(Some(resized), resize_at);
+        assert!(resize.is_active());
+        let resize_mid =
+            registry.frame_for_target(Some(resized), resize_at + STDIN_OVERLAY_RESIZE_DURATION / 2);
+        let (_, resize_visual) = resize_mid.current.expect("resize overlay visual");
+        assert!(resize_visual.height_lines > requested.line_count as f32);
+        assert!(resize_visual.height_lines < resized.line_count as f32);
+        assert!(resize_visual.input_glow > 0.22);
+        assert!(resize_visual.submit_opacity > 0.0);
+
+        let exit_at = resize_at + STDIN_OVERLAY_RESIZE_DURATION * 2 + Duration::from_millis(5);
+        let exit = registry.frame_for_target(None, exit_at);
+        assert!(exit.is_active());
+        assert!(exit.current.is_none());
+        let (_, exit_visual) = exit.exiting.expect("exit overlay visual");
+        assert!(exit_visual.opacity > 0.9);
+        assert!(exit_visual.submit_opacity > 0.0);
+
+        let exit_mid = registry.frame_for_target(None, exit_at + STDIN_OVERLAY_EXIT_DURATION / 2);
+        let (_, exit_mid_visual) = exit_mid.exiting.expect("mid exit overlay visual");
+        assert!(exit_mid.is_active());
+        assert!(exit_mid_visual.opacity > 0.0 && exit_mid_visual.opacity < 1.0);
+        assert!(exit_mid_visual.y_offset_pixels < 0.0);
+    }
+
         let now = Instant::now();
         let line_height = 28.0;
         let first = SingleSessionStyledLine::new("```rust", SingleSessionLineStyle::Code);
+    #[test]
+    fn transcript_card_motion_animates_new_card_entry() {
+        let mut registry = TranscriptCardMotionRegistry::default();
         let spacer = SingleSessionStyledLine::new("between", SingleSessionLineStyle::Assistant);
         let second = SingleSessionStyledLine::new("```text", SingleSessionLineStyle::Code);
 
