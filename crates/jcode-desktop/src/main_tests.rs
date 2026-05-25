@@ -8856,7 +8856,10 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     let areas = single_session_text_areas_for_app(&app, &buffers, size);
     let draft_area = areas.first().expect("draft text area");
     assert_eq!(draft_area.top, single_session_draft_top(size));
-    let inline_area = areas.last().expect("inline model picker text area");
+    let inline_area = areas
+        .iter()
+        .find(|area| std::ptr::eq(area.buffer, &buffers[4]))
+        .expect("inline model picker text area");
     let version_area = areas
         .iter()
         .find(|area| std::ptr::eq(area.buffer, &buffers[3]))

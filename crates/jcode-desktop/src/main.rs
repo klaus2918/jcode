@@ -2952,8 +2952,8 @@ fn run_resize_render_benchmark(frames: usize) -> Result<()> {
     });
 
     let mut optimized_font_system = benchmark_font_system();
-    let mut optimized_raw_body_key = None;
-    let mut optimized_raw_body_lines = Vec::new();
+    let mut optimized_raw_body_key = Some(app.rendered_body_cache_key((0, 0)));
+    let mut optimized_raw_body_lines = app.body_styled_lines_for_tick(0);
     let mut optimized_body_key = None;
     let mut optimized_body_lines = Vec::new();
     let mut optimized_text_cache_key = None;
