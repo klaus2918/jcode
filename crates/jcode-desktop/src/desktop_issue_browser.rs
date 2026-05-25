@@ -274,9 +274,52 @@ fn push_issue_list_panel(
         size,
         max_width,
     );
+    let sync_label = app.side_panel().github_issue_sync.label();
+    if let Some(sync_label) = sync_label.as_deref() {
+        push_issue_browser_text(
+            vertices,
+            sync_label,
+            x,
+            rect.y + 74.0,
+            ISSUE_BROWSER_ACCENT,
+            size,
+            max_width,
+        );
+    }
+    let guidance_label = app.side_panel().github_issue_sync.guidance();
+    if let Some(guidance_label) = guidance_label.as_deref() {
+        push_issue_browser_text(
+            vertices,
+            guidance_label,
+            x,
+            rect.y + 94.0,
+            ISSUE_BROWSER_MUTED_TEXT,
+            size,
+            max_width,
+        );
+    }
 
-    let mut row_y = rect.y + 84.0;
+    let mut row_y = rect.y
+        + if guidance_label.is_some() {
+            124.0
+        } else if sync_label.is_some() {
+            104.0
+        } else {
+            84.0
+        };
     let max_y = rect.y + rect.height - ISSUE_BROWSER_PANEL_PADDING;
+    if browser.issues.is_empty() {
+        push_issue_browser_text(
+            vertices,
+            "No cached issues yet. Authenticate gh, then press r or Ctrl+R to sync.",
+            x,
+            row_y,
+            ISSUE_BROWSER_MUTED_TEXT,
+            size,
+            max_width,
+        );
+        return;
+    }
     for (index, issue) in browser.issues.iter().enumerate().skip(browser.list_scroll) {
         if row_y + ISSUE_BROWSER_ROW_HEIGHT > max_y {
             break;

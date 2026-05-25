@@ -801,6 +801,7 @@ async fn run() -> Result<()> {
     let mut pending_resize: Option<PhysicalSize<u32>> = None;
     let mut space_hold_started_at: Option<Instant> = None;
     let mut space_hold_consumed = false;
+    let mut github_issue_sync_running = false;
     let mut desktop_clipboard = DesktopClipboard::default();
 
     if pending_workspace_startup_load {
@@ -1534,6 +1535,14 @@ async fn run() -> Result<()> {
                         }
                         KeyOutcome::None => {}
                     }
+                    if start_pending_github_issue_sync(
+                        &mut app,
+                        &mut github_issue_sync_running,
+                        event_loop_proxy.clone(),
+                    ) {
+                        window.set_title(&app.status_title());
+                        window.request_redraw();
+                    }
                     log_desktop_slow_interaction(
                         "keyboard_input",
                         keyboard_started.elapsed(),
@@ -1745,6 +1754,13 @@ async fn run() -> Result<()> {
                 }
                 window.set_title(&app.status_title());
                 interaction_latency.mark("restore_crashed_sessions", Instant::now());
+                window.request_redraw();
+            }
+            Event::UserEvent(DesktopUserEvent::GitHubIssuesSyncFinished(result)) => {
+                github_issue_sync_running = false;
+                app.apply_github_issue_sync_result(result);
+                window.set_title(&app.status_title());
+                interaction_latency.mark("github_issue_sync", Instant::now());
                 window.request_redraw();
             }
             Event::UserEvent(DesktopUserEvent::SessionEvents(batch)) => {
@@ -2049,6 +2065,59 @@ fn spawn_restore_crashed_sessions(event_loop_proxy: EventLoopProxy<DesktopUserEv
         desktop_log::error(format_args!(
             "jcode-desktop: failed to start crashed-session restore: {error:#}"
         ));
+    }
+}
+
+fn spawn_github_issue_sync(event_loop_proxy: EventLoopProxy<DesktopUserEvent>) -> Result<()> {
+    spawn_bounded_desktop_async_job("jcode-desktop-github-issues-sync", move || {
+        let result = desktop_issue_cache::sync_current_repo_issue_cache()
+            .map_err(|error| format!("{error:#}"));
+        match &result {
+            Ok(summary) => desktop_log::info(format_args!(
+                "jcode-desktop: synced {} GitHub issue(s) for {} in {}ms to {} (comment_threads={} comment_errors={})",
+                summary.issue_count,
+                summary.repo,
+                summary.elapsed.as_millis(),
+                summary.cache_path.display(),
+                summary.fetched_comment_threads,
+                summary.comment_fetch_errors
+            )),
+            Err(error) => desktop_log::warn(format_args!(
+                "jcode-desktop: GitHub issue sync failed: {error}"
+            )),
+        }
+        if event_loop_proxy
+            .send_event(DesktopUserEvent::GitHubIssuesSyncFinished(result))
+            .is_err()
+        {
+            desktop_log::warn(format_args!(
+                "jcode-desktop: failed to deliver GitHub issue sync result"
+            ));
+        }
+    })
+}
+
+fn start_pending_github_issue_sync(
+    app: &mut DesktopApp,
+    sync_running: &mut bool,
+    event_loop_proxy: EventLoopProxy<DesktopUserEvent>,
+) -> bool {
+    if !app.take_github_issue_sync_request() {
+        return false;
+    }
+    if *sync_running {
+        app.note_github_issue_sync_already_running();
+        return true;
+    }
+    match spawn_github_issue_sync(event_loop_proxy) {
+        Ok(()) => {
+            *sync_running = true;
+            true
+        }
+        Err(error) => {
+            app.apply_github_issue_sync_result(Err(format!("{error:#}")));
+            true
+        }
     }
 }
 
@@ -2536,6 +2605,9 @@ enum DesktopUserEvent {
         errors: Vec<String>,
         elapsed: Duration,
     },
+    GitHubIssuesSyncFinished(
+        std::result::Result<desktop_issue_cache::GitHubIssueSyncSummary, String>,
+    ),
     RecoveryCount(usize),
 }
 
@@ -6213,6 +6285,28 @@ impl DesktopApp {
     fn set_single_session_status_label(&mut self, label: impl Into<String>) {
         if let Self::SingleSession(app) = self {
             app.set_status_label(label);
+        }
+    }
+
+    fn take_github_issue_sync_request(&mut self) -> bool {
+        match self {
+            Self::SingleSession(app) => app.take_github_issue_sync_request(),
+            Self::Workspace(_) => false,
+        }
+    }
+
+    fn note_github_issue_sync_already_running(&mut self) {
+        if let Self::SingleSession(app) = self {
+            app.note_github_issue_sync_already_running();
+        }
+    }
+
+    fn apply_github_issue_sync_result(
+        &mut self,
+        result: std::result::Result<desktop_issue_cache::GitHubIssueSyncSummary, String>,
+    ) {
+        if let Self::SingleSession(app) = self {
+            app.apply_github_issue_sync_result(result);
         }
     }
 

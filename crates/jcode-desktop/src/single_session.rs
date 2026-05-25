@@ -269,6 +269,7 @@ pub(crate) struct SingleSessionApp {
     tool: SingleSessionToolState,
     view: SingleSessionViewState,
     side_panel: DesktopSidePanelState,
+    pending_issue_sync_request: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -276,6 +277,7 @@ pub(crate) struct DesktopSidePanelState {
     pub(crate) visible: bool,
     pub(crate) focus: DesktopSidePanelFocus,
     pub(crate) github_issues: GitHubIssueBrowserState,
+    pub(crate) github_issue_sync: GitHubIssueSyncUiState,
 }
 
 impl Default for DesktopSidePanelState {
@@ -284,6 +286,7 @@ impl Default for DesktopSidePanelState {
             visible: false,
             focus: DesktopSidePanelFocus::Chat,
             github_issues: GitHubIssueBrowserState::sample(),
+            github_issue_sync: GitHubIssueSyncUiState::default(),
         }
     }
 }
@@ -311,6 +314,30 @@ pub(crate) enum DesktopSidePanelFocus {
     IssueList,
     IssuePreview,
     Chat,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct GitHubIssueSyncUiState {
+    pub(crate) syncing: bool,
+    pub(crate) last_message: Option<String>,
+    pub(crate) last_error: Option<String>,
+}
+
+impl GitHubIssueSyncUiState {
+    pub(crate) fn label(&self) -> Option<String> {
+        if self.syncing {
+            return Some("syncing from GitHub in the background".to_string());
+        }
+        if let Some(error) = &self.last_error {
+            return Some(format!("sync failed · {error}"));
+        }
+        self.last_message.clone()
+    }
+
+    pub(crate) fn guidance(&self) -> Option<String> {
+        let error = self.last_error.as_deref()?;
+        Some(issue_sync_error_guidance(error).to_string())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -489,9 +516,43 @@ fn issue_context_prompt(repo: &str, issue: &GitHubIssuePreview) -> String {
         issue.comment_lines.join("\n")
     };
     format!(
-        "GitHub issue context\n\nrepo: {repo}\nissue: #{}\ntitle: {}\npriority: {}\nlabels: {labels}\nage: {}\ncomments: {}\npriority rationale: {}\n\nIssue body:\n{body}\n\nRecent comments:\n{comments}\n\nTask: investigate this issue in the local repository. Reproduce it if possible, identify the root cause, propose or implement a fix, validate with targeted tests or checks, and report the result. Do not rely on the GitHub web UI while working unless explicitly needed.",
+        "GitHub issue mission\n\nRepository: {repo}\nIssue: #{}\nTitle: {}\nPriority: {}\nLabels: {labels}\nAge: {}\nComment count: {}\nPriority rationale: {}\n\nIssue body:\n{body}\n\nRecent comments:\n{comments}\n\nMission objective: investigate and, when safe, implement a fix for this issue in the local repository.\n\nOperating instructions:\n1. Start by inspecting the relevant code and reproducing or narrowing the behavior.\n2. Preserve existing user changes and avoid destructive actions.\n3. If implementing a fix, add or update targeted tests.\n4. Run the maximum reasonable validation before reporting completion.\n5. Report evidence, remaining gaps, and any follow-up work.\n6. Do not rely on the GitHub web UI unless local cache context is insufficient.",
         issue.number, issue.title, issue.priority, issue.age, issue.comments, issue.priority_reason
     )
+}
+
+fn issue_sync_error_guidance(error: &str) -> &'static str {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("not installed")
+        || lower.contains("not on path")
+        || lower.contains("no such file")
+    {
+        "Install GitHub CLI `gh`, authenticate it, then press r or Ctrl+R to sync."
+    } else if lower.contains("auth")
+        || lower.contains("authentication")
+        || lower.contains("login")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
+    {
+        "Run `gh auth login` or refresh GitHub CLI auth, then press r or Ctrl+R to sync."
+    } else if lower.contains("could not find a github origin") || lower.contains("origin remote") {
+        "Add a GitHub origin remote for this repository, then press r or Ctrl+R to sync."
+    } else {
+        "Using cached GitHub issues. Press r or Ctrl+R to retry background sync."
+    }
+}
+
+fn compact_issue_sync_error(error: &str) -> String {
+    let mut compact = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() > 160 {
+        compact.truncate(157);
+        compact.push_str("...");
+    }
+    if compact.is_empty() {
+        "unknown error".to_string()
+    } else {
+        compact
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1744,6 +1805,7 @@ impl SingleSessionApp {
             tool: SingleSessionToolState::default(),
             view: SingleSessionViewState::default(),
             side_panel: DesktopSidePanelState::default(),
+            pending_issue_sync_request: false,
         }
     }
 
@@ -1924,14 +1986,75 @@ impl SingleSessionApp {
         self.view.inline_widget_opened_at = None;
         self.view.closing_inline_widget = None;
         self.side_panel = DesktopSidePanelState::default();
+        self.pending_issue_sync_request = false;
     }
 
     pub(crate) fn side_panel(&self) -> &DesktopSidePanelState {
         &self.side_panel
     }
 
+    pub(crate) fn take_github_issue_sync_request(&mut self) -> bool {
+        std::mem::take(&mut self.pending_issue_sync_request)
+    }
+
+    pub(crate) fn note_github_issue_sync_already_running(&mut self) {
+        self.side_panel.github_issue_sync.syncing = true;
+        self.side_panel.github_issue_sync.last_error = None;
+        self.side_panel.github_issue_sync.last_message =
+            Some("GitHub issue sync already running; cached issues remain interactive".to_string());
+    }
+
+    pub(crate) fn apply_github_issue_sync_result(
+        &mut self,
+        result: std::result::Result<crate::desktop_issue_cache::GitHubIssueSyncSummary, String>,
+    ) {
+        self.pending_issue_sync_request = false;
+        self.side_panel.github_issue_sync.syncing = false;
+        match result {
+            Ok(summary) => {
+                let warning_label = if summary.comment_fetch_errors == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        " · {} comment refresh warning(s)",
+                        summary.comment_fetch_errors
+                    )
+                };
+                let message = format!(
+                    "synced {} GitHub issues for {} in {}ms · cache {}{}",
+                    summary.issue_count,
+                    summary.repo,
+                    summary.elapsed.as_millis(),
+                    summary.cache_path.display(),
+                    warning_label
+                );
+                self.side_panel.github_issues = summary.browser;
+                self.side_panel.github_issue_sync.last_error = None;
+                self.side_panel.github_issue_sync.last_message = Some(message.clone());
+                self.set_status(SingleSessionStatus::Info(message));
+            }
+            Err(error) => {
+                let compact_error = compact_issue_sync_error(&error);
+                self.side_panel.github_issue_sync.last_error = Some(compact_error.clone());
+                self.side_panel.github_issue_sync.last_message =
+                    Some(issue_sync_error_guidance(&error).to_string());
+                self.set_status(SingleSessionStatus::Info(format!(
+                    "GitHub issue sync failed · {compact_error}"
+                )));
+            }
+        }
+    }
+
     pub(crate) fn issue_browser_visible(&self) -> bool {
         self.side_panel.visible
+    }
+
+    fn request_issue_browser_sync(&mut self) {
+        self.pending_issue_sync_request = true;
+        self.side_panel.github_issue_sync.syncing = true;
+        self.side_panel.github_issue_sync.last_error = None;
+        self.side_panel.github_issue_sync.last_message =
+            Some("syncing from GitHub via gh; cached issues remain interactive".to_string());
     }
 
     fn toggle_issue_browser(&mut self, visible: Option<bool>) -> KeyOutcome {
@@ -1945,6 +2068,9 @@ impl SingleSessionApp {
         let cache_status = visible
             .then(|| self.refresh_issue_browser_from_cache())
             .flatten();
+        if visible {
+            self.request_issue_browser_sync();
+        }
         self.draft.clear();
         self.draft_cursor = 0;
         self.composer.input_undo_stack.clear();
@@ -1991,6 +2117,18 @@ impl SingleSessionApp {
             return Some(KeyOutcome::Redraw);
         }
 
+        if let KeyInput::Character(text) = key
+            && text.starts_with('/')
+        {
+            self.side_panel.focus = DesktopSidePanelFocus::Chat;
+            return None;
+        }
+
+        if matches!(key, KeyInput::RefreshSessions) {
+            self.request_issue_browser_sync();
+            return Some(KeyOutcome::Redraw);
+        }
+
         match self.side_panel.focus {
             DesktopSidePanelFocus::Chat => None,
             DesktopSidePanelFocus::IssueList => Some(self.handle_issue_list_key(key)),
@@ -2005,6 +2143,10 @@ impl SingleSessionApp {
                 KeyOutcome::Redraw
             }
             KeyInput::SubmitDraft => self.investigate_selected_issue(),
+            KeyInput::Character(text) if text.eq_ignore_ascii_case("r") => {
+                self.request_issue_browser_sync();
+                KeyOutcome::Redraw
+            }
             KeyInput::ModelPickerMove(delta) => {
                 self.side_panel.github_issues.move_selection(*delta);
                 KeyOutcome::Redraw
@@ -2051,6 +2193,10 @@ impl SingleSessionApp {
                 KeyOutcome::Redraw
             }
             KeyInput::SubmitDraft => self.investigate_selected_issue(),
+            KeyInput::Character(text) if text.eq_ignore_ascii_case("r") => {
+                self.request_issue_browser_sync();
+                KeyOutcome::Redraw
+            }
             KeyInput::ScrollBodyLines(lines) => {
                 self.side_panel.github_issues.scroll_preview_lines(*lines);
                 KeyOutcome::Redraw
@@ -4534,6 +4680,9 @@ impl SingleSessionApp {
                 KeyOutcome::SpawnSession
             }
             "/issues" => {
+                if matches!(args, "refresh" | "sync") {
+                    return Some(self.toggle_issue_browser(Some(true)));
+                }
                 if args == "preview" {
                     let outcome = self.toggle_issue_browser(Some(true));
                     self.side_panel.focus = DesktopSidePanelFocus::IssuePreview;

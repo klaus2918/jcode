@@ -1,13 +1,28 @@
 #![cfg_attr(test, allow(dead_code))]
 
+use crate::desktop_log;
 use crate::single_session::{GitHubIssueBrowserState, GitHubIssuePreview, GitHubIssueVisualState};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub(crate) const ISSUE_CACHE_SCHEMA_VERSION: u32 = 1;
+const DEFAULT_ISSUE_SYNC_LIMIT: usize = 100;
+const DEFAULT_COMMENT_THREAD_SYNC_LIMIT: usize = 40;
+
+#[derive(Clone, Debug)]
+pub(crate) struct GitHubIssueSyncSummary {
+    pub(crate) repo: String,
+    pub(crate) issue_count: usize,
+    pub(crate) fetched_comment_threads: usize,
+    pub(crate) comment_fetch_errors: usize,
+    pub(crate) cache_path: PathBuf,
+    pub(crate) elapsed: Duration,
+    pub(crate) browser: GitHubIssueBrowserState,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct GitHubIssueCache {
@@ -30,6 +45,8 @@ pub(crate) struct CachedGitHubIssue {
     pub(crate) body: Option<String>,
     #[serde(default)]
     pub(crate) labels: Vec<CachedGitHubLabel>,
+    #[serde(default)]
+    pub(crate) comment_count: Option<u32>,
     #[serde(default)]
     pub(crate) comments: Vec<CachedGitHubComment>,
     #[serde(default)]
@@ -91,17 +108,30 @@ fn is_missing_cache_error(error: &anyhow::Error) -> bool {
 }
 
 pub(crate) fn load_issue_browser_for_repo(repo: &str) -> Result<GitHubIssueBrowserState> {
-    let path = issue_cache_path_for_repo(repo);
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read GitHub issue cache {}", path.display()))?;
-    let cache: GitHubIssueCache = serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse GitHub issue cache {}", path.display()))?;
-    Ok(issue_browser_from_cache(cache))
+    Ok(issue_browser_from_cache(load_issue_cache_for_repo_raw(
+        repo,
+    )?))
 }
 
 #[allow(dead_code)]
 pub(crate) fn write_issue_cache(cache: &GitHubIssueCache) -> Result<PathBuf> {
-    let path = issue_cache_path_for_repo(&cache.repo);
+    write_issue_cache_to_root(cache, &issue_cache_root())
+}
+
+fn load_issue_cache_for_repo_raw(repo: &str) -> Result<GitHubIssueCache> {
+    load_issue_cache_for_repo_raw_from_root(repo, &issue_cache_root())
+}
+
+fn load_issue_cache_for_repo_raw_from_root(repo: &str, root: &Path) -> Result<GitHubIssueCache> {
+    let path = issue_cache_path_for_repo_in_root(root, repo);
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read GitHub issue cache {}", path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse GitHub issue cache {}", path.display()))
+}
+
+fn write_issue_cache_to_root(cache: &GitHubIssueCache, root: &Path) -> Result<PathBuf> {
+    let path = issue_cache_path_for_repo_in_root(root, &cache.repo);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -117,8 +147,301 @@ pub(crate) fn write_issue_cache(cache: &GitHubIssueCache) -> Result<PathBuf> {
     Ok(path)
 }
 
+pub(crate) fn sync_current_repo_issue_cache() -> Result<GitHubIssueSyncSummary> {
+    let repo = detect_current_github_repo()?
+        .context("could not find a GitHub origin remote for this repository")?;
+    sync_issue_cache_for_repo(&repo)
+}
+
+pub(crate) fn sync_issue_cache_for_repo(repo: &str) -> Result<GitHubIssueSyncSummary> {
+    let runner = SystemGitHubIssueCommandRunner;
+    sync_issue_cache_for_repo_with_runner_and_root(
+        repo,
+        &runner,
+        GitHubIssueSyncOptions::default(),
+        &issue_cache_root(),
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GitHubIssueSyncOptions {
+    issue_limit: usize,
+    comment_thread_limit: usize,
+}
+
+impl Default for GitHubIssueSyncOptions {
+    fn default() -> Self {
+        Self {
+            issue_limit: DEFAULT_ISSUE_SYNC_LIMIT,
+            comment_thread_limit: DEFAULT_COMMENT_THREAD_SYNC_LIMIT,
+        }
+    }
+}
+
+trait GitHubIssueCommandRunner {
+    fn run_gh(&self, args: &[String]) -> Result<String>;
+}
+
+struct SystemGitHubIssueCommandRunner;
+
+impl GitHubIssueCommandRunner for SystemGitHubIssueCommandRunner {
+    fn run_gh(&self, args: &[String]) -> Result<String> {
+        let output = Command::new("gh").args(args).output();
+        let output = match output {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!("GitHub CLI `gh` is not installed or not on PATH")
+            }
+            Err(error) => return Err(error).context("failed to run GitHub CLI `gh`"),
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            anyhow::bail!(
+                "gh {} failed{}",
+                args.join(" "),
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                }
+            );
+        }
+        String::from_utf8(output.stdout).context("GitHub CLI emitted non-UTF-8 output")
+    }
+}
+
+fn sync_issue_cache_for_repo_with_runner_and_root(
+    repo: &str,
+    runner: &dyn GitHubIssueCommandRunner,
+    options: GitHubIssueSyncOptions,
+    cache_root: &Path,
+) -> Result<GitHubIssueSyncSummary> {
+    let started = Instant::now();
+    let existing_cache = load_issue_cache_for_repo_raw_from_root(repo, cache_root).ok();
+    let existing_comments_by_number = existing_cache
+        .as_ref()
+        .map(existing_comments_by_number)
+        .unwrap_or_default();
+    let local_overrides = existing_cache
+        .map(|cache| cache.local_overrides)
+        .unwrap_or_default();
+
+    let raw_issues = runner.run_gh(&issue_list_args(repo, options.issue_limit))?;
+    let gh_issues: Vec<GhIssueListItem> = serde_json::from_str(&raw_issues)
+        .with_context(|| format!("failed to parse gh issue list JSON for {repo}"))?;
+
+    let mut issues = Vec::with_capacity(gh_issues.len());
+    let mut fetched_comment_threads = 0usize;
+    let mut comment_fetch_errors = 0usize;
+    for (index, issue) in gh_issues.into_iter().enumerate() {
+        let number = issue.number;
+        let existing_comments = existing_comments_by_number
+            .get(&number)
+            .cloned()
+            .unwrap_or_default();
+        let should_fetch_comments =
+            issue.comments.unwrap_or_default() > 0 && index < options.comment_thread_limit;
+        let comments = if should_fetch_comments {
+            match fetch_issue_comments(repo, number, runner) {
+                Ok(comments) => {
+                    fetched_comment_threads += 1;
+                    comments
+                }
+                Err(error) => {
+                    comment_fetch_errors += 1;
+                    desktop_log::warn(format_args!(
+                        "jcode-desktop: failed to refresh comments for GitHub issue {repo}#{number}: {error:#}"
+                    ));
+                    existing_comments
+                }
+            }
+        } else {
+            existing_comments
+        };
+        issues.push(issue.into_cached(comments));
+    }
+
+    let cache = GitHubIssueCache {
+        schema_version: ISSUE_CACHE_SCHEMA_VERSION,
+        repo: repo.to_string(),
+        synced_at: Some(current_sync_label()),
+        issues,
+        local_overrides,
+    };
+    let cache_path = write_issue_cache_to_root(&cache, cache_root)?;
+    let issue_count = cache.issues.len();
+    let browser = issue_browser_from_cache(cache);
+    Ok(GitHubIssueSyncSummary {
+        repo: repo.to_string(),
+        issue_count,
+        fetched_comment_threads,
+        comment_fetch_errors,
+        cache_path,
+        elapsed: started.elapsed(),
+        browser,
+    })
+}
+
+fn issue_list_args(repo: &str, limit: usize) -> Vec<String> {
+    vec![
+        "issue".to_string(),
+        "list".to_string(),
+        "--repo".to_string(),
+        repo.to_string(),
+        "--state".to_string(),
+        "open".to_string(),
+        "--limit".to_string(),
+        limit.to_string(),
+        "--json".to_string(),
+        "number,title,body,labels,comments,createdAt,updatedAt,assignees,milestone,state"
+            .to_string(),
+    ]
+}
+
+fn issue_comments_args(repo: &str, number: u64) -> Vec<String> {
+    vec![
+        "issue".to_string(),
+        "view".to_string(),
+        number.to_string(),
+        "--repo".to_string(),
+        repo.to_string(),
+        "--json".to_string(),
+        "comments".to_string(),
+    ]
+}
+
+fn fetch_issue_comments(
+    repo: &str,
+    number: u64,
+    runner: &dyn GitHubIssueCommandRunner,
+) -> Result<Vec<CachedGitHubComment>> {
+    let raw_comments = runner.run_gh(&issue_comments_args(repo, number))?;
+    let view: GhIssueCommentsView = serde_json::from_str(&raw_comments)
+        .with_context(|| format!("failed to parse gh issue view JSON for {repo}#{number}"))?;
+    Ok(view
+        .comments
+        .into_iter()
+        .map(GhIssueComment::into_cached)
+        .collect())
+}
+
+fn existing_comments_by_number(cache: &GitHubIssueCache) -> HashMap<u64, Vec<CachedGitHubComment>> {
+    cache
+        .issues
+        .iter()
+        .map(|issue| (issue.number, issue.comments.clone()))
+        .collect()
+}
+
+fn current_sync_label() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    format!("unix:{seconds}")
+}
+
+#[derive(Debug, Deserialize)]
+struct GhIssueListItem {
+    number: u64,
+    title: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    labels: Vec<GhIssueLabel>,
+    #[serde(default)]
+    comments: Option<u32>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default, rename = "createdAt")]
+    created_at: Option<String>,
+    #[serde(default, rename = "updatedAt")]
+    updated_at: Option<String>,
+    #[serde(default)]
+    assignees: Vec<GhIssueUser>,
+    #[serde(default)]
+    milestone: Option<GhIssueMilestone>,
+}
+
+impl GhIssueListItem {
+    fn into_cached(self, comments: Vec<CachedGitHubComment>) -> CachedGitHubIssue {
+        CachedGitHubIssue {
+            number: self.number,
+            title: self.title,
+            body: self.body,
+            labels: self
+                .labels
+                .into_iter()
+                .map(|label| CachedGitHubLabel { name: label.name })
+                .collect(),
+            comment_count: self.comments,
+            comments,
+            state: self.state,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            assignees: self
+                .assignees
+                .into_iter()
+                .map(|assignee| assignee.login)
+                .filter(|login| !login.is_empty())
+                .collect(),
+            milestone: self.milestone.map(|milestone| milestone.title),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GhIssueLabel {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhIssueUser {
+    #[serde(default)]
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhIssueMilestone {
+    title: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhIssueCommentsView {
+    #[serde(default)]
+    comments: Vec<GhIssueComment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhIssueComment {
+    #[serde(default)]
+    author: Option<GhIssueUser>,
+    #[serde(default)]
+    body: String,
+    #[serde(default, rename = "createdAt")]
+    created_at: Option<String>,
+}
+
+impl GhIssueComment {
+    fn into_cached(self) -> CachedGitHubComment {
+        CachedGitHubComment {
+            author: self.author.map(|author| author.login),
+            body: self.body,
+            created_at: self.created_at,
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub(crate) fn issue_cache_path_for_repo(repo: &str) -> PathBuf {
-    issue_cache_root().join(format!("{}.json", repo_cache_key(repo)))
+    issue_cache_path_for_repo_in_root(&issue_cache_root(), repo)
+}
+
+fn issue_cache_path_for_repo_in_root(root: &Path, repo: &str) -> PathBuf {
+    root.join(format!("{}.json", repo_cache_key(repo)))
 }
 
 pub(crate) fn issue_cache_root() -> PathBuf {
@@ -253,6 +576,7 @@ fn cached_issue_to_preview(
     score: i32,
     override_: Option<&CachedGitHubIssueOverride>,
 ) -> GitHubIssuePreview {
+    let comment_count = issue.comment_count.unwrap_or(issue.comments.len() as u32);
     let labels = issue
         .labels
         .into_iter()
@@ -286,7 +610,7 @@ fn cached_issue_to_preview(
         title: issue.title,
         labels,
         age,
-        comments: comment_lines.len() as u32,
+        comments: comment_count,
         state: GitHubIssueVisualState::Idle,
         body_lines,
         comment_lines,
@@ -404,7 +728,7 @@ fn issue_priority_score(
             score += 5;
         }
     }
-    score += (issue.comments.len() as i32).min(10);
+    score += (issue.comment_count.unwrap_or(issue.comments.len() as u32) as i32).min(10);
     if issue
         .milestone
         .as_deref()
@@ -446,6 +770,76 @@ fn issue_priority_reason(priority: &str, score: i32, labels: &[String]) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Debug)]
+    enum FakeGhResponse {
+        Ok(String),
+        Err(String),
+    }
+
+    struct FakeGhRunner {
+        list_output: String,
+        comment_outputs: HashMap<u64, FakeGhResponse>,
+        calls: RefCell<Vec<Vec<String>>>,
+    }
+
+    impl FakeGhRunner {
+        fn new(list_output: String) -> Self {
+            Self {
+                list_output,
+                comment_outputs: HashMap::new(),
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn with_comment_output(mut self, issue_number: u64, output: String) -> Self {
+            self.comment_outputs
+                .insert(issue_number, FakeGhResponse::Ok(output));
+            self
+        }
+
+        fn with_comment_error(mut self, issue_number: u64, error: &str) -> Self {
+            self.comment_outputs
+                .insert(issue_number, FakeGhResponse::Err(error.to_string()));
+            self
+        }
+
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl GitHubIssueCommandRunner for FakeGhRunner {
+        fn run_gh(&self, args: &[String]) -> Result<String> {
+            self.calls.borrow_mut().push(args.to_vec());
+            match args {
+                [issue, list, ..] if issue == "issue" && list == "list" => {
+                    Ok(self.list_output.clone())
+                }
+                [issue, view, number, ..] if issue == "issue" && view == "view" => {
+                    let number = number.parse::<u64>().context("fake gh issue number")?;
+                    match self.comment_outputs.get(&number) {
+                        Some(FakeGhResponse::Ok(output)) => Ok(output.clone()),
+                        Some(FakeGhResponse::Err(error)) => anyhow::bail!("{}", error),
+                        None => anyhow::bail!("unexpected fake gh comment fetch for #{number}"),
+                    }
+                }
+                _ => anyhow::bail!("unexpected fake gh args: {args:?}"),
+            }
+        }
+    }
+
+    fn unique_issue_cache_temp_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!(
+            "jcode-desktop-issue-cache-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
 
     fn issue(number: u64, title: &str, labels: &[&str], comments: usize) -> CachedGitHubIssue {
         CachedGitHubIssue {
@@ -458,6 +852,7 @@ mod tests {
                     name: (*name).to_string(),
                 })
                 .collect(),
+            comment_count: Some(comments as u32),
             comments: (0..comments)
                 .map(|index| CachedGitHubComment {
                     author: Some(format!("user{index}")),
@@ -544,5 +939,137 @@ mod tests {
             vec![2, 1]
         );
         assert!(browser.filter_label.contains("cached unsynced cache"));
+    }
+
+    #[test]
+    fn syncs_issue_list_comments_and_preserves_local_overrides() {
+        let root = unique_issue_cache_temp_root("sync-success");
+        let existing = GitHubIssueCache {
+            schema_version: ISSUE_CACHE_SCHEMA_VERSION,
+            repo: "owner/repo".to_string(),
+            synced_at: Some("old".to_string()),
+            issues: vec![issue(5, "old title", &["docs"], 0)],
+            local_overrides: vec![CachedGitHubIssueOverride {
+                number: 5,
+                priority: Some("P0".to_string()),
+                pinned: true,
+            }],
+        };
+        write_issue_cache_to_root(&existing, &root).unwrap();
+
+        let list_output = serde_json::json!([
+            {
+                "number": 5,
+                "title": "synced bug",
+                "body": "fresh body",
+                "labels": [{"name": "bug"}],
+                "comments": 1,
+                "state": "OPEN",
+                "createdAt": "2026-05-01T00:00:00Z",
+                "updatedAt": "2026-05-02T00:00:00Z",
+                "assignees": [{"login": "octo"}],
+                "milestone": {"title": "desktop"}
+            },
+            {
+                "number": 6,
+                "title": "normal enhancement",
+                "body": "nice to have",
+                "labels": [{"name": "enhancement"}],
+                "comments": 0,
+                "state": "OPEN",
+                "createdAt": "2026-05-03T00:00:00Z",
+                "updatedAt": "2026-05-03T00:00:00Z",
+                "assignees": [],
+                "milestone": null
+            }
+        ])
+        .to_string();
+        let comment_output = serde_json::json!({
+            "comments": [{
+                "author": {"login": "maintainer"},
+                "body": "synced comment",
+                "createdAt": "2026-05-02T01:00:00Z"
+            }]
+        })
+        .to_string();
+        let runner = FakeGhRunner::new(list_output).with_comment_output(5, comment_output);
+
+        let summary = sync_issue_cache_for_repo_with_runner_and_root(
+            "owner/repo",
+            &runner,
+            GitHubIssueSyncOptions {
+                issue_limit: 10,
+                comment_thread_limit: 10,
+            },
+            &root,
+        )
+        .unwrap();
+
+        assert_eq!(summary.repo, "owner/repo");
+        assert_eq!(summary.issue_count, 2);
+        assert_eq!(summary.fetched_comment_threads, 1);
+        assert_eq!(summary.comment_fetch_errors, 0);
+        assert!(summary.cache_path.is_file());
+        assert_eq!(summary.browser.issues[0].number, 5);
+        assert_eq!(summary.browser.issues[0].priority, "P0");
+        assert_eq!(summary.browser.issues[0].comments, 1);
+        assert!(summary.browser.issues[0].comment_lines[0].contains("maintainer: synced comment"));
+
+        let saved = load_issue_cache_for_repo_raw_from_root("owner/repo", &root).unwrap();
+        assert_eq!(saved.local_overrides.len(), 1);
+        assert_eq!(saved.local_overrides[0].number, 5);
+        assert!(
+            runner
+                .calls()
+                .iter()
+                .any(|args| args.starts_with(&["issue".to_string(), "list".to_string()]))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_reuses_cached_comments_when_comment_fetch_fails() {
+        let root = unique_issue_cache_temp_root("sync-comment-error");
+        let existing = GitHubIssueCache {
+            schema_version: ISSUE_CACHE_SCHEMA_VERSION,
+            repo: "owner/repo".to_string(),
+            synced_at: Some("old".to_string()),
+            issues: vec![issue(7, "old crash", &["bug"], 1)],
+            local_overrides: Vec::new(),
+        };
+        write_issue_cache_to_root(&existing, &root).unwrap();
+
+        let list_output = serde_json::json!([{
+            "number": 7,
+            "title": "crash regression",
+            "body": "crashes on launch",
+            "labels": [{"name": "bug"}, {"name": "regression"}],
+            "comments": 2,
+            "state": "OPEN",
+            "createdAt": "2026-05-01T00:00:00Z",
+            "updatedAt": "2026-05-04T00:00:00Z",
+            "assignees": [],
+            "milestone": null
+        }])
+        .to_string();
+        let runner = FakeGhRunner::new(list_output).with_comment_error(7, "rate limited");
+
+        let summary = sync_issue_cache_for_repo_with_runner_and_root(
+            "owner/repo",
+            &runner,
+            GitHubIssueSyncOptions {
+                issue_limit: 10,
+                comment_thread_limit: 10,
+            },
+            &root,
+        )
+        .unwrap();
+
+        assert_eq!(summary.fetched_comment_threads, 0);
+        assert_eq!(summary.comment_fetch_errors, 1);
+        assert_eq!(summary.browser.issues[0].number, 7);
+        assert_eq!(summary.browser.issues[0].comments, 2);
+        assert!(summary.browser.issues[0].comment_lines[0].contains("user0: comment 0"));
+        let _ = std::fs::remove_dir_all(root);
     }
 }
