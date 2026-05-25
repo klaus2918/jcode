@@ -9257,6 +9257,113 @@ fn rendered_body_cache_key_samples_large_transcript_middle() {
     );
 }
 
+fn streaming_cache_test_app() -> SingleSessionApp {
+    let mut app = SingleSessionApp::new(Some(test_session_card(
+        "streaming-cache-session",
+        "cache session",
+        "active",
+    )));
+    app.messages
+        .push(SingleSessionMessage::assistant("settled response"));
+    app.streaming_response = "streaming partial response".to_string();
+    app
+}
+
+fn streaming_primitive_geometry_cache_key_for_test(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    spinner_tick: u64,
+    activity_cue_motion_cache_key: u64,
+) -> Option<u64> {
+    let rendered_body_lines = single_session_rendered_body_lines_for_tick(app, size, spinner_tick);
+    single_session_streaming_primitive_geometry_cache_key(
+        app,
+        size,
+        0.0,
+        spinner_tick,
+        0.0,
+        1.0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        activity_cue_motion_cache_key,
+        0,
+        Some(app.rendered_body_cache_key((size.width, size.height))),
+        rendered_body_lines.len(),
+    )
+}
+
+#[test]
+fn streaming_primitive_geometry_cache_key_is_stable_for_idle_motion_inputs() {
+    let size = PhysicalSize::new(900, 700);
+    let app = streaming_cache_test_app();
+
+    let first = streaming_primitive_geometry_cache_key_for_test(&app, size, 0, 0)
+        .expect("plain streaming transcript should be cacheable");
+    let second = streaming_primitive_geometry_cache_key_for_test(&app, size, 0, 0)
+        .expect("same streaming transcript should stay cacheable");
+    assert_eq!(first, second);
+
+    let spinner_changed = streaming_primitive_geometry_cache_key_for_test(&app, size, 1, 0)
+        .expect("spinner tick remains eligible but invalidates animated dots");
+    assert_ne!(first, spinner_changed);
+
+    let motion_changed = streaming_primitive_geometry_cache_key_for_test(&app, size, 0, 99)
+        .expect("activity cue motion remains eligible but invalidates geometry");
+    assert_ne!(first, motion_changed);
+
+    let mut scrolled = app.clone();
+    scrolled.body_scroll_lines = 2.0;
+    let scrolled_key = streaming_primitive_geometry_cache_key_for_test(&scrolled, size, 0, 0)
+        .expect("scroll position remains eligible but invalidates geometry");
+    assert_ne!(first, scrolled_key);
+}
+
+#[test]
+fn streaming_primitive_geometry_cache_key_rejects_dynamic_overlay_states() {
+    let size = PhysicalSize::new(900, 700);
+    let base = streaming_cache_test_app();
+    assert!(streaming_primitive_geometry_cache_key_for_test(&base, size, 0, 0).is_some());
+
+    let mut no_streaming = base.clone();
+    no_streaming.streaming_response.clear();
+    assert!(streaming_primitive_geometry_cache_key_for_test(&no_streaming, size, 0, 0).is_none());
+
+    let mut help = base.clone();
+    help.show_help = true;
+    assert!(streaming_primitive_geometry_cache_key_for_test(&help, size, 0, 0).is_none());
+
+    let mut model_picker = base.clone();
+    model_picker.model_picker.open = true;
+    assert!(streaming_primitive_geometry_cache_key_for_test(&model_picker, size, 0, 0).is_none());
+
+    let mut session_switcher = base.clone();
+    session_switcher.session_switcher.open = true;
+    assert!(
+        streaming_primitive_geometry_cache_key_for_test(&session_switcher, size, 0, 0).is_none()
+    );
+
+    let mut stdin_overlay = base.clone();
+    stdin_overlay.stdin_response = Some(StdinResponseState {
+        request_id: "request".to_string(),
+        prompt: "continue?".to_string(),
+        is_password: false,
+        tool_call_id: "tool".to_string(),
+        input: String::new(),
+    });
+    assert!(streaming_primitive_geometry_cache_key_for_test(&stdin_overlay, size, 0, 0).is_none());
+
+    let mut welcome = SingleSessionApp::new(None);
+    welcome.streaming_response = "fresh welcome stream".to_string();
+    assert!(streaming_primitive_geometry_cache_key_for_test(&welcome, size, 0, 0).is_none());
+}
+
 #[test]
 fn streaming_text_delta_batches_do_not_refresh_session_metadata() {
     let mut app = DesktopApp::SingleSession(SingleSessionApp::new(None));
