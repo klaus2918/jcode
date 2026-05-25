@@ -150,6 +150,7 @@ const SCROLL_MOMENTUM_DECAY_PER_SECOND: f32 = 7.0;
 const SCROLL_MOMENTUM_MAX_VELOCITY: f32 = 72.0;
 const SCROLL_MOMENTUM_STOP_VELOCITY: f32 = 0.08;
 const SCROLL_FRAME_MAX_DT_SECONDS: f32 = 0.050;
+const SINGLE_SESSION_SCROLL_ANIMATION_DURATION: Duration = Duration::from_millis(150);
 const SINGLE_SESSION_BODY_TEXT_WINDOW_BEFORE_LINES: usize = 8;
 const SINGLE_SESSION_BODY_TEXT_WINDOW_AFTER_LINES: usize = 16;
 const SINGLE_SESSION_STREAMING_BODY_TEXT_WINDOW_BEFORE_LINES: usize = 2;
@@ -7415,6 +7416,84 @@ impl ScrollLineAccumulator {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SingleSessionScrollMotionFrame {
+    visual_scroll_lines: f32,
+    smooth_scroll_lines: f32,
+    active: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SingleSessionScrollMotion {
+    initialized: bool,
+    start_lines: f32,
+    current_lines: f32,
+    target_lines: f32,
+    started_at: Option<Instant>,
+}
+
+impl SingleSessionScrollMotion {
+    fn frame(&mut self, target_lines: f32, now: Instant) -> SingleSessionScrollMotionFrame {
+        let target_lines = if target_lines.is_finite() {
+            target_lines.max(0.0)
+        } else {
+            0.0
+        };
+
+        if !self.initialized || animation::desktop_reduced_motion_enabled() {
+            self.initialized = true;
+            self.start_lines = target_lines;
+            self.current_lines = target_lines;
+            self.target_lines = target_lines;
+            self.started_at = None;
+            return SingleSessionScrollMotionFrame {
+                visual_scroll_lines: target_lines,
+                smooth_scroll_lines: 0.0,
+                active: false,
+            };
+        }
+
+        if (self.target_lines - target_lines).abs() >= SCROLL_FRACTIONAL_EPSILON {
+            self.start_lines = self.current_lines;
+            self.target_lines = target_lines;
+            self.started_at = Some(now);
+        }
+
+        if let Some(started_at) = self.started_at {
+            let progress = (now.saturating_duration_since(started_at).as_secs_f32()
+                / SINGLE_SESSION_SCROLL_ANIMATION_DURATION.as_secs_f32())
+            .clamp(0.0, 1.0);
+            let eased = animation::ease_out_cubic(progress);
+            self.current_lines = animation::lerp(self.start_lines, self.target_lines, eased);
+            if progress >= 1.0
+                || (self.current_lines - self.target_lines).abs() < SCROLL_FRACTIONAL_EPSILON
+            {
+                self.current_lines = self.target_lines;
+                self.started_at = None;
+            }
+        }
+
+        SingleSessionScrollMotionFrame {
+            visual_scroll_lines: self.current_lines,
+            smooth_scroll_lines: self.current_lines - target_lines,
+            active: self.is_active(),
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.started_at.is_some()
+            || (self.current_lines - self.target_lines).abs() >= SCROLL_FRACTIONAL_EPSILON
+    }
+
+    fn clear(&mut self) {
+        self.initialized = false;
+        self.start_lines = 0.0;
+        self.current_lines = 0.0;
+        self.target_lines = 0.0;
+        self.started_at = None;
+    }
+}
+
 #[cfg(test)]
 fn mouse_scroll_lines(delta: MouseScrollDelta) -> Option<f32> {
     ScrollLineAccumulator::default().scroll_lines(delta, Instant::now())
@@ -8403,6 +8482,7 @@ struct Canvas {
     primitive_workspace_vertices: Vec<Vertex>,
     app_mode_transition: AppModeTransitionState,
     app_mode_transition_vertices: Vec<Vertex>,
+    single_session_scroll_motion: SingleSessionScrollMotion,
     needs_initial_frame: bool,
     boot_frame_presented: bool,
     first_render_completed: bool,
@@ -8531,6 +8611,7 @@ impl Canvas {
             primitive_workspace_vertices: Vec::new(),
             app_mode_transition: AppModeTransitionState::default(),
             app_mode_transition_vertices: Vec::new(),
+            single_session_scroll_motion: SingleSessionScrollMotion::default(),
             needs_initial_frame: true,
             boot_frame_presented: false,
             first_render_completed: false,
@@ -8595,6 +8676,7 @@ impl Canvas {
         self.primitive_frame_vertices.clear();
         self.app_mode_transition.clear();
         self.app_mode_transition_vertices.clear();
+        self.single_session_scroll_motion.clear();
         self.first_render_completed = false;
         self.text_needs_prepare = true;
         if self.single_session_streaming_text_buffer.is_some() {
@@ -9328,6 +9410,20 @@ impl Canvas {
         let spinner_tick = desktop_spinner_tick(now);
         frame_profile.checkpoint("frame_setup");
 
+        let scroll_motion_frame = if let DesktopApp::SingleSession(single_session) = app {
+            self.single_session_scroll_motion
+                .frame(single_session.body_scroll_lines, now)
+        } else {
+            self.single_session_scroll_motion.clear();
+            SingleSessionScrollMotionFrame {
+                visual_scroll_lines: 0.0,
+                smooth_scroll_lines: 0.0,
+                active: false,
+            }
+        };
+        let smooth_scroll_lines = smooth_scroll_lines + scroll_motion_frame.smooth_scroll_lines;
+        frame_profile.checkpoint("scroll_motion");
+
         let (welcome_hero_reveal_progress, welcome_hero_reveal_active) =
             if let DesktopApp::SingleSession(single_session) = app {
                 self.welcome_hero_reveal_progress(single_session, now)
@@ -9684,6 +9780,7 @@ impl Canvas {
                     || inline_markdown_motion.is_active()
                     || tool_motion.is_active()
                     || scrollbar_motion.is_active()
+                    || scroll_motion_frame.active
                     || welcome_hero_reveal_active
                     || streaming_text_arrival_style.active;
                 let geometry_cache_key = single_session_streaming_primitive_geometry_cache_key(

@@ -7869,6 +7869,51 @@ fn scroll_accumulator_keeps_fractional_momentum_after_wheel_input() {
 }
 
 #[test]
+fn single_session_scroll_motion_animates_keyboard_and_snap_targets() {
+    let mut motion = SingleSessionScrollMotion::default();
+    let now = Instant::now();
+
+    let initial = motion.frame(0.0, now);
+    assert_eq!(initial.visual_scroll_lines, 0.0);
+    assert_eq!(initial.smooth_scroll_lines, 0.0);
+    assert!(!initial.active);
+
+    let start = motion.frame(12.0, now);
+    assert_eq!(start.visual_scroll_lines, 0.0);
+    assert_eq!(start.smooth_scroll_lines, -12.0);
+    assert!(start.active);
+
+    let middle = motion.frame(12.0, now + SINGLE_SESSION_SCROLL_ANIMATION_DURATION / 2);
+    assert!(middle.visual_scroll_lines > 0.0);
+    assert!(middle.visual_scroll_lines < 12.0);
+    assert!(middle.smooth_scroll_lines < 0.0);
+    assert!(middle.active);
+
+    let interrupted = motion.frame(0.0, now + SINGLE_SESSION_SCROLL_ANIMATION_DURATION / 2);
+    assert_eq!(interrupted.visual_scroll_lines, middle.visual_scroll_lines);
+    assert!(interrupted.smooth_scroll_lines > 0.0);
+    assert!(interrupted.active);
+
+    let settled = motion.frame(0.0, now + SINGLE_SESSION_SCROLL_ANIMATION_DURATION * 2);
+    assert_eq!(settled.visual_scroll_lines, 0.0);
+    assert_eq!(settled.smooth_scroll_lines, 0.0);
+    assert!(!settled.active);
+}
+
+#[test]
+fn reduced_motion_disables_single_session_scroll_motion() {
+    let _guard = DesktopReducedMotionEnvGuard::set(true);
+    let mut motion = SingleSessionScrollMotion::default();
+    let now = Instant::now();
+
+    assert_eq!(motion.frame(0.0, now).visual_scroll_lines, 0.0);
+    let snapped = motion.frame(12.0, now + Duration::from_millis(16));
+    assert_eq!(snapped.visual_scroll_lines, 12.0);
+    assert_eq!(snapped.smooth_scroll_lines, 0.0);
+    assert!(!snapped.active);
+}
+
+#[test]
 fn pixel_scroll_reversal_and_idle_reset_keep_fractional_deltas() {
     let mut accumulator = ScrollLineAccumulator::default();
     let now = Instant::now();
