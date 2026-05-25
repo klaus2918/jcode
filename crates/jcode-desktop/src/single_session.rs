@@ -762,6 +762,7 @@ pub(crate) struct ModelPickerState {
     pub(crate) current_model: Option<String>,
     pub(crate) provider_name: Option<String>,
     pub(crate) choices: Vec<DesktopModelChoice>,
+    search_texts: Vec<String>,
     visible_indices: Vec<usize>,
     pub(crate) error: Option<String>,
 }
@@ -810,6 +811,7 @@ impl ModelPickerState {
         }
         if !choices.is_empty() {
             self.choices = dedupe_model_choices(choices);
+            self.rebuild_search_texts();
         }
         self.loading = false;
         self.error = None;
@@ -895,19 +897,27 @@ impl ModelPickerState {
     }
 
     fn refresh_visible_indices(&mut self) {
+        self.ensure_search_texts_current();
         let query = self.filter.trim().to_lowercase();
         if query.is_empty() {
             self.visible_indices = (0..self.choices.len()).collect();
             return;
         }
 
-        let mut substring_matches = Vec::new();
+        let substring_matches = self
+            .search_texts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, search_text)| search_text.contains(&query).then_some(index))
+            .collect::<Vec<_>>();
+        if !substring_matches.is_empty() {
+            self.visible_indices = substring_matches;
+            return;
+        }
+
         let mut fuzzy_matches = Vec::new();
-        for (index, choice) in self.choices.iter().enumerate() {
-            let search_text = model_choice_search_text(choice);
-            if search_text.contains(&query) {
-                substring_matches.push(index);
-            } else if let Some(score) = model_picker_fuzzy_score(&query, &search_text) {
+        for (index, search_text) in self.search_texts.iter().enumerate() {
+            if let Some(score) = model_picker_fuzzy_score(&query, search_text) {
                 fuzzy_matches.push((score, search_text.len(), index));
             }
         }
@@ -916,10 +926,9 @@ impl ModelPickerState {
                 .then_with(|| a.1.cmp(&b.1))
                 .then_with(|| a.2.cmp(&b.2))
         });
-
-        self.visible_indices = substring_matches
+        self.visible_indices = fuzzy_matches
             .into_iter()
-            .chain(fuzzy_matches.into_iter().map(|(_, _, index)| index))
+            .map(|(_, _, index)| index)
             .collect();
     }
 
@@ -958,6 +967,16 @@ impl ModelPickerState {
         }
     }
 
+    fn rebuild_search_texts(&mut self) {
+        self.search_texts = self.choices.iter().map(model_choice_search_text).collect();
+    }
+
+    fn ensure_search_texts_current(&mut self) {
+        if self.search_texts.len() != self.choices.len() {
+            self.rebuild_search_texts();
+        }
+    }
+
     fn ensure_current_choice_present(&mut self) {
         let Some(current_model) = self.current_model.clone() else {
             return;
@@ -969,16 +988,16 @@ impl ModelPickerState {
         {
             return;
         }
-        self.choices.insert(
-            0,
-            DesktopModelChoice {
-                model: current_model,
-                provider: self.provider_name.clone(),
-                api_method: Some("current".to_string()),
-                detail: Some("current model".to_string()),
-                available: true,
-            },
-        );
+        let choice = DesktopModelChoice {
+            model: current_model,
+            provider: self.provider_name.clone(),
+            api_method: Some("current".to_string()),
+            detail: Some("current model".to_string()),
+            available: true,
+        };
+        let search_text = model_choice_search_text(&choice);
+        self.choices.insert(0, choice);
+        self.search_texts.insert(0, search_text);
     }
 }
 

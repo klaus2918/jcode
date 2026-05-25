@@ -6483,6 +6483,43 @@ fn single_session_model_picker_filter_supports_fuzzy_abbreviations() {
 }
 
 #[test]
+fn single_session_model_picker_filter_finds_synthetic_current_choice() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenModelPicker),
+        KeyOutcome::LoadModelCatalog
+    );
+    app.apply_session_event(session_launch::DesktopSessionEvent::ModelCatalog {
+        current_model: Some("custom-local-model".to_string()),
+        provider_name: Some("Local".to_string()),
+        models: vec![session_launch::DesktopModelChoice {
+            model: "gpt-5-codex".to_string(),
+            provider: Some("openai".to_string()),
+            api_method: Some("responses".to_string()),
+            detail: Some("coding model".to_string()),
+            available: true,
+        }],
+        reasoning_effort: None,
+        service_tier: None,
+        compaction_mode: None,
+    });
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("current".to_string())),
+        KeyOutcome::Redraw
+    );
+    let picker = app
+        .inline_widget_styled_lines()
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(picker.contains("custom-local-model"), "{picker}");
+    assert!(!picker.contains("gpt-5-codex"), "{picker}");
+}
+
+#[test]
 fn single_session_model_picker_cold_start_benchmark() {
     use std::time::Instant;
 
