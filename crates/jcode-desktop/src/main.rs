@@ -426,14 +426,19 @@ fn streaming_text_fade_start_after_len_change(
         return None;
     }
 
-    let response_changed = previous_len != next_len;
     let fade_active = current_started_at.is_some_and(|started_at| {
         now.saturating_duration_since(started_at) < STREAMING_TEXT_FADE_DURATION
     });
-    if response_changed && !fade_active {
+    if fade_active {
+        return current_started_at;
+    }
+
+    // Only fade in the beginning of a streaming response. Restarting after
+    // every slow delta dims the already-visible response and reads as flicker.
+    if previous_len == 0 && next_len > 0 {
         Some(now)
     } else {
-        current_started_at
+        None
     }
 }
 

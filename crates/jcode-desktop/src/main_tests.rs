@@ -2143,23 +2143,53 @@ fn single_session_streaming_text_fade_does_not_restart_for_each_delta() {
 }
 
 #[test]
-fn single_session_streaming_text_fade_restarts_after_previous_fade_finishes() {
+fn single_session_streaming_text_fade_does_not_restart_for_slow_delta_after_previous_fade_finishes()
+{
     let first = Instant::now();
     let later = first + STREAMING_TEXT_FADE_DURATION + Duration::from_millis(1);
 
     let started = streaming_text_fade_start_after_len_change(0, 5, None, first);
     assert_eq!(started, Some(first));
 
-    let restarted = streaming_text_fade_start_after_len_change(5, 12, started, later);
-    assert_eq!(restarted, Some(later));
+    let settled = streaming_text_fade_start_after_len_change(5, 12, started, later);
+    assert_eq!(settled, None);
+
+    let style = settled
+        .map(|started_at| {
+            streaming_text_arrival_style_for_elapsed(later.saturating_duration_since(started_at))
+        })
+        .unwrap_or(StreamingTextArrivalStyle {
+            opacity: 1.0,
+            y_offset_pixels: 0.0,
+            active: false,
+        });
+    assert_eq!(style.opacity, 1.0);
+    assert_eq!(style.y_offset_pixels, 0.0);
+    assert!(!style.active);
 }
 
 #[test]
-fn single_session_streaming_text_fade_restarts_after_renderer_clears_finished_fade() {
+fn single_session_streaming_text_fade_stays_idle_after_renderer_clears_finished_fade() {
     let later = Instant::now() + STREAMING_TEXT_FADE_DURATION + Duration::from_millis(1);
 
     let restarted = streaming_text_fade_start_after_len_change(5, 12, None, later);
-    assert_eq!(restarted, Some(later));
+    assert_eq!(restarted, None);
+}
+
+#[test]
+fn single_session_streaming_text_fade_starts_for_new_response_after_reset() {
+    let first = Instant::now();
+    let next = first + STREAMING_TEXT_FADE_DURATION + Duration::from_millis(1);
+
+    let started = streaming_text_fade_start_after_len_change(0, 5, None, first);
+    assert_eq!(started, Some(first));
+    assert_eq!(
+        streaming_text_fade_start_after_len_change(5, 0, started, first),
+        None
+    );
+
+    let restarted_for_new_response = streaming_text_fade_start_after_len_change(0, 4, None, next);
+    assert_eq!(restarted_for_new_response, Some(next));
 }
 
 #[test]
