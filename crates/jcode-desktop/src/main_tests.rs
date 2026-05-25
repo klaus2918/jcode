@@ -2795,26 +2795,29 @@ fn single_session_commands_alias_opens_help_without_sending_prompt() {
 #[test]
 fn single_session_slash_resume_opens_session_switcher_without_sending_prompt() {
     let mut app = SingleSessionApp::new(None);
-    app.handle_key(KeyInput::Character("/resume".to_string()));
-
     assert_eq!(
-        app.active_inline_widget(),
-        Some(InlineWidgetKind::SlashSuggestions)
-    );
-    assert_eq!(
-        app.handle_key(KeyInput::SubmitDraft),
+        app.handle_key(KeyInput::Character("/resume".to_string())),
         KeyOutcome::LoadSessionSwitcher
     );
-    assert!(app.session_switcher.open);
-    assert!(app.session_switcher.loading);
+
     assert_eq!(
         app.active_inline_widget(),
         Some(InlineWidgetKind::SessionSwitcher)
     );
     assert_eq!(
         app.active_inline_widget_mode(),
-        Some(InlineWidgetMode::Interactive)
+        Some(InlineWidgetMode::ReadOnly)
     );
+    assert!(app.session_switcher.open);
+    assert!(app.session_switcher.loading);
+    assert!(app.session_switcher.preview);
+    assert_eq!(app.draft, "/resume");
+    assert!(app.messages.is_empty());
+
+    app.apply_session_switcher_cards(vec![test_session_card("session_alpha", "alpha", "active")]);
+    assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
+    assert!(!app.session_switcher.open);
+    assert_eq!(app.live_session_id.as_deref(), Some("session_alpha"));
     assert!(app.draft.is_empty());
     assert!(app.messages.is_empty());
 }
@@ -3151,6 +3154,49 @@ fn single_session_typing_model_slash_opens_preview_picker_without_submitting() {
     assert!(!app.model_picker.open);
     assert!(app.draft.is_empty());
     assert!(app.messages.is_empty());
+}
+
+#[test]
+fn single_session_model_slash_preview_accepts_vim_navigation_keys() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("/model".to_string())),
+        KeyOutcome::LoadModelCatalog
+    );
+    app.apply_session_event(session_launch::DesktopSessionEvent::ModelCatalog {
+        current_model: None,
+        provider_name: Some("Claude".to_string()),
+        models: vec![
+            session_launch::DesktopModelChoice {
+                model: "claude-sonnet-4-5".to_string(),
+                provider: Some("claude".to_string()),
+                api_method: Some("oauth".to_string()),
+                detail: None,
+                available: true,
+            },
+            session_launch::DesktopModelChoice {
+                model: "claude-opus-4-5".to_string(),
+                provider: Some("claude".to_string()),
+                api_method: Some("oauth".to_string()),
+                detail: None,
+                available: true,
+            },
+        ],
+        reasoning_effort: None,
+        service_tier: None,
+        compaction_mode: None,
+    });
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("j".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.model_picker.selected, 1);
+    assert_eq!(app.draft, "/model");
+    assert_eq!(
+        app.handle_key(KeyInput::SubmitDraft),
+        KeyOutcome::SetModel("claude-opus-4-5".to_string())
+    );
 }
 
 #[test]
@@ -4195,7 +4241,7 @@ fn single_session_text_buffers_include_header_version_area() {
     let mut font_system = FontSystem::new();
     let buffers = single_session_text_buffers(&app, size, &mut font_system);
 
-    assert_eq!(buffers.len(), 7);
+    assert_eq!(buffers.len(), 8);
     assert_eq!(single_session_text_areas(&buffers, size).len(), 4);
 }
 
@@ -4317,7 +4363,7 @@ fn single_session_visual_state_smoke_covers_markdown_spinner_and_switcher() {
     );
     let switcher_key = single_session_text_key(&switcher_app, size);
     assert_eq!(switcher_key.title, "");
-    assert_visual_text_contains(&switcher_key, "desktop session switcher");
+    assert_visual_text_contains(&switcher_key, "Resume sessions");
     assert_visual_text_contains(
         &switcher_key,
         "loading recent sessions from ~/.jcode/sessions...",
@@ -5770,6 +5816,11 @@ fn assert_visual_text_contains(key: &SingleSessionTextKey, expected: &str) {
         .iter()
         .map(|line| line.text.as_str())
         .chain(key.inline_widget.iter().map(|line| line.text.as_str()))
+        .chain(
+            key.inline_widget_preview
+                .iter()
+                .map(|line| line.text.as_str()),
+        )
         .chain(std::iter::once(key.welcome_hero.as_str()))
         .chain(key.welcome_hint.iter().map(|line| line.text.as_str()))
         .collect::<Vec<_>>();
@@ -6436,6 +6487,58 @@ fn single_session_model_picker_loads_filters_and_selects_model() {
 }
 
 #[test]
+fn single_session_model_picker_accepts_vim_navigation_keys() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenModelPicker),
+        KeyOutcome::LoadModelCatalog
+    );
+    app.apply_session_event(session_launch::DesktopSessionEvent::ModelCatalog {
+        current_model: None,
+        provider_name: Some("Claude".to_string()),
+        models: vec![
+            session_launch::DesktopModelChoice {
+                model: "claude-sonnet-4-5".to_string(),
+                provider: Some("claude".to_string()),
+                api_method: Some("oauth".to_string()),
+                detail: None,
+                available: true,
+            },
+            session_launch::DesktopModelChoice {
+                model: "claude-opus-4-5".to_string(),
+                provider: Some("claude".to_string()),
+                api_method: Some("oauth".to_string()),
+                detail: None,
+                available: true,
+            },
+        ],
+        reasoning_effort: None,
+        service_tier: None,
+        compaction_mode: None,
+    });
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("j".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.model_picker.selected, 1);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("k".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.model_picker.selected, 0);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("G".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.model_picker.selected, 1);
+    assert_eq!(
+        app.handle_key(KeyInput::SubmitDraft),
+        KeyOutcome::SetModel("claude-opus-4-5".to_string())
+    );
+}
+
+#[test]
 fn single_session_model_picker_filter_supports_fuzzy_abbreviations() {
     let mut app = SingleSessionApp::new(None);
     assert_eq!(
@@ -6669,12 +6772,12 @@ fn single_session_session_switcher_loads_filters_and_resumes_session() {
         .map(|line| line.text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(switcher.contains("desktop session switcher"));
-    assert!(switcher.contains("sessions ›"));
-    assert!(switcher.contains("preview"));
+    assert!(switcher.contains("Resume sessions"));
+    assert!(switcher.contains("Recent sessions"));
+    assert!(switcher.contains("Preview"));
     assert!(switcher.contains("alpha"));
     assert!(switcher.contains("beta"));
-    assert!(switcher.contains("assistant alpha response"));
+    assert!(switcher.contains("Assistant  alpha response"));
 
     assert_eq!(app.handle_key(KeyInput::MoveToLineEnd), KeyOutcome::Redraw);
     assert_eq!(app.session_switcher.selected, 1);
@@ -6715,6 +6818,54 @@ fn single_session_session_switcher_loads_filters_and_resumes_session() {
 }
 
 #[test]
+fn single_session_session_switcher_uses_split_rail_and_preview_text_areas() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    app.apply_session_switcher_cards(vec![test_session_card("session_alpha", "alpha", "active")]);
+
+    let size = PhysicalSize::new(1100, 760);
+    let key = single_session_text_key(&app, size);
+    assert!(
+        key.inline_widget
+            .iter()
+            .any(|line| line.text.contains("active session"))
+    );
+    assert!(
+        key.inline_widget_preview
+            .iter()
+            .any(|line| line.text.contains("Preview"))
+    );
+    assert!(
+        key.inline_widget_preview
+            .iter()
+            .any(|line| line.text.contains("Assistant  alpha response"))
+    );
+
+    let mut font_system = FontSystem::new();
+    let buffers = single_session_text_buffers(&app, size, &mut font_system);
+    let areas = single_session_text_areas_for_app(&app, &buffers, size);
+    let rail_area = areas
+        .iter()
+        .find(|area| std::ptr::eq(area.buffer, &buffers[4]))
+        .expect("resume rail text area");
+    let preview_area = areas
+        .iter()
+        .find(|area| std::ptr::eq(area.buffer, &buffers[7]))
+        .expect("resume preview text area");
+
+    assert!(preview_area.left > rail_area.left + 240.0);
+    assert!(preview_area.bounds.right > preview_area.bounds.left);
+    assert!(preview_area.bounds.bottom > preview_area.bounds.top);
+    assert!(buffer_has_layout_run_text(
+        &buffers[7],
+        "Assistant  alpha response"
+    ));
+}
+
+#[test]
 fn single_session_session_switcher_renders_tui_style_cards_and_role_preview() {
     let mut app = SingleSessionApp::new(None);
     assert_eq!(
@@ -6743,16 +6894,16 @@ fn single_session_session_switcher_renders_tui_style_cards_and_role_preview() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(switcher.contains("desktop session switcher · 1 sessions · all · Design Session"));
-    assert!(switcher.contains("sessions › · recent sessions, newest first"));
-    assert!(switcher.contains("preview · full selected-session preview"));
-    assert!(switcher.contains("▶ Design Session"));
-    assert!(switcher.contains("▶ active · claude-sonnet-4-5"));
+    assert!(switcher.contains("Resume sessions · 1 sessions · all"));
+    assert!(switcher.contains("Recent sessions · focused · newest first"));
+    assert!(switcher.contains("Preview · selected session transcript"));
+    assert!(switcher.contains("active session · Design Session"));
+    assert!(switcher.contains("Status active · Model claude-sonnet-4-5"));
     assert!(switcher.contains("latest prompt: compact card prompt"));
-    assert!(switcher.contains("1› first question"));
-    assert!(switcher.contains("assistant thoughtful answer"));
-    assert!(switcher.contains("tool bash completed"));
-    assert!(switcher.contains("system system note"));
+    assert!(switcher.contains("Prompt 1  first question"));
+    assert!(switcher.contains("Assistant  thoughtful answer"));
+    assert!(switcher.contains("Tool  bash completed"));
+    assert!(switcher.contains("System  system note"));
 
     let style_containing = |needle: &str| {
         styled
@@ -6761,15 +6912,15 @@ fn single_session_session_switcher_renders_tui_style_cards_and_role_preview() {
             .map(|line| line.style)
     };
     assert_eq!(
-        style_containing("1› first question"),
+        style_containing("Prompt 1  first question"),
         Some(SingleSessionLineStyle::User)
     );
     assert_eq!(
-        style_containing("assistant thoughtful answer"),
+        style_containing("Assistant  thoughtful answer"),
         Some(SingleSessionLineStyle::Assistant)
     );
     assert_eq!(
-        style_containing("tool bash completed"),
+        style_containing("Tool  bash completed"),
         Some(SingleSessionLineStyle::Tool)
     );
 }
@@ -6849,7 +7000,10 @@ fn single_session_session_switcher_filter_reports_visible_match_count() {
         .join("\n");
 
     assert!(switcher.contains("filter: beta"), "{switcher}");
-    assert!(switcher.contains("sessions: 1/2"), "{switcher}");
+    assert!(
+        switcher.contains("Resume sessions · 1/2 sessions · filter beta"),
+        "{switcher}"
+    );
 }
 
 #[test]
@@ -6892,6 +7046,38 @@ fn single_session_resume_switcher_reopens_without_stale_filter_but_refresh_prese
 }
 
 #[test]
+fn single_session_resume_slash_preview_accepts_vim_navigation_keys() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("/resume".to_string())),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    app.apply_session_switcher_cards(vec![
+        test_session_card("session_alpha", "alpha", "active"),
+        test_session_card("session_beta", "beta", "closed"),
+    ]);
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("j".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.session_switcher.selected, 1);
+    assert_eq!(app.draft, "/resume");
+    assert_eq!(
+        app.handle_key(KeyInput::Character("l".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.session_switcher.focus, SessionSwitcherPane::Preview);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("h".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.session_switcher.focus, SessionSwitcherPane::Sessions);
+    assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
+    assert_eq!(app.live_session_id.as_deref(), Some("session_beta"));
+}
+
+#[test]
 fn single_session_resume_picker_switches_to_preview_pane_and_opens_terminal() {
     let mut app = SingleSessionApp::new(None);
     assert_eq!(
@@ -6914,7 +7100,7 @@ fn single_session_resume_picker_switches_to_preview_pane_and_opens_terminal() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(switcher.contains("focus: preview"));
-    assert!(switcher.contains("preview ›"));
+    assert!(switcher.contains("Preview · focused · selected session transcript"));
 
     assert_eq!(app.handle_key(KeyInput::MoveCursorLeft), KeyOutcome::Redraw);
     assert_eq!(
@@ -6928,6 +7114,46 @@ fn single_session_resume_picker_switches_to_preview_pane_and_opens_terminal() {
             title: "beta".to_string(),
         }
     );
+}
+
+#[test]
+fn single_session_resume_picker_accepts_vim_navigation_keys() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    app.apply_session_switcher_cards(vec![
+        test_session_card("session_alpha", "alpha", "active"),
+        test_session_card("session_beta", "beta", "closed"),
+    ]);
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("j".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.session_switcher.selected, 1);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("k".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.session_switcher.selected, 0);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("l".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.session_switcher.focus, SessionSwitcherPane::Preview);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("h".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.session_switcher.focus, SessionSwitcherPane::Sessions);
+    assert_eq!(
+        app.handle_key(KeyInput::Character("G".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
+    assert_eq!(app.live_session_id.as_deref(), Some("session_beta"));
 }
 
 #[test]
@@ -6999,7 +7225,7 @@ fn single_session_session_switcher_marks_current_session_and_reloads() {
             .map(|line| line.text)
             .collect::<Vec<_>>()
             .join("\n")
-            .contains("› ✓ ▶ alpha")
+            .contains("active session · current · alpha")
     );
 
     assert_eq!(

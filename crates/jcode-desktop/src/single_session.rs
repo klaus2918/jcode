@@ -1,6 +1,5 @@
 use crate::{
-    desktop_rich_text,
-    session_data::{self, SessionTranscriptMessage},
+    desktop_rich_text, session_data,
     session_launch::{
         DesktopModelChoice, DesktopSessionEvent, DesktopSessionHandle, DesktopSessionStatus,
     },
@@ -13,7 +12,7 @@ use pulldown_cmark::{
 use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
-use workspace::{KeyInput, KeyOutcome};
+use workspace::{KeyInput, KeyOutcome, SessionTranscriptMessage};
 
 pub(crate) const SINGLE_SESSION_FONT_FAMILY: &str = "JetBrainsMono Nerd Font";
 pub(crate) const SINGLE_SESSION_USER_FONT_FAMILY: &str = "Kalam";
@@ -637,6 +636,10 @@ impl SingleSessionOverlay {
                 mode: InlineWidgetMode::ReadOnly,
             } => false,
             Self::Inline {
+                kind: InlineWidgetKind::SessionSwitcher,
+                mode: InlineWidgetMode::ReadOnly,
+            } => false,
+            Self::Inline {
                 kind: InlineWidgetKind::SlashSuggestions,
                 mode: InlineWidgetMode::ReadOnly,
             } => false,
@@ -653,6 +656,7 @@ impl InlineWidgetKind {
             }
             Self::ModelPicker if app.model_picker.preview => InlineWidgetMode::ReadOnly,
             Self::ModelPicker => InlineWidgetMode::Interactive,
+            Self::SessionSwitcher if app.session_switcher.preview => InlineWidgetMode::ReadOnly,
             Self::SessionSwitcher => InlineWidgetMode::Interactive,
         }
     }
@@ -1005,15 +1009,17 @@ impl ModelPickerState {
 pub(crate) struct SessionSwitcherState {
     pub(crate) open: bool,
     pub(crate) loading: bool,
+    pub(crate) preview: bool,
     pub(crate) filter: String,
     pub(crate) selected: usize,
     pub(crate) sessions: Vec<workspace::SessionCard>,
+    visible_indices: Vec<usize>,
     preview_scroll: usize,
-    focus: SessionSwitcherPane,
+    pub(crate) focus: SessionSwitcherPane,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-enum SessionSwitcherPane {
+pub(crate) enum SessionSwitcherPane {
     #[default]
     Sessions,
     Preview,
@@ -1021,18 +1027,30 @@ enum SessionSwitcherPane {
 
 impl SessionSwitcherState {
     fn open_loading(&mut self, current_session_id: Option<&str>) {
-        self.open_loading_with_filter(current_session_id, String::new());
+        self.open_loading_with_filter(current_session_id, String::new(), false);
+    }
+
+    fn open_preview_loading(&mut self, current_session_id: Option<&str>, filter: String) {
+        self.open_loading_with_filter(current_session_id, filter, true);
     }
 
     fn refresh_loading(&mut self, current_session_id: Option<&str>) {
         let filter = self.filter.clone();
-        self.open_loading_with_filter(current_session_id, filter);
+        let preview = self.preview;
+        self.open_loading_with_filter(current_session_id, filter, preview);
     }
 
-    fn open_loading_with_filter(&mut self, current_session_id: Option<&str>, filter: String) {
+    fn open_loading_with_filter(
+        &mut self,
+        current_session_id: Option<&str>,
+        filter: String,
+        preview: bool,
+    ) {
         self.open = true;
         self.loading = true;
+        self.preview = preview;
         self.filter = filter;
+        self.refresh_visible_indices();
         self.focus = SessionSwitcherPane::Sessions;
         self.preview_scroll = 0;
         self.selected = self
@@ -1044,6 +1062,7 @@ impl SessionSwitcherState {
     fn close(&mut self) {
         self.open = false;
         self.loading = false;
+        self.preview = false;
     }
 
     fn apply_sessions(
@@ -1052,6 +1071,7 @@ impl SessionSwitcherState {
         current_session_id: Option<&str>,
     ) {
         self.sessions = sessions;
+        self.refresh_visible_indices();
         self.loading = false;
         self.selected = self
             .current_visible_position(current_session_id)
@@ -1061,11 +1081,14 @@ impl SessionSwitcherState {
     }
 
     fn selected_session(&self) -> Option<workspace::SessionCard> {
+        self.selected_session_ref().cloned()
+    }
+
+    fn selected_session_ref(&self) -> Option<&workspace::SessionCard> {
         let visible = self.filtered_indices();
         visible
             .get(self.selected)
             .and_then(|index| self.sessions.get(*index))
-            .cloned()
     }
 
     fn move_selection(&mut self, delta: i32) {
@@ -1094,20 +1117,37 @@ impl SessionSwitcherState {
 
     fn push_filter_text(&mut self, text: &str) {
         self.filter.push_str(text);
+        self.refresh_visible_indices();
         self.selected = 0;
         self.preview_scroll = 0;
     }
 
     fn pop_filter_char(&mut self) {
         self.filter.pop();
+        self.refresh_visible_indices();
         self.selected = 0;
         self.preview_scroll = 0;
     }
 
-    fn filtered_indices(&self) -> Vec<usize> {
+    fn set_filter(&mut self, filter: String) {
+        if self.filter != filter {
+            self.filter = filter;
+            self.refresh_visible_indices();
+            self.selected = 0;
+            self.preview_scroll = 0;
+        }
+        self.clamp_selection();
+    }
+
+    fn filtered_indices(&self) -> &[usize] {
+        &self.visible_indices
+    }
+
+    fn refresh_visible_indices(&mut self) {
         let query = self.filter.trim().to_lowercase();
         if query.is_empty() {
-            return (0..self.sessions.len()).collect();
+            self.visible_indices = (0..self.sessions.len()).collect();
+            return;
         }
 
         let mut substring_matches = Vec::new();
@@ -1126,7 +1166,7 @@ impl SessionSwitcherState {
                 .then_with(|| a.2.cmp(&b.2))
         });
 
-        substring_matches
+        self.visible_indices = substring_matches
             .into_iter()
             .chain(fuzzy_matches.into_iter().map(|(_, _, index)| index))
             .collect()
@@ -1178,8 +1218,8 @@ impl SessionSwitcherState {
     }
 
     fn preview_line_count(&self) -> usize {
-        self.selected_session()
-            .map(|session| session_switcher_preview_lines_for_session(&session).len())
+        self.selected_session_ref()
+            .map(session_switcher_preview_line_count_for_session)
             .unwrap_or(0)
     }
 
@@ -1364,6 +1404,7 @@ fn hash_text_cache_fingerprint<H: Hasher>(text: &str, hasher: &mut H) {
 fn hash_session_switcher_cache_state<H: Hasher>(switcher: &SessionSwitcherState, hasher: &mut H) {
     switcher.open.hash(hasher);
     switcher.loading.hash(hasher);
+    switcher.preview.hash(hasher);
     switcher.filter.hash(hasher);
     switcher.selected.hash(hasher);
     switcher.preview_scroll.hash(hasher);
@@ -1780,7 +1821,29 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn render_inline_widget_line_count(&self) -> usize {
-        self.render_inline_widget_styled_lines().len()
+        if let Some(kind) = self.active_inline_widget() {
+            return self.active_inline_widget_line_count(kind);
+        }
+        if self.render_inline_widget_reveal_progress() <= 0.001 {
+            return 0;
+        }
+        self.view
+            .closing_inline_widget
+            .as_ref()
+            .map(|closing| closing.lines.len())
+            .unwrap_or(0)
+    }
+
+    fn active_inline_widget_line_count(&self, kind: InlineWidgetKind) -> usize {
+        match kind {
+            InlineWidgetKind::HotkeyHelp => hotkey_help_inline_line_count(),
+            InlineWidgetKind::ModelPicker => model_picker_inline_line_count(&self.model_picker),
+            InlineWidgetKind::SessionSwitcher => {
+                session_switcher_line_count(&self.session_switcher, self.current_session_id())
+            }
+            InlineWidgetKind::SessionInfo => session_info_inline_line_count(self),
+            InlineWidgetKind::SlashSuggestions => self.slash_suggestion_line_count(),
+        }
     }
 
     pub(crate) fn render_inline_widget_visible_line_count(&self) -> usize {
@@ -1935,6 +1998,13 @@ impl SingleSessionApp {
 
         if self.stdin_response.is_some() {
             return self.handle_stdin_response_key(key);
+        }
+
+        if self.session_switcher.open
+            && self.session_switcher.preview
+            && let Some(outcome) = self.handle_session_switcher_preview_key(&key)
+        {
+            return outcome;
         }
 
         if self.session_switcher.open {
@@ -2178,6 +2248,20 @@ impl SingleSessionApp {
         KeyOutcome::LoadModelCatalog
     }
 
+    fn open_session_switcher_preview(&mut self, filter: String) -> KeyOutcome {
+        let was_open = self.session_switcher.open;
+        self.close_inline_widgets();
+        let current_session_id = self.current_session_id().map(str::to_string);
+        self.session_switcher
+            .open_preview_loading(current_session_id.as_deref(), filter);
+        if !was_open {
+            self.mark_inline_widget_opened();
+        }
+        self.set_status(SingleSessionStatus::LoadingRecentSessions);
+        self.scroll_body_to_bottom();
+        KeyOutcome::LoadSessionSwitcher
+    }
+
     fn sync_model_picker_preview_from_draft(&mut self) -> Option<KeyOutcome> {
         let Some(filter) = model_picker_preview_filter(&self.draft) else {
             if self.model_picker.open && self.model_picker.preview {
@@ -2196,9 +2280,37 @@ impl SingleSessionApp {
         }
     }
 
+    fn sync_session_switcher_preview_from_draft(&mut self) -> Option<KeyOutcome> {
+        if !self.pending_images.is_empty() {
+            if self.session_switcher.open && self.session_switcher.preview {
+                self.capture_inline_widget_exit();
+                self.session_switcher.close();
+                return Some(KeyOutcome::Redraw);
+            }
+            return None;
+        }
+
+        let Some(filter) = session_switcher_preview_filter(&self.draft) else {
+            if self.session_switcher.open && self.session_switcher.preview {
+                self.capture_inline_widget_exit();
+                self.session_switcher.close();
+                return Some(KeyOutcome::Redraw);
+            }
+            return None;
+        };
+
+        if self.session_switcher.open && self.session_switcher.preview {
+            self.session_switcher.set_filter(filter);
+            Some(KeyOutcome::Redraw)
+        } else {
+            Some(self.open_session_switcher_preview(filter))
+        }
+    }
+
     fn sync_inline_previews_from_draft(&mut self) -> Option<KeyOutcome> {
         self.sync_slash_suggestions_from_draft();
         self.sync_model_picker_preview_from_draft()
+            .or_else(|| self.sync_session_switcher_preview_from_draft())
     }
 
     fn sync_slash_suggestions_from_draft(&mut self) {
@@ -2305,6 +2417,30 @@ impl SingleSessionApp {
 
     fn handle_model_picker_preview_key(&mut self, key: &KeyInput) -> Option<KeyOutcome> {
         match key {
+            KeyInput::Character(text) if text == "j" => {
+                self.model_picker.move_selection(1);
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Character(text) if text == "k" => {
+                self.model_picker.move_selection(-1);
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Character(text) if text == "g" => {
+                self.model_picker.select_first();
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Character(text) if text == "G" => {
+                self.model_picker.select_last();
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Character(text) if text == "q" => {
+                self.capture_inline_widget_exit();
+                self.model_picker.close();
+                self.draft.clear();
+                self.draft_cursor = 0;
+                self.composer.input_undo_stack.clear();
+                Some(KeyOutcome::Redraw)
+            }
             KeyInput::Escape => {
                 self.capture_inline_widget_exit();
                 self.model_picker.close();
@@ -2356,6 +2492,144 @@ impl SingleSessionApp {
         }
     }
 
+    fn handle_session_switcher_preview_key(&mut self, key: &KeyInput) -> Option<KeyOutcome> {
+        match key {
+            KeyInput::Character(text) if text == "j" => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.scroll_preview(1);
+                } else {
+                    self.session_switcher.move_selection(1);
+                }
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Character(text) if text == "k" => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.scroll_preview(-1);
+                } else {
+                    self.session_switcher.move_selection(-1);
+                }
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Character(text) if text == "h" => {
+                self.session_switcher.focus_sessions();
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Character(text) if text == "l" => {
+                self.session_switcher.focus_preview();
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Character(text) if text == "g" => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.preview_scroll = 0;
+                } else {
+                    self.session_switcher.select_first();
+                }
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Character(text) if text == "G" => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.preview_scroll =
+                        self.session_switcher.preview_line_count().saturating_sub(1);
+                } else {
+                    self.session_switcher.select_last();
+                }
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Character(text) if text == "q" => {
+                self.capture_inline_widget_exit();
+                self.session_switcher.close();
+                self.draft.clear();
+                self.draft_cursor = 0;
+                self.composer.input_undo_stack.clear();
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Escape => {
+                self.capture_inline_widget_exit();
+                self.session_switcher.close();
+                self.draft.clear();
+                self.draft_cursor = 0;
+                self.composer.input_undo_stack.clear();
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::ModelPickerMove(delta) => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.scroll_preview(*delta);
+                } else {
+                    self.session_switcher.move_selection(*delta);
+                }
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::ScrollBodyPages(pages) => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher
+                        .scroll_preview(if *pages > 0 { -8 } else { 8 });
+                } else {
+                    self.session_switcher
+                        .move_selection(if *pages > 0 { -5 } else { 5 });
+                }
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::Autocomplete => {
+                self.session_switcher.toggle_focus();
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::MoveCursorLeft => {
+                self.session_switcher.focus_sessions();
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::MoveCursorRight => {
+                self.session_switcher.focus_preview();
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::MoveToLineStart => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.preview_scroll = 0;
+                } else {
+                    self.session_switcher.select_first();
+                }
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::MoveToLineEnd => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.preview_scroll =
+                        self.session_switcher.preview_line_count().saturating_sub(1);
+                } else {
+                    self.session_switcher.select_last();
+                }
+                Some(KeyOutcome::Redraw)
+            }
+            KeyInput::SubmitDraft => {
+                self.draft.clear();
+                self.draft_cursor = 0;
+                self.composer.input_undo_stack.clear();
+                Some(self.resume_selected_switcher_session())
+            }
+            KeyInput::QueueDraft => {
+                let Some(session) = self.session_switcher.selected_session() else {
+                    return Some(KeyOutcome::None);
+                };
+                self.capture_inline_widget_exit();
+                self.session_switcher.close();
+                self.draft.clear();
+                self.draft_cursor = 0;
+                self.composer.input_undo_stack.clear();
+                Some(KeyOutcome::OpenSession {
+                    session_id: session.session_id,
+                    title: session.title,
+                })
+            }
+            KeyInput::RefreshSessions => {
+                let current_session_id = self.current_session_id().map(str::to_string);
+                let filter = self.session_switcher.filter.clone();
+                self.session_switcher
+                    .open_preview_loading(current_session_id.as_deref(), filter);
+                self.set_status(SingleSessionStatus::LoadingRecentSessions);
+                Some(KeyOutcome::LoadSessionSwitcher)
+            }
+            _ => None,
+        }
+    }
+
     fn open_session_switcher(&mut self) -> KeyOutcome {
         self.close_inline_widgets();
         let current_session_id = self.current_session_id().map(str::to_string);
@@ -2369,6 +2643,35 @@ impl SingleSessionApp {
 
     fn handle_model_picker_key(&mut self, key: KeyInput) -> KeyOutcome {
         match key {
+            KeyInput::Character(text) if text == "j" => {
+                self.model_picker.move_selection(1);
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "k" => {
+                self.model_picker.move_selection(-1);
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "h" => {
+                self.model_picker.column = self.model_picker.column.saturating_sub(1);
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "l" => {
+                self.model_picker.column = (self.model_picker.column + 1).min(2);
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "g" => {
+                self.model_picker.select_first();
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "G" => {
+                self.model_picker.select_last();
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "q" => {
+                self.capture_inline_widget_exit();
+                self.model_picker.close();
+                KeyOutcome::Redraw
+            }
             KeyInput::Escape if !self.model_picker.filter.is_empty() => {
                 self.model_picker.set_filter(String::new());
                 KeyOutcome::Redraw
@@ -2436,6 +2739,52 @@ impl SingleSessionApp {
 
     fn handle_session_switcher_key(&mut self, key: KeyInput) -> KeyOutcome {
         match key {
+            KeyInput::Character(text) if text == "j" => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.scroll_preview(1);
+                } else {
+                    self.session_switcher.move_selection(1);
+                }
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "k" => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.scroll_preview(-1);
+                } else {
+                    self.session_switcher.move_selection(-1);
+                }
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "h" => {
+                self.session_switcher.focus_sessions();
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "l" => {
+                self.session_switcher.focus_preview();
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "g" => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.preview_scroll = 0;
+                } else {
+                    self.session_switcher.select_first();
+                }
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "G" => {
+                if self.session_switcher.focus == SessionSwitcherPane::Preview {
+                    self.session_switcher.preview_scroll =
+                        self.session_switcher.preview_line_count().saturating_sub(1);
+                } else {
+                    self.session_switcher.select_last();
+                }
+                KeyOutcome::Redraw
+            }
+            KeyInput::Character(text) if text == "q" => {
+                self.capture_inline_widget_exit();
+                self.session_switcher.close();
+                KeyOutcome::Redraw
+            }
             KeyInput::Escape | KeyInput::OpenSessionSwitcher => {
                 self.capture_inline_widget_exit();
                 self.session_switcher.close();
@@ -2708,6 +3057,19 @@ impl SingleSessionApp {
         lines
     }
 
+    fn slash_suggestion_line_count(&self) -> usize {
+        let candidate_count = self.slash_suggestion_candidate_count();
+        if candidate_count == 0 {
+            0
+        } else {
+            1 + candidate_count
+        }
+    }
+
+    fn slash_suggestion_candidate_count(&self) -> usize {
+        self.slash_suggestion_candidates().len()
+    }
+
     fn slash_suggestion_candidates(&self) -> Vec<(&'static str, &'static str)> {
         if self
             .slash_suggestions
@@ -2782,7 +3144,7 @@ impl SingleSessionApp {
         if self.session_switcher.open {
             return SingleSessionOverlay::Inline {
                 kind: InlineWidgetKind::SessionSwitcher,
-                mode: InlineWidgetMode::Interactive,
+                mode: InlineWidgetKind::SessionSwitcher.mode(self),
             };
         }
         if self.model_picker.open {
@@ -4750,6 +5112,10 @@ impl SingleSessionApp {
             self.capture_inline_widget_exit();
             self.model_picker.close();
         }
+        if self.session_switcher.open && self.session_switcher.preview {
+            self.capture_inline_widget_exit();
+            self.session_switcher.close();
+        }
         self.set_status(SingleSessionStatus::Info(
             "Input cleared - Ctrl+Z to restore".to_string(),
         ));
@@ -5009,7 +5375,7 @@ fn session_switcher_styled_lines(
     let filter_label = if switcher.filter.trim().is_empty() {
         "all".to_string()
     } else {
-        format!("🔍 {}", switcher.filter.trim())
+        format!("filter {}", switcher.filter.trim())
     };
     let selected_label = switcher
         .selected_session()
@@ -5017,26 +5383,23 @@ fn session_switcher_styled_lines(
         .unwrap_or_else(|| "no session selected".to_string());
     let mut lines = vec![
         styled_line(
-            format!(
-                "desktop session switcher · {} sessions · {} · {}",
-                session_count, filter_label, selected_label
-            ),
+            format!("Resume sessions · {session_count} sessions · {filter_label}"),
             SingleSessionLineStyle::OverlayTitle,
         ),
         styled_line(
-            "↑/↓ select · type to filter · Tab/←/→ preview · PgUp/PgDn scroll · Enter resume here · Ctrl+Enter terminal · Ctrl+R reload · Esc close",
+            "Type to filter · Up/Down select · Tab or Left/Right preview · PageUp/PageDown scroll · Enter resume here · Ctrl+Enter open terminal · Esc close",
             SingleSessionLineStyle::Overlay,
         ),
         styled_line(
             format!(
-                "filter: {} · focus: {} · sessions: {}",
+                "selected: {} · filter: {} · focus: {}",
+                selected_label,
                 if switcher.filter.is_empty() {
                     "<none>"
                 } else {
                     switcher.filter.as_str()
                 },
                 session_switcher_focus_label(switcher.focus),
-                session_count
             ),
             SingleSessionLineStyle::Meta,
         ),
@@ -5064,58 +5427,63 @@ fn session_switcher_styled_lines(
         return lines;
     }
 
-    const CARD_LIMIT: usize = 4;
-    const BODY_ROW_LIMIT: usize = 16;
-    const LIST_COLUMNS: usize = 62;
-    const PREVIEW_COLUMNS: usize = 88;
+    const CARD_LIMIT: usize = 5;
+    const BODY_ROW_LIMIT: usize = 9;
+    const CONTENT_COLUMNS: usize = 92;
 
-    let list_header = if switcher.focus == SessionSwitcherPane::Sessions {
-        "sessions ›"
+    let sessions_header = if switcher.focus == SessionSwitcherPane::Sessions {
+        "Recent sessions · focused"
     } else {
-        "sessions"
-    };
-    let preview_header = if switcher.focus == SessionSwitcherPane::Preview {
-        "preview ›"
-    } else {
-        "preview"
+        "Recent sessions"
     };
     lines.push(styled_line(
-        format!(
-            "╭{}╮ ╭{}╮",
-            "─".repeat(LIST_COLUMNS + 2),
-            "─".repeat(PREVIEW_COLUMNS.min(86) + 2)
-        ),
-        SingleSessionLineStyle::OverlayTitle,
-    ));
-    lines.push(styled_line(
-        format!(
-            "│ {} │ {} │",
-            pad_columns(
-                &format!("{list_header} · recent sessions, newest first"),
-                LIST_COLUMNS
-            ),
-            pad_columns(
-                &format!("{preview_header} · full selected-session preview"),
-                PREVIEW_COLUMNS.min(86)
-            )
-        ),
+        format!("{sessions_header} · newest first"),
         SingleSessionLineStyle::OverlayTitle,
     ));
 
     let (window_start, row_indices) = switcher.visible_row_window(CARD_LIMIT);
-    let mut list_rows = Vec::new();
+    let row_count = row_indices.len();
     for (offset, index) in row_indices.iter().enumerate() {
         if let Some(session) = switcher.sessions.get(*index) {
             let position = window_start + offset;
-            list_rows.extend(session_switcher_list_card_lines(
-                switcher,
-                current_session_id,
-                position,
-                session,
-                LIST_COLUMNS,
-            ));
+            lines.extend(
+                session_switcher_list_card_lines(
+                    switcher,
+                    current_session_id,
+                    position,
+                    session,
+                    CONTENT_COLUMNS,
+                )
+                .into_iter()
+                .map(|line| styled_line(line.text, line.style)),
+            );
+            if offset + 1 < row_count {
+                lines.push(blank_styled_line());
+            }
         }
     }
+
+    if window_start + row_indices.len() < visible.len() {
+        lines.push(styled_line(
+            format!(
+                "{} more sessions · keep pressing ↓ or type to filter",
+                visible.len() - window_start - row_indices.len()
+            ),
+            SingleSessionLineStyle::Overlay,
+        ));
+    }
+
+    lines.push(blank_styled_line());
+    let preview_header = if switcher.focus == SessionSwitcherPane::Preview {
+        "Preview · focused"
+    } else {
+        "Preview"
+    };
+    lines.push(styled_line(
+        format!("{preview_header} · selected session transcript"),
+        SingleSessionLineStyle::OverlayTitle,
+    ));
+
     let preview_lines = switcher
         .selected_session()
         .map(|session| session_switcher_preview_lines_for_session(&session))
@@ -5134,68 +5502,18 @@ fn session_switcher_styled_lines(
         .take(BODY_ROW_LIMIT)
         .cloned()
         .collect::<Vec<_>>();
-    let row_count = list_rows.len().max(preview_visible.len()).max(1);
-
-    for row in 0..row_count {
-        let list_row = list_rows.get(row).cloned().unwrap_or_else(|| {
-            SessionSwitcherRenderedLine::new(
-                " ".repeat(LIST_COLUMNS),
-                SingleSessionLineStyle::Overlay,
-            )
-        });
-        let preview_cell = preview_visible.get(row).cloned().unwrap_or_else(|| {
-            SessionSwitcherRenderedLine::new(String::new(), SingleSessionLineStyle::Overlay)
-        });
-        let preview_has_semantic_style = matches!(
-            preview_cell.style,
-            SingleSessionLineStyle::User
-                | SingleSessionLineStyle::Assistant
-                | SingleSessionLineStyle::Tool
-                | SingleSessionLineStyle::Status
-                | SingleSessionLineStyle::OverlayTitle
-                | SingleSessionLineStyle::Error
-        );
-        let style = if list_row.style == SingleSessionLineStyle::OverlaySelection {
-            SingleSessionLineStyle::OverlaySelection
-        } else if preview_has_semantic_style || row >= list_rows.len() {
-            preview_cell.style
-        } else {
-            list_row.style
-        };
-        lines.push(styled_line(
-            format!(
-                "│ {} │ {} │",
-                pad_columns(&list_row.text, LIST_COLUMNS),
-                pad_columns(&preview_cell.text, PREVIEW_COLUMNS.min(86))
-            ),
-            style,
-        ));
-    }
-
-    lines.push(styled_line(
-        format!(
-            "╰{}╯ ╰{}╯",
-            "─".repeat(LIST_COLUMNS + 2),
-            "─".repeat(PREVIEW_COLUMNS.min(86) + 2)
-        ),
-        SingleSessionLineStyle::Meta,
-    ));
-
-    if window_start + row_indices.len() < visible.len() {
-        lines.push(styled_line(
-            format!(
-                "… {} more sessions · keep pressing ↓ or type to filter",
-                visible.len() - window_start - row_indices.len()
-            ),
-            SingleSessionLineStyle::Overlay,
-        ));
-    }
-    if preview_scroll > 0 || preview_scroll + preview_visible.len() < preview_lines.len() {
+    let preview_visible_len = preview_visible.len();
+    lines.extend(
+        preview_visible
+            .into_iter()
+            .map(|line| styled_line(truncate_chars(&line.text, CONTENT_COLUMNS), line.style)),
+    );
+    if preview_scroll > 0 || preview_scroll + preview_visible_len < preview_lines.len() {
         lines.push(styled_line(
             format!(
                 "preview lines {}-{} of {}",
                 preview_scroll + 1,
-                preview_scroll + preview_visible.len(),
+                preview_scroll + preview_visible_len,
                 preview_lines.len()
             ),
             SingleSessionLineStyle::Meta,
@@ -5203,6 +5521,48 @@ fn session_switcher_styled_lines(
     }
 
     lines
+}
+
+fn session_switcher_line_count(
+    switcher: &SessionSwitcherState,
+    current_session_id: Option<&str>,
+) -> usize {
+    let visible_len = switcher.filtered_indices().len();
+    let mut count = 4;
+
+    if switcher.loading {
+        count += 1;
+    }
+
+    if visible_len == 0 && !switcher.loading {
+        return count + 2;
+    }
+
+    const CARD_LIMIT: usize = 5;
+    const BODY_ROW_LIMIT: usize = 9;
+    count += 1; // Recent sessions header.
+    let (window_start, window_len) = row_window_bounds(visible_len, switcher.selected, CARD_LIMIT);
+    count += window_len * 4 + window_len.saturating_sub(1);
+    if window_start + window_len < visible_len {
+        count += 1;
+    }
+
+    count += 2; // Blank spacer and preview header.
+    let preview_len = switcher
+        .selected_session_ref()
+        .map(session_switcher_preview_line_count_for_session)
+        .unwrap_or(1);
+    let preview_scroll = switcher.preview_scroll.min(preview_len.saturating_sub(1));
+    let preview_visible_len = preview_len
+        .saturating_sub(preview_scroll)
+        .min(BODY_ROW_LIMIT);
+    count += preview_visible_len;
+    if preview_scroll > 0 || preview_scroll + preview_visible_len < preview_len {
+        count += 1;
+    }
+
+    let _ = current_session_id;
+    count
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5234,15 +5594,10 @@ fn session_switcher_list_card_lines(
     session: &workspace::SessionCard,
     width: usize,
 ) -> Vec<SessionSwitcherRenderedLine> {
-    let selector = if position == switcher.selected {
-        "›"
-    } else {
-        " "
-    };
     let current_marker = if Some(session.session_id.as_str()) == current_session_id {
-        "✓"
+        "current · "
     } else {
-        " "
+        ""
     };
     let selected = position == switcher.selected;
     let primary_style = if selected {
@@ -5268,30 +5623,24 @@ fn session_switcher_list_card_lines(
         .or_else(|| session.detail_lines.last())
         .map(|line| session_switcher_compact_transcript_line(line, width.saturating_sub(8)))
         .unwrap_or_else(|| "no transcript preview yet".to_string());
+    let card_text = |text: String| -> String {
+        format!("      {}", truncate_chars(&text, width.saturating_sub(6)))
+    };
     vec![
         SessionSwitcherRenderedLine::new(
-            truncate_chars(
-                &format!(
-                    "{selector} {current_marker} {} {}",
-                    session_status_icon(session),
-                    session.title
-                ),
-                width,
-            ),
+            card_text(format!(
+                "{} session · {current_marker}{}",
+                session_status_label(session),
+                session.title
+            )),
             primary_style,
         ),
         SessionSwitcherRenderedLine::new(
-            truncate_chars(&format!("    {status} · {model}"), width),
+            card_text(format!("Status {status} · Model {model}")),
             meta_style,
         ),
-        SessionSwitcherRenderedLine::new(
-            truncate_chars(&format!("    {}", session.detail), width),
-            meta_style,
-        ),
-        SessionSwitcherRenderedLine::new(
-            truncate_chars(&format!("    {preview}"), width),
-            preview_style,
-        ),
+        SessionSwitcherRenderedLine::new(card_text(session.detail.clone()), meta_style),
+        SessionSwitcherRenderedLine::new(card_text(preview), preview_style),
     ]
 }
 
@@ -5300,7 +5649,7 @@ fn session_switcher_preview_lines_for_session(
 ) -> Vec<SessionSwitcherRenderedLine> {
     let mut lines = vec![
         SessionSwitcherRenderedLine::new(
-            format!("{} {}", session_status_icon(session), session.title),
+            session.title.clone(),
             SingleSessionLineStyle::OverlayTitle,
         ),
         SessionSwitcherRenderedLine::new(
@@ -5320,10 +5669,6 @@ fn session_switcher_preview_lines_for_session(
             SingleSessionLineStyle::Meta,
         ));
     }
-    lines.push(SessionSwitcherRenderedLine::new(
-        "─".repeat(48),
-        SingleSessionLineStyle::Meta,
-    ));
     let transcript = if session.detail_lines.is_empty() {
         &session.preview_lines
     } else {
@@ -5350,10 +5695,29 @@ fn session_switcher_preview_lines_for_session(
     lines
 }
 
+fn session_switcher_preview_line_count_for_session(session: &workspace::SessionCard) -> usize {
+    let mut count = 2;
+    if !session.subtitle.is_empty() {
+        count += 1;
+    }
+    if !session.detail.is_empty() {
+        count += 1;
+    }
+    let transcript_len = if session.detail_lines.is_empty() {
+        session.preview_lines.len()
+    } else {
+        session.detail_lines.len()
+    };
+    if transcript_len == 0 {
+        count + 1
+    } else {
+        count + 1 + transcript_len
+    }
+}
+
 fn session_status_badge(session: &workspace::SessionCard) -> String {
     let status = session_status_label(session);
-    let icon = session_status_icon_for_label(status);
-    format!("{icon} {status}")
+    status.to_string()
 }
 
 fn session_status_label(session: &workspace::SessionCard) -> &str {
@@ -5364,22 +5728,6 @@ fn session_status_label(session: &workspace::SessionCard) -> &str {
         .map(str::trim)
         .filter(|status| !status.is_empty())
         .unwrap_or("unknown")
-}
-
-fn session_status_icon(session: &workspace::SessionCard) -> &'static str {
-    session_status_icon_for_label(session_status_label(session))
-}
-
-fn session_status_icon_for_label(status: &str) -> &'static str {
-    match status {
-        "active" => "▶",
-        "closed" => "✓",
-        "crashed" => "💥",
-        "reloaded" => "↻",
-        "compacted" => "📦",
-        status if status.contains("error") => "✕",
-        _ => "•",
-    }
 }
 
 fn session_model_label(session: &workspace::SessionCard) -> Option<String> {
@@ -5413,28 +5761,28 @@ fn session_switcher_transcript_preview_line(
     let (role, content) = session_switcher_split_preview_role(line);
     match role {
         Some("user") => {
-            let rendered = format!("{}› {}", *user_turn, content);
+            let rendered = format!("Prompt {}  {}", *user_turn, content);
             *user_turn = (*user_turn).saturating_add(1);
             SessionSwitcherRenderedLine::new(rendered, SingleSessionLineStyle::User)
         }
         Some("asst" | "assistant") => SessionSwitcherRenderedLine::new(
-            format!("assistant {content}"),
+            format!("Assistant  {content}"),
             SingleSessionLineStyle::Assistant,
         ),
         Some("tool") => SessionSwitcherRenderedLine::new(
-            format!("tool {content}"),
+            format!("Tool  {content}"),
             SingleSessionLineStyle::Tool,
         ),
         Some("sys" | "system") => SessionSwitcherRenderedLine::new(
-            format!("system {content}"),
+            format!("System  {content}"),
             SingleSessionLineStyle::Meta,
         ),
         Some("task" | "background_task") => SessionSwitcherRenderedLine::new(
-            format!("task {content}"),
+            format!("Task  {content}"),
             SingleSessionLineStyle::Meta,
         ),
         Some("meta") => SessionSwitcherRenderedLine::new(
-            format!("meta {content}"),
+            format!("Meta  {content}"),
             SingleSessionLineStyle::Meta,
         ),
         _ => SessionSwitcherRenderedLine::new(
@@ -5453,16 +5801,6 @@ fn session_switcher_split_preview_role(line: &str) -> (Option<&str>, &str) {
         "user" | "asst" | "assistant" | "tool" | "sys" | "system" | "task" | "background_task"
         | "meta" => (Some(role), content.trim()),
         _ => (None, trimmed),
-    }
-}
-
-fn pad_columns(text: &str, width: usize) -> String {
-    let text = truncate_chars(text, width);
-    let len = text.chars().count();
-    if len >= width {
-        text
-    } else {
-        format!("{text}{}", " ".repeat(width - len))
     }
 }
 
@@ -5662,6 +6000,18 @@ fn session_info_inline_styled_lines(app: &SingleSessionApp) -> Vec<SingleSession
     lines
 }
 
+fn session_info_inline_line_count(app: &SingleSessionApp) -> usize {
+    12 + usize::from(
+        app.session
+            .as_ref()
+            .is_some_and(|session| !session.subtitle.trim().is_empty()),
+    ) + usize::from(
+        app.session
+            .as_ref()
+            .is_some_and(|session| !session.detail.trim().is_empty()),
+    ) + usize::from(app.error.is_some())
+}
+
 fn session_message_role_counts(
     messages: &[SingleSessionMessage],
 ) -> (usize, usize, usize, usize, usize) {
@@ -5744,11 +6094,6 @@ fn model_picker_inline_styled_lines(picker: &ModelPickerState) -> Vec<SingleSess
             continue;
         };
         let visible_position = window_start + row_offset;
-        let selector = if visible_position == picker.selected {
-            "›"
-        } else {
-            " "
-        };
         let provider = choice.provider.as_deref().unwrap_or("auto");
         let method = choice.api_method.as_deref().unwrap_or("auto");
         let current_badge = if Some(choice.model.as_str()) == current {
@@ -5772,11 +6117,7 @@ fn model_picker_inline_styled_lines(picker: &ModelPickerState) -> Vec<SingleSess
             SingleSessionLineStyle::Overlay
         };
         lines.push(styled_line(
-            format!(
-                "{selector} {}{}",
-                truncate_chars(&choice.model, 54),
-                current_badge,
-            ),
+            format!("{}{}", truncate_chars(&choice.model, 54), current_badge,),
             row_style,
         ));
         lines.push(styled_line(
@@ -5792,20 +6133,53 @@ fn model_picker_inline_styled_lines(picker: &ModelPickerState) -> Vec<SingleSess
     if visible.len() > window_start + window.len() {
         lines.push(styled_line(
             format!(
-                "… {} more models",
+                "{} more models",
                 visible.len() - window_start - window.len()
             ),
             SingleSessionLineStyle::Overlay,
         ));
     }
     let footer = if picker.preview {
-        "↑↓/PgUp/PgDn select   Home/End top/bottom   Enter use model   Esc clear /model"
+        "Up/Down/PageUp/PageDown select   Home/End top/bottom   Enter use model   Esc clear /model"
     } else {
-        "↑↓/PgUp/PgDn select   Home/End top/bottom   Type filter   Enter use   Esc close"
+        "Up/Down/PageUp/PageDown select   Home/End top/bottom   Type filter   Enter use   Esc close"
     };
     lines.push(styled_line(footer, SingleSessionLineStyle::Overlay));
 
     lines
+}
+
+fn model_picker_inline_line_count(picker: &ModelPickerState) -> usize {
+    let visible_len = picker.filtered_indices().len();
+    let mut count = 2;
+    if picker.loading {
+        count += 1;
+    }
+    if picker.error.is_some() {
+        count += 1;
+    }
+    if visible_len == 0 && !picker.loading {
+        return count + 2;
+    }
+
+    let (window_start, window_len) =
+        row_window_bounds(visible_len, picker.selected, MODEL_PICKER_INLINE_ROW_LIMIT);
+    count += window_len * 2;
+    if visible_len > window_start + window_len {
+        count += 1;
+    }
+    count + 1
+}
+
+fn row_window_bounds(visible_len: usize, selected: usize, limit: usize) -> (usize, usize) {
+    if visible_len == 0 || limit == 0 {
+        return (0, 0);
+    }
+    let max_start = visible_len.saturating_sub(limit);
+    let selected = selected.min(visible_len - 1);
+    let start = selected.saturating_sub(limit / 2).min(max_start);
+    let end = (start + limit).min(visible_len);
+    (start, end - start)
 }
 
 fn model_picker_preview_filter(input: &str) -> Option<String> {
@@ -5813,6 +6187,21 @@ fn model_picker_preview_filter(input: &str) -> Option<String> {
     let rest = trimmed
         .strip_prefix("/model")
         .or_else(|| trimmed.strip_prefix("/models"))?;
+    if rest.is_empty() {
+        return Some(String::new());
+    }
+    rest.chars()
+        .next()
+        .filter(|ch| ch.is_whitespace())
+        .map(|_| rest.trim_start().to_string())
+}
+
+fn session_switcher_preview_filter(input: &str) -> Option<String> {
+    let trimmed = input.trim_start();
+    let rest = trimmed
+        .strip_prefix("/resume")
+        .or_else(|| trimmed.strip_prefix("/sessions"))
+        .or_else(|| trimmed.strip_prefix("/session"))?;
     if rest.is_empty() {
         return Some(String::new());
     }
@@ -6078,6 +6467,19 @@ fn single_session_help_styled_lines() -> Vec<SingleSessionStyledLine> {
 
 fn hotkey_help_inline_widget() -> ReadOnlyInlineWidget {
     ReadOnlyInlineWidget::new("desktop shortcuts", single_session_help_styled_lines())
+}
+
+fn hotkey_help_inline_line_count() -> usize {
+    single_session_help_styled_line_count() + 2
+}
+
+fn single_session_help_styled_line_count() -> usize {
+    DESKTOP_SLASH_COMMANDS.len()
+        + 1
+        + SINGLE_SESSION_HELP_SECTIONS
+            .iter()
+            .map(|section| 2 + section.shortcuts.len())
+            .sum::<usize>()
 }
 
 fn append_chat_message_lines(
@@ -7955,6 +8357,74 @@ mod tests {
             .into_iter()
             .map(|line| line.text)
             .collect()
+    }
+
+    fn test_model_choice(model: &str) -> DesktopModelChoice {
+        DesktopModelChoice {
+            model: model.to_string(),
+            provider: Some("test-provider".to_string()),
+            api_method: Some("chat".to_string()),
+            detail: Some("available".to_string()),
+            available: true,
+        }
+    }
+
+    fn test_session_card(session_id: &str, title: &str) -> workspace::SessionCard {
+        workspace::SessionCard {
+            session_id: session_id.to_string(),
+            title: title.to_string(),
+            subtitle: "active · test-model".to_string(),
+            detail: "4 msgs · just now · test".to_string(),
+            preview_lines: vec!["user latest compact prompt".to_string()],
+            detail_lines: vec![
+                "user first question".to_string(),
+                "assistant first answer".to_string(),
+                "tool bash completed".to_string(),
+            ],
+            transcript_messages: Vec::new(),
+        }
+    }
+
+    fn assert_render_line_count_matches(app: &SingleSessionApp) {
+        assert_eq!(
+            app.render_inline_widget_line_count(),
+            app.render_inline_widget_styled_lines().len(),
+            "render line count should match styled-line rendering"
+        );
+    }
+
+    #[test]
+    fn inline_widget_line_count_matches_rendered_lines_for_active_widgets() {
+        let mut help = SingleSessionApp::new(None);
+        help.show_help = true;
+        assert_render_line_count_matches(&help);
+
+        let mut info = SingleSessionApp::new(None);
+        info.show_session_info = true;
+        info.error = Some("test error".to_string());
+        info.session = Some(test_session_card("session_info", "Info Session"));
+        assert_render_line_count_matches(&info);
+
+        let mut slash = SingleSessionApp::new(None);
+        slash.handle_key(KeyInput::Character("/re".to_string()));
+        assert_render_line_count_matches(&slash);
+
+        let mut model = SingleSessionApp::new(None);
+        model.model_picker.open = true;
+        model.model_picker.choices = vec![test_model_choice("alpha"), test_model_choice("beta")];
+        model.model_picker.selected = 1;
+        model.model_picker.refresh_visible_indices();
+        assert_render_line_count_matches(&model);
+
+        let mut switcher = SingleSessionApp::new(None);
+        switcher.session_switcher.open = true;
+        switcher.session_switcher.sessions = vec![
+            test_session_card("session_alpha", "Alpha"),
+            test_session_card("session_beta", "Beta"),
+        ];
+        switcher.session_switcher.selected = 1;
+        switcher.session_switcher.refresh_visible_indices();
+        assert_render_line_count_matches(&switcher);
     }
 
     #[test]

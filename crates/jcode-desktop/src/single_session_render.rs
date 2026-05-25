@@ -131,6 +131,7 @@ pub(crate) struct SingleSessionTextKey {
     pub(crate) body: Vec<SingleSessionStyledLine>,
     pub(crate) inline_widget_kind: Option<InlineWidgetKind>,
     pub(crate) inline_widget: Vec<SingleSessionStyledLine>,
+    pub(crate) inline_widget_preview: Vec<SingleSessionStyledLine>,
     pub(crate) draft: String,
 }
 
@@ -220,7 +221,7 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         size,
     );
 
-    push_single_session_composer_chrome(&mut vertices, app, size, None, None);
+    push_single_session_composer_chrome(&mut vertices, app, size, None, None, None);
 
     let welcome_chrome_offset = if app.is_welcome_timeline_visible() {
         welcome_timeline_visual_offset_pixels(app, size, smooth_scroll_lines)
@@ -443,12 +444,14 @@ fn build_single_session_vertices_with_cached_body_internal(
         size,
     );
 
+    let layout = single_session_layout_for_total_lines(app, size, rendered_body_lines.len());
     push_single_session_composer_chrome(
         &mut vertices,
         app,
         size,
         composer_motion,
         attachment_chip_motion,
+        Some(layout),
     );
 
     let welcome_chrome_offset = if app.is_welcome_timeline_visible() {
@@ -574,6 +577,125 @@ fn single_session_content_right(size: PhysicalSize<u32>) -> f32 {
 
 fn single_session_content_width(size: PhysicalSize<u32>) -> f32 {
     (single_session_content_right(size) - PANEL_TITLE_LEFT_PADDING).max(1.0)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SingleSessionLayoutMetrics {
+    body_line_height: f32,
+    composer_line_height: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SingleSessionLayout {
+    body: Rect,
+    draft_top: f32,
+    composer: Rect,
+    activity_lane: Option<Rect>,
+    metrics: SingleSessionLayoutMetrics,
+}
+
+impl SingleSessionLayout {
+    #[inline]
+    fn body_bottom(self) -> f32 {
+        rect_bottom(self.body)
+    }
+
+    #[inline]
+    fn body_text_bounds_bottom(self) -> i32 {
+        text_bounds_bottom(self.body_bottom())
+    }
+}
+
+fn single_session_layout_metrics(app: &SingleSessionApp) -> SingleSessionLayoutMetrics {
+    let typography = single_session_typography_for_scale(app.text_scale());
+    SingleSessionLayoutMetrics {
+        body_line_height: typography.body_size * typography.body_line_height,
+        composer_line_height: typography.code_size * typography.code_line_height,
+    }
+}
+
+fn single_session_layout_for_app(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+) -> SingleSessionLayout {
+    single_session_layout_from_bounds(
+        app,
+        size,
+        single_session_draft_top_for_app(app, size),
+        single_session_body_bottom_base_for_app(app, size),
+    )
+}
+
+fn single_session_layout_for_total_lines(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    total_lines: usize,
+) -> SingleSessionLayout {
+    single_session_layout_from_bounds(
+        app,
+        size,
+        single_session_draft_top_for_total_lines(app, size, total_lines),
+        single_session_body_bottom_base_for_total_lines(app, size, total_lines),
+    )
+}
+
+fn single_session_layout_from_bounds(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+    draft_top: f32,
+    body_base_bottom: f32,
+) -> SingleSessionLayout {
+    let metrics = single_session_layout_metrics(app);
+    let body_top = PANEL_BODY_TOP_PADDING;
+    let body_base_bottom = body_base_bottom.max(body_top);
+    let inline_widget_reserved_height = inline_widget_reserved_height(app);
+    let activity_reserved_height = streaming_activity_reserved_height(app);
+    let body_bottom =
+        (body_base_bottom - inline_widget_reserved_height - activity_reserved_height).max(body_top);
+    let activity_lane = (activity_reserved_height > 0.0).then(|| {
+        let activity_top = (body_base_bottom - activity_reserved_height).max(body_top);
+        Rect {
+            x: PANEL_TITLE_LEFT_PADDING,
+            y: activity_top,
+            width: single_session_content_width(size),
+            height: (body_base_bottom - activity_top).max(0.0),
+        }
+    });
+    let composer_target = composer_motion_target(app);
+    let composer_visual = ComposerMotionVisual::settled(composer_target);
+    let composer_height = single_session_composer_height(size, metrics, composer_visual);
+
+    SingleSessionLayout {
+        body: Rect {
+            x: PANEL_TITLE_LEFT_PADDING,
+            y: body_top,
+            width: single_session_content_width(size),
+            height: (body_bottom - body_top).max(0.0),
+        },
+        draft_top,
+        composer: Rect {
+            x: PANEL_TITLE_LEFT_PADDING - 10.0,
+            y: draft_top - 9.0,
+            width: single_session_content_width(size) + 20.0,
+            height: composer_height,
+        },
+        activity_lane,
+        metrics,
+    }
+}
+
+fn single_session_composer_height(
+    size: PhysicalSize<u32>,
+    metrics: SingleSessionLayoutMetrics,
+    visual: ComposerMotionVisual,
+) -> f32 {
+    (visual.height_lines.max(1.0) * metrics.composer_line_height + 18.0)
+        .min((size.height as f32 * 0.34).max(metrics.composer_line_height + 18.0))
+}
+
+#[inline]
+fn rect_bottom(rect: Rect) -> f32 {
+    rect.y + rect.height
 }
 
 #[cfg(test)]
@@ -814,26 +936,24 @@ fn push_single_session_composer_chrome(
     size: PhysicalSize<u32>,
     composer_motion: Option<&ComposerMotionFrame>,
     attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
+    layout: Option<SingleSessionLayout>,
 ) {
     if welcome_status_lane_visible(app) {
         return;
     }
 
-    let typography = single_session_typography_for_scale(app.text_scale());
-    let line_height = typography.code_size * typography.code_line_height;
+    let typography = single_session_typography();
+    let layout = layout.unwrap_or_else(|| single_session_layout_for_app(app, size));
     let target = composer_motion_target(app);
     let visual = composer_motion
         .map(|frame| frame.visual())
         .unwrap_or_else(|| ComposerMotionVisual::settled(target));
-    let height = (visual.height_lines.max(1.0) * line_height + 18.0)
-        .min((size.height as f32 * 0.34).max(line_height + 18.0));
-    let draft_top = single_session_draft_top_for_app(app, size);
-    let content_width = single_session_content_width(size);
+    let line_height = layout.metrics.composer_line_height;
+    let draft_top = layout.draft_top;
+    let content_width = layout.body.width;
     let rect = Rect {
-        x: PANEL_TITLE_LEFT_PADDING - 10.0,
-        y: draft_top - 9.0,
-        width: content_width + 20.0,
-        height,
+        height: single_session_composer_height(size, layout.metrics, visual),
+        ..layout.composer
     };
     if rect.width <= 12.0 || rect.height <= 10.0 {
         return;
@@ -1460,7 +1580,12 @@ fn push_single_session_inline_widget_card(
     }
 
     let typography = single_session_typography_for_scale(app.text_scale());
-    let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
+    let session_layout = single_session_layout_for_total_lines(app, size, total_lines);
+    let body_bottom = session_layout.body_bottom();
+    let inline_bottom_limit = session_layout
+        .activity_lane
+        .map(|activity| activity.y)
+        .unwrap_or(session_layout.draft_top);
     let welcome_chrome_visible =
         welcome_timeline_chrome_visible(app, size, welcome_chrome_offset_pixels);
     let target_top = inline_widget_target_top(
@@ -1471,7 +1596,7 @@ fn push_single_session_inline_widget_card(
         welcome_chrome_offset_pixels,
     );
     let inline_lines = app.render_inline_widget_styled_lines();
-    let Some(layout) = inline_widget_card_layout(
+    let Some(layout) = inline_widget_card_layout_with_bottom_limit(
         size,
         app.render_inline_widget_kind(),
         &typography,
@@ -1484,6 +1609,7 @@ fn push_single_session_inline_widget_card(
         ),
         target_top,
         progress,
+        inline_bottom_limit,
     ) else {
         return;
     };
@@ -1545,17 +1671,30 @@ fn push_single_session_inline_widget_card(
         );
     }
 
-    push_single_session_inline_widget_preview_panes(
-        vertices,
-        app.render_inline_widget_kind(),
-        &inline_lines,
-        line_count,
-        &typography,
-        &layout,
-        progress,
-        inline_preview_pane_motion,
-        size,
-    );
+    if app.render_inline_widget_kind() == Some(InlineWidgetKind::ModelPicker) {
+        push_single_session_inline_widget_structured_chrome(
+            vertices,
+            app.render_inline_widget_kind(),
+            &inline_lines,
+            line_count,
+            &typography,
+            &layout,
+            progress,
+            size,
+        );
+    } else {
+        push_single_session_inline_widget_preview_panes(
+            vertices,
+            app.render_inline_widget_kind(),
+            &inline_lines,
+            line_count,
+            &typography,
+            &layout,
+            progress,
+            inline_preview_pane_motion,
+            size,
+        );
+    }
 
     push_single_session_inline_widget_list_reflow(
         vertices,
@@ -1687,6 +1826,15 @@ fn inline_widget_preview_pane_geometry(
     if kind != Some(InlineWidgetKind::SessionSwitcher) {
         return None;
     }
+    if line_count > 0
+        && let Some(columns) = session_switcher_split_columns(layout)
+    {
+        return Some(InlineWidgetPreviewPaneGeometry {
+            sessions: columns.rail,
+            preview: columns.preview,
+            radius: 13.0,
+        });
+    }
     let visible_len = line_count.min(inline_lines.len());
     let visible_lines = &inline_lines[..visible_len];
     let header_line = visible_lines
@@ -1743,6 +1891,1105 @@ fn interpolate_inline_widget_preview_pane_rect(
         width: lerp_f32(sessions.width, preview.width, position),
         height: lerp_f32(sessions.height, preview.height, position),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_single_session_inline_widget_structured_chrome(
+    vertices: &mut Vec<Vertex>,
+    kind: Option<InlineWidgetKind>,
+    inline_lines: &[SingleSessionStyledLine],
+    line_count: usize,
+    typography: &SingleSessionTypography,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    size: PhysicalSize<u32>,
+) {
+    match kind {
+        Some(InlineWidgetKind::ModelPicker) => push_inline_command_row_cards(
+            vertices,
+            kind,
+            inline_lines,
+            line_count,
+            typography,
+            layout,
+            reveal_progress,
+            size,
+        ),
+        Some(InlineWidgetKind::SessionSwitcher) => {
+            push_session_switcher_section_panels(
+                vertices,
+                inline_lines,
+                line_count,
+                typography,
+                layout,
+                reveal_progress,
+                size,
+            );
+            push_session_switcher_preview_bubbles(
+                vertices,
+                inline_lines,
+                line_count,
+                typography,
+                layout,
+                reveal_progress,
+                size,
+            );
+            push_inline_command_row_cards(
+                vertices,
+                kind,
+                inline_lines,
+                line_count,
+                typography,
+                layout,
+                reveal_progress,
+                size,
+            );
+        }
+        _ => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_inline_command_row_cards(
+    vertices: &mut Vec<Vertex>,
+    kind: Option<InlineWidgetKind>,
+    inline_lines: &[SingleSessionStyledLine],
+    line_count: usize,
+    typography: &SingleSessionTypography,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    size: PhysicalSize<u32>,
+) {
+    let line_height = inline_widget_line_height(kind, typography);
+    for run in inline_widget_list_row_runs(kind, inline_lines, line_count) {
+        let primary_text = inline_lines
+            .get(run.line)
+            .map(|line| line.text.as_str())
+            .unwrap_or_default();
+        let selected = inline_lines
+            .get(run.line)
+            .is_some_and(|line| line.style == SingleSessionLineStyle::OverlaySelection);
+        let palette = inline_command_row_palette(kind, primary_text, selected);
+        push_inline_command_row_card(
+            vertices,
+            kind,
+            run.line,
+            run.line_span,
+            palette,
+            line_height,
+            layout,
+            reveal_progress,
+            size,
+        );
+        push_inline_command_row_icon(
+            vertices,
+            kind,
+            run.line,
+            palette,
+            line_height,
+            layout,
+            reveal_progress,
+            size,
+        );
+
+        if selected {
+            push_inline_command_current_chip(
+                vertices,
+                kind,
+                primary_text,
+                run.line,
+                line_height,
+                layout,
+                reveal_progress,
+                size,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_inline_command_row_card(
+    vertices: &mut Vec<Vertex>,
+    kind: Option<InlineWidgetKind>,
+    line: usize,
+    line_span: usize,
+    palette: InlineCommandRowPalette,
+    line_height: f32,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    size: PhysicalSize<u32>,
+) {
+    let is_session = matches!(kind, Some(InlineWidgetKind::SessionSwitcher));
+    let row_top = layout.text_top
+        + line as f32 * line_height
+        + if is_session {
+            INLINE_COMMAND_SESSION_ROW_TOP_INSET
+        } else {
+            -INLINE_COMMAND_ROW_GAP_Y
+        };
+    let row_height = (line_span as f32 * line_height
+        + if is_session {
+            -INLINE_COMMAND_SESSION_ROW_BOTTOM_INSET
+        } else {
+            INLINE_COMMAND_ROW_GAP_Y * 1.4
+        })
+    .max(line_height * 0.9);
+    let visible_height = (layout.visible_text_bottom - row_top).min(row_height);
+    let row_width = (layout.card.width - INLINE_COMMAND_ROW_INSET_X * 2.0).max(0.0);
+    if visible_height <= 4.0 || row_width <= 12.0 {
+        return;
+    }
+
+    let rect = if is_session {
+        session_switcher_split_columns(layout)
+            .map(|columns| Rect {
+                x: columns.rail.x + INLINE_COMMAND_ROW_INSET_X,
+                y: row_top,
+                width: (columns.rail.width - INLINE_COMMAND_ROW_INSET_X * 2.0).max(0.0),
+                height: visible_height,
+            })
+            .unwrap_or(Rect {
+                x: layout.card.x + INLINE_COMMAND_ROW_INSET_X,
+                y: row_top,
+                width: row_width,
+                height: visible_height,
+            })
+    } else {
+        Rect {
+            x: layout.card.x + INLINE_COMMAND_ROW_INSET_X,
+            y: row_top,
+            width: row_width,
+            height: visible_height,
+        }
+    };
+    if rect.width <= 12.0 {
+        return;
+    }
+    push_rounded_rect(
+        vertices,
+        rect,
+        INLINE_COMMAND_ROW_RADIUS,
+        with_alpha(palette.fill, palette.fill[3] * reveal_progress),
+        size,
+    );
+    push_rounded_rect_border(
+        vertices,
+        rect,
+        INLINE_COMMAND_ROW_RADIUS,
+        1.0,
+        with_alpha(palette.border, palette.border[3] * reveal_progress),
+        size,
+    );
+    if palette.selected {
+        push_rounded_rect(
+            vertices,
+            Rect {
+                x: rect.x + 6.0,
+                y: rect.y + 7.0,
+                width: 3.0,
+                height: (rect.height - 14.0).max(1.0),
+            },
+            2.0,
+            with_alpha(palette.accent, palette.accent[3] * reveal_progress),
+            size,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_inline_command_row_icon(
+    vertices: &mut Vec<Vertex>,
+    kind: Option<InlineWidgetKind>,
+    line: usize,
+    palette: InlineCommandRowPalette,
+    line_height: f32,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    size: PhysicalSize<u32>,
+) {
+    let Some(icon) = palette.icon else {
+        return;
+    };
+    let is_session = matches!(kind, Some(InlineWidgetKind::SessionSwitcher));
+    let icon_size = if is_session { 19.0 } else { 17.0 };
+    let top = layout.text_top + line as f32 * line_height + if is_session { 10.0 } else { 4.0 };
+    let left = if is_session {
+        session_switcher_split_columns(layout)
+            .map(|columns| columns.rail.x + INLINE_COMMAND_ROW_INSET_X + 10.0)
+            .unwrap_or(layout.card.x + INLINE_COMMAND_ROW_INSET_X + 10.0)
+    } else {
+        layout.card.x + layout.card.width - INLINE_COMMAND_ROW_INSET_X - icon_size - 10.0
+    };
+    if top + icon_size > layout.visible_text_bottom || left + icon_size > layout.visible_text_right
+    {
+        return;
+    }
+    if is_session {
+        let halo = Rect {
+            x: left - 5.0,
+            y: top - 5.0,
+            width: icon_size + 10.0,
+            height: icon_size + 10.0,
+        };
+        push_rounded_rect(
+            vertices,
+            halo,
+            halo.height * 0.5,
+            with_alpha(
+                palette.icon_background,
+                palette.icon_background[3] * reveal_progress,
+            ),
+            size,
+        );
+    }
+    push_lucide_icon(
+        vertices,
+        icon,
+        Rect {
+            x: left,
+            y: top,
+            width: icon_size,
+            height: icon_size,
+        },
+        with_alpha(palette.icon_color, palette.icon_color[3] * reveal_progress),
+        if is_session { 1.75 } else { 1.55 },
+        size,
+    );
+}
+
+fn push_inline_command_current_chip(
+    vertices: &mut Vec<Vertex>,
+    kind: Option<InlineWidgetKind>,
+    primary_text: &str,
+    line: usize,
+    line_height: f32,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    size: PhysicalSize<u32>,
+) {
+    let chip_width = (layout.card.width * 0.16).clamp(54.0, 98.0);
+    let chip_height = (line_height * 0.74).clamp(14.0, 22.0);
+    let x = if matches!(kind, Some(InlineWidgetKind::SessionSwitcher)) {
+        session_switcher_split_columns(layout)
+            .map(|columns| {
+                columns.rail.x + columns.rail.width - chip_width - INLINE_COMMAND_ROW_INSET_X - 10.0
+            })
+            .unwrap_or(
+                layout.card.x + layout.card.width - chip_width - INLINE_COMMAND_ROW_INSET_X - 10.0,
+            )
+    } else {
+        layout.card.x + layout.card.width - chip_width - INLINE_COMMAND_ROW_INSET_X - 10.0
+    };
+    let y = layout.text_top + line as f32 * line_height + (line_height - chip_height) * 0.5;
+    if x <= layout.text_left || y + chip_height > layout.visible_text_bottom {
+        return;
+    }
+    push_rounded_rect(
+        vertices,
+        Rect {
+            x,
+            y,
+            width: chip_width,
+            height: chip_height,
+        },
+        chip_height * 0.5,
+        with_alpha(
+            INLINE_COMMAND_CHIP_COLOR,
+            INLINE_COMMAND_CHIP_COLOR[3] * reveal_progress,
+        ),
+        size,
+    );
+    let chip_icon = if matches!(kind, Some(InlineWidgetKind::SessionSwitcher))
+        && resume_session_row_is_current(primary_text)
+    {
+        LucideIcon::BookmarkCheck
+    } else {
+        LucideIcon::CircleCheck
+    };
+    let icon_size = chip_height * 0.62;
+    push_lucide_icon(
+        vertices,
+        chip_icon,
+        Rect {
+            x: x + (chip_width - icon_size) * 0.5,
+            y: y + (chip_height - icon_size) * 0.5,
+            width: icon_size,
+            height: icon_size,
+        },
+        with_alpha(
+            INLINE_COMMAND_CHIP_ICON_COLOR,
+            INLINE_COMMAND_CHIP_ICON_COLOR[3] * reveal_progress,
+        ),
+        1.35,
+        size,
+    );
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LucideIcon {
+    Bot,
+    BookmarkCheck,
+    CircleCheck,
+    CirclePlay,
+    CircleX,
+    MessageSquare,
+    Package,
+    RefreshCw,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InlineCommandRowPalette {
+    fill: [f32; 4],
+    border: [f32; 4],
+    accent: [f32; 4],
+    icon_background: [f32; 4],
+    icon_color: [f32; 4],
+    icon: Option<LucideIcon>,
+    selected: bool,
+}
+
+fn inline_command_row_palette(
+    kind: Option<InlineWidgetKind>,
+    primary_text: &str,
+    selected: bool,
+) -> InlineCommandRowPalette {
+    if matches!(kind, Some(InlineWidgetKind::SessionSwitcher)) {
+        return resume_session_row_palette(primary_text, selected);
+    }
+
+    InlineCommandRowPalette {
+        fill: if selected {
+            INLINE_COMMAND_ROW_SELECTED_COLOR
+        } else {
+            INLINE_COMMAND_ROW_BACKGROUND_COLOR
+        },
+        border: if selected {
+            INLINE_COMMAND_ROW_SELECTED_BORDER_COLOR
+        } else {
+            INLINE_COMMAND_ROW_BORDER_COLOR
+        },
+        accent: INLINE_COMMAND_ROW_ACCENT_COLOR,
+        icon_background: INLINE_COMMAND_MODEL_ICON_BACKGROUND_COLOR,
+        icon_color: INLINE_COMMAND_MODEL_ICON_COLOR,
+        icon: matches!(kind, Some(InlineWidgetKind::ModelPicker)).then_some(LucideIcon::Bot),
+        selected,
+    }
+}
+
+fn resume_session_row_palette(primary_text: &str, selected: bool) -> InlineCommandRowPalette {
+    let status = resume_session_status_from_row(primary_text);
+    let (fill, border, accent, icon_background, icon_color, icon) = match status {
+        "active" => (
+            RESUME_SESSION_ACTIVE_FILL,
+            RESUME_SESSION_ACTIVE_BORDER,
+            RESUME_SESSION_ACTIVE_ACCENT,
+            RESUME_SESSION_ACTIVE_ICON_BACKGROUND,
+            RESUME_SESSION_ACTIVE_ICON_COLOR,
+            LucideIcon::CirclePlay,
+        ),
+        "closed" | "done" | "finished" => (
+            RESUME_SESSION_CLOSED_FILL,
+            RESUME_SESSION_CLOSED_BORDER,
+            RESUME_SESSION_CLOSED_ACCENT,
+            RESUME_SESSION_CLOSED_ICON_BACKGROUND,
+            RESUME_SESSION_CLOSED_ICON_COLOR,
+            LucideIcon::CircleCheck,
+        ),
+        "crashed" | "failed" | "error" => (
+            RESUME_SESSION_ERROR_FILL,
+            RESUME_SESSION_ERROR_BORDER,
+            RESUME_SESSION_ERROR_ACCENT,
+            RESUME_SESSION_ERROR_ICON_BACKGROUND,
+            RESUME_SESSION_ERROR_ICON_COLOR,
+            LucideIcon::CircleX,
+        ),
+        "compacted" => (
+            RESUME_SESSION_SPECIAL_FILL,
+            RESUME_SESSION_SPECIAL_BORDER,
+            RESUME_SESSION_SPECIAL_ACCENT,
+            RESUME_SESSION_SPECIAL_ICON_BACKGROUND,
+            RESUME_SESSION_SPECIAL_ICON_COLOR,
+            LucideIcon::Package,
+        ),
+        "reloaded" => (
+            RESUME_SESSION_RELOADED_FILL,
+            RESUME_SESSION_RELOADED_BORDER,
+            RESUME_SESSION_RELOADED_ACCENT,
+            RESUME_SESSION_RELOADED_ICON_BACKGROUND,
+            RESUME_SESSION_RELOADED_ICON_COLOR,
+            LucideIcon::RefreshCw,
+        ),
+        _ => (
+            RESUME_SESSION_NEUTRAL_FILL,
+            RESUME_SESSION_NEUTRAL_BORDER,
+            RESUME_SESSION_NEUTRAL_ACCENT,
+            RESUME_SESSION_NEUTRAL_ICON_BACKGROUND,
+            RESUME_SESSION_NEUTRAL_ICON_COLOR,
+            LucideIcon::MessageSquare,
+        ),
+    };
+
+    InlineCommandRowPalette {
+        fill: if selected {
+            mix_rgba(fill, RESUME_SESSION_SELECTED_TINT, 0.58)
+        } else {
+            fill
+        },
+        border: if selected {
+            mix_rgba(border, RESUME_SESSION_SELECTED_BORDER_TINT, 0.46)
+        } else {
+            border
+        },
+        accent,
+        icon_background: if selected {
+            mix_rgba(icon_background, RESUME_SESSION_SELECTED_TINT, 0.28)
+        } else {
+            icon_background
+        },
+        icon_color,
+        icon: Some(icon),
+        selected,
+    }
+}
+
+fn resume_session_status_from_row(primary_text: &str) -> &str {
+    primary_text
+        .trim_start()
+        .split_once(" session ·")
+        .map(|(status, _)| status.trim())
+        .unwrap_or("unknown")
+}
+
+fn resume_session_row_is_current(primary_text: &str) -> bool {
+    primary_text.contains(" current ·")
+}
+
+fn mix_rgba(left: [f32; 4], right: [f32; 4], amount: f32) -> [f32; 4] {
+    let amount = amount.clamp(0.0, 1.0);
+    [
+        left[0] + (right[0] - left[0]) * amount,
+        left[1] + (right[1] - left[1]) * amount,
+        left[2] + (right[2] - left[2]) * amount,
+        left[3] + (right[3] - left[3]) * amount,
+    ]
+}
+
+fn push_lucide_icon(
+    vertices: &mut Vec<Vertex>,
+    icon: LucideIcon,
+    rect: Rect,
+    color: [f32; 4],
+    stroke_width: f32,
+    size: PhysicalSize<u32>,
+) {
+    if rect.width <= 1.0 || rect.height <= 1.0 || color[3] <= 0.0 {
+        return;
+    }
+
+    match icon {
+        LucideIcon::Bot => {
+            push_lucide_rect(
+                vertices,
+                rect,
+                [5.0, 7.0],
+                [19.0, 19.0],
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_line(
+                vertices,
+                rect,
+                [12.0, 3.5],
+                [12.0, 7.0],
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_line(
+                vertices,
+                rect,
+                [9.0, 3.5],
+                [15.0, 3.5],
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_line(
+                vertices,
+                rect,
+                [8.5, 12.0],
+                [8.6, 12.0],
+                color,
+                stroke_width * 2.0,
+                size,
+            );
+            push_lucide_line(
+                vertices,
+                rect,
+                [15.4, 12.0],
+                [15.5, 12.0],
+                color,
+                stroke_width * 2.0,
+                size,
+            );
+            push_lucide_line(
+                vertices,
+                rect,
+                [9.0, 16.0],
+                [15.0, 16.0],
+                color,
+                stroke_width,
+                size,
+            );
+        }
+        LucideIcon::BookmarkCheck => {
+            push_lucide_polyline(
+                vertices,
+                rect,
+                &[
+                    [7.0, 4.0],
+                    [17.0, 4.0],
+                    [17.0, 20.0],
+                    [12.0, 17.0],
+                    [7.0, 20.0],
+                    [7.0, 4.0],
+                ],
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_polyline(
+                vertices,
+                rect,
+                &[[9.3, 11.6], [11.2, 13.5], [15.0, 9.7]],
+                color,
+                stroke_width,
+                size,
+            );
+        }
+        LucideIcon::CircleCheck => {
+            push_lucide_circle(vertices, rect, [12.0, 12.0], 8.2, color, stroke_width, size);
+            push_lucide_polyline(
+                vertices,
+                rect,
+                &[[8.3, 12.2], [10.8, 14.7], [15.9, 9.4]],
+                color,
+                stroke_width,
+                size,
+            );
+        }
+        LucideIcon::CirclePlay => {
+            push_lucide_circle(vertices, rect, [12.0, 12.0], 8.2, color, stroke_width, size);
+            push_lucide_polyline(
+                vertices,
+                rect,
+                &[[10.2, 8.7], [15.9, 12.0], [10.2, 15.3], [10.2, 8.7]],
+                color,
+                stroke_width,
+                size,
+            );
+        }
+        LucideIcon::CircleX => {
+            push_lucide_circle(vertices, rect, [12.0, 12.0], 8.2, color, stroke_width, size);
+            push_lucide_line(
+                vertices,
+                rect,
+                [9.2, 9.2],
+                [14.8, 14.8],
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_line(
+                vertices,
+                rect,
+                [14.8, 9.2],
+                [9.2, 14.8],
+                color,
+                stroke_width,
+                size,
+            );
+        }
+        LucideIcon::MessageSquare => {
+            push_lucide_polyline(
+                vertices,
+                rect,
+                &[
+                    [5.0, 6.0],
+                    [19.0, 6.0],
+                    [19.0, 16.0],
+                    [13.0, 16.0],
+                    [8.0, 20.0],
+                    [8.0, 16.0],
+                    [5.0, 16.0],
+                    [5.0, 6.0],
+                ],
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_line(
+                vertices,
+                rect,
+                [8.5, 10.0],
+                [15.5, 10.0],
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_line(
+                vertices,
+                rect,
+                [8.5, 13.0],
+                [13.0, 13.0],
+                color,
+                stroke_width,
+                size,
+            );
+        }
+        LucideIcon::Package => {
+            push_lucide_polyline(
+                vertices,
+                rect,
+                &[
+                    [12.0, 3.8],
+                    [19.0, 7.8],
+                    [19.0, 16.2],
+                    [12.0, 20.2],
+                    [5.0, 16.2],
+                    [5.0, 7.8],
+                    [12.0, 3.8],
+                ],
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_polyline(
+                vertices,
+                rect,
+                &[[5.3, 8.0], [12.0, 12.0], [18.7, 8.0]],
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_line(
+                vertices,
+                rect,
+                [12.0, 12.0],
+                [12.0, 20.0],
+                color,
+                stroke_width,
+                size,
+            );
+        }
+        LucideIcon::RefreshCw => {
+            push_lucide_arc(
+                vertices,
+                rect,
+                [12.0, 12.0],
+                7.4,
+                -0.10,
+                3.55,
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_arc(
+                vertices,
+                rect,
+                [12.0, 12.0],
+                7.4,
+                3.05,
+                6.70,
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_polyline(
+                vertices,
+                rect,
+                &[[17.0, 4.2], [19.4, 7.0], [15.6, 7.2]],
+                color,
+                stroke_width,
+                size,
+            );
+            push_lucide_polyline(
+                vertices,
+                rect,
+                &[[7.0, 19.8], [4.6, 17.0], [8.4, 16.8]],
+                color,
+                stroke_width,
+                size,
+            );
+        }
+    }
+}
+
+fn lucide_point(rect: Rect, point: [f32; 2]) -> [f32; 2] {
+    [
+        rect.x + rect.width * point[0] / 24.0,
+        rect.y + rect.height * point[1] / 24.0,
+    ]
+}
+
+fn push_lucide_line(
+    vertices: &mut Vec<Vertex>,
+    rect: Rect,
+    a: [f32; 2],
+    b: [f32; 2],
+    color: [f32; 4],
+    stroke_width: f32,
+    size: PhysicalSize<u32>,
+) {
+    push_stroke_segment(
+        vertices,
+        lucide_point(rect, a),
+        lucide_point(rect, b),
+        stroke_width,
+        color,
+        size,
+    );
+}
+
+fn push_lucide_polyline(
+    vertices: &mut Vec<Vertex>,
+    rect: Rect,
+    points: &[[f32; 2]],
+    color: [f32; 4],
+    stroke_width: f32,
+    size: PhysicalSize<u32>,
+) {
+    for pair in points.windows(2) {
+        push_lucide_line(vertices, rect, pair[0], pair[1], color, stroke_width, size);
+    }
+}
+
+fn push_lucide_rect(
+    vertices: &mut Vec<Vertex>,
+    rect: Rect,
+    min: [f32; 2],
+    max: [f32; 2],
+    color: [f32; 4],
+    stroke_width: f32,
+    size: PhysicalSize<u32>,
+) {
+    push_lucide_polyline(
+        vertices,
+        rect,
+        &[
+            [min[0], min[1]],
+            [max[0], min[1]],
+            [max[0], max[1]],
+            [min[0], max[1]],
+            [min[0], min[1]],
+        ],
+        color,
+        stroke_width,
+        size,
+    );
+}
+
+fn push_lucide_circle(
+    vertices: &mut Vec<Vertex>,
+    rect: Rect,
+    center: [f32; 2],
+    radius: f32,
+    color: [f32; 4],
+    stroke_width: f32,
+    size: PhysicalSize<u32>,
+) {
+    push_lucide_arc(
+        vertices,
+        rect,
+        center,
+        radius,
+        0.0,
+        std::f32::consts::TAU,
+        color,
+        stroke_width,
+        size,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_lucide_arc(
+    vertices: &mut Vec<Vertex>,
+    rect: Rect,
+    center: [f32; 2],
+    radius: f32,
+    start_angle: f32,
+    end_angle: f32,
+    color: [f32; 4],
+    stroke_width: f32,
+    size: PhysicalSize<u32>,
+) {
+    const ICON_ARC_SEGMENTS: usize = 18;
+    let mut previous = None;
+    for step in 0..=ICON_ARC_SEGMENTS {
+        let t = step as f32 / ICON_ARC_SEGMENTS as f32;
+        let angle = start_angle + (end_angle - start_angle) * t;
+        let point = [
+            center[0] + radius * angle.cos(),
+            center[1] + radius * angle.sin(),
+        ];
+        if let Some(previous) = previous {
+            push_lucide_line(vertices, rect, previous, point, color, stroke_width, size);
+        }
+        previous = Some(point);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SessionSwitcherSplitColumns {
+    rail: Rect,
+    preview: Rect,
+    gap: Rect,
+}
+
+fn session_switcher_split_columns(
+    layout: &InlineWidgetCardLayout,
+) -> Option<SessionSwitcherSplitColumns> {
+    let content_x = layout.card.x + layout.padding_x * 0.72;
+    let content_width = (layout.card.width - layout.padding_x * 1.44).max(0.0);
+    if content_width <= 260.0 {
+        return None;
+    }
+
+    let gap_width = (content_width * 0.018).clamp(9.0, 15.0);
+    let preferred_rail_width = (content_width * 0.38).clamp(250.0, 365.0);
+    let max_rail_width = (content_width - gap_width - 210.0)
+        .max(content_width * 0.42)
+        .min(content_width - gap_width - 96.0);
+    let rail_width = preferred_rail_width
+        .min(max_rail_width)
+        .max((content_width * 0.32).min(content_width - gap_width - 96.0));
+    let preview_width = content_width - rail_width - gap_width;
+    if rail_width <= 96.0 || preview_width <= 96.0 {
+        return None;
+    }
+
+    let y = layout.card.y + layout.padding_x * 0.18;
+    let height = (layout.card.height - layout.padding_x * 0.36).max(1.0);
+    let rail = Rect {
+        x: content_x,
+        y,
+        width: rail_width,
+        height,
+    };
+    let gap = Rect {
+        x: rail.x + rail.width,
+        y,
+        width: gap_width,
+        height,
+    };
+    let preview = Rect {
+        x: gap.x + gap.width,
+        y,
+        width: preview_width,
+        height,
+    };
+    Some(SessionSwitcherSplitColumns { rail, preview, gap })
+}
+
+fn session_switcher_split_panel_rects(
+    layout: &InlineWidgetCardLayout,
+    top: f32,
+    height: f32,
+) -> Option<(Rect, Rect, Rect)> {
+    let columns = session_switcher_split_columns(layout)?;
+    let bottom = (top + height).min(layout.visible_text_bottom);
+    if bottom <= top + 8.0 {
+        return None;
+    }
+    let height = bottom - top;
+    Some((
+        Rect {
+            y: top,
+            height,
+            ..columns.rail
+        },
+        Rect {
+            y: top,
+            height,
+            ..columns.preview
+        },
+        Rect {
+            y: top,
+            height,
+            ..columns.gap
+        },
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_session_switcher_section_panels(
+    vertices: &mut Vec<Vertex>,
+    inline_lines: &[SingleSessionStyledLine],
+    line_count: usize,
+    typography: &SingleSessionTypography,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    size: PhysicalSize<u32>,
+) {
+    let visible_len = line_count.min(inline_lines.len());
+    let Some(sessions_header) = inline_lines[..visible_len]
+        .iter()
+        .position(|line| line.text.starts_with("Recent sessions"))
+    else {
+        return;
+    };
+    let preview_header = inline_lines[..visible_len]
+        .iter()
+        .position(|line| line.text.starts_with("Preview"));
+    let sessions_end = preview_header
+        .unwrap_or(visible_len)
+        .max(sessions_header + 1);
+    let line_height =
+        inline_widget_line_height(Some(InlineWidgetKind::SessionSwitcher), typography);
+
+    let top = layout.text_top + sessions_header as f32 * line_height - 7.0;
+    let height = (visible_len - sessions_header) as f32 * line_height + 12.0;
+    if let Some((rail, preview, gap)) = session_switcher_split_panel_rects(layout, top, height) {
+        push_rounded_rect(
+            vertices,
+            rail,
+            INLINE_COMMAND_ROW_RADIUS + 4.0,
+            with_alpha(
+                INLINE_COMMAND_SECTION_BACKGROUND_COLOR,
+                INLINE_COMMAND_SECTION_BACKGROUND_COLOR[3] * reveal_progress,
+            ),
+            size,
+        );
+        push_rounded_rect(
+            vertices,
+            preview,
+            INLINE_COMMAND_ROW_RADIUS + 4.0,
+            with_alpha(
+                INLINE_COMMAND_PREVIEW_BACKGROUND_COLOR,
+                INLINE_COMMAND_PREVIEW_BACKGROUND_COLOR[3] * reveal_progress,
+            ),
+            size,
+        );
+        push_rounded_rect(
+            vertices,
+            Rect {
+                x: gap.x + gap.width * 0.5 - 0.5,
+                y: gap.y + 9.0,
+                width: 1.0,
+                height: (gap.height - 18.0).max(1.0),
+            },
+            0.5,
+            with_alpha(
+                INLINE_COMMAND_SPLIT_DIVIDER_COLOR,
+                INLINE_COMMAND_SPLIT_DIVIDER_COLOR[3] * reveal_progress,
+            ),
+            size,
+        );
+    } else {
+        push_inline_command_section_panel(
+            vertices,
+            sessions_header,
+            sessions_end,
+            line_height,
+            layout,
+            INLINE_COMMAND_SECTION_BACKGROUND_COLOR,
+            reveal_progress,
+            size,
+        );
+        if let Some(preview_header) = preview_header {
+            push_inline_command_section_panel(
+                vertices,
+                preview_header,
+                visible_len,
+                line_height,
+                layout,
+                INLINE_COMMAND_PREVIEW_BACKGROUND_COLOR,
+                reveal_progress,
+                size,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_session_switcher_preview_bubbles(
+    vertices: &mut Vec<Vertex>,
+    inline_lines: &[SingleSessionStyledLine],
+    line_count: usize,
+    typography: &SingleSessionTypography,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    size: PhysicalSize<u32>,
+) {
+    let visible_len = line_count.min(inline_lines.len());
+    let Some(preview_header) = inline_lines[..visible_len]
+        .iter()
+        .position(|line| line.text.starts_with("Preview"))
+    else {
+        return;
+    };
+    let line_height =
+        inline_widget_line_height(Some(InlineWidgetKind::SessionSwitcher), typography);
+    let radius = (line_height * 0.12).clamp(2.5, 4.5);
+    let y = layout.text_top + preview_header as f32 * line_height + line_height * 0.44;
+    let right = layout.card.x + layout.card.width - layout.padding_x * 0.72;
+    if y + radius > layout.visible_text_bottom {
+        return;
+    }
+    for index in 0..3 {
+        let alpha_scale = 1.0 - index as f32 * 0.18;
+        push_rounded_rect(
+            vertices,
+            Rect {
+                x: right - (index as f32 + 1.0) * (radius * 2.7),
+                y: y - radius,
+                width: radius * 2.0,
+                height: radius * 2.0,
+            },
+            radius,
+            with_alpha(
+                INLINE_COMMAND_ROW_ACCENT_COLOR,
+                INLINE_COMMAND_ROW_ACCENT_COLOR[3] * reveal_progress * alpha_scale,
+            ),
+            size,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_inline_command_section_panel(
+    vertices: &mut Vec<Vertex>,
+    start_line: usize,
+    end_line: usize,
+    line_height: f32,
+    layout: &InlineWidgetCardLayout,
+    color: [f32; 4],
+    reveal_progress: f32,
+    size: PhysicalSize<u32>,
+) {
+    if end_line <= start_line {
+        return;
+    }
+    let top = layout.text_top + start_line as f32 * line_height - 7.0;
+    let height = (end_line - start_line) as f32 * line_height + 12.0;
+    let visible_height = (layout.visible_text_bottom - top).min(height);
+    if visible_height <= 8.0 {
+        return;
+    }
+    let rect = Rect {
+        x: layout.card.x + layout.padding_x * 0.42,
+        y: top,
+        width: (layout.card.width - layout.padding_x * 0.84).max(1.0),
+        height: visible_height,
+    };
+    push_rounded_rect(
+        vertices,
+        rect,
+        INLINE_COMMAND_ROW_RADIUS + 4.0,
+        with_alpha(color, color[3] * reveal_progress),
+        size,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1885,6 +3132,55 @@ const SLASH_SUGGESTIONS_INLINE_CARD_PADDING_Y: f32 = 5.0;
 const SLASH_SUGGESTIONS_INLINE_CARD_RADIUS: f32 = 13.0;
 const SLASH_SUGGESTIONS_INLINE_SELECTION_RADIUS: f32 = 7.0;
 const SLASH_SUGGESTIONS_INLINE_FONT_SCALE: f32 = 0.88;
+const INLINE_COMMAND_ROW_RADIUS: f32 = 12.0;
+const INLINE_COMMAND_ROW_INSET_X: f32 = 9.0;
+const INLINE_COMMAND_ROW_GAP_Y: f32 = 4.0;
+const INLINE_COMMAND_ROW_BACKGROUND_COLOR: [f32; 4] = [0.972, 0.982, 1.000, 0.42];
+const INLINE_COMMAND_ROW_BORDER_COLOR: [f32; 4] = [0.080, 0.170, 0.420, 0.115];
+const INLINE_COMMAND_ROW_SELECTED_COLOR: [f32; 4] = [0.830, 0.900, 1.000, 0.58];
+const INLINE_COMMAND_ROW_SELECTED_BORDER_COLOR: [f32; 4] = [0.085, 0.300, 0.850, 0.30];
+const INLINE_COMMAND_ROW_ACCENT_COLOR: [f32; 4] = [0.100, 0.360, 0.940, 0.50];
+const INLINE_COMMAND_SECTION_BACKGROUND_COLOR: [f32; 4] = [0.955, 0.972, 1.000, 0.30];
+const INLINE_COMMAND_PREVIEW_BACKGROUND_COLOR: [f32; 4] = [0.985, 0.990, 1.000, 0.34];
+const INLINE_COMMAND_SPLIT_DIVIDER_COLOR: [f32; 4] = [0.120, 0.220, 0.440, 0.16];
+const INLINE_COMMAND_CHIP_COLOR: [f32; 4] = [0.900, 0.940, 1.000, 0.64];
+const INLINE_COMMAND_CHIP_ICON_COLOR: [f32; 4] = [0.085, 0.270, 0.760, 0.92];
+const INLINE_COMMAND_MODEL_ICON_BACKGROUND_COLOR: [f32; 4] = [0.890, 0.930, 1.000, 0.54];
+const INLINE_COMMAND_MODEL_ICON_COLOR: [f32; 4] = [0.080, 0.260, 0.720, 0.88];
+const INLINE_COMMAND_SESSION_ROW_TOP_INSET: f32 = 3.0;
+const INLINE_COMMAND_SESSION_ROW_BOTTOM_INSET: f32 = 10.0;
+const RESUME_SESSION_SELECTED_TINT: [f32; 4] = [0.835, 0.905, 1.000, 0.66];
+const RESUME_SESSION_SELECTED_BORDER_TINT: [f32; 4] = [0.075, 0.290, 0.900, 0.34];
+const RESUME_SESSION_ACTIVE_FILL: [f32; 4] = [0.925, 0.992, 0.955, 0.50];
+const RESUME_SESSION_ACTIVE_BORDER: [f32; 4] = [0.050, 0.530, 0.300, 0.22];
+const RESUME_SESSION_ACTIVE_ACCENT: [f32; 4] = [0.045, 0.650, 0.355, 0.62];
+const RESUME_SESSION_ACTIVE_ICON_BACKGROUND: [f32; 4] = [0.790, 0.970, 0.865, 0.54];
+const RESUME_SESSION_ACTIVE_ICON_COLOR: [f32; 4] = [0.025, 0.455, 0.250, 0.92];
+const RESUME_SESSION_CLOSED_FILL: [f32; 4] = [0.965, 0.978, 0.994, 0.46];
+const RESUME_SESSION_CLOSED_BORDER: [f32; 4] = [0.160, 0.235, 0.360, 0.16];
+const RESUME_SESSION_CLOSED_ACCENT: [f32; 4] = [0.290, 0.400, 0.560, 0.44];
+const RESUME_SESSION_CLOSED_ICON_BACKGROUND: [f32; 4] = [0.905, 0.935, 0.975, 0.50];
+const RESUME_SESSION_CLOSED_ICON_COLOR: [f32; 4] = [0.170, 0.260, 0.420, 0.82];
+const RESUME_SESSION_ERROR_FILL: [f32; 4] = [1.000, 0.930, 0.930, 0.50];
+const RESUME_SESSION_ERROR_BORDER: [f32; 4] = [0.760, 0.120, 0.160, 0.25];
+const RESUME_SESSION_ERROR_ACCENT: [f32; 4] = [0.850, 0.120, 0.180, 0.64];
+const RESUME_SESSION_ERROR_ICON_BACKGROUND: [f32; 4] = [1.000, 0.820, 0.835, 0.56];
+const RESUME_SESSION_ERROR_ICON_COLOR: [f32; 4] = [0.670, 0.060, 0.110, 0.92];
+const RESUME_SESSION_SPECIAL_FILL: [f32; 4] = [0.964, 0.940, 1.000, 0.50];
+const RESUME_SESSION_SPECIAL_BORDER: [f32; 4] = [0.405, 0.190, 0.780, 0.23];
+const RESUME_SESSION_SPECIAL_ACCENT: [f32; 4] = [0.500, 0.245, 0.900, 0.58];
+const RESUME_SESSION_SPECIAL_ICON_BACKGROUND: [f32; 4] = [0.900, 0.830, 1.000, 0.54];
+const RESUME_SESSION_SPECIAL_ICON_COLOR: [f32; 4] = [0.360, 0.150, 0.720, 0.90];
+const RESUME_SESSION_RELOADED_FILL: [f32; 4] = [0.930, 0.982, 1.000, 0.50];
+const RESUME_SESSION_RELOADED_BORDER: [f32; 4] = [0.050, 0.470, 0.680, 0.22];
+const RESUME_SESSION_RELOADED_ACCENT: [f32; 4] = [0.050, 0.520, 0.760, 0.56];
+const RESUME_SESSION_RELOADED_ICON_BACKGROUND: [f32; 4] = [0.800, 0.940, 1.000, 0.52];
+const RESUME_SESSION_RELOADED_ICON_COLOR: [f32; 4] = [0.035, 0.370, 0.620, 0.90];
+const RESUME_SESSION_NEUTRAL_FILL: [f32; 4] = [0.972, 0.982, 1.000, 0.44];
+const RESUME_SESSION_NEUTRAL_BORDER: [f32; 4] = [0.100, 0.170, 0.320, 0.14];
+const RESUME_SESSION_NEUTRAL_ACCENT: [f32; 4] = [0.135, 0.280, 0.620, 0.42];
+const RESUME_SESSION_NEUTRAL_ICON_BACKGROUND: [f32; 4] = [0.900, 0.930, 1.000, 0.46];
+const RESUME_SESSION_NEUTRAL_ICON_COLOR: [f32; 4] = [0.120, 0.220, 0.460, 0.82];
 
 #[derive(Clone, Copy, Debug)]
 struct InlineWidgetCardStyle {
@@ -1915,6 +3211,28 @@ fn inline_widget_card_layout(
     text_top: f32,
     progress: f32,
 ) -> Option<InlineWidgetCardLayout> {
+    inline_widget_card_layout_with_bottom_limit(
+        size,
+        kind,
+        typography,
+        line_count,
+        text_width,
+        text_top,
+        progress,
+        single_session_draft_top(size),
+    )
+}
+
+fn inline_widget_card_layout_with_bottom_limit(
+    size: PhysicalSize<u32>,
+    kind: Option<InlineWidgetKind>,
+    typography: &SingleSessionTypography,
+    line_count: usize,
+    text_width: f32,
+    text_top: f32,
+    progress: f32,
+    bottom_limit: f32,
+) -> Option<InlineWidgetCardLayout> {
     if line_count == 0 {
         return None;
     }
@@ -1933,11 +3251,31 @@ fn inline_widget_card_layout(
         .min(inline_widget_max_text_width_for_kind(kind, size))
         .max(1.0);
     let text_height = line_count as f32 * line_height;
+    let requested_card_height = text_height + padding_y * 2.0;
+    let card_y = (text_top - padding_y).max(PANEL_TITLE_TOP_PADDING);
+    let draft_top = single_session_draft_top(size);
+    let bottom_limit = bottom_limit.min(draft_top);
+    let constrained_by_bottom = bottom_limit < draft_top - 0.001;
+    let minimum_card_height = if constrained_by_bottom {
+        (line_height * 0.72).min(requested_card_height)
+    } else {
+        (line_height + padding_y * 2.0).min(requested_card_height)
+    };
+    let available_card_height = if constrained_by_bottom {
+        (bottom_limit - card_y).max(1.0)
+    } else {
+        (bottom_limit - card_y - 8.0).max(minimum_card_height)
+    };
+    let max_card_height = available_card_height
+        .min((size.height as f32 * 0.56).max(line_height * 3.0 + padding_y * 2.0));
+    let final_card_height = requested_card_height
+        .min(max_card_height)
+        .max(minimum_card_height.min(max_card_height));
     let final_card = Rect {
         x: (text_left - padding_x).max(0.0),
-        y: (text_top - padding_y).max(PANEL_TITLE_TOP_PADDING),
+        y: card_y,
         width: text_width + padding_x * 2.0,
-        height: text_height + padding_y * 2.0,
+        height: final_card_height,
     };
     let start_width = (line_height * 2.0).min(final_card.width);
     let start_height = (line_height * 0.72).min(final_card.height);
@@ -2603,19 +3941,21 @@ fn push_streaming_activity_cue_visual(
     if visual.opacity <= 0.001 || visual.scale <= 0.05 {
         return;
     }
-    let typography = single_session_typography();
-    let body_top = single_session_body_top_for_app(app, size);
+    let typography = single_session_typography_for_scale(app.text_scale());
     let viewport = viewport
         .cloned()
         .unwrap_or_else(|| single_session_body_viewport_for_tick(app, size, tick, 0.0));
     let pill_width = (typography.body_size * 2.05).clamp(26.0, 34.0);
     let pill_height = (typography.body_size * 0.82).clamp(11.0, 15.0);
-    let body_bottom = single_session_body_bottom_for_total_lines(app, size, viewport.total_lines);
-    let draft_top = single_session_draft_top_for_total_lines(app, size, viewport.total_lines);
-    let activity_lane_top = body_bottom.max(body_top);
-    let activity_lane_bottom = draft_top.max(activity_lane_top + pill_height);
-    let cue_y = activity_lane_top + (activity_lane_bottom - activity_lane_top - pill_height) * 0.5;
-    let cue_x = PANEL_TITLE_LEFT_PADDING;
+    let layout = single_session_layout_for_total_lines(app, size, viewport.total_lines);
+    let activity_lane = layout.activity_lane.unwrap_or(Rect {
+        x: PANEL_TITLE_LEFT_PADDING,
+        y: layout.body_bottom(),
+        width: layout.body.width,
+        height: (layout.draft_top - layout.body_bottom()).max(pill_height),
+    });
+    let cue_y = activity_lane.y + (activity_lane.height - pill_height).max(0.0) * 0.5;
+    let cue_x = activity_lane.x;
     let cue_rect = Rect {
         x: cue_x,
         y: cue_y + visual.y_offset_pixels,
@@ -4981,18 +6321,38 @@ fn inline_widget_list_row_runs(
             }
         }
         InlineWidgetKind::SessionSwitcher => {
-            for line in 0..visible_len {
-                if lines[line].text.starts_with("│ ")
-                    && lines[line].style != SingleSessionLineStyle::OverlayTitle
-                {
+            let mut line = 0;
+            while line < visible_len {
+                if lines[line].text.starts_with("Preview") {
+                    break;
+                }
+                let looks_like_session_card = matches!(
+                    lines[line].style,
+                    SingleSessionLineStyle::OverlaySelection | SingleSessionLineStyle::Overlay
+                ) && lines[line].text.contains(" session ·")
+                    && line + 1 < visible_len
+                    && lines[line + 1].text.trim_start().starts_with("Status ");
+                if looks_like_session_card {
+                    let mut span = 1;
+                    while line + span < visible_len
+                        && span < 4
+                        && !lines[line + span].text.starts_with("Preview")
+                        && lines[line + span].style != SingleSessionLineStyle::Blank
+                        && lines[line + span].style != SingleSessionLineStyle::OverlayTitle
+                    {
+                        span += 1;
+                    }
                     push_inline_widget_list_row_run(
                         &mut runs,
                         &mut occurrences,
                         kind,
                         lines,
                         line,
-                        1,
+                        span,
                     );
+                    line += span;
+                } else {
+                    line += 1;
                 }
             }
         }
@@ -7306,7 +8666,7 @@ fn push_single_session_selection(
         return;
     }
 
-    let typography = single_session_typography();
+    let typography = single_session_typography_for_scale(app.text_scale());
     let line_height = typography.body_size * typography.body_line_height;
     let char_width = single_session_body_char_width();
     let visible_lines = single_session_visible_body(app, size);
@@ -7714,6 +9074,48 @@ pub(crate) fn single_session_text_key_for_tick_with_rendered_body(
     )
 }
 
+fn inline_widget_split_preview_start(
+    kind: Option<InlineWidgetKind>,
+    lines: &[SingleSessionStyledLine],
+) -> Option<usize> {
+    if kind != Some(InlineWidgetKind::SessionSwitcher) {
+        return None;
+    }
+    lines
+        .iter()
+        .position(|line| line.text.starts_with("Preview"))
+}
+
+fn inline_widget_split_primary_lines(
+    kind: Option<InlineWidgetKind>,
+    lines: Vec<SingleSessionStyledLine>,
+) -> Vec<SingleSessionStyledLine> {
+    let Some(preview_start) = inline_widget_split_preview_start(kind, &lines) else {
+        return lines;
+    };
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if index < preview_start {
+                line
+            } else {
+                blank_render_line()
+            }
+        })
+        .collect()
+}
+
+fn inline_widget_split_preview_lines(
+    kind: Option<InlineWidgetKind>,
+    lines: &[SingleSessionStyledLine],
+) -> Vec<SingleSessionStyledLine> {
+    let Some(preview_start) = inline_widget_split_preview_start(kind, lines) else {
+        return Vec::new();
+    };
+    lines[preview_start..].to_vec()
+}
+
 fn single_session_text_key_for_body_lines(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
@@ -7745,6 +9147,11 @@ fn single_session_text_key_for_body_lines(
     } else {
         (String::new(), Vec::new())
     };
+    let inline_widget_kind = app.render_inline_widget_kind();
+    let inline_widget = app.render_inline_widget_styled_lines();
+    let inline_widget_preview =
+        inline_widget_split_preview_lines(inline_widget_kind, &inline_widget);
+    let inline_widget = inline_widget_split_primary_lines(inline_widget_kind, inline_widget);
     SingleSessionTextKey {
         size: (size.width, size.height),
         fresh_welcome_visible: welcome_chrome_visible,
@@ -7771,8 +9178,9 @@ fn single_session_text_key_for_body_lines(
         user_font_family: single_session_user_font_family(),
         assistant_font_family: single_session_assistant_font_family(),
         body,
-        inline_widget_kind: app.render_inline_widget_kind(),
-        inline_widget: app.render_inline_widget_styled_lines(),
+        inline_widget_kind,
+        inline_widget,
+        inline_widget_preview,
         draft: if welcome_input_visible {
             visualize_composer_whitespace(&app.composer_text())
         } else {
@@ -7890,12 +9298,18 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
         single_session_body_text_buffer_from_lines(font_system, &key.body, size, text_scale)
     });
 
-    let inline_widget_width = if key.inline_widget.is_empty() {
+    let inline_widget_line_count = inline_widget_visual_line_count(
+        key.inline_widget_kind,
+        &key.inline_widget,
+        &key.inline_widget_preview,
+    );
+    let inline_widget_width = if inline_widget_line_count == 0 {
         content_width
     } else {
-        inline_widget_text_width_for_lines(
+        inline_widget_text_width_for_split_buffers(
             key.inline_widget_kind,
             &key.inline_widget,
+            &key.inline_widget_preview,
             size,
             text_scale,
         )
@@ -7909,8 +9323,16 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
             inline_widget_line_height(key.inline_widget_kind, &typography);
         prompt_height
             .max(size.height as f32)
-            .max(key.inline_widget.len() as f32 * inline_widget_line_height)
+            .max(inline_widget_line_count as f32 * inline_widget_line_height)
     };
+    let (inline_widget_primary_width, inline_widget_preview_width) =
+        inline_widget_split_text_widths(
+            key.inline_widget_kind,
+            &typography,
+            size,
+            inline_widget_line_count,
+            inline_widget_width,
+        );
     let inline_widget_buffer = take_reusable(
         &mut old_buffers,
         4,
@@ -7934,9 +9356,40 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
             &key.inline_widget,
             inline_widget_font_size,
             inline_widget_line_height,
-            inline_widget_width,
+            inline_widget_primary_width,
             inline_widget_height,
             inline_widget_wrap,
+        )
+    });
+
+    let inline_widget_preview_buffer = take_reusable(
+        &mut old_buffers,
+        7,
+        exact_previous.is_some_and(|previous| {
+            previous.inline_widget_preview == key.inline_widget_preview
+                && previous.inline_widget_kind == key.inline_widget_kind
+        }),
+    )
+    .unwrap_or_else(|| {
+        let inline_widget_font_size = inline_widget_font_size(key.inline_widget_kind, &typography);
+        let inline_widget_line_height =
+            inline_widget_line_height(key.inline_widget_kind, &typography);
+        let inline_widget_preview_height = inline_widget_estimated_wrapped_text_height(
+            key.inline_widget_kind,
+            &key.inline_widget_preview,
+            inline_widget_preview_width,
+            &typography,
+        )
+        .min(inline_widget_height)
+        .max(inline_widget_line_height);
+        single_session_styled_text_buffer(
+            font_system,
+            &key.inline_widget_preview,
+            inline_widget_font_size,
+            inline_widget_line_height,
+            inline_widget_preview_width,
+            inline_widget_preview_height,
+            Wrap::Word,
         )
     });
 
@@ -8019,7 +9472,103 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
         inline_widget_buffer,
         hero_buffer,
         welcome_hint_buffer,
+        inline_widget_preview_buffer,
     ]
+}
+
+fn inline_widget_visual_line_count(
+    kind: Option<InlineWidgetKind>,
+    primary: &[SingleSessionStyledLine],
+    preview: &[SingleSessionStyledLine],
+) -> usize {
+    if kind != Some(InlineWidgetKind::SessionSwitcher) || preview.is_empty() {
+        return primary.len();
+    }
+    primary.len().max(preview.len())
+}
+
+fn inline_widget_text_width_for_split_buffers(
+    kind: Option<InlineWidgetKind>,
+    primary: &[SingleSessionStyledLine],
+    preview: &[SingleSessionStyledLine],
+    size: PhysicalSize<u32>,
+    ui_scale: f32,
+) -> f32 {
+    if kind != Some(InlineWidgetKind::SessionSwitcher) || preview.is_empty() {
+        return inline_widget_text_width_for_lines(kind, primary, size, ui_scale);
+    }
+
+    let typography = single_session_typography_for_scale(ui_scale);
+    let average_char_width = inline_widget_font_size(kind, &typography) * 0.57;
+    let max_columns = primary
+        .iter()
+        .chain(preview.iter())
+        .map(|line| inline_widget_visual_columns(&line.text))
+        .max()
+        .unwrap_or_default() as f32;
+    (max_columns * average_char_width)
+        .ceil()
+        .min(inline_widget_max_text_width_for_kind(kind, size))
+}
+
+fn inline_widget_estimated_wrapped_text_height(
+    kind: Option<InlineWidgetKind>,
+    lines: &[SingleSessionStyledLine],
+    width: f32,
+    typography: &SingleSessionTypography,
+) -> f32 {
+    let line_height = inline_widget_line_height(kind, typography);
+    if lines.is_empty() {
+        return line_height;
+    }
+
+    let average_char_width = inline_widget_font_size(kind, typography) * 0.57;
+    let columns_per_line = (width / average_char_width).floor().max(1.0) as usize;
+    let visual_lines = lines
+        .iter()
+        .map(|line| {
+            inline_widget_visual_columns(&line.text)
+                .max(1)
+                .div_ceil(columns_per_line)
+        })
+        .sum::<usize>();
+
+    // glyphon::Buffer::shape_until_scroll is intentionally viewport-limited;
+    // leave a small amount of slack so the last row is shaped even when glyph
+    // metrics or word wrapping round up slightly differently than this cheap
+    // column estimate. This keeps split previews compact without restoring the
+    // old full-window buffer height.
+    visual_lines.saturating_add(2) as f32 * line_height
+}
+
+fn inline_widget_split_text_widths(
+    kind: Option<InlineWidgetKind>,
+    typography: &SingleSessionTypography,
+    size: PhysicalSize<u32>,
+    line_count: usize,
+    full_text_width: f32,
+) -> (f32, f32) {
+    if kind != Some(InlineWidgetKind::SessionSwitcher) || line_count == 0 {
+        return (full_text_width, 1.0);
+    }
+    let Some(layout) = inline_widget_card_layout(
+        size,
+        kind,
+        typography,
+        line_count,
+        full_text_width,
+        PANEL_TITLE_TOP_PADDING,
+        1.0,
+    ) else {
+        return (full_text_width, full_text_width);
+    };
+    let Some(columns) = session_switcher_split_columns(&layout) else {
+        return (full_text_width, full_text_width);
+    };
+    (
+        (columns.rail.width - INLINE_COMMAND_ROW_INSET_X * 2.0).max(1.0),
+        (columns.preview.width - layout.padding_x * 1.8).max(1.0),
+    )
 }
 
 pub(crate) fn single_session_body_text_buffer_from_lines(
@@ -8155,12 +9704,10 @@ pub(crate) fn single_session_body_viewport_from_lines(
     smooth_scroll_lines: f32,
     lines: &[SingleSessionStyledLine],
 ) -> SingleSessionBodyViewport {
-    let typography = single_session_typography_for_scale(app.text_scale());
-    let line_height = typography.body_size * typography.body_line_height;
-    let body_top = single_session_body_top_for_app(app, size);
     let total_lines = lines.len();
-    let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
-    let available_height = (body_bottom - body_top).max(line_height);
+    let layout = single_session_layout_for_total_lines(app, size, total_lines);
+    let line_height = layout.metrics.body_line_height;
+    let available_height = layout.body.height.max(line_height);
     let visible_lines = ((available_height / line_height).floor() as usize).max(1);
     if lines.len() <= visible_lines {
         return SingleSessionBodyViewport {
@@ -8571,13 +10118,6 @@ fn single_session_body_bottom_base_for_app(app: &SingleSessionApp, size: Physica
     single_session_body_bottom(size)
 }
 
-fn single_session_body_bottom_for_app(app: &SingleSessionApp, size: PhysicalSize<u32>) -> f32 {
-    (single_session_body_bottom_base_for_app(app, size)
-        - inline_widget_reserved_height(app)
-        - streaming_activity_reserved_height(app))
-    .max(single_session_body_top_for_app(app, size))
-}
-
 fn single_session_body_bottom_base_for_total_lines(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
@@ -8597,10 +10137,7 @@ pub(crate) fn single_session_body_bottom_for_total_lines(
     size: PhysicalSize<u32>,
     total_lines: usize,
 ) -> f32 {
-    (single_session_body_bottom_base_for_total_lines(app, size, total_lines)
-        - inline_widget_reserved_height(app)
-        - streaming_activity_reserved_height(app))
-    .max(single_session_body_top_for_app(app, size))
+    single_session_layout_for_total_lines(app, size, total_lines).body_bottom()
 }
 
 fn streaming_activity_reserved_height(app: &SingleSessionApp) -> f32 {
@@ -9669,15 +11206,16 @@ pub(crate) fn single_session_text_areas_for_app_with_scroll<'a>(
 ) -> Vec<TextArea<'a>> {
     let inline_widget_kind = app.render_inline_widget_kind();
     let inline_widget_lines = app.render_inline_widget_styled_lines();
+    let inline_widget_preview_start_line =
+        inline_widget_split_preview_start(inline_widget_kind, &inline_widget_lines);
     let inline_widget_text_width = inline_widget_text_width_for_lines(
         inline_widget_kind,
         &inline_widget_lines,
         size,
         app.text_scale(),
     );
-    let body_top_offset_pixels =
-        single_session_body_viewport_for_tick(app, size, tick, smooth_scroll_lines)
-            .top_offset_pixels;
+    let viewport = single_session_body_viewport_for_tick(app, size, tick, smooth_scroll_lines);
+    let layout = single_session_layout_for_total_lines(app, size, viewport.total_lines);
     let welcome_chrome_offset_pixels =
         welcome_timeline_visual_offset_pixels(app, size, smooth_scroll_lines);
     let welcome_chrome_visible =
@@ -9687,13 +11225,18 @@ pub(crate) fn single_session_text_areas_for_app_with_scroll<'a>(
         size,
         welcome_chrome_visible,
         false,
-        body_top_offset_pixels,
-        single_session_body_top_for_app(app, size),
-        text_bounds_bottom(single_session_body_bottom_for_app(app, size)),
+        viewport.top_offset_pixels,
+        layout.body.y,
+        layout.body_text_bounds_bottom(),
         app.render_inline_widget_visible_line_count(),
         inline_widget_kind,
+        inline_widget_preview_start_line,
         inline_widget_text_width,
-        single_session_draft_top_for_app(app, size),
+        layout
+            .activity_lane
+            .map(|activity| activity.y)
+            .unwrap_or(layout.draft_top),
+        layout.draft_top,
         welcome_chrome_offset_pixels,
         welcome_status_lane_visible(app),
         app.is_fresh_welcome_visible() && app.draft.is_empty(),
@@ -9753,6 +11296,8 @@ pub(crate) fn single_session_text_areas_for_app_with_cached_body_viewport_and_re
 ) -> Vec<TextArea<'a>> {
     let inline_widget_kind = app.render_inline_widget_kind();
     let inline_widget_lines = app.render_inline_widget_styled_lines();
+    let inline_widget_preview_start_line =
+        inline_widget_split_preview_start(inline_widget_kind, &inline_widget_lines);
     let inline_widget_text_width = inline_widget_text_width_for_lines(
         inline_widget_kind,
         &inline_widget_lines,
@@ -9765,6 +11310,7 @@ pub(crate) fn single_session_text_areas_for_app_with_cached_body_viewport_and_re
         smooth_scroll_lines,
         viewport.total_lines,
     );
+    let layout = single_session_layout_for_total_lines(app, size, viewport.total_lines);
     let welcome_chrome_visible =
         welcome_timeline_chrome_visible(app, size, welcome_chrome_offset_pixels);
     single_session_text_areas_for_state(
@@ -9773,16 +11319,17 @@ pub(crate) fn single_session_text_areas_for_app_with_cached_body_viewport_and_re
         welcome_chrome_visible,
         false,
         viewport.top_offset_pixels,
-        single_session_body_top_for_app(app, size),
-        text_bounds_bottom(single_session_body_bottom_for_total_lines(
-            app,
-            size,
-            viewport.total_lines,
-        )),
+        layout.body.y,
+        layout.body_text_bounds_bottom(),
         app.render_inline_widget_visible_line_count(),
         inline_widget_kind,
+        inline_widget_preview_start_line,
         inline_widget_text_width,
-        single_session_draft_top_for_total_lines(app, size, viewport.total_lines),
+        layout
+            .activity_lane
+            .map(|activity| activity.y)
+            .unwrap_or(layout.draft_top),
+        layout.draft_top,
         welcome_chrome_offset_pixels,
         welcome_status_lane_visible(app),
         app.is_fresh_welcome_visible() && app.draft.is_empty(),
@@ -9802,11 +11349,11 @@ pub(crate) fn single_session_streaming_text_area_for_cached_body_viewport<'a>(
     opacity: f32,
     y_offset_pixels: f32,
 ) -> TextArea<'a> {
-    let typography = single_session_typography_for_scale(app.text_scale());
-    let line_height = typography.body_size * typography.body_line_height;
+    let layout = single_session_layout_for_total_lines(app, size, viewport.total_lines);
+    let line_height = layout.metrics.body_line_height;
     let left = PANEL_TITLE_LEFT_PADDING;
     let right = single_session_content_right(size) as i32;
-    let body_top = single_session_body_top_for_app(app, size);
+    let body_top = layout.body.y;
     let top = body_top
         + viewport.top_offset_pixels
         + streaming_start_line.saturating_sub(viewport.start_line) as f32 * line_height
@@ -9820,11 +11367,7 @@ pub(crate) fn single_session_streaming_text_area_for_cached_body_viewport<'a>(
             left: 0,
             top: body_top as i32,
             right,
-            bottom: text_bounds_bottom(single_session_body_bottom_for_total_lines(
-                app,
-                size,
-                viewport.total_lines,
-            )),
+            bottom: layout.body_text_bounds_bottom(),
         },
         default_color: text_color([
             ASSISTANT_TEXT_COLOR[0],
@@ -9850,7 +11393,9 @@ pub(crate) fn single_session_text_areas_for_fresh_state(
         text_bounds_bottom(single_session_body_bottom(size)),
         0,
         None,
+        None,
         0.0,
+        single_session_draft_top_for_fresh_state(size, fresh_welcome_visible),
         single_session_draft_top_for_fresh_state(size, fresh_welcome_visible),
         0.0,
         false,
@@ -9878,7 +11423,9 @@ pub(crate) fn single_session_text_areas_for_state(
     body_bottom: i32,
     inline_widget_line_count: usize,
     inline_widget_kind: Option<InlineWidgetKind>,
+    inline_widget_preview_start_line: Option<usize>,
     inline_widget_text_width: f32,
+    inline_widget_bottom_limit: f32,
     draft_top: f32,
     welcome_chrome_offset_pixels: f32,
     status_lane_visible: bool,
@@ -9937,7 +11484,7 @@ pub(crate) fn single_session_text_areas_for_state(
             welcome_chrome_visible,
             welcome_chrome_offset_pixels,
         );
-        inline_widget_card_layout(
+        inline_widget_card_layout_with_bottom_limit(
             size,
             inline_widget_kind,
             &typography,
@@ -9945,6 +11492,7 @@ pub(crate) fn single_session_text_areas_for_state(
             inline_widget_text_width,
             target_top,
             inline_widget_reveal_progress,
+            inline_widget_bottom_limit,
         )
     } else {
         None
@@ -10057,8 +11605,13 @@ pub(crate) fn single_session_text_areas_for_state(
         && let Some(buffer) = buffers.get(4)
         && let Some(layout) = inline_widget_layout
     {
-        let inline_bounds_right = layout
-            .visible_text_right
+        let split_columns = (inline_widget_kind == Some(InlineWidgetKind::SessionSwitcher))
+            .then(|| session_switcher_split_columns(&layout))
+            .flatten();
+        let rail_bounds_right = split_columns
+            .map(|columns| columns.rail.x + columns.rail.width - layout.padding_x * 0.75);
+        let inline_bounds_right = rail_bounds_right
+            .unwrap_or(layout.visible_text_right)
             .min(right as f32)
             .max(layout.text_left);
         let inline_bounds_bottom = layout
@@ -10079,6 +11632,66 @@ pub(crate) fn single_session_text_areas_for_state(
                 },
                 default_color: text_color(ASSISTANT_TEXT_COLOR),
             });
+        }
+        if inline_widget_kind == Some(InlineWidgetKind::SessionSwitcher)
+            && let Some(preview_buffer) = buffers.get(7)
+        {
+            let columns = split_columns.unwrap_or_else(|| {
+                let fallback_gap = (layout.card.width * 0.018).clamp(9.0, 15.0);
+                let rail_width = (layout.card.width * 0.38).clamp(220.0, layout.card.width * 0.55);
+                let rail = Rect {
+                    x: layout.card.x + layout.padding_x * 0.72,
+                    y: layout.card.y + layout.padding_x * 0.18,
+                    width: rail_width,
+                    height: (layout.card.height - layout.padding_x * 0.36).max(1.0),
+                };
+                let gap = Rect {
+                    x: rail.x + rail.width,
+                    y: rail.y,
+                    width: fallback_gap,
+                    height: rail.height,
+                };
+                let preview = Rect {
+                    x: gap.x + gap.width,
+                    y: rail.y,
+                    width: (layout.card.x + layout.card.width
+                        - gap.x
+                        - gap.width
+                        - layout.padding_x * 0.72)
+                        .max(96.0),
+                    height: rail.height,
+                };
+                SessionSwitcherSplitColumns { rail, preview, gap }
+            });
+            let preview_left = columns.preview.x + layout.padding_x * 0.95;
+            let preview_right = (columns.preview.x + columns.preview.width
+                - layout.padding_x * 0.85)
+                .min(right as f32)
+                .max(preview_left);
+            let preview_top = (layout.text_top
+                + inline_widget_preview_start_line.unwrap_or(0) as f32
+                    * inline_widget_line_height(inline_widget_kind, &typography))
+            .max(columns.preview.y + 8.0);
+            let preview_bottom = layout
+                .visible_text_bottom
+                .min(columns.preview.y + columns.preview.height - 8.0)
+                .min(draft_top)
+                .max(preview_top + 1.0);
+            if preview_right > preview_left {
+                areas.push(TextArea {
+                    buffer: preview_buffer,
+                    left: preview_left,
+                    top: preview_top,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: preview_left as i32,
+                        top: preview_top as i32,
+                        right: preview_right as i32,
+                        bottom: preview_bottom as i32,
+                    },
+                    default_color: text_color(ASSISTANT_TEXT_COLOR),
+                });
+            }
         }
     }
 
@@ -10246,13 +11859,203 @@ mod tests {
             .expect("attachment chip visual")
     }
 
+    fn test_session_card(session_id: &str, title: &str) -> SessionCard {
+        SessionCard {
+            session_id: session_id.to_string(),
+            title: title.to_string(),
+            subtitle: "active · test-model".to_string(),
+            detail: "3 msgs · just now · jcode".to_string(),
+            preview_lines: vec![
+                "Prompt 1  inspect compact desktop geometry".to_string(),
+                "Assistant  layout lanes should stay separated".to_string(),
+            ],
+            detail_lines: vec![
+                "Prompt 1  inspect compact desktop geometry".to_string(),
+                "Assistant  layout lanes should stay separated".to_string(),
+            ],
+            transcript_messages: Vec::new(),
+        }
+    }
+
+    fn assert_single_session_layout_invariants(app: &SingleSessionApp, size: PhysicalSize<u32>) {
+        let total_lines = welcome_timeline_total_body_lines(app, size).max(1);
+        let layout = single_session_layout_for_total_lines(app, size, total_lines);
+        let base_bottom = single_session_body_bottom_base_for_total_lines(app, size, total_lines);
+
+        assert!(
+            layout.body.width >= 1.0,
+            "body width should be renderable: {layout:?}"
+        );
+        assert!(
+            layout.body.y >= PANEL_BODY_TOP_PADDING - 0.001,
+            "body starts above panel lane: {layout:?}"
+        );
+        assert!(
+            layout.body.height >= 0.0,
+            "body height should never be negative: {layout:?}"
+        );
+        assert!(
+            layout.body_bottom() <= base_bottom + 0.001,
+            "body exceeds reserved bottom: {layout:?}, base_bottom={base_bottom}"
+        );
+        assert!(
+            layout.composer.y >= layout.draft_top - 9.001,
+            "composer y should derive from draft lane: {layout:?}"
+        );
+        assert!(
+            layout.composer.width >= layout.body.width,
+            "composer should cover body width: {layout:?}"
+        );
+        if let Some(activity) = layout.activity_lane {
+            assert!(
+                layout.body_bottom() <= activity.y + 0.001,
+                "activity overlaps body: {layout:?}"
+            );
+            assert!(
+                rect_bottom(activity) <= base_bottom + 0.001,
+                "activity exceeds base bottom: {layout:?}, base_bottom={base_bottom}"
+            );
+            assert!(
+                activity.height >= 0.0,
+                "activity height should not be negative: {layout:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_session_layout_lanes_do_not_overlap_across_common_states() {
+        let sizes = [
+            PhysicalSize::new(360, 260),
+            PhysicalSize::new(900, 700),
+            PhysicalSize::new(1440, 1000),
+        ];
+
+        for size in sizes {
+            let idle = SingleSessionApp::new(None);
+            assert_single_session_layout_invariants(&idle, size);
+
+            let mut streaming = SingleSessionApp::new(None);
+            streaming.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+                "streaming response".to_string(),
+            ));
+            assert_single_session_layout_invariants(&streaming, size);
+
+            let mut with_images = SingleSessionApp::new(None);
+            with_images
+                .pending_images
+                .push(("/tmp/a.png".to_string(), "a".to_string()));
+            with_images
+                .pending_images
+                .push(("/tmp/b.png".to_string(), "b".to_string()));
+            assert_single_session_layout_invariants(&with_images, size);
+
+            let mut multiline = SingleSessionApp::new(None);
+            multiline.draft = "first\nsecond\nthird".to_string();
+            multiline.draft_cursor = multiline.draft.len();
+            assert_single_session_layout_invariants(&multiline, size);
+        }
+    }
+
+    #[test]
+    fn small_window_inline_activity_and_composer_lanes_do_not_overlap() {
+        let size = PhysicalSize::new(520, 320);
+        let mut app = SingleSessionApp::new(Some(test_session_card(
+            "current-session",
+            "current compact session",
+        )));
+        assert_eq!(
+            app.handle_key(KeyInput::OpenSessionSwitcher),
+            KeyOutcome::LoadSessionSwitcher
+        );
+        app.apply_session_switcher_cards(
+            (0..6)
+                .map(|index| {
+                    test_session_card(
+                        &format!("resume-session-{index}"),
+                        &format!("resume compact session {index}"),
+                    )
+                })
+                .collect(),
+        );
+        app.draft = "first line\nsecond line\nthird line".to_string();
+        app.draft_cursor = app.draft.len();
+        app.apply_session_event(session_launch::DesktopSessionEvent::TextDelta(
+            "streaming response while the resume picker is open".to_string(),
+        ));
+
+        assert!(app.has_activity_indicator());
+        assert_eq!(
+            app.render_inline_widget_kind(),
+            Some(InlineWidgetKind::SessionSwitcher)
+        );
+        assert_single_session_layout_invariants(&app, size);
+
+        let total_lines = welcome_timeline_total_body_lines(&app, size).max(1);
+        let layout = single_session_layout_for_total_lines(&app, size, total_lines);
+        let activity = layout.activity_lane.expect("streaming activity lane");
+        let inline_lines = app.render_inline_widget_styled_lines();
+        let inline_kind = app.render_inline_widget_kind();
+        let typography = single_session_typography_for_scale(app.text_scale());
+        let inline_width =
+            inline_widget_text_width_for_lines(inline_kind, &inline_lines, size, app.text_scale());
+        let inline_layout = inline_widget_card_layout_with_bottom_limit(
+            size,
+            inline_kind,
+            &typography,
+            app.render_inline_widget_visible_line_count(),
+            inline_width,
+            inline_widget_target_top(size, app.text_scale(), layout.body_bottom(), false, 0.0),
+            app.render_inline_widget_reveal_progress(),
+            activity.y,
+        )
+        .expect("inline widget card layout");
+
+        assert!(
+            inline_layout.text_top >= layout.body_bottom() + INLINE_WIDGET_BODY_GAP - 0.001,
+            "inline text should start below the body: layout={layout:?}, inline={inline_layout:?}"
+        );
+        assert!(
+            rect_bottom(inline_layout.card) <= activity.y + 0.001,
+            "inline card should stay above the activity lane: activity={activity:?}, inline={inline_layout:?}"
+        );
+        assert!(
+            rect_bottom(activity) <= layout.composer.y + 0.001,
+            "activity lane should stay above composer chrome: layout={layout:?}, activity={activity:?}"
+        );
+        assert!(
+            rect_bottom(inline_layout.card) <= layout.draft_top - 7.5,
+            "inline card should leave the composer lane clear: layout={layout:?}, inline={inline_layout:?}"
+        );
+
+        if let Some(columns) = session_switcher_split_columns(&inline_layout) {
+            assert!(
+                columns.rail.x + columns.rail.width <= columns.gap.x + 0.001,
+                "session rail should not overlap split gap: {columns:?}"
+            );
+            assert!(
+                columns.gap.x + columns.gap.width <= columns.preview.x + 0.001,
+                "split gap should not overlap preview pane: {columns:?}"
+            );
+            assert!(
+                columns.preview.x + columns.preview.width
+                    <= inline_layout.card.x + inline_layout.card.width + 0.001,
+                "preview pane should stay inside inline card: columns={columns:?}, inline={inline_layout:?}"
+            );
+        }
+
+        assert!(
+            !build_single_session_vertices(&app, size, 0.0, 0).is_empty(),
+            "compact combined state should render primitives"
+        );
+    }
+
     #[test]
     fn inline_widget_selection_target_detects_widget_row_shapes() {
         let model_lines = vec![
             SingleSessionStyledLine::new("title", SingleSessionLineStyle::OverlayTitle),
             SingleSessionStyledLine::new("filter", SingleSessionLineStyle::Overlay),
-            SingleSessionStyledLine::new("› gpt", SingleSessionLineStyle::OverlaySelection),
-            SingleSessionStyledLine::new("  provider · detail", SingleSessionLineStyle::Meta),
+            SingleSessionStyledLine::new("gpt", SingleSessionLineStyle::OverlaySelection),
+            SingleSessionStyledLine::new("provider · detail", SingleSessionLineStyle::Meta),
             SingleSessionStyledLine::new("footer", SingleSessionLineStyle::Overlay),
         ];
         assert_eq!(
@@ -10271,10 +12074,22 @@ mod tests {
         let session_lines = vec![
             SingleSessionStyledLine::new("header", SingleSessionLineStyle::OverlayTitle),
             SingleSessionStyledLine::new("body", SingleSessionLineStyle::Overlay),
-            SingleSessionStyledLine::new("› session", SingleSessionLineStyle::OverlaySelection),
-            SingleSessionStyledLine::new("  model", SingleSessionLineStyle::OverlaySelection),
-            SingleSessionStyledLine::new("  detail", SingleSessionLineStyle::OverlaySelection),
-            SingleSessionStyledLine::new("  preview", SingleSessionLineStyle::OverlaySelection),
+            SingleSessionStyledLine::new(
+                "active session · current · alpha",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
+            SingleSessionStyledLine::new(
+                "Status active · Model test-model",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
+            SingleSessionStyledLine::new(
+                "2 msgs · alpha-workspace",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
+            SingleSessionStyledLine::new(
+                "latest prompt: hello",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
             SingleSessionStyledLine::new("next", SingleSessionLineStyle::Overlay),
         ];
         assert_eq!(
@@ -10288,6 +12103,163 @@ mod tests {
                 line: 2,
                 line_span: 4,
             })
+        );
+    }
+
+    fn vertex_count_for_color(vertices: &[Vertex], color: [f32; 4]) -> usize {
+        vertices
+            .iter()
+            .filter(|vertex| vertex.color == color)
+            .count()
+    }
+
+    #[test]
+    fn inline_widget_command_palettes_draw_structured_cards_not_text_boxes() {
+        let size = PhysicalSize::new(1000, 720);
+        let typography = single_session_typography_for_scale(1.0);
+        let model_lines = vec![
+            SingleSessionStyledLine::new("Model picker", SingleSessionLineStyle::OverlayTitle),
+            SingleSessionStyledLine::new("type to filter", SingleSessionLineStyle::Overlay),
+            SingleSessionStyledLine::new("gpt-5.4", SingleSessionLineStyle::OverlaySelection),
+            SingleSessionStyledLine::new("OpenAI · chat · available", SingleSessionLineStyle::Meta),
+            SingleSessionStyledLine::new("claude-sonnet", SingleSessionLineStyle::Overlay),
+            SingleSessionStyledLine::new(
+                "Anthropic · chat · available",
+                SingleSessionLineStyle::Meta,
+            ),
+        ];
+        let model_layout = inline_widget_card_layout(
+            size,
+            Some(InlineWidgetKind::ModelPicker),
+            &typography,
+            model_lines.len(),
+            520.0,
+            130.0,
+            1.0,
+        )
+        .expect("model picker layout");
+        let mut model_vertices = Vec::new();
+        push_single_session_inline_widget_structured_chrome(
+            &mut model_vertices,
+            Some(InlineWidgetKind::ModelPicker),
+            &model_lines,
+            model_lines.len(),
+            &typography,
+            &model_layout,
+            1.0,
+            size,
+        );
+        assert!(
+            vertex_count_for_color(&model_vertices, INLINE_COMMAND_ROW_SELECTED_COLOR) > 0,
+            "selected model row should be a rendered rounded card"
+        );
+        assert!(
+            vertex_count_for_color(&model_vertices, INLINE_COMMAND_ROW_BACKGROUND_COLOR) > 0,
+            "unselected model row should be a rendered rounded card"
+        );
+        assert!(
+            vertex_count_for_color(&model_vertices, INLINE_COMMAND_ROW_ACCENT_COLOR) > 0,
+            "selected model row should use a rendered accent rail instead of selector text"
+        );
+
+        let session_lines = vec![
+            SingleSessionStyledLine::new("Resume sessions", SingleSessionLineStyle::OverlayTitle),
+            SingleSessionStyledLine::new(
+                "Recent sessions · focused · newest first",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new(
+                "active session · current · alpha",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
+            SingleSessionStyledLine::new(
+                "Status active · Model test-model",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
+            SingleSessionStyledLine::new(
+                "2 msgs · alpha-workspace",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
+            SingleSessionStyledLine::new(
+                "latest prompt: hello",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
+            SingleSessionStyledLine::new("", SingleSessionLineStyle::Blank),
+            SingleSessionStyledLine::new(
+                "Preview · selected session transcript",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new("Prompt 1  hello", SingleSessionLineStyle::User),
+        ];
+        let session_layout = inline_widget_card_layout(
+            size,
+            Some(InlineWidgetKind::SessionSwitcher),
+            &typography,
+            session_lines.len(),
+            760.0,
+            80.0,
+            1.0,
+        )
+        .expect("session switcher layout");
+        let mut session_vertices = Vec::new();
+        push_single_session_inline_widget_structured_chrome(
+            &mut session_vertices,
+            Some(InlineWidgetKind::SessionSwitcher),
+            &session_lines,
+            session_lines.len(),
+            &typography,
+            &session_layout,
+            1.0,
+            size,
+        );
+        assert!(
+            vertex_count_for_color(&session_vertices, INLINE_COMMAND_SECTION_BACKGROUND_COLOR) > 0,
+            "resume list section should be a rendered panel"
+        );
+        assert!(
+            vertex_count_for_color(&session_vertices, INLINE_COMMAND_PREVIEW_BACKGROUND_COLOR) > 0,
+            "resume preview section should be a rendered panel"
+        );
+        let selected_resume_fill =
+            resume_session_row_palette("active session · current · alpha", true).fill;
+        assert!(
+            vertex_count_for_color(&session_vertices, selected_resume_fill) > 0,
+            "selected resume row should be a rendered status card"
+        );
+    }
+
+    #[test]
+    fn inline_widget_card_layout_clamps_tall_command_palettes_above_composer() {
+        let size = PhysicalSize::new(920, 500);
+        let typography = single_session_typography_for_scale(1.0);
+        let line_height =
+            inline_widget_line_height(Some(InlineWidgetKind::SessionSwitcher), &typography);
+        let layout = inline_widget_card_layout(
+            size,
+            Some(InlineWidgetKind::SessionSwitcher),
+            &typography,
+            80,
+            1400.0,
+            92.0,
+            1.0,
+        )
+        .expect("session switcher layout");
+        let draft_top = single_session_draft_top(size);
+        assert!(layout.card.y >= PANEL_TITLE_TOP_PADDING);
+        assert!(
+            layout.card.y + layout.card.height <= draft_top - 7.5,
+            "inline card should leave the composer lane clear: card_bottom={} draft_top={}",
+            layout.card.y + layout.card.height,
+            draft_top
+        );
+        assert!(
+            layout.card.height <= size.height as f32 * 0.56 + 0.1,
+            "tall resume preview should be capped to a desktop palette height"
+        );
+        assert!(layout.visible_text_bottom <= draft_top);
+        assert!(
+            layout.visible_text_bottom < layout.text_top + line_height * 80.0,
+            "oversized session lists should clip inside the card instead of growing into the composer"
         );
     }
 
@@ -11595,6 +13567,54 @@ mod tests {
         assert!(
             rendered_inline_text.contains("visible resume row"),
             "desktop text buffer should shape session rows, got:\n{rendered_inline_text}"
+        );
+
+        let rendered_preview_text = buffers
+            .get(7)
+            .expect("split preview buffer should be present")
+            .layout_runs()
+            .map(|run| run.text.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered_preview_text.contains("Preview"),
+            "split preview buffer should shape preview rows, got:\n{rendered_preview_text}"
+        );
+        assert!(
+            rendered_preview_text.contains("hello from resume picker"),
+            "split preview buffer should contain preview content, got:\n{rendered_preview_text}"
+        );
+
+        let areas = single_session_text_areas_for_app(&app, &buffers, size);
+        let inline_area = areas
+            .iter()
+            .find(|area| std::ptr::eq(area.buffer, &buffers[4]))
+            .expect("primary inline widget text area");
+        let preview_area = areas
+            .iter()
+            .find(|area| std::ptr::eq(area.buffer, &buffers[7]))
+            .expect("split preview text area");
+        let preview_start_line = inline_widget_split_preview_start(
+            app.render_inline_widget_kind(),
+            &app.render_inline_widget_styled_lines(),
+        )
+        .expect("session switcher preview start line");
+        let typography = single_session_typography_for_scale(app.text_scale());
+        let expected_preview_top = inline_area.top
+            + preview_start_line as f32
+                * inline_widget_line_height(app.render_inline_widget_kind(), &typography);
+        assert!(
+            (preview_area.top - expected_preview_top).abs() <= 1.0,
+            "compact preview buffer should be positioned at its visual row offset: inline_top={}, preview_top={}, expected={}",
+            inline_area.top,
+            preview_area.top,
+            expected_preview_top
+        );
+        assert!(
+            (preview_area.top - preview_area.bounds.top as f32).abs() <= 1.0,
+            "compact preview buffer should not rely on clipped leading blank rows: top={}, bounds_top={}",
+            preview_area.top,
+            preview_area.bounds.top
         );
     }
 }

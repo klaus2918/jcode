@@ -7741,6 +7741,11 @@ struct DesktopFrameContext {
     text_buffer_count: usize,
     text_area_count: usize,
     primitive_vertices: usize,
+    body_line_count: usize,
+    viewport_line_count: usize,
+    body_text_window_line_count: usize,
+    streaming_text_line_count: usize,
+    inline_widget_line_count: usize,
     text_prepared: bool,
     primitive_geometry_cache_hit: bool,
 }
@@ -7873,6 +7878,11 @@ impl DesktopFrameProfiler {
                     "text_buffer_count": worst.context.text_buffer_count,
                     "text_area_count": worst.context.text_area_count,
                     "primitive_vertices": worst.context.primitive_vertices,
+                    "body_line_count": worst.context.body_line_count,
+                    "viewport_line_count": worst.context.viewport_line_count,
+                    "body_text_window_line_count": worst.context.body_text_window_line_count,
+                    "streaming_text_line_count": worst.context.streaming_text_line_count,
+                    "inline_widget_line_count": worst.context.inline_widget_line_count,
                     "text_prepared": worst.context.text_prepared,
                     "primitive_geometry_cache_hit": worst.context.primitive_geometry_cache_hit,
                     "stages": worst.stages.iter().map(|stage| serde_json::json!({
@@ -7974,6 +7984,11 @@ impl DesktopInteractionLatencyProfiler {
                 "text_buffer_count": frame.context.text_buffer_count,
                 "text_area_count": frame.context.text_area_count,
                 "primitive_vertices": frame.context.primitive_vertices,
+                "body_line_count": frame.context.body_line_count,
+                "viewport_line_count": frame.context.viewport_line_count,
+                "body_text_window_line_count": frame.context.body_text_window_line_count,
+                "streaming_text_line_count": frame.context.streaming_text_line_count,
+                "inline_widget_line_count": frame.context.inline_widget_line_count,
                 "text_prepared": frame.context.text_prepared,
                 "stages": frame.stages.iter().map(|stage| serde_json::json!({
                     "name": stage.name,
@@ -9386,6 +9401,11 @@ impl Canvas {
             text_buffer_count: 0,
             text_area_count: 0,
             primitive_vertices: 0,
+            body_line_count: 0,
+            viewport_line_count: 0,
+            body_text_window_line_count: 0,
+            streaming_text_line_count: 0,
+            inline_widget_line_count: 0,
             text_prepared: false,
             primitive_geometry_cache_hit: false,
         };
@@ -9479,6 +9499,11 @@ impl Canvas {
             text_buffer_count: 0,
             text_area_count: 0,
             primitive_vertices: primitive_vertex_count,
+            body_line_count: 0,
+            viewport_line_count: 0,
+            body_text_window_line_count: 0,
+            streaming_text_line_count: 0,
+            inline_widget_line_count: 0,
             text_prepared: false,
             primitive_geometry_cache_hit: false,
         };
@@ -9585,6 +9610,11 @@ impl Canvas {
 
         let mut single_session_rendered_body_key = None;
         let mut workspace_text_panes = Vec::new();
+        let mut body_line_count = 0usize;
+        let mut viewport_line_count = 0usize;
+        let mut body_text_window_line_count = 0usize;
+        let mut streaming_text_line_count = 0usize;
+        let mut inline_widget_line_count = 0usize;
         let defer_text_this_frame = self.defer_initial_text_frame;
         if defer_text_this_frame {
             self.defer_initial_text_frame = false;
@@ -9604,6 +9634,8 @@ impl Canvas {
             let (rendered_body_key, rendered_body_changed) =
                 self.cached_single_session_body_lines(single_session, spinner_tick);
             single_session_rendered_body_key = Some(rendered_body_key);
+            body_line_count = self.single_session_body_lines.len();
+            inline_widget_line_count = single_session.render_inline_widget_visible_line_count();
             frame_profile.checkpoint("body_lines_cache");
             self.ensure_font_system();
             frame_profile.checkpoint("font_system");
@@ -9677,12 +9709,24 @@ impl Canvas {
         let mut text_area_count = 0usize;
         let mut text_prepared = false;
         let single_session_viewport = if let DesktopApp::SingleSession(single_session) = app {
-            Some(single_session_body_viewport_from_lines(
+            let viewport = single_session_body_viewport_from_lines(
                 single_session,
                 self.size,
                 smooth_scroll_lines,
                 &self.single_session_body_lines,
-            ))
+            );
+            viewport_line_count = viewport.lines.len();
+            body_text_window_line_count = self
+                .single_session_body_text_window_start
+                .zip(self.single_session_body_text_window_end)
+                .map(|(start, end)| end.saturating_sub(start))
+                .unwrap_or_default();
+            streaming_text_line_count = self
+                .single_session_streaming_text_start_line
+                .zip(self.single_session_streaming_text_end_line)
+                .map(|(start, end)| end.saturating_sub(start))
+                .unwrap_or_default();
+            Some(viewport)
         } else {
             None
         };
@@ -10216,6 +10260,11 @@ impl Canvas {
                 + usize::from(self.single_session_streaming_text_buffer.is_some()),
             text_area_count,
             primitive_vertices: primitive_vertex_count,
+            body_line_count,
+            viewport_line_count,
+            body_text_window_line_count,
+            streaming_text_line_count,
+            inline_widget_line_count,
             text_prepared,
             primitive_geometry_cache_hit,
         };
