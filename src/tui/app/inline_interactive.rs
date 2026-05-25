@@ -4,6 +4,8 @@ use crate::tui::{
     AccountPickerAction, InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
     PickerOption,
 };
+use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "inline_interactive/helpers.rs"]
 mod helpers;
@@ -18,6 +20,32 @@ use helpers::{
     catchup_queue_position, model_entry_base_name, model_entry_saved_spec,
     openrouter_route_model_id, picker_route_model_spec, save_agent_model_override,
 };
+
+const REMOTE_MODEL_CATALOG_CACHE_FILE: &str = "remote_model_catalog_cache.json";
+const REMOTE_MODEL_CATALOG_CACHE_VERSION: u8 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RemoteModelCatalogCache {
+    version: u8,
+    provider_name: Option<String>,
+    provider_model: Option<String>,
+    available_models: Vec<String>,
+    model_routes: Vec<crate::provider::ModelRoute>,
+    observed_at_unix_secs: u64,
+}
+
+fn remote_model_catalog_cache_path() -> Option<std::path::PathBuf> {
+    crate::storage::app_config_dir()
+        .ok()
+        .map(|dir| dir.join(REMOTE_MODEL_CATALOG_CACHE_FILE))
+}
+
+fn remote_model_catalog_observed_at_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
 
 fn normalize_model_picker_provider_label(value: &str) -> String {
     value
@@ -57,6 +85,60 @@ fn model_picker_route_is_current(
 }
 
 impl App {
+    pub(super) fn persist_remote_model_catalog_cache(&self) {
+        if !self.is_remote || self.remote_model_options.is_empty() {
+            return;
+        }
+
+        let Some(path) = remote_model_catalog_cache_path() else {
+            return;
+        };
+        let cache = RemoteModelCatalogCache {
+            version: REMOTE_MODEL_CATALOG_CACHE_VERSION,
+            provider_name: self.remote_provider_name.clone(),
+            provider_model: self.remote_provider_model.clone(),
+            available_models: self.remote_available_entries.clone(),
+            model_routes: self.remote_model_options.clone(),
+            observed_at_unix_secs: remote_model_catalog_observed_at_unix_secs(),
+        };
+        if let Err(error) = crate::storage::write_json(&path, &cache) {
+            crate::logging::warn(&format!(
+                "Failed to persist remote model catalog cache {}: {}",
+                path.display(),
+                error
+            ));
+        }
+    }
+
+    fn hydrate_remote_model_catalog_cache(&mut self) -> bool {
+        if !self.is_remote || !self.remote_model_options.is_empty() {
+            return false;
+        }
+
+        let Some(path) = remote_model_catalog_cache_path() else {
+            return false;
+        };
+        let Ok(cache) = crate::storage::read_json::<RemoteModelCatalogCache>(&path) else {
+            return false;
+        };
+        if cache.version != REMOTE_MODEL_CATALOG_CACHE_VERSION || cache.model_routes.is_empty() {
+            return false;
+        }
+
+        if self.remote_provider_name.is_none() {
+            self.remote_provider_name = cache.provider_name;
+        }
+        if self.remote_provider_model.is_none() {
+            self.remote_provider_model = cache.provider_model;
+        }
+        if self.remote_available_entries.is_empty() {
+            self.remote_available_entries = cache.available_models;
+        }
+        self.remote_model_options = cache.model_routes;
+        self.invalidate_model_picker_cache();
+        true
+    }
+
     pub(super) fn invalidate_model_picker_cache(&mut self) {
         self.model_picker_cache = None;
         self.model_picker_catalog_revision = self.model_picker_catalog_revision.wrapping_add(1);
@@ -296,6 +378,10 @@ impl App {
         {
             self.recent_authenticated_provider = None;
             self.invalidate_model_picker_cache();
+        }
+
+        if self.is_remote && self.remote_model_options.is_empty() {
+            self.hydrate_remote_model_catalog_cache();
         }
 
         let current_model = if self.is_remote {
@@ -982,6 +1068,10 @@ impl App {
         let previous_input = self.input.clone();
         let previous_cursor_pos = self.cursor_pos;
         let previous_status_notice = self.status_notice.clone();
+
+        if self.is_remote && self.remote_model_options.is_empty() {
+            self.hydrate_remote_model_catalog_cache();
+        }
 
         let started = std::time::Instant::now();
         let current_model = if self.is_remote {

@@ -753,6 +753,7 @@ pub(in crate::tui::app) fn handle_server_event(
             app.remote_side_pane_images = images;
             app.remote_available_entries = available_models;
             app.remote_model_options = available_model_routes;
+            app.persist_remote_model_catalog_cache();
             app.invalidate_model_picker_cache();
             app.remote_skills = skills;
             app.invalidate_command_candidates_cache();
@@ -1141,6 +1142,7 @@ pub(in crate::tui::app) fn handle_server_event(
             }
             app.remote_available_entries = available_models;
             app.remote_model_options = available_model_routes;
+            app.persist_remote_model_catalog_cache();
             app.invalidate_model_picker_cache();
             if provider_meta_changed {
                 app.update_terminal_title();
