@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 pub(crate) const VIEWPORT_ANIMATION_DURATION: Duration = Duration::from_millis(150);
 pub(crate) const FOCUS_PULSE_DURATION: Duration = Duration::from_millis(180);
 pub(crate) const SURFACE_TRANSITION_DURATION: Duration = Duration::from_millis(180);
+pub(crate) const APP_MODE_TRANSITION_DURATION: Duration = Duration::from_millis(180);
 pub(crate) const STATUS_COLOR_TRANSITION_DURATION: Duration = Duration::from_millis(140);
 pub(crate) const STATUS_TEXT_TRANSITION_DURATION: Duration = Duration::from_millis(150);
 pub(crate) const DESKTOP_REDUCED_MOTION_ENV: &str = "JCODE_DESKTOP_REDUCED_MOTION";
@@ -566,7 +567,6 @@ impl StatusTextTransition {
         self.previous_text = None;
         self.started_at = None;
     }
-
 }
 
 #[derive(Default)]

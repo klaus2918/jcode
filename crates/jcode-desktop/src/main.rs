@@ -22,9 +22,10 @@ mod workspace;
 
 use ab_glyph::{Font, FontArc, Glyph as AbGlyph, PxScale, ScaleFont, point};
 use animation::{
-    AnimatedRect, AnimatedViewport, ColorTransition, FocusPulse, StatusTextTransition,
-    StatusTextTransitionFrame, StatusTextVisualFrame, SurfaceTransitionAnimator,
-    SurfaceVisualFrame, SurfaceVisualTarget, VisibleColumnLayout, WorkspaceRenderLayout,
+    APP_MODE_TRANSITION_DURATION, AnimatedRect, AnimatedViewport, ColorTransition, FocusPulse,
+    StatusTextTransition, StatusTextTransitionFrame, StatusTextVisualFrame,
+    SurfaceTransitionAnimator, SurfaceVisualFrame, SurfaceVisualTarget, VisibleColumnLayout,
+    WorkspaceRenderLayout,
 };
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -8244,6 +8245,123 @@ fn single_session_streaming_primitive_geometry_cache_key(
     Some(hasher.finish())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AppModeTransitionFrame {
+    previous_opacity: f32,
+    previous_scale: f32,
+    current_opacity: f32,
+    current_scale: f32,
+}
+
+#[derive(Default)]
+struct AppModeTransitionState {
+    last_mode: Option<&'static str>,
+    started_at: Option<Instant>,
+    previous_vertices: Vec<Vertex>,
+    last_vertices: Vec<Vertex>,
+}
+
+impl AppModeTransitionState {
+    fn frame(&mut self, mode: &'static str, now: Instant) -> Option<AppModeTransitionFrame> {
+        if animation::desktop_reduced_motion_enabled() {
+            self.last_mode = Some(mode);
+            self.started_at = None;
+            self.previous_vertices.clear();
+            return None;
+        }
+
+        match self.last_mode {
+            None => {
+                self.last_mode = Some(mode);
+                return None;
+            }
+            Some(previous_mode) if previous_mode != mode => {
+                self.last_mode = Some(mode);
+                self.previous_vertices.clear();
+                self.previous_vertices
+                    .extend_from_slice(&self.last_vertices);
+                self.started_at = (!self.previous_vertices.is_empty()).then_some(now);
+            }
+            Some(_) => {}
+        }
+
+        let started_at = self.started_at?;
+        let progress = (now.saturating_duration_since(started_at).as_secs_f32()
+            / APP_MODE_TRANSITION_DURATION.as_secs_f32())
+        .clamp(0.0, 1.0);
+        if progress >= 1.0 {
+            self.started_at = None;
+            self.previous_vertices.clear();
+            return None;
+        }
+
+        let eased = animation::ease_out_cubic(progress);
+        Some(AppModeTransitionFrame {
+            previous_opacity: 1.0 - eased,
+            previous_scale: animation::lerp(1.0, 0.985, eased),
+            current_opacity: eased,
+            current_scale: animation::lerp(0.985, 1.0, eased),
+        })
+    }
+
+    fn previous_vertices(&self) -> &[Vertex] {
+        &self.previous_vertices
+    }
+
+    fn remember_uploaded_vertices(&mut self, vertices: &[Vertex]) {
+        self.last_vertices.clear();
+        self.last_vertices.extend_from_slice(vertices);
+    }
+
+    fn clear(&mut self) {
+        self.last_mode = None;
+        self.started_at = None;
+        self.previous_vertices.clear();
+        self.last_vertices.clear();
+    }
+}
+
+fn compose_app_mode_transition_vertices(
+    output: &mut Vec<Vertex>,
+    previous_vertices: &[Vertex],
+    current_vertices: &[Vertex],
+    frame: AppModeTransitionFrame,
+) {
+    output.clear();
+    append_app_mode_transition_vertices(
+        output,
+        previous_vertices,
+        frame.previous_opacity,
+        frame.previous_scale,
+    );
+    append_app_mode_transition_vertices(
+        output,
+        current_vertices,
+        frame.current_opacity,
+        frame.current_scale,
+    );
+}
+
+fn append_app_mode_transition_vertices(
+    output: &mut Vec<Vertex>,
+    vertices: &[Vertex],
+    opacity: f32,
+    scale: f32,
+) {
+    let opacity = opacity.clamp(0.0, 1.0);
+    if opacity <= 0.001 {
+        return;
+    }
+    output.extend(vertices.iter().map(|vertex| {
+        let mut color = vertex.color;
+        color[3] *= opacity;
+        Vertex {
+            position: [vertex.position[0] * scale, vertex.position[1] * scale],
+            color,
+        }
+    }));
+}
+
 struct Canvas {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -8283,6 +8401,8 @@ struct Canvas {
     primitive_vertices_cache: Vec<Vertex>,
     primitive_frame_vertices: Vec<Vertex>,
     primitive_workspace_vertices: Vec<Vertex>,
+    app_mode_transition: AppModeTransitionState,
+    app_mode_transition_vertices: Vec<Vertex>,
     needs_initial_frame: bool,
     boot_frame_presented: bool,
     first_render_completed: bool,
@@ -8409,6 +8529,8 @@ impl Canvas {
             primitive_vertices_cache: Vec::new(),
             primitive_frame_vertices: Vec::new(),
             primitive_workspace_vertices: Vec::new(),
+            app_mode_transition: AppModeTransitionState::default(),
+            app_mode_transition_vertices: Vec::new(),
             needs_initial_frame: true,
             boot_frame_presented: false,
             first_render_completed: false,
@@ -8471,6 +8593,8 @@ impl Canvas {
         self.primitive_vertices_cache_key = None;
         self.primitive_vertices_cache.clear();
         self.primitive_frame_vertices.clear();
+        self.app_mode_transition.clear();
+        self.app_mode_transition_vertices.clear();
         self.first_render_completed = false;
         self.text_needs_prepare = true;
         if self.single_session_streaming_text_buffer.is_some() {
@@ -9503,7 +9627,7 @@ impl Canvas {
         frame_profile.checkpoint("text_prepare_streaming");
 
         let mut primitive_geometry_cache_hit = false;
-        let (mut vertices, animation_active): (Cow<'_, [Vertex]>, bool) = match app {
+        let (mut vertices, mut animation_active): (Cow<'_, [Vertex]>, bool) = match app {
             DesktopApp::SingleSession(single_session) => {
                 let focus_pulse = self.focus_pulse.frame(1, now);
                 let inline_selection_motion = self
@@ -9711,6 +9835,22 @@ impl Canvas {
             }
         }
         frame_profile.checkpoint("caret");
+        if let Some(mode_transition_frame) = self.app_mode_transition.frame(app.mode(), now) {
+            let previous_vertices = self.app_mode_transition.previous_vertices().to_vec();
+            let current_vertices = vertices.as_ref().to_vec();
+            compose_app_mode_transition_vertices(
+                &mut self.app_mode_transition_vertices,
+                &previous_vertices,
+                &current_vertices,
+                mode_transition_frame,
+            );
+            vertices = Cow::Borrowed(self.app_mode_transition_vertices.as_slice());
+            animation_active = true;
+        }
+        let uploaded_vertices_snapshot = vertices.as_ref().to_vec();
+        self.app_mode_transition
+            .remember_uploaded_vertices(&uploaded_vertices_snapshot);
+        frame_profile.checkpoint("mode_transition");
         let primitive_vertex_count = vertices.len();
         upload_primitive_vertices(
             &self.device,

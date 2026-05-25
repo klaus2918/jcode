@@ -1,9 +1,10 @@
 use super::animation::{
-    AnimatedRect, ColorTransition, DESKTOP_REDUCED_MOTION_ENV, DesktopReducedMotionEnvGuard,
-    FOCUS_PULSE_DURATION, STATUS_COLOR_TRANSITION_DURATION, STATUS_TEXT_TRANSITION_DURATION,
-    SURFACE_TRANSITION_DURATION, StatusTextTransition, SurfaceTransitionAnimator,
-    SurfaceVisualFrame, SurfaceVisualTarget, VIEWPORT_ANIMATION_DURATION,
-    desktop_reduced_motion_enabled, desktop_reduced_motion_enabled_for_env_value,
+    APP_MODE_TRANSITION_DURATION, AnimatedRect, ColorTransition, DESKTOP_REDUCED_MOTION_ENV,
+    DesktopReducedMotionEnvGuard, FOCUS_PULSE_DURATION, STATUS_COLOR_TRANSITION_DURATION,
+    STATUS_TEXT_TRANSITION_DURATION, SURFACE_TRANSITION_DURATION, StatusTextTransition,
+    SurfaceTransitionAnimator, SurfaceVisualFrame, SurfaceVisualTarget,
+    VIEWPORT_ANIMATION_DURATION, desktop_reduced_motion_enabled,
+    desktop_reduced_motion_enabled_for_env_value,
 };
 use super::single_session::*;
 use super::*;
@@ -1193,6 +1194,83 @@ fn reduced_motion_disables_focus_pulse() {
     assert_eq!(pulse.frame(1, now), 0.0);
     assert_eq!(pulse.frame(2, now), 0.0);
     assert!(!pulse.is_animating());
+}
+
+#[test]
+fn app_mode_transition_crossfades_and_scales_previous_and_current_vertices() {
+    let mut transition = AppModeTransitionState::default();
+    let now = Instant::now();
+    let previous_vertex = Vertex {
+        position: [0.5, -0.25],
+        color: [0.1, 0.2, 0.3, 0.8],
+    };
+    let current_vertex = Vertex {
+        position: [-0.25, 0.5],
+        color: [0.6, 0.7, 0.8, 0.4],
+    };
+
+    assert!(transition.frame("workspace", now).is_none());
+    transition.remember_uploaded_vertices(&[previous_vertex]);
+
+    let start = transition
+        .frame("single_session", now)
+        .expect("mode change should start a transition");
+    assert_eq!(start.previous_opacity, 1.0);
+    assert_eq!(start.current_opacity, 0.0);
+    assert_eq!(transition.previous_vertices().len(), 1);
+
+    let middle = transition
+        .frame("single_session", now + APP_MODE_TRANSITION_DURATION / 2)
+        .expect("transition should still be active halfway through");
+    assert!(middle.previous_opacity > 0.0 && middle.previous_opacity < 1.0);
+    assert!(middle.current_opacity > 0.0 && middle.current_opacity < 1.0);
+    assert!(middle.previous_scale < 1.0);
+    assert!(middle.current_scale > 0.985 && middle.current_scale <= 1.0);
+
+    let mut composed = Vec::new();
+    compose_app_mode_transition_vertices(
+        &mut composed,
+        &[previous_vertex],
+        &[current_vertex],
+        middle,
+    );
+    assert_eq!(composed.len(), 2);
+    assert!(
+        (composed[0].position[0] - previous_vertex.position[0] * middle.previous_scale).abs()
+            < 0.000_1
+    );
+    assert!(
+        (composed[0].color[3] - previous_vertex.color[3] * middle.previous_opacity).abs() < 0.000_1
+    );
+    assert!(
+        (composed[1].position[1] - current_vertex.position[1] * middle.current_scale).abs()
+            < 0.000_1
+    );
+    assert!(
+        (composed[1].color[3] - current_vertex.color[3] * middle.current_opacity).abs() < 0.000_1
+    );
+
+    assert!(
+        transition
+            .frame("single_session", now + APP_MODE_TRANSITION_DURATION * 2)
+            .is_none()
+    );
+    assert!(transition.previous_vertices().is_empty());
+}
+
+#[test]
+fn reduced_motion_disables_app_mode_transition() {
+    let _guard = DesktopReducedMotionEnvGuard::set(true);
+    let mut transition = AppModeTransitionState::default();
+    let now = Instant::now();
+    transition.frame("workspace", now);
+    transition.remember_uploaded_vertices(&[Vertex {
+        position: [0.0, 0.0],
+        color: [1.0, 1.0, 1.0, 1.0],
+    }]);
+
+    assert!(transition.frame("single_session", now).is_none());
+    assert!(transition.previous_vertices().is_empty());
 }
 
 #[test]
