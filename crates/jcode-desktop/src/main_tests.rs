@@ -6577,6 +6577,28 @@ fn single_session_session_switcher_renders_tui_style_cards_and_role_preview() {
 }
 
 #[test]
+fn single_session_vertices_draw_session_switcher_preview_panes() {
+    let mut app = SingleSessionApp::new(None);
+    let size = PhysicalSize::new(1180, 760);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    app.apply_session_switcher_cards(vec![test_session_card("session_alpha", "alpha", "active")]);
+
+    let vertices = build_single_session_vertices(&app, size, 0.0, 0);
+
+    assert!(vertices_have_color(
+        &vertices,
+        INLINE_WIDGET_PREVIEW_PANE_BACKGROUND_COLOR
+    ));
+    assert!(vertices_have_color(
+        &vertices,
+        INLINE_WIDGET_PREVIEW_PANE_FOCUS_COLOR
+    ));
+}
+
+#[test]
 fn single_session_session_switcher_filter_supports_fuzzy_abbreviations() {
     let mut app = SingleSessionApp::new(None);
     assert_eq!(

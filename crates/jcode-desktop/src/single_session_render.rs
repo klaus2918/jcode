@@ -65,6 +65,13 @@ const INLINE_MARKDOWN_PILL_EXIT_DURATION: Duration = Duration::from_millis(125);
 const INLINE_MARKDOWN_PILL_ENTRY_OFFSET_PIXELS: f32 = 4.0;
 const INLINE_MARKDOWN_PILL_ENTRY_SCALE: f32 = 0.94;
 const INLINE_WIDGET_SELECTION_TRANSITION_DURATION: Duration = Duration::from_millis(135);
+const INLINE_WIDGET_PREVIEW_PANE_FOCUS_DURATION: Duration = Duration::from_millis(150);
+const INLINE_WIDGET_PREVIEW_PANE_CONTENT_DURATION: Duration = Duration::from_millis(145);
+pub(crate) const INLINE_WIDGET_PREVIEW_PANE_BACKGROUND_COLOR: [f32; 4] =
+    [0.968, 0.984, 1.000, 0.430];
+const INLINE_WIDGET_PREVIEW_PANE_BORDER_COLOR: [f32; 4] = [0.090, 0.205, 0.480, 0.180];
+pub(crate) const INLINE_WIDGET_PREVIEW_PANE_FOCUS_COLOR: [f32; 4] = [0.100, 0.340, 0.920, 0.180];
+const INLINE_WIDGET_PREVIEW_PANE_CONTENT_COLOR: [f32; 4] = [0.125, 0.420, 0.920, 0.105];
 const INLINE_WIDGET_LIST_REFLOW_ENTRY_DURATION: Duration = Duration::from_millis(145);
 const INLINE_WIDGET_LIST_REFLOW_SHIFT_DURATION: Duration = Duration::from_millis(145);
 const INLINE_WIDGET_LIST_REFLOW_EXIT_DURATION: Duration = Duration::from_millis(120);
@@ -236,6 +243,7 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         welcome_timeline_total_body_lines(app, size),
         None,
         None,
+        None,
     );
     let rendered_body_lines = single_session_rendered_body_lines_for_tick(app, size, spinner_tick);
     push_single_session_stdin_overlay(&mut vertices, app, size, &rendered_body_lines, None);
@@ -325,6 +333,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -339,6 +348,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
     rendered_body_lines: &[SingleSessionStyledLine],
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
     inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
+    inline_preview_pane_motion: Option<&InlineWidgetPreviewPaneMotionFrame>,
     composer_motion: Option<&ComposerMotionFrame>,
     attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
     stdin_overlay_motion: Option<&StdinOverlayMotionFrame>,
@@ -358,6 +368,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
         rendered_body_lines,
         inline_selection_motion,
         inline_list_reflow_motion,
+        inline_preview_pane_motion,
         composer_motion,
         attachment_chip_motion,
         stdin_overlay_motion,
@@ -380,6 +391,7 @@ fn build_single_session_vertices_with_cached_body_internal(
     rendered_body_lines: &[SingleSessionStyledLine],
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
     inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
+    inline_preview_pane_motion: Option<&InlineWidgetPreviewPaneMotionFrame>,
     composer_motion: Option<&ComposerMotionFrame>,
     attachment_chip_motion: Option<&AttachmentChipMotionFrame>,
     stdin_overlay_motion: Option<&StdinOverlayMotionFrame>,
@@ -461,6 +473,7 @@ fn build_single_session_vertices_with_cached_body_internal(
         rendered_body_lines.len(),
         inline_selection_motion,
         inline_list_reflow_motion,
+        inline_preview_pane_motion,
     );
 
     push_single_session_stdin_overlay(
@@ -1417,6 +1430,7 @@ fn push_single_session_inline_widget_card(
     total_lines: usize,
     inline_selection_motion: Option<&InlineWidgetSelectionMotionFrame>,
     inline_list_reflow_motion: Option<&InlineWidgetListReflowMotionFrame>,
+    inline_preview_pane_motion: Option<&InlineWidgetPreviewPaneMotionFrame>,
 ) {
     let line_count = app.render_inline_widget_visible_line_count();
     if line_count == 0 {
@@ -1514,6 +1528,18 @@ fn push_single_session_inline_widget_card(
         );
     }
 
+    push_single_session_inline_widget_preview_panes(
+        vertices,
+        app.render_inline_widget_kind(),
+        &inline_lines,
+        line_count,
+        &typography,
+        &layout,
+        progress,
+        inline_preview_pane_motion,
+        size,
+    );
+
     push_single_session_inline_widget_list_reflow(
         vertices,
         app.render_inline_widget_kind(),
@@ -1537,6 +1563,169 @@ fn push_single_session_inline_widget_card(
         inline_selection_motion,
         size,
     );
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InlineWidgetPreviewPaneGeometry {
+    sessions: Rect,
+    preview: Rect,
+    radius: f32,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_single_session_inline_widget_preview_panes(
+    vertices: &mut Vec<Vertex>,
+    kind: Option<InlineWidgetKind>,
+    inline_lines: &[SingleSessionStyledLine],
+    line_count: usize,
+    typography: &SingleSessionTypography,
+    layout: &InlineWidgetCardLayout,
+    reveal_progress: f32,
+    inline_preview_pane_motion: Option<&InlineWidgetPreviewPaneMotionFrame>,
+    size: PhysicalSize<u32>,
+) {
+    let Some(geometry) =
+        inline_widget_preview_pane_geometry(kind, inline_lines, line_count, typography, layout)
+    else {
+        return;
+    };
+    let visual = inline_preview_pane_motion
+        .and_then(InlineWidgetPreviewPaneMotionFrame::visual)
+        .unwrap_or(InlineWidgetPreviewPaneVisual {
+            focus_pane_position: inline_widget_preview_pane_target(kind, inline_lines, line_count)
+                .map(|target| target.focus_pane as f32)
+                .unwrap_or_default(),
+            preview_opacity: 1.0,
+            preview_y_offset_pixels: 0.0,
+        });
+    let alpha = reveal_progress.clamp(0.0, 1.0);
+    if alpha <= 0.001 {
+        return;
+    }
+
+    for pane in [geometry.sessions, geometry.preview] {
+        push_rounded_rect(
+            vertices,
+            pane,
+            geometry.radius,
+            with_alpha(
+                INLINE_WIDGET_PREVIEW_PANE_BACKGROUND_COLOR,
+                INLINE_WIDGET_PREVIEW_PANE_BACKGROUND_COLOR[3] * alpha,
+            ),
+            size,
+        );
+        push_rounded_rect(
+            vertices,
+            inset_rect(pane, 0.8),
+            (geometry.radius - 1.0).max(1.0),
+            with_alpha(
+                INLINE_WIDGET_PREVIEW_PANE_BORDER_COLOR,
+                INLINE_WIDGET_PREVIEW_PANE_BORDER_COLOR[3] * alpha,
+            ),
+            size,
+        );
+    }
+
+    let content_rect = Rect {
+        x: geometry.preview.x + 5.0,
+        y: geometry.preview.y + 4.0 + visual.preview_y_offset_pixels,
+        width: (geometry.preview.width - 10.0).max(0.0),
+        height: (geometry.preview.height - 8.0).max(0.0),
+    };
+    push_rounded_rect(
+        vertices,
+        content_rect,
+        (geometry.radius - 2.0).max(1.0),
+        with_alpha(
+            INLINE_WIDGET_PREVIEW_PANE_CONTENT_COLOR,
+            INLINE_WIDGET_PREVIEW_PANE_CONTENT_COLOR[3] * alpha * visual.preview_opacity,
+        ),
+        size,
+    );
+
+    let focus_rect = interpolate_inline_widget_preview_pane_rect(
+        geometry.sessions,
+        geometry.preview,
+        visual.focus_pane_position,
+    );
+    push_rounded_rect(
+        vertices,
+        inset_rect(focus_rect, -1.4),
+        geometry.radius + 1.4,
+        with_alpha(
+            INLINE_WIDGET_PREVIEW_PANE_FOCUS_COLOR,
+            INLINE_WIDGET_PREVIEW_PANE_FOCUS_COLOR[3] * alpha,
+        ),
+        size,
+    );
+}
+
+fn inline_widget_preview_pane_geometry(
+    kind: Option<InlineWidgetKind>,
+    inline_lines: &[SingleSessionStyledLine],
+    line_count: usize,
+    typography: &SingleSessionTypography,
+    layout: &InlineWidgetCardLayout,
+) -> Option<InlineWidgetPreviewPaneGeometry> {
+    if kind != Some(InlineWidgetKind::SessionSwitcher) {
+        return None;
+    }
+    let visible_len = line_count.min(inline_lines.len());
+    let visible_lines = &inline_lines[..visible_len];
+    let header_line = visible_lines
+        .iter()
+        .position(|line| line.text.contains("sessions") && line.text.contains("preview"))?;
+    let end_line = visible_lines
+        .iter()
+        .enumerate()
+        .skip(header_line + 1)
+        .find_map(|(index, line)| {
+            (line.text.contains('╰') || line.text.contains("preview lines ")).then_some(index)
+        })
+        .unwrap_or(visible_len);
+
+    let line_height = inline_widget_line_height(kind, typography);
+    let top = layout.text_top + header_line as f32 * line_height - 2.0;
+    let bottom = (layout.text_top + end_line as f32 * line_height + 4.0)
+        .min(layout.visible_text_bottom)
+        .max(top + line_height);
+    let inner_left = layout.card.x + layout.padding_x * 0.72;
+    let inner_right = layout.card.x + layout.card.width - layout.padding_x * 0.72;
+    let inner_width = (inner_right - inner_left).max(1.0);
+    let gap = 10.0_f32.min(inner_width * 0.08);
+    let sessions_width = ((inner_width - gap) * 0.42).max(1.0);
+    let preview_width = (inner_width - gap - sessions_width).max(1.0);
+    let height = bottom - top;
+
+    Some(InlineWidgetPreviewPaneGeometry {
+        sessions: Rect {
+            x: inner_left,
+            y: top,
+            width: sessions_width,
+            height,
+        },
+        preview: Rect {
+            x: inner_left + sessions_width + gap,
+            y: top,
+            width: preview_width,
+            height,
+        },
+        radius: 13.0,
+    })
+}
+
+fn interpolate_inline_widget_preview_pane_rect(
+    sessions: Rect,
+    preview: Rect,
+    position: f32,
+) -> Rect {
+    let position = position.clamp(0.0, 1.0);
+    Rect {
+        x: lerp_f32(sessions.x, preview.x, position),
+        y: lerp_f32(sessions.y, preview.y, position),
+        width: lerp_f32(sessions.width, preview.width, position),
+        height: lerp_f32(sessions.height, preview.height, position),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2357,6 +2546,138 @@ impl InlineWidgetSelectionMotionRegistry {
         self.initialized = false;
         self.current = None;
         self.transition = None;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InlineWidgetPreviewPaneTarget {
+    kind: InlineWidgetKind,
+    focus_pane: usize,
+    preview_key: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct InlineWidgetPreviewPaneVisual {
+    focus_pane_position: f32,
+    preview_opacity: f32,
+    preview_y_offset_pixels: f32,
+}
+
+impl InlineWidgetPreviewPaneVisual {
+    fn settled(target: InlineWidgetPreviewPaneTarget) -> Self {
+        Self {
+            focus_pane_position: target.focus_pane as f32,
+            preview_opacity: 1.0,
+            preview_y_offset_pixels: 0.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InlineWidgetPreviewPaneFocusTransition {
+    from_pane: usize,
+    started_at: Instant,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct InlineWidgetPreviewPaneMotionFrame {
+    visual: Option<InlineWidgetPreviewPaneVisual>,
+    active: bool,
+    cache_key: u64,
+}
+
+impl InlineWidgetPreviewPaneMotionFrame {
+    pub(crate) fn visual(&self) -> Option<InlineWidgetPreviewPaneVisual> {
+        self.visual
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub(crate) fn cache_key(&self) -> u64 {
+        self.cache_key
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct InlineWidgetPreviewPaneMotionRegistry {
+    initialized: bool,
+    current: Option<InlineWidgetPreviewPaneTarget>,
+    focus_transition: Option<InlineWidgetPreviewPaneFocusTransition>,
+    content_started_at: Option<Instant>,
+}
+
+impl InlineWidgetPreviewPaneMotionRegistry {
+    pub(crate) fn frame(
+        &mut self,
+        app: &SingleSessionApp,
+        now: Instant,
+    ) -> InlineWidgetPreviewPaneMotionFrame {
+        let kind = app.render_inline_widget_kind();
+        let lines = app.render_inline_widget_styled_lines();
+        let visible_line_count = app.render_inline_widget_visible_line_count();
+        let target = inline_widget_preview_pane_target(kind, &lines, visible_line_count);
+        self.frame_for_target(target, now)
+    }
+
+    fn frame_for_target(
+        &mut self,
+        target: Option<InlineWidgetPreviewPaneTarget>,
+        now: Instant,
+    ) -> InlineWidgetPreviewPaneMotionFrame {
+        let Some(target) = target else {
+            self.clear();
+            return InlineWidgetPreviewPaneMotionFrame::default();
+        };
+
+        let reduced_motion = crate::animation::desktop_reduced_motion_enabled();
+        if !self.initialized {
+            self.initialized = true;
+            self.current = Some(target);
+            self.focus_transition = None;
+            self.content_started_at = None;
+        } else if self.current != Some(target) {
+            if reduced_motion {
+                self.focus_transition = None;
+                self.content_started_at = None;
+            } else if let Some(current) = self.current {
+                if current.focus_pane != target.focus_pane {
+                    self.focus_transition = Some(InlineWidgetPreviewPaneFocusTransition {
+                        from_pane: current.focus_pane,
+                        started_at: now,
+                    });
+                }
+                if current.preview_key != target.preview_key {
+                    self.content_started_at = Some(now);
+                }
+            }
+            self.current = Some(target);
+        }
+
+        if reduced_motion {
+            self.focus_transition = None;
+            self.content_started_at = None;
+        }
+
+        let (visual, active) = inline_widget_preview_pane_visual_from_state(
+            target,
+            &mut self.focus_transition,
+            &mut self.content_started_at,
+            now,
+        );
+        InlineWidgetPreviewPaneMotionFrame {
+            visual: Some(visual),
+            active,
+            cache_key: inline_widget_preview_pane_cache_key(Some(visual), active),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.current = None;
+        self.focus_transition = None;
+        self.content_started_at = None;
     }
 }
 
@@ -4247,6 +4568,103 @@ fn inline_widget_selection_target(
             .min(visible_len.saturating_sub(selected_line))
             .max(1),
     })
+}
+
+fn inline_widget_preview_pane_target(
+    kind: Option<InlineWidgetKind>,
+    lines: &[SingleSessionStyledLine],
+    visible_line_count: usize,
+) -> Option<InlineWidgetPreviewPaneTarget> {
+    let kind = kind?;
+    if kind != InlineWidgetKind::SessionSwitcher {
+        return None;
+    }
+    let visible_len = visible_line_count.min(lines.len());
+    let visible_lines = &lines[..visible_len];
+    let header_line = visible_lines
+        .iter()
+        .position(|line| line.text.contains("sessions") && line.text.contains("preview"))?;
+    let focus_pane = usize::from(visible_lines[header_line].text.contains("preview ›"));
+    let mut hasher = DefaultHasher::new();
+    kind.hash(&mut hasher);
+    for line in visible_lines.iter().skip(header_line + 1) {
+        if line.text.contains("preview lines ") {
+            break;
+        }
+        line.text.hash(&mut hasher);
+        line.style.hash(&mut hasher);
+    }
+    Some(InlineWidgetPreviewPaneTarget {
+        kind,
+        focus_pane,
+        preview_key: hasher.finish(),
+    })
+}
+
+fn inline_widget_preview_pane_visual_from_state(
+    target: InlineWidgetPreviewPaneTarget,
+    focus_transition: &mut Option<InlineWidgetPreviewPaneFocusTransition>,
+    content_started_at: &mut Option<Instant>,
+    now: Instant,
+) -> (InlineWidgetPreviewPaneVisual, bool) {
+    let settled = InlineWidgetPreviewPaneVisual::settled(target);
+    let mut active = false;
+    let mut focus_pane_position = settled.focus_pane_position;
+    if let Some(transition) = *focus_transition {
+        let (progress, running) = timed_animation_progress(
+            transition.started_at,
+            now,
+            INLINE_WIDGET_PREVIEW_PANE_FOCUS_DURATION,
+        );
+        let eased = ease_out_cubic_local(progress);
+        focus_pane_position =
+            lerp_f32(transition.from_pane as f32, target.focus_pane as f32, eased);
+        active |= running;
+        if !running {
+            *focus_transition = None;
+            focus_pane_position = target.focus_pane as f32;
+        }
+    }
+
+    let mut preview_opacity = settled.preview_opacity;
+    let mut preview_y_offset_pixels = settled.preview_y_offset_pixels;
+    if let Some(started_at) = *content_started_at {
+        let (progress, running) =
+            timed_animation_progress(started_at, now, INLINE_WIDGET_PREVIEW_PANE_CONTENT_DURATION);
+        let eased = ease_out_cubic_local(progress);
+        preview_opacity = 0.35 + 0.65 * eased;
+        preview_y_offset_pixels = 5.0 * (1.0 - eased);
+        active |= running;
+        if !running {
+            *content_started_at = None;
+            preview_opacity = 1.0;
+            preview_y_offset_pixels = 0.0;
+        }
+    }
+
+    (
+        InlineWidgetPreviewPaneVisual {
+            focus_pane_position,
+            preview_opacity,
+            preview_y_offset_pixels,
+        },
+        active,
+    )
+}
+
+fn inline_widget_preview_pane_cache_key(
+    visual: Option<InlineWidgetPreviewPaneVisual>,
+    active: bool,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    active.hash(&mut hasher);
+    visual.is_some().hash(&mut hasher);
+    if let Some(visual) = visual {
+        hash_f32(visual.focus_pane_position, &mut hasher);
+        hash_f32(visual.preview_opacity, &mut hasher);
+        hash_f32(visual.preview_y_offset_pixels, &mut hasher);
+    }
+    hasher.finish()
 }
 
 fn inline_widget_list_row_runs(
@@ -9649,6 +10067,165 @@ mod tests {
                 line: 2,
                 line_span: 4,
             })
+        );
+    }
+
+    #[test]
+    fn inline_widget_preview_pane_target_tracks_focus_and_preview_content() {
+        let sessions_focused = vec![
+            SingleSessionStyledLine::new(
+                "desktop session switcher",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new("filter", SingleSessionLineStyle::Overlay),
+            SingleSessionStyledLine::new("", SingleSessionLineStyle::Blank),
+            SingleSessionStyledLine::new(
+                "│ sessions › · recent │ preview · full selected-session preview │",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new(
+                "│ alpha │ assistant answer │",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
+            SingleSessionStyledLine::new("╰────╯ ╰────╯", SingleSessionLineStyle::Meta),
+        ];
+        let preview_focused = vec![
+            SingleSessionStyledLine::new(
+                "desktop session switcher",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new("filter", SingleSessionLineStyle::Overlay),
+            SingleSessionStyledLine::new("", SingleSessionLineStyle::Blank),
+            SingleSessionStyledLine::new(
+                "│ sessions · recent │ preview › · full selected-session preview │",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new(
+                "│ alpha │ assistant answer │",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
+            SingleSessionStyledLine::new("╰────╯ ╰────╯", SingleSessionLineStyle::Meta),
+        ];
+        let changed_preview = vec![
+            SingleSessionStyledLine::new(
+                "desktop session switcher",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new("filter", SingleSessionLineStyle::Overlay),
+            SingleSessionStyledLine::new("", SingleSessionLineStyle::Blank),
+            SingleSessionStyledLine::new(
+                "│ sessions · recent │ preview › · full selected-session preview │",
+                SingleSessionLineStyle::OverlayTitle,
+            ),
+            SingleSessionStyledLine::new(
+                "│ beta │ user different prompt │",
+                SingleSessionLineStyle::OverlaySelection,
+            ),
+            SingleSessionStyledLine::new("╰────╯ ╰────╯", SingleSessionLineStyle::Meta),
+        ];
+
+        let sessions_target = inline_widget_preview_pane_target(
+            Some(InlineWidgetKind::SessionSwitcher),
+            &sessions_focused,
+            sessions_focused.len(),
+        )
+        .expect("session switcher preview target");
+        let preview_target = inline_widget_preview_pane_target(
+            Some(InlineWidgetKind::SessionSwitcher),
+            &preview_focused,
+            preview_focused.len(),
+        )
+        .expect("preview focused target");
+        let changed_target = inline_widget_preview_pane_target(
+            Some(InlineWidgetKind::SessionSwitcher),
+            &changed_preview,
+            changed_preview.len(),
+        )
+        .expect("changed preview target");
+
+        assert_eq!(sessions_target.focus_pane, 0);
+        assert_eq!(preview_target.focus_pane, 1);
+        assert_ne!(preview_target.preview_key, changed_target.preview_key);
+        assert!(
+            inline_widget_preview_pane_target(
+                Some(InlineWidgetKind::ModelPicker),
+                &preview_focused,
+                preview_focused.len(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn inline_widget_preview_pane_motion_animates_focus_and_content_changes() {
+        let mut registry = InlineWidgetPreviewPaneMotionRegistry::default();
+        let now = Instant::now();
+        let sessions_target = InlineWidgetPreviewPaneTarget {
+            kind: InlineWidgetKind::SessionSwitcher,
+            focus_pane: 0,
+            preview_key: 10,
+        };
+        let preview_target = InlineWidgetPreviewPaneTarget {
+            kind: InlineWidgetKind::SessionSwitcher,
+            focus_pane: 1,
+            preview_key: 10,
+        };
+        let changed_preview_target = InlineWidgetPreviewPaneTarget {
+            kind: InlineWidgetKind::SessionSwitcher,
+            focus_pane: 1,
+            preview_key: 42,
+        };
+
+        let initial = registry.frame_for_target(Some(sessions_target), now);
+        assert!(!initial.is_active());
+        assert_eq!(
+            initial.visual(),
+            Some(InlineWidgetPreviewPaneVisual::settled(sessions_target))
+        );
+
+        let focus_start =
+            registry.frame_for_target(Some(preview_target), now + Duration::from_millis(6));
+        let focus_start_visual = focus_start.visual().expect("preview focus visual");
+        assert!(focus_start.is_active());
+        assert_eq!(focus_start_visual.focus_pane_position, 0.0);
+
+        let focus = registry.frame_for_target(
+            Some(preview_target),
+            now + Duration::from_millis(6) + INLINE_WIDGET_PREVIEW_PANE_FOCUS_DURATION / 2,
+        );
+        let focus_visual = focus.visual().expect("preview focus visual");
+        assert!(focus.is_active());
+        assert!(focus_visual.focus_pane_position > 0.0);
+        assert!(focus_visual.focus_pane_position < 1.0);
+        assert_eq!(focus_visual.preview_opacity, 1.0);
+
+        let settled_focus = registry.frame_for_target(
+            Some(preview_target),
+            now + INLINE_WIDGET_PREVIEW_PANE_FOCUS_DURATION * 2,
+        );
+        assert!(!settled_focus.is_active());
+
+        let content = registry.frame_for_target(
+            Some(changed_preview_target),
+            now + INLINE_WIDGET_PREVIEW_PANE_FOCUS_DURATION * 2 + Duration::from_millis(4),
+        );
+        let content_visual = content.visual().expect("preview content visual");
+        assert!(content.is_active());
+        assert_eq!(content_visual.focus_pane_position, 1.0);
+        assert!(content_visual.preview_opacity < 0.5);
+        assert!(content_visual.preview_y_offset_pixels > 3.0);
+
+        let settled_content = registry.frame_for_target(
+            Some(changed_preview_target),
+            now + INLINE_WIDGET_PREVIEW_PANE_FOCUS_DURATION * 2
+                + INLINE_WIDGET_PREVIEW_PANE_CONTENT_DURATION * 2,
+        );
+        assert!(!settled_content.is_active());
+        assert_eq!(
+            settled_content.visual(),
+            Some(InlineWidgetPreviewPaneVisual::settled(
+                changed_preview_target
+            ))
         );
     }
 
