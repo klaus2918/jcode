@@ -9847,12 +9847,11 @@ pub(crate) fn single_session_streaming_response_rendered_body_line_count(
     }
     let separator = usize::from(!app.messages.is_empty());
     separator
-        + single_session_wrapped_body_lines(
+        + single_session_wrapped_body_line_count(
             app.streaming_response_styled_lines(),
             size,
             app.text_scale(),
         )
-        .len()
 }
 
 fn blank_render_line() -> SingleSessionStyledLine {
@@ -9878,6 +9877,18 @@ fn single_session_wrapped_body_lines(
     }
 
     wrapped
+}
+
+fn single_session_wrapped_body_line_count(
+    lines: Vec<SingleSessionStyledLine>,
+    size: PhysicalSize<u32>,
+    text_scale: f32,
+) -> usize {
+    let max_columns = single_session_body_max_columns(size, text_scale);
+    lines
+        .iter()
+        .map(|line| wrapped_body_line_count(line, max_columns))
+        .sum()
 }
 
 fn single_session_wrapped_body_lines_ref(
@@ -10019,6 +10030,34 @@ fn push_wrapped_body_line_ref(
     );
 }
 
+fn wrapped_body_line_count(line: &SingleSessionStyledLine, max_columns: usize) -> usize {
+    if line.text.is_empty() {
+        return 1;
+    }
+    if line.inline_spans.is_empty() && line.text.is_ascii() {
+        return wrapped_ascii_body_line_count(&line.text, max_columns);
+    }
+    if !text_exceeds_columns(&line.text, max_columns) {
+        return 1;
+    }
+    wrapped_body_line_text_count(&line.text, &line.inline_spans, max_columns)
+}
+
+fn wrapped_ascii_body_line_count(text: &str, max_columns: usize) -> usize {
+    let max_columns = max_columns.max(1);
+    let trimmed_end = text.trim_end().len();
+    let mut remaining = &text[..trimmed_end];
+    let mut count = 1usize;
+
+    while remaining.len() > max_columns {
+        let split = ascii_word_wrap_split_index(remaining, max_columns);
+        remaining = remaining[split..].trim_start();
+        count += 1;
+    }
+
+    count
+}
+
 fn push_wrapped_body_line_parts(
     wrapped: &mut Vec<SingleSessionStyledLine>,
     text: &str,
@@ -10102,6 +10141,27 @@ fn wrap_body_line_text_with_spans(
         inline_spans_for_wrapped_range(inline_spans, start, end),
     ));
     lines
+}
+
+fn wrapped_body_line_text_count(
+    text: &str,
+    inline_spans: &[SingleSessionInlineSpan],
+    max_columns: usize,
+) -> usize {
+    let max_columns = max_columns.max(1);
+    let trimmed_end =
+        single_session_trimmed_line_end_preserving_inline_code_whitespace(text, inline_spans);
+    let mut remaining = &text[..trimmed_end];
+    let mut count = 1usize;
+
+    while text_exceeds_columns(remaining, max_columns) {
+        let split = word_wrap_split_index(remaining, max_columns);
+        let (_, rest) = remaining.split_at(split);
+        remaining = rest.trim_start();
+        count += 1;
+    }
+
+    count
 }
 
 fn inline_spans_for_wrapped_range(
@@ -12163,6 +12223,30 @@ mod tests {
         assert!(text_exceeds_columns("你好世界a", 4));
         assert_eq!(word_wrap_split_index("你好 abc", 3), "你好".len());
         assert_eq!(byte_index_at_char_limit("你好abc", 2), "你好".len());
+    }
+
+    #[test]
+    fn body_wrap_line_count_matches_wrapped_output_without_allocating_lines() {
+        let cases = [
+            SingleSessionStyledLine::new("alpha beta gamma", SingleSessionLineStyle::Assistant),
+            SingleSessionStyledLine::new("abcdefghijk", SingleSessionLineStyle::Assistant),
+            SingleSessionStyledLine::new("你好 abc", SingleSessionLineStyle::Assistant),
+            SingleSessionStyledLine::with_inline_spans(
+                "code span keeps trailing spaces   ".to_string(),
+                SingleSessionLineStyle::Assistant,
+                vec![SingleSessionInlineSpan {
+                    start: 0,
+                    end: "code span keeps trailing spaces   ".len(),
+                    kind: SingleSessionInlineSpanKind::Code,
+                }],
+            ),
+        ];
+
+        for line in cases {
+            let mut wrapped = Vec::new();
+            push_wrapped_body_line_ref(&mut wrapped, &line, 10);
+            assert_eq!(wrapped_body_line_count(&line, 10), wrapped.len());
+        }
     }
 
     #[test]
