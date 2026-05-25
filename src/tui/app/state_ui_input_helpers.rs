@@ -78,6 +78,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/dictate", "Run configured external dictation command"),
     RegisteredCommand::public("/dictation", "Alias for /dictate"),
     RegisteredCommand::public("/memory", "Toggle memory feature"),
+    RegisteredCommand::public("/test", "Verify a claim/current changes with layered tests"),
     RegisteredCommand::public("/mission", "Set/show active autonomous mission"),
     RegisteredCommand::public("/goal", "Alias for /mission"),
     RegisteredCommand::public(
@@ -1269,6 +1270,7 @@ impl App {
                 | "/subscription"
                 | "/poke"
                 | "/memory"
+                | "/test"
                 | "/mission"
                 | "/goal"
                 | "/initiatives"

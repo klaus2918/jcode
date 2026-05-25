@@ -1632,6 +1632,10 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
+    if handle_test_command(app, trimmed) {
+        return true;
+    }
+
     if handle_mission_command(app, trimmed) {
         return true;
     }
@@ -2141,6 +2145,67 @@ pub(super) fn handle_mission_command(app: &mut App, trimmed: &str) -> bool {
         Err(e) => app.push_display_message(DisplayMessage::error(format!("Mission error: {}", e))),
     }
     true
+}
+
+pub(super) fn handle_test_command(app: &mut App, trimmed: &str) -> bool {
+    let Some(rest) = trimmed.strip_prefix("/test") else {
+        return false;
+    };
+    let claim = rest.trim();
+    if matches!(claim, "help" | "--help" | "-h") {
+        app.push_display_message(DisplayMessage::system(test_usage()));
+        return true;
+    }
+
+    let prompt = build_test_verification_prompt(claim);
+    app.queued_messages.push(prompt);
+    if app.is_processing {
+        app.push_display_message(DisplayMessage::system(
+            "Queued `/test`; verification will run after the current turn.".to_string(),
+        ));
+        app.set_status_notice("Queued /test");
+    } else {
+        app.pending_queued_dispatch = true;
+        app.push_display_message(DisplayMessage::system(
+            "Running `/test` verification orchestrator.".to_string(),
+        ));
+        app.set_status_notice("Running /test");
+    }
+    true
+}
+
+fn test_usage() -> String {
+    "Usage: `/test [claim|feature|current changes]`\n\nRuns a layered verification pass and returns evidence, confidence, and gaps."
+        .to_string()
+}
+
+fn build_test_verification_prompt(claim: &str) -> String {
+    let target = if claim.trim().is_empty() {
+        "the current changes and the likely user-facing behavior they affect"
+    } else {
+        claim.trim()
+    };
+    format!(
+        "Run Jcode's /test verification orchestrator for: {target}\n\n\
+Goal: become as sure as reasonably possible before the user checks manually. Do not stop at compile success. Build and execute a verification plan, update todos as needed, and finish with an evidence-backed proof packet.\n\n\
+Required verification layers to consider and run when applicable:\n\
+1. Reproduction-first: if this is a bug, create or identify the exact failing repro and prove it now passes.\n\
+2. Focused unit tests plus integration tests for real module boundaries.\n\
+3. End-to-end/user-flow smoke tests that mirror what the user would manually try.\n\
+4. Property-based tests, state-machine/model-based tests, fuzzing, and exhaustive enumeration for small state spaces.\n\
+5. Static analysis: formatting, type/check build, clippy/lints, dead code, schema/contract compatibility, secret/security scans, dependency/audit checks when available.\n\
+6. Regression strategy: adjacent feature sweep, old-vs-new differential checks, oracle/golden/snapshot comparisons, and metamorphic tests.\n\
+7. Robustness: fault injection/chaos for timeouts, network errors, corrupt storage, permission errors, restarts/resume, cancellation, and invalid inputs.\n\
+8. Concurrency/race/interrupt/multi-session stress plus soak/flakiness loops where risk exists.\n\
+9. Nonfunctional checks: performance/resource regressions, observability logs/events/telemetry, UX/accessibility, and security/safety boundaries.\n\n\
+Final proof packet required:\n\
+- Claim verified or not verified.\n\
+- Commands/tests/checks actually run and their results.\n\
+- E2E/manual-equivalent flows covered.\n\
+- Adjacent regressions considered.\n\
+- Remaining gaps or untested environments.\n\
+- Confidence level and why the user should or should not expect to hit another obvious error."
+    )
 }
 
 fn mission_status_message(

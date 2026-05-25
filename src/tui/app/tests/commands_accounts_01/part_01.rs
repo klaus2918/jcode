@@ -544,6 +544,23 @@ fn test_mission_command_sets_and_shows_status() {
 }
 
 #[test]
+fn test_test_command_queues_layered_verification_prompt() {
+    let mut app = create_test_app();
+    app.input = "/test browser control is reliable".to_string();
+    app.submit_input();
+
+    assert!(app.pending_queued_dispatch);
+    let queued = app.queued_messages.last().expect("missing /test prompt");
+    assert!(queued.contains("browser control is reliable"));
+    assert!(queued.contains("Reproduction-first"));
+    assert!(queued.contains("End-to-end/user-flow smoke tests"));
+    assert!(queued.contains("Property-based tests"));
+    assert!(queued.contains("Static analysis"));
+    assert!(queued.contains("fault injection/chaos"));
+    assert!(queued.contains("Final proof packet"));
+}
+
+#[test]
 fn test_btw_command_requires_question() {
     let mut app = create_test_app();
     app.input = "/btw".to_string();
