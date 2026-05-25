@@ -7818,6 +7818,10 @@ fn formatted_tool_input_lines(tool_name: &str, raw_input: &str) -> Vec<String> {
         return vec!["input: <empty>".to_string()];
     }
 
+    if !looks_like_json_value(raw_input) {
+        return vec![format!("input: {}", compact_tool_text(raw_input, 132))];
+    }
+
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw_input) else {
         return vec![format!("input: {}", compact_tool_text(raw_input, 132))];
     };
@@ -7857,6 +7861,13 @@ fn formatted_tool_input_lines(tool_name: &str, raw_input: &str) -> Vec<String> {
         rendered.push(format!("… {} more", total - MAX_INPUT_LINES));
     }
     rendered
+}
+
+fn looks_like_json_value(text: &str) -> bool {
+    matches!(
+        text.as_bytes().first().copied(),
+        Some(b'{' | b'[' | b'"' | b'-' | b'0'..=b'9' | b't' | b'f' | b'n')
+    )
 }
 
 fn formatted_tool_input_summary(
@@ -8568,6 +8579,14 @@ mod tests {
             "{\"intent\":\"describe action\",\"query\":\"tool calls\"}",
         );
         assert_eq!(lines, vec!["query: tool calls", "intent: describe action"]);
+    }
+
+    #[test]
+    fn plain_tool_input_skips_json_probe_and_renders_compactly() {
+        let lines = formatted_tool_input_lines("bash", " chunk-0 chunk-1 chunk-2");
+        assert_eq!(lines, vec!["input: chunk-0 chunk-1 chunk-2"]);
+        assert!(!looks_like_json_value("chunk-0"));
+        assert!(looks_like_json_value("{\"command\":\"cargo test\"}"));
     }
 
     #[test]
