@@ -2778,6 +2778,74 @@ fn single_session_slash_help_opens_help_without_sending_prompt() {
 }
 
 #[test]
+fn single_session_issues_slash_toggles_local_issue_browser() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/issues".to_string()));
+
+    assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
+    assert!(app.issue_browser_visible());
+    assert_eq!(app.side_panel().focus, DesktopSidePanelFocus::IssueList);
+    assert!(app.draft.is_empty());
+    assert!(app.messages.is_empty());
+    assert_eq!(app.side_panel().github_issues.repo, "1jehuang/jcode");
+    assert_eq!(
+        app.side_panel()
+            .github_issues
+            .selected_issue()
+            .unwrap()
+            .number,
+        342
+    );
+
+    app.handle_key(KeyInput::Character("/issues preview".to_string()));
+    assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
+    assert_eq!(app.side_panel().focus, DesktopSidePanelFocus::IssuePreview);
+
+    app.handle_key(KeyInput::Character("/issues off".to_string()));
+    assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
+    assert!(!app.issue_browser_visible());
+    assert_eq!(app.side_panel().focus, DesktopSidePanelFocus::Chat);
+}
+
+#[test]
+fn issue_browser_layout_uses_three_panes_when_wide() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/issues".to_string()));
+    assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
+
+    let layout = issue_browser_layout(&app, PhysicalSize::new(1440, 900));
+    assert_eq!(layout.mode, IssueBrowserLayoutMode::Wide);
+    let list = layout.list.expect("wide layout should have issue list");
+    let preview = layout
+        .preview
+        .expect("wide layout should have issue preview");
+    assert!(list.x < preview.x);
+    assert!(preview.x + preview.width < layout.chat.x);
+    assert!(layout.chat.width > 360.0);
+}
+
+#[test]
+fn issue_browser_layout_collapses_for_medium_and_narrow_windows() {
+    let mut app = SingleSessionApp::new(None);
+    app.handle_key(KeyInput::Character("/issues".to_string()));
+    assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
+
+    let medium = issue_browser_layout(&app, PhysicalSize::new(980, 720));
+    assert_eq!(medium.mode, IssueBrowserLayoutMode::Medium);
+    let list = medium.list.expect("medium layout should keep list");
+    let preview = medium.preview.expect("medium layout should keep preview");
+    assert_eq!(list.x, preview.x);
+    assert!(list.y + list.height < preview.y);
+    assert!(medium.chat.x > list.x + list.width);
+
+    let narrow = issue_browser_layout(&app, PhysicalSize::new(760, 720));
+    assert_eq!(narrow.mode, IssueBrowserLayoutMode::Narrow);
+    assert!(narrow.list.is_none());
+    assert!(narrow.preview.is_none());
+    assert_eq!(narrow.chat.width, 760.0);
+}
+
+#[test]
 fn single_session_commands_alias_opens_help_without_sending_prompt() {
     let mut app = SingleSessionApp::new(None);
     app.handle_key(KeyInput::Character("/commands".to_string()));

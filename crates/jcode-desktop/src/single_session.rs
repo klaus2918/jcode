@@ -143,6 +143,7 @@ const DESKTOP_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/resume", "open the recent session switcher"),
     ("/sessions", "open the recent session switcher"),
     ("/session", "alias for /sessions"),
+    ("/issues", "toggle the local GitHub issue browser"),
     ("/model [name]", "open model picker or switch to a model"),
     ("/models", "alias for /model"),
     ("/refresh-model-list", "refresh provider model catalogs"),
@@ -267,6 +268,131 @@ pub(crate) struct SingleSessionApp {
     runtime: SingleSessionRuntimeState,
     tool: SingleSessionToolState,
     view: SingleSessionViewState,
+    side_panel: DesktopSidePanelState,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DesktopSidePanelState {
+    pub(crate) visible: bool,
+    pub(crate) focus: DesktopSidePanelFocus,
+    pub(crate) github_issues: GitHubIssueBrowserState,
+}
+
+impl Default for DesktopSidePanelState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            focus: DesktopSidePanelFocus::Chat,
+            github_issues: GitHubIssueBrowserState::sample(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DesktopSidePanelFocus {
+    IssueList,
+    IssuePreview,
+    Chat,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitHubIssueBrowserState {
+    pub(crate) repo: String,
+    pub(crate) filter_label: String,
+    pub(crate) selected: usize,
+    pub(crate) list_scroll: usize,
+    pub(crate) preview_scroll: usize,
+    pub(crate) issues: Vec<GitHubIssuePreview>,
+}
+
+impl GitHubIssueBrowserState {
+    fn sample() -> Self {
+        Self {
+            repo: "1jehuang/jcode".to_string(),
+            filter_label: "priority · open · local cache".to_string(),
+            selected: 0,
+            list_scroll: 0,
+            preview_scroll: 0,
+            issues: vec![
+                GitHubIssuePreview {
+                    number: 342,
+                    priority: "P0".to_string(),
+                    title: "Desktop reload can lose the active chat surface".to_string(),
+                    labels: vec!["bug".to_string(), "desktop".to_string(), "regression".to_string()],
+                    age: "2d".to_string(),
+                    comments: 8,
+                    state: GitHubIssueVisualState::Selected,
+                    body_lines: vec![
+                        "When the desktop process reloads while a session is streaming, the window sometimes returns to the welcome state instead of the active chat.".to_string(),
+                        "Expected: reload handoff preserves the session id, transcript, draft, and scroll position.".to_string(),
+                        "Observed: the app opens, paints the shell, then falls back to a fresh session.".to_string(),
+                    ],
+                    comment_lines: vec![
+                        "maintainer: happens more often after resizing during handoff".to_string(),
+                        "agent note: likely snapshot restore ordering or worker init race".to_string(),
+                    ],
+                    priority_reason: "explicit regression label, data-loss risk, bounded desktop repro".to_string(),
+                },
+                GitHubIssuePreview {
+                    number: 337,
+                    priority: "P1".to_string(),
+                    title: "Tool-card animation does too much work offscreen".to_string(),
+                    labels: vec!["performance".to_string(), "desktop".to_string()],
+                    age: "5d".to_string(),
+                    comments: 4,
+                    state: GitHubIssueVisualState::Idle,
+                    body_lines: vec![
+                        "Large transcripts still spend frame time walking tool-card metadata for rows far outside the viewport.".to_string(),
+                        "The UI remains correct, but long sessions can miss frame budget during streaming.".to_string(),
+                    ],
+                    comment_lines: vec![
+                        "profiling: check viewport clipping before card motion".to_string(),
+                    ],
+                    priority_reason: "perf label plus objective frame-time validation path".to_string(),
+                },
+                GitHubIssuePreview {
+                    number: 329,
+                    priority: "P2".to_string(),
+                    title: "Provider auth errors should link to doctor output".to_string(),
+                    labels: vec!["auth".to_string(), "ux".to_string()],
+                    age: "1w".to_string(),
+                    comments: 2,
+                    state: GitHubIssueVisualState::Idle,
+                    body_lines: vec![
+                        "Desktop auth failures currently show a terse provider error.".to_string(),
+                        "It should offer a one-click path to the same diagnostic information as `jcode auth doctor`.".to_string(),
+                    ],
+                    comment_lines: vec!["nice to have after core desktop stability".to_string()],
+                    priority_reason: "important UX improvement, but not blocking active work".to_string(),
+                },
+            ],
+        }
+    }
+
+    pub(crate) fn selected_issue(&self) -> Option<&GitHubIssuePreview> {
+        self.issues.get(self.selected)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitHubIssueVisualState {
+    Idle,
+    Selected,
+    Active,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitHubIssuePreview {
+    pub(crate) number: u64,
+    pub(crate) priority: String,
+    pub(crate) title: String,
+    pub(crate) labels: Vec<String>,
+    pub(crate) age: String,
+    pub(crate) comments: u32,
+    pub(crate) state: GitHubIssueVisualState,
+    pub(crate) body_lines: Vec<String>,
+    pub(crate) comment_lines: Vec<String>,
+    pub(crate) priority_reason: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1497,6 +1623,7 @@ impl SingleSessionApp {
             runtime: SingleSessionRuntimeState::default(),
             tool: SingleSessionToolState::default(),
             view: SingleSessionViewState::default(),
+            side_panel: DesktopSidePanelState::default(),
         }
     }
 
@@ -1676,6 +1803,34 @@ impl SingleSessionApp {
         self.tool = SingleSessionToolState::default();
         self.view.inline_widget_opened_at = None;
         self.view.closing_inline_widget = None;
+        self.side_panel = DesktopSidePanelState::default();
+    }
+
+    pub(crate) fn side_panel(&self) -> &DesktopSidePanelState {
+        &self.side_panel
+    }
+
+    pub(crate) fn issue_browser_visible(&self) -> bool {
+        self.side_panel.visible
+    }
+
+    fn toggle_issue_browser(&mut self, visible: Option<bool>) -> KeyOutcome {
+        let visible = visible.unwrap_or(!self.side_panel.visible);
+        self.side_panel.visible = visible;
+        self.side_panel.focus = if visible {
+            DesktopSidePanelFocus::IssueList
+        } else {
+            DesktopSidePanelFocus::Chat
+        };
+        self.draft.clear();
+        self.draft_cursor = 0;
+        self.composer.input_undo_stack.clear();
+        self.set_status(SingleSessionStatus::Info(if visible {
+            "showing local GitHub issue browser".to_string()
+        } else {
+            "hid local GitHub issue browser".to_string()
+        }));
+        KeyOutcome::Redraw
     }
 
     pub(crate) fn status_title(&self) -> String {
@@ -4082,6 +4237,19 @@ impl SingleSessionApp {
                 self.draft_cursor = 0;
                 self.composer.input_undo_stack.clear();
                 KeyOutcome::SpawnSession
+            }
+            "/issues" => {
+                if args == "preview" {
+                    let outcome = self.toggle_issue_browser(Some(true));
+                    self.side_panel.focus = DesktopSidePanelFocus::IssuePreview;
+                    return Some(outcome);
+                }
+                let visible = match args {
+                    "on" | "open" | "show" => Some(true),
+                    "off" | "close" | "hide" => Some(false),
+                    _ => None,
+                };
+                self.toggle_issue_browser(visible)
             }
             "/sessions" | "/session" | "/resume" => {
                 self.draft.clear();

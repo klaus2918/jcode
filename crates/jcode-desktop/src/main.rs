@@ -165,6 +165,21 @@ const PRIMITIVE_VERTEX_BUFFER_MIN_CAPACITY: usize = 1024;
 const PRIMITIVE_VERTEX_BUFFER_SHRINK_RATIO: usize = 4;
 const WORKSPACE_BASE_VERTEX_CAPACITY_HINT: usize = 512;
 const WORKSPACE_SURFACE_VERTEX_CAPACITY_HINT: usize = 2048;
+const ISSUE_BROWSER_WIDE_MIN_WIDTH: u32 = 1180;
+const ISSUE_BROWSER_MEDIUM_MIN_WIDTH: u32 = 860;
+const ISSUE_BROWSER_PANEL_RADIUS: f32 = 12.0;
+const ISSUE_BROWSER_ROW_HEIGHT: f32 = 70.0;
+const ISSUE_BROWSER_PANEL_PADDING: f32 = 14.0;
+const ISSUE_BROWSER_CARD_BACKGROUND: [f32; 4] = [0.970, 0.984, 1.000, 0.58];
+const ISSUE_BROWSER_CARD_BORDER: [f32; 4] = [0.080, 0.170, 0.360, 0.16];
+const ISSUE_BROWSER_SELECTED_ROW: [f32; 4] = [0.155, 0.360, 0.860, 0.16];
+const ISSUE_BROWSER_ACTIVE_ROW: [f32; 4] = [0.045, 0.530, 0.330, 0.16];
+const ISSUE_BROWSER_TEXT: [f32; 4] = [0.060, 0.078, 0.115, 0.96];
+const ISSUE_BROWSER_MUTED_TEXT: [f32; 4] = [0.245, 0.285, 0.360, 0.84];
+const ISSUE_BROWSER_ACCENT: [f32; 4] = [0.090, 0.315, 0.900, 0.70];
+const ISSUE_BROWSER_P0: [f32; 4] = [0.900, 0.140, 0.160, 0.82];
+const ISSUE_BROWSER_P1: [f32; 4] = [0.950, 0.520, 0.120, 0.82];
+const ISSUE_BROWSER_P2: [f32; 4] = [0.120, 0.520, 0.820, 0.78];
 
 static DESKTOP_ASYNC_JOB_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -8778,6 +8793,7 @@ impl Canvas {
     fn refresh_cached_single_session_text_buffers(
         &mut self,
         app: &SingleSessionApp,
+        render_size: PhysicalSize<u32>,
         now: Instant,
         smooth_scroll_lines: f32,
         rendered_body_key: u64,
@@ -8786,15 +8802,15 @@ impl Canvas {
         let tick = desktop_spinner_tick(now);
         let viewport = single_session_body_viewport_from_lines(
             app,
-            self.size,
+            render_size,
             smooth_scroll_lines,
             &self.single_session_body_lines,
         );
         let text_cache_key =
-            single_session_text_buffer_cache_key(app, self.size, tick, rendered_body_key);
+            single_session_text_buffer_cache_key(app, render_size, tick, rendered_body_key);
         let key = single_session_text_key_for_tick_with_rendered_body(
             app,
-            self.size,
+            render_size,
             tick,
             smooth_scroll_lines,
             &self.single_session_body_lines,
@@ -8831,7 +8847,7 @@ impl Canvas {
             let body_layout_compatible = previous_key.as_ref().is_some_and(|previous| {
                 single_session_body_text_buffer_layout_compatible(
                     previous.size,
-                    self.size,
+                    render_size,
                     app.text_scale(),
                 )
             });
@@ -8848,7 +8864,7 @@ impl Canvas {
                 old_buffers[1] = single_session_body_text_buffer_from_lines(
                     font_system,
                     &self.single_session_body_lines[window_start..window_end],
-                    self.size,
+                    render_size,
                     app.text_scale(),
                 );
                 self.single_session_body_text_window_start = Some(window_start);
@@ -8862,7 +8878,7 @@ impl Canvas {
                     previous_key.as_ref(),
                     old_buffers,
                     can_reuse_body_buffer,
-                    self.size,
+                    render_size,
                     font_system,
                 );
             self.single_session_text_key = Some(key);
@@ -8874,12 +8890,13 @@ impl Canvas {
             }
             self.text_needs_prepare = true;
         }
-        self.sync_single_session_body_text_window(app, &viewport);
+        self.sync_single_session_body_text_window(app, render_size, &viewport);
     }
 
     fn sync_single_session_body_text_window(
         &mut self,
         app: &SingleSessionApp,
+        render_size: PhysicalSize<u32>,
         viewport: &SingleSessionBodyViewport,
     ) {
         let desired_body_window = self.single_session_body_buffer_window_bounds(app, viewport);
@@ -8893,7 +8910,7 @@ impl Canvas {
             viewport,
         ) {
             self.sync_single_session_body_text_scroll(viewport.start_line, window_start);
-            self.sync_single_session_streaming_text_buffer(app, viewport);
+            self.sync_single_session_streaming_text_buffer(app, render_size, viewport);
             return;
         }
 
@@ -8905,7 +8922,7 @@ impl Canvas {
             *body_buffer = single_session_body_text_buffer_from_lines(
                 font_system,
                 &window_lines,
-                self.size,
+                render_size,
                 app.text_scale(),
             );
             self.single_session_body_text_window_start = Some(window_start);
@@ -8913,7 +8930,7 @@ impl Canvas {
             self.single_session_body_text_scroll_start = None;
             self.sync_single_session_body_text_scroll(viewport.start_line, window_start);
         }
-        self.sync_single_session_streaming_text_buffer(app, viewport);
+        self.sync_single_session_streaming_text_buffer(app, render_size, viewport);
     }
 
     fn single_session_body_buffer_window_bounds(
@@ -8959,6 +8976,7 @@ impl Canvas {
     fn sync_single_session_streaming_text_buffer(
         &mut self,
         app: &SingleSessionApp,
+        render_size: PhysicalSize<u32>,
         viewport: &SingleSessionBodyViewport,
     ) {
         self.update_single_session_streaming_fade(app);
@@ -8983,7 +9001,7 @@ impl Canvas {
         };
 
         let mut hasher = DefaultHasher::new();
-        (self.size.width, self.size.height).hash(&mut hasher);
+        (render_size.width, render_size.height).hash(&mut hasher);
         app.text_scale().to_bits().hash(&mut hasher);
         start_line.hash(&mut hasher);
         end_line.hash(&mut hasher);
@@ -8999,7 +9017,7 @@ impl Canvas {
                 Some(single_session_body_text_buffer_from_lines_with_opacity(
                     font_system,
                     &lines,
-                    self.size,
+                    render_size,
                     app.text_scale(),
                     1.0,
                 ));
@@ -9078,6 +9096,7 @@ impl Canvas {
     fn update_single_session_streaming_text_buffer_opacity(
         &mut self,
         app: &SingleSessionApp,
+        render_size: PhysicalSize<u32>,
         opacity: f32,
     ) {
         let opacity = opacity.clamp(0.0, 1.0);
@@ -9102,7 +9121,7 @@ impl Canvas {
             Some(single_session_body_text_buffer_from_lines_with_opacity(
                 font_system,
                 &lines,
-                self.size,
+                render_size,
                 app.text_scale(),
                 quantized_opacity,
             ));
@@ -9270,9 +9289,10 @@ impl Canvas {
     fn cached_single_session_body_lines(
         &mut self,
         app: &SingleSessionApp,
+        render_size: PhysicalSize<u32>,
         tick: u64,
     ) -> (u64, bool) {
-        let body_layout_size = single_session_body_layout_cache_size(app, self.size);
+        let body_layout_size = single_session_body_layout_cache_size(app, render_size);
         let key = app.rendered_body_cache_key(body_layout_size);
         if self.single_session_body_key == Some(key) {
             return (key, false);
@@ -9284,7 +9304,7 @@ impl Canvas {
             let base_key = app.rendered_body_static_cache_key(body_layout_size);
             if self.single_session_streaming_base_key != Some(base_key) {
                 if let Some(base_lines) =
-                    single_session_rendered_static_body_lines_for_streaming(app, self.size, tick)
+                    single_session_rendered_static_body_lines_for_streaming(app, render_size, tick)
                 {
                     self.single_session_body_lines = base_lines;
                     self.single_session_streaming_base_len = self.single_session_body_lines.len();
@@ -9294,7 +9314,7 @@ impl Canvas {
                     self.single_session_body_text_window_end = None;
                 } else {
                     self.single_session_body_lines =
-                        single_session_rendered_body_lines_for_tick(app, self.size, tick);
+                        single_session_rendered_body_lines_for_tick(app, render_size, tick);
                     self.single_session_streaming_base_key = None;
                     self.single_session_streaming_base_len = 0;
                     self.single_session_body_key = Some(key);
@@ -9309,7 +9329,7 @@ impl Canvas {
             }
             append_single_session_streaming_response_rendered_body_lines(
                 app,
-                self.size,
+                render_size,
                 &mut self.single_session_body_lines,
             );
         } else {
@@ -9320,7 +9340,7 @@ impl Canvas {
             }
             self.single_session_body_lines = single_session_rendered_body_lines_from_raw_ref(
                 app,
-                self.size,
+                render_size,
                 &self.single_session_raw_body_lines,
             );
             self.single_session_streaming_base_key = None;
@@ -9608,6 +9628,14 @@ impl Canvas {
             (None, None, None, None)
         };
 
+        let single_session_issue_layout_for_frame =
+            if let DesktopApp::SingleSession(single_session) = app {
+                issue_browser_layout(single_session, self.size)
+            } else {
+                IssueBrowserLayout::hidden(self.size)
+            };
+        let single_session_render_size = single_session_issue_layout_for_frame.chat_size();
+
         let mut single_session_rendered_body_key = None;
         let mut workspace_text_panes = Vec::new();
         let mut body_line_count = 0usize;
@@ -9631,8 +9659,11 @@ impl Canvas {
             self.single_session_body_text_window_start = None;
             self.single_session_body_text_window_end = None;
         } else if let DesktopApp::SingleSession(single_session) = app {
-            let (rendered_body_key, rendered_body_changed) =
-                self.cached_single_session_body_lines(single_session, spinner_tick);
+            let (rendered_body_key, rendered_body_changed) = self.cached_single_session_body_lines(
+                single_session,
+                single_session_render_size,
+                spinner_tick,
+            );
             single_session_rendered_body_key = Some(rendered_body_key);
             body_line_count = self.single_session_body_lines.len();
             inline_widget_line_count = single_session.render_inline_widget_visible_line_count();
@@ -9641,6 +9672,7 @@ impl Canvas {
             frame_profile.checkpoint("font_system");
             self.refresh_cached_single_session_text_buffers(
                 single_session,
+                single_session_render_size,
                 now,
                 smooth_scroll_lines,
                 rendered_body_key,
@@ -9694,6 +9726,7 @@ impl Canvas {
         if let DesktopApp::SingleSession(single_session) = app {
             self.update_single_session_streaming_text_buffer_opacity(
                 single_session,
+                single_session_render_size,
                 streaming_text_arrival_style.opacity,
             );
         }
@@ -9711,7 +9744,7 @@ impl Canvas {
         let single_session_viewport = if let DesktopApp::SingleSession(single_session) = app {
             let viewport = single_session_body_viewport_from_lines(
                 single_session,
-                self.size,
+                single_session_render_size,
                 smooth_scroll_lines,
                 &self.single_session_body_lines,
             );
@@ -9733,7 +9766,8 @@ impl Canvas {
         let welcome_hero_uses_runtime_mask = matches!(
             app,
             DesktopApp::SingleSession(single_session)
-                if welcome_hero_runtime_mask_supported(&single_session.welcome_hero_text())
+                if !single_session_issue_layout_for_frame.visible()
+                    && welcome_hero_runtime_mask_supported(&single_session.welcome_hero_text())
         );
         if welcome_hero_reveal_active && !welcome_hero_uses_runtime_mask {
             self.text_needs_prepare = true;
@@ -9741,14 +9775,31 @@ impl Canvas {
         if self.text_needs_prepare {
             let text_areas = if let DesktopApp::SingleSession(single_session) = app {
                 if let Some(viewport) = single_session_viewport.clone() {
-                    single_session_text_areas_for_app_with_cached_body_viewport_and_reveal(
-                        single_session,
-                        text_buffers,
-                        self.size,
-                        smooth_scroll_lines,
-                        viewport,
-                        welcome_hero_reveal_progress,
-                    )
+                    let areas =
+                        single_session_text_areas_for_app_with_cached_body_viewport_and_reveal(
+                            single_session,
+                            text_buffers,
+                            single_session_render_size,
+                            smooth_scroll_lines,
+                            viewport,
+                            welcome_hero_reveal_progress,
+                        );
+                    if single_session_issue_layout_for_frame.visible() {
+                        areas
+                            .into_iter()
+                            .filter_map(|area| {
+                                let area = offset_workspace_text_area(
+                                    area,
+                                    single_session_issue_layout_for_frame.chat,
+                                );
+                                (area.bounds.right > area.bounds.left
+                                    && area.bounds.bottom > area.bounds.top)
+                                    .then_some(area)
+                            })
+                            .collect()
+                    } else {
+                        areas
+                    }
                 } else {
                     desktop_log::error(format_args!(
                         "jcode-desktop: missing single-session viewport while preparing text"
@@ -9758,7 +9809,7 @@ impl Canvas {
             } else if !workspace_text_panes.is_empty() {
                 workspace_single_session_text_areas(&workspace_text_panes)
             } else {
-                single_session_text_areas(text_buffers, self.size)
+                single_session_text_areas(text_buffers, single_session_render_size)
             };
             text_area_count = text_areas.len();
             frame_profile.checkpoint("text_areas");
@@ -9820,15 +9871,27 @@ impl Canvas {
                 self.single_session_streaming_text_buffer.as_ref(),
                 self.single_session_streaming_text_start_line,
             ) {
-                vec![single_session_streaming_text_area_for_cached_body_viewport(
+                let area = single_session_streaming_text_area_for_cached_body_viewport(
                     single_session,
                     buffer,
-                    self.size,
+                    single_session_render_size,
                     viewport,
                     start_line,
                     streaming_text_arrival_style.opacity,
                     streaming_text_arrival_style.y_offset_pixels,
-                )]
+                );
+                if single_session_issue_layout_for_frame.visible() {
+                    let area = offset_workspace_text_area(
+                        area,
+                        single_session_issue_layout_for_frame.chat,
+                    );
+                    (area.bounds.right > area.bounds.left && area.bounds.bottom > area.bounds.top)
+                        .then_some(area)
+                        .into_iter()
+                        .collect()
+                } else {
+                    vec![area]
+                }
             } else {
                 Vec::new()
             };
@@ -9930,7 +9993,7 @@ impl Canvas {
                     .frame(tool_motion_lines, now, spinner_tick);
                 let scrollbar_motion = self.single_session_scrollbar_motion.frame(
                     single_session,
-                    self.size,
+                    single_session_render_size,
                     self.single_session_body_lines.len(),
                     smooth_scroll_lines,
                     now,
@@ -9953,28 +10016,32 @@ impl Canvas {
                     || scroll_motion_frame.active
                     || welcome_hero_reveal_active
                     || streaming_text_arrival_style.active;
-                let geometry_cache_key = single_session_streaming_primitive_geometry_cache_key(
-                    single_session,
-                    self.size,
-                    focus_pulse,
-                    spinner_tick,
-                    smooth_scroll_lines,
-                    welcome_hero_reveal_progress,
-                    tool_motion.cache_key(),
-                    inline_list_reflow_motion.cache_key(),
-                    inline_preview_pane_motion.cache_key(),
-                    composer_motion.cache_key(),
-                    attachment_chip_motion.cache_key(),
-                    stdin_overlay_motion.cache_key(),
-                    transcript_message_motion.cache_key(),
-                    transcript_motion.cache_key(),
-                    inline_markdown_motion.cache_key(),
-                    activity_cue_motion.cache_key(),
-                    scrollbar_motion.cache_key(),
-                    single_session_rendered_body_key,
-                    self.single_session_body_lines.len(),
-                );
-                let vertices = if let Some(cache_key) = geometry_cache_key {
+                let geometry_cache_key = if single_session_issue_layout_for_frame.visible() {
+                    None
+                } else {
+                    single_session_streaming_primitive_geometry_cache_key(
+                        single_session,
+                        single_session_render_size,
+                        focus_pulse,
+                        spinner_tick,
+                        smooth_scroll_lines,
+                        welcome_hero_reveal_progress,
+                        tool_motion.cache_key(),
+                        inline_list_reflow_motion.cache_key(),
+                        inline_preview_pane_motion.cache_key(),
+                        composer_motion.cache_key(),
+                        attachment_chip_motion.cache_key(),
+                        stdin_overlay_motion.cache_key(),
+                        transcript_message_motion.cache_key(),
+                        transcript_motion.cache_key(),
+                        inline_markdown_motion.cache_key(),
+                        activity_cue_motion.cache_key(),
+                        scrollbar_motion.cache_key(),
+                        single_session_rendered_body_key,
+                        self.single_session_body_lines.len(),
+                    )
+                };
+                let child_vertices = if let Some(cache_key) = geometry_cache_key {
                     if self.primitive_vertices_cache_key == Some(cache_key) {
                         primitive_geometry_cache_hit = true;
                         Cow::Borrowed(self.primitive_vertices_cache.as_slice())
@@ -9982,7 +10049,7 @@ impl Canvas {
                         let vertices =
                             build_single_session_vertices_with_cached_body_and_tool_motion(
                                 single_session,
-                                self.size,
+                                single_session_render_size,
                                 focus_pulse,
                                 spinner_tick,
                                 smooth_scroll_lines,
@@ -10010,7 +10077,7 @@ impl Canvas {
                     Cow::Owned(
                         build_single_session_vertices_with_cached_body_and_tool_motion(
                             single_session,
-                            self.size,
+                            single_session_render_size,
                             focus_pulse,
                             spinner_tick,
                             smooth_scroll_lines,
@@ -10030,6 +10097,17 @@ impl Canvas {
                             Some(&scrollbar_motion),
                         ),
                     )
+                };
+                let vertices = if single_session_issue_layout_for_frame.visible() {
+                    Cow::Owned(compose_single_session_issue_browser_vertices(
+                        single_session,
+                        single_session_issue_layout_for_frame,
+                        child_vertices.as_ref(),
+                        single_session_render_size,
+                        self.size,
+                    ))
+                } else {
+                    child_vertices
                 };
                 frame_profile.checkpoint("vertices_geometry");
                 (vertices, animation_active)
@@ -10093,22 +10171,27 @@ impl Canvas {
         if let DesktopApp::SingleSession(single_session) = app
             && single_session_caret_visible_for_frame(single_session, spinner_tick)
         {
-            if let Cow::Borrowed(base_vertices) = vertices {
-                self.primitive_frame_vertices.clear();
-                self.primitive_frame_vertices
-                    .extend_from_slice(base_vertices);
+            if single_session_issue_layout_for_frame.visible() {
+                let mut caret_vertices = Vec::new();
                 push_single_session_caret(
-                    &mut self.primitive_frame_vertices,
+                    &mut caret_vertices,
                     single_session,
-                    self.size,
+                    single_session_render_size,
                     text_buffers.get(2),
                 );
-                vertices = Cow::Borrowed(self.primitive_frame_vertices.as_slice());
+                append_child_vertices_to_parent_with_opacity(
+                    vertices.to_mut(),
+                    &caret_vertices,
+                    single_session_render_size,
+                    single_session_issue_layout_for_frame.chat,
+                    self.size,
+                    1.0,
+                );
             } else {
                 push_single_session_caret(
                     vertices.to_mut(),
                     single_session,
-                    self.size,
+                    single_session_render_size,
                     text_buffers.get(2),
                 );
             }
@@ -10447,12 +10530,503 @@ impl Vertex {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Rect {
     x: f32,
     y: f32,
     width: f32,
     height: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IssueBrowserLayoutMode {
+    Hidden,
+    Wide,
+    Medium,
+    Narrow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct IssueBrowserLayout {
+    mode: IssueBrowserLayoutMode,
+    list: Option<Rect>,
+    preview: Option<Rect>,
+    chat: Rect,
+}
+
+impl IssueBrowserLayout {
+    fn hidden(size: PhysicalSize<u32>) -> Self {
+        Self {
+            mode: IssueBrowserLayoutMode::Hidden,
+            list: None,
+            preview: None,
+            chat: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: size.width.max(1) as f32,
+                height: size.height.max(1) as f32,
+            },
+        }
+    }
+
+    fn visible(self) -> bool {
+        self.mode != IssueBrowserLayoutMode::Hidden
+    }
+
+    fn chat_size(self) -> PhysicalSize<u32> {
+        workspace_panel_size(self.chat)
+    }
+}
+
+fn issue_browser_layout(app: &SingleSessionApp, size: PhysicalSize<u32>) -> IssueBrowserLayout {
+    if !app.issue_browser_visible() {
+        return IssueBrowserLayout::hidden(size);
+    }
+
+    let width = size.width.max(1) as f32;
+    let height = size.height.max(1) as f32;
+    if size.width < ISSUE_BROWSER_MEDIUM_MIN_WIDTH {
+        return IssueBrowserLayout {
+            mode: IssueBrowserLayoutMode::Narrow,
+            list: None,
+            preview: None,
+            chat: Rect {
+                x: 0.0,
+                y: 0.0,
+                width,
+                height,
+            },
+        };
+    }
+
+    let content_top = OUTER_PADDING;
+    let content_height = (height - OUTER_PADDING * 2.0).max(1.0);
+    if size.width >= ISSUE_BROWSER_WIDE_MIN_WIDTH {
+        let list_width = (width * 0.215).clamp(252.0, 328.0);
+        let preview_width = (width * 0.285).clamp(332.0, 468.0);
+        let chat_x = OUTER_PADDING + list_width + GAP + preview_width + GAP;
+        let chat_width = (width - chat_x - OUTER_PADDING).max(360.0);
+        return IssueBrowserLayout {
+            mode: IssueBrowserLayoutMode::Wide,
+            list: Some(Rect {
+                x: OUTER_PADDING,
+                y: content_top,
+                width: list_width,
+                height: content_height,
+            }),
+            preview: Some(Rect {
+                x: OUTER_PADDING + list_width + GAP,
+                y: content_top,
+                width: preview_width,
+                height: content_height,
+            }),
+            chat: Rect {
+                x: chat_x,
+                y: 0.0,
+                width: chat_width,
+                height,
+            },
+        };
+    }
+
+    let browser_width = (width * 0.43).clamp(326.0, 430.0);
+    let list_height = (content_height * 0.46).clamp(220.0, content_height - 220.0);
+    let preview_y = content_top + list_height + GAP;
+    let chat_x = OUTER_PADDING + browser_width + GAP;
+    IssueBrowserLayout {
+        mode: IssueBrowserLayoutMode::Medium,
+        list: Some(Rect {
+            x: OUTER_PADDING,
+            y: content_top,
+            width: browser_width,
+            height: list_height,
+        }),
+        preview: Some(Rect {
+            x: OUTER_PADDING,
+            y: preview_y,
+            width: browser_width,
+            height: (height - preview_y - OUTER_PADDING).max(1.0),
+        }),
+        chat: Rect {
+            x: chat_x,
+            y: 0.0,
+            width: (width - chat_x).max(360.0),
+            height,
+        },
+    }
+}
+
+fn push_issue_browser_shell(
+    vertices: &mut Vec<Vertex>,
+    app: &SingleSessionApp,
+    layout: IssueBrowserLayout,
+    size: PhysicalSize<u32>,
+) {
+    if !layout.visible() {
+        return;
+    }
+    if let Some(list_rect) = layout.list {
+        push_issue_list_panel(vertices, app, list_rect, size);
+    }
+    if let Some(preview_rect) = layout.preview {
+        push_issue_preview_panel(vertices, app, preview_rect, size);
+    }
+}
+
+fn issue_priority_color(priority: &str) -> [f32; 4] {
+    match priority {
+        "P0" => ISSUE_BROWSER_P0,
+        "P1" => ISSUE_BROWSER_P1,
+        _ => ISSUE_BROWSER_P2,
+    }
+}
+
+fn push_issue_panel_frame(vertices: &mut Vec<Vertex>, rect: Rect, size: PhysicalSize<u32>) {
+    push_rounded_rect(
+        vertices,
+        rect,
+        ISSUE_BROWSER_PANEL_RADIUS,
+        ISSUE_BROWSER_CARD_BACKGROUND,
+        size,
+    );
+    push_rounded_rect_border(
+        vertices,
+        rect,
+        ISSUE_BROWSER_PANEL_RADIUS,
+        1.4,
+        ISSUE_BROWSER_CARD_BORDER,
+        size,
+    );
+}
+
+fn push_issue_browser_text(
+    vertices: &mut Vec<Vertex>,
+    text: &str,
+    x: f32,
+    y: f32,
+    color: [f32; 4],
+    size: PhysicalSize<u32>,
+    max_width: f32,
+) {
+    push_bitmap_text(
+        vertices,
+        &normalize_bitmap_text(text),
+        x,
+        y,
+        BITMAP_TEXT_PIXEL,
+        color,
+        size,
+        max_width.max(1.0),
+    );
+}
+
+fn push_issue_list_panel(
+    vertices: &mut Vec<Vertex>,
+    app: &SingleSessionApp,
+    rect: Rect,
+    size: PhysicalSize<u32>,
+) {
+    let browser = &app.side_panel().github_issues;
+    push_issue_panel_frame(vertices, rect, size);
+    let x = rect.x + ISSUE_BROWSER_PANEL_PADDING;
+    let max_width = (rect.width - ISSUE_BROWSER_PANEL_PADDING * 2.0).max(1.0);
+    push_issue_browser_text(
+        vertices,
+        "GitHub Issues",
+        x,
+        rect.y + 12.0,
+        ISSUE_BROWSER_TEXT,
+        size,
+        max_width,
+    );
+    push_issue_browser_text(
+        vertices,
+        &browser.repo,
+        x,
+        rect.y + 34.0,
+        ISSUE_BROWSER_MUTED_TEXT,
+        size,
+        max_width,
+    );
+    push_issue_browser_text(
+        vertices,
+        &browser.filter_label,
+        x,
+        rect.y + 54.0,
+        ISSUE_BROWSER_MUTED_TEXT,
+        size,
+        max_width,
+    );
+
+    let mut row_y = rect.y + 84.0;
+    let max_y = rect.y + rect.height - ISSUE_BROWSER_PANEL_PADDING;
+    for (index, issue) in browser.issues.iter().enumerate().skip(browser.list_scroll) {
+        if row_y + ISSUE_BROWSER_ROW_HEIGHT > max_y {
+            break;
+        }
+        let row = Rect {
+            x: rect.x + 8.0,
+            y: row_y,
+            width: rect.width - 16.0,
+            height: ISSUE_BROWSER_ROW_HEIGHT - 6.0,
+        };
+        if index == browser.selected
+            || issue.state == single_session::GitHubIssueVisualState::Selected
+        {
+            push_rounded_rect(vertices, row, 8.0, ISSUE_BROWSER_SELECTED_ROW, size);
+        } else if issue.state == single_session::GitHubIssueVisualState::Active {
+            push_rounded_rect(vertices, row, 8.0, ISSUE_BROWSER_ACTIVE_ROW, size);
+        }
+        push_rounded_rect(
+            vertices,
+            Rect {
+                x: row.x + 5.0,
+                y: row.y + 6.0,
+                width: 4.0,
+                height: row.height - 12.0,
+            },
+            2.0,
+            issue_priority_color(&issue.priority),
+            size,
+        );
+        let text_x = row.x + 16.0;
+        push_issue_browser_text(
+            vertices,
+            &format!("{} #{}", issue.priority, issue.number),
+            text_x,
+            row.y + 8.0,
+            issue_priority_color(&issue.priority),
+            size,
+            row.width - 24.0,
+        );
+        push_issue_browser_text(
+            vertices,
+            &issue.title,
+            text_x,
+            row.y + 28.0,
+            ISSUE_BROWSER_TEXT,
+            size,
+            row.width - 24.0,
+        );
+        push_issue_browser_text(
+            vertices,
+            &format!(
+                "{} · {} comments · {}",
+                issue.labels.join(","),
+                issue.comments,
+                issue.age
+            ),
+            text_x,
+            row.y + 49.0,
+            ISSUE_BROWSER_MUTED_TEXT,
+            size,
+            row.width - 24.0,
+        );
+        row_y += ISSUE_BROWSER_ROW_HEIGHT;
+    }
+}
+
+fn push_issue_preview_panel(
+    vertices: &mut Vec<Vertex>,
+    app: &SingleSessionApp,
+    rect: Rect,
+    size: PhysicalSize<u32>,
+) {
+    let browser = &app.side_panel().github_issues;
+    push_issue_panel_frame(vertices, rect, size);
+    let x = rect.x + ISSUE_BROWSER_PANEL_PADDING;
+    let max_width = (rect.width - ISSUE_BROWSER_PANEL_PADDING * 2.0).max(1.0);
+    let Some(issue) = browser.selected_issue() else {
+        push_issue_browser_text(
+            vertices,
+            "No issue selected",
+            x,
+            rect.y + 14.0,
+            ISSUE_BROWSER_TEXT,
+            size,
+            max_width,
+        );
+        return;
+    };
+
+    push_issue_browser_text(
+        vertices,
+        &format!("Preview #{}", issue.number),
+        x,
+        rect.y + 12.0,
+        ISSUE_BROWSER_TEXT,
+        size,
+        max_width,
+    );
+    push_issue_browser_text(
+        vertices,
+        &issue.title,
+        x,
+        rect.y + 36.0,
+        ISSUE_BROWSER_TEXT,
+        size,
+        max_width,
+    );
+    push_issue_browser_text(
+        vertices,
+        &format!(
+            "{} · {} · {} comments",
+            issue.priority,
+            issue.labels.join(","),
+            issue.comments
+        ),
+        x,
+        rect.y + 60.0,
+        ISSUE_BROWSER_MUTED_TEXT,
+        size,
+        max_width,
+    );
+
+    let action = Rect {
+        x,
+        y: rect.y + 86.0,
+        width: (max_width * 0.58).clamp(150.0, max_width),
+        height: 24.0,
+    };
+    push_rounded_rect(vertices, action, 7.0, [0.090, 0.315, 0.900, 0.13], size);
+    push_rounded_rect_border(
+        vertices,
+        action,
+        7.0,
+        1.2,
+        [0.090, 0.315, 0.900, 0.28],
+        size,
+    );
+    push_issue_browser_text(
+        vertices,
+        "Enter · investigate",
+        action.x + 10.0,
+        action.y + 6.0,
+        ISSUE_BROWSER_ACCENT,
+        size,
+        action.width - 18.0,
+    );
+
+    let mut y = rect.y + 126.0;
+    let line_height = bitmap_text_height(BITMAP_TEXT_PIXEL) + 8.0;
+    let max_y = rect.y + rect.height - ISSUE_BROWSER_PANEL_PADDING;
+    push_issue_browser_text(
+        vertices,
+        "Priority rationale",
+        x,
+        y,
+        ISSUE_BROWSER_ACCENT,
+        size,
+        max_width,
+    );
+    y += line_height;
+    for line in wrap_bitmap_text(&issue.priority_reason, BITMAP_TEXT_PIXEL, max_width) {
+        if y + line_height > max_y {
+            return;
+        }
+        push_issue_browser_text(
+            vertices,
+            &line,
+            x,
+            y,
+            ISSUE_BROWSER_MUTED_TEXT,
+            size,
+            max_width,
+        );
+        y += line_height;
+    }
+    y += 8.0;
+    push_issue_browser_text(
+        vertices,
+        "Issue body",
+        x,
+        y,
+        ISSUE_BROWSER_ACCENT,
+        size,
+        max_width,
+    );
+    y += line_height;
+    for line in issue.body_lines.iter().skip(browser.preview_scroll) {
+        for visual_line in wrap_bitmap_text(line, BITMAP_TEXT_PIXEL, max_width) {
+            if y + line_height > max_y {
+                return;
+            }
+            push_issue_browser_text(
+                vertices,
+                &visual_line,
+                x,
+                y,
+                ISSUE_BROWSER_TEXT,
+                size,
+                max_width,
+            );
+            y += line_height;
+        }
+        y += 4.0;
+    }
+    y += 8.0;
+    push_issue_browser_text(
+        vertices,
+        "Recent comments",
+        x,
+        y,
+        ISSUE_BROWSER_ACCENT,
+        size,
+        max_width,
+    );
+    y += line_height;
+    for line in &issue.comment_lines {
+        for visual_line in wrap_bitmap_text(line, BITMAP_TEXT_PIXEL, max_width) {
+            if y + line_height > max_y {
+                return;
+            }
+            push_issue_browser_text(
+                vertices,
+                &visual_line,
+                x,
+                y,
+                ISSUE_BROWSER_MUTED_TEXT,
+                size,
+                max_width,
+            );
+            y += line_height;
+        }
+        y += 4.0;
+    }
+}
+
+fn compose_single_session_issue_browser_vertices(
+    app: &SingleSessionApp,
+    layout: IssueBrowserLayout,
+    child_vertices: &[Vertex],
+    child_size: PhysicalSize<u32>,
+    size: PhysicalSize<u32>,
+) -> Vec<Vertex> {
+    let mut vertices = Vec::with_capacity(child_vertices.len() + 1024);
+    push_gradient_rect(
+        &mut vertices,
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: size.width.max(1) as f32,
+            height: size.height.max(1) as f32,
+        },
+        BACKGROUND_TOP_LEFT,
+        BACKGROUND_BOTTOM_LEFT,
+        BACKGROUND_BOTTOM_RIGHT,
+        BACKGROUND_TOP_RIGHT,
+        size,
+    );
+    push_issue_browser_shell(&mut vertices, app, layout, size);
+    append_child_vertices_to_parent_with_opacity(
+        &mut vertices,
+        child_vertices,
+        child_size,
+        layout.chat,
+        size,
+        1.0,
+    );
+    vertices
 }
 
 const HERO_MASK_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
