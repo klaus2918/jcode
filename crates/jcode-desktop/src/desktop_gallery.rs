@@ -50,6 +50,7 @@ pub(super) fn temporary_app(state: &str) -> DesktopApp {
         detail: "fixture".to_string(),
         preview_lines: Vec::new(),
         detail_lines: Vec::new(),
+        transcript_messages: Vec::new(),
     }));
     app.messages.push(SingleSessionMessage::meta(format!(
         "TEMP GALLERY STATE: {state}"

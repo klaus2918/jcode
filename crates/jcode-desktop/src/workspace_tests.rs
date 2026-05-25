@@ -242,6 +242,7 @@ fn insert_mode_slash_resume_with_image_remains_normal_prompt() {
         detail: "recent".to_string(),
         preview_lines: Vec::new(),
         detail_lines: Vec::new(),
+        transcript_messages: Vec::new(),
     }]);
     workspace.handle_key(KeyInput::Character("i".to_string()));
     assert!(workspace.attach_image("image/png".to_string(), "abc".to_string()));
@@ -803,5 +804,6 @@ fn session_card(id: &str, title: &str) -> SessionCard {
         detail: "1 msgs · workspace".to_string(),
         preview_lines: vec!["user hello".to_string()],
         detail_lines: vec!["user expanded hello".to_string()],
+        transcript_messages: Vec::new(),
     }
 }

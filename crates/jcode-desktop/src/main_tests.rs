@@ -430,6 +430,7 @@ fn desktop_hot_reload_persists_workspace_focus_before_spawn() -> Result<()> {
             detail: "1 message".to_string(),
             preview_lines: vec![],
             detail_lines: vec![],
+            transcript_messages: Vec::new(),
         },
         workspace::SessionCard {
             session_id: "session-b".to_string(),
@@ -438,6 +439,7 @@ fn desktop_hot_reload_persists_workspace_focus_before_spawn() -> Result<()> {
             detail: "2 messages".to_string(),
             preview_lines: vec![],
             detail_lines: vec![],
+            transcript_messages: Vec::new(),
         },
     ];
     let mut workspace = Workspace::from_session_cards(cards);
@@ -486,6 +488,7 @@ fn desktop_hot_reload_restarts_default_launched_workspace_as_workspace() -> Resu
             detail: "already on screen".to_string(),
             preview_lines: vec!["same content".to_string()],
             detail_lines: vec![],
+            transcript_messages: Vec::new(),
         },
     ]));
 
@@ -661,6 +664,7 @@ fn workspace_vertex_capacity_hint_scales_with_surface_count() {
         detail: "1 msg".to_string(),
         preview_lines: Vec::new(),
         detail_lines: Vec::new(),
+        transcript_messages: Vec::new(),
     };
     let second_card = workspace::SessionCard {
         session_id: "b".to_string(),
@@ -669,6 +673,7 @@ fn workspace_vertex_capacity_hint_scales_with_surface_count() {
         detail: "2 msgs".to_string(),
         preview_lines: Vec::new(),
         detail_lines: Vec::new(),
+        transcript_messages: Vec::new(),
     };
     let mut workspace = Workspace::from_session_cards(vec![first_card.clone()]);
 
@@ -1527,6 +1532,7 @@ fn workspace_zoom_uses_surface_transition_frames() {
         detail: "3 msgs".to_string(),
         preview_lines: Vec::new(),
         detail_lines: Vec::new(),
+        transcript_messages: Vec::new(),
     }]);
     let size = PhysicalSize::new(1280, 800);
     let layout = workspace_render_layout(&workspace, size, Some(size));
@@ -5595,6 +5601,7 @@ fn test_session_card(id: &str, title: &str, status: &str) -> workspace::SessionC
         detail: format!("2 msgs · {title}-workspace"),
         preview_lines: vec![format!("user {title} prompt")],
         detail_lines: vec![format!("assistant {title} response")],
+        transcript_messages: Vec::new(),
     }
 }
 
@@ -6444,6 +6451,7 @@ fn single_session_session_switcher_renders_tui_style_cards_and_role_preview() {
             "tool bash completed".to_string(),
             "sys system note".to_string(),
         ],
+        transcript_messages: Vec::new(),
     }]);
 
     let styled = app.inline_widget_styled_lines();
@@ -8458,6 +8466,7 @@ fn session_attach_does_not_move_submitted_fresh_layout() {
         detail: "1 msg".to_string(),
         preview_lines: Vec::new(),
         detail_lines: Vec::new(),
+        transcript_messages: Vec::new(),
     }));
 
     let after_key = single_session_text_key(&app, size);
@@ -8613,6 +8622,7 @@ fn single_session_spawn_resets_to_fresh_native_draft() {
         detail: "3 msgs".to_string(),
         preview_lines: Vec::new(),
         detail_lines: Vec::new(),
+        transcript_messages: Vec::new(),
     };
     let mut app = SingleSessionApp::new(Some(card));
     app.handle_key(KeyInput::Character("draft".to_string()));
@@ -8634,6 +8644,7 @@ fn single_session_wraps_one_session_card() {
         detail: "3 msgs".to_string(),
         preview_lines: vec!["user hello".to_string()],
         detail_lines: vec!["assistant hi".to_string()],
+        transcript_messages: Vec::new(),
     };
     let mut app = SingleSessionApp::new(Some(card));
 
@@ -8661,6 +8672,7 @@ fn workspace_focused_session_promotes_to_single_session_app() {
             detail: "3 msgs".to_string(),
             preview_lines: vec!["user hello".to_string()],
             detail_lines: vec!["assistant hi".to_string()],
+            transcript_messages: Vec::new(),
         },
     ]));
 
@@ -8680,6 +8692,7 @@ fn workspace_session_panel_app_uses_single_session_body_and_focused_draft() {
         detail: "3 msgs".to_string(),
         preview_lines: vec!["user hello".to_string()],
         detail_lines: vec!["assistant hi".to_string()],
+        transcript_messages: Vec::new(),
     }]);
     workspace.handle_key(KeyInput::Character("i".to_string()));
     workspace.handle_key(KeyInput::Character("draft text".to_string()));
@@ -8698,6 +8711,43 @@ fn workspace_session_panel_app_uses_single_session_body_and_focused_draft() {
 }
 
 #[test]
+fn workspace_session_panel_prefers_filtered_transcript_over_card_preview() {
+    let workspace = Workspace::from_session_cards(vec![workspace::SessionCard {
+        session_id: "session_alpha".to_string(),
+        title: "alpha".to_string(),
+        subtitle: "active".to_string(),
+        detail: "3 msgs".to_string(),
+        preview_lines: vec![
+            "user <system-reminder>raw startup context</system-reminder>".to_string(),
+        ],
+        detail_lines: vec!["expanded transcript raw fallback".to_string()],
+        transcript_messages: vec![
+            workspace::SessionTranscriptMessage {
+                role: "user".to_string(),
+                content: "clean workspace prompt".to_string(),
+            },
+            workspace::SessionTranscriptMessage {
+                role: "assistant".to_string(),
+                content: "clean workspace answer".to_string(),
+            },
+        ],
+    }]);
+
+    let surface = workspace.focused_surface().expect("focused surface");
+    let app = workspace_single_session_app_for_surface(&workspace, surface)
+        .expect("session surface should become a single-session app");
+    let body = app.body_lines().join("\n");
+
+    assert!(body.contains("clean workspace prompt"));
+    assert!(body.contains("clean workspace answer"));
+    assert!(!body.contains("system-reminder"));
+    assert!(!body.contains("raw startup context"));
+    assert!(!body.contains("single session mode"));
+    assert!(!body.contains("recent transcript"));
+    assert!(!body.contains("expanded transcript raw fallback"));
+}
+
+#[test]
 fn workspace_session_panel_composes_single_session_geometry() {
     let workspace = Workspace::from_session_cards(vec![workspace::SessionCard {
         session_id: "session_alpha".to_string(),
@@ -8706,6 +8756,7 @@ fn workspace_session_panel_composes_single_session_geometry() {
         detail: "3 msgs".to_string(),
         preview_lines: vec!["user hello".to_string()],
         detail_lines: vec!["assistant hi".to_string()],
+        transcript_messages: Vec::new(),
     }]);
     let size = PhysicalSize::new(1280, 800);
     let render_layout = workspace_render_layout(&workspace, size, None);
@@ -8811,6 +8862,7 @@ fn workspace_session_panel_reuses_single_session_primitive_exactly() {
         detail: "3 msgs".to_string(),
         preview_lines: vec!["user hello".to_string()],
         detail_lines: vec!["assistant hi".to_string()],
+        transcript_messages: Vec::new(),
     }]);
     workspace.handle_key(KeyInput::Character("i".to_string()));
     workspace.handle_key(KeyInput::Character("draft text".to_string()));
@@ -8907,6 +8959,7 @@ fn single_session_surface_is_the_panel_primitive() {
         detail: "3 msgs".to_string(),
         preview_lines: Vec::new(),
         detail_lines: Vec::new(),
+        transcript_messages: Vec::new(),
     };
 
     let surface = single_session_surface(Some(&card));
@@ -8931,6 +8984,7 @@ fn focused_panel_draft_only_shows_for_focused_insert_panel() {
         detail: "1 msg".to_string(),
         preview_lines: Vec::new(),
         detail_lines: Vec::new(),
+        transcript_messages: Vec::new(),
     }]);
     workspace.handle_key(KeyInput::Character("i".to_string()));
     workspace.handle_key(KeyInput::Character("draft text".to_string()));
@@ -9031,6 +9085,7 @@ fn desktop_preferences_save_is_queued_off_ui_thread() {
         detail: "1 msg".to_string(),
         preview_lines: Vec::new(),
         detail_lines: Vec::new(),
+        transcript_messages: Vec::new(),
     }]);
     let expected = workspace.preferences();
     let (tx, rx) = mpsc::channel();

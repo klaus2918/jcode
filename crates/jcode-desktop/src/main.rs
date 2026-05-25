@@ -4622,6 +4622,7 @@ fn benchmark_workspace_session_cards(count: usize) -> Vec<workspace::SessionCard
                     )
                 })
                 .collect(),
+            transcript_messages: Vec::new(),
         })
         .collect()
 }

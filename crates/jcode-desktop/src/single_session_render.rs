@@ -10688,6 +10688,7 @@ mod tests {
             detail: "3 msgs · just now · jcode".to_string(),
             preview_lines: vec!["user hello from resume picker".to_string()],
             detail_lines: vec!["user hello from resume picker".to_string()],
+            transcript_messages: Vec::new(),
         }]);
         assert!(
             app.inline_widget_styled_lines()

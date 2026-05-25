@@ -1369,13 +1369,25 @@ fn hash_session_switcher_cache_state<H: Hasher>(switcher: &SessionSwitcherState,
 impl SingleSessionApp {
     pub(crate) fn new(session: Option<workspace::SessionCard>) -> Self {
         let welcome = SingleSessionWelcomeState::new(session.is_some());
+        let messages = session
+            .as_ref()
+            .filter(|session| !session.transcript_messages.is_empty())
+            .map(|session| {
+                session
+                    .transcript_messages
+                    .iter()
+                    .cloned()
+                    .map(SingleSessionMessage::from_session_transcript)
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             session,
             draft: String::new(),
             draft_cursor: 0,
             detail_scroll: 0,
             live_session_id: None,
-            messages: Vec::new(),
+            messages,
             streaming_response: String::new(),
             status: None,
             status_kind: None,
@@ -7829,6 +7841,7 @@ pub(crate) fn single_session_surface(
             .unwrap_or_else(|| "new jcode session".to_string()),
         body_lines: lines.clone(),
         detail_lines: lines,
+        transcript_messages: Vec::new(),
         session_id: session.map(|session| session.session_id.clone()),
         lane: 0,
         column: 0,
