@@ -2833,15 +2833,6 @@ impl AttachmentChipMotionRegistry {
             }
         }
 
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.initialized = false;
-        self.generation = 0;
-        self.states.clear();
-    }
-}
-
         self.states
             .retain(|_, state| state.last_seen_generation == generation);
 
@@ -2851,6 +2842,15 @@ impl AttachmentChipMotionRegistry {
             exiting,
             active,
         }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.initialized = false;
+        self.generation = 0;
+        self.states.clear();
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct StdinOverlayTarget {
     key: u64,
@@ -4452,15 +4452,6 @@ fn attachment_chip_motion_cache_key(
     active.hash(&mut hasher);
     let mut entries = visuals.iter().collect::<Vec<_>>();
     entries.sort_by_key(|(key, _)| **key);
-        run.index.hash(&mut hasher);
-        hash_f32(visual.opacity, &mut hasher);
-        hash_f32(visual.x_offset_pixels, &mut hasher);
-        hash_f32(visual.y_offset_pixels, &mut hasher);
-        hash_f32(visual.scale, &mut hasher);
-    }
-    hasher.finish()
-}
-
     for (key, visual) in entries {
         key.hash(&mut hasher);
         hash_f32(visual.opacity, &mut hasher);
@@ -4470,6 +4461,15 @@ fn attachment_chip_motion_cache_key(
     }
     for (run, visual) in exiting {
         run.key.hash(&mut hasher);
+        run.index.hash(&mut hasher);
+        hash_f32(visual.opacity, &mut hasher);
+        hash_f32(visual.x_offset_pixels, &mut hasher);
+        hash_f32(visual.y_offset_pixels, &mut hasher);
+        hash_f32(visual.scale, &mut hasher);
+    }
+    hasher.finish()
+}
+
 fn stdin_overlay_target(
     app: &SingleSessionApp,
     rendered_body_lines: &[SingleSessionStyledLine],
@@ -9500,12 +9500,12 @@ mod tests {
         assert!(exit_mid_visual.y_offset_pixels < 0.0);
     }
 
-        let now = Instant::now();
-        let line_height = 28.0;
-        let first = SingleSessionStyledLine::new("```rust", SingleSessionLineStyle::Code);
     #[test]
     fn transcript_card_motion_animates_new_card_entry() {
         let mut registry = TranscriptCardMotionRegistry::default();
+        let now = Instant::now();
+        let line_height = 28.0;
+        let first = SingleSessionStyledLine::new("```rust", SingleSessionLineStyle::Code);
         let spacer = SingleSessionStyledLine::new("between", SingleSessionLineStyle::Assistant);
         let second = SingleSessionStyledLine::new("```text", SingleSessionLineStyle::Code);
 
