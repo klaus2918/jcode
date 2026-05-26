@@ -13,6 +13,7 @@ use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 use workspace::{KeyInput, KeyOutcome, SessionTranscriptMessage};
@@ -5952,6 +5953,14 @@ struct ExternalCliSessionCandidate {
 
 fn latest_external_cli_continuation_suggestion() -> Option<String> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    std::panic::catch_unwind(AssertUnwindSafe(|| {
+        latest_external_cli_continuation_suggestion_from_home(&home)
+    }))
+    .ok()
+    .flatten()
+}
+
+fn latest_external_cli_continuation_suggestion_from_home(home: &Path) -> Option<String> {
     let mut candidates = Vec::new();
     candidates.extend(latest_jsonl_candidates(
         &home.join(".codex/sessions"),
@@ -5996,7 +6005,7 @@ fn latest_jsonl_candidates(
     source: &'static str,
     scan_limit: usize,
 ) -> Vec<ExternalCliSessionCandidate> {
-    if !root.exists() {
+    if !root.is_dir() {
         return Vec::new();
     }
     let mut files = Vec::new();
@@ -6080,6 +6089,9 @@ fn external_cli_candidate_from_jsonl(
         {
             last_user_text = Some(text);
         }
+    }
+    if working_dir.is_none() && last_user_text.is_none() && summary_text.is_none() {
+        return None;
     }
     Some(ExternalCliSessionCandidate {
         source,
@@ -9283,6 +9295,44 @@ mod tests {
             suggestion,
             "continue the latest Codex session in jcode: implement startup continuation suggestions"
         );
+    }
+
+    #[test]
+    fn latest_external_cli_suggestion_missing_roots_returns_none() {
+        let home =
+            std::env::temp_dir().join(format!("jcode-missing-external-cli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(
+            latest_external_cli_continuation_suggestion_from_home(&home),
+            None
+        );
+    }
+
+    #[test]
+    fn latest_external_cli_suggestion_ignores_malformed_jsonl() {
+        let home = std::env::temp_dir().join(format!(
+            "jcode-malformed-external-cli-{}-{:?}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let codex_dir = home.join(".codex/sessions");
+        std::fs::create_dir_all(&codex_dir).expect("create fake codex dir");
+        std::fs::write(
+            codex_dir.join("broken.jsonl"),
+            "not json\n{\"type\":\"message\",\"role\":\"assistant\",\"content\":[]\n",
+        )
+        .expect("write malformed jsonl");
+
+        assert_eq!(
+            latest_external_cli_continuation_suggestion_from_home(&home),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
