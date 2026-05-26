@@ -137,6 +137,34 @@ impl Default for SessionSearchTool {
     }
 }
 
+/// Warm the recent-session search index in the background so the first
+/// interactive `session_search` call does not pay the cold indexing cost.
+pub fn spawn_recent_index_warmup() {
+    tokio::task::spawn_blocking(|| {
+        let start = std::time::Instant::now();
+        let result = (|| -> Result<usize> {
+            let sessions_dir = storage::jcode_dir()?.join("sessions");
+            let collection = collect_session_files(&sessions_dir, DEFAULT_MAX_SCAN_SESSIONS)?;
+            if collection.files.is_empty() {
+                return Ok(0);
+            }
+            load_or_build_recent_index(&sessions_dir, &collection.files)?;
+            Ok(collection.files.len())
+        })();
+
+        match result {
+            Ok(count) => crate::logging::info(&format!(
+                "Session search index warmup completed for {count} session(s) in {}ms",
+                start.elapsed().as_millis()
+            )),
+            Err(err) => crate::logging::info(&format!(
+                "Session search index warmup skipped/failed after {}ms: {err}",
+                start.elapsed().as_millis()
+            )),
+        }
+    });
+}
+
 #[derive(Debug, Clone)]
 struct SearchOptions {
     current_session_id: String,

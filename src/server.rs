@@ -899,6 +899,11 @@ impl Server {
             );
         }
 
+        // Warm the lightweight session-search index after daemon startup. This
+        // keeps the first agent `session_search` call from paying the cold
+        // indexing cost while leaving exhaustive searches available on demand.
+        crate::tool::spawn_recent_index_warmup();
+
         // Spawn reload monitor (event-driven via in-process channel).
         // In the unified server design, self-dev sessions share the main server,
         // so the shared server must always listen for reload signals.
