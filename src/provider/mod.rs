@@ -58,6 +58,18 @@ pub(crate) use routing::{
     is_transient_transport_error, should_eager_detect_copilot_tier,
 };
 
+/// Whether reasoning deltas should be persisted in session history for later
+/// provider context reconstruction.
+///
+/// Display is controlled separately by `display.show_thinking`. Persist only
+/// when a provider request builder can safely send the stored block back in
+/// the provider-native shape. Anthropic thinking blocks require signatures,
+/// which the generic `ContentBlock::Reasoning` does not preserve, so storing
+/// Anthropic reasoning would bloat history without restoring provider context.
+pub fn stores_reasoning_content_for_context(provider_name: &str) -> bool {
+    provider_name.eq_ignore_ascii_case("openrouter")
+}
+
 fn cached_live_models_for_openai_compatible_profile(
     resolved: &crate::provider_catalog::ResolvedOpenAiCompatibleProfile,
 ) -> Option<Vec<String>> {

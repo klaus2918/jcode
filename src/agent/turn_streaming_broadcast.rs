@@ -209,7 +209,7 @@ impl Agent {
             let mut sdk_tool_results: std::collections::HashMap<String, (String, bool)> =
                 std::collections::HashMap::new();
             let store_reasoning_content =
-                matches!(self.provider.name(), "openrouter" | "anthropic");
+                crate::provider::stores_reasoning_content_for_context(self.provider.name());
             let mut reasoning_content = String::new();
             let mut openai_native_compaction: Option<(String, usize)> = None;
             // Track tool_use_id -> name for tool results
