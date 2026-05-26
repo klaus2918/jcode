@@ -232,6 +232,9 @@ pub fn push_reasoning_content_block(
                 signature: signature.to_string(),
             });
         }
+    } else if provider_name.eq_ignore_ascii_case("openai") {
+        // OpenAI reasoning is stored as native `OpenAIReasoning` output items
+        // when available, so avoid adding a duplicate generic reasoning block.
     } else {
         blocks.push(ContentBlock::Reasoning {
             text: reasoning_content.to_string(),

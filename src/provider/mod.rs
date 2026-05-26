@@ -66,9 +66,12 @@ pub(crate) use routing::{
 /// the provider-native shape. Anthropic is included only because we preserve
 /// its thinking signatures in `ContentBlock::AnthropicThinking`.
 pub fn stores_reasoning_content_for_context(provider_name: &str) -> bool {
+    if !crate::config::config().provider.preserve_reasoning_context {
+        return false;
+    }
     matches!(
         provider_name.to_ascii_lowercase().as_str(),
-        "openrouter" | "anthropic"
+        "openrouter" | "anthropic" | "openai"
     )
 }
 

@@ -836,7 +836,8 @@ pub(crate) fn build_contents(messages: &[Message]) -> Vec<GeminiContent> {
                         });
                     }
                     crate::message::ContentBlock::Reasoning { .. }
-                    | crate::message::ContentBlock::AnthropicThinking { .. } => {}
+                    | crate::message::ContentBlock::AnthropicThinking { .. }
+                    | crate::message::ContentBlock::OpenAIReasoning { .. } => {}
                     crate::message::ContentBlock::ToolUse { id, name, input } => {
                         parts.push(GeminiPart {
                             function_call: Some(GeminiFunctionCall {

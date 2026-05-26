@@ -780,6 +780,17 @@ impl crate::tui::TuiState for App {
                         } => {
                             asst_chars += thinking.len() + signature.len();
                         }
+                        ContentBlock::OpenAIReasoning {
+                            id,
+                            summary,
+                            encrypted_content,
+                            status,
+                        } => {
+                            asst_chars += id.len()
+                                + summary.iter().map(String::len).sum::<usize>()
+                                + encrypted_content.as_ref().map(String::len).unwrap_or(0)
+                                + status.as_ref().map(String::len).unwrap_or(0);
+                        }
                         ContentBlock::Image { data, .. } => {
                             user_chars += data.len();
                         }

@@ -635,7 +635,9 @@ fn stored_message_visible_text(message: &jcode::session::StoredMessage) -> Strin
             ContentBlock::Image { media_type, .. } => {
                 parts.push(format!("[image:{}]", media_type));
             }
-            ContentBlock::OpenAICompaction { .. } | ContentBlock::AnthropicThinking { .. } => {}
+            ContentBlock::OpenAICompaction { .. }
+            | ContentBlock::AnthropicThinking { .. }
+            | ContentBlock::OpenAIReasoning { .. } => {}
         }
     }
     parts.join("\n\n")

@@ -1015,6 +1015,11 @@ impl Session {
                     ContentBlock::AnthropicThinking { thinking, .. } => {
                         *thinking = crate::message::redact_secrets(thinking);
                     }
+                    ContentBlock::OpenAIReasoning { summary, .. } => {
+                        for item in summary {
+                            *item = crate::message::redact_secrets(item);
+                        }
+                    }
                     ContentBlock::ToolResult { content, .. } => {
                         *content = crate::message::redact_secrets(content);
                     }
