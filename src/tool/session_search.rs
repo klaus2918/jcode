@@ -1012,6 +1012,20 @@ fn search_external_sessions(query: &QueryProfile, options: &SearchOptions) -> Se
         report.external_sources.push("claude");
         for session in sessions.into_iter().take(options.max_scan_sessions) {
             let path = PathBuf::from(&session.full_path);
+            if !external_path_or_raw_matches_query(&path, query)
+                && !external_text_matches_query(&session.session_id, query)
+                && !external_text_matches_query(&session.first_prompt, query)
+                && !session
+                    .summary
+                    .as_deref()
+                    .is_some_and(|summary| external_text_matches_query(summary, query))
+                && !session
+                    .project_path
+                    .as_deref()
+                    .is_some_and(|project| external_text_matches_query(project, query))
+            {
+                continue;
+            }
             let messages = load_claude_external_messages(&path, options.include_tools);
             let created_at = session.created.unwrap_or_else(Utc::now);
             let updated_at = session.modified.or(session.created).unwrap_or(created_at);
@@ -1043,6 +1057,7 @@ fn search_external_sessions(query: &QueryProfile, options: &SearchOptions) -> Se
         &mut report,
         "codex",
         ".codex/sessions",
+        query,
         options,
         load_codex_external_session,
     );
@@ -1051,6 +1066,7 @@ fn search_external_sessions(query: &QueryProfile, options: &SearchOptions) -> Se
         &mut report,
         "pi",
         ".pi/agent/sessions",
+        query,
         options,
         load_pi_external_session,
     );
@@ -1075,6 +1091,7 @@ fn collect_external_jsonl_source(
     report: &mut SearchReport,
     source: &'static str,
     root_relative: &str,
+    query: &QueryProfile,
     options: &SearchOptions,
     loader: fn(&Path, bool) -> ImportCoreResult<Option<ExternalSessionRecord>>,
 ) {
@@ -1089,12 +1106,28 @@ fn collect_external_jsonl_source(
     }
     report.external_sources.push(source);
     for path in collect_recent_files_recursive(&root, "jsonl", options.max_scan_sessions) {
+        if !external_path_or_raw_matches_query(&path, query) {
+            continue;
+        }
         match loader(&path, options.include_tools) {
             Ok(Some(record)) => records.push(record),
             Ok(None) => {}
             Err(_) => report.parse_errors += 1,
         }
     }
+}
+
+fn external_path_or_raw_matches_query(path: &Path, query: &QueryProfile) -> bool {
+    if path_matches_query(&path.to_string_lossy(), query) {
+        return true;
+    }
+    std::fs::read(path)
+        .map(|raw| raw_matches_query(&raw, query))
+        .unwrap_or(false)
+}
+
+fn external_text_matches_query(text: &str, query: &QueryProfile) -> bool {
+    jcode_session_types::normalized_session_search_text_matches(&text.to_lowercase(), query)
 }
 
 fn collect_opencode_external_sessions(
