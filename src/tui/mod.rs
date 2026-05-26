@@ -153,6 +153,10 @@ pub trait TuiState {
     }
     /// Total session token usage (input, output) - used for high usage warnings
     fn total_session_tokens(&self) -> Option<(u64, u64)>;
+    /// Number of jcode compactions already applied to this session, when known.
+    fn session_compaction_count(&self) -> usize {
+        0
+    }
     /// Whether running in remote (client-server) mode
     fn is_remote_mode(&self) -> bool;
     /// Whether running in canary/self-dev mode

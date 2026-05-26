@@ -342,6 +342,37 @@ fn format_stream_tokens(tokens: u64) -> String {
     }
 }
 
+fn occasional_session_history_warning(
+    total_tokens: u64,
+    compaction_count: usize,
+    width: usize,
+    elapsed_secs: u64,
+) -> Option<String> {
+    if total_tokens < 250_000 || width < 64 {
+        return None;
+    }
+
+    // This is not current context usage, so keep it an occasional nudge rather
+    // than a persistent warning. Reappears briefly as the session grows.
+    if elapsed_secs % 90 >= 12 {
+        return None;
+    }
+
+    let tokens = format_stream_tokens(total_tokens);
+    let compactions = if compaction_count > 0 {
+        format!(
+            " and {compaction_count} compact{}",
+            if compaction_count == 1 { "" } else { "s" }
+        )
+    } else {
+        String::new()
+    };
+
+    Some(format!(
+        "Session history: {tokens} tokens processed{compactions}; /clear starts fresh context"
+    ))
+}
+
 fn connection_phase_label(phase: &ConnectionPhase) -> String {
     match phase {
         ConnectionPhase::Authenticating => "refreshing auth".to_string(),
@@ -800,22 +831,20 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         }
     } else if let Some((total_in, total_out)) = app.total_session_tokens() {
         let total = total_in + total_out;
-        if total > 100_000 {
-            let warning_color = if total > 150_000 {
+        if let Some(warning) = occasional_session_history_warning(
+            total,
+            app.session_compaction_count(),
+            area.width as usize,
+            app.animation_elapsed() as u64,
+        ) {
+            let warning_color = if total >= 1_000_000 || app.session_compaction_count() >= 3 {
                 rgb(255, 100, 100)
             } else {
                 rgb(255, 193, 7)
             };
             Line::from(vec![
                 Span::styled("⚠ ", Style::default().fg(warning_color)),
-                Span::styled(
-                    format!("Session: {}k tokens ", total / 1000),
-                    Style::default().fg(warning_color),
-                ),
-                Span::styled(
-                    "(consider /clear for fresh context)",
-                    Style::default().fg(dim_color()),
-                ),
+                Span::styled(warning, Style::default().fg(warning_color)),
             ])
         } else if let Some(tip) =
             occasional_status_tip(area.width as usize, app.animation_elapsed() as u64)
@@ -874,6 +903,19 @@ fn streaming_status_spans(
 mod tests {
     use super::*;
     use ratatui::style::Modifier;
+
+    #[test]
+    fn session_history_warning_is_clear_and_occasional() {
+        assert!(occasional_session_history_warning(249_999, 0, 100, 0).is_none());
+        assert!(occasional_session_history_warning(300_000, 0, 63, 0).is_none());
+        assert!(occasional_session_history_warning(300_000, 0, 100, 12).is_none());
+
+        let warning = occasional_session_history_warning(2_522_000, 4, 100, 0)
+            .expect("large sessions should get a brief reminder");
+        assert!(warning.contains("Session history: 2.5M tokens processed and 4 compacts"));
+        assert!(warning.contains("/clear starts fresh context"));
+        assert!(!warning.contains("Context usage"));
+    }
 
     #[test]
     fn command_suggestion_hint_line_count_reserves_vertical_rows() {

@@ -496,6 +496,18 @@ impl crate::tui::TuiState for App {
         self.remote_total_tokens
     }
 
+    fn session_compaction_count(&self) -> usize {
+        if self.is_remote || !self.provider.uses_jcode_compaction() {
+            return 0;
+        }
+        self.registry
+            .compaction()
+            .try_read()
+            .ok()
+            .map(|manager| manager.compacted_count())
+            .unwrap_or(0)
+    }
+
     fn is_remote_mode(&self) -> bool {
         self.is_remote
     }
