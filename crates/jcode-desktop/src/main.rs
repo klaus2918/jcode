@@ -86,7 +86,7 @@ use winit::window::{Fullscreen, Window, WindowBuilder};
 use workspace::{InputMode, KeyInput, KeyOutcome, PanelSizePreset, Workspace};
 
 use std::borrow::Cow;
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -4324,6 +4324,7 @@ fn run_scroll_render_benchmark(frames: usize) -> Result<()> {
     let mut workspace_full_text_pane_count = 0usize;
     let mut workspace_full_text_area_count = 0usize;
     let mut workspace_full_font_system = benchmark_font_system();
+    let mut workspace_full_text_pane_cache = HashMap::new();
     let (workspace_full_frame_ms, workspace_full_frame_checksum) =
         benchmark_phase(frames, |frame| {
             let key = match frame % 4 {
@@ -4337,10 +4338,8 @@ fn run_scroll_render_benchmark(frames: usize) -> Result<()> {
             workspace_full_visible_surfaces +=
                 workspace_visible_surface_count(&workspace_full_app, size, layout);
             let phase_started = Instant::now();
-            let vertices = build_vertices(&workspace_full_app, size, layout, 0.0, None);
-            workspace_full_vertices_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
-            let phase_started = Instant::now();
             let panes = build_workspace_single_session_text_panes(
+                &mut workspace_full_text_pane_cache,
                 &workspace_full_app,
                 size,
                 layout,
@@ -4348,12 +4347,35 @@ fn run_scroll_render_benchmark(frames: usize) -> Result<()> {
                 &mut workspace_full_font_system,
             );
             workspace_full_text_panes_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
-            workspace_full_text_pane_count += panes.len();
+            let pane_count = panes.len();
+            workspace_full_text_pane_count += pane_count;
             let phase_started = Instant::now();
             let areas = workspace_single_session_text_areas(&panes);
             workspace_full_text_areas_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
-            workspace_full_text_area_count += areas.len();
-            vertices.len() ^ panes.len() ^ areas.len() ^ workspace_full_app.surfaces.len()
+            let area_count = areas.len();
+            workspace_full_text_area_count += area_count;
+            drop(areas);
+            drop(panes);
+            let phase_started = Instant::now();
+            let mut vertices =
+                Vec::with_capacity(workspace_vertex_capacity_hint(&workspace_full_app));
+            build_vertices_into(
+                WorkspaceVertexBuildParams {
+                    workspace: &workspace_full_app,
+                    size,
+                    render_layout: layout,
+                    focus_pulse: 0.0,
+                    space_hold_progress: None,
+                    surface_frames: None,
+                    exiting_surfaces: &HashMap::new(),
+                    workspace_panel_cache: Some(&workspace_full_text_pane_cache),
+                    status_color: workspace_status_bar_target_color(&workspace_full_app),
+                    status_text_frame: None,
+                },
+                &mut vertices,
+            );
+            workspace_full_vertices_ms += phase_started.elapsed().as_secs_f64() * 1000.0;
+            vertices.len() ^ pane_count ^ area_count ^ workspace_full_app.surfaces.len()
         });
 
     let mut large_app = desktop_large_transcript_benchmark_app();
@@ -8712,6 +8734,7 @@ struct Canvas {
     viewport_animation: AnimatedViewport,
     surface_transitions: SurfaceTransitionAnimator,
     workspace_surface_exit_cache: HashMap<u64, workspace::Surface>,
+    workspace_text_pane_cache: HashMap<u64, CachedWorkspaceSingleSessionTextPane>,
     focus_pulse: FocusPulse,
     status_color_transition: ColorTransition,
     status_text_transition: StatusTextTransition,
@@ -8845,6 +8868,7 @@ impl Canvas {
             viewport_animation: AnimatedViewport::default(),
             surface_transitions: SurfaceTransitionAnimator::default(),
             workspace_surface_exit_cache: HashMap::new(),
+            workspace_text_pane_cache: HashMap::new(),
             focus_pulse: FocusPulse::default(),
             status_color_transition: ColorTransition::default(),
             status_text_transition: StatusTextTransition::default(),
@@ -8932,6 +8956,7 @@ impl Canvas {
         self.primitive_vertices_cache_key = None;
         self.primitive_vertices_cache.clear();
         self.primitive_frame_vertices.clear();
+        self.workspace_text_pane_cache.clear();
         self.app_mode_transition.clear();
         self.app_mode_transition_vertices.clear();
         self.single_session_scroll_motion.clear();
@@ -9797,6 +9822,7 @@ impl Canvas {
 
         let mut single_session_rendered_body_key = None;
         let mut workspace_text_panes = Vec::new();
+        let mut workspace_text_pane_cache_for_frame = None;
         let mut body_line_count = 0usize;
         let mut viewport_line_count = 0usize;
         let mut body_text_window_line_count = 0usize;
@@ -9858,7 +9884,10 @@ impl Canvas {
             {
                 self.ensure_font_system();
                 if let Some(font_system) = self.font_system.as_mut() {
+                    let cache = workspace_text_pane_cache_for_frame
+                        .get_or_insert_with(|| std::mem::take(&mut self.workspace_text_pane_cache));
                     workspace_text_panes = build_workspace_single_session_text_panes(
+                        cache,
                         workspace,
                         self.size,
                         render_layout,
@@ -10019,6 +10048,10 @@ impl Canvas {
             frame_profile.checkpoint("text_areas");
         }
         frame_profile.checkpoint("text_prepare_static");
+        drop(workspace_text_panes);
+        if let Some(cache) = workspace_text_pane_cache_for_frame.take() {
+            self.workspace_text_pane_cache = cache;
+        }
         if self.streaming_text_needs_prepare {
             let streaming_text_areas = if let (
                 DesktopApp::SingleSession(single_session),
@@ -10315,6 +10348,7 @@ impl Canvas {
                         space_hold_progress: workspace_space_hold_progress,
                         surface_frames: workspace_surface_frames_for_frame.as_ref(),
                         exiting_surfaces: &self.workspace_surface_exit_cache,
+                        workspace_panel_cache: Some(&self.workspace_text_pane_cache),
                         status_color,
                         status_text_frame,
                     },
@@ -11377,6 +11411,7 @@ fn build_vertices(
             space_hold_progress,
             surface_frames: None,
             exiting_surfaces: &HashMap::new(),
+            workspace_panel_cache: None,
             status_color: workspace_status_bar_target_color(workspace),
             status_text_frame: None,
         },
@@ -11400,12 +11435,23 @@ fn workspace_vertex_capacity_hint(workspace: &Workspace) -> usize {
             .saturating_mul(WORKSPACE_SURFACE_VERTEX_CAPACITY_HINT)
 }
 
-struct WorkspaceSingleSessionTextPane {
+struct WorkspaceSingleSessionTextPane<'a> {
+    app: &'a SingleSessionApp,
+    rect: Rect,
+    size: PhysicalSize<u32>,
+    rendered_body_lines: &'a [SingleSessionStyledLine],
+    buffers: &'a [Buffer],
+}
+
+struct CachedWorkspaceSingleSessionTextPane {
+    identity_key: u64,
+    text_key: SingleSessionTextKey,
     app: SingleSessionApp,
     rect: Rect,
     size: PhysicalSize<u32>,
     rendered_body_lines: Vec<SingleSessionStyledLine>,
     buffers: Vec<Buffer>,
+    child_vertices: Vec<Vertex>,
 }
 
 struct WorkspaceSurfaceTransitionFrames {
@@ -11651,14 +11697,15 @@ fn workspace_visible_surface_count(
     count
 }
 
-fn build_workspace_single_session_text_panes(
+fn build_workspace_single_session_text_panes<'a>(
+    cache: &'a mut HashMap<u64, CachedWorkspaceSingleSessionTextPane>,
     workspace: &Workspace,
     size: PhysicalSize<u32>,
     render_layout: WorkspaceRenderLayout,
     surface_frames: Option<&WorkspaceSurfaceTransitionFrames>,
     font_system: &mut FontSystem,
-) -> Vec<WorkspaceSingleSessionTextPane> {
-    let mut panes = Vec::new();
+) -> Vec<WorkspaceSingleSessionTextPane<'a>> {
+    let mut visible_surface_ids = Vec::new();
     if workspace.zoomed {
         if let Some(surface) = workspace.focused_surface()
             && surface.kind == workspace::SurfaceKind::Session
@@ -11672,50 +11719,195 @@ fn build_workspace_single_session_text_panes(
             };
             let rect = workspace_transitioned_surface_rect(surface_frames, surface.id, target_rect);
             let panel_size = workspace_panel_size(rect);
-            let rendered_body_lines =
-                single_session_rendered_body_lines_for_tick(&app, panel_size, 0);
-            let key = single_session_text_key_for_tick_with_rendered_body(
-                &app,
-                panel_size,
-                0,
-                0.0,
-                &rendered_body_lines,
-            );
-            let buffers = single_session_text_buffers_from_key(&key, panel_size, font_system);
-            panes.push(WorkspaceSingleSessionTextPane {
+            visible_surface_ids.push(surface.id);
+            refresh_workspace_text_pane_cache_entry(
+                cache,
+                surface.id,
+                workspace_surface_text_pane_identity_key(workspace, surface, panel_size),
                 app,
                 rect,
-                size: panel_size,
-                rendered_body_lines,
-                buffers,
-            });
+                panel_size,
+                font_system,
+            );
         }
-        return panes;
+        retain_workspace_text_pane_cache_for_workspace(cache, workspace);
+        return workspace_text_panes_from_cache(cache, &visible_surface_ids);
     }
 
-    // In window-manager mode, scrolling/panning must stay geometry-only. Building
-    // full single-session transcript text buffers for every visible card makes a
-    // workspace scroll frame scale with transcript complexity and font shaping.
-    // Keep rich transcript rendering for the zoomed/focused surface, and render
-    // lightweight session-card previews for the spatial overview.
-    let _ = (size, render_layout, surface_frames, font_system);
-    panes
+    for_each_visible_workspace_surface(
+        workspace,
+        size,
+        render_layout,
+        0.0,
+        |surface, target_rect, _, _| {
+            if surface.kind != workspace::SurfaceKind::Session {
+                return;
+            }
+            let Some(app) = workspace_single_session_app_for_surface(workspace, surface) else {
+                return;
+            };
+            let rect = workspace_transitioned_surface_rect(surface_frames, surface.id, target_rect);
+            let panel_size = workspace_panel_size(rect);
+            visible_surface_ids.push(surface.id);
+            refresh_workspace_text_pane_cache_entry(
+                cache,
+                surface.id,
+                workspace_surface_text_pane_identity_key(workspace, surface, panel_size),
+                app,
+                rect,
+                panel_size,
+                font_system,
+            );
+        },
+    );
+
+    retain_workspace_text_pane_cache_for_workspace(cache, workspace);
+    workspace_text_panes_from_cache(cache, &visible_surface_ids)
+}
+
+fn retain_workspace_text_pane_cache_for_workspace(
+    cache: &mut HashMap<u64, CachedWorkspaceSingleSessionTextPane>,
+    workspace: &Workspace,
+) {
+    let session_surface_ids = workspace
+        .surfaces
+        .iter()
+        .filter(|surface| surface.kind == workspace::SurfaceKind::Session)
+        .map(|surface| surface.id)
+        .collect::<HashSet<_>>();
+    cache.retain(|surface_id, _| session_surface_ids.contains(surface_id));
+}
+
+fn workspace_surface_text_pane_identity_key(
+    workspace: &Workspace,
+    surface: &workspace::Surface,
+    panel_size: PhysicalSize<u32>,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    panel_size.width.hash(&mut hasher);
+    panel_size.height.hash(&mut hasher);
+    surface.id.hash(&mut hasher);
+    workspace_surface_kind_key(surface.kind).hash(&mut hasher);
+    surface.title.hash(&mut hasher);
+    surface.body_lines.hash(&mut hasher);
+    surface.detail_lines.hash(&mut hasher);
+    surface.session_id.hash(&mut hasher);
+    surface.transcript_messages.len().hash(&mut hasher);
+    for message in &surface.transcript_messages {
+        message.role.hash(&mut hasher);
+        message.content.hash(&mut hasher);
+    }
+    if workspace.mode == InputMode::Insert && workspace.is_focused(surface.id) {
+        workspace.draft.hash(&mut hasher);
+        workspace.draft_cursor.hash(&mut hasher);
+        workspace.pending_images.len().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn workspace_surface_kind_key(kind: workspace::SurfaceKind) -> u8 {
+    match kind {
+        workspace::SurfaceKind::Session => 0,
+        workspace::SurfaceKind::Scratch => 1,
+        workspace::SurfaceKind::WorkspacePlaceholder => 2,
+        workspace::SurfaceKind::HotkeyHelp => 3,
+        workspace::SurfaceKind::Loading => 4,
+        workspace::SurfaceKind::Empty => 5,
+    }
+}
+
+fn refresh_workspace_text_pane_cache_entry(
+    cache: &mut HashMap<u64, CachedWorkspaceSingleSessionTextPane>,
+    surface_id: u64,
+    identity_key: u64,
+    app: SingleSessionApp,
+    rect: Rect,
+    panel_size: PhysicalSize<u32>,
+    font_system: &mut FontSystem,
+) {
+    if let Some(entry) = cache.get_mut(&surface_id)
+        && entry.identity_key == identity_key
+    {
+        entry.app = app;
+        entry.rect = rect;
+        entry.size = panel_size;
+        return;
+    }
+
+    let rendered_body_lines = single_session_rendered_body_lines_for_tick(&app, panel_size, 0);
+    let key = single_session_text_key_for_tick_with_rendered_body(
+        &app,
+        panel_size,
+        0,
+        0.0,
+        &rendered_body_lines,
+    );
+
+    if let Some(entry) = cache.get_mut(&surface_id)
+        && entry.text_key == key
+    {
+        entry.app = app;
+        entry.rect = rect;
+        entry.size = panel_size;
+        return;
+    }
+
+    let child_vertices = build_single_session_vertices_with_cached_body(
+        &app,
+        panel_size,
+        0.0,
+        0,
+        0.0,
+        1.0,
+        &rendered_body_lines,
+    );
+    let buffers = single_session_text_buffers_from_key(&key, panel_size, font_system);
+    cache.insert(
+        surface_id,
+        CachedWorkspaceSingleSessionTextPane {
+            identity_key,
+            text_key: key,
+            app,
+            rect,
+            size: panel_size,
+            rendered_body_lines,
+            buffers,
+            child_vertices,
+        },
+    );
+}
+
+fn workspace_text_panes_from_cache<'a>(
+    cache: &'a HashMap<u64, CachedWorkspaceSingleSessionTextPane>,
+    surface_ids: &[u64],
+) -> Vec<WorkspaceSingleSessionTextPane<'a>> {
+    surface_ids
+        .iter()
+        .filter_map(|surface_id| cache.get(surface_id))
+        .map(|entry| WorkspaceSingleSessionTextPane {
+            app: &entry.app,
+            rect: entry.rect,
+            size: entry.size,
+            rendered_body_lines: &entry.rendered_body_lines,
+            buffers: &entry.buffers,
+        })
+        .collect()
 }
 
 fn workspace_single_session_text_areas<'a>(
-    panes: &'a [WorkspaceSingleSessionTextPane],
+    panes: &'a [WorkspaceSingleSessionTextPane<'a>],
 ) -> Vec<TextArea<'a>> {
     let mut areas = Vec::new();
     for pane in panes {
         let viewport = single_session_body_viewport_from_lines(
-            &pane.app,
+            pane.app,
             pane.size,
             0.0,
-            &pane.rendered_body_lines,
+            pane.rendered_body_lines,
         );
         let pane_areas = single_session_text_areas_for_app_with_cached_body_viewport_and_reveal(
-            &pane.app,
-            &pane.buffers,
+            pane.app,
+            pane.buffers,
             pane.size,
             0.0,
             viewport,
@@ -11764,6 +11956,7 @@ struct WorkspaceVertexBuildParams<'a> {
     space_hold_progress: Option<f32>,
     surface_frames: Option<&'a WorkspaceSurfaceTransitionFrames>,
     exiting_surfaces: &'a HashMap<u64, workspace::Surface>,
+    workspace_panel_cache: Option<&'a HashMap<u64, CachedWorkspaceSingleSessionTextPane>>,
     status_color: [f32; 4],
     status_text_frame: Option<&'a StatusTextTransitionFrame>,
 }
@@ -11777,6 +11970,7 @@ fn build_vertices_into(params: WorkspaceVertexBuildParams<'_>, vertices: &mut Ve
         space_hold_progress,
         surface_frames,
         exiting_surfaces,
+        workspace_panel_cache,
         status_color,
         status_text_frame,
     } = params;
@@ -11875,6 +12069,34 @@ fn build_vertices_into(params: WorkspaceVertexBuildParams<'_>, vertices: &mut Ve
             let rect = workspace_transitioned_surface_rect(surface_frames, surface.id, target_rect);
             let opacity = workspace_transitioned_surface_opacity(surface_frames, surface.id);
             let start_index = vertices.len();
+            if surface.kind == workspace::SurfaceKind::Session {
+                if surface_pulse <= 0.001
+                    && let Some(entry) =
+                        workspace_panel_cache.and_then(|cache| cache.get(&surface.id))
+                {
+                    append_child_vertices_to_parent_with_opacity(
+                        vertices,
+                        &entry.child_vertices,
+                        entry.size,
+                        rect,
+                        size,
+                        opacity,
+                    );
+                    return;
+                }
+                let Some(app) = workspace_single_session_app_for_surface(workspace, surface) else {
+                    return;
+                };
+                push_workspace_single_session_panel(
+                    vertices,
+                    &app,
+                    rect,
+                    size,
+                    surface_pulse,
+                    opacity,
+                );
+                return;
+            }
             push_surface(
                 vertices,
                 rect,
