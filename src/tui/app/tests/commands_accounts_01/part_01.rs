@@ -191,6 +191,47 @@ fn test_help_topic_shows_provider_test_coverage_command_details() {
 }
 
 #[test]
+fn slash_provider_test_coverage_without_args_shows_cli_style_summary() {
+    let mut app = create_test_app();
+    app.input = "/provider-test-coverage".to_string();
+    app.submit_input();
+
+    assert!(app.model_status_scroll.is_some());
+    assert!(
+        app.model_status_content
+            .starts_with("Live provider/model E2E coverage"),
+        "unexpected content: {}",
+        app.model_status_content
+    );
+    assert!(
+        app.model_status_content.contains("Coverage:")
+            || app
+                .model_status_content
+                .contains("Status: no verification ledger found"),
+        "unexpected content: {}",
+        app.model_status_content
+    );
+}
+
+#[test]
+fn slash_provider_test_coverage_with_args_shows_provider_detail() {
+    let mut app = create_test_app();
+    app.input = "/provider-test-coverage fpt FPT.AI-KIE-v1.7".to_string();
+    app.submit_input();
+
+    assert!(app.model_status_scroll.is_some());
+    assert!(
+        app.model_status_content
+            .starts_with("# Provider test coverage")
+    );
+    assert!(app.model_status_content.contains("Provider: `fpt`"));
+    assert!(
+        app.model_status_content
+            .contains("Model: `FPT.AI-KIE-v1.7`")
+    );
+}
+
+#[test]
 fn test_help_topic_shows_btw_command_details() {
     let mut app = create_test_app();
     app.input = "/help btw".to_string();
@@ -536,8 +577,14 @@ fn test_mission_and_goal_commands_are_disabled() {
     app.input = "/mission make browser control reliable".to_string();
     app.submit_input();
     assert!(!app.is_processing, "/mission must not start a turn");
-    assert!(!app.pending_queued_dispatch, "/mission must not queue dispatch");
-    assert!(app.queued_messages.is_empty(), "/mission must not queue prompts");
+    assert!(
+        !app.pending_queued_dispatch,
+        "/mission must not queue dispatch"
+    );
+    assert!(
+        app.queued_messages.is_empty(),
+        "/mission must not queue prompts"
+    );
     assert!(
         crate::mission::load(&app.session.id)
             .expect("load mission")
@@ -548,8 +595,14 @@ fn test_mission_and_goal_commands_are_disabled() {
     app.input = "/goal status".to_string();
     app.submit_input();
     assert!(!app.is_processing, "/goal must not start a turn");
-    assert!(!app.pending_queued_dispatch, "/goal must not queue dispatch");
-    assert!(app.queued_messages.is_empty(), "/goal must not queue prompts");
+    assert!(
+        !app.pending_queued_dispatch,
+        "/goal must not queue dispatch"
+    );
+    assert!(
+        app.queued_messages.is_empty(),
+        "/goal must not queue prompts"
+    );
     assert!(
         crate::mission::load(&app.session.id)
             .expect("load mission")
@@ -580,7 +633,10 @@ fn test_goals_legacy_alias_is_not_captured_by_goal_mission_alias() {
 
     assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("goals"));
     let mission = crate::mission::load(&app.session.id).expect("load mission");
-    assert!(mission.is_none(), "/goals should not create a mission named `s`");
+    assert!(
+        mission.is_none(),
+        "/goals should not create a mission named `s`"
+    );
 
     if let Some(prev_home) = prev_home {
         crate::env::set_var("JCODE_HOME", prev_home);
