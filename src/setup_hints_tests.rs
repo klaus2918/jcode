@@ -65,7 +65,7 @@ fn first_three_launches_can_include_hotkey_notice_too() {
     let hints = startup_hints_for_launch(&state).expect("expected startup hint");
     let (_, message) = hints.display_message.expect("expected display message");
     assert!(message.contains("Alt+C"));
-    assert!(message.contains("Alt+;"));
+    assert!(message.contains("Cmd+;"));
 }
 
 #[test]

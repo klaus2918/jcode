@@ -222,7 +222,7 @@ fn startup_hints_for_launch(state: &SetupHintsState) -> Option<StartupHints> {
         None
     } else {
         Some(format!(
-            "Press Alt+; from anywhere to open jcode in {}.",
+            "Press Cmd+; from anywhere to open jcode in {}.",
             effective_macos_terminal().label()
         ))
     };
@@ -363,7 +363,7 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
         eprintln!("\x1b[1mjcode setup-hotkey\x1b[0m");
         eprintln!();
         eprintln!("  Preferred terminal: {}", terminal.label());
-        eprintln!("  Installing a LaunchAgent so Alt+; opens jcode from anywhere.");
+        eprintln!("  Installing a LaunchAgent so Cmd+; opens jcode from anywhere.");
         eprintln!();
 
         match install_macos_hotkey_listener(Some(terminal)) {
@@ -372,12 +372,12 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
                 state.hotkey_dismissed = true;
                 let _ = state.save();
                 eprintln!(
-                    "  \x1b[32m✓\x1b[0m Created hotkey (\x1b[1mAlt+;\x1b[0m) → {} + jcode",
+                    "  \x1b[32m✓\x1b[0m Created hotkey (\x1b[1mCmd+;\x1b[0m) → {} + jcode",
                     installed_terminal.label()
                 );
                 eprintln!();
                 eprintln!(
-                    "  Press \x1b[1mAlt+;\x1b[0m from anywhere to open jcode in {}.",
+                    "  Press \x1b[1mCmd+;\x1b[0m from anywhere to open jcode in {}.",
                     installed_terminal.label()
                 );
                 return Ok(());
@@ -416,10 +416,10 @@ fn run_macos_hotkey_listener() -> Result<()> {
     let launch_script = mac_hotkey_support_dir()?.join("launch_jcode.sh");
     let manager =
         GlobalHotKeyManager::new().context("failed to initialize global hotkey manager")?;
-    let hotkey = HotKey::new(Some(Modifiers::ALT), Code::Semicolon);
+    let hotkey = HotKey::new(Some(Modifiers::META), Code::Semicolon);
     manager
         .register(hotkey)
-        .context("failed to register Alt+; hotkey")?;
+        .context("failed to register Cmd+; hotkey")?;
 
     loop {
         if let Ok(event) = GlobalHotKeyEvent::receiver().recv() {
