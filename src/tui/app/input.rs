@@ -928,6 +928,9 @@ pub(super) fn retrieve_pending_message_for_edit(app: &mut App) -> bool {
     }
     if !app.queued_messages.is_empty() {
         parts.extend(std::mem::take(&mut app.queued_messages));
+        if !app.has_queued_followups() {
+            app.pending_queued_dispatch = false;
+        }
         had_pending = true;
     }
 

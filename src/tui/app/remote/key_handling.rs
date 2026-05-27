@@ -446,7 +446,7 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
-    if modifiers == KeyModifiers::CONTROL && matches!(code, KeyCode::Up | KeyCode::Down) {
+    if modifiers == KeyModifiers::CONTROL && code == KeyCode::Down {
         input::handle_prompt_history_navigation(app, code, modifiers);
         return Ok(());
     }
