@@ -761,6 +761,28 @@ pub struct LiveProviderModelCoveragePair {
     pub non_passing_checkpoints: BTreeMap<String, LiveVerificationStageStatus>,
 }
 
+impl LiveProviderModelCoveragePair {
+    fn checkpoint_status(&self, checkpoint: &str) -> Option<LiveVerificationStageStatus> {
+        if self
+            .passed_checkpoints
+            .iter()
+            .any(|passed| passed == checkpoint)
+        {
+            Some(LiveVerificationStageStatus::Passed)
+        } else if let Some(status) = self.non_passing_checkpoints.get(checkpoint) {
+            Some(status.clone())
+        } else if self
+            .missing_checkpoints
+            .iter()
+            .any(|missing| missing == checkpoint)
+        {
+            None
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct LiveProviderCoverageSummary {
     pub provider_id: String,
@@ -1442,6 +1464,39 @@ pub fn format_strict_live_provider_model_coverage_summary(
         summary.total_provider_model_pairs,
         summary.coverage_percent
     ));
+
+    let mut basic_chat_passed = 0usize;
+    let mut tool_smoke_passed = 0usize;
+    let mut tool_smoke_skipped = 0usize;
+    let all_pairs = summary
+        .covered_pairs
+        .iter()
+        .chain(summary.uncovered_pairs.iter())
+        .collect::<Vec<_>>();
+    for pair in &all_pairs {
+        if matches!(
+            pair.checkpoint_status(crate::live_tests::checkpoints::NON_STREAMING_CHAT_COMPLETION),
+            Some(LiveVerificationStageStatus::Passed)
+        ) {
+            basic_chat_passed += 1;
+        }
+        match pair.checkpoint_status(crate::live_tests::checkpoints::REAL_JCODE_TOOL_SMOKE) {
+            Some(LiveVerificationStageStatus::Passed) => tool_smoke_passed += 1,
+            Some(LiveVerificationStageStatus::Skipped) => tool_smoke_skipped += 1,
+            _ => {}
+        }
+    }
+    if !all_pairs.is_empty() {
+        out.push_str(&format!(
+            "Auth-test smoke snapshot: basic chat passed {}/{} observed provider/model pairs; real tool smoke passed {}/{} and skipped {}.\n",
+            basic_chat_passed,
+            all_pairs.len(),
+            tool_smoke_passed,
+            all_pairs.len(),
+            tool_smoke_skipped
+        ));
+        out.push_str("Note: this is separate from strict E2E coverage, which also requires catalog, TUI picker, model-switch, and streaming checkpoints.\n\n");
+    }
 
     out.push_str("Required checkpoints:\n");
     for checkpoint in &summary.required_checkpoints {
