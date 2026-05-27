@@ -454,6 +454,9 @@ pub(super) async fn try_persistent_ws_continuation(
 
     let incremental_stats = summarize_ws_input(&incremental_items);
     let previous_response_id = state.last_response_id.clone();
+    let request_prompt_cache_key_hash = request
+        .get("prompt_cache_key")
+        .map(crate::provider::fingerprint::stable_hash_json);
     let usage_snapshot = crate::usage::get_openai_usage_sync();
     crate::logging::info(&format!(
         "OpenAI limit diag: attempting persistent WS reuse previous_response_id_present={} usage=({}) state=({})",
@@ -491,6 +494,30 @@ pub(super) async fn try_persistent_ws_continuation(
             (
                 "tool_callback",
                 (incremental_stats.tool_callback_count() > 0).to_string(),
+            ),
+            ("request_kind", "ws_delta".to_string()),
+            ("cache_namespace", "previous_response_delta".to_string()),
+            (
+                "prompt_cache_key_present",
+                request.get("prompt_cache_key").is_some().to_string(),
+            ),
+            (
+                "prompt_cache_key_hash",
+                format!("{:?}", request_prompt_cache_key_hash),
+            ),
+            (
+                "prompt_cache_retention",
+                request
+                    .get("prompt_cache_retention")
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+            ),
+            (
+                "service_tier",
+                request
+                    .get("service_tier")
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
             ),
         ],
     );
@@ -548,6 +575,9 @@ pub(super) async fn try_persistent_ws_continuation(
         .as_array()
         .map(|tools| tools.len())
         .unwrap_or(0);
+    let prompt_cache_key_hash = continuation_request
+        .get("prompt_cache_key")
+        .map(crate::provider::fingerprint::stable_hash_json);
     let model_for_fingerprint = continuation_request
         .get("model")
         .and_then(|value| value.as_str())
@@ -590,6 +620,34 @@ pub(super) async fn try_persistent_ws_continuation(
             (
                 "incremental_item_count",
                 incremental_items.len().to_string(),
+            ),
+            ("request_kind", "ws_delta".to_string()),
+            ("cache_namespace", "previous_response_delta".to_string()),
+            ("transport_mode", "websocket".to_string()),
+            (
+                "prompt_cache_key_present",
+                continuation_request
+                    .get("prompt_cache_key")
+                    .is_some()
+                    .to_string(),
+            ),
+            (
+                "prompt_cache_key_hash",
+                format!("{:?}", prompt_cache_key_hash),
+            ),
+            (
+                "prompt_cache_retention",
+                continuation_request
+                    .get("prompt_cache_retention")
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+            ),
+            (
+                "service_tier",
+                continuation_request
+                    .get("service_tier")
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
             ),
         ],
     );
