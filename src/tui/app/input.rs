@@ -1018,18 +1018,26 @@ impl App {
             return false;
         }
 
-        let incomplete = super::commands::incomplete_poke_todos(self);
+        let todos = super::commands::poke_todos(self);
+        let incomplete: Vec<_> = todos
+            .iter()
+            .filter(|todo| super::commands::is_incomplete_poke_todo(todo))
+            .cloned()
+            .collect();
         if incomplete.is_empty() {
-            let had_todos = crate::todo::todos_exist(&super::commands::active_session_id(self))
-                .unwrap_or(false);
             self.auto_poke_incomplete_todos = false;
-            if !had_todos {
+            if todos.is_empty() {
                 return false;
             }
             self.push_display_message(DisplayMessage::system(
-                "✅ Todos complete. Auto-poke finished.".to_string(),
+                "✅ Todos complete. Auto-poke finished; queued confidence summary.".to_string(),
             ));
-            return false;
+            self.queued_messages
+                .push(super::commands::build_todo_confidence_summary_message(
+                    &todos,
+                ));
+            self.pending_queued_dispatch = true;
+            return true;
         }
 
         self.push_display_message(DisplayMessage::system(format!(

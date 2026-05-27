@@ -153,8 +153,7 @@ fn test_model_picker_bedrock_selection_prefixes_model() {
 fn test_model_picker_bedrock_arn_selection_prefixes_model() {
     let mut app = create_test_app();
     app.is_remote = true;
-    let model =
-        "arn:aws:bedrock:us-east-2:302154194530:inference-profile/us.deepseek.r1-v1:0";
+    let model = "arn:aws:bedrock:us-east-2:302154194530:inference-profile/us.deepseek.r1-v1:0";
     app.remote_available_entries = vec![model.to_string()];
     app.remote_model_options = vec![crate::provider::ModelRoute {
         model: model.to_string(),
@@ -195,8 +194,7 @@ fn test_model_picker_bedrock_arn_selection_prefixes_model() {
 fn test_remote_fallback_bedrock_arn_does_not_create_openrouter_route() {
     let mut app = create_test_app();
     app.is_remote = true;
-    let model =
-        "arn:aws:bedrock:us-east-2:302154194530:inference-profile/us.deepseek.r1-v1:0";
+    let model = "arn:aws:bedrock:us-east-2:302154194530:inference-profile/us.deepseek.r1-v1:0";
     app.remote_available_entries = vec![model.to_string()];
     app.remote_model_options.clear();
 
@@ -205,9 +203,11 @@ fn test_remote_fallback_bedrock_arn_does_not_create_openrouter_route() {
     assert!(routes.iter().any(|route| {
         route.model == model && route.api_method == "bedrock" && route.provider == "AWS Bedrock"
     }));
-    assert!(!routes
-        .iter()
-        .any(|route| route.model == model && route.api_method == "openrouter"));
+    assert!(
+        !routes
+            .iter()
+            .any(|route| route.model == model && route.api_method == "openrouter")
+    );
 }
 
 #[test]
@@ -737,6 +737,8 @@ fn test_create_transfer_session_from_parent_copies_todos_and_uses_compacted_cont
                 priority: "high".to_string(),
                 blocked_by: Vec::new(),
                 assigned_to: None,
+                confidence: None,
+                completion_confidence: None,
             }],
         )
         .expect("save todos");
@@ -776,7 +778,6 @@ fn test_shift_enter_inserts_newline() {
     assert_eq!(app.queued_count(), 0);
     assert_eq!(app.interleave_message.as_deref(), None);
 }
-
 
 #[test]
 fn test_alt_enter_inserts_newline() {
@@ -871,6 +872,8 @@ fn test_escape_interrupt_disables_auto_poke_while_processing() {
                 priority: "high".to_string(),
                 blocked_by: Vec::new(),
                 assigned_to: None,
+                confidence: None,
+                completion_confidence: None,
             },
         ]));
 

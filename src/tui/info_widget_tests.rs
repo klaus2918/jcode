@@ -830,6 +830,8 @@ fn placements_never_include_border_only_widgets() {
             id: "todo-1".to_string(),
             blocked_by: Vec::new(),
             assigned_to: None,
+            confidence: None,
+            completion_confidence: None,
         }],
         queue_mode: Some(true),
         memory_info: Some(MemoryInfo {
