@@ -218,6 +218,17 @@ pub(crate) fn shortcut_char_for_macos_option_key(
     shortcut_char_for_macos_option_key_for_platform(code, modifiers, cfg!(target_os = "macos"))
 }
 
+pub(crate) fn shortcut_char_for_macos_option_shift_key(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Option<char> {
+    shortcut_char_for_macos_option_shift_key_for_platform(
+        code,
+        modifiers,
+        cfg!(target_os = "macos"),
+    )
+}
+
 fn shortcut_char_for_macos_option_key_for_platform(
     code: KeyCode,
     modifiers: KeyModifiers,
@@ -227,6 +238,47 @@ fn shortcut_char_for_macos_option_key_for_platform(
         return None;
     }
     macos_option_char_to_ascii_key(code)
+}
+
+fn shortcut_char_for_macos_option_shift_key_for_platform(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    is_macos: bool,
+) -> Option<char> {
+    if !is_macos || !modifiers.is_empty() {
+        return None;
+    }
+    macos_option_shift_char_to_ascii_key(code)
+}
+
+fn macos_option_shift_char_to_ascii_key(code: KeyCode) -> Option<char> {
+    let KeyCode::Char(ch) = code else {
+        return None;
+    };
+
+    // macOS terminals that do not treat Option as Meta/Alt insert these Unicode
+    // characters for Option+Shift+letter on a US keyboard. Copy badges advertise
+    // [Alt] [⇧] [key], so normalize the inserted character back to the badge key.
+    match ch {
+        'Å' => Some('a'),
+        'ı' => Some('b'),
+        'Ç' => Some('c'),
+        'Î' => Some('d'),
+        '´' => Some('e'),
+        'Ï' => Some('f'),
+        'Ó' => Some('h'),
+        'ˆ' => Some('i'),
+        'Ô' => Some('j'),
+        '' => Some('k'),
+        'Ò' => Some('l'),
+        'Â' => Some('m'),
+        'Í' => Some('s'),
+        'ˇ' => Some('t'),
+        '¨' => Some('u'),
+        '◊' => Some('v'),
+        'Á' => Some('y'),
+        _ => None,
+    }
 }
 
 fn matches_side_panel_toggle_key_for_platform(
@@ -333,6 +385,39 @@ mod tests {
                 ),
                 Some(ascii),
                 "Option+{ascii} should map from {option_char}"
+            );
+        }
+    }
+
+    #[test]
+    fn macos_option_shift_shortcut_chars_cover_builtin_alt_shift_letter_shortcuts() {
+        for (option_shift_char, ascii) in [
+            ('Å', 'a'),
+            ('ı', 'b'),
+            ('Ç', 'c'),
+            ('Î', 'd'),
+            ('´', 'e'),
+            ('Ï', 'f'),
+            ('Ó', 'h'),
+            ('ˆ', 'i'),
+            ('Ô', 'j'),
+            ('', 'k'),
+            ('Ò', 'l'),
+            ('Â', 'm'),
+            ('Í', 's'),
+            ('ˇ', 't'),
+            ('¨', 'u'),
+            ('◊', 'v'),
+            ('Á', 'y'),
+        ] {
+            assert_eq!(
+                shortcut_char_for_macos_option_shift_key_for_platform(
+                    KeyCode::Char(option_shift_char),
+                    KeyModifiers::empty(),
+                    true,
+                ),
+                Some(ascii),
+                "Option+Shift+{ascii} should map from {option_shift_char}"
             );
         }
     }

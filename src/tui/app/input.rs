@@ -1467,20 +1467,18 @@ pub(super) fn handle_visible_copy_shortcut(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> bool {
-    let KeyCode::Char(c) = code else {
+    let Some(c) = visible_copy_shortcut_key(code, modifiers) else {
         return false;
     };
-
-    if !modifiers.contains(KeyModifiers::ALT) {
-        return false;
-    }
 
     // Many terminals encode Alt+Shift+<letter> as just Alt + uppercase letter
     // instead of reporting an explicit Shift modifier. Accept either form so the
     // on-screen [Alt] [⇧] copy badges behave consistently.
     let explicit_shift = modifiers.contains(KeyModifiers::SHIFT);
     let implicit_shift = c.is_ascii_uppercase();
-    if !explicit_shift && !implicit_shift {
+    let macos_option_shift =
+        crate::tui::keybind::shortcut_char_for_macos_option_shift_key(code, modifiers).is_some();
+    if !explicit_shift && !implicit_shift && !macos_option_shift {
         return false;
     }
 
@@ -1503,6 +1501,20 @@ pub(super) fn handle_visible_copy_shortcut(
     }
 
     false
+}
+
+fn visible_copy_shortcut_key(code: KeyCode, modifiers: KeyModifiers) -> Option<char> {
+    if let Some(key) =
+        crate::tui::keybind::shortcut_char_for_macos_option_shift_key(code, modifiers)
+    {
+        return Some(key);
+    }
+
+    let KeyCode::Char(c) = code else {
+        return None;
+    };
+
+    modifiers.contains(KeyModifiers::ALT).then_some(c)
 }
 
 fn handle_expand_edit_badge_shortcut(app: &mut App, key: char) -> bool {
