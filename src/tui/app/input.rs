@@ -219,6 +219,13 @@ pub(super) fn paste_from_clipboard(app: &mut App) {
     spawn_clipboard_paste(app, ClipboardPasteKind::Smart);
 }
 
+fn is_clipboard_paste_shortcut(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Char('v' | 'V'))
+        && modifiers.intersects(
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::META,
+        )
+}
+
 fn active_clipboard_session_id(app: &App) -> String {
     app.active_client_session_id()
         .unwrap_or(app.session.id.as_str())
@@ -384,8 +391,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ClipboardPasteContent, ClipboardPasteKind, preferred_wayland_text_type,
-        read_clipboard_for_paste_with, shifted_printable_fallback, text_input_for_key,
+        ClipboardPasteContent, ClipboardPasteKind, is_clipboard_paste_shortcut,
+        preferred_wayland_text_type, read_clipboard_for_paste_with, shifted_printable_fallback,
+        text_input_for_key,
     };
     use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -434,6 +442,33 @@ mod tests {
             matches!(content, ClipboardPasteContent::Empty),
             "expected empty paste, got {content:?}"
         );
+    }
+
+    #[test]
+    fn paste_shortcut_accepts_control_alt_command_and_meta_v() {
+        for modifiers in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SUPER,
+            KeyModifiers::META,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+            KeyModifiers::SUPER | KeyModifiers::SHIFT,
+        ] {
+            assert!(
+                is_clipboard_paste_shortcut(KeyCode::Char('v'), modifiers),
+                "{modifiers:?}+v should paste clipboard contents"
+            );
+            assert!(
+                is_clipboard_paste_shortcut(KeyCode::Char('V'), modifiers),
+                "{modifiers:?}+V should paste clipboard contents"
+            );
+        }
+
+        assert!(!is_clipboard_paste_shortcut(
+            KeyCode::Char('v'),
+            KeyModifiers::empty()
+        ));
     }
 
     #[test]
@@ -538,7 +573,7 @@ pub(super) fn handle_paste(app: &mut App, text: String) {
     // terminal always deliver text. Checking clipboard_image() here caused a bug where
     // text pastes were misidentified as images when the clipboard also had image data
     // (common on Wayland where apps advertise multiple MIME types). Image pasting is
-    // handled by explicit clipboard shortcuts instead (Ctrl+V smart-pastes, Alt+V forces image).
+    // handled by explicit clipboard shortcuts instead (Ctrl+V/Alt+V/Cmd+V smart-paste).
     if let Some(url) = super::extract_image_url(&text) {
         crate::logging::info(&format!("Downloading image from pasted URL: {}", url));
         app.set_status_notice("Downloading image...");
@@ -1419,6 +1454,11 @@ pub(super) fn handle_pre_control_shortcuts(
         && !app.input.is_empty()
     {
         delete_input_to_end(app);
+        return true;
+    }
+
+    if is_clipboard_paste_shortcut(code, modifiers) {
+        paste_from_clipboard(app);
         return true;
     }
 

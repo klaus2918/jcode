@@ -6739,7 +6739,7 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
             KeyInput::DeleteNextWord
         }
         Key::Character(text) if modifiers.alt_key() && text.eq_ignore_ascii_case("v") => {
-            KeyInput::AttachClipboardImage
+            KeyInput::PasteText
         }
         Key::Character(text) if modifiers.control_key() && text == "[" => KeyInput::JumpPrompt(-1),
         Key::Character(text) if modifiers.control_key() && text == "]" => KeyInput::JumpPrompt(1),
@@ -6833,7 +6833,7 @@ fn to_key_input(key: &Key, modifiers: ModifiersState) -> KeyInput {
 }
 
 fn desktop_clipboard_shortcut_modifier(modifiers: ModifiersState) -> bool {
-    modifiers.control_key() || modifiers.super_key()
+    modifiers.control_key() || modifiers.alt_key() || modifiers.super_key()
 }
 
 fn is_space_key(key: &Key) -> bool {

@@ -4246,6 +4246,17 @@ fn desktop_maps_standard_clipboard_shortcuts_across_platform_modifiers() {
         KeyInput::PasteText
     );
     assert_eq!(
+        to_key_input(&Key::Character("v".into()), ModifiersState::ALT),
+        KeyInput::PasteText
+    );
+    assert_eq!(
+        to_key_input(
+            &Key::Character("v".into()),
+            ModifiersState::ALT | ModifiersState::SHIFT
+        ),
+        KeyInput::PasteText
+    );
+    assert_eq!(
         to_key_input(&Key::Character("x".into()), ModifiersState::SUPER),
         KeyInput::CutInputLine
     );
