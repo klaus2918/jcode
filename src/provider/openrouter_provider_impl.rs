@@ -976,9 +976,11 @@ impl Provider for OpenRouterProvider {
                 }
             }
 
-            for model in targets {
-                let _ = self.refresh_endpoints(&model).await;
-            }
+            futures::stream::iter(targets)
+                .for_each_concurrent(4, |model| async move {
+                    let _ = self.refresh_endpoints(&model).await;
+                })
+                .await;
         }
 
         let after_models = self.available_models_display();

@@ -2,7 +2,7 @@
 
 use crate::agent::Agent;
 use crate::auth::lifecycle::{AuthActivationRequest, AuthActivationResult};
-use crate::protocol::{AuthChanged, ServerEvent};
+use crate::protocol::{AuthChanged, NotificationType, ServerEvent};
 use crate::provider::{ModelCatalogRefreshSummary, ModelRoute, Provider};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -512,14 +512,44 @@ pub(super) async fn handle_refresh_models(
     let agent_clone = agent.clone();
     let client_event_tx_clone = client_event_tx.clone();
     tokio::spawn(async move {
-        let result = provider_clone.refresh_model_catalog().await;
+        send_catalog_activity(
+            &client_event_tx_clone,
+            "Refreshing model catalogs... querying configured providers in parallel.",
+        );
+
+        let refresh_started = Instant::now();
+        let refresh_future = provider_clone.refresh_model_catalog();
+        tokio::pin!(refresh_future);
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(2));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let result = loop {
+            tokio::select! {
+                result = &mut refresh_future => break result,
+                _ = heartbeat.tick() => {
+                    let elapsed_secs = refresh_started.elapsed().as_secs();
+                    if elapsed_secs > 0 {
+                        send_catalog_activity(
+                            &client_event_tx_clone,
+                            &format!("Refreshing model catalogs... still waiting on provider APIs ({elapsed_secs}s elapsed)."),
+                        );
+                    }
+                }
+            }
+        };
         match result {
             Ok(_) => {
+                send_catalog_activity(
+                    &client_event_tx_clone,
+                    "Model catalogs refreshed. Updating model picker...",
+                );
                 crate::bus::Bus::global().publish_models_updated();
                 let event = available_models_updated_event(&agent_clone).await;
                 let _ = client_event_tx_clone.send(event);
+                send_catalog_activity(&client_event_tx_clone, "Model list refresh complete.");
             }
             Err(err) => {
+                send_catalog_activity(&client_event_tx_clone, "Model list refresh failed.");
                 let _ = client_event_tx_clone.send(ServerEvent::Error {
                     id,
                     message: format!("Failed to refresh models: {}", err),
@@ -529,6 +559,18 @@ pub(super) async fn handle_refresh_models(
         }
     });
     let _ = client_event_tx.send(ServerEvent::Done { id });
+}
+
+fn send_catalog_activity(client_event_tx: &mpsc::UnboundedSender<ServerEvent>, message: &str) {
+    let _ = client_event_tx.send(ServerEvent::Notification {
+        from_session: "jcode".to_string(),
+        from_name: Some("Jcode".to_string()),
+        notification_type: NotificationType::Message {
+            scope: Some("catalog_activity".to_string()),
+            channel: None,
+        },
+        message: message.to_string(),
+    });
 }
 
 pub(super) async fn handle_set_reasoning_effort(
