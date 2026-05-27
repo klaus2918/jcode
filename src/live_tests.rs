@@ -1201,8 +1201,9 @@ pub fn strict_live_provider_model_coverage_summary(
 ) -> LiveProviderModelCoverageSummary {
     let mut builders: BTreeMap<(String, String), ProviderModelCoverageBuilder> = BTreeMap::new();
     let mut provider_only_entries = BTreeSet::new();
+    let latest_entries = latest_coverage_entries_by_provider_model_test(coverage);
 
-    for (key, entry) in &coverage.latest {
+    for (key, entry) in latest_entries {
         let model = entry.model.as_deref().map(str::trim).unwrap_or("*");
         if model.is_empty() || model == "*" {
             provider_only_entries.insert(key.clone());
@@ -1305,6 +1306,36 @@ pub fn strict_live_provider_model_coverage_summary(
         known_provider_ids_without_live_model_coverage,
         issue_driven_targets,
     }
+}
+
+fn latest_coverage_entries_by_provider_model_test(
+    coverage: &LiveVerificationCoverage,
+) -> BTreeMap<String, &LiveVerificationCoverageEntry> {
+    let mut latest_by_target: BTreeMap<(String, String, String), (&String, &LiveVerificationCoverageEntry)> =
+        BTreeMap::new();
+    for (key, entry) in &coverage.latest {
+        let provider_identity =
+            canonical_live_provider_identity(&entry.provider_id, &entry.provider_label);
+        let model = entry
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .unwrap_or("*")
+            .to_string();
+        let target_key = (provider_identity.0, model, entry.test_name.clone());
+        let replace = latest_by_target
+            .get(&target_key)
+            .map(|(_, current)| entry.recorded_at > current.recorded_at)
+            .unwrap_or(true);
+        if replace {
+            latest_by_target.insert(target_key, (key, entry));
+        }
+    }
+    latest_by_target
+        .into_values()
+        .map(|(key, entry)| (key.clone(), entry))
+        .collect()
 }
 
 fn percent(numerator: usize, denominator: usize) -> f64 {
