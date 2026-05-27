@@ -1126,13 +1126,7 @@ pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Char('w') | KeyCode::Char('\u{8}') | KeyCode::Backspace => {
-            let start = app.find_word_boundary_back();
-            if start < app.cursor_pos {
-                app.remember_input_undo_state();
-            }
-            app.input.drain(start..app.cursor_pos);
-            app.cursor_pos = start;
-            app.sync_model_picker_preview_from_input();
+            delete_input_word_back(app);
             true
         }
         KeyCode::Char('s') => {
@@ -1189,13 +1183,24 @@ pub(super) fn delete_input_to_start(app: &mut App) {
 pub(super) fn handle_super_key(app: &mut App, code: KeyCode) -> bool {
     match code {
         // macOS terminals that report Command+Backspace to the application mark it as Super.
-        // Match the native text-editing convention: delete back to the start of the line.
+        // In Jcode, make it a word-delete shortcut so it works in terminals that do not
+        // translate Option+Backspace into a word-delete sequence for us.
         KeyCode::Backspace => {
-            delete_input_to_start(app);
+            delete_input_word_back(app);
             true
         }
         _ => false,
     }
+}
+
+pub(super) fn delete_input_word_back(app: &mut App) {
+    let start = app.find_word_boundary_back();
+    if start < app.cursor_pos {
+        app.remember_input_undo_state();
+    }
+    app.input.drain(start..app.cursor_pos);
+    app.cursor_pos = start;
+    app.sync_model_picker_preview_from_input();
 }
 
 pub(super) fn handle_alt_key(app: &mut App, code: KeyCode) -> bool {
@@ -1218,13 +1223,7 @@ pub(super) fn handle_alt_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Backspace => {
-            let start = app.find_word_boundary_back();
-            if start < app.cursor_pos {
-                app.remember_input_undo_state();
-            }
-            app.input.drain(start..app.cursor_pos);
-            app.cursor_pos = start;
-            app.sync_model_picker_preview_from_input();
+            delete_input_word_back(app);
             true
         }
         KeyCode::Char('i') => {
