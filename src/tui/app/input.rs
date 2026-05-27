@@ -214,11 +214,6 @@ fn input_exceeds_submit_limit(input: &str) -> Option<String> {
     (size > MAX_SUBMITTED_TEXT_BYTES).then(|| oversized_message_notice(size))
 }
 
-pub(super) fn paste_image_from_clipboard(app: &mut App) {
-    app.set_status_notice("Reading clipboard image...");
-    spawn_clipboard_paste(app, ClipboardPasteKind::ImageOnly);
-}
-
 pub(super) fn paste_from_clipboard(app: &mut App) {
     app.set_status_notice("Reading clipboard...");
     spawn_clipboard_paste(app, ClipboardPasteKind::Smart);
@@ -1237,7 +1232,7 @@ pub(super) fn handle_alt_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Char('v') => {
-            paste_image_from_clipboard(app);
+            paste_from_clipboard(app);
             true
         }
         KeyCode::Char('a') if app.input.is_empty() => {
