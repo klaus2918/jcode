@@ -1091,12 +1091,7 @@ pub(super) fn handle_alternate_enter(app: &mut App) {
 pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
     match code {
         KeyCode::Char('u') => {
-            if app.cursor_pos > 0 {
-                app.remember_input_undo_state();
-            }
-            app.input.drain(..app.cursor_pos);
-            app.cursor_pos = 0;
-            app.sync_model_picker_preview_from_input();
+            delete_input_to_start(app);
             true
         }
         KeyCode::Char('z') => {
@@ -1173,6 +1168,27 @@ pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Up => {
             retrieve_pending_message_for_edit(app);
+            true
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn delete_input_to_start(app: &mut App) {
+    if app.cursor_pos > 0 {
+        app.remember_input_undo_state();
+    }
+    app.input.drain(..app.cursor_pos);
+    app.cursor_pos = 0;
+    app.sync_model_picker_preview_from_input();
+}
+
+pub(super) fn handle_super_key(app: &mut App, code: KeyCode) -> bool {
+    match code {
+        // macOS terminals that report Command+Backspace to the application mark it as Super.
+        // Match the native text-editing convention: delete back to the start of the line.
+        KeyCode::Backspace => {
+            delete_input_to_start(app);
             true
         }
         _ => false,
@@ -1424,6 +1440,9 @@ pub(super) fn handle_pre_control_shortcuts(
         return true;
     }
     if modifiers.contains(KeyModifiers::ALT) && handle_alt_key(app, code) {
+        return true;
+    }
+    if modifiers.contains(KeyModifiers::SUPER) && handle_super_key(app, code) {
         return true;
     }
 

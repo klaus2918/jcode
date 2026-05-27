@@ -377,6 +377,11 @@ async fn handle_remote_key_internal(
         }
     }
 
+    if modifiers.contains(KeyModifiers::SUPER) && matches!(code, KeyCode::Backspace) {
+        input::delete_input_to_start(app);
+        return Ok(());
+    }
+
     if app.handle_command_suggestion_key(code, modifiers) {
         return Ok(());
     }
