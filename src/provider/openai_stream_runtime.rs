@@ -527,6 +527,15 @@ pub(super) async fn try_persistent_ws_continuation(
     if let Some(include) = request.get("include") {
         continuation_request["include"] = include.clone();
     }
+    if let Some(service_tier) = request.get("service_tier") {
+        continuation_request["service_tier"] = service_tier.clone();
+    }
+    if let Some(prompt_cache_key) = request.get("prompt_cache_key") {
+        continuation_request["prompt_cache_key"] = prompt_cache_key.clone();
+    }
+    if let Some(prompt_cache_retention) = request.get("prompt_cache_retention") {
+        continuation_request["prompt_cache_retention"] = prompt_cache_retention.clone();
+    }
     continuation_request["store"] = serde_json::json!(false);
     continuation_request["parallel_tool_calls"] = serde_json::json!(false);
 
@@ -555,6 +564,9 @@ pub(super) async fn try_persistent_ws_continuation(
         "reasoning": continuation_request.get("reasoning"),
         "context_management": continuation_request.get("context_management"),
         "include": continuation_request.get("include"),
+        "service_tier": continuation_request.get("service_tier"),
+        "prompt_cache_key": continuation_request.get("prompt_cache_key"),
+        "prompt_cache_retention": continuation_request.get("prompt_cache_retention"),
     });
     crate::provider::fingerprint::log_provider_canonical_input(
         "openai",
