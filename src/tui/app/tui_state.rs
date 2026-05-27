@@ -1292,6 +1292,11 @@ impl crate::tui::TuiState for App {
         self.help_scroll
     }
 
+    fn model_status_overlay(&self) -> Option<(usize, &str)> {
+        self.model_status_scroll
+            .map(|scroll| (scroll, self.model_status_content.as_str()))
+    }
+
     fn session_picker_overlay(
         &self,
     ) -> Option<&RefCell<crate::tui::session_picker::SessionPicker>> {

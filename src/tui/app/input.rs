@@ -1555,6 +1555,11 @@ pub(super) fn handle_modal_key(
         return Ok(true);
     }
 
+    if app.model_status_scroll.is_some() {
+        app.handle_model_status_key(code)?;
+        return Ok(true);
+    }
+
     if app.session_picker_overlay.is_some() {
         app.handle_session_picker_key(code, modifiers)?;
         return Ok(true);
@@ -2260,6 +2265,7 @@ impl App {
             || commands::handle_session_command(self, trimmed)
             || commands::handle_dictation_command(self, trimmed)
             || commands::handle_config_command(self, trimmed)
+            || commands::handle_model_status_command(self, trimmed)
             || super::debug::handle_debug_command(self, trimmed)
             || super::model_context::handle_model_command(self, trimmed)
             || super::commands::handle_usage_command(self, trimmed)

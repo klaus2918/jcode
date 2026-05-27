@@ -46,6 +46,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/commands", "Alias for /help"),
     RegisteredCommand::public("/model", "List or switch models"),
     RegisteredCommand::public("/models", "Alias for /model"),
+    RegisteredCommand::public(
+        "/model-status",
+        "Show live-test evidence for the current model",
+    ),
     RegisteredCommand::public("/refresh-model-list", "Refresh provider model catalogs"),
     RegisteredCommand::public("/agents", "Configure models for agent roles"),
     RegisteredCommand::public("/subagent", "Launch a subagent manually"),

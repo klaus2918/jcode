@@ -983,6 +983,8 @@ pub struct App {
     /// Scroll offset for changelog overlay (None = not visible)
     changelog_scroll: Option<usize>,
     help_scroll: Option<usize>,
+    model_status_scroll: Option<usize>,
+    model_status_content: String,
     /// Session picker overlay (None = not visible)
     session_picker_overlay: Option<RefCell<super::session_picker::SessionPicker>>,
     session_picker_mode: SessionPickerMode,

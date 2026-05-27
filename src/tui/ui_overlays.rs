@@ -130,6 +130,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     ));
     lines.push(help_entry("/model", "List or switch models"));
     lines.push(help_entry("/model <name>", "Switch to a different model"));
+    lines.push(help_entry(
+        "/model-status",
+        "Show live-test evidence for the current model",
+    ));
     lines.push(help_entry("/agents", "Configure models for agent roles"));
     lines.push(help_entry(
         "/effort <level>",
@@ -452,6 +456,56 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         .block(block)
         .scroll((scroll as u16, 0));
 
+    frame.render_widget(paragraph, area);
+}
+
+pub(super) fn draw_model_status_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    scroll: usize,
+    content: &str,
+) {
+    clear_area(frame, area);
+
+    let title_style = Style::default()
+        .fg(accent_color())
+        .add_modifier(Modifier::BOLD);
+    let text_style = Style::default().fg(rgb(210, 210, 220));
+    let dim_style = Style::default().fg(dim_color());
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled("  Model Status", title_style)));
+    lines.push(Line::from(Span::styled(
+        "  Live verification evidence for provider/model behavior in jcode",
+        dim_style,
+    )));
+    lines.push(Line::from(""));
+
+    for raw in content.lines() {
+        if let Some(title) = raw.strip_prefix("# ") {
+            lines.push(Line::from(Span::styled(format!("  {title}"), title_style)));
+        } else if let Some(title) = raw.strip_prefix("## ") {
+            lines.push(Line::from(Span::styled(format!("  {title}"), title_style)));
+        } else if raw.trim().is_empty() {
+            lines.push(Line::from(""));
+        } else {
+            lines.push(Line::from(Span::styled(format!("  {raw}"), text_style)));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ↑/↓ scroll, PgUp/PgDn page, q/Esc close",
+        dim_style,
+    )));
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" /model-status "),
+        )
+        .scroll((scroll.min(u16::MAX as usize) as u16, 0));
     frame.render_widget(paragraph, area);
 }
 
