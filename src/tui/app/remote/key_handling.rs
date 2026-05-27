@@ -294,7 +294,7 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
-    if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('m')) {
+    if crate::tui::keybind::matches_side_panel_toggle_key(code, modifiers) {
         app.toggle_side_panel();
         return Ok(());
     }

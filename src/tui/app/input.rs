@@ -1392,7 +1392,7 @@ pub(super) fn handle_pre_control_shortcuts(
         return true;
     }
 
-    if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('m')) {
+    if crate::tui::keybind::matches_side_panel_toggle_key(code, modifiers) {
         app.toggle_side_panel();
         return true;
     }

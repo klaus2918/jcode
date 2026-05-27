@@ -196,6 +196,33 @@ pub fn load_centered_toggle_key() -> CenteredToggleKeys {
     CenteredToggleKeys { toggle }
 }
 
+pub(crate) fn side_panel_toggle_key_label() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "⌥+M"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Alt+M"
+    }
+}
+
+pub(crate) fn matches_side_panel_toggle_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    if modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('m')) {
+        return true;
+    }
+
+    // macOS terminals often insert Option+M as `µ` unless Option is configured
+    // as Meta/Alt. Treat that character as the same toggle so the advertised
+    // shortcut works with the default Terminal/iTerm-style Option behavior.
+    #[cfg(target_os = "macos")]
+    if modifiers.is_empty() && matches!(code, KeyCode::Char('µ')) {
+        return true;
+    }
+
+    false
+}
+
 pub fn load_dictation_key() -> OptionalBinding {
     let cfg = config();
     let raw = cfg.dictation.key.trim();

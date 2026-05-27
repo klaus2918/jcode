@@ -346,7 +346,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     )));
     lines.push(Line::from(""));
     lines.push(key_entry(
-        "Alt+M",
+        crate::tui::keybind::side_panel_toggle_key_label(),
         "Toggle side panel (or diagram pane if empty)",
     ));
     lines.push(key_entry("Alt+T", "Toggle diagram position (side/top)"));
