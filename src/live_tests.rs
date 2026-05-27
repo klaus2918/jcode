@@ -938,6 +938,21 @@ pub fn format_provider_test_coverage_report(
         })
         .collect::<Vec<_>>();
     matches.sort_by_key(|entry| entry.recorded_at);
+    let mut latest_by_target = BTreeMap::new();
+    for entry in matches {
+        let key = (
+            normalize_provider_test_coverage_key(&entry.provider_id),
+            entry
+                .model
+                .as_deref()
+                .map(normalize_provider_test_coverage_key)
+                .unwrap_or_else(|| "*".to_string()),
+            entry.test_name.clone(),
+        );
+        latest_by_target.insert(key, entry);
+    }
+    let mut matches = latest_by_target.into_values().collect::<Vec<_>>();
+    matches.sort_by_key(|entry| entry.recorded_at);
 
     let Some(entry) = matches.last() else {
         out.push_str("Status: **Not yet covered by this jcode verification ledger**\n\n");
