@@ -148,3 +148,47 @@ fn test_websocket_continuation_request_excludes_transport_fields() {
         ])
     );
 }
+
+#[test]
+fn test_websocket_continuation_delta_skips_reasoning_items() {
+    let input = vec![
+        serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": "first" }]
+        }),
+        serde_json::json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "ok" }]
+        }),
+        serde_json::json!({
+            "type": "reasoning",
+            "id": "rs_duplicate_from_previous_response",
+            "summary": []
+        }),
+        serde_json::json!({
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "done"
+        }),
+        serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": "continue" }]
+        }),
+    ];
+
+    let (delta, skipped_reasoning) = persistent_ws_incremental_items(&input, 2);
+
+    assert_eq!(skipped_reasoning, 1);
+    assert_eq!(delta.len(), 2);
+    assert!(
+        delta
+            .iter()
+            .all(|item| item.get("type").and_then(|value| value.as_str()) != Some("reasoning")),
+        "previous_response_id deltas must not replay rs_* reasoning items"
+    );
+    assert_eq!(delta[0]["type"], "function_call_output");
+    assert_eq!(delta[1]["type"], "message");
+}

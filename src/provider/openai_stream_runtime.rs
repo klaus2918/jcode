@@ -421,8 +421,23 @@ pub(super) async fn try_persistent_ws_continuation(
         return PersistentWsResult::NotAvailable;
     }
 
-    // Compute incremental items: everything after the last_input_item_count
-    let incremental_items: Vec<Value> = input[state.last_input_item_count..].to_vec();
+    // Compute incremental items: everything after the last_input_item_count.
+    //
+    // When continuing with `previous_response_id`, OpenAI already has every
+    // output item produced by that previous response, including native
+    // reasoning store items (`rs_...`). Replaying those items in the next delta
+    // makes the API reject the request with "Duplicate item found with id
+    // rs_...". The full input still needs reasoning items for fresh requests,
+    // but deltas must only contain genuinely new client-side input/tool
+    // callbacks.
+    let (incremental_items, skipped_reasoning_items) =
+        persistent_ws_incremental_items(input, state.last_input_item_count);
+    if skipped_reasoning_items > 0 {
+        crate::logging::info(&format!(
+            "Skipped {} reasoning item(s) in persistent WS continuation delta to avoid duplicate rs_* replay",
+            skipped_reasoning_items
+        ));
+    }
     if incremental_items.is_empty() {
         crate::logging::info("No incremental items to send; need fresh request");
         *guard = None;
