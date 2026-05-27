@@ -1566,6 +1566,12 @@ pub(super) fn handle_visible_copy_shortcut(
     let macos_option_shift =
         crate::tui::keybind::shortcut_char_for_macos_option_shift_key(code, modifiers).is_some();
     if !explicit_shift && !implicit_shift && !macos_option_shift {
+        // Some terminals report Alt+Shift+E as Alt+lowercase `e` with no
+        // explicit SHIFT modifier. Keep the relaxed fallback scoped to the
+        // expand badge so plain Alt+letter copy shortcuts do not become active.
+        if c.eq_ignore_ascii_case(&'e') && handle_expand_edit_badge_shortcut(app, c) {
+            return true;
+        }
         return false;
     }
 

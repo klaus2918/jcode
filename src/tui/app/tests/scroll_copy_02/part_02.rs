@@ -200,6 +200,18 @@ fn test_expand_badge_rendered_shortcut_expands_with_alt_uppercase_event() {
 }
 
 #[test]
+fn test_expand_badge_rendered_shortcut_expands_with_alt_lowercase_event() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    // Matches terminals that lose the Shift bit and lowercase the character for
+    // Alt+Shift+E. The fallback is intentionally scoped to the expand badge.
+    assert_rendered_expand_badge_shortcut_expands_to_full_diff(
+        KeyCode::Char('e'),
+        KeyModifiers::ALT,
+    );
+}
+
+#[test]
 fn test_remote_expand_badge_rendered_shortcut_expands_with_alt_uppercase_event() {
     let _render_lock = scroll_render_test_lock();
     let (mut app, mut terminal) = make_edit_badge_test_app(20);
@@ -215,6 +227,32 @@ fn test_remote_expand_badge_rendered_shortcut_expands_with_alt_uppercase_event()
 
     use crossterm::event::{KeyCode, KeyModifiers};
     rt.block_on(app.handle_remote_key(KeyCode::Char('E'), KeyModifiers::ALT, &mut remote))
+        .unwrap();
+
+    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
+    let rendered = render_and_snap(&app, &mut terminal);
+    assert!(
+        rendered.contains("new line 19"),
+        "remote expand shortcut should reveal the full inline diff:\n{rendered}"
+    );
+}
+
+#[test]
+fn test_remote_expand_badge_rendered_shortcut_expands_with_alt_lowercase_event() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = make_edit_badge_test_app(20);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    let rendered = render_and_snap(&app, &mut terminal);
+    assert!(
+        rendered.contains("[E] expand"),
+        "expected visible expand badge before remote key injection:\n{rendered}"
+    );
+
+    use crossterm::event::{KeyCode, KeyModifiers};
+    rt.block_on(app.handle_remote_key(KeyCode::Char('e'), KeyModifiers::ALT, &mut remote))
         .unwrap();
 
     assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
