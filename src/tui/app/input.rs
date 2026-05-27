@@ -1615,6 +1615,7 @@ fn handle_expand_edit_badge_shortcut(app: &mut App, key: char) -> bool {
         return false;
     }
 
+    let visible_expand_badge = crate::tui::ui::visible_expand_edit_badge();
     let has_edit_tool_message = app.display_edit_tool_message_count > 0
         || app.display_messages.iter().any(|message| {
             message
@@ -1628,7 +1629,7 @@ fn handle_expand_edit_badge_shortcut(app: &mut App, key: char) -> bool {
     // opening it from other diff modes requires at least one edit tool message.
     // Keep this predicate in one place so the [Alt] [⇧] [E] badge uses the same
     // shortcut path as visible copy badges without falling through to copy key E.
-    if !app.diff_mode.is_inline() && !has_edit_tool_message {
+    if !visible_expand_badge && !app.diff_mode.is_inline() && !has_edit_tool_message {
         return false;
     }
 
