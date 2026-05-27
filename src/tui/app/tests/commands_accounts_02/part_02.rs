@@ -87,7 +87,7 @@ fn test_refactor_status_summarizes_current_todos() {
                     priority: "high".to_string(),
                     blocked_by: Vec::new(),
                     assigned_to: None,
-                    confidence: None,
+                    confidence: Some(76),
                     completion_confidence: None,
                 },
                 crate::todo::TodoItem {
@@ -118,6 +118,7 @@ fn test_refactor_status_summarizes_current_todos() {
                 .contains("1 incomplete · 1 completed · 0 cancelled")
         );
         assert!(msg.content.contains("Split giant module"));
+        assert!(msg.content.contains("confidence 76%"));
     });
 }
 

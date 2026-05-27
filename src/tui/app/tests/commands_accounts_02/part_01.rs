@@ -675,7 +675,7 @@ fn test_improve_status_summarizes_current_todos() {
                     priority: "high".to_string(),
                     blocked_by: Vec::new(),
                     assigned_to: None,
-                    confidence: None,
+                    confidence: Some(82),
                     completion_confidence: None,
                 },
                 crate::todo::TodoItem {
@@ -706,6 +706,7 @@ fn test_improve_status_summarizes_current_todos() {
                 .contains("1 incomplete · 1 completed · 0 cancelled")
         );
         assert!(msg.content.contains("Profile startup path"));
+        assert!(msg.content.contains("confidence 82%"));
     });
 }
 
