@@ -2477,6 +2477,9 @@ impl App {
             return;
         }
 
+        // Leaving the preview should happen as soon as the user acts on it.
+        self.onboarding_preview_mode = false;
+
         // Add user message to display (show placeholder to user, not full paste)
         self.push_display_message(DisplayMessage {
             role: "user".to_string(),

@@ -427,6 +427,63 @@ impl App {
 }
 
 pub(super) fn handle_dev_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed == "/onboarding-preview"
+        || trimmed == "/onboarding-preview on"
+        || trimmed == "/onboarding-preview off"
+        || trimmed == "/onboarding-preview status"
+    {
+        let mode = trimmed
+            .strip_prefix("/onboarding-preview")
+            .unwrap_or("")
+            .trim();
+        if mode == "status" {
+            let status = if app.onboarding_preview_mode {
+                "on"
+            } else {
+                "off"
+            };
+            app.push_display_message(DisplayMessage::system(format!(
+                "Onboarding preview is **{}**. Use `/onboarding-preview on` to mimic the first-run empty screen, or `/onboarding-preview off` to return to this session.",
+                status
+            )));
+            return true;
+        }
+
+        if app.is_processing {
+            app.push_display_message(DisplayMessage::system(
+                "Onboarding preview is only available while idle.".to_string(),
+            ));
+            app.set_status_notice("Onboarding preview unavailable while busy");
+            return true;
+        }
+
+        let enable = match mode {
+            "" | "on" => true,
+            "off" => false,
+            _ => unreachable!("guarded by command matcher"),
+        };
+        app.onboarding_preview_mode = enable;
+        if enable {
+            app.input.clear();
+            app.cursor_pos = 0;
+            app.clear_input_undo_history();
+            app.follow_chat_bottom();
+            app.force_full_redraw = true;
+            app.set_status_notice("Onboarding preview: on");
+        } else {
+            app.force_full_redraw = true;
+            app.set_status_notice("Onboarding preview: off");
+        }
+        return true;
+    }
+
+    if trimmed.starts_with("/onboarding-preview ") {
+        app.push_display_message(DisplayMessage::system(
+            "Usage: `/onboarding-preview`, `/onboarding-preview on`, `/onboarding-preview off`, or `/onboarding-preview status`.".to_string(),
+        ));
+        return true;
+    }
+
     if trimmed == "/reload" {
         if !app.has_newer_binary() {
             app.push_display_message(DisplayMessage {
