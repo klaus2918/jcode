@@ -27,10 +27,8 @@ const REMOTE_MODEL_CATALOG_CACHE_VERSION: u8 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RemoteModelCatalogCache {
     version: u8,
-    provider_name: Option<String>,
-    provider_model: Option<String>,
-    available_models: Vec<String>,
-    model_routes: Vec<crate::provider::ModelRoute>,
+    #[serde(flatten)]
+    snapshot: jcode_provider_core::ModelCatalogSnapshot,
     observed_at_unix_secs: u64,
 }
 
@@ -235,6 +233,63 @@ fn model_picker_route_is_default(
 }
 
 impl App {
+    pub(super) fn remote_model_catalog_snapshot(
+        &self,
+    ) -> jcode_provider_core::ModelCatalogSnapshot {
+        jcode_provider_core::ModelCatalogSnapshot::new(
+            self.remote_provider_name.clone(),
+            self.remote_provider_model.clone(),
+            self.remote_available_entries.clone(),
+            self.remote_model_options.clone(),
+        )
+    }
+
+    pub(super) fn replace_remote_model_catalog_snapshot(
+        &mut self,
+        snapshot: jcode_provider_core::ModelCatalogSnapshot,
+    ) -> bool {
+        let mut provider_meta_changed = false;
+        if let Some(name) = snapshot.provider_name
+            && self.remote_provider_name.as_deref() != Some(name.as_str())
+        {
+            self.remote_provider_name = Some(name);
+            provider_meta_changed = true;
+        }
+        if let Some(model) = snapshot.provider_model
+            && self.remote_provider_model.as_deref() != Some(model.as_str())
+        {
+            self.update_context_limit_for_model(&model);
+            self.remote_provider_model = Some(model);
+            provider_meta_changed = true;
+        }
+        self.remote_available_entries = snapshot.available_models;
+        self.remote_model_options = snapshot.model_routes;
+        self.invalidate_model_picker_cache();
+        provider_meta_changed
+    }
+
+    fn hydrate_remote_model_catalog_snapshot(
+        &mut self,
+        snapshot: jcode_provider_core::ModelCatalogSnapshot,
+    ) -> bool {
+        if !snapshot.has_routes() {
+            return false;
+        }
+
+        if self.remote_provider_name.is_none() {
+            self.remote_provider_name = snapshot.provider_name;
+        }
+        if self.remote_provider_model.is_none() {
+            self.remote_provider_model = snapshot.provider_model;
+        }
+        if self.remote_available_entries.is_empty() {
+            self.remote_available_entries = snapshot.available_models;
+        }
+        self.remote_model_options = snapshot.model_routes;
+        self.invalidate_model_picker_cache();
+        true
+    }
+
     pub(super) fn persist_remote_model_catalog_cache(&self) {
         if !self.is_remote || self.remote_model_options.is_empty() {
             return;
@@ -245,10 +300,7 @@ impl App {
         };
         let cache = RemoteModelCatalogCache {
             version: REMOTE_MODEL_CATALOG_CACHE_VERSION,
-            provider_name: self.remote_provider_name.clone(),
-            provider_model: self.remote_provider_model.clone(),
-            available_models: self.remote_available_entries.clone(),
-            model_routes: self.remote_model_options.clone(),
+            snapshot: self.remote_model_catalog_snapshot(),
             observed_at_unix_secs: remote_model_catalog_observed_at_unix_secs(),
         };
         if let Err(error) = crate::storage::write_json(&path, &cache) {
@@ -271,22 +323,11 @@ impl App {
         let Ok(cache) = crate::storage::read_json::<RemoteModelCatalogCache>(&path) else {
             return false;
         };
-        if cache.version != REMOTE_MODEL_CATALOG_CACHE_VERSION || cache.model_routes.is_empty() {
+        if cache.version != REMOTE_MODEL_CATALOG_CACHE_VERSION {
             return false;
         }
 
-        if self.remote_provider_name.is_none() {
-            self.remote_provider_name = cache.provider_name;
-        }
-        if self.remote_provider_model.is_none() {
-            self.remote_provider_model = cache.provider_model;
-        }
-        if self.remote_available_entries.is_empty() {
-            self.remote_available_entries = cache.available_models;
-        }
-        self.remote_model_options = cache.model_routes;
-        self.invalidate_model_picker_cache();
-        true
+        self.hydrate_remote_model_catalog_snapshot(cache.snapshot)
     }
 
     pub(super) fn invalidate_model_picker_cache(&mut self) {
@@ -2273,7 +2314,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        model_picker_provider_labels_match, model_picker_route_is_current,
+        RemoteModelCatalogCache, model_picker_provider_labels_match, model_picker_route_is_current,
         model_picker_route_is_default, model_picker_route_is_recommended,
     };
     use crate::tui::PickerOption;
@@ -2445,5 +2486,37 @@ mod tests {
             "deepseek/deepseek-v4-pro",
             &openrouter_provider_route,
         ));
+    }
+
+    #[test]
+    fn remote_model_catalog_cache_keeps_flattened_legacy_schema() {
+        let cache: RemoteModelCatalogCache = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "provider_name": "OpenAI",
+            "provider_model": "gpt-5.5",
+            "available_models": ["gpt-5.5"],
+            "model_routes": [{
+                "model": "gpt-5.5",
+                "provider": "OpenAI",
+                "api_method": "openai-oauth",
+                "available": true,
+                "detail": "OAuth"
+            }],
+            "observed_at_unix_secs": 123,
+        }))
+        .expect("legacy flattened remote cache should deserialize");
+
+        assert_eq!(cache.snapshot.provider_name.as_deref(), Some("OpenAI"));
+        assert_eq!(cache.snapshot.provider_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(cache.snapshot.available_models, ["gpt-5.5"]);
+        assert_eq!(cache.snapshot.model_routes.len(), 1);
+        assert_eq!(
+            cache.snapshot.model_routes[0].api_method_kind(),
+            crate::provider::ModelRouteApiMethod::OpenAIOAuth
+        );
+
+        let serialized = serde_json::to_value(&cache).expect("cache should serialize");
+        assert_eq!(serialized["provider_name"], "OpenAI");
+        assert!(serialized.get("snapshot").is_none());
     }
 }
