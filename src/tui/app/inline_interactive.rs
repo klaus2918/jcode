@@ -1965,6 +1965,10 @@ impl App {
                         self.inline_interactive_state = None;
                         self.start_login_provider(provider);
                     }
+                    PickerAction::Logout(provider) => {
+                        self.inline_interactive_state = None;
+                        self.start_logout_provider(provider);
+                    }
                     PickerAction::Usage {
                         title,
                         subtitle,
