@@ -123,6 +123,10 @@ pub(super) fn picker_route_model_spec(entry: &PickerEntry, route: &PickerOption)
     let bare_name = model_entry_base_name(entry);
     if route.api_method == "copilot" {
         format!("copilot:{}", bare_name)
+    } else if route.api_method == "claude-oauth" {
+        format!("claude-oauth:{}", bare_name)
+    } else if route.api_method == "api-key" && route.provider == "Anthropic" {
+        format!("claude-api:{}", bare_name)
     } else if route.api_method == "cursor" {
         format!("cursor:{}", bare_name)
     } else if route.api_method == "bedrock" {
@@ -270,7 +274,12 @@ mod tests {
             (
                 "claude-opus-4-6",
                 route("Anthropic", "claude-oauth"),
+                "claude-oauth:claude-opus-4-6",
+            ),
+            (
                 "claude-opus-4-6",
+                route("Anthropic", "api-key"),
+                "claude-api:claude-opus-4-6",
             ),
             (
                 "glm-51-nvfp4",

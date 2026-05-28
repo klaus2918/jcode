@@ -202,6 +202,27 @@ fn route_matches_activation(route: &ModelRoute, activation: &AuthActivationResul
         return true;
     }
 
+    match provider_id {
+        "claude" => {
+            return route.api_method.eq_ignore_ascii_case("claude-oauth")
+                || route.api_method.eq_ignore_ascii_case("claude");
+        }
+        "claude-api" => {
+            return route.provider.eq_ignore_ascii_case("Anthropic")
+                && (route.api_method.eq_ignore_ascii_case("api-key")
+                    || route.api_method.eq_ignore_ascii_case("claude-api"));
+        }
+        "openai" => {
+            return route.api_method.eq_ignore_ascii_case("openai-oauth")
+                || route.api_method.eq_ignore_ascii_case("openai");
+        }
+        "openai-api" => {
+            return route.api_method.eq_ignore_ascii_case("openai-api-key")
+                || route.api_method.eq_ignore_ascii_case("openai-api");
+        }
+        _ => {}
+    }
+
     // OpenAI-compatible auth has a concrete catalog namespace. Accepting a
     // matching display label or generic `openai-compatible` route as success can
     // hide stale/mixed catalogs, especially when providers share model IDs.
@@ -241,6 +262,7 @@ pub fn normalized_auth_provider_id(provider_hint: Option<&str>) -> Option<&'stat
 fn normalized_login_provider_id(provider_id: &str) -> Option<&'static str> {
     match provider_id.trim().to_ascii_lowercase().as_str() {
         "claude" | "anthropic" => Some("claude"),
+        "anthropic-api" | "claude-api" | "anthropic-key" | "claude-key" => Some("claude-api"),
         "openai" => Some("openai"),
         "openai-api" | "openai-key" | "openai-apikey" | "openai-platform" | "platform-openai" => {
             Some("openai-api")
@@ -357,6 +379,10 @@ fn direct_provider_activation(provider_id: &str) -> Option<ProviderActivation> {
             RuntimeProviderId::Claude,
             ActiveProvider::Claude,
         )),
+        "claude-api" => Some(ProviderActivation::locked(
+            RuntimeProviderId::ClaudeApiKey,
+            ActiveProvider::Claude,
+        )),
         "openai" => Some(ProviderActivation::locked(
             RuntimeProviderId::OpenAi,
             ActiveProvider::OpenAI,
@@ -411,7 +437,8 @@ pub fn model_switch_request_for_provider_id(
         {
             format!("{}:{}", profile_id, model)
         }
-        Some("claude") => format!("claude:{}", model),
+        Some("claude") => format!("claude-oauth:{}", model),
+        Some("claude-api") => format!("claude-api:{}", model),
         Some("openai") => format!("openai-oauth:{}", model),
         Some("openai-api") => format!("openai-api:{}", model),
         Some("openrouter") | Some("jcode") => format!("openrouter:{}", model),
@@ -472,6 +499,68 @@ mod tests {
     }
 
     #[test]
+    fn direct_auth_catalog_matching_preserves_oauth_vs_api_key_route_identity() {
+        for (provider_id, provider_label, matching_provider, matching_method, stale_method) in [
+            (
+                "claude",
+                "Anthropic/Claude",
+                "Anthropic",
+                "claude-oauth",
+                "api-key",
+            ),
+            (
+                "claude-api",
+                "Anthropic API",
+                "Anthropic",
+                "api-key",
+                "claude-oauth",
+            ),
+            (
+                "openai",
+                "OpenAI",
+                "OpenAI",
+                "openai-oauth",
+                "openai-api-key",
+            ),
+            (
+                "openai-api",
+                "OpenAI API",
+                "OpenAI",
+                "openai-api-key",
+                "openai-oauth",
+            ),
+        ] {
+            let activation = AuthActivationResult {
+                provider_id: Some(provider_id.to_string()),
+                provider_label: Some(provider_label.to_string()),
+                activated_model: Some("shared-model".to_string()),
+                expected_runtime: None,
+                expected_catalog_namespace: None,
+            };
+            let routes = vec![
+                route("shared-model", matching_provider, stale_method, true),
+                route("shared-model", matching_provider, matching_method, true),
+            ];
+
+            let report = validate_catalog_invariants(&activation, Some("shared-model"), &routes);
+            assert!(
+                report.ok(),
+                "{provider_id} should match {matching_method}: {report:?}"
+            );
+            assert_eq!(report.selectable_provider_routes, 1);
+            assert_eq!(
+                report.route_sample,
+                vec![format!("`shared-model` via {matching_method}")]
+            );
+            assert_eq!(
+                provider_model_to_select_after_auth(&activation, Some("shared-model"), &routes),
+                Some("shared-model".to_string()),
+                "duplicate model IDs must force a provider-explicit model switch for {provider_id}"
+            );
+        }
+    }
+
+    #[test]
     fn typed_auth_request_provider_id_wins_over_legacy_hint() {
         let request = AuthActivationRequest::new(
             Some("openai".to_string()),
@@ -490,6 +579,8 @@ mod tests {
         for (hint, normalized, label) in [
             ("claude", "claude", "Anthropic/Claude"),
             ("anthropic", "claude", "Anthropic/Claude"),
+            ("anthropic-api", "claude-api", "Anthropic API"),
+            ("claude-api", "claude-api", "Anthropic API"),
             ("openai", "openai", "OpenAI"),
             ("openai-key", "openai-api", "OpenAI API"),
             ("openrouter", "openrouter", "OpenRouter"),
@@ -544,6 +635,7 @@ mod tests {
 
         for (provider, runtime, active) in [
             ("claude", "claude", "claude"),
+            ("claude-api", "claude-api", "claude"),
             ("openai", "openai", "openai"),
             ("openai-api", "openai-api", "openai"),
             ("openrouter", "openrouter", "openrouter"),
@@ -592,13 +684,16 @@ mod tests {
                     Some(("jcode", "jcode", "openrouter", "openrouter"))
                 }
                 crate::provider_catalog::LoginProviderTarget::Claude => {
-                    Some(("claude", "claude", "claude", "claude"))
+                    Some(("claude", "claude", "claude", "claude-oauth"))
+                }
+                crate::provider_catalog::LoginProviderTarget::ClaudeApiKey => {
+                    Some(("claude-api", "claude-api", "claude", "claude-api"))
                 }
                 crate::provider_catalog::LoginProviderTarget::OpenAi => {
-                    Some(("openai", "openai", "openai", "openai"))
+                    Some(("openai", "openai", "openai", "openai-oauth"))
                 }
                 crate::provider_catalog::LoginProviderTarget::OpenAiApiKey => {
-                    Some(("openai-api", "openai-api", "openai", "openai"))
+                    Some(("openai-api", "openai-api", "openai", "openai-api"))
                 }
                 crate::provider_catalog::LoginProviderTarget::OpenRouter => {
                     Some(("openrouter", "openrouter", "openrouter", "openrouter"))
@@ -678,6 +773,7 @@ mod tests {
 
         for expected in [
             "claude",
+            "anthropic-api",
             "openai",
             "openai-api",
             "openrouter",
@@ -710,8 +806,9 @@ mod tests {
     #[test]
     fn model_switch_request_is_provider_explicit_for_all_auth_providers() {
         for (provider, expected) in [
-            ("claude", "claude:shared-model"),
-            ("anthropic", "claude:shared-model"),
+            ("claude", "claude-oauth:shared-model"),
+            ("anthropic", "claude-oauth:shared-model"),
+            ("anthropic-api", "claude-api:shared-model"),
             ("openai", "openai-oauth:shared-model"),
             ("openai-api", "openai-api:shared-model"),
             ("openrouter", "openrouter:shared-model"),

@@ -508,14 +508,15 @@ impl MultiProvider {
     }
 
     fn set_model_on_provider(&self, provider: ActiveProvider, model: &str) -> Result<()> {
-        self.set_model_on_provider_with_openai_credential_mode(provider, model, None)
+        self.set_model_on_provider_with_credential_modes(provider, model, None, None)
     }
 
-    fn set_model_on_provider_with_openai_credential_mode(
+    fn set_model_on_provider_with_credential_modes(
         &self,
         provider: ActiveProvider,
         model: &str,
         openai_credential_mode: Option<openai::OpenAICredentialMode>,
+        anthropic_credential_mode: Option<anthropic::AnthropicCredentialMode>,
     ) -> Result<()> {
         let model = model.trim();
         if model.is_empty() {
@@ -528,6 +529,9 @@ impl MultiProvider {
             ActiveProvider::Claude => {
                 let model = model_name_for_provider(provider, model);
                 if let Some(anthropic) = self.anthropic_provider() {
+                    if let Some(mode) = anthropic_credential_mode {
+                        anthropic.set_credential_mode(mode)?;
+                    }
                     anthropic.set_model(&model)?;
                 } else if let Some(claude) = self.claude_provider() {
                     claude.set_model(&model)?;
@@ -1036,11 +1040,17 @@ impl Provider for MultiProvider {
                 "openai-oauth:" => Some(openai::OpenAICredentialMode::OAuth),
                 _ => None,
             };
-            if openai_credential_mode.is_some() {
-                return self.set_model_on_provider_with_openai_credential_mode(
+            let anthropic_credential_mode = match prefix {
+                "claude-api:" => Some(anthropic::AnthropicCredentialMode::ApiKey),
+                "claude-oauth:" => Some(anthropic::AnthropicCredentialMode::OAuth),
+                _ => None,
+            };
+            if openai_credential_mode.is_some() || anthropic_credential_mode.is_some() {
+                return self.set_model_on_provider_with_credential_modes(
                     target,
                     target_model,
                     openai_credential_mode,
+                    anthropic_credential_mode,
                 );
             }
             return self.set_model_on_provider(target, target_model);

@@ -129,6 +129,10 @@ impl MultiProvider {
             Self::openai_compatible_profile_id_from_route(api_method, provider_display);
         let model_spec = if api_method == "copilot" {
             format!("copilot:{}", bare_name)
+        } else if api_method == "claude-oauth" {
+            format!("claude-oauth:{}", bare_name)
+        } else if api_method == "api-key" && provider_display == "Anthropic" {
+            format!("claude-api:{}", bare_name)
         } else if api_method == "cursor" {
             format!("cursor:{}", bare_name)
         } else if api_method == "bedrock" {
@@ -253,7 +257,14 @@ mod tests {
                 "claude-opus-4-6",
                 "claude-oauth",
                 "Anthropic",
+                "claude-oauth:claude-opus-4-6",
+                Some("claude"),
+            ),
+            (
                 "claude-opus-4-6",
+                "api-key",
+                "Anthropic",
+                "claude-api:claude-opus-4-6",
                 Some("claude"),
             ),
             (
