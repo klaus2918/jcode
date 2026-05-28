@@ -182,24 +182,12 @@ impl App {
 
         let result: anyhow::Result<String> = (|| match provider.target {
             LoginProviderTarget::Claude | LoginProviderTarget::ClaudeApiKey => {
-                let accounts = crate::auth::claude::list_accounts().unwrap_or_default();
-                for account in &accounts {
-                    crate::auth::claude::remove_account(&account.label)?;
-                }
-                Ok(format!(
-                    "Logged out of {} Anthropic account(s).",
-                    accounts.len()
-                ))
+                let removed = crate::auth::claude::clear_accounts()?;
+                Ok(format!("Logged out of {} Anthropic account(s).", removed))
             }
             LoginProviderTarget::OpenAi | LoginProviderTarget::OpenAiApiKey => {
-                let accounts = crate::auth::codex::list_accounts().unwrap_or_default();
-                for account in &accounts {
-                    crate::auth::codex::remove_account(&account.label)?;
-                }
-                Ok(format!(
-                    "Logged out of {} OpenAI account(s).",
-                    accounts.len()
-                ))
+                let removed = crate::auth::codex::clear_accounts()?;
+                Ok(format!("Logged out of {} OpenAI account(s).", removed))
             }
             LoginProviderTarget::Gemini => {
                 crate::auth::gemini::clear_tokens()?;

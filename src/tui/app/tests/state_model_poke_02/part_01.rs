@@ -809,6 +809,51 @@ fn test_top_level_command_suggestions_include_catchup_and_back() {
 }
 
 #[test]
+fn test_top_level_command_suggestions_include_all_non_hidden_commands() {
+    let app = create_test_app();
+
+    let suggestions = app.get_suggestions_for("/logo");
+    assert!(suggestions.iter().any(|(cmd, _)| cmd == "/logout"));
+
+    let suggestions = app.get_suggestions_for("/client");
+    assert!(suggestions.iter().any(|(cmd, _)| cmd == "/client-reload"));
+
+    let suggestions = app.get_suggestions_for("/z");
+    assert!(!suggestions.iter().any(|(cmd, _)| cmd == "/z"));
+    assert!(!suggestions.iter().any(|(cmd, _)| cmd == "/zz"));
+}
+
+#[test]
+fn test_logout_clear_anthropic_accounts_removes_all_accounts_once() {
+    with_temp_jcode_home(|| {
+        for index in 1..=3 {
+            crate::auth::claude::upsert_account(crate::auth::claude::AnthropicAccount {
+                label: format!("requested-{index}"),
+                access: format!("access-{index}"),
+                refresh: format!("refresh-{index}"),
+                expires: 100 + index,
+                email: None,
+                subscription_type: None,
+                scopes: Vec::new(),
+            })
+            .unwrap();
+        }
+        crate::auth::claude::set_active_account("claude-3").unwrap();
+
+        let labels: Vec<_> = crate::auth::claude::list_accounts()
+            .unwrap()
+            .into_iter()
+            .map(|account| account.label)
+            .collect();
+        assert_eq!(labels, vec!["claude-1", "claude-2", "claude-3"]);
+
+        assert_eq!(crate::auth::claude::clear_accounts().unwrap(), 3);
+        assert!(crate::auth::claude::list_accounts().unwrap().is_empty());
+        assert!(crate::auth::claude::active_account_label().is_none());
+    });
+}
+
+#[test]
 fn test_transcript_command_suggestions_include_path_variant() {
     let app = create_test_app();
 

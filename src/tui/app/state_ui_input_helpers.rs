@@ -7,8 +7,7 @@ use std::time::SystemTime;
 struct RegisteredCommand {
     name: &'static str,
     help: &'static str,
-    autocomplete: bool,
-    remote_only: bool,
+    hidden: bool,
 }
 
 impl RegisteredCommand {
@@ -16,8 +15,7 @@ impl RegisteredCommand {
         Self {
             name,
             help,
-            autocomplete: true,
-            remote_only: false,
+            hidden: false,
         }
     }
 
@@ -25,8 +23,7 @@ impl RegisteredCommand {
         Self {
             name,
             help,
-            autocomplete: true,
-            remote_only: true,
+            hidden: false,
         }
     }
 
@@ -34,8 +31,7 @@ impl RegisteredCommand {
         Self {
             name,
             help,
-            autocomplete: false,
-            remote_only: false,
+            hidden: true,
         }
     }
 }
@@ -72,7 +68,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/review", "Launch a one-shot headed review session"),
     RegisteredCommand::public("/judge", "Launch a one-shot headed judge session"),
     RegisteredCommand::public("/effort", "Show/change reasoning effort (Alt+left/right)"),
-    RegisteredCommand::public("/fast", "Toggle OpenAI/Codex fast mode"),
+    RegisteredCommand::public("/fast", "Toggle fast mode"),
     RegisteredCommand::public("/transport", "Show/change connection transport"),
     RegisteredCommand::public("/alignment", "Show/change default text alignment"),
     RegisteredCommand::public("/clear", "Clear conversation history"),
@@ -124,6 +120,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/quit", "Exit jcode"),
     RegisteredCommand::public("/auth", "Show authentication status"),
     RegisteredCommand::public("/login", "Login to a provider"),
+    RegisteredCommand::public("/logout", "Log out of a provider"),
     RegisteredCommand::public("/account", "Open the combined account picker"),
     RegisteredCommand::public("/accounts", "Alias for /account"),
     RegisteredCommand::public("/cache", "Show cache stats or set cache TTL"),
@@ -289,8 +286,7 @@ impl App {
         let mut seen = std::collections::HashSet::new();
         let mut commands: Vec<(String, &'static str)> = REGISTERED_COMMANDS
             .iter()
-            .filter(|command| command.autocomplete)
-            .filter(|command| !command.remote_only || self.is_remote)
+            .filter(|command| !command.hidden)
             .filter_map(|command| {
                 let name = command.name.to_string();
                 seen.insert(name.clone()).then_some((name, command.help))
