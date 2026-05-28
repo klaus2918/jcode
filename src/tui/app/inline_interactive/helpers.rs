@@ -127,6 +127,10 @@ pub(super) fn picker_route_model_spec(entry: &PickerEntry, route: &PickerOption)
         format!("cursor:{}", bare_name)
     } else if route.api_method == "bedrock" {
         format!("bedrock:{}", bare_name)
+    } else if route.api_method == "openai-api-key" {
+        format!("openai-api:{}", bare_name)
+    } else if route.api_method == "openai-oauth" {
+        format!("openai-oauth:{}", bare_name)
     } else if route.provider == "Antigravity" {
         format!("antigravity:{}", bare_name)
     } else if let Some(profile_id) = openai_compatible_profile_id_for_route(route) {
@@ -217,4 +221,70 @@ pub(super) fn agent_model_default_summary(target: AgentModelTarget, app: &App) -
     };
 
     normalize_agent_model_summary(target, summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::{PickerAction, PickerEntry, PickerOption};
+
+    fn entry(model: &str, route: PickerOption) -> PickerEntry {
+        PickerEntry {
+            name: model.to_string(),
+            options: vec![route],
+            action: PickerAction::Model,
+            selected_option: 0,
+            is_current: false,
+            is_default: false,
+            recommended: false,
+            recommendation_rank: 0,
+            old: false,
+            created_date: None,
+            effort: None,
+        }
+    }
+
+    fn route(provider: &str, api_method: &str) -> PickerOption {
+        PickerOption {
+            provider: provider.to_string(),
+            api_method: api_method.to_string(),
+            available: true,
+            detail: String::new(),
+            estimated_reference_cost_micros: None,
+        }
+    }
+
+    #[test]
+    fn model_picker_specs_preserve_provider_and_openai_auth_state_space() {
+        for (model, route, expected) in [
+            (
+                "gpt-5.5",
+                route("OpenAI", "openai-oauth"),
+                "openai-oauth:gpt-5.5",
+            ),
+            (
+                "gpt-5.5",
+                route("OpenAI", "openai-api-key"),
+                "openai-api:gpt-5.5",
+            ),
+            (
+                "claude-opus-4-6",
+                route("Anthropic", "claude-oauth"),
+                "claude-opus-4-6",
+            ),
+            (
+                "glm-51-nvfp4",
+                route("Comtegra GPU Cloud", "openai-compatible:comtegra"),
+                "comtegra:glm-51-nvfp4",
+            ),
+            (
+                "claude-sonnet-4-6",
+                route("Copilot", "copilot"),
+                "copilot:claude-sonnet-4-6",
+            ),
+        ] {
+            let entry = entry(model, route.clone());
+            assert_eq!(picker_route_model_spec(&entry, &route), expected);
+        }
+    }
 }

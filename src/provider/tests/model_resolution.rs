@@ -751,6 +751,66 @@ fn test_profile_prefixed_model_switch_reinitializes_direct_compatible_runtime() 
 }
 
 #[test]
+fn test_openai_auth_mode_prefixed_model_switch_changes_credentials() {
+    with_clean_provider_test_env(|| {
+        let prev_runtime = std::env::var_os("JCODE_RUNTIME_PROVIDER");
+        crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
+        crate::env::set_var("OPENAI_API_KEY", "sk-test-openai-api-key");
+        crate::auth::codex::upsert_account_from_tokens(
+            "openai-1",
+            "oauth-access-token",
+            "oauth-refresh-token",
+            None,
+            None,
+        )
+        .expect("save OAuth account");
+
+        let openai = Arc::new(openai::OpenAIProvider::new(
+            crate::auth::codex::load_credentials().expect("load OpenAI credentials"),
+        ));
+        let provider = MultiProvider {
+            claude: RwLock::new(None),
+            anthropic: RwLock::new(None),
+            openai: RwLock::new(Some(Arc::clone(&openai))),
+            copilot_api: RwLock::new(None),
+            antigravity: RwLock::new(None),
+            gemini: RwLock::new(None),
+            cursor: RwLock::new(None),
+            bedrock: RwLock::new(None),
+            openrouter: RwLock::new(None),
+            active: RwLock::new(ActiveProvider::OpenAI),
+            use_claude_cli: false,
+            startup_notices: RwLock::new(Vec::new()),
+            forced_provider: None,
+        };
+        let rt = enter_test_runtime();
+        let _runtime_guard = rt.enter();
+
+        assert_eq!(
+            rt.block_on(openai.test_access_token()),
+            "oauth-access-token",
+            "default OpenAI credentials should still prefer OAuth for backwards compatibility"
+        );
+
+        provider
+            .set_model("openai-api:gpt-5.5")
+            .expect("API-key route should select the OpenAI API credentials");
+        assert_eq!(rt.block_on(openai.test_access_token()), "sk-test-openai-api-key");
+
+        provider
+            .set_model("openai-oauth:gpt-5.5")
+            .expect("OAuth route should switch back to Codex OAuth credentials");
+        assert_eq!(rt.block_on(openai.test_access_token()), "oauth-access-token");
+
+        if let Some(prev_runtime) = prev_runtime {
+            crate::env::set_var("JCODE_RUNTIME_PROVIDER", prev_runtime);
+        } else {
+            crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
+        }
+    });
+}
+
+#[test]
 fn test_deepseek_direct_profile_supports_reasoning_effort_via_multi_provider() {
     with_clean_provider_test_env(|| {
         with_env_var("DEEPSEEK_API_KEY", "test-deepseek-key", || {

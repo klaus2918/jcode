@@ -132,6 +132,35 @@ enum OpenAINativeCompactionMode {
     Off,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenAICredentialMode {
+    Auto,
+    OAuth,
+    ApiKey,
+}
+
+impl OpenAICredentialMode {
+    fn from_runtime_env() -> Self {
+        match std::env::var("JCODE_RUNTIME_PROVIDER")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("openai-api") => Self::ApiKey,
+            Some("openai") => Self::OAuth,
+            _ => Self::Auto,
+        }
+    }
+
+    fn load_credentials(self) -> Result<CodexCredentials> {
+        match self {
+            Self::Auto => crate::auth::codex::load_credentials(),
+            Self::OAuth => crate::auth::codex::load_oauth_credentials(),
+            Self::ApiKey => crate::auth::codex::load_api_key_credentials(),
+        }
+    }
+}
+
 impl OpenAINativeCompactionMode {
     fn from_config(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -440,6 +469,7 @@ async fn ensure_persistent_ws_is_healthy(state: &mut PersistentWsState) -> Resul
 pub struct OpenAIProvider {
     client: Client,
     credentials: Arc<RwLock<CodexCredentials>>,
+    credential_mode: Arc<RwLock<OpenAICredentialMode>>,
     model: Arc<RwLock<String>>,
     prompt_cache_key: Option<String>,
     prompt_cache_retention: Option<String>,
@@ -476,6 +506,14 @@ impl OpenAIProvider {
     }
 
     pub fn new(credentials: CodexCredentials) -> Self {
+        let credential_mode = OpenAICredentialMode::from_runtime_env();
+        let credentials = match credential_mode {
+            OpenAICredentialMode::Auto => credentials,
+            OpenAICredentialMode::OAuth | OpenAICredentialMode::ApiKey => {
+                credential_mode.load_credentials().unwrap_or(credentials)
+            }
+        };
+
         // Check for model override from environment
         let mut model =
             std::env::var("JCODE_OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
@@ -537,6 +575,7 @@ impl OpenAIProvider {
         Self {
             client: crate::provider::shared_http_client(),
             credentials: Arc::new(RwLock::new(credentials)),
+            credential_mode: Arc::new(RwLock::new(credential_mode)),
             model: Arc::new(RwLock::new(model)),
             prompt_cache_key,
             prompt_cache_retention,
@@ -553,7 +592,12 @@ impl OpenAIProvider {
     }
 
     pub(crate) fn reload_credentials_now(&self) {
-        if let Ok(credentials) = crate::auth::codex::load_credentials() {
+        let mode = self
+            .credential_mode
+            .try_read()
+            .map(|mode| *mode)
+            .unwrap_or(OpenAICredentialMode::Auto);
+        if let Ok(credentials) = mode.load_credentials() {
             match self.credentials.try_write() {
                 Ok(mut guard) => {
                     *guard = credentials;
@@ -567,6 +611,32 @@ impl OpenAIProvider {
         }
 
         self.clear_persistent_ws_try("credentials reloaded");
+    }
+
+    pub(crate) fn set_credential_mode(&self, mode: OpenAICredentialMode) -> Result<()> {
+        let credentials = mode.load_credentials()?;
+        match self.credentials.try_write() {
+            Ok(mut guard) => {
+                *guard = credentials;
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "Cannot change OpenAI credential mode while a request is in progress"
+                );
+            }
+        }
+        match self.credential_mode.try_write() {
+            Ok(mut guard) => {
+                *guard = mode;
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "Cannot change OpenAI credential mode while a request is in progress"
+                );
+            }
+        }
+        self.clear_persistent_ws_try("OpenAI credential mode changed");
+        Ok(())
     }
 
     fn clear_persistent_ws_try(&self, reason: &str) {

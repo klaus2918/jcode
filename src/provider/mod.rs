@@ -508,6 +508,15 @@ impl MultiProvider {
     }
 
     fn set_model_on_provider(&self, provider: ActiveProvider, model: &str) -> Result<()> {
+        self.set_model_on_provider_with_openai_credential_mode(provider, model, None)
+    }
+
+    fn set_model_on_provider_with_openai_credential_mode(
+        &self,
+        provider: ActiveProvider,
+        model: &str,
+        openai_credential_mode: Option<openai::OpenAICredentialMode>,
+    ) -> Result<()> {
         let model = model.trim();
         if model.is_empty() {
             anyhow::bail!("Model cannot be empty");
@@ -536,6 +545,9 @@ impl MultiProvider {
                         "OpenAI credentials not available. Run `jcode login --provider openai` first."
                     );
                 };
+                if let Some(mode) = openai_credential_mode {
+                    openai.set_credential_mode(mode)?;
+                }
                 openai.set_model(model)?;
                 self.set_active_provider(ActiveProvider::OpenAI);
                 Ok(())
@@ -1015,10 +1027,22 @@ impl Provider for MultiProvider {
         // Provider-prefixed model names are explicit routing directives. They
         // must never silently fall through to another provider when the target
         // is unavailable or when --provider locks a different backend.
-        if let Some((target, _prefix, target_model)) =
+        if let Some((target, prefix, target_model)) =
             explicit_model_provider_prefix(requested_model)
         {
             self.ensure_provider_lock_allows_model_target(target, requested_model)?;
+            let openai_credential_mode = match prefix {
+                "openai-api:" => Some(openai::OpenAICredentialMode::ApiKey),
+                "openai-oauth:" => Some(openai::OpenAICredentialMode::OAuth),
+                _ => None,
+            };
+            if openai_credential_mode.is_some() {
+                return self.set_model_on_provider_with_openai_credential_mode(
+                    target,
+                    target_model,
+                    openai_credential_mode,
+                );
+            }
             return self.set_model_on_provider(target, target_model);
         }
 

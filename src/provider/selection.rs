@@ -133,6 +133,10 @@ impl MultiProvider {
             format!("cursor:{}", bare_name)
         } else if api_method == "bedrock" {
             format!("bedrock:{}", bare_name)
+        } else if api_method == "openai-api-key" {
+            format!("openai-api:{}", bare_name)
+        } else if api_method == "openai-oauth" {
+            format!("openai-oauth:{}", bare_name)
         } else if provider_display == "Antigravity" {
             format!("antigravity:{}", bare_name)
         } else if profile_id.is_some() {
@@ -226,6 +230,56 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn default_model_selection_preserves_route_identity_state_space() {
+        for (bare, api_method, provider, expected_spec, expected_provider_key) in [
+            (
+                "gpt-5.5",
+                "openai-oauth",
+                "OpenAI",
+                "openai-oauth:gpt-5.5",
+                Some("openai"),
+            ),
+            (
+                "gpt-5.5",
+                "openai-api-key",
+                "OpenAI",
+                "openai-api:gpt-5.5",
+                Some("openai"),
+            ),
+            (
+                "claude-opus-4-6",
+                "claude-oauth",
+                "Anthropic",
+                "claude-opus-4-6",
+                Some("claude"),
+            ),
+            (
+                "glm-51-nvfp4",
+                "openai-compatible:comtegra",
+                "Comtegra GPU Cloud",
+                "glm-51-nvfp4",
+                Some("comtegra"),
+            ),
+            (
+                "claude-sonnet-4-6",
+                "copilot",
+                "Copilot",
+                "copilot:claude-sonnet-4-6",
+                Some("copilot"),
+            ),
+        ] {
+            let selection =
+                MultiProvider::default_model_selection_from_route(bare, api_method, provider);
+            assert_eq!(selection.model_spec, expected_spec, "{api_method}");
+            assert_eq!(
+                selection.provider_key.as_deref(),
+                expected_provider_key,
+                "{api_method}"
+            );
+        }
     }
 
     #[test]

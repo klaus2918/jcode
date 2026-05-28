@@ -412,7 +412,8 @@ pub fn model_switch_request_for_provider_id(
             format!("{}:{}", profile_id, model)
         }
         Some("claude") => format!("claude:{}", model),
-        Some("openai") | Some("openai-api") => format!("openai:{}", model),
+        Some("openai") => format!("openai-oauth:{}", model),
+        Some("openai-api") => format!("openai-api:{}", model),
         Some("openrouter") | Some("jcode") => format!("openrouter:{}", model),
         Some("bedrock") => format!("bedrock:{}", model),
         Some("cursor") => format!("cursor:{}", model),
@@ -711,8 +712,8 @@ mod tests {
         for (provider, expected) in [
             ("claude", "claude:shared-model"),
             ("anthropic", "claude:shared-model"),
-            ("openai", "openai:shared-model"),
-            ("openai-api", "openai:shared-model"),
+            ("openai", "openai-oauth:shared-model"),
+            ("openai-api", "openai-api:shared-model"),
             ("openrouter", "openrouter:shared-model"),
             ("jcode", "openrouter:shared-model"),
             ("azure-openai", "openrouter:shared-model"),
