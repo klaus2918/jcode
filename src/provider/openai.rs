@@ -639,6 +639,13 @@ impl OpenAIProvider {
         Ok(())
     }
 
+    pub(crate) fn credential_mode_snapshot(&self) -> OpenAICredentialMode {
+        self.credential_mode
+            .try_read()
+            .map(|mode| *mode)
+            .unwrap_or(OpenAICredentialMode::Auto)
+    }
+
     fn clear_persistent_ws_try(&self, reason: &str) {
         if let Ok(mut persistent_ws) = self.persistent_ws.try_lock() {
             if persistent_ws.is_some() {

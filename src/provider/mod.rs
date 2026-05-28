@@ -877,6 +877,57 @@ impl MultiProvider {
 
         self.set_model(model)
     }
+
+    fn fork_model_switch_request(&self, active: ActiveProvider, current_model: &str) -> String {
+        let prefix = match active {
+            ActiveProvider::Claude => {
+                if let Some(anthropic) = self.anthropic_provider() {
+                    match anthropic.credential_mode_snapshot() {
+                        anthropic::AnthropicCredentialMode::OAuth => "claude-oauth",
+                        anthropic::AnthropicCredentialMode::ApiKey => "claude-api",
+                        anthropic::AnthropicCredentialMode::Auto => "claude",
+                    }
+                } else {
+                    "claude"
+                }
+            }
+            ActiveProvider::OpenAI => {
+                if let Some(openai) = self.openai_provider() {
+                    match openai.credential_mode_snapshot() {
+                        openai::OpenAICredentialMode::OAuth => "openai-oauth",
+                        openai::OpenAICredentialMode::ApiKey => "openai-api",
+                        openai::OpenAICredentialMode::Auto => "openai",
+                    }
+                } else {
+                    "openai"
+                }
+            }
+            ActiveProvider::Copilot => "copilot",
+            ActiveProvider::Antigravity => "antigravity",
+            ActiveProvider::Gemini => "gemini",
+            ActiveProvider::Cursor => "cursor",
+            ActiveProvider::Bedrock => "bedrock",
+            ActiveProvider::OpenRouter => {
+                if let Some(openrouter) = self.openrouter_provider()
+                    && let Some((_provider, api_method, _detail)) =
+                        openrouter.direct_openai_compatible_route_parts()
+                    && let Some(profile_id) = api_method
+                        .strip_prefix("openai-compatible:")
+                        .map(str::trim)
+                        .filter(|profile_id| !profile_id.is_empty())
+                {
+                    return format!("{profile_id}:{current_model}");
+                }
+                if let Some(openrouter) = self.openrouter_provider()
+                    && let Some(provider_pin) = openrouter.explicit_provider_pin_for_current_model()
+                {
+                    return format!("openrouter:{current_model}@{provider_pin}");
+                }
+                "openrouter"
+            }
+        };
+        format!("{prefix}:{current_model}")
+    }
 }
 
 impl Default for MultiProvider {
@@ -2196,17 +2247,8 @@ impl Provider for MultiProvider {
 
         provider.spawn_anthropic_catalog_refresh_if_needed();
         provider.spawn_openai_catalog_refresh_if_needed();
-        if matches!(active, ActiveProvider::Copilot) {
-            let _ = provider.set_model(&format!("copilot:{}", current_model));
-        } else if matches!(active, ActiveProvider::Antigravity) {
-            let _ = provider.set_model(&format!("antigravity:{}", current_model));
-        } else if matches!(active, ActiveProvider::Cursor) {
-            let _ = provider.set_model(&format!("cursor:{}", current_model));
-        } else if matches!(active, ActiveProvider::Bedrock) {
-            let _ = provider.set_model(&format!("bedrock:{}", current_model));
-        } else {
-            let _ = provider.set_model(&current_model);
-        }
+        let switch_request = self.fork_model_switch_request(active, &current_model);
+        let _ = provider.set_model(&switch_request);
         Arc::new(provider)
     }
 

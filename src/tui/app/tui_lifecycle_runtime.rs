@@ -260,12 +260,21 @@ impl App {
             self.session.provider_session_id = None;
             let mut restored_model = false;
             if let Some(model) = self.session.model.clone() {
-                if let Err(e) =
-                    crate::provider::set_model_with_auth_refresh(self.provider.as_ref(), &model)
-                {
+                let model_request =
+                    crate::provider::MultiProvider::model_switch_request_for_session_model(
+                        &model,
+                        self.session.provider_key.as_deref(),
+                    );
+                if let Err(e) = crate::provider::set_model_with_auth_refresh(
+                    self.provider.as_ref(),
+                    &model_request,
+                ) {
                     self.push_display_message(DisplayMessage {
                         role: "system".to_string(),
-                        content: format!("⚠ Failed to restore model '{}': {}", model, e),
+                        content: format!(
+                            "⚠ Failed to restore model '{}' via '{}': {}",
+                            model, model_request, e
+                        ),
                         tool_calls: vec![],
                         duration_secs: None,
                         title: None,

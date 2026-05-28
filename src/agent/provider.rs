@@ -73,9 +73,16 @@ impl Agent {
     ) -> Result<()> {
         crate::provider::set_model_with_auth_refresh(self.provider.as_ref(), model)?;
         let resolved_model = self.provider.model();
+        self.session.provider_key =
+            crate::provider::MultiProvider::session_provider_key_after_model_switch(
+                model,
+                self.provider.name(),
+                self.session.provider_key.as_deref(),
+            );
         self.session.model = Some(resolved_model.clone());
         let event = crate::provider::ProviderStateEvent::selected_model(source, resolved_model);
         self.provider_runtime_state.apply(event);
+        self.persist_session_best_effort("model selection");
         self.log_env_snapshot("set_model");
         Ok(())
     }

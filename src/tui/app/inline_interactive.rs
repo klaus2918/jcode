@@ -2069,6 +2069,11 @@ impl App {
                                     self.invalidate_model_picker_cache();
                                     let active_model = self.provider.model();
                                     self.update_context_limit_for_model(&active_model);
+                                    self.session.provider_key = crate::provider::MultiProvider::session_provider_key_after_model_switch(
+                                        &spec,
+                                        self.provider.name(),
+                                        self.session.provider_key.as_deref(),
+                                    );
                                     self.session.model = Some(active_model);
                                     let _ = self.session.save();
                                 }

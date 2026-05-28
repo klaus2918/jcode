@@ -720,6 +720,13 @@ impl AnthropicProvider {
         Ok(())
     }
 
+    pub(crate) fn credential_mode_snapshot(&self) -> AnthropicCredentialMode {
+        self.credential_mode
+            .try_read()
+            .map(|mode| *mode)
+            .unwrap_or(AnthropicCredentialMode::Auto)
+    }
+
     #[cfg(test)]
     pub(crate) async fn test_access_token_and_oauth_mode(&self) -> Result<(String, bool)> {
         self.get_access_token().await
