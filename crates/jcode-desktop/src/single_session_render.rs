@@ -48,6 +48,11 @@ const SLASH_SUGGESTIONS_INLINE_CARD_HIGHLIGHT_COLOR: [f32; 4] = [1.000, 1.000, 1
 const SLASH_SUGGESTIONS_INLINE_CARD_ACCENT_COLOR: [f32; 4] = [0.105, 0.355, 0.950, 0.48];
 pub(crate) const SLASH_SUGGESTIONS_INLINE_SELECTION_BACKGROUND_COLOR: [f32; 4] =
     [0.215, 0.420, 0.900, 0.155];
+const MODEL_PICKER_CARD_BACKGROUND_COLOR: [f32; 4] = [0.982, 0.990, 1.000, 0.82];
+const MODEL_PICKER_CARD_BORDER_COLOR: [f32; 4] = [0.075, 0.195, 0.520, 0.24];
+const MODEL_PICKER_CARD_HIGHLIGHT_COLOR: [f32; 4] = [1.000, 1.000, 1.000, 0.64];
+const MODEL_PICKER_CARD_ACCENT_COLOR: [f32; 4] = [0.080, 0.355, 0.960, 0.48];
+const MODEL_PICKER_SELECTION_BACKGROUND_COLOR: [f32; 4] = [0.135, 0.360, 0.940, 0.145];
 const SINGLE_SESSION_SCROLLBAR_TRACK_WIDTH: f32 = 3.0;
 const SINGLE_SESSION_SCROLLBAR_GAP: f32 = 8.0;
 const SINGLE_SESSION_SCROLLBAR_THUMB_TRANSITION_DURATION: Duration = Duration::from_millis(140);
@@ -74,7 +79,7 @@ const INLINE_MARKDOWN_PILL_SHIFT_DURATION: Duration = Duration::from_millis(130)
 const INLINE_MARKDOWN_PILL_EXIT_DURATION: Duration = Duration::from_millis(125);
 const INLINE_MARKDOWN_PILL_ENTRY_OFFSET_PIXELS: f32 = 4.0;
 const INLINE_MARKDOWN_PILL_ENTRY_SCALE: f32 = 0.94;
-const INLINE_WIDGET_SELECTION_TRANSITION_DURATION: Duration = Duration::from_millis(135);
+const INLINE_WIDGET_SELECTION_TRANSITION_DURATION: Duration = Duration::from_millis(170);
 const INLINE_WIDGET_PREVIEW_PANE_FOCUS_DURATION: Duration = Duration::from_millis(150);
 const INLINE_WIDGET_PREVIEW_PANE_CONTENT_DURATION: Duration = Duration::from_millis(145);
 pub(crate) const INLINE_WIDGET_PREVIEW_PANE_BACKGROUND_COLOR: [f32; 4] =
@@ -82,10 +87,10 @@ pub(crate) const INLINE_WIDGET_PREVIEW_PANE_BACKGROUND_COLOR: [f32; 4] =
 const INLINE_WIDGET_PREVIEW_PANE_BORDER_COLOR: [f32; 4] = [0.090, 0.205, 0.480, 0.180];
 pub(crate) const INLINE_WIDGET_PREVIEW_PANE_FOCUS_COLOR: [f32; 4] = [0.100, 0.340, 0.920, 0.180];
 const INLINE_WIDGET_PREVIEW_PANE_CONTENT_COLOR: [f32; 4] = [0.125, 0.420, 0.920, 0.105];
-const INLINE_WIDGET_LIST_REFLOW_ENTRY_DURATION: Duration = Duration::from_millis(145);
-const INLINE_WIDGET_LIST_REFLOW_SHIFT_DURATION: Duration = Duration::from_millis(145);
-const INLINE_WIDGET_LIST_REFLOW_EXIT_DURATION: Duration = Duration::from_millis(120);
-const INLINE_WIDGET_LIST_REFLOW_COLOR: [f32; 4] = [0.105, 0.355, 0.950, 0.110];
+const INLINE_WIDGET_LIST_REFLOW_ENTRY_DURATION: Duration = Duration::from_millis(170);
+const INLINE_WIDGET_LIST_REFLOW_SHIFT_DURATION: Duration = Duration::from_millis(170);
+const INLINE_WIDGET_LIST_REFLOW_EXIT_DURATION: Duration = Duration::from_millis(135);
+const INLINE_WIDGET_LIST_REFLOW_COLOR: [f32; 4] = [0.105, 0.355, 0.950, 0.090];
 const COMPOSER_MOTION_DURATION: Duration = Duration::from_millis(165);
 pub(crate) const COMPOSER_CARD_BACKGROUND_COLOR: [f32; 4] = [0.990, 0.994, 1.000, 0.420];
 pub(crate) const COMPOSER_FOCUS_RING_COLOR: [f32; 4] = [0.090, 0.250, 0.680, 0.185];
@@ -2028,16 +2033,21 @@ fn push_inline_command_row_card(
     size: PhysicalSize<u32>,
 ) {
     let is_session = matches!(kind, Some(InlineWidgetKind::SessionSwitcher));
+    let is_model = matches!(kind, Some(InlineWidgetKind::ModelPicker));
     let row_top = layout.text_top
         + line as f32 * line_height
         + if is_session {
             INLINE_COMMAND_SESSION_ROW_TOP_INSET
+        } else if is_model {
+            -INLINE_COMMAND_MODEL_ROW_GAP_Y
         } else {
             -INLINE_COMMAND_ROW_GAP_Y
         };
     let row_height = (line_span as f32 * line_height
         + if is_session {
             -INLINE_COMMAND_SESSION_ROW_BOTTOM_INSET
+        } else if is_model {
+            INLINE_COMMAND_MODEL_ROW_GAP_Y * 1.65
         } else {
             INLINE_COMMAND_ROW_GAP_Y * 1.4
         })
@@ -2119,12 +2129,29 @@ fn push_inline_command_row_icon(
         return;
     };
     let is_session = matches!(kind, Some(InlineWidgetKind::SessionSwitcher));
-    let icon_size = if is_session { 19.0 } else { 17.0 };
-    let top = layout.text_top + line as f32 * line_height + if is_session { 10.0 } else { 4.0 };
+    let is_model = matches!(kind, Some(InlineWidgetKind::ModelPicker));
+    let icon_size = if is_session {
+        19.0
+    } else if is_model {
+        18.0
+    } else {
+        17.0
+    };
+    let top = layout.text_top
+        + line as f32 * line_height
+        + if is_session {
+            10.0
+        } else if is_model {
+            6.0
+        } else {
+            4.0
+        };
     let left = if is_session {
         session_switcher_split_columns(layout)
             .map(|columns| columns.rail.x + INLINE_COMMAND_ROW_INSET_X + 10.0)
             .unwrap_or(layout.card.x + INLINE_COMMAND_ROW_INSET_X + 10.0)
+    } else if is_model {
+        layout.card.x + INLINE_COMMAND_ROW_INSET_X + 13.0
     } else {
         layout.card.x + layout.card.width - INLINE_COMMAND_ROW_INSET_X - icon_size - 10.0
     };
@@ -2132,7 +2159,7 @@ fn push_inline_command_row_icon(
     {
         return;
     }
-    if is_session {
+    if is_session || is_model {
         let halo = Rect {
             x: left - 5.0,
             y: top - 5.0,
@@ -2264,7 +2291,11 @@ fn inline_command_row_palette(
         } else {
             INLINE_COMMAND_ROW_BORDER_COLOR
         },
-        accent: INLINE_COMMAND_ROW_ACCENT_COLOR,
+        accent: if matches!(kind, Some(InlineWidgetKind::ModelPicker)) {
+            MODEL_PICKER_ROW_ACCENT_COLOR
+        } else {
+            INLINE_COMMAND_ROW_ACCENT_COLOR
+        },
         icon_background: INLINE_COMMAND_MODEL_ICON_BACKGROUND_COLOR,
         icon_color: INLINE_COMMAND_MODEL_ICON_COLOR,
         icon: matches!(kind, Some(InlineWidgetKind::ModelPicker)).then_some(LucideIcon::Bot),
@@ -2755,6 +2786,7 @@ const SLASH_SUGGESTIONS_INLINE_FONT_SCALE: f32 = 0.88;
 const INLINE_COMMAND_ROW_RADIUS: f32 = 12.0;
 const INLINE_COMMAND_ROW_INSET_X: f32 = 9.0;
 const INLINE_COMMAND_ROW_GAP_Y: f32 = 4.0;
+const INLINE_COMMAND_MODEL_ROW_GAP_Y: f32 = 5.5;
 const INLINE_COMMAND_ROW_BACKGROUND_COLOR: [f32; 4] = [0.972, 0.982, 1.000, 0.42];
 const INLINE_COMMAND_ROW_BORDER_COLOR: [f32; 4] = [0.080, 0.170, 0.420, 0.115];
 const INLINE_COMMAND_ROW_SELECTED_COLOR: [f32; 4] = [0.830, 0.900, 1.000, 0.58];
@@ -2767,6 +2799,7 @@ const INLINE_COMMAND_CHIP_COLOR: [f32; 4] = [0.900, 0.940, 1.000, 0.64];
 const INLINE_COMMAND_CHIP_ICON_COLOR: [f32; 4] = [0.085, 0.270, 0.760, 0.92];
 const INLINE_COMMAND_MODEL_ICON_BACKGROUND_COLOR: [f32; 4] = [0.890, 0.930, 1.000, 0.54];
 const INLINE_COMMAND_MODEL_ICON_COLOR: [f32; 4] = [0.080, 0.260, 0.720, 0.88];
+const MODEL_PICKER_ROW_ACCENT_COLOR: [f32; 4] = [0.075, 0.345, 0.940, 0.56];
 const INLINE_COMMAND_SESSION_ROW_TOP_INSET: f32 = 3.0;
 const INLINE_COMMAND_SESSION_ROW_BOTTOM_INSET: f32 = 10.0;
 const RESUME_SESSION_SELECTED_TINT: [f32; 4] = [0.835, 0.905, 1.000, 0.66];
@@ -2969,6 +3002,7 @@ fn inline_widget_font_size(
 fn inline_widget_card_padding_x(kind: Option<InlineWidgetKind>) -> f32 {
     match kind {
         Some(InlineWidgetKind::SlashSuggestions) => SLASH_SUGGESTIONS_INLINE_CARD_PADDING_X,
+        Some(InlineWidgetKind::ModelPicker) => 18.0,
         _ => INLINE_WIDGET_CARD_PADDING_X,
     }
 }
@@ -2976,6 +3010,7 @@ fn inline_widget_card_padding_x(kind: Option<InlineWidgetKind>) -> f32 {
 fn inline_widget_card_padding_y(kind: Option<InlineWidgetKind>) -> f32 {
     match kind {
         Some(InlineWidgetKind::SlashSuggestions) => SLASH_SUGGESTIONS_INLINE_CARD_PADDING_Y,
+        Some(InlineWidgetKind::ModelPicker) => 11.0,
         _ => INLINE_WIDGET_CARD_PADDING_Y,
     }
 }
@@ -2983,6 +3018,7 @@ fn inline_widget_card_padding_y(kind: Option<InlineWidgetKind>) -> f32 {
 fn inline_widget_card_radius(kind: Option<InlineWidgetKind>) -> f32 {
     match kind {
         Some(InlineWidgetKind::SlashSuggestions) => SLASH_SUGGESTIONS_INLINE_CARD_RADIUS,
+        Some(InlineWidgetKind::ModelPicker) => 22.0,
         _ => INLINE_WIDGET_CARD_RADIUS,
     }
 }
@@ -2990,6 +3026,7 @@ fn inline_widget_card_radius(kind: Option<InlineWidgetKind>) -> f32 {
 fn inline_widget_selection_radius(kind: Option<InlineWidgetKind>) -> f32 {
     match kind {
         Some(InlineWidgetKind::SlashSuggestions) => SLASH_SUGGESTIONS_INLINE_SELECTION_RADIUS,
+        Some(InlineWidgetKind::ModelPicker) => 14.0,
         _ => INLINE_WIDGET_SELECTION_RADIUS,
     }
 }
@@ -2997,6 +3034,7 @@ fn inline_widget_selection_radius(kind: Option<InlineWidgetKind>) -> f32 {
 fn inline_widget_selection_top_offset(kind: Option<InlineWidgetKind>) -> f32 {
     match kind {
         Some(InlineWidgetKind::SlashSuggestions) => -1.0,
+        Some(InlineWidgetKind::ModelPicker) => -4.5,
         _ => -2.0,
     }
 }
@@ -3004,6 +3042,7 @@ fn inline_widget_selection_top_offset(kind: Option<InlineWidgetKind>) -> f32 {
 fn inline_widget_selection_extra_height(kind: Option<InlineWidgetKind>) -> f32 {
     match kind {
         Some(InlineWidgetKind::SlashSuggestions) => 2.0,
+        Some(InlineWidgetKind::ModelPicker) => 8.0,
         _ => 2.0,
     }
 }
@@ -3013,6 +3052,7 @@ fn inline_widget_selection_background_color(kind: Option<InlineWidgetKind>) -> [
         Some(InlineWidgetKind::SlashSuggestions) => {
             SLASH_SUGGESTIONS_INLINE_SELECTION_BACKGROUND_COLOR
         }
+        Some(InlineWidgetKind::ModelPicker) => MODEL_PICKER_SELECTION_BACKGROUND_COLOR,
         _ => OVERLAY_SELECTION_BACKGROUND_COLOR,
     }
 }
@@ -3024,6 +3064,12 @@ fn inline_widget_card_style(kind: Option<InlineWidgetKind>) -> InlineWidgetCardS
             border: SLASH_SUGGESTIONS_INLINE_CARD_BORDER_COLOR,
             highlight: SLASH_SUGGESTIONS_INLINE_CARD_HIGHLIGHT_COLOR,
             accent: SLASH_SUGGESTIONS_INLINE_CARD_ACCENT_COLOR,
+        },
+        Some(InlineWidgetKind::ModelPicker) => InlineWidgetCardStyle {
+            background: MODEL_PICKER_CARD_BACKGROUND_COLOR,
+            border: MODEL_PICKER_CARD_BORDER_COLOR,
+            highlight: MODEL_PICKER_CARD_HIGHLIGHT_COLOR,
+            accent: MODEL_PICKER_CARD_ACCENT_COLOR,
         },
         _ => InlineWidgetCardStyle {
             background: INLINE_WIDGET_CARD_BACKGROUND_COLOR,
