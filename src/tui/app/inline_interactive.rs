@@ -45,36 +45,6 @@ fn remote_model_catalog_observed_at_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn normalize_model_picker_provider_label(value: &str) -> String {
-    value
-        .trim()
-        .to_ascii_lowercase()
-        .replace([' ', '_', '-'], "")
-}
-
-fn model_picker_provider_labels_match(route_provider: &str, current_provider: &str) -> bool {
-    let route = normalize_model_picker_provider_label(route_provider);
-    let current = normalize_model_picker_provider_label(current_provider);
-    if route == current {
-        return true;
-    }
-
-    matches!(
-        (current.as_str(), route.as_str()),
-        ("claude" | "anthropic", "anthropic" | "claude")
-            | ("openai", "openai")
-            | ("gemini" | "google", "gemini" | "google")
-            | ("antigravity", "antigravity")
-            | (
-                "copilot" | "copilotcode" | "githubcopilot",
-                "copilot" | "githubcopilot"
-            )
-            | ("cursor", "cursor")
-            | ("bedrock" | "awsbedrock", "bedrock" | "awsbedrock")
-            | ("openrouter", "openrouter" | "auto")
-    )
-}
-
 fn model_picker_route_is_current(
     model_name: &str,
     route: &PickerOption,
@@ -82,7 +52,7 @@ fn model_picker_route_is_current(
     current_provider: &str,
 ) -> bool {
     model_name == current_model
-        && model_picker_provider_labels_match(&route.provider, current_provider)
+        && jcode_provider_core::model_route_provider_labels_match(&route.provider, current_provider)
 }
 
 const RECOMMENDED_MODELS: &[&str] = &["gpt-5.5", "claude-opus-4-7", "deepseek/deepseek-v4-pro"];
@@ -94,37 +64,14 @@ fn model_picker_recommendation_rank(name: &str) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-fn model_picker_route_can_be_recommended(model: &str, route: &PickerOption) -> bool {
-    let api_method = crate::provider::ModelRouteApiMethod::parse(&route.api_method);
-    match model {
-        "gpt-5.5" => {
-            matches!(
-                &api_method,
-                crate::provider::ModelRouteApiMethod::OpenAIOAuth
-            ) && model_picker_provider_labels_match(&route.provider, "openai")
-        }
-        "claude-opus-4-7" => {
-            matches!(
-                &api_method,
-                crate::provider::ModelRouteApiMethod::ClaudeOAuth
-            ) && model_picker_provider_labels_match(&route.provider, "anthropic")
-        }
-        "deepseek/deepseek-v4-pro" => {
-            (matches!(
-                &api_method,
-                crate::provider::ModelRouteApiMethod::OpenRouter
-            ) && route.provider == "auto")
-                || (api_method.is_openai_compatible()
-                    && model_picker_provider_labels_match(&route.provider, "deepseek"))
-        }
-        _ => false,
-    }
-}
-
 fn model_picker_route_is_recommended(model_name: &str, route: &PickerOption) -> bool {
     RECOMMENDED_MODELS.contains(&model_name)
-        && route.available
-        && model_picker_route_can_be_recommended(model_name, route)
+        && jcode_provider_core::model_route_metadata_is_recommended(
+            model_name,
+            &route.provider,
+            &route.api_method,
+            route.available,
+        )
 }
 
 fn model_picker_provider_hint_from_model_spec(model_spec: &str) -> Option<(&str, &str)> {
@@ -160,17 +107,11 @@ fn model_picker_route_provider_matches_key(
     route_provider_label: &str,
     desired_provider: &str,
 ) -> bool {
-    let desired_provider = desired_provider.trim();
-    if desired_provider.is_empty() {
-        return false;
-    }
-    if let Some(route_provider_key) = route_provider_key
-        && normalize_model_picker_provider_label(route_provider_key)
-            == normalize_model_picker_provider_label(desired_provider)
-    {
-        return true;
-    }
-    model_picker_provider_labels_match(route_provider_label, desired_provider)
+    jcode_provider_core::model_route_provider_matches_key(
+        route_provider_key,
+        route_provider_label,
+        desired_provider,
+    )
 }
 
 fn model_picker_route_is_default(
@@ -224,7 +165,10 @@ fn model_picker_route_is_default(
 
     if let Some((bare_model, provider_label)) = default_model.rsplit_once('@') {
         return bare_model == model_name
-            && model_picker_provider_labels_match(&route.provider, provider_label);
+            && jcode_provider_core::model_route_provider_labels_match(
+                &route.provider,
+                provider_label,
+            );
     }
 
     // Legacy configs may only contain a bare model. In that case the persisted
@@ -807,21 +751,7 @@ impl App {
         }
 
         fn route_matches_recent_auth(route_provider: &str, login_provider: &str) -> bool {
-            let route = normalize_model_picker_provider_label(route_provider);
-            let login = normalize_model_picker_provider_label(login_provider);
-            if route == login || route.contains(&login) || login.contains(&route) {
-                return true;
-            }
-            matches!(
-                (login.as_str(), route.as_str()),
-                ("claude" | "anthropic", "anthropic" | "claude")
-                    | ("openai", "openai")
-                    | ("gemini" | "google", "gemini" | "google")
-                    | ("antigravity", "antigravity")
-                    | ("copilot" | "copilotcode", "copilot")
-                    | ("cursor", "cursor")
-                    | ("openrouter", "openrouter" | "auto")
-            )
+            jcode_provider_core::model_route_provider_labels_related(route_provider, login_provider)
         }
 
         let timestamp_started = std::time::Instant::now();
@@ -2314,8 +2244,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        RemoteModelCatalogCache, model_picker_provider_labels_match, model_picker_route_is_current,
-        model_picker_route_is_default, model_picker_route_is_recommended,
+        RemoteModelCatalogCache, model_picker_route_is_current, model_picker_route_is_default,
+        model_picker_route_is_recommended,
     };
     use crate::tui::PickerOption;
 
@@ -2354,22 +2284,34 @@ mod tests {
 
     #[test]
     fn model_picker_current_route_allows_provider_aliases() {
-        assert!(model_picker_provider_labels_match("Anthropic", "Claude"));
-        assert!(model_picker_provider_labels_match("auto", "OpenRouter"));
-        assert!(model_picker_provider_labels_match(
+        assert!(jcode_provider_core::model_route_provider_labels_match(
+            "Anthropic",
+            "Claude"
+        ));
+        assert!(jcode_provider_core::model_route_provider_labels_match(
+            "auto",
+            "OpenRouter"
+        ));
+        assert!(jcode_provider_core::model_route_provider_labels_match(
             "GitHub Copilot",
             "Copilot"
         ));
-        assert!(model_picker_provider_labels_match("AWS Bedrock", "Bedrock"));
+        assert!(jcode_provider_core::model_route_provider_labels_match(
+            "AWS Bedrock",
+            "Bedrock"
+        ));
     }
 
     #[test]
     fn model_picker_provider_match_does_not_use_substring_false_positives() {
-        assert!(!model_picker_provider_labels_match(
+        assert!(!jcode_provider_core::model_route_provider_labels_match(
             "OpenRouter/OpenAI",
             "OpenAI"
         ));
-        assert!(!model_picker_provider_labels_match("OpenAI", "OpenRouter"));
+        assert!(!jcode_provider_core::model_route_provider_labels_match(
+            "OpenAI",
+            "OpenRouter"
+        ));
     }
 
     #[test]
