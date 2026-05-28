@@ -11,8 +11,10 @@ use crate::single_session::{
 };
 
 mod handwriting;
+mod math;
 
 use handwriting::handwritten_welcome_paths_for_phrase;
+use math::*;
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 
@@ -860,14 +862,6 @@ pub(crate) fn welcome_hero_reveal_is_active(progress: f32) -> bool {
     progress < 0.999
 }
 
-fn ease_in_out_cubic(t: f32) -> f32 {
-    if t < 0.5 {
-        4.0 * t * t * t
-    } else {
-        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
-    }
-}
-
 fn push_single_session_surface_without_bottom_rule(
     vertices: &mut Vec<Vertex>,
     rect: Rect,
@@ -1363,18 +1357,6 @@ fn push_single_session_stdin_overlay_visual(
 fn stdin_overlay_alpha(mut color: [f32; 4], opacity: f32) -> [f32; 4] {
     color[3] = (color[3] * opacity.clamp(0.0, 1.0)).clamp(0.0, 1.0);
     color
-}
-
-fn scaled_rect(rect: Rect, scale: f32) -> Rect {
-    let scale = scale.clamp(0.01, 1.5);
-    let width = rect.width * scale;
-    let height = rect.height * scale;
-    Rect {
-        x: rect.x + (rect.width - width) * 0.5,
-        y: rect.y + (rect.height - height) * 0.5,
-        width,
-        height,
-    }
 }
 
 fn push_fresh_welcome_ambient(
@@ -2384,16 +2366,6 @@ fn resume_session_status_from_row(primary_text: &str) -> &str {
 
 fn resume_session_row_is_current(primary_text: &str) -> bool {
     primary_text.contains(" current ·")
-}
-
-fn mix_rgba(left: [f32; 4], right: [f32; 4], amount: f32) -> [f32; 4] {
-    let amount = amount.clamp(0.0, 1.0);
-    [
-        left[0] + (right[0] - left[0]) * amount,
-        left[1] + (right[1] - left[1]) * amount,
-        left[2] + (right[2] - left[2]) * amount,
-        left[3] + (right[3] - left[3]) * amount,
-    ]
 }
 
 fn push_lucide_icon(
@@ -3575,14 +3547,6 @@ fn stroke_paths_length(paths: &[Vec<[f32; 2]>]) -> f32 {
         .sum()
 }
 
-fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
-    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt()
-}
-
-fn lerp_point(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
-}
-
 fn transform_handwriting_point(point: [f32; 2], origin: [f32; 2], scale: f32) -> [f32; 2] {
     [origin[0] + point[0] * scale, origin[1] + point[1] * scale]
 }
@@ -3691,15 +3655,6 @@ fn push_gradient_quad(
     push_gradient_triangle(vertices, a, c, d, a_color, c_color, d_color, size);
 }
 
-fn mix_color(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-        a[3] + (b[3] - a[3]) * t,
-    ]
-}
-
 #[allow(clippy::too_many_arguments)]
 fn push_gradient_triangle(
     vertices: &mut Vec<Vertex>,
@@ -3725,11 +3680,6 @@ fn push_gradient_triangle(
             color: c_color,
         },
     ]);
-}
-
-fn transparent(mut color: [f32; 4]) -> [f32; 4] {
-    color[3] = 0.0;
-    color
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -6011,10 +5961,6 @@ fn scrollbar_motion_cache_key(visual: Option<SingleSessionScrollbarVisual>, acti
     hasher.finish()
 }
 
-fn lerp_f32(start: f32, end: f32, progress: f32) -> f32 {
-    start + (end - start) * progress
-}
-
 fn tool_card_visual_from_state(
     state: &mut ToolCardMotionState,
     run: &SingleSessionToolCardRun,
@@ -6144,10 +6090,6 @@ fn timed_animation_progress(started_at: Instant, now: Instant, duration: Duratio
         / duration.as_secs_f32())
     .clamp(0.0, 1.0);
     (progress, progress < 1.0)
-}
-
-fn ease_out_cubic_local(progress: f32) -> f32 {
-    1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
 }
 
 fn inline_widget_selection_target(
