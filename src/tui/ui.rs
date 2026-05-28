@@ -1070,6 +1070,10 @@ use frame_metrics::{
     note_viewport_metrics, reset_frame_perf_stats, viewport_stability_hash,
 };
 pub(crate) use frame_metrics::{
+    DrawCallAttribution, FrameInputAttribution, frame_input_attribution_snapshot,
+    record_draw_call_attribution, set_frame_input_attribution, wall_clock_ms,
+};
+pub(crate) use frame_metrics::{
     debug_flicker_frame_history, debug_slow_frame_history, recent_flicker_copy_target_for_key,
     recent_flicker_ui_notice,
 };
