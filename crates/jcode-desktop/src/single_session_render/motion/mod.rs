@@ -5,5 +5,7 @@
 //! stable content hash). Extracted from the parent render module.
 
 mod scrollbar;
+mod streaming_cue;
 
 pub(crate) use scrollbar::*;
+pub(crate) use streaming_cue::*;
