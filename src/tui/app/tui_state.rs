@@ -197,8 +197,14 @@ impl App {
             }
             WidgetProviderKind::OpenCode => crate::tui::info_widget::AuthMethod::OpenCodeApiKey,
             WidgetProviderKind::OpenRouter => {
-                if openrouter_like_runtime_uses_api_key_cost(runtime_provider.as_deref()) {
+                let transport_state =
+                    crate::provider::openrouter::OpenRouterTransportState::from_current_env(
+                        runtime_provider.as_deref(),
+                    );
+                if transport_state.is_real_openrouter() {
                     crate::tui::info_widget::AuthMethod::OpenRouterApiKey
+                } else if transport_state.accrues_user_api_key_cost() {
+                    crate::tui::info_widget::AuthMethod::ApiKey
                 } else {
                     crate::tui::info_widget::AuthMethod::Unknown
                 }
@@ -332,10 +338,16 @@ impl App {
             }
             WidgetProviderKind::Gemini => None,
             WidgetProviderKind::OpenRouter => {
+                if route.is_remote {
+                    return Some(cost_based_usage());
+                }
+
                 let runtime_provider = active_runtime_provider_key();
-                if route.is_remote
-                    || openrouter_like_runtime_uses_api_key_cost(runtime_provider.as_deref())
-                {
+                let transport_state =
+                    crate::provider::openrouter::OpenRouterTransportState::from_current_env(
+                        runtime_provider.as_deref(),
+                    );
+                if transport_state.accrues_user_api_key_cost() {
                     Some(cost_based_usage())
                 } else {
                     None

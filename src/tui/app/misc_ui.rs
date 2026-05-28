@@ -89,7 +89,10 @@ impl App {
         let is_explicit_openai_oauth = matches!(runtime_provider.as_deref(), Some("openai"));
 
         let should_calculate_cost = if provider_name.contains("openrouter") {
-            openrouter_like_runtime_uses_api_key_cost(runtime_provider.as_deref())
+            crate::provider::openrouter::OpenRouterTransportState::from_current_env(
+                runtime_provider.as_deref(),
+            )
+            .accrues_user_api_key_cost()
         } else if provider_name.contains("anthropic") || provider_name.contains("claude") {
             is_explicit_anthropic_api
                 || (!is_explicit_anthropic_oauth && auth_status.anthropic.has_api_key)

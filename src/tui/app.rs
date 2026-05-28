@@ -105,21 +105,6 @@ fn active_runtime_provider_key() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn env_truthy(key: &str) -> bool {
-    std::env::var(key)
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
-fn openrouter_like_runtime_uses_api_key_cost(runtime_provider: Option<&str>) -> bool {
-    !matches!(runtime_provider, Some("jcode")) && !env_truthy("JCODE_OPENROUTER_ALLOW_NO_AUTH")
-}
-
 #[derive(Debug, Clone)]
 struct PendingRemoteMessage {
     content: String,

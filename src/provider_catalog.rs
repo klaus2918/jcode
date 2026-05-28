@@ -455,6 +455,7 @@ fn apply_openai_compatible_profile_env_impl(
         "JCODE_OPENROUTER_ENV_FILE",
         "JCODE_OPENROUTER_CACHE_NAMESPACE",
         "JCODE_OPENROUTER_PROVIDER_FEATURES",
+        "JCODE_OPENROUTER_TRANSPORT_STATE",
         "JCODE_OPENROUTER_ALLOW_NO_AUTH",
         "JCODE_OPENROUTER_MODEL_CATALOG",
         "JCODE_OPENROUTER_MODEL",
@@ -488,8 +489,10 @@ fn apply_openai_compatible_profile_env_impl(
         }
         if resolved.requires_api_key {
             crate::env::remove_var("JCODE_OPENROUTER_ALLOW_NO_AUTH");
+            crate::env::set_var("JCODE_OPENROUTER_TRANSPORT_STATE", "direct-api-key");
         } else {
             crate::env::set_var("JCODE_OPENROUTER_ALLOW_NO_AUTH", "1");
+            crate::env::set_var("JCODE_OPENROUTER_TRANSPORT_STATE", "direct-no-auth");
         }
     }
 }
@@ -540,12 +543,13 @@ pub fn apply_named_provider_profile_env_from_config(
     crate::env::set_var("JCODE_OPENROUTER_API_BASE", &api_base);
     crate::env::set_var("JCODE_OPENROUTER_CACHE_NAMESPACE", profile_name);
     crate::env::set_var("JCODE_NAMED_PROVIDER_PROFILE", profile_name);
-
-    let provider_features = matches!(
+    let provider_is_openrouter = matches!(
         profile.provider_type,
         crate::config::NamedProviderType::OpenRouter
-    ) || profile.provider_routing
-        || profile.allow_provider_pinning;
+    );
+
+    let provider_features =
+        provider_is_openrouter || profile.provider_routing || profile.allow_provider_pinning;
     crate::env::set_var(
         "JCODE_OPENROUTER_PROVIDER_FEATURES",
         if provider_features { "1" } else { "0" },
@@ -586,6 +590,7 @@ pub fn apply_named_provider_profile_env_from_config(
     match profile.auth {
         crate::config::NamedProviderAuth::None => {
             crate::env::set_var("JCODE_OPENROUTER_ALLOW_NO_AUTH", "1");
+            crate::env::set_var("JCODE_OPENROUTER_TRANSPORT_STATE", "direct-no-auth");
         }
         crate::config::NamedProviderAuth::Bearer | crate::config::NamedProviderAuth::Header => {
             let key_env = profile
@@ -638,6 +643,11 @@ pub fn apply_named_provider_profile_env_from_config(
                 .unwrap_or(!api_base_uses_localhost(&api_base));
             if !requires_key {
                 crate::env::set_var("JCODE_OPENROUTER_ALLOW_NO_AUTH", "1");
+                crate::env::set_var("JCODE_OPENROUTER_TRANSPORT_STATE", "direct-no-auth");
+            } else if provider_is_openrouter {
+                crate::env::set_var("JCODE_OPENROUTER_TRANSPORT_STATE", "openrouter-api-key");
+            } else {
+                crate::env::set_var("JCODE_OPENROUTER_TRANSPORT_STATE", "direct-api-key");
             }
 
             match profile.auth {

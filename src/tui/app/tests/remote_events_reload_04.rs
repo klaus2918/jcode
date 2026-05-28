@@ -660,8 +660,24 @@ fn test_info_widget_remote_opencode_shows_cost_based_usage() {
 #[test]
 fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
     let _guard = crate::storage::lock_test_env();
-    let prev_runtime_provider = std::env::var_os("JCODE_RUNTIME_PROVIDER");
-    let prev_allow_no_auth = std::env::var_os("JCODE_OPENROUTER_ALLOW_NO_AUTH");
+    let tracked_env = [
+        "JCODE_RUNTIME_PROVIDER",
+        "JCODE_OPENROUTER_ALLOW_NO_AUTH",
+        "JCODE_OPENROUTER_API_BASE",
+        "JCODE_OPENROUTER_PROVIDER_FEATURES",
+        "JCODE_OPENROUTER_TRANSPORT_STATE",
+        "JCODE_OPENROUTER_CACHE_NAMESPACE",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_PROVIDER_PROFILE_NAME",
+    ];
+    let saved_env = tracked_env
+        .iter()
+        .map(|&key| (key, std::env::var_os(key)))
+        .collect::<Vec<_>>();
+    for &key in &tracked_env {
+        crate::env::remove_var(key);
+    }
 
     let cases = [
         (
@@ -675,6 +691,18 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
             "openai",
             "gpt-5.4",
             crate::tui::info_widget::AuthMethod::OpenAIApiKey,
+        ),
+        (
+            "openrouter",
+            "openrouter",
+            "anthropic/claude-sonnet-4",
+            crate::tui::info_widget::AuthMethod::OpenRouterApiKey,
+        ),
+        (
+            "openai-compatible",
+            "openrouter",
+            "direct-compatible-model",
+            crate::tui::info_widget::AuthMethod::ApiKey,
         ),
         (
             "openai-compatible",
@@ -722,6 +750,23 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
         assert!(usage.total_cost > 0.0);
     }
 
+    crate::env::set_var("JCODE_RUNTIME_PROVIDER", "jcode");
+    crate::env::remove_var("JCODE_OPENROUTER_ALLOW_NO_AUTH");
+    let mut app = create_named_provider_test_app("openrouter", "subscription-model");
+    app.streaming_input_tokens = 1_000;
+    app.streaming_output_tokens = 1_000;
+    app.total_input_tokens = 12_000;
+    app.total_output_tokens = 3_400;
+    app.update_cost_impl();
+    assert_eq!(app.total_cost, 0.0);
+
+    let data = crate::tui::TuiState::info_widget_data(&app);
+    assert_eq!(
+        data.auth_method,
+        crate::tui::info_widget::AuthMethod::Unknown
+    );
+    assert!(data.usage_info.is_none());
+
     crate::env::set_var("JCODE_RUNTIME_PROVIDER", "openai-compatible");
     crate::env::set_var("JCODE_OPENROUTER_ALLOW_NO_AUTH", "1");
     let mut app = create_named_provider_test_app("openrouter", "local-model");
@@ -739,15 +784,12 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
     );
     assert!(data.usage_info.is_none());
 
-    if let Some(prev_runtime_provider) = prev_runtime_provider {
-        crate::env::set_var("JCODE_RUNTIME_PROVIDER", prev_runtime_provider);
-    } else {
-        crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
-    }
-    if let Some(prev_allow_no_auth) = prev_allow_no_auth {
-        crate::env::set_var("JCODE_OPENROUTER_ALLOW_NO_AUTH", prev_allow_no_auth);
-    } else {
-        crate::env::remove_var("JCODE_OPENROUTER_ALLOW_NO_AUTH");
+    for (key, value) in saved_env {
+        if let Some(value) = value {
+            crate::env::set_var(key, value);
+        } else {
+            crate::env::remove_var(key);
+        }
     }
     crate::auth::AuthStatus::invalidate_cache();
 }
