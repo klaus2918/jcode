@@ -470,6 +470,7 @@ pub(super) enum MouseScrollTarget {
     SidePane,
     HelpOverlay,
     ChangelogOverlay,
+    ModelStatusOverlay,
 }
 
 #[derive(Debug, Clone, Default)]

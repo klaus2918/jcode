@@ -232,6 +232,34 @@ fn slash_provider_test_coverage_with_args_shows_provider_detail() {
 }
 
 #[test]
+fn slash_provider_test_coverage_overlay_scrolls_with_mouse_wheel() {
+    let mut app = create_test_app();
+    app.input = "/provider-test-coverage".to_string();
+    app.submit_input();
+
+    assert_eq!(app.model_status_scroll, Some(0));
+
+    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::ScrollDown,
+        column: 10,
+        row: 10,
+        modifiers: crossterm::event::KeyModifiers::empty(),
+    });
+    assert!(scroll_only);
+    assert!(app.model_status_scroll.unwrap_or(0) > 0);
+
+    let before = app.model_status_scroll.unwrap_or(0);
+    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::ScrollUp,
+        column: 10,
+        row: 10,
+        modifiers: crossterm::event::KeyModifiers::empty(),
+    });
+    assert!(scroll_only);
+    assert!(app.model_status_scroll.unwrap_or(usize::MAX) < before);
+}
+
+#[test]
 fn test_help_topic_shows_btw_command_details() {
     let mut app = create_test_app();
     app.input = "/help btw".to_string();
