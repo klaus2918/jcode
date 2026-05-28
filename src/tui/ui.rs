@@ -202,6 +202,7 @@ thread_local! {
     static TEST_LAST_STATUS_AREA: RefCell<Option<Rect>> = const { RefCell::new(None) };
     static TEST_VISIBLE_COPY_TARGETS: RefCell<Vec<VisibleCopyTarget>> = RefCell::new(Vec::new());
     static TEST_VISIBLE_EXPAND_EDIT_BADGE: Cell<bool> = const { Cell::new(false) };
+    static TEST_VISIBLE_EXPAND_EDIT_BADGE_LINE: Cell<Option<usize>> = const { Cell::new(None) };
     static TEST_PROMPT_VIEWPORT_STATE: RefCell<PromptViewportState> = RefCell::new(PromptViewportState::default());
     static TEST_COPY_VIEWPORT: RefCell<CopyViewportSnapshots> = RefCell::new(CopyViewportSnapshots::default());
 }
@@ -393,6 +394,9 @@ static VISIBLE_COPY_TARGETS: OnceLock<Mutex<Vec<VisibleCopyTarget>>> = OnceLock:
 static VISIBLE_EXPAND_EDIT_BADGE: OnceLock<Mutex<bool>> = OnceLock::new();
 
 #[cfg(not(test))]
+static VISIBLE_EXPAND_EDIT_BADGE_LINE: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
+
+#[cfg(not(test))]
 fn visible_copy_targets_state() -> &'static Mutex<Vec<VisibleCopyTarget>> {
     VISIBLE_COPY_TARGETS.get_or_init(|| Mutex::new(Vec::new()))
 }
@@ -402,19 +406,31 @@ fn visible_expand_edit_badge_state() -> &'static Mutex<bool> {
     VISIBLE_EXPAND_EDIT_BADGE.get_or_init(|| Mutex::new(false))
 }
 
-pub(crate) fn set_visible_expand_edit_badge(visible: bool) {
+#[cfg(not(test))]
+fn visible_expand_edit_badge_line_state() -> &'static Mutex<Option<usize>> {
+    VISIBLE_EXPAND_EDIT_BADGE_LINE.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn set_visible_expand_edit_badge(visible: bool, line: Option<usize>) {
     #[cfg(test)]
     {
         TEST_VISIBLE_EXPAND_EDIT_BADGE.with(|state| state.set(visible));
+        TEST_VISIBLE_EXPAND_EDIT_BADGE_LINE.with(|state| state.set(line));
         return;
     }
     #[cfg(not(test))]
     {
-        let mut state = match visible_expand_edit_badge_state().lock() {
+        let mut visible_state = match visible_expand_edit_badge_state().lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        *state = visible;
+        *visible_state = visible;
+
+        let mut line_state = match visible_expand_edit_badge_line_state().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *line_state = line;
     }
 }
 
@@ -426,6 +442,21 @@ pub(crate) fn visible_expand_edit_badge() -> bool {
     #[cfg(not(test))]
     {
         let state = match visible_expand_edit_badge_state().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *state
+    }
+}
+
+pub(crate) fn visible_expand_edit_badge_line() -> Option<usize> {
+    #[cfg(test)]
+    {
+        return TEST_VISIBLE_EXPAND_EDIT_BADGE_LINE.with(Cell::get);
+    }
+    #[cfg(not(test))]
+    {
+        let state = match visible_expand_edit_badge_line_state().lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };

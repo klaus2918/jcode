@@ -368,6 +368,8 @@ pub struct CopyBadgeUiState {
     pub shift_pulse_until: Option<Instant>,
     pub key_active: Option<(char, Instant)>,
     pub copied_feedback: Option<CopyBadgeFeedback>,
+    pub expand_feedback_until: Option<Instant>,
+    pub expand_feedback_line: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -410,6 +412,11 @@ impl CopyBadgeUiState {
                 None
             }
         })
+    }
+
+    pub(crate) fn expand_feedback_is_active(&self, now: Instant) -> bool {
+        self.expand_feedback_until
+            .is_some_and(|expires_at| expires_at > now)
     }
 }
 
