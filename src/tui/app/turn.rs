@@ -246,6 +246,11 @@ impl App {
 
             // Stream with input handling
             loop {
+                let desired_redraw = crate::tui::redraw_interval(self);
+                if desired_redraw != redraw_period {
+                    redraw_period = desired_redraw;
+                    redraw_interval = interval(redraw_period);
+                }
                 tokio::select! {
                     // Redraw periodically
                     _ = redraw_interval.tick() => {
