@@ -2,6 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 use std::time::{Duration, Instant, SystemTime};
 
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeModelUnavailability {
+    pub(crate) reason: String,
+    recorded_at: Instant,
+    pub(crate) observed_at: SystemTime,
+}
+
 /// Account-scoped live catalog state for one provider family.
 ///
 /// This replaces several parallel globals (available models, fetched time,
@@ -12,24 +19,33 @@ use std::time::{Duration, Instant, SystemTime};
 pub(crate) struct ModelCatalogService {
     cache_ttl: Duration,
     retry_interval: Duration,
+    runtime_unavailable_ttl: Duration,
     available_models: RwLock<HashMap<String, HashSet<String>>>,
     fetched_at: RwLock<HashMap<String, Instant>>,
     observed_at: RwLock<HashMap<String, SystemTime>>,
     last_attempt: RwLock<HashMap<String, Instant>>,
     in_flight: RwLock<HashSet<String>>,
+    runtime_unavailable_models:
+        RwLock<HashMap<String, HashMap<String, RuntimeModelUnavailability>>>,
     revision: RwLock<u64>,
 }
 
 impl ModelCatalogService {
-    pub(crate) fn new(cache_ttl: Duration, retry_interval: Duration) -> Self {
+    pub(crate) fn new(
+        cache_ttl: Duration,
+        retry_interval: Duration,
+        runtime_unavailable_ttl: Duration,
+    ) -> Self {
         Self {
             cache_ttl,
             retry_interval,
+            runtime_unavailable_ttl,
             available_models: RwLock::new(HashMap::new()),
             fetched_at: RwLock::new(HashMap::new()),
             observed_at: RwLock::new(HashMap::new()),
             last_attempt: RwLock::new(HashMap::new()),
             in_flight: RwLock::new(HashSet::new()),
+            runtime_unavailable_models: RwLock::new(HashMap::new()),
             revision: RwLock::new(0),
         }
     }
@@ -80,6 +96,60 @@ impl ModelCatalogService {
             *revision = revision.wrapping_add(1);
         }
         true
+    }
+
+    pub(crate) fn record_runtime_model_unavailable(&self, scope: &str, model: &str, reason: &str) {
+        let scope = scope.trim();
+        let model = model.trim();
+        if scope.is_empty() || model.is_empty() {
+            return;
+        }
+        if let Ok(mut unavailable) = self.runtime_unavailable_models.write() {
+            unavailable.entry(scope.to_string()).or_default().insert(
+                model.to_string(),
+                RuntimeModelUnavailability {
+                    reason: reason.trim().to_string(),
+                    recorded_at: Instant::now(),
+                    observed_at: SystemTime::now(),
+                },
+            );
+        }
+    }
+
+    pub(crate) fn runtime_model_unavailability(
+        &self,
+        scope: &str,
+        model: &str,
+    ) -> Option<RuntimeModelUnavailability> {
+        let mut unavailable = self.runtime_unavailable_models.write().ok()?;
+        let models = unavailable.get_mut(scope)?;
+        if let Some(entry) = models.get(model) {
+            if entry.recorded_at.elapsed() <= self.runtime_unavailable_ttl {
+                return Some(entry.clone());
+            }
+        }
+        models.remove(model);
+        if models.is_empty() {
+            unavailable.remove(scope);
+        }
+        None
+    }
+
+    pub(crate) fn clear_runtime_model_unavailable(&self, scope: &str, model: &str) {
+        if let Ok(mut unavailable) = self.runtime_unavailable_models.write() {
+            if let Some(models) = unavailable.get_mut(scope) {
+                models.remove(model);
+                if models.is_empty() {
+                    unavailable.remove(scope);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn clear_runtime_model_unavailable_scope(&self, scope: &str) {
+        if let Ok(mut unavailable) = self.runtime_unavailable_models.write() {
+            unavailable.remove(scope);
+        }
     }
 
     pub(crate) fn is_fresh(&self, scope: &str) -> bool {
@@ -154,7 +224,11 @@ mod tests {
     use super::*;
 
     fn service() -> ModelCatalogService {
-        ModelCatalogService::new(Duration::from_secs(60), Duration::from_secs(60))
+        ModelCatalogService::new(
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        )
     }
 
     #[test]
@@ -189,5 +263,48 @@ mod tests {
         assert!(!service.replace_scope_models("default", HashSet::new(), SystemTime::now()));
         assert_eq!(service.model_ids("default"), None);
         assert_eq!(service.revision(), 0);
+    }
+
+    #[test]
+    fn runtime_unavailability_is_account_scoped_and_clearable() {
+        let service = service();
+        service.record_runtime_model_unavailable("default", "gpt-5.5", "quota exceeded");
+
+        let unavailable = service
+            .runtime_model_unavailability("default", "gpt-5.5")
+            .expect("runtime marker should be present");
+        assert_eq!(unavailable.reason, "quota exceeded");
+        assert!(
+            service
+                .runtime_model_unavailability("other", "gpt-5.5")
+                .is_none()
+        );
+
+        service.clear_runtime_model_unavailable("default", "gpt-5.5");
+        assert!(
+            service
+                .runtime_model_unavailability("default", "gpt-5.5")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn runtime_unavailability_scope_clear_drops_all_models_for_account() {
+        let service = service();
+        service.record_runtime_model_unavailable("default", "gpt-5.5", "quota exceeded");
+        service.record_runtime_model_unavailable("default", "gpt-5.4", "quota exceeded");
+
+        service.clear_runtime_model_unavailable_scope("default");
+
+        assert!(
+            service
+                .runtime_model_unavailability("default", "gpt-5.5")
+                .is_none()
+        );
+        assert!(
+            service
+                .runtime_model_unavailability("default", "gpt-5.4")
+                .is_none()
+        );
     }
 }

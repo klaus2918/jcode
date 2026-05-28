@@ -13,7 +13,7 @@ pub use catalog::{
     AnthropicModelCatalog, OpenAIModelCatalog, fetch_anthropic_model_catalog,
     fetch_anthropic_model_catalog_oauth, fetch_openai_context_limits, fetch_openai_model_catalog,
 };
-use catalog_service::ModelCatalogService;
+use catalog_service::{ModelCatalogService, RuntimeModelUnavailability};
 use jcode_provider_core::{
     ALL_CLAUDE_MODELS, ALL_OPENAI_MODELS, ModelCapabilities, ModelRoute,
     context_limit_for_model_with_provider_and_cache, core_provider_for_model_with_hint,
@@ -79,13 +79,6 @@ static CONTEXT_LIMIT_CACHE: std::sync::LazyLock<RwLock<HashMap<String, usize>>> 
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
 #[derive(Debug, Clone)]
-struct RuntimeModelUnavailability {
-    reason: String,
-    recorded_at: Instant,
-    observed_at: SystemTime,
-}
-
-#[derive(Debug, Clone)]
 struct RuntimeProviderUnavailability {
     reason: String,
     recorded_at: Instant,
@@ -99,6 +92,7 @@ static OPENAI_MODEL_CATALOG_SERVICE: std::sync::LazyLock<ModelCatalogService> =
         ModelCatalogService::new(
             ACCOUNT_MODEL_CACHE_TTL,
             ACCOUNT_MODEL_REFRESH_RETRY_INTERVAL,
+            RUNTIME_UNAVAILABLE_TTL,
         )
     });
 static ANTHROPIC_MODEL_CATALOG_SERVICE: std::sync::LazyLock<ModelCatalogService> =
@@ -106,11 +100,9 @@ static ANTHROPIC_MODEL_CATALOG_SERVICE: std::sync::LazyLock<ModelCatalogService>
         ModelCatalogService::new(
             ACCOUNT_MODEL_CACHE_TTL,
             ACCOUNT_MODEL_REFRESH_RETRY_INTERVAL,
+            RUNTIME_UNAVAILABLE_TTL,
         )
     });
-static ACCOUNT_RUNTIME_UNAVAILABLE_MODELS: std::sync::LazyLock<
-    RwLock<HashMap<String, RuntimeModelUnavailability>>,
-> = std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 static ACCOUNT_RUNTIME_UNAVAILABLE_PROVIDERS: std::sync::LazyLock<
     RwLock<HashMap<String, RuntimeProviderUnavailability>>,
 > = std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -213,18 +205,6 @@ fn current_anthropic_catalog_scope() -> String {
     } else {
         format!("oauth::{}", current_claude_account_scope())
     }
-}
-
-fn scoped_openai_model_key(scope: &str, model: &str) -> Option<String> {
-    let key = normalize_model_id(model);
-    if key.is_empty() {
-        return None;
-    }
-    Some(format!("{}::{}", scope, key))
-}
-
-fn current_scoped_openai_model_key(model: &str) -> Option<String> {
-    scoped_openai_model_key(&current_openai_account_scope(), model)
 }
 
 fn provider_runtime_scope_key(provider: &str, account_label: Option<&str>) -> String {
@@ -494,13 +474,8 @@ fn populate_account_models_for_scope(scope: &str, slugs: Vec<String>) {
             SystemTime::now(),
         );
         OPENAI_MODEL_CATALOG_SERVICE.note_attempt(scope);
-        if let Ok(mut unavailable) = ACCOUNT_RUNTIME_UNAVAILABLE_MODELS.write() {
-            unavailable.retain(|key, _| {
-                let Some((entry_scope, model)) = key.split_once("::") else {
-                    return true;
-                };
-                entry_scope != scope || !normalized.contains(model)
-            });
+        for model in &normalized {
+            OPENAI_MODEL_CATALOG_SERVICE.clear_runtime_model_unavailable(scope, model);
         }
         crate::bus::Bus::global().publish_models_updated();
     }
@@ -669,16 +644,12 @@ fn anthropic_model_cache_is_fresh(scope: &str) -> bool {
 }
 
 fn runtime_model_unavailability(model: &str) -> Option<RuntimeModelUnavailability> {
-    let key = current_scoped_openai_model_key(model)?;
-
-    let mut unavailable = ACCOUNT_RUNTIME_UNAVAILABLE_MODELS.write().ok()?;
-    if let Some(entry) = unavailable.get(&key) {
-        if entry.recorded_at.elapsed() <= RUNTIME_UNAVAILABLE_TTL {
-            return Some(entry.clone());
-        }
-        unavailable.remove(&key);
+    let scope = current_openai_account_scope();
+    let model = normalize_model_id(model);
+    if model.is_empty() {
+        return None;
     }
-    None
+    OPENAI_MODEL_CATALOG_SERVICE.runtime_model_unavailability(&scope, &model)
 }
 
 fn account_snapshot_model_available(model: &str) -> Option<bool> {
@@ -745,30 +716,21 @@ pub fn refresh_openai_model_catalog_in_background(access_token: String, context:
 }
 
 pub fn record_model_unavailable_for_account(model: &str, reason: &str) {
-    let Some(key) = current_scoped_openai_model_key(model) else {
+    let scope = current_openai_account_scope();
+    let model = normalize_model_id(model);
+    if model.is_empty() {
         return;
-    };
-
-    if let Ok(mut unavailable) = ACCOUNT_RUNTIME_UNAVAILABLE_MODELS.write() {
-        unavailable.insert(
-            key,
-            RuntimeModelUnavailability {
-                reason: reason.trim().to_string(),
-                recorded_at: Instant::now(),
-                observed_at: SystemTime::now(),
-            },
-        );
     }
+    OPENAI_MODEL_CATALOG_SERVICE.record_runtime_model_unavailable(&scope, &model, reason);
 }
 
 pub fn clear_model_unavailable_for_account(model: &str) {
-    let Some(key) = current_scoped_openai_model_key(model) else {
+    let scope = current_openai_account_scope();
+    let model = normalize_model_id(model);
+    if model.is_empty() {
         return;
-    };
-
-    if let Ok(mut unavailable) = ACCOUNT_RUNTIME_UNAVAILABLE_MODELS.write() {
-        unavailable.remove(&key);
     }
+    OPENAI_MODEL_CATALOG_SERVICE.clear_runtime_model_unavailable(&scope, &model);
 }
 
 fn runtime_provider_unavailability(provider: &str) -> Option<RuntimeProviderUnavailability> {
@@ -816,9 +778,7 @@ pub fn clear_provider_unavailable_for_account(provider: &str) {
 /// Clear all runtime model unavailability markers.
 pub fn clear_all_model_unavailability_for_account() {
     let scope = current_openai_account_scope();
-    if let Ok(mut unavailable) = ACCOUNT_RUNTIME_UNAVAILABLE_MODELS.write() {
-        unavailable.retain(|key, _| !key.starts_with(&format!("{}::", scope)));
-    }
+    OPENAI_MODEL_CATALOG_SERVICE.clear_runtime_model_unavailable_scope(&scope);
 }
 
 /// Clear all runtime provider unavailability markers.
