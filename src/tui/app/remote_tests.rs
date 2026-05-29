@@ -127,6 +127,69 @@ fn auth_provider_hint_maps_direct_provider_logins_by_display_label() {
 }
 
 #[test]
+fn auth_provider_hint_resolves_every_emitted_login_completed_provider() {
+    // Every string published as `LoginCompleted.provider` (see the emit sites in
+    // src/tui/app/auth.rs) must resolve to a canonical server provider id so the
+    // auth-change refresh is attributed to the right provider and the post-login
+    // model auto-select runs. Before the loose display-name resolution, only
+    // Azure and OpenAI-compatible logins resolved; every direct provider sent no
+    // hint, so the server fell back to the session's active provider (the
+    // "OpenAI credentials are active" bug) and skipped the model switch.
+    //
+    // Pairs of (emitted string, expected canonical hint). `None` is only correct
+    // for auto-import, which intentionally has no single runtime to attribute to.
+    let cases: &[(&str, Option<&str>)] = &[
+        // OAuth logins emit lowercase descriptor ids.
+        ("openai", Some("openai")),
+        ("claude", Some("claude")),
+        ("gemini", Some("gemini")),
+        ("copilot", Some("copilot")),
+        ("antigravity", Some("antigravity")),
+        ("cursor", Some("cursor")),
+        // API-key paste logins emit descriptor display labels.
+        ("Anthropic API", Some("anthropic-api")),
+        ("OpenAI API", Some("openai-api")),
+        ("AWS Bedrock", Some("bedrock")),
+        ("OpenRouter", Some("openrouter")),
+        // Azure keeps its dedicated runtime id mapping.
+        ("Azure OpenAI", Some("azure-openai")),
+        // Auto-import has no single runtime to attribute the refresh to.
+        ("auto-import", None),
+    ];
+
+    for (emitted, expected) in cases {
+        assert_eq!(
+            auth_provider_hint_for_login_provider(emitted),
+            *expected,
+            "login provider {emitted:?} should resolve to {expected:?}"
+        );
+    }
+
+    // Every login provider descriptor's display label must also resolve, so
+    // future API-key providers routed through the generic paste path keep
+    // working without a code change here.
+    for descriptor in crate::provider_catalog::login_providers() {
+        if matches!(
+            descriptor.target,
+            crate::provider_catalog::LoginProviderTarget::AutoImport
+        ) {
+            continue;
+        }
+        assert!(
+            auth_provider_hint_for_login_provider(descriptor.display_name).is_some(),
+            "display label {:?} (id {:?}) should resolve to a provider hint",
+            descriptor.display_name,
+            descriptor.id
+        );
+        assert!(
+            auth_provider_hint_for_login_provider(descriptor.id).is_some(),
+            "descriptor id {:?} should resolve to a provider hint",
+            descriptor.id
+        );
+    }
+}
+
+#[test]
 fn auth_changed_event_for_anthropic_api_login_targets_claude_api_route() {
     let auth = super::auth_changed_event_for_login_provider("Anthropic API")
         .expect("Anthropic API login should produce a typed auth event");
