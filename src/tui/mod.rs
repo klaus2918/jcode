@@ -385,7 +385,11 @@ pub fn cache_ttl_for_provider(provider: &str) -> Option<u64> {
 
 pub fn cache_ttl_for_provider_model(provider: &str, model: Option<&str>) -> Option<u64> {
     match provider.to_lowercase().as_str() {
-        "anthropic" | "claude" => Some(300),
+        "anthropic" | "claude" => Some(if crate::provider::anthropic::is_cache_ttl_1h() {
+            60 * 60
+        } else {
+            300
+        }),
         "openai" => {
             if model
                 .map(crate::provider::openai::OpenAIProvider::supports_extended_prompt_cache_retention)

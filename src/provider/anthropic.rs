@@ -26,9 +26,9 @@ use tokio::sync::{RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-static CACHE_TTL_1H: AtomicBool = AtomicBool::new(false);
+static CACHE_TTL_1H: AtomicBool = AtomicBool::new(true);
 
-/// Enable or disable the 1-hour cache TTL (default: 5-minute)
+/// Enable or disable the 1-hour cache TTL (default: 1-hour)
 pub fn set_cache_ttl_1h(enabled: bool) {
     CACHE_TTL_1H.store(enabled, Ordering::Relaxed);
 }
