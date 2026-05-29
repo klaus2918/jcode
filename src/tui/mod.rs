@@ -3,7 +3,6 @@ mod app;
 pub mod backend;
 pub(crate) mod color_support;
 mod core;
-mod generated_image;
 // Terminal image display + metadata helpers now live in the dependency-free
 // `jcode-terminal-image` crate (shared with the `read` tool). Re-exported here
 // so existing `crate::tui::image` / `crate::tui::image_metadata` paths keep working.
@@ -33,7 +32,7 @@ pub use jcode_tui_workspace::workspace_map;
 pub use jcode_tui_workspace::workspace_map_widget;
 
 pub use app::{App, CopyBadgeUiState, ProcessingStatus, RunResult};
-pub use generated_image::{
+pub use crate::generated_image::{
     generated_image_side_panel_markdown, generated_image_side_panel_page_id,
     write_generated_image_side_panel_page,
 };
