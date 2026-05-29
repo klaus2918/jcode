@@ -866,10 +866,11 @@ impl CompactionManager {
         all_messages: &[Message],
         provider: Arc<dyn Provider>,
     ) -> CompactionAction {
-        let was_compacting = self.is_compacting();
-        self.maybe_start_compaction_with(all_messages, provider);
-        let bg_started = !was_compacting && self.is_compacting();
-
+        // If we're already critically full, hard-compact synchronously *before*
+        // kicking off any background compaction. Starting a background task here
+        // would only get aborted by the hard compact (its summary is computed
+        // against the pre-hard-compact offsets), so skip the wasted work and the
+        // risk of a stale `pending_cutoff` being applied later.
         let usage = self.context_usage_with(all_messages);
         if usage >= CRITICAL_THRESHOLD {
             crate::logging::warn(&format!(
@@ -895,6 +896,10 @@ impl CompactionManager {
                 }
             }
         }
+
+        let was_compacting = self.is_compacting();
+        self.maybe_start_compaction_with(all_messages, provider);
+        let bg_started = !was_compacting && self.is_compacting();
 
         if bg_started {
             CompactionAction::BackgroundStarted {
@@ -1305,6 +1310,22 @@ impl CompactionManager {
     /// exceed the token budget, progressively keeps fewer turns down to
     /// `MIN_TURNS_TO_KEEP`.
     pub fn hard_compact_with(&mut self, all_messages: &[Message]) -> Result<usize, String> {
+        // A hard compact supersedes any in-flight background (reactive/proactive/
+        // semantic) compaction. That background task summarized messages relative
+        // to the *old* `compacted_count`; if we let it complete after hard
+        // compaction has already advanced `compacted_count`, applying its stale
+        // `pending_cutoff` double-compacts and can wipe out all live messages
+        // (e.g. "kept 0 recent messages"). Abort and discard it now.
+        if let Some(task) = self.pending_task.take() {
+            task.abort();
+            crate::logging::warn(&format!(
+                "[compaction] Aborting in-flight background compaction (pending_cutoff={}, trigger={:?}) — superseded by hard compact",
+                self.pending_cutoff, self.pending_trigger,
+            ));
+            self.pending_cutoff = 0;
+            self.pending_trigger = None;
+        }
+
         if self.clamp_compacted_count_to_messages(all_messages, "hard_compact_start") {
             self.log_compaction_state("hard_compact_clamped", "hard_compact", all_messages);
         }
