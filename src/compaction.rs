@@ -1475,6 +1475,86 @@ impl CompactionManager {
         }
         truncated
     }
+
+    /// Synchronously force the context back under budget without waiting for a
+    /// background summary.
+    ///
+    /// This is the shared escalation policy used by every emergency-recovery
+    /// caller: drop old turns via [`hard_compact_with`], then — only if the
+    /// context is *still* over budget — shorten oversized tool results via
+    /// [`emergency_truncate_with`]. Previously each caller open-coded this
+    /// sequence with subtly different escalation (one retried after a hard
+    /// compact without re-checking the budget), so centralizing it both removes
+    /// the duplication and guarantees consistent behavior.
+    ///
+    /// Returns a structured outcome so callers can render their own
+    /// user-facing message. `pre_usage` is the context usage fraction observed
+    /// before recovery (captured here so the report matches what triggered it).
+    pub fn recover_within_budget(&mut self, all_messages: &mut Vec<Message>) -> EmergencyRecovery {
+        let pre_usage = self.context_usage_with(all_messages);
+
+        let dropped = match self.hard_compact_with(all_messages) {
+            Ok(dropped) => Some(dropped),
+            Err(reason) => {
+                crate::logging::warn(&format!(
+                    "[compaction] recover_within_budget: hard compact failed ({reason})"
+                ));
+                None
+            }
+        };
+
+        // Only escalate to truncation when dropping turns did not get us under
+        // budget (or could not run at all).
+        let still_over_budget = self.context_usage_with(all_messages) > 1.0 || dropped.is_none();
+        let truncated = if still_over_budget {
+            self.emergency_truncate_with(all_messages)
+        } else {
+            0
+        };
+
+        EmergencyRecovery {
+            pre_usage,
+            dropped,
+            truncated,
+        }
+    }
+}
+
+/// Outcome of [`CompactionManager::recover_within_budget`].
+#[derive(Debug, Clone, Copy)]
+pub struct EmergencyRecovery {
+    /// Context usage fraction (1.0 == full budget) observed before recovery.
+    pub pre_usage: f32,
+    /// Messages dropped by the hard compact, or `None` if it could not run.
+    pub dropped: Option<usize>,
+    /// Number of oversized tool results that were truncated as a fallback.
+    pub truncated: usize,
+}
+
+impl EmergencyRecovery {
+    /// Whether any space-reclaiming action actually happened.
+    pub fn did_anything(&self) -> bool {
+        self.dropped.unwrap_or(0) > 0 || self.truncated > 0
+    }
+
+    /// A user-facing description of what recovery did, without a trailing
+    /// call to action (callers append their own, e.g. "Retrying..." or
+    /// "You can continue."). `trigger_usage` is the usage fraction that
+    /// triggered recovery (rendered as a percentage).
+    pub fn summary_line(&self, trigger_usage: f32) -> String {
+        let pct = trigger_usage * 100.0;
+        match (self.dropped, self.truncated) {
+            (Some(dropped), 0) => format!(
+                "⚡ Emergency compaction: dropped {dropped} old messages (context was at {pct:.0}%).",
+            ),
+            (Some(dropped), truncated) => format!(
+                "⚡ Emergency compaction: dropped {dropped} old messages and truncated {truncated} tool result(s) (context was at {pct:.0}%).",
+            ),
+            (None, truncated) => format!(
+                "⚡ Emergency truncation: shortened {truncated} large tool result(s) to fit context.",
+            ),
+        }
+    }
 }
 
 impl Default for CompactionManager {

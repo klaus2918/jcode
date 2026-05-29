@@ -994,3 +994,109 @@ fn test_context_usage_after_compaction_resets_observed() {
         post_usage
     );
 }
+
+#[test]
+fn test_recover_within_budget_drops_messages_without_truncation() {
+    let mut manager = CompactionManager::new().with_budget(1_000);
+    let mut messages = Vec::new();
+    for i in 0..30 {
+        messages.push(make_text_message(
+            Role::User,
+            &format!("msg {} pad {}", i, "x".repeat(40)),
+        ));
+        manager.notify_message_added();
+    }
+    // Push well over budget so recovery triggers.
+    manager.update_observed_input_tokens(2_000);
+
+    let recovery = manager.recover_within_budget(&mut messages);
+    assert!(
+        recovery.dropped.unwrap_or(0) > 0,
+        "should drop old messages"
+    );
+    // Dropping turns alone should fit the small remaining tail, so no
+    // truncation escalation is needed.
+    assert_eq!(
+        recovery.truncated, 0,
+        "should not truncate when dropping turns fits the budget"
+    );
+    assert!(recovery.did_anything());
+    assert!(
+        manager.context_usage_with(&messages) <= 1.0,
+        "context should be back under budget after recovery"
+    );
+}
+
+#[test]
+fn test_recover_within_budget_truncates_when_tail_still_too_large() {
+    let mut manager = CompactionManager::new().with_budget(1_000);
+    let mut messages = Vec::new();
+    // Build tool-use/tool-result pairs whose results are each individually
+    // larger than the whole budget. After hard compaction drops down to the
+    // minimum kept tail, the surviving tool result is still far over budget, so
+    // recovery must escalate to truncation (which only acts on tool results).
+    for i in 0..10 {
+        let id = format!("tool_{i}");
+        messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: id.clone(),
+                name: "bash".to_string(),
+                input: serde_json::json!({ "command": "cat big.log" }),
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        });
+        manager.notify_message_added();
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id,
+                content: format!("huge {} {}", i, "y".repeat(20_000)),
+                is_error: Some(false),
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        });
+        manager.notify_message_added();
+    }
+    manager.update_observed_input_tokens(50_000);
+
+    let recovery = manager.recover_within_budget(&mut messages);
+    assert!(recovery.did_anything());
+    assert!(
+        recovery.truncated > 0,
+        "should escalate to truncation when the remaining tail is still too large"
+    );
+}
+
+#[test]
+fn test_recover_within_budget_summary_line_variants() {
+    let dropped_only = EmergencyRecovery {
+        pre_usage: 1.6,
+        dropped: Some(7),
+        truncated: 0,
+    };
+    let line = dropped_only.summary_line(dropped_only.pre_usage);
+    assert!(line.contains("dropped 7 old messages"));
+    assert!(line.contains("160%"));
+    assert!(!line.contains("truncated"));
+
+    let dropped_and_truncated = EmergencyRecovery {
+        pre_usage: 2.0,
+        dropped: Some(3),
+        truncated: 2,
+    };
+    let line = dropped_and_truncated.summary_line(dropped_and_truncated.pre_usage);
+    assert!(line.contains("dropped 3 old messages"));
+    assert!(line.contains("truncated 2 tool result(s)"));
+
+    let truncate_only = EmergencyRecovery {
+        pre_usage: 1.2,
+        dropped: None,
+        truncated: 5,
+    };
+    let line = truncate_only.summary_line(truncate_only.pre_usage);
+    assert!(line.contains("shortened 5 large tool result(s)"));
+    assert!(!line.contains("dropped"));
+}

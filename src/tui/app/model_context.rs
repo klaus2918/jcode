@@ -372,40 +372,11 @@ impl App {
 
         let usage = manager.context_usage_with(&provider_messages);
         if usage > 1.5 {
-            match manager.hard_compact_with(&provider_messages) {
-                Ok(dropped) => {
-                    self.sync_session_compaction_state_from_manager(&manager);
-                    let post_usage = manager.context_usage_with(&provider_messages);
-                    if post_usage <= 1.0 {
-                        return Some(format!(
-                            "⚡ Emergency compaction: dropped {} old messages (context was at {:.0}%). You can continue.",
-                            dropped,
-                            usage * 100.0
-                        ));
-                    }
-                    let truncated = manager.emergency_truncate_with(&mut provider_messages);
-                    self.messages = provider_messages;
-                    return Some(format!(
-                        "⚡ Emergency compaction: dropped {} old messages and truncated {} tool result(s) (context was at {:.0}%). You can continue.",
-                        dropped,
-                        truncated,
-                        usage * 100.0
-                    ));
-                }
-                Err(reason) => {
-                    crate::logging::error(&format!(
-                        "[auto_recover] hard_compact failed: {}",
-                        reason
-                    ));
-                    let truncated = manager.emergency_truncate_with(&mut provider_messages);
-                    if truncated > 0 {
-                        self.messages = provider_messages;
-                        return Some(format!(
-                            "⚡ Emergency truncation: shortened {} large tool result(s) to fit context. You can continue.",
-                            truncated
-                        ));
-                    }
-                }
+            let recovery = manager.recover_within_budget(&mut provider_messages);
+            if recovery.did_anything() {
+                self.messages = provider_messages.clone();
+                self.sync_session_compaction_state_from_manager(&manager);
+                return Some(format!("{} You can continue.", recovery.summary_line(usage)));
             }
         }
 
@@ -521,41 +492,20 @@ impl App {
                 manager.update_observed_input_tokens(self.context_limit);
                 let usage = manager.context_usage_with(&provider_messages);
                 if usage > 1.5 {
-                    match manager.hard_compact_with(&provider_messages) {
-                        Ok(dropped) => {
-                            self.sync_session_compaction_state_from_manager(&manager);
-                            self.push_display_message(DisplayMessage::system(
-                                format!(
-                                    "⚡ Emergency compaction: dropped {} old messages (context was at {:.0}%).",
-                                    dropped,
-                                    usage * 100.0
-                                ),
-                            ));
-                            drop(manager);
-                            self.reset_state_for_compaction_retry();
+                    let recovery = manager.recover_within_budget(&mut provider_messages);
+                    if recovery.did_anything() {
+                        self.messages = provider_messages;
+                        self.sync_session_compaction_state_from_manager(&manager);
+                        drop(manager);
+                        self.reset_state_for_compaction_retry();
 
-                            self.push_display_message(DisplayMessage::system(
-                                "✓ Context compacted. Retrying...".to_string(),
-                            ));
-                            return self.run_compaction_retry_turn(terminal, event_stream).await;
-                        }
-                        Err(_) => {
-                            let truncated = manager.emergency_truncate_with(&mut provider_messages);
-                            if truncated > 0 {
-                                self.messages = provider_messages;
-                                drop(manager);
-                                self.reset_state_for_compaction_retry();
-
-                                self.push_display_message(DisplayMessage::system(
-                                    format!("⚡ Emergency truncation: shortened {} large tool result(s). Retrying...", truncated),
-                                ));
-                                return self
-                                    .run_compaction_retry_turn(terminal, event_stream)
-                                    .await;
-                            }
-                            false
-                        }
+                        self.push_display_message(DisplayMessage::system(format!(
+                            "{} Retrying...",
+                            recovery.summary_line(usage)
+                        )));
+                        return self.run_compaction_retry_turn(terminal, event_stream).await;
                     }
+                    false
                 } else {
                     match manager.force_compact_with(&provider_messages, self.provider.clone()) {
                         Ok(()) => true,
@@ -864,8 +814,9 @@ impl App {
                     }
                     let usage = manager.context_usage_with(&provider_messages);
                     if usage > 1.5 {
-                        match manager.hard_compact_with(&provider_messages) {
-                            Ok(dropped) => {
+                        let recovery = manager.recover_within_budget(&mut provider_messages);
+                        match recovery.dropped {
+                            Some(dropped) if dropped > 0 => {
                                 self.sync_session_compaction_state_from_manager(&manager);
                                 actions.push(format!(
                                     "Emergency compaction: dropped {} old messages (context was at {:.0}%).",
@@ -873,20 +824,17 @@ impl App {
                                     usage * 100.0
                                 ));
                             }
-                            Err(reason) => {
-                                notes.push(format!("Hard compaction failed: {}", reason));
+                            Some(_) => {}
+                            None => {
+                                notes.push("Hard compaction failed.".to_string());
                             }
                         }
-                        let post_usage = manager.context_usage_with(&provider_messages);
-                        if post_usage > 1.0 {
-                            let truncated = manager.emergency_truncate_with(&mut provider_messages);
-                            if truncated > 0 {
-                                self.messages = provider_messages.clone();
-                                actions.push(format!(
-                                    "Emergency truncation: shortened {} large tool result(s) to fit context.",
-                                    truncated
-                                ));
-                            }
+                        if recovery.truncated > 0 {
+                            self.messages = provider_messages.clone();
+                            actions.push(format!(
+                                "Emergency truncation: shortened {} large tool result(s) to fit context.",
+                                recovery.truncated
+                            ));
                         }
                     } else {
                         match manager.force_compact_with(&provider_messages, self.provider.clone())
