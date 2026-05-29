@@ -1,5 +1,39 @@
 pub use jcode_provider_metadata::*;
 use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, RwLock};
+
+/// Fallback resolvers consulted by [`load_api_key_from_env_or_config`] after the
+/// environment and config-file lookups fail. Higher-level crates (notably
+/// `auth`, which scans trusted external CLI credential stores) register a
+/// resolver at startup so `provider_catalog` does not need to depend on `auth`.
+type ApiKeyFallbackResolver = fn(&str) -> Option<String>;
+
+static API_KEY_FALLBACK_RESOLVERS: LazyLock<RwLock<Vec<ApiKeyFallbackResolver>>> =
+    LazyLock::new(|| RwLock::new(Vec::new()));
+
+/// Register a fallback API-key resolver consulted when env/config lookups miss.
+///
+/// This inverts the historical `provider_catalog -> auth` dependency: `auth`
+/// (the higher layer) now registers its external-credential scan here, keeping
+/// `provider_catalog` free of upward references.
+pub fn register_api_key_fallback_resolver(resolver: ApiKeyFallbackResolver) {
+    API_KEY_FALLBACK_RESOLVERS
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(resolver);
+}
+
+fn resolve_api_key_fallback(env_key: &str) -> Option<String> {
+    let resolvers = API_KEY_FALLBACK_RESOLVERS
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for resolver in resolvers.iter() {
+        if let Some(key) = resolver(env_key) {
+            return Some(key);
+        }
+    }
+    None
+}
 
 pub const OPENAI_COMPAT_LOCAL_ENABLED_ENV: &str = "JCODE_OPENAI_COMPAT_LOCAL_ENABLED";
 pub const MINIMAX_CHINA_API_BASE: &str = "https://api.minimaxi.com/v1";
@@ -831,7 +865,7 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
         }
     }
 
-    if let Some(key) = crate::auth::external::load_api_key_for_env(env_key) {
+    if let Some(key) = resolve_api_key_fallback(env_key) {
         return Some(key);
     }
 
