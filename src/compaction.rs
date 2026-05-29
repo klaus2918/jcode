@@ -56,6 +56,63 @@ struct CompactionOutcomeLog<'a> {
     all_messages: &'a [Message],
 }
 
+/// Rolling character-count estimate for the active (non-compacted) message
+/// suffix.
+///
+/// Token estimation needs the size of the live message tail without rescanning
+/// the entire history on every call, so this caches that sum next to a dirty
+/// flag. The value and the flag must always move together: previously they were
+/// two independent `CompactionManager` fields, and a code path that updated one
+/// without the other silently corrupted token accounting. Keeping the raw
+/// fields private and forcing every mutation through these named operations
+/// makes that class of bug unrepresentable.
+#[derive(Debug, Clone, Default)]
+struct ActiveCharEstimate {
+    chars: usize,
+    dirty: bool,
+}
+
+impl ActiveCharEstimate {
+    /// The currently cached character count. Only trustworthy when not dirty;
+    /// readers must consult [`Self::is_dirty`] (and any external invariants)
+    /// before relying on it.
+    fn value(&self) -> usize {
+        self.chars
+    }
+
+    /// Whether the cached value is stale and must be recomputed from history.
+    fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Mark the cached value stale so the next read recomputes from history.
+    fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Record an exact, freshly computed count as the trusted value.
+    fn set_exact(&mut self, chars: usize) {
+        self.chars = chars;
+        self.dirty = false;
+    }
+
+    /// Extend a trusted count by a newly appended message's characters.
+    ///
+    /// Mirrors the append-only fast path: the prior value is assumed accurate,
+    /// so the running sum stays trusted (dirty cleared).
+    fn append_exact(&mut self, chars: usize) {
+        self.chars = self.chars.saturating_add(chars);
+        self.dirty = false;
+    }
+
+    /// Reset to zero after a restore/clamp. Stays dirty when there may be active
+    /// messages whose characters have not been measured yet.
+    fn reset_pending(&mut self, maybe_has_active: bool) {
+        self.chars = 0;
+        self.dirty = maybe_has_active;
+    }
+}
+
 /// Manages background compaction of conversation context.
 ///
 /// Does NOT own message data. The caller owns the messages and passes
@@ -74,11 +131,9 @@ pub struct CompactionManager {
     ///
     /// In the common append-only case this is maintained incrementally, so token
     /// estimation does not need to rescan the entire active history every time.
-    active_message_chars: usize,
-
-    /// When true, the incremental char estimate must be recomputed from the
-    /// caller's full message list before it can be trusted.
-    active_message_chars_dirty: bool,
+    /// Bundled with its own dirty flag so the value and staleness can never
+    /// drift apart (see [`ActiveCharEstimate`]).
+    active_chars: ActiveCharEstimate,
 
     /// Background compaction task handle
     pending_task: Option<JoinHandle<Result<CompactionResult>>>,
@@ -144,8 +199,7 @@ impl CompactionManager {
         Self {
             compacted_count: 0,
             active_summary: None,
-            active_message_chars: 0,
-            active_message_chars_dirty: false,
+            active_chars: ActiveCharEstimate::default(),
             pending_task: None,
             pending_trigger: None,
             pending_cutoff: 0,
@@ -192,7 +246,7 @@ impl CompactionManager {
     pub fn notify_message_added(&mut self) {
         self.total_turns += 1;
         self.suppress_compaction_until_new_message = false;
-        self.active_message_chars_dirty = true;
+        self.active_chars.invalidate();
     }
 
     /// Notify the manager that a message was added and update the rolling char
@@ -204,10 +258,7 @@ impl CompactionManager {
     pub fn notify_message_added_blocks(&mut self, content: &[ContentBlock]) {
         self.total_turns += 1;
         self.suppress_compaction_until_new_message = false;
-        self.active_message_chars = self
-            .active_message_chars
-            .saturating_add(content_char_count(content));
-        self.active_message_chars_dirty = false;
+        self.active_chars.append_exact(content_char_count(content));
     }
 
     /// Backward-compatible alias for `notify_message_added`.
@@ -226,8 +277,7 @@ impl CompactionManager {
     pub fn seed_restored_messages(&mut self, count: usize) {
         self.total_turns = count;
         self.suppress_compaction_until_new_message = count > 0;
-        self.active_message_chars = 0;
-        self.active_message_chars_dirty = count > 0;
+        self.active_chars.reset_pending(count > 0);
     }
 
     /// Seed the manager from already-existing history with an exact rolling char
@@ -235,8 +285,8 @@ impl CompactionManager {
     pub fn seed_restored_messages_with(&mut self, all_messages: &[Message]) {
         self.total_turns = all_messages.len();
         self.suppress_compaction_until_new_message = !all_messages.is_empty();
-        self.active_message_chars = all_messages.iter().map(message_char_count).sum();
-        self.active_message_chars_dirty = false;
+        self.active_chars
+            .set_exact(all_messages.iter().map(message_char_count).sum());
     }
 
     pub fn seed_restored_stored_messages_with(
@@ -245,11 +295,12 @@ impl CompactionManager {
     ) {
         self.total_turns = all_messages.len();
         self.suppress_compaction_until_new_message = !all_messages.is_empty();
-        self.active_message_chars = all_messages
-            .iter()
-            .map(|message| content_char_count(&message.content))
-            .sum();
-        self.active_message_chars_dirty = false;
+        self.active_chars.set_exact(
+            all_messages
+                .iter()
+                .map(|message| content_char_count(&message.content))
+                .sum(),
+        );
     }
 
     /// Restore a previously persisted compacted view.
@@ -270,8 +321,8 @@ impl CompactionManager {
         self.semantic_embed_cache_counter = 0;
         self.total_turns = total_messages;
         self.compacted_count = state.compacted_count.min(total_messages);
-        self.active_message_chars = 0;
-        self.active_message_chars_dirty = total_messages > self.compacted_count;
+        self.active_chars
+            .reset_pending(total_messages > self.compacted_count);
         self.active_summary = Some(Summary {
             text: state.summary_text.clone(),
             openai_encrypted_content: state.openai_encrypted_content.clone(),
@@ -289,12 +340,12 @@ impl CompactionManager {
         all_messages: &[Message],
     ) {
         self.restore_persisted_state(state, all_messages.len());
-        self.active_message_chars = self
-            .active_messages(all_messages)
-            .iter()
-            .map(message_char_count)
-            .sum();
-        self.active_message_chars_dirty = false;
+        self.active_chars.set_exact(
+            self.active_messages(all_messages)
+                .iter()
+                .map(message_char_count)
+                .sum(),
+        );
     }
 
     pub fn restore_persisted_stored_state_with(
@@ -304,11 +355,12 @@ impl CompactionManager {
     ) {
         self.restore_persisted_state(state, all_messages.len());
         let start = self.compacted_count.min(all_messages.len());
-        self.active_message_chars = all_messages[start..]
-            .iter()
-            .map(|message| content_char_count(&message.content))
-            .sum();
-        self.active_message_chars_dirty = false;
+        self.active_chars.set_exact(
+            all_messages[start..]
+                .iter()
+                .map(|message| content_char_count(&message.content))
+                .sum(),
+        );
     }
 
     /// Export the currently active compacted view for persistence.
@@ -649,8 +701,7 @@ impl CompactionManager {
             self.observed_input_tokens,
         ));
         self.compacted_count = all_messages.len();
-        self.active_message_chars = 0;
-        self.active_message_chars_dirty = false;
+        self.active_chars.set_exact(0);
         true
     }
 
@@ -705,7 +756,12 @@ impl CompactionManager {
     }
 
     fn active_message_chars_with(&self, all_messages: &[Message]) -> usize {
-        if self.active_message_chars_dirty
+        // Recompute from history when the cache is stale, or when the
+        // display-side turn estimate disagrees with the real active slice
+        // length (the two can diverge across restore/clamp/compaction paths,
+        // and trusting a mismatched cache is exactly what corrupts token
+        // accounting).
+        if self.active_chars.is_dirty()
             || self.active_messages_count() != self.active_messages(all_messages).len()
         {
             self.active_messages(all_messages)
@@ -713,7 +769,7 @@ impl CompactionManager {
                 .map(message_char_count)
                 .sum()
         } else {
-            self.active_message_chars
+            self.active_chars.value()
         }
     }
 
@@ -913,13 +969,6 @@ impl CompactionManager {
         }
     }
 
-    /// Backward-compatible wrapper
-    pub fn maybe_start_compaction(&mut self, _provider: Arc<dyn Provider>) {
-        // Without messages, we can only check observed tokens
-        // This is a no-op if no messages are provided
-        // Callers should migrate to maybe_start_compaction_with
-    }
-
     /// Force immediate compaction (for manual /compact command).
     pub fn force_compact_with(
         &mut self,
@@ -984,16 +1033,6 @@ impl CompactionManager {
         }));
 
         Ok(())
-    }
-
-    /// Backward-compatible force_compact (for callers that still have their own message vec).
-    /// This variant works with the old API where CompactionManager had its own messages.
-    /// Callers should migrate to force_compact_with.
-    pub fn force_compact(&mut self, _provider: Arc<dyn Provider>) -> Result<(), String> {
-        Err(
-            "force_compact requires messages — use force_compact_with(messages, provider)"
-                .to_string(),
-        )
     }
 
     /// Check if background compaction is done and apply it, updating rolling
@@ -1064,10 +1103,10 @@ impl CompactionManager {
                 if !all_messages.is_empty() {
                     self.compacted_count = self.compacted_count.min(all_messages.len());
                 }
-                self.active_message_chars = self
-                    .active_message_chars_with(all_messages)
-                    .saturating_sub(compacted_chars);
-                self.active_message_chars_dirty = false;
+                self.active_chars.set_exact(
+                    self.active_message_chars_with(all_messages)
+                        .saturating_sub(compacted_chars),
+                );
 
                 // Store summary
                 self.active_summary = Some(summary);
@@ -1138,7 +1177,7 @@ impl CompactionManager {
     /// Backward-compatible completion check without caller history.
     pub fn check_and_apply_compaction(&mut self) {
         self.check_and_apply_compaction_with(&[]);
-        self.active_message_chars_dirty = true;
+        self.active_chars.invalidate();
     }
 
     /// Take the last compaction event (if any)
@@ -1182,36 +1221,6 @@ impl CompactionManager {
                 result
             }
             None => active.to_vec(),
-        }
-    }
-
-    /// Backward-compatible messages_for_api (no messages available).
-    /// Returns only summary if present, or empty vec.
-    pub fn messages_for_api(&mut self) -> Vec<Message> {
-        self.check_and_apply_compaction();
-        self.discard_oversized_openai_native_compaction();
-
-        // Without caller messages, we can only return the summary
-        match &self.active_summary {
-            Some(summary) => {
-                let summary_block = summary
-                    .openai_encrypted_content
-                    .as_ref()
-                    .map(|encrypted_content| ContentBlock::OpenAICompaction {
-                        encrypted_content: encrypted_content.clone(),
-                    })
-                    .unwrap_or_else(|| ContentBlock::Text {
-                        text: compacted_summary_text_block(&summary.text),
-                        cache_control: None,
-                    });
-                vec![Message {
-                    role: Role::User,
-                    content: vec![summary_block],
-                    timestamp: None,
-                    tool_duration_ms: None,
-                }]
-            }
-            None => Vec::new(),
         }
     }
 
@@ -1323,11 +1332,6 @@ impl CompactionManager {
         self.take_compaction_event()
     }
 
-    pub fn poll_compaction_event(&mut self) -> Option<CompactionEvent> {
-        self.check_and_apply_compaction();
-        self.take_compaction_event()
-    }
-
     /// Emergency hard compaction: drop old messages without summarizing.
     /// Takes the caller's full message list to inspect content.
     ///
@@ -1423,8 +1427,7 @@ impl CompactionManager {
             .compacted_count
             .saturating_add(cutoff)
             .min(all_messages.len());
-        self.active_message_chars = remaining_suffix_chars[cutoff];
-        self.active_message_chars_dirty = false;
+        self.active_chars.set_exact(remaining_suffix_chars[cutoff]);
         self.active_summary = Some(summary);
         self.observed_input_tokens = None;
         let post_tokens = self.effective_token_count_with(all_messages) as u64;
@@ -1453,11 +1456,6 @@ impl CompactionManager {
         });
 
         Ok(dropped_count)
-    }
-
-    /// Backward-compatible hard_compact
-    pub fn hard_compact(&mut self) -> Result<usize, String> {
-        Err("hard_compact requires messages — use hard_compact_with(messages)".to_string())
     }
 
     /// Emergency truncation: shorten large tool results in active messages.

@@ -751,7 +751,7 @@ fn test_hard_compact_clamps_pathological_compacted_count() {
         covers_up_to_turn: 100,
         original_turn_count: 100,
     });
-    manager.active_message_chars_dirty = true;
+    manager.active_chars.invalidate();
 
     for _ in 0..3 {
         let _ = manager.hard_compact_with(&messages);
@@ -844,7 +844,7 @@ fn test_invalid_compacted_count_does_not_resurrect_full_transcript_after_new_tur
         covers_up_to_turn: 500,
         original_turn_count: 500,
     });
-    manager.active_message_chars_dirty = true;
+    manager.active_chars.invalidate();
 
     let before_new_turn = manager.messages_for_api_with(&messages);
     assert_eq!(before_new_turn.len(), 1);
