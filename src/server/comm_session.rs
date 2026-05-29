@@ -97,14 +97,14 @@ fn spawn_visible_session_window(
         .or_else(|| std::env::current_exe().ok())
         .unwrap_or_else(|| PathBuf::from("jcode"));
     if selfdev_requested {
-        crate::cli::tui_launch::spawn_selfdev_in_new_terminal_with_provider(
+        crate::session_launch::spawn_selfdev_in_new_terminal_with_provider(
             &exe,
             session_id,
             cwd,
             provider_key,
         )
     } else {
-        crate::cli::tui_launch::spawn_resume_in_new_terminal_with_provider(
+        crate::session_launch::spawn_resume_in_new_terminal_with_provider(
             &exe,
             session_id,
             cwd,

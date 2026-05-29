@@ -5,7 +5,7 @@
 use crate::background::{self, TaskResult};
 use crate::build;
 use crate::bus::BackgroundTaskStatus;
-use crate::cli::tui_launch;
+use crate::session_launch;
 use crate::protocol::{ServerEvent, TranscriptMode};
 use crate::server;
 use crate::session;
