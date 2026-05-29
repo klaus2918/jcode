@@ -178,7 +178,62 @@ pub fn provider_model_to_select_after_auth(
         return Some(activated_model.to_string());
     }
 
+    // No usable current model and no activation-supplied model: fall back to the
+    // best available route. Plain catalog order would pick whatever the live
+    // catalog happened to list first (e.g. `claude-haiku-4-5-...` ahead of
+    // `claude-opus-4-8`), so an Anthropic API-key login would auto-select Haiku
+    // instead of the provider's flagship default. When the provider has a
+    // curated flagship-first preference order, pick the highest-ranked matching
+    // route; ties and unranked providers preserve catalog order.
+    if let Some(order) = provider_preferred_model_order(activation) {
+        return matching_routes
+            .iter()
+            .min_by_key(|route| preferred_model_rank(order, &route.model))
+            .map(|route| route.model.clone());
+    }
+
     matching_routes.first().map(|route| route.model.clone())
+}
+
+/// Flagship-first preference order used only to break ties when falling back to
+/// an arbitrary matching route after a login. Returns `None` for providers
+/// without a curated multi-model order (OpenAI-compatible, Copilot, Cursor,
+/// Gemini, Bedrock, ...), which preserves live-catalog order for them.
+fn provider_preferred_model_order(
+    activation: &AuthActivationResult,
+) -> Option<&'static [&'static str]> {
+    match activation.provider_id.as_deref() {
+        Some("claude") | Some("claude-api") => Some(crate::provider::ALL_CLAUDE_MODELS),
+        Some("openai") | Some("openai-api") => Some(crate::provider::ALL_OPENAI_MODELS),
+        _ => None,
+    }
+}
+
+/// Rank a (possibly date-suffixed) catalog model id against a flagship-first
+/// preference list. Lower is more preferred; unknown models sort last.
+fn preferred_model_rank(order: &[&str], model: &str) -> usize {
+    let normalized = normalize_model_for_preference(model);
+    order
+        .iter()
+        .position(|candidate| normalize_model_for_preference(candidate) == normalized)
+        .unwrap_or(usize::MAX)
+}
+
+/// Normalize a model id for flagship-preference comparison: lowercase, drop a
+/// `[1m]` long-context suffix, and strip a trailing 8-digit `-YYYYMMDD` date so
+/// live dated ids (`claude-haiku-4-5-20251001`) match bare canonical ids
+/// (`claude-haiku-4-5`).
+fn normalize_model_for_preference(model: &str) -> String {
+    let lowered = model.trim().to_ascii_lowercase();
+    let without_long_context = lowered.strip_suffix("[1m]").unwrap_or(&lowered);
+    match without_long_context.rsplit_once('-') {
+        Some((head, tail))
+            if tail.len() == 8 && tail.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            head.to_string()
+        }
+        _ => without_long_context.to_string(),
+    }
 }
 
 fn route_matches_activation(route: &ModelRoute, activation: &AuthActivationResult) -> bool {
@@ -976,6 +1031,101 @@ mod tests {
                 &routes
             ),
             None
+        );
+    }
+
+    #[test]
+    fn post_auth_model_selection_prefers_anthropic_flagship_over_catalog_order() {
+        // Live Anthropic catalogs list `claude-haiku-4-5-...` before
+        // `claude-opus-4-8`, and an API-key login supplies no activated model.
+        // Plain catalog order would auto-select Haiku; the flagship-first
+        // fallback must land on Opus instead.
+        let activation = AuthActivationResult {
+            provider_id: Some("claude-api".to_string()),
+            provider_label: Some("Anthropic".to_string()),
+            activated_model: None,
+            expected_runtime: None,
+            expected_catalog_namespace: None,
+        };
+        let routes = vec![
+            route("claude-haiku-4-5-20251001", "Anthropic", "claude-api", true),
+            route("claude-opus-4-6", "Anthropic", "claude-api", true),
+            route("claude-opus-4-8", "Anthropic", "claude-api", true),
+            route("claude-sonnet-4-6", "Anthropic", "claude-api", true),
+        ];
+
+        assert_eq!(
+            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
+            Some("claude-opus-4-8"),
+            "API-key login should auto-select the Anthropic flagship, not the first catalog route"
+        );
+    }
+
+    #[test]
+    fn post_auth_model_selection_prefers_claude_oauth_flagship() {
+        let activation = AuthActivationResult {
+            provider_id: Some("claude".to_string()),
+            provider_label: Some("Anthropic".to_string()),
+            activated_model: None,
+            expected_runtime: None,
+            expected_catalog_namespace: None,
+        };
+        let routes = vec![
+            route("claude-haiku-4-5", "Anthropic", "claude-oauth", true),
+            route("claude-opus-4-8", "Anthropic", "claude-oauth", true),
+        ];
+
+        assert_eq!(
+            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
+            Some("claude-opus-4-8")
+        );
+    }
+
+    #[test]
+    fn post_auth_model_selection_prefers_openai_flagship_over_catalog_order() {
+        let activation = AuthActivationResult {
+            provider_id: Some("openai-api".to_string()),
+            provider_label: Some("OpenAI".to_string()),
+            activated_model: None,
+            expected_runtime: None,
+            expected_catalog_namespace: None,
+        };
+        let routes = vec![
+            route("gpt-5.1", "OpenAI", "openai-api", true),
+            route("gpt-5.5", "OpenAI", "openai-api", true),
+        ];
+
+        assert_eq!(
+            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
+            Some("gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn post_auth_model_selection_keeps_catalog_order_for_unranked_providers() {
+        // OpenAI-compatible / namespaced providers have no curated flagship
+        // order; the fallback must preserve live-catalog order for them.
+        let activation = AuthActivationResult {
+            provider_id: Some("cerebras".to_string()),
+            provider_label: Some("Cerebras".to_string()),
+            activated_model: None,
+            expected_runtime: Some("openai-compatible".to_string()),
+            expected_catalog_namespace: Some("cerebras".to_string()),
+        };
+        let routes = vec![
+            route("llama3.1-8b", "Cerebras", "openai-compatible:cerebras", true),
+            route(
+                "qwen-3-235b-a22b-instruct-2507",
+                "Cerebras",
+                "openai-compatible:cerebras",
+                true,
+            ),
+        ];
+
+        assert_eq!(
+            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
+            Some("llama3.1-8b"),
+            "providers without a curated flagship order keep live-catalog order"
         );
     }
 }
