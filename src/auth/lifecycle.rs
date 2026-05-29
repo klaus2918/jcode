@@ -1261,6 +1261,19 @@ mod tests {
             ),
         ];
 
+        // Guard: the hand-written cases must cover every ranked provider, or the
+        // "for_every_ranked_provider" claim silently rots when a new ranked
+        // provider is added without a matching case.
+        let covered: std::collections::BTreeSet<&str> =
+            cases.iter().map(|(provider_id, ..)| *provider_id).collect();
+        let expected_covered: std::collections::BTreeSet<&str> =
+            RANKED_PROVIDER_IDS.iter().copied().collect();
+        assert_eq!(
+            covered, expected_covered,
+            "flagship cases drifted from RANKED_PROVIDER_IDS; add a cheap-first case for any \
+             newly ranked provider so its flagship selection is actually exercised"
+        );
+
         for (provider_id, api_method, provider_display, models, expected) in cases {
             let activation = activation_for_provider_id(provider_id);
             let routes: Vec<ModelRoute> = models
