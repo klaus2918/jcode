@@ -58,6 +58,40 @@ const LEGACY_NOTE_CATEGORY: &str = "note";
 const MEMORY_RELEVANCE_MAX_CANDIDATES: usize = 30;
 const MEMORY_RELEVANCE_MAX_RESULTS: usize = 10;
 
+/// Producer of synthetic [`MemoryEntry`] values contributed by a higher layer.
+///
+/// Used to invert the legacy `memory -> skill` dependency: the `skill` layer
+/// (which already depends on `MemoryEntry`) registers a provider that turns the
+/// shared skill registry into synthetic memory entries, instead of `memory`
+/// reaching up into `skill::SkillRegistry`.
+type SyntheticEntryProvider = fn() -> Vec<MemoryEntry>;
+
+static SYNTHETIC_ENTRY_PROVIDERS: std::sync::LazyLock<
+    std::sync::RwLock<Vec<SyntheticEntryProvider>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(Vec::new()));
+
+/// Register a provider of synthetic memory entries (e.g. skills).
+///
+/// Inverts `memory -> skill`: higher layers register their synthetic-entry
+/// source here at startup so `memory` stays free of upward references.
+pub fn register_synthetic_entry_provider(provider: SyntheticEntryProvider) {
+    SYNTHETIC_ENTRY_PROVIDERS
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(provider);
+}
+
+fn collect_synthetic_entries() -> Vec<MemoryEntry> {
+    let providers = SYNTHETIC_ENTRY_PROVIDERS
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut entries = Vec::new();
+    for provider in providers.iter() {
+        entries.extend(provider());
+    }
+    entries
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct LegacyNotesFile {
     #[serde(default)]
@@ -610,11 +644,7 @@ impl MemoryManager {
             return Vec::new();
         }
 
-        crate::skill::SkillRegistry::shared_snapshot()
-            .list()
-            .into_iter()
-            .map(|skill| skill.as_memory_entry())
-            .collect()
+        collect_synthetic_entries()
     }
 
     fn collect_retrieval_candidates_scoped(&self, scope: MemoryScope) -> Result<Vec<MemoryEntry>> {

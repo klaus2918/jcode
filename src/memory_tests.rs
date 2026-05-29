@@ -531,6 +531,16 @@ fn scoped_retrieval_respects_project_vs_global() {
 #[test]
 fn retrieval_candidates_include_local_skills() {
     with_temp_home(|home| {
+        // memory no longer reaches into skill directly; register the skill
+        // synthetic-entry provider (as cli::startup does in production) so the
+        // memory<-skill integration this test exercises is wired up.
+        crate::memory::register_synthetic_entry_provider(|| {
+            crate::skill::SkillRegistry::shared_snapshot()
+                .list()
+                .into_iter()
+                .map(|skill| skill.as_memory_entry())
+                .collect()
+        });
         let project_dir = home.join("project-with-skill");
         fs::create_dir_all(project_dir.join(".jcode/skills/firefox-browser"))
             .expect("create skills dir");
