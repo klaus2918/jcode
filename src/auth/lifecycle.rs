@@ -185,38 +185,58 @@ pub fn provider_model_to_select_after_auth(
     // instead of the provider's flagship default. When the provider has a
     // curated flagship-first preference order, pick the highest-ranked matching
     // route; ties and unranked providers preserve catalog order.
-    if let Some(order) = provider_preferred_model_order(activation) {
+    let orders = provider_preferred_model_orders(activation);
+    if !orders.is_empty() {
         return matching_routes
             .iter()
-            .min_by_key(|route| preferred_model_rank(order, &route.model))
+            .min_by_key(|route| preferred_model_rank(orders, &route.model))
             .map(|route| route.model.clone());
     }
 
     matching_routes.first().map(|route| route.model.clone())
 }
 
-/// Flagship-first preference order used only to break ties when falling back to
-/// an arbitrary matching route after a login. Returns `None` for providers
-/// without a curated multi-model order (OpenAI-compatible, Copilot, Cursor,
-/// Gemini, Bedrock, ...), which preserves live-catalog order for them.
-fn provider_preferred_model_order(
+/// Flagship-first preference tiers used only to break ties when falling back to
+/// an arbitrary matching route after a login. Each inner slice is one curated
+/// family ordered best-first; earlier families outrank later ones. Returns an
+/// empty slice for providers without a curated order (local OpenAI-compatible,
+/// Gemini, Bedrock arns, OpenRouter, ...), which preserves live-catalog order.
+///
+/// Copilot and Cursor proxy Claude/OpenAI models under their bare canonical ids
+/// (`copilot:claude-opus-4-8`), so they share the same "catalog lists the cheap
+/// model first" hazard as a direct login and get the combined Claude+OpenAI
+/// order. The Claude/OpenAI subscription default bias mirrors jcode's global
+/// default model.
+fn provider_preferred_model_orders(
     activation: &AuthActivationResult,
-) -> Option<&'static [&'static str]> {
+) -> &'static [&'static [&'static str]] {
     match activation.provider_id.as_deref() {
-        Some("claude") | Some("claude-api") => Some(crate::provider::ALL_CLAUDE_MODELS),
-        Some("openai") | Some("openai-api") => Some(crate::provider::ALL_OPENAI_MODELS),
-        _ => None,
+        Some("claude") | Some("claude-api") => &[crate::provider::ALL_CLAUDE_MODELS],
+        Some("openai") | Some("openai-api") => &[crate::provider::ALL_OPENAI_MODELS],
+        Some("copilot") | Some("cursor") => &[
+            crate::provider::ALL_CLAUDE_MODELS,
+            crate::provider::ALL_OPENAI_MODELS,
+        ],
+        _ => &[],
     }
 }
 
-/// Rank a (possibly date-suffixed) catalog model id against a flagship-first
-/// preference list. Lower is more preferred; unknown models sort last.
-fn preferred_model_rank(order: &[&str], model: &str) -> usize {
+/// Rank a (possibly date-suffixed) catalog model id against flagship-first
+/// preference tiers. Lower is more preferred: an earlier family tier always
+/// outranks a later one, and within a tier the curated position decides.
+/// Unknown models sort last so they only win when nothing curated matches.
+fn preferred_model_rank(orders: &[&[&str]], model: &str) -> usize {
+    const TIER_STRIDE: usize = 10_000;
     let normalized = normalize_model_for_preference(model);
-    order
-        .iter()
-        .position(|candidate| normalize_model_for_preference(candidate) == normalized)
-        .unwrap_or(usize::MAX)
+    for (tier, order) in orders.iter().enumerate() {
+        if let Some(position) = order
+            .iter()
+            .position(|candidate| normalize_model_for_preference(candidate) == normalized)
+        {
+            return tier * TIER_STRIDE + position;
+        }
+    }
+    usize::MAX
 }
 
 /// Normalize a model id for flagship-preference comparison: lowercase, drop a
@@ -1126,6 +1146,150 @@ mod tests {
             provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
             Some("llama3.1-8b"),
             "providers without a curated flagship order keep live-catalog order"
+        );
+    }
+
+    /// The set of canonical provider ids whose post-login fallback must apply a
+    /// curated flagship-first order. These are the providers that expose
+    /// Claude/OpenAI models under their bare canonical ids and report no
+    /// `activated_model`, so a "cheap model first" catalog would otherwise
+    /// auto-select the wrong default. Kept here as the single source of truth
+    /// the exhaustive walk asserts against.
+    const RANKED_PROVIDER_IDS: &[&str] =
+        &["claude", "claude-api", "openai", "openai-api", "copilot", "cursor"];
+
+    fn activation_for_provider_id(provider_id: &str) -> AuthActivationResult {
+        AuthActivationResult {
+            provider_id: Some(provider_id.to_string()),
+            provider_label: provider_display_label(Some(provider_id)),
+            activated_model: None,
+            expected_runtime: None,
+            expected_catalog_namespace: None,
+        }
+    }
+
+    /// Exhaustive walk: every login provider descriptor is classified as ranked
+    /// (curated flagship order) or unranked (catalog order), and the
+    /// classification must exactly match RANKED_PROVIDER_IDS. This is the guard
+    /// that catches a newly added provider that proxies Claude/OpenAI models but
+    /// forgets to opt into the flagship-first fallback.
+    #[test]
+    fn post_auth_model_selection_classifies_every_login_provider() {
+        let mut ranked_seen: std::collections::BTreeSet<String> = Default::default();
+        for descriptor in crate::provider_catalog::login_providers() {
+            let Some(provider_id) = normalized_auth_provider_id(Some(descriptor.id)) else {
+                // AutoImport / non-runtime descriptors have no activation id.
+                continue;
+            };
+            let activation = activation_for_provider_id(provider_id);
+            let ranked = !provider_preferred_model_orders(&activation).is_empty();
+            let expected = RANKED_PROVIDER_IDS.contains(&provider_id);
+            assert_eq!(
+                ranked, expected,
+                "login provider `{}` (id `{}`) classified ranked={ranked}, expected {expected}; \
+                 if this is a new Claude/OpenAI-proxying provider add it to \
+                 provider_preferred_model_orders + RANKED_PROVIDER_IDS, otherwise leave it unranked",
+                descriptor.id, provider_id
+            );
+            if ranked {
+                ranked_seen.insert(provider_id.to_string());
+            }
+        }
+        let expected_ranked: std::collections::BTreeSet<String> =
+            RANKED_PROVIDER_IDS.iter().map(|id| id.to_string()).collect();
+        assert_eq!(
+            ranked_seen, expected_ranked,
+            "the ranked providers reachable from the login catalog drifted from RANKED_PROVIDER_IDS"
+        );
+    }
+
+    /// Exhaustive walk: for every ranked provider, an adversarial catalog that
+    /// lists the cheapest model first must still auto-select the curated
+    /// flagship after login. This is the direct regression for the live
+    /// Anthropic API-key login that auto-selected Haiku instead of Opus.
+    #[test]
+    fn post_auth_model_selection_picks_flagship_for_every_ranked_provider() {
+        // (provider_id, api_method, provider_display, cheap_first_routes, expected flagship)
+        let cases: &[(&str, &str, &str, &[&str], &str)] = &[
+            (
+                "claude",
+                "claude-oauth",
+                "Anthropic",
+                &["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"],
+                "claude-opus-4-8",
+            ),
+            (
+                "claude-api",
+                "claude-api",
+                "Anthropic",
+                &[
+                    "claude-haiku-4-5-20251001",
+                    "claude-sonnet-4-6",
+                    "claude-opus-4-8",
+                ],
+                "claude-opus-4-8",
+            ),
+            (
+                "openai",
+                "openai-oauth",
+                "OpenAI",
+                &["gpt-5-nano", "gpt-5.1", "gpt-5.5"],
+                "gpt-5.5",
+            ),
+            (
+                "openai-api",
+                "openai-api-key",
+                "OpenAI",
+                &["gpt-5-mini", "gpt-5.1", "gpt-5.5"],
+                "gpt-5.5",
+            ),
+            (
+                // Copilot proxies Claude under canonical ids: Opus must beat Haiku.
+                "copilot",
+                "copilot",
+                "Copilot",
+                &["claude-haiku-4-5", "gpt-5.5", "claude-opus-4-8"],
+                "claude-opus-4-8",
+            ),
+            (
+                // Cursor likewise: an all-OpenAI catalog still picks the flagship.
+                "cursor",
+                "cursor",
+                "Cursor",
+                &["gpt-5-nano", "gpt-5.1", "gpt-5.5"],
+                "gpt-5.5",
+            ),
+        ];
+
+        for (provider_id, api_method, provider_display, models, expected) in cases {
+            let activation = activation_for_provider_id(provider_id);
+            let routes: Vec<ModelRoute> = models
+                .iter()
+                .map(|model| route(model, provider_display, api_method, true))
+                .collect();
+            assert_eq!(
+                provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
+                Some(*expected),
+                "provider `{provider_id}` should auto-select flagship `{expected}` from a \
+                 cheap-first catalog, not the first route `{}`",
+                models[0]
+            );
+        }
+    }
+
+    /// Copilot proxies both families; the cross-family tie-break must prefer the
+    /// Claude flagship over the OpenAI flagship to mirror jcode's default model.
+    #[test]
+    fn post_auth_model_selection_copilot_prefers_claude_family_over_openai() {
+        let activation = activation_for_provider_id("copilot");
+        let routes = vec![
+            route("gpt-5.5", "Copilot", "copilot", true),
+            route("claude-opus-4-8", "Copilot", "copilot", true),
+        ];
+        assert_eq!(
+            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
+            Some("claude-opus-4-8"),
+            "copilot tie-break should prefer the Claude flagship family first"
         );
     }
 }
