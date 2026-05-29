@@ -2398,6 +2398,21 @@ struct SessionSwitcherSplitColumns {
     gap: Rect,
 }
 
+/// Rail width for the session-switcher fallback layout used when the card is too
+/// narrow for the full split layout.
+///
+/// Guards against narrow cards: the preferred minimum rail width is 220px, but
+/// `card_width * 0.55` (the max) can drop below that on small windows. Passing
+/// `min > max` to `f32::clamp` panics, which previously crashed the desktop app
+/// on resume into a narrow window. Cap the minimum at the available max so the
+/// rail just shrinks instead.
+fn session_switcher_fallback_rail_width(card_width: f32) -> f32 {
+    let card_width = card_width.max(0.0);
+    let rail_max = (card_width * 0.55).max(1.0);
+    let rail_min = 220.0_f32.min(rail_max);
+    (card_width * 0.38).clamp(rail_min, rail_max)
+}
+
 fn session_switcher_split_columns(
     layout: &InlineWidgetCardLayout,
 ) -> Option<SessionSwitcherSplitColumns> {
@@ -9672,7 +9687,7 @@ pub(crate) fn single_session_text_areas_for_state(
         {
             let columns = split_columns.unwrap_or_else(|| {
                 let fallback_gap = (layout.card.width * 0.018).clamp(9.0, 15.0);
-                let rail_width = (layout.card.width * 0.38).clamp(220.0, layout.card.width * 0.55);
+                let rail_width = session_switcher_fallback_rail_width(layout.card.width);
                 let rail = Rect {
                     x: layout.card.x + layout.padding_x * 0.72,
                     y: layout.card.y + layout.padding_x * 0.18,

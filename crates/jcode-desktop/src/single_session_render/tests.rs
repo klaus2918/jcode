@@ -1881,3 +1881,22 @@ fn session_switcher_text_buffer_shapes_loaded_session_rows() {
         preview_area.bounds.top
     );
 }
+
+#[test]
+fn session_switcher_fallback_rail_width_does_not_panic_on_narrow_cards() {
+    // Regression: narrow cards made `card_width * 0.55` drop below the 220px
+    // preferred minimum, so the old `clamp(220.0, card_width * 0.55)` panicked
+    // with `min > max`, crashing the desktop app on resume into a small window.
+    for card_width in [0.0_f32, 1.0, 50.0, 205.0, 220.0, 399.0, 400.0, 1200.0] {
+        let rail = session_switcher_fallback_rail_width(card_width);
+        assert!(
+            rail.is_finite() && rail >= 0.0,
+            "rail width must be finite and non-negative for card_width={card_width}, got {rail}"
+        );
+        // The rail should never exceed the available card width.
+        assert!(
+            rail <= card_width.max(1.0),
+            "rail width {rail} should not exceed card_width {card_width}"
+        );
+    }
+}
