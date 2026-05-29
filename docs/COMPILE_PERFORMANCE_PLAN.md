@@ -595,6 +595,41 @@ JCODE_FAST_LINKER=mold scripts/dev_cargo.sh build --release -p jcode --bin jcode
 JCODE_FAST_LINKER=system scripts/dev_cargo.sh build --release -p jcode --bin jcode
 ```
 
+### Remote build host fast-fail / fast-recovery
+
+When `JCODE_REMOTE_CARGO=1` (commonly set in `~/.config/jcode/remote-build.env`),
+`dev_cargo.sh` offloads builds to `JCODE_REMOTE_HOST` via `scripts/remote_build.sh`.
+The preflight is designed so that remote builds "just work" when the host is up,
+without paying a slow timeout when it is down:
+
+- A cheap `bash` `/dev/tcp` reachability probe runs before the SSH preflight, so an
+  offline host fails over to local cargo in about **1s** instead of waiting for the
+  full SSH `ConnectTimeout` (previously ~5s on every build).
+- After a recent failure, subsequent builds use a shorter recovery probe timeout
+  (default **0.3s**) so repeated builds during an outage stay cheap.
+- Recovery is detected on the **very next build**: an up host answers the TCP probe
+  in a few milliseconds, so it immediately reverts to remote builds with no cooldown.
+- The probe is skipped automatically when the SSH config uses `ProxyJump`/`ProxyCommand`
+  (where a direct TCP probe to the final host would be misleading), falling back to the
+  normal SSH preflight.
+
+Tunables (all optional):
+
+```bash
+JCODE_REMOTE_TCP_TIMEOUT=1            # first-probe TCP timeout (seconds, fractional ok)
+JCODE_REMOTE_RECOVERY_TCP_TIMEOUT=0.3 # probe timeout while host was recently down
+JCODE_REMOTE_DOWN_TTL=300             # how long to keep using the recovery timeout
+JCODE_REMOTE_TCP_PROBE=0              # disable the pre-probe; use SSH preflight only
+JCODE_REMOTE_CARGO=0                  # disable remote builds entirely for one command
+```
+
+- 2026-05-29: added the TCP pre-probe + recovery-timeout logic above. Validation on this
+  machine (remote host offline): warm self-dev edit-build preflight dropped from about
+  **5.0s** to about **1.0s** on the first build and about **0.3s** on subsequent builds,
+  while an up host still reconnects on the next build (TCP probe answered in ~10ms in
+  unit tests). Function-level unit tests covered reachable/unreachable probes, the
+  recent-failure window, and `desktop-tailscale` endpoint resolution.
+
 For compile timing, prefer repeatable touched-file measurements over no-op hot-cache reruns:
 
 ```bash
