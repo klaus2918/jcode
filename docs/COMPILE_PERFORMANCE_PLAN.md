@@ -542,6 +542,66 @@ Current TUI-boundary stance:
 - **Reason:** the remaining high-value TUI files are larger but still more tightly coupled to `App`, config, images,
   side-panel state, and rendering orchestration, so they need staged extraction rather than a rushed top-level split.
 
+## Root-Crate Decomposition Strategy (2026-05-29)
+
+The previous splits created many `*-types` / `*-core` crates that the root re-exports from, but
+`scripts/analyze_root_crate.py` shows **334K of 336K root-crate lines are still genuinely in-root**:
+the heavy logic stayed behind thin facades. The analyzer (committed alongside this section) gives the
+objective map needed to finish the job. Run it any time:
+
+```bash
+python3 scripts/analyze_root_crate.py          # ranked modules + blockers + cycles + feedback arcs
+python3 scripts/analyze_root_crate.py --full    # full feedback-arc-set listing
+python3 scripts/analyze_root_crate.py --json     # machine-readable
+```
+
+### The core problem: one giant dependency cycle
+
+The library-only module graph (test code excluded) has a single **strongly-connected component of 42
+modules / ~310K lines (92% of the crate)**: `tui, server, provider, tool, cli, auth, agent, session, …`.
+You cannot peel `tui`/`server`/`provider` into independent crates while they mutually reference each
+other. This is *the* structural blocker, and it is why "just move the big dirs out" never works.
+
+### The good news: the cycle is shallow
+
+The 42-module cycle is held together by only **46 back-edges totaling 178 references**, and most are
+single-reference "accidental" couplings. Breaking this small feedback arc set turns the graph into a
+DAG, after which modules peel off bottom-up. Cheapest-first (from the analyzer):
+
+- **1-ref edges (≈24 of them):** e.g. `agent -> tui` (one `write_generated_image_side_panel_page` call),
+  `tool -> tui` (one `tui::image::display_image` import), `config -> auth`, `config -> tool`,
+  `telemetry -> cli`, `bus -> provider`, `browser -> provider`. Each is a single call/import that can move
+  to a shared lower-level crate or be inverted behind a trait/callback.
+- **Mid-weight edges:** `usage -> auth` (4), `tool -> provider` (5), `tool -> server` (5),
+  `sidecar -> provider` (7), `agent -> tool` (9), `import -> tui` (9), `usage -> provider` (9).
+- **Heavy structural seams (design carefully):** `agent -> provider` (20), `cli -> tui` (21),
+  `auth -> provider` (39). These are the genuine architectural couplings worth a trait seam.
+
+### Execution order (bottom-up, DAG-first)
+
+1. **Baseline metrics.** Record peak rustc RSS for the largest current unit and full-build wall time
+   (`scripts/bench_compile.sh`), so each extraction's memory/compile win is measurable.
+2. **Break the cheap back-edges first.** Eliminate the 1-2 ref couplings (image helpers, single config
+   lookups, telemetry/cli) by moving shared primitives down into existing low-level crates
+   (`jcode-core`, `jcode-tui-*`) or inverting them behind small traits. Re-run the analyzer; watch the
+   SCC shrink.
+3. **Extract already-clean leaves.** Modules the analyzer marks "extractable now" (no in-root blockers):
+   `background`, `prompt`, `safety`, `transport`, `replay`, `browser`, `perf`, plus the many <400 loc
+   leaves. These need no cycle-breaking and immediately shrink the root crate.
+4. **Address the heavy seams** (`auth↔provider`, `cli↔tui`, `agent↔provider`) with deliberate trait
+   boundaries once the cheap edges are gone.
+5. **Lift the big subsystems** (`tool` 29K, `provider` 35K, `server` 38K, then `tui` 125K) once they are
+   no longer in the cycle. `tui` goes last: almost nothing depends on it (sink of the DAG), so once its
+   own outbound deps are crates it lifts cleanly and removes the single largest compilation unit.
+
+### Why this directly reduces compile memory
+
+rustc holds an entire crate's IR in memory at its codegen peak, so peak RSS scales with the size of the
+largest compilation unit. Today that unit is the 336K-line root crate (~2.5-3 GiB/process). Every module
+moved into its own crate shrinks the largest unit, lowering peak per-process RSS, which is exactly what
+lets more parallel jobs run without OOM (complementing the memory-adaptive job count above). It also
+sharpens incremental caching: editing one file rebuilds one small crate instead of the whole monolith.
+
 ## Developer Workflow Guidance
 
 ### Fast local cargo wrapper
