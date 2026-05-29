@@ -659,6 +659,33 @@ JCODE_REMOTE_CARGO=0                  # disable remote builds entirely for one c
   unit tests). Function-level unit tests covered reachable/unreachable probes, the
   recent-failure window, and `desktop-tailscale` endpoint resolution.
 
+### Target dir cleanup (`scripts/clean_target.sh`)
+
+The `target/` directory grows without bound across profiles (dev/selfdev/release)
+and cross-compile caches (`*-apple-darwin`, `*-pc-windows-*`, `linux-compat`). On
+this machine it reached ~84GB. A bloated target dir does not slow compilation
+directly, but it can exhaust disk and force full rebuilds when space runs out.
+
+`scripts/clean_target.sh` reclaims space **safely while parallel builds are running**:
+
+- It never touches a `target/<profile>` dir that has an active `rustc`/`cargo`
+  process (scanned via `/proc/<pid>/cmdline`) or that was written to within a recent
+  activity window (default 20min, `JCODE_CLEAN_ACTIVE_WINDOW_MIN`).
+- Default mode removes only cross-compile/compat caches (regenerated on demand) and
+  reports what it would free.
+- `--aggressive` additionally runs `cargo clean --profile <p>` on stale profiles
+  (still subject to the active-process / recent-write guards).
+
+```bash
+scripts/clean_target.sh                        # dry-run: report reclaimable space
+scripts/clean_target.sh --apply                # remove cross-compile/compat caches
+scripts/clean_target.sh --apply --aggressive   # also cargo-clean stale profiles
+```
+
+- 2026-05-29: reclaimed a stale `target/aarch64-apple-darwin` (2.5G) and added this
+  script. Dry-runs verified it correctly SKIPs profiles with recent writes / active
+  rustc while a parallel agent was building on `debug`/`selfdev`.
+
 For compile timing, prefer repeatable touched-file measurements over no-op hot-cache reruns:
 
 ```bash
