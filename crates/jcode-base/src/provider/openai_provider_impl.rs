@@ -620,8 +620,14 @@ impl Provider for OpenAIProvider {
     }
 
     async fn prefetch_models(&self) -> Result<()> {
-        let access_token = openai_access_token(&self.credentials).await?;
-        let catalog = crate::provider::fetch_openai_model_catalog(&access_token).await?;
+        let credential_mode = self.credential_mode_snapshot();
+        let catalog = if credential_mode == super::OpenAICredentialMode::ApiKey {
+            let creds = self.credentials.read().await;
+            crate::provider::fetch_openai_api_key_model_catalog(&creds.access_token).await?
+        } else {
+            let access_token = openai_access_token(&self.credentials).await?;
+            crate::provider::fetch_openai_model_catalog(&access_token).await?
+        };
         crate::provider::persist_openai_model_catalog(&catalog);
         if !catalog.context_limits.is_empty() {
             crate::provider::populate_context_limits(catalog.context_limits);
