@@ -5,12 +5,25 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
+// Build metadata generator for the jcode workspace.
+//
+// This is the single source of truth for the JCODE_* compile-time values that
+// previously lived in the root `jcode` crate's build.rs. It is hosted in the
+// leaf `jcode-build-meta` crate so every workspace crate can read identical
+// values (via `jcode_build_meta::*`) without duplicating this script.
+//
+// NOTE: because this crate's own package version is unrelated to jcode's, we
+// parse the root `Cargo.toml` `[package].version` for the base semver instead
+// of `CARGO_PKG_VERSION`.
+
 fn main() {
-    let pkg_version = env!("CARGO_PKG_VERSION");
-    let base_version = parse_semver(pkg_version).unwrap_or((0, 0, 0));
+    let repo_root = repo_root();
+
+    let pkg_version = root_package_version(&repo_root).unwrap_or_else(|| "0.0.0".to_string());
+    let base_version = parse_semver(&pkg_version).unwrap_or((0, 0, 0));
     let build_semver = resolve_build_semver(base_version).unwrap_or_else(|err| {
         eprintln!("cargo:warning=failed to resolve auto build semver: {err}");
-        pkg_version.to_string()
+        pkg_version.clone()
     });
     let (major, minor, patch) = parse_semver(&build_semver).unwrap_or(base_version);
     let base_semver = format!("{}.{}.{}", base_version.0, base_version.1, base_version.2);
@@ -21,6 +34,7 @@ fn main() {
     };
 
     let git_hash = env_or_metadata_or_git(
+        &repo_root,
         "JCODE_BUILD_GIT_HASH",
         "git_hash",
         ["rev-parse", "--short", "HEAD"],
@@ -30,6 +44,7 @@ fn main() {
 
     // Get git commit date (full datetime with timezone for accurate age calculation)
     let git_date = env_or_metadata_or_git(
+        &repo_root,
         "JCODE_BUILD_GIT_DATE",
         "git_date",
         ["log", "-1", "--format=%ci"],
@@ -49,12 +64,15 @@ fn main() {
                     "1" | "true" | "yes" | "dirty"
                 )
             })
-            .or_else(|| git_output(["status", "--porcelain"]).map(|output| !output.is_empty()))
+            .or_else(|| {
+                git_output(&repo_root, ["status", "--porcelain"]).map(|output| !output.is_empty())
+            })
             .unwrap_or(false),
     };
 
     // Get git tag (e.g., "v0.1.2" if HEAD is tagged, or "v0.1.2-3-gabc1234" if ahead)
     let git_tag = env_or_metadata_or_git(
+        &repo_root,
         "JCODE_BUILD_GIT_TAG",
         "git_tag",
         ["describe", "--tags", "--always"],
@@ -67,7 +85,7 @@ fn main() {
     let raw_log = std::env::var("JCODE_BUILD_CHANGELOG_RAW")
         .ok()
         .or_else(|| metadata_value("changelog_raw"))
-        .or_else(|| git_output(["log", "-700", "--format=%h|%ct|%D|%s"]))
+        .or_else(|| git_output(&repo_root, ["log", "-700", "--format=%h|%ct|%D|%s"]))
         .unwrap_or_default();
 
     // Normalize to "hash<RS>tag<RS>timestamp<RS>subject" — extract version tag or
@@ -117,18 +135,67 @@ fn main() {
     println!("cargo:rustc-env=JCODE_UPDATE_SEMVER={}", update_semver);
     println!("cargo:rustc-env=JCODE_GIT_TAG={}", git_tag);
     println!("cargo:rustc-env=JCODE_CHANGELOG={}", changelog);
+    println!("cargo:rustc-env=JCODE_PKG_VERSION={}", pkg_version);
 
     // Forward JCODE_RELEASE_BUILD env var if set (CI sets this for release binaries)
     if std::env::var("JCODE_RELEASE_BUILD").is_ok() {
         println!("cargo:rustc-env=JCODE_RELEASE_BUILD=1");
     }
 
-    // Re-run if git HEAD changes
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/index");
-    println!("cargo:rerun-if-changed=Cargo.toml");
+    // Re-run if git HEAD changes (paths resolved against the repo root, since
+    // the build script's CWD is this crate's directory, not the workspace root).
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_root.join(".git/HEAD").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_root.join(".git/index").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_root.join("Cargo.toml").display()
+    );
     println!("cargo:rerun-if-env-changed=JCODE_RELEASE_BUILD");
     println!("cargo:rerun-if-env-changed=JCODE_BUILD_SEMVER");
+}
+
+/// Workspace root, derived from this crate's manifest dir (`crates/jcode-build-meta`).
+fn repo_root() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    // crates/jcode-build-meta -> crates -> <repo root>
+    manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or(manifest_dir)
+}
+
+/// Parse `[package].version` from the root `Cargo.toml` without a toml dep.
+fn root_package_version(repo_root: &Path) -> Option<String> {
+    let data = fs::read_to_string(repo_root.join("Cargo.toml")).ok()?;
+    let mut in_package = false;
+    for line in data.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_package = trimmed == "[package]";
+            continue;
+        }
+        if in_package {
+            if let Some(rest) = trimmed.strip_prefix("version") {
+                let rest = rest.trim_start();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let value = rest.trim().trim_matches('"').to_string();
+                    if !value.is_empty() {
+                        return Some(value);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn parse_semver(value: &str) -> Option<(u32, u32, u32)> {
@@ -185,10 +252,7 @@ fn build_counter_file() -> PathBuf {
         return target_root.join("jcode-build").join("patch-counters.txt");
     }
 
-    std::env::var("CARGO_MANIFEST_DIR")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    repo_root()
         .join("target")
         .join("jcode-build")
         .join("patch-counters.txt")
@@ -297,6 +361,7 @@ fn lock_is_stale(path: &Path, stale_after_secs: u64) -> bool {
 }
 
 fn env_or_metadata_or_git<const N: usize>(
+    repo_root: &Path,
     env_name: &str,
     metadata_key: &str,
     git_args: [&str; N],
@@ -304,12 +369,16 @@ fn env_or_metadata_or_git<const N: usize>(
     std::env::var(env_name)
         .ok()
         .or_else(|| metadata_value(metadata_key))
-        .or_else(|| git_output(git_args))
+        .or_else(|| git_output(repo_root, git_args))
         .map(|value| value.trim().to_string())
 }
 
-fn git_output<const N: usize>(args: [&str; N]) -> Option<String> {
-    let output = Command::new("git").args(args).output().ok()?;
+fn git_output<const N: usize>(repo_root: &Path, args: [&str; N]) -> Option<String> {
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args(args)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

@@ -98,7 +98,7 @@ pub(super) fn restored_session_was_interrupted(
 fn mark_remote_reload_started(request_id: &str) {
     crate::server::write_reload_state(
         request_id,
-        env!("JCODE_VERSION"),
+        jcode_build_meta::VERSION,
         crate::server::ReloadPhase::Starting,
         None,
     );
@@ -709,7 +709,7 @@ pub(super) async fn handle_reload(
         let _ = client_event_tx.send(ServerEvent::Reloading { new_socket: None });
     }
 
-    let hash = env!("JCODE_GIT_HASH").to_string();
+    let hash = jcode_build_meta::GIT_HASH.to_string();
     let signal_request_id =
         crate::server::send_reload_signal(hash, triggering_session.clone(), prefer_selfdev_binary);
 

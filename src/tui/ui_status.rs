@@ -3,7 +3,7 @@ use super::*;
 /// Extract semantic version for UI display/grouping.
 pub(super) fn semver() -> &'static str {
     static SEMVER: OnceLock<String> = OnceLock::new();
-    SEMVER.get_or_init(|| format!("v{}", env!("JCODE_SEMVER")))
+    SEMVER.get_or_init(|| format!("v{}", jcode_build_meta::SEMVER))
 }
 
 /// True when this process is running from the stable release binary path.
@@ -83,7 +83,7 @@ pub(super) fn format_age(secs: i64) -> String {
 }
 
 pub(super) fn binary_age() -> Option<String> {
-    let git_date = env!("JCODE_GIT_DATE");
+    let git_date = jcode_build_meta::GIT_DATE;
 
     let now = chrono::Utc::now();
 

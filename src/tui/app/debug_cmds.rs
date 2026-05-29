@@ -185,7 +185,7 @@ impl App {
                 "diagram_pane_position": format!("{:?}", self.diagram_pane_position),
                 "diagram_zoom": self.diagram_zoom,
                 "diagram_count": crate::tui::mermaid::get_active_diagrams().len(),
-                "version": env!("JCODE_VERSION"),
+                "version": jcode_build_meta::VERSION,
             })
             .to_string()
         } else if cmd == "expand-badge-fixture" {
@@ -670,7 +670,7 @@ impl App {
                 Err(e) => format!("script error: {}", e),
             }
         } else if cmd == "version" {
-            format!("version: {}", env!("JCODE_VERSION"))
+            format!("version: {}", jcode_build_meta::VERSION)
         } else if cmd == "help" {
             "Debug commands:\n\
                  - message:<text> - inject and submit a message\n\

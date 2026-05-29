@@ -230,7 +230,7 @@ pub(super) fn is_first_run() -> bool {
 }
 
 pub(super) fn version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+    jcode_build_meta::PKG_VERSION.to_string()
 }
 
 pub(super) fn install_recorded_for_id(id: &str) -> bool {

@@ -446,7 +446,7 @@ pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Lin
     );
 
     let version_text = if is_running_stable_release() {
-        let tag = env!("JCODE_GIT_TAG");
+        let tag = jcode_build_meta::GIT_TAG;
         if tag.is_empty() || tag.contains('-') {
             let full = format!("{} · release · built {}", semver(), build_info);
             if full.chars().count() <= w {
