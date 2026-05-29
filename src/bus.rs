@@ -153,7 +153,7 @@ pub struct ClipboardPasteCompleted {
 #[derive(Clone, Debug)]
 pub struct ModelRefreshCompleted {
     pub session_id: String,
-    pub result: std::result::Result<crate::provider::ModelCatalogRefreshSummary, String>,
+    pub result: std::result::Result<jcode_provider_core::ModelCatalogRefreshSummary, String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,9 +316,9 @@ pub enum BusEvent {
     /// Background task reported progress
     BackgroundTaskProgress(BackgroundTaskProgressEvent),
     /// Usage report fetched from providers
-    UsageReport(Vec<crate::usage::ProviderUsage>),
+    UsageReport(Vec<jcode_usage_types::ProviderUsage>),
     /// Progressive usage report update while providers are still loading
-    UsageReportProgress(crate::usage::ProviderUsageProgress),
+    UsageReportProgress(jcode_usage_types::ProviderUsageProgress),
     /// OAuth/login flow completed in the background
     LoginCompleted(LoginCompleted),
     /// Local `!cmd` shell command completed from the input line
