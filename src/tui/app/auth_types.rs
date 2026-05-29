@@ -48,7 +48,7 @@ pub(crate) enum PendingLogin {
     Copilot,
     /// Waiting for the user to choose which external auth sources to import.
     AutoImportSelection {
-        candidates: Vec<crate::cli::provider_init::ExternalAuthReviewCandidate>,
+        candidates: Vec<crate::external_auth::ExternalAuthReviewCandidate>,
     },
     /// Waiting for Azure OpenAI endpoint.
     AzureEndpoint,

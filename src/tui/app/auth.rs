@@ -222,7 +222,7 @@ impl App {
         crate::telemetry::record_provider_selected(provider.id);
         match provider.target {
             crate::provider_catalog::LoginProviderTarget::AutoImport => {
-                match crate::cli::provider_init::pending_external_auth_review_candidates() {
+                match crate::external_auth::pending_external_auth_review_candidates() {
                     Ok(candidates) if candidates.is_empty() => {
                         self.push_display_message(DisplayMessage::system(
                             "No importable external logins were found.".to_string(),
@@ -231,7 +231,7 @@ impl App {
                     }
                     Ok(candidates) => {
                         self.push_display_message(DisplayMessage::system(
-                            crate::cli::provider_init::format_external_auth_review_candidates_markdown(
+                            crate::external_auth::format_external_auth_review_candidates_markdown(
                                 &candidates,
                             ),
                         ));
@@ -1611,7 +1611,7 @@ impl App {
                     Ok(()) => {
                         crate::auth::AuthStatus::invalidate_cache();
                         if key_name == crate::provider::bedrock::API_KEY_ENV {
-                            crate::cli::provider_init::lock_model_provider("bedrock");
+                            crate::provider::activation::lock_runtime_provider_key("bedrock");
                             if let Some(default_model) = default_model.as_deref() {
                                 crate::env::set_var("JCODE_BEDROCK_MODEL", default_model);
                             }
@@ -1890,7 +1890,7 @@ impl App {
                 self.pending_login = Some(PendingLogin::Copilot);
             }
             PendingLogin::AutoImportSelection { candidates } => {
-                let selected = match crate::cli::provider_init::parse_external_auth_review_selection(
+                let selected = match crate::external_auth::parse_external_auth_review_selection(
                     &input,
                     candidates.len(),
                 ) {
@@ -1904,7 +1904,7 @@ impl App {
 
                 self.set_status_notice("Login: importing approved sources...");
                 tokio::spawn(async move {
-                    match crate::cli::provider_init::run_external_auth_auto_import_candidates(
+                    match crate::external_auth::run_external_auth_auto_import_candidates(
                         &candidates,
                         &selected,
                     )

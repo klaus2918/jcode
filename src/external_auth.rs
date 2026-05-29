@@ -1,12 +1,24 @@
-use super::*;
+//! External-auth-source review and auto-import flow.
+//!
+//! Discovers credentials left behind by other tools (Claude Code, Codex,
+//! Copilot, Cursor, Gemini CLI, ...), asks the user to approve trusting them,
+//! and imports approved sources. This is provider/auth domain logic that
+//! depends only on core modules (`auth`, `config`, `provider`,
+//! `provider_catalog`), so it lives in the core layer and can be driven by
+//! both the CLI login flow and the TUI auth UI.
 
-pub(super) fn can_prompt_for_external_auth() -> bool {
+use anyhow::Result;
+use std::io::{self, IsTerminal, Write};
+
+use crate::auth;
+
+pub(crate) fn can_prompt_for_external_auth() -> bool {
     std::io::stdin().is_terminal()
         && std::io::stderr().is_terminal()
         && std::env::var("JCODE_NON_INTERACTIVE").is_err()
 }
 
-pub(super) fn external_auth_blocked_message(
+pub(crate) fn external_auth_blocked_message(
     provider_name: &str,
     source_name: &str,
     path: &std::path::Path,
@@ -21,7 +33,7 @@ pub(super) fn external_auth_blocked_message(
     )
 }
 
-pub(super) fn prompt_to_trust_external_auth(
+pub(crate) fn prompt_to_trust_external_auth(
     provider_name: &str,
     source_name: &str,
     path: &std::path::Path,

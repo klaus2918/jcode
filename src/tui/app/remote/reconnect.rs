@@ -308,7 +308,7 @@ async fn recover_reloading_server(
     state: &mut RemoteRunState,
     detail: &str,
 ) -> Result<bool> {
-    if state.reload_recovery_attempted || crate::cli::dispatch::server_is_running().await {
+    if state.reload_recovery_attempted || crate::server_spawn::is_running().await {
         return Ok(false);
     }
 
@@ -329,13 +329,7 @@ async fn recover_reloading_server(
         detail
     ));
 
-    match crate::cli::dispatch::spawn_server(
-        &crate::cli::provider_init::ProviderChoice::Auto,
-        None,
-        None,
-    )
-    .await
-    {
+    match crate::server_spawn::spawn_default_server().await {
         Ok(()) => {
             state.initial_server_start = true;
             state.last_disconnect_reason =

@@ -127,7 +127,7 @@ impl App {
                         "Running in the background. jcode will reload automatically after the rebuild succeeds.",
                     ),
                 );
-                crate::cli::hot_exec::spawn_background_session_rebuild(session_id);
+                crate::session_rebuild::spawn_background_session_rebuild(session_id);
             }
         }
     }
