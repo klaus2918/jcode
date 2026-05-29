@@ -4,8 +4,11 @@ pub mod backend;
 pub(crate) mod color_support;
 mod core;
 mod generated_image;
-pub mod image;
-mod image_metadata;
+// Terminal image display + metadata helpers now live in the dependency-free
+// `jcode-terminal-image` crate (shared with the `read` tool). Re-exported here
+// so existing `crate::tui::image` / `crate::tui::image_metadata` paths keep working.
+pub use jcode_terminal_image::display as image;
+use jcode_terminal_image::metadata as image_metadata;
 pub mod info_widget;
 mod info_widget_layout;
 mod info_widget_overview;
