@@ -2,8 +2,8 @@ use crate::message::ToolCall;
 use crate::side_panel::SidePanelSnapshot;
 use crate::todo::TodoItem;
 pub use jcode_background_types::{
-    BackgroundTaskProgress, BackgroundTaskProgressEvent, BackgroundTaskProgressKind,
-    BackgroundTaskProgressSource, BackgroundTaskStatus,
+    BackgroundTaskCompleted, BackgroundTaskProgress, BackgroundTaskProgressEvent,
+    BackgroundTaskProgressKind, BackgroundTaskProgressSource, BackgroundTaskStatus,
 };
 pub use jcode_batch_types::{BatchProgress, BatchSubcallProgress, BatchSubcallState};
 use serde::{Deserialize, Serialize};
@@ -110,22 +110,6 @@ pub struct FileTouch {
     pub summary: Option<String>,
     /// Optional compact preview of what changed. Keep this short and already truncated.
     pub detail: Option<String>,
-}
-
-/// Event sent when a background task completes
-#[derive(Debug, Clone)]
-pub struct BackgroundTaskCompleted {
-    pub task_id: String,
-    pub tool_name: String,
-    pub display_name: Option<String>,
-    pub session_id: String,
-    pub status: BackgroundTaskStatus,
-    pub exit_code: Option<i32>,
-    pub output_preview: String,
-    pub output_file: PathBuf,
-    pub duration_secs: f64,
-    pub notify: bool,
-    pub wake: bool,
 }
 
 #[derive(Clone, Debug)]
