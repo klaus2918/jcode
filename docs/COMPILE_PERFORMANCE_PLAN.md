@@ -686,6 +686,42 @@ scripts/clean_target.sh --apply --aggressive   # also cargo-clean stale profiles
   script. Dry-runs verified it correctly SKIPs profiles with recent writes / active
   rustc while a parallel agent was building on `debug`/`selfdev`.
 
+### Memory-adaptive cargo job count
+
+The biggest day-to-day pain on the 8-core/15 GiB dev machine was **memory
+pressure**: several self-dev agents build at once, and `.cargo/config.toml` pinned
+a static `jobs = 6`. rustc on the large root `jcode` crate peaks around 2.5-3 GiB
+RSS, so 6 concurrent rustc processes (across one or several builds) overshoot RAM
+on a no-swap box and `earlyoom` kills the build. A static job count is wrong in both
+directions: it wastes cores when the machine is idle and oversubscribes memory when
+it is busy.
+
+`scripts/dev_cargo.sh` (the path `selfdev build` uses) now sizes the job count from
+**currently-available** memory each time it runs:
+
+- `select_build_jobs()` reads `MemAvailable` and divides by a per-job memory budget
+  (default **2048 MiB**, `JCODE_BUILD_MIB_PER_JOB`), then clamps into `[1, nproc]`.
+- It exports `CARGO_BUILD_JOBS`, which overrides `build.jobs` from `.cargo/config.toml`.
+- An idle machine still uses every core; under pressure a fresh build self-throttles
+  (e.g. it picked **2 jobs** at ~5.9 GiB available during a parallel-agent build).
+- Explicit `JCODE_BUILD_JOBS` / `CARGO_BUILD_JOBS` always win; invalid values warn and
+  fall back to adaptive sizing. Non-Linux hosts keep the cargo/`.cargo` default.
+
+The committed static fallback in `.cargo/config.toml` was also lowered from `6` to
+`4` for direct `cargo` invocations that bypass the wrapper (still memory-safe for a
+single build on ~15 GiB, but no longer assuming a near-full core count).
+
+```bash
+JCODE_BUILD_JOBS=2            # hard override the job count for one command
+JCODE_BUILD_MIB_PER_JOB=2048  # memory budget per rustc job (default)
+scripts/dev_cargo.sh --print-setup   # shows build_jobs_status + cargo_build_jobs
+```
+
+- 2026-05-29: added adaptive sizing. Verified via `--print-setup` and a stubbed-cargo
+  harness that overrides win, invalid input falls through to adaptive, budget extremes
+  clamp to `[1, nproc]`, and the chosen `CARGO_BUILD_JOBS` is exported to the child
+  cargo process. A real `dev_cargo.sh check -p jcode-logging` build succeeded.
+
 For compile timing, prefer repeatable touched-file measurements over no-op hot-cache reruns:
 
 ```bash
