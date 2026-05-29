@@ -165,27 +165,39 @@ fn auth_provider_hint_resolves_every_emitted_login_completed_provider() {
         );
     }
 
-    // Every login provider descriptor's display label must also resolve, so
-    // future API-key providers routed through the generic paste path keep
-    // working without a code change here.
+    // Every login provider descriptor must resolve to the EXACT canonical hint
+    // implied by its target, across its display label, id, and every alias.
+    // Asserting the exact value (not just `is_some`) is what catches a
+    // wrong-attribution bug like the original "OpenAI credentials are active"
+    // after an Anthropic login - a weak `is_some` check would have passed even
+    // while the hint pointed at the wrong provider.
+    use crate::provider_catalog::LoginProviderTarget;
     for descriptor in crate::provider_catalog::login_providers() {
-        if matches!(
-            descriptor.target,
-            crate::provider_catalog::LoginProviderTarget::AutoImport
-        ) {
-            continue;
+        // Expected hint mirrors auth_provider_hint_for_login_provider's target
+        // mapping, the single source of truth for post-login attribution.
+        let expected: Option<String> = match descriptor.target {
+            LoginProviderTarget::AutoImport => None,
+            LoginProviderTarget::Azure => Some("azure-openai".to_string()),
+            LoginProviderTarget::OpenAiCompatible(profile) => Some(profile.id.to_string()),
+            _ => Some(descriptor.id.to_string()),
+        };
+
+        // The emitted string can be the descriptor id, its display label, or any
+        // alias (LoginCompleted.provider varies by surface/auth path).
+        let mut emitted: Vec<&str> = vec![descriptor.id, descriptor.display_name];
+        emitted.extend_from_slice(descriptor.aliases);
+        for label in emitted {
+            assert_eq!(
+                auth_provider_hint_for_login_provider(label),
+                expected.as_deref(),
+                "login provider {:?} (id {:?}, target {:?}) emitted as {label:?} must attribute \
+                 to {expected:?}; a wrong/missing hint mislabels the catalog-refresh message and \
+                 skips the post-login model switch",
+                descriptor.display_name,
+                descriptor.id,
+                descriptor.target
+            );
         }
-        assert!(
-            auth_provider_hint_for_login_provider(descriptor.display_name).is_some(),
-            "display label {:?} (id {:?}) should resolve to a provider hint",
-            descriptor.display_name,
-            descriptor.id
-        );
-        assert!(
-            auth_provider_hint_for_login_provider(descriptor.id).is_some(),
-            "descriptor id {:?} should resolve to a provider hint",
-            descriptor.id
-        );
     }
 }
 
