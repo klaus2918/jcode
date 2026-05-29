@@ -167,7 +167,7 @@ fn resolve_swarm_spawn_model_and_provider(
 }
 
 fn persist_headed_startup_message(session_id: &str, message: &str) {
-    crate::tui::App::save_startup_submission_for_session(
+    crate::client_input::save_startup_submission_for_session(
         session_id,
         message.to_string(),
         Vec::new(),
