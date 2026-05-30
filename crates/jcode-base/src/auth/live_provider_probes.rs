@@ -149,7 +149,8 @@ pub async fn run_live_openai_compatible_stream_smoke(
         "messages": [
             {"role": "user", "content": "Reply with exactly STREAM_TEST_OK and nothing else."}
         ],
-        "stream": true
+        "stream": true,
+        "stream_options": {"include_usage": true}
     });
     let request = crate::provider::shared_http_client()
         .post(&url)
@@ -172,6 +173,7 @@ pub async fn run_live_openai_compatible_stream_smoke(
     let mut content = String::new();
     let mut chunk_count = 0usize;
     let mut finish_reason = serde_json::Value::Null;
+    let mut usage = serde_json::Value::Null;
     for line in text.lines() {
         let Some(data) = line.trim().strip_prefix("data:") else {
             continue;
@@ -186,6 +188,9 @@ pub async fn run_live_openai_compatible_stream_smoke(
         let parsed: serde_json::Value = serde_json::from_str(data)
             .with_context(|| format!("parse live {} stream chunk", resolved.display_name))?;
         chunk_count += 1;
+        if let Some(reported) = parsed.get("usage").filter(|usage| !usage.is_null()) {
+            usage = reported.clone();
+        }
         if let Some(delta) = parsed
             .get("choices")
             .and_then(|choices| choices.get(0))
@@ -209,14 +214,18 @@ pub async fn run_live_openai_compatible_stream_smoke(
         resolved.display_name,
         content
     );
-    Ok(crate::live_tests::LiveVerificationStage::passed(
+    let mut stage = crate::live_tests::LiveVerificationStage::passed(
         crate::live_tests::checkpoints::STREAMING_CHAT_COMPLETION,
     )
     .with_duration_ms(started.elapsed().as_millis() as u64)
     .with_evidence("http_status", serde_json::json!(status.as_u16()))
     .with_evidence("chunk_count", serde_json::json!(chunk_count))
     .with_evidence("finish_reason", finish_reason)
-    .with_evidence("matched_expected_content", serde_json::json!(true)))
+    .with_evidence("matched_expected_content", serde_json::json!(true));
+    if !usage.is_null() {
+        stage = stage.with_evidence("usage", usage);
+    }
+    Ok(stage)
 }
 
 pub async fn run_live_openai_compatible_tool_smoke(

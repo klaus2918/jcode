@@ -135,6 +135,103 @@ pub struct DoctorReport {
     pub tier_passed: bool,
     /// True when every strict checkpoint passed (only possible on the full tier).
     pub strict_passed: bool,
+    /// Token/cost spend incurred by this run's billable API calls.
+    pub spend: DoctorSpend,
+}
+
+/// Tokens and (when the provider reports it) dollar cost spent by a doctor run.
+///
+/// Aggregated across every billable call in the run (non-streaming chat,
+/// streaming chat, and the tool-call round-trip on the `full` tier). Lighter
+/// tiers leave this empty/zeroed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DoctorSpend {
+    /// Number of billable API calls made.
+    pub billable_calls: usize,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    /// Sum of provider-reported `cost` (USD), when present. `None` if no call
+    /// reported a cost field.
+    pub reported_cost_usd: Option<f64>,
+    /// True when at least one billable call reported a token count.
+    pub has_token_data: bool,
+}
+
+impl DoctorSpend {
+    /// Fold one API response's `usage`/`cost` JSON into the running total.
+    fn accumulate(&mut self, usage: Option<&serde_json::Value>, cost: Option<&serde_json::Value>) {
+        self.billable_calls += 1;
+        if let Some(usage) = usage {
+            let prompt = usage
+                .get("prompt_tokens")
+                .or_else(|| usage.get("input_tokens"))
+                .and_then(serde_json::Value::as_u64);
+            let completion = usage
+                .get("completion_tokens")
+                .or_else(|| usage.get("output_tokens"))
+                .and_then(serde_json::Value::as_u64);
+            let total = usage
+                .get("total_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .or_else(|| match (prompt, completion) {
+                    (Some(p), Some(c)) => Some(p + c),
+                    _ => None,
+                });
+            if let Some(prompt) = prompt {
+                self.prompt_tokens += prompt;
+                self.has_token_data = true;
+            }
+            if let Some(completion) = completion {
+                self.completion_tokens += completion;
+                self.has_token_data = true;
+            }
+            if let Some(total) = total {
+                self.total_tokens += total;
+                self.has_token_data = true;
+            }
+        }
+        if let Some(cost) = cost.and_then(serde_json::Value::as_f64) {
+            *self.reported_cost_usd.get_or_insert(0.0) += cost;
+        }
+    }
+
+    /// Serialize for persistence into the ledger event metadata.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "billable_calls": self.billable_calls,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "reported_cost_usd": self.reported_cost_usd,
+            "has_token_data": self.has_token_data,
+        })
+    }
+
+    /// One-line, human-readable spend summary for the doctor output.
+    pub fn human_summary(&self) -> String {
+        if self.billable_calls == 0 {
+            return "no billable API calls (no balance spent)".to_string();
+        }
+        let calls = format!(
+            "{} billable API call{}",
+            self.billable_calls,
+            if self.billable_calls == 1 { "" } else { "s" }
+        );
+        let tokens = if self.has_token_data {
+            format!(
+                ", {} tokens ({} in + {} out)",
+                self.total_tokens, self.prompt_tokens, self.completion_tokens
+            )
+        } else {
+            ", token usage not reported by provider".to_string()
+        };
+        let cost = match self.reported_cost_usd {
+            Some(cost) => format!(", provider-reported cost ${cost:.6}"),
+            None => ", cost not reported by provider".to_string(),
+        };
+        format!("{calls}{tokens}{cost}")
+    }
 }
 
 impl DoctorReport {
@@ -251,6 +348,7 @@ pub async fn run_provider_e2e(
                     requested_model.unwrap_or("").to_string(),
                     tier,
                     checks,
+                    DoctorSpend::default(),
                     api_key,
                     resolved.api_key_env.clone(),
                     resolved.env_file.clone(),
@@ -290,6 +388,7 @@ pub async fn run_provider_e2e(
                     model.to_string(),
                     tier,
                     checks,
+                    DoctorSpend::default(),
                     api_key,
                     resolved.api_key_env.clone(),
                     resolved.env_file.clone(),
@@ -309,8 +408,16 @@ pub async fn run_provider_e2e(
     run_wiring_checks(profile, &selected, &catalog_models, &mut checks);
 
     // --- Stage 4: API-dependent checkpoints ---
+    let mut spend = DoctorSpend::default();
     if tier == DoctorTier::Full {
-        run_full_api_checks(profile, api_key.unwrap_or_default(), &selected, &mut checks).await;
+        run_full_api_checks(
+            profile,
+            api_key.unwrap_or_default(),
+            &selected,
+            &mut checks,
+            &mut spend,
+        )
+        .await;
     } else {
         for checkpoint in API_DEPENDENT_CHECKPOINTS {
             checks.push(DoctorCheck::skipped(
@@ -330,6 +437,7 @@ pub async fn run_provider_e2e(
         selected,
         tier,
         checks,
+        spend,
         api_key,
         resolved.api_key_env.clone(),
         resolved.env_file.clone(),
@@ -494,14 +602,18 @@ async fn run_full_api_checks(
     api_key: &str,
     selected: &str,
     checks: &mut Vec<DoctorCheck>,
+    spend: &mut DoctorSpend,
 ) {
     // Non-streaming completion.
     match run_live_openai_compatible_smoke(profile, api_key, selected).await {
-        Ok(_) => checks.push(DoctorCheck::passed(
-            checkpoints::NON_STREAMING_CHAT_COMPLETION,
-            label_for(checkpoints::NON_STREAMING_CHAT_COMPLETION),
-            "received expected completion".to_string(),
-        )),
+        Ok(stage) => {
+            spend.accumulate(stage.evidence.get("usage"), stage.evidence.get("cost"));
+            checks.push(DoctorCheck::passed(
+                checkpoints::NON_STREAMING_CHAT_COMPLETION,
+                label_for(checkpoints::NON_STREAMING_CHAT_COMPLETION),
+                "received expected completion".to_string(),
+            ));
+        }
         Err(error) => checks.push(DoctorCheck::failed(
             checkpoints::NON_STREAMING_CHAT_COMPLETION,
             label_for(checkpoints::NON_STREAMING_CHAT_COMPLETION),
@@ -511,11 +623,14 @@ async fn run_full_api_checks(
 
     // Streaming completion.
     match run_live_openai_compatible_stream_smoke(profile, api_key, selected).await {
-        Ok(_) => checks.push(DoctorCheck::passed(
-            checkpoints::STREAMING_CHAT_COMPLETION,
-            label_for(checkpoints::STREAMING_CHAT_COMPLETION),
-            "received expected streamed completion".to_string(),
-        )),
+        Ok(stage) => {
+            spend.accumulate(stage.evidence.get("usage"), stage.evidence.get("cost"));
+            checks.push(DoctorCheck::passed(
+                checkpoints::STREAMING_CHAT_COMPLETION,
+                label_for(checkpoints::STREAMING_CHAT_COMPLETION),
+                "received expected streamed completion".to_string(),
+            ));
+        }
         Err(error) => checks.push(DoctorCheck::failed(
             checkpoints::STREAMING_CHAT_COMPLETION,
             label_for(checkpoints::STREAMING_CHAT_COMPLETION),
@@ -525,7 +640,8 @@ async fn run_full_api_checks(
 
     // Tool call + derived execution/result/smoke checkpoints (one round-trip).
     match run_live_openai_compatible_tool_smoke(profile, api_key, selected).await {
-        Ok(_) => {
+        Ok(stage) => {
+            spend.accumulate(stage.evidence.get("usage"), stage.evidence.get("cost"));
             for checkpoint in [
                 checkpoints::TOOL_CALL_PARSE,
                 checkpoints::TOOL_EXECUTION_LOOP,
@@ -563,6 +679,7 @@ fn finish_report(
     model: String,
     tier: DoctorTier,
     checks: Vec<DoctorCheck>,
+    spend: DoctorSpend,
     api_key: Option<&str>,
     api_key_env: String,
     env_file: String,
@@ -584,6 +701,7 @@ fn finish_report(
         &model,
         tier,
         &checks,
+        &spend,
         api_key,
         &api_key_env,
         &env_file,
@@ -598,6 +716,7 @@ fn finish_report(
         checks,
         tier_passed,
         strict_passed,
+        spend,
     }
 }
 
@@ -608,6 +727,7 @@ fn record_event(
     model: &str,
     tier: DoctorTier,
     checks: &[DoctorCheck],
+    spend: &DoctorSpend,
     api_key: Option<&str>,
     api_key_env: &str,
     env_file: &str,
@@ -667,7 +787,8 @@ fn record_event(
     .with_metadata(
         "checkpoint_taxonomy_version",
         serde_json::json!(live_tests::CHECKPOINT_TAXONOMY_VERSION),
-    );
+    )
+    .with_metadata("spend", spend.to_json());
     if !model.trim().is_empty() {
         event = event.with_model(model.to_string());
     }
@@ -683,4 +804,60 @@ fn truncate_list(models: &[String]) -> String {
         out.push_str(&format!(", +{} more", models.len() - shown.len()));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spend_accumulates_openai_style_usage_and_cost() {
+        let mut spend = DoctorSpend::default();
+        spend.accumulate(
+            Some(&serde_json::json!({
+                "prompt_tokens": 100,
+                "completion_tokens": 40,
+                "total_tokens": 140
+            })),
+            Some(&serde_json::json!(0.0012)),
+        );
+        spend.accumulate(
+            Some(&serde_json::json!({
+                "prompt_tokens": 10,
+                "completion_tokens": 5
+            })),
+            None,
+        );
+        assert_eq!(spend.billable_calls, 2);
+        assert_eq!(spend.prompt_tokens, 110);
+        assert_eq!(spend.completion_tokens, 45);
+        // Second call has no total_tokens, so it is derived as prompt+completion.
+        assert_eq!(spend.total_tokens, 155);
+        assert!(spend.has_token_data);
+        assert_eq!(spend.reported_cost_usd, Some(0.0012));
+        assert!(spend.human_summary().contains("155 tokens"));
+        assert!(spend.human_summary().contains("$0.001200"));
+    }
+
+    #[test]
+    fn spend_handles_missing_usage_and_anthropic_style_keys() {
+        let mut spend = DoctorSpend::default();
+        // No usage at all (e.g. provider that omits it).
+        spend.accumulate(None, None);
+        assert_eq!(spend.billable_calls, 1);
+        assert!(!spend.has_token_data);
+        assert!(spend
+            .human_summary()
+            .contains("token usage not reported by provider"));
+
+        // Anthropic-style input_tokens/output_tokens.
+        spend.accumulate(
+            Some(&serde_json::json!({"input_tokens": 7, "output_tokens": 3})),
+            None,
+        );
+        assert_eq!(spend.prompt_tokens, 7);
+        assert_eq!(spend.completion_tokens, 3);
+        assert_eq!(spend.total_tokens, 10);
+        assert!(spend.has_token_data);
+    }
 }
