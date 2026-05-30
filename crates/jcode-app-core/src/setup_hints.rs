@@ -27,6 +27,8 @@ mod windows_setup;
 use macos_launcher::{install_macos_app_launcher, should_refresh_macos_app_launcher};
 #[cfg(target_os = "macos")]
 use macos_terminal::launch_script_for_macos_terminal;
+#[cfg(target_os = "macos")]
+use macos_terminal::load_preferred_macos_terminal;
 #[cfg(any(test, target_os = "macos"))]
 use macos_terminal::{
     MacTerminalKind, effective_macos_terminal, escape_applescript_text, escape_shell_single_quotes,
@@ -52,7 +54,22 @@ pub struct SetupHintsState {
     pub startup_spawn_hint_dismissed: bool,
     pub mac_ghostty_guided: bool,
     pub mac_ghostty_dismissed: bool,
+    /// Version of the installed macOS Cmd+; hotkey listener. Bumped when the
+    /// listener implementation changes in a way that requires reinstalling the
+    /// LaunchAgent for already-configured users (e.g. the run-loop fix that made
+    /// the hotkey actually fire). `0` = legacy/unknown.
+    #[serde(default)]
+    pub hotkey_listener_version: u32,
 }
+
+/// Current macOS hotkey listener implementation version.
+///
+/// Increment this whenever the listener needs to be reinstalled for existing
+/// users on update. History:
+/// - 1: pump the Core Foundation run loop on the main thread so Cmd+; fires
+///   (previously the listener blocked and never delivered events).
+#[cfg(any(test, target_os = "macos"))]
+pub const HOTKEY_LISTENER_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Default)]
 pub struct StartupHints {
@@ -387,6 +404,7 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
             Ok(installed_terminal) => {
                 state.hotkey_configured = true;
                 state.hotkey_dismissed = true;
+                state.hotkey_listener_version = HOTKEY_LISTENER_VERSION;
                 let _ = state.save();
                 eprintln!(
                     "  \x1b[32m✓\x1b[0m Created hotkey (\x1b[1mCmd+;\x1b[0m) → {} + jcode",
@@ -513,6 +531,33 @@ fn run_macos_hotkey_listener() -> Result<()> {
     }
 }
 
+/// Decide what macOS hotkey listener action a launch should take, given the
+/// persisted setup state. Extracted as a pure function so the upgrade/install
+/// gating can be unit-tested without touching launchd.
+#[cfg(any(test, target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacHotkeyAction {
+    /// First-time install (never configured, never dismissed).
+    Install,
+    /// Reinstall because the configured listener predates the current version.
+    Migrate,
+    /// Nothing to do.
+    None,
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn mac_hotkey_action_for_state(state: &SetupHintsState) -> MacHotkeyAction {
+    if !state.hotkey_configured && !state.hotkey_dismissed {
+        MacHotkeyAction::Install
+    } else if state.hotkey_configured
+        && state.hotkey_listener_version < HOTKEY_LISTENER_VERSION
+    {
+        MacHotkeyAction::Migrate
+    } else {
+        MacHotkeyAction::None
+    }
+}
+
 /// Main entry point: check if we should show setup hints.
 ///
 /// Called early in startup, before the TUI is initialized.
@@ -539,12 +584,25 @@ pub fn maybe_show_setup_hints() -> Option<StartupHints> {
 
     #[cfg(target_os = "macos")]
     {
-        if !state.hotkey_configured && !state.hotkey_dismissed {
-            if let Err(err) = auto_install_macos_hotkey_listener(&mut state) {
-                crate::logging::warn(&format!(
-                    "failed to auto-install macOS Cmd+; hotkey listener: {err}"
-                ));
+        match mac_hotkey_action_for_state(&state) {
+            MacHotkeyAction::Install => {
+                if let Err(err) = auto_install_macos_hotkey_listener(&mut state) {
+                    crate::logging::warn(&format!(
+                        "failed to auto-install macOS Cmd+; hotkey listener: {err}"
+                    ));
+                }
             }
+            MacHotkeyAction::Migrate => {
+                // Already-configured user on an older listener: reinstall so the
+                // updated listener (and current binary path) takes effect on
+                // update without requiring them to re-run setup.
+                if let Err(err) = migrate_macos_hotkey_listener(&mut state) {
+                    crate::logging::warn(&format!(
+                        "failed to migrate macOS Cmd+; hotkey listener: {err}"
+                    ));
+                }
+            }
+            MacHotkeyAction::None => {}
         }
     }
 
@@ -667,9 +725,32 @@ fn auto_install_macos_hotkey_listener(state: &mut SetupHintsState) -> Result<()>
     let terminal = install_macos_hotkey_listener(None)?;
     state.hotkey_configured = true;
     state.hotkey_dismissed = true;
+    state.hotkey_listener_version = HOTKEY_LISTENER_VERSION;
     state.save()?;
     crate::logging::info(&format!(
         "Installed macOS Cmd+; hotkey listener for {}",
+        terminal.label()
+    ));
+    Ok(())
+}
+
+/// Reinstall the macOS hotkey LaunchAgent for an already-configured user after
+/// an update that changed the listener implementation.
+///
+/// The LaunchAgent pins the binary path captured at setup time and the listener
+/// process keeps running the old code until reloaded. Reinstalling re-points it
+/// at the current binary and restarts it so the fixed listener takes effect
+/// without the user re-running setup. The user's previously chosen terminal is
+/// preserved.
+#[cfg(target_os = "macos")]
+fn migrate_macos_hotkey_listener(state: &mut SetupHintsState) -> Result<()> {
+    let preferred = load_preferred_macos_terminal();
+    let terminal = install_macos_hotkey_listener(preferred)?;
+    state.hotkey_listener_version = HOTKEY_LISTENER_VERSION;
+    state.save()?;
+    crate::logging::info(&format!(
+        "Migrated macOS Cmd+; hotkey listener to v{} for {}",
+        HOTKEY_LISTENER_VERSION,
         terminal.label()
     ));
     Ok(())
