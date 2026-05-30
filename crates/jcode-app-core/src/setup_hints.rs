@@ -367,6 +367,10 @@ fn nudge_macos_ghostty(state: &mut SetupHintsState) -> Option<String> {
 pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
+        // The background listener (`--listen-macos-hotkey`) is intercepted earlier,
+        // in `main()`, so it runs on the real main thread with a Core Foundation
+        // run loop. If we somehow reach here with that flag (e.g. invoked directly),
+        // honor it rather than running the interactive installer.
         if _listen_macos_hotkey {
             return run_macos_hotkey_listener();
         }
@@ -420,12 +424,74 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
     }
 }
 
+/// Run the macOS global-hotkey listener on the current (main) thread.
+///
+/// This must be called from `main()` before any tokio runtime is created, so
+/// that the Core Foundation run loop driving Carbon hotkey events lives on the
+/// real main thread. On non-macOS platforms this is a no-op that returns `Ok`.
+pub fn run_macos_hotkey_listener_main_thread() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        run_macos_hotkey_listener()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos_run_loop {
+    use std::time::Duration;
+
+    // Minimal Core Foundation bindings to pump the current thread's run loop.
+    // Avoids pulling in a heavier core-foundation dependency just for one call.
+    #[allow(non_camel_case_types)]
+    type CFTimeInterval = f64;
+    #[allow(non_camel_case_types)]
+    type CFRunLoopRunResult = i32;
+    type CFStringRef = *const std::ffi::c_void;
+    type Boolean = u8;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static kCFRunLoopDefaultMode: CFStringRef;
+        fn CFRunLoopRunInMode(
+            mode: CFStringRef,
+            seconds: CFTimeInterval,
+            return_after_source_handled: Boolean,
+        ) -> CFRunLoopRunResult;
+    }
+
+    /// Run the current thread's Core Foundation run loop for up to `duration`,
+    /// delivering any pending hotkey events. Returns when the time elapses or a
+    /// source is handled.
+    pub fn run_for(duration: Duration) {
+        unsafe {
+            // return_after_source_handled = false so we wait out the full window
+            // even if nothing fires, keeping CPU usage near zero while idle.
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, duration.as_secs_f64(), 0);
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn run_macos_hotkey_listener() -> Result<()> {
     use global_hotkey::hotkey::{Code, HotKey, Modifiers};
     use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
     use std::process::Command;
+    use std::time::Duration;
 
+    // `global-hotkey` on macOS delivers events through the main thread's Core
+    // Foundation run loop (Carbon `RegisterEventHotKey`). If we just block on
+    // `recv()` the run loop never runs, the Carbon callback never fires, and the
+    // hotkey appears dead. So we must create the manager on (and pump) the main
+    // thread run loop. This function is invoked directly from `main()` before the
+    // tokio runtime is built, so it runs on the real main thread.
+    //
+    // `CFRunLoopRunInMode` processes any pending run-loop sources (including the
+    // hotkey events) for up to `seconds`, then returns so we can drain the event
+    // receiver and re-arm.
     let launch_script = mac_hotkey_support_dir()?.join("launch_jcode.sh");
     let manager =
         GlobalHotKeyManager::new().context("failed to initialize global hotkey manager")?;
@@ -434,8 +500,12 @@ fn run_macos_hotkey_listener() -> Result<()> {
         .register(hotkey)
         .context("failed to register Cmd+; hotkey")?;
 
+    let receiver = GlobalHotKeyEvent::receiver();
     loop {
-        if let Ok(event) = GlobalHotKeyEvent::receiver().recv() {
+        // Pump the main run loop so Carbon hotkey events get delivered.
+        macos_run_loop::run_for(Duration::from_millis(250));
+
+        while let Ok(event) = receiver.try_recv() {
             if event.id == hotkey.id() && event.state == HotKeyState::Pressed {
                 let _ = Command::new("sh").arg(&launch_script).spawn();
             }
