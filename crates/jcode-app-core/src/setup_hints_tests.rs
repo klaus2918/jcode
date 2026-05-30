@@ -122,3 +122,23 @@ fn current_version_user_is_left_alone() {
     };
     assert_eq!(mac_hotkey_action_for_state(&state), MacHotkeyAction::None);
 }
+
+#[test]
+fn previous_listener_version_user_gets_migrated_on_update() {
+    // A user who already installed an earlier listener version (e.g. the v1
+    // run-loop-only listener that still never fired) must be re-migrated to the
+    // current listener on update.
+    for old_version in 0..HOTKEY_LISTENER_VERSION {
+        let state = SetupHintsState {
+            hotkey_configured: true,
+            hotkey_dismissed: true,
+            hotkey_listener_version: old_version,
+            ..SetupHintsState::default()
+        };
+        assert_eq!(
+            mac_hotkey_action_for_state(&state),
+            MacHotkeyAction::Migrate,
+            "listener version {old_version} should be migrated"
+        );
+    }
+}
