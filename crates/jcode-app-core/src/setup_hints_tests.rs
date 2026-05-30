@@ -66,6 +66,8 @@ fn first_three_launches_can_include_hotkey_notice_too() {
     let (_, message) = hints.display_message.expect("expected display message");
     assert!(message.contains("Alt+C"));
     assert!(message.contains("Cmd+;"));
+    // The notice should make clear the hotkey works globally, not just inside jcode.
+    assert!(message.contains("system-wide"));
 }
 
 #[test]

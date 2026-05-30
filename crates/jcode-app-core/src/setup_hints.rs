@@ -252,7 +252,7 @@ fn startup_hints_for_launch(state: &SetupHintsState) -> Option<StartupHints> {
         None
     } else {
         Some(format!(
-            "Press Cmd+; from anywhere to open jcode in {}.",
+            "Cmd+; launches a new jcode from anywhere, system-wide (opens in {}).",
             effective_macos_terminal().label()
         ))
     };
@@ -397,7 +397,7 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
         eprintln!("\x1b[1mjcode setup-hotkey\x1b[0m");
         eprintln!();
         eprintln!("  Preferred terminal: {}", terminal.label());
-        eprintln!("  Installing a LaunchAgent so Cmd+; opens jcode from anywhere.");
+        eprintln!("  Installing a LaunchAgent so Cmd+; launches a new jcode from anywhere, system-wide.");
         eprintln!();
 
         match install_macos_hotkey_listener(Some(terminal)) {
@@ -412,7 +412,7 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
                 );
                 eprintln!();
                 eprintln!(
-                    "  Press \x1b[1mCmd+;\x1b[0m from anywhere to open jcode in {}.",
+                    "  Press \x1b[1mCmd+;\x1b[0m anywhere, system-wide, to launch a new jcode in {}.",
                     installed_terminal.label()
                 );
                 return Ok(());
@@ -460,36 +460,23 @@ pub fn run_macos_hotkey_listener_main_thread() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 mod macos_run_loop {
-    use std::time::Duration;
-
-    // Minimal Core Foundation bindings to pump the current thread's run loop.
+    // Minimal Core Foundation binding to run the current thread's run loop.
     // Avoids pulling in a heavier core-foundation dependency just for one call.
-    #[allow(non_camel_case_types)]
-    type CFTimeInterval = f64;
-    #[allow(non_camel_case_types)]
-    type CFRunLoopRunResult = i32;
-    type CFStringRef = *const std::ffi::c_void;
-    type Boolean = u8;
-
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
-        static kCFRunLoopDefaultMode: CFStringRef;
-        fn CFRunLoopRunInMode(
-            mode: CFStringRef,
-            seconds: CFTimeInterval,
-            return_after_source_handled: Boolean,
-        ) -> CFRunLoopRunResult;
+        fn CFRunLoopRun();
     }
 
-    /// Run the current thread's Core Foundation run loop for up to `duration`,
-    /// delivering any pending hotkey events. Returns when the time elapses or a
-    /// source is handled.
-    pub fn run_for(duration: Duration) {
-        unsafe {
-            // return_after_source_handled = false so we wait out the full window
-            // even if nothing fires, keeping CPU usage near zero while idle.
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, duration.as_secs_f64(), 0);
-        }
+    /// Block on the current thread's Core Foundation run loop forever, dispatching
+    /// run-loop sources (including Carbon hotkey events) as they arrive.
+    ///
+    /// This must be called on the thread that created the hotkey manager (the main
+    /// thread). It only returns if every source is removed and the loop stops,
+    /// which does not happen for our long-lived listener.
+    pub fn run_forever() {
+        // SAFETY: CFRunLoopRun takes no arguments and runs the calling thread's
+        // run loop. We are on the main thread with hotkey sources installed.
+        unsafe { CFRunLoopRun() };
     }
 }
 
@@ -498,18 +485,18 @@ fn run_macos_hotkey_listener() -> Result<()> {
     use global_hotkey::hotkey::{Code, HotKey, Modifiers};
     use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
     use std::process::Command;
-    use std::time::Duration;
 
-    // `global-hotkey` on macOS delivers events through the main thread's Core
-    // Foundation run loop (Carbon `RegisterEventHotKey`). If we just block on
-    // `recv()` the run loop never runs, the Carbon callback never fires, and the
-    // hotkey appears dead. So we must create the manager on (and pump) the main
-    // thread run loop. This function is invoked directly from `main()` before the
-    // tokio runtime is built, so it runs on the real main thread.
+    // `global-hotkey` on macOS registers a Carbon hotkey (`RegisterEventHotKey`)
+    // whose events are dispatched through the **main thread's** Core Foundation
+    // run loop. The previous implementation blocked on `recv()` without ever
+    // running a run loop, so the Carbon callback never fired and Cmd+; was dead.
     //
-    // `CFRunLoopRunInMode` processes any pending run-loop sources (including the
-    // hotkey events) for up to `seconds`, then returns so we can drain the event
-    // receiver and re-arm.
+    // This function is invoked directly from `main()` before the tokio runtime is
+    // built, so it runs on the real main thread. We install an event handler that
+    // launches jcode on key-down, then hand the thread to `CFRunLoopRun()` so the
+    // handler is invoked synchronously whenever the hotkey fires. Using the event
+    // handler (rather than polling the channel) avoids both busy-spinning and
+    // wakeup latency.
     let launch_script = mac_hotkey_support_dir()?.join("launch_jcode.sh");
     let manager =
         GlobalHotKeyManager::new().context("failed to initialize global hotkey manager")?;
@@ -518,17 +505,18 @@ fn run_macos_hotkey_listener() -> Result<()> {
         .register(hotkey)
         .context("failed to register Cmd+; hotkey")?;
 
-    let receiver = GlobalHotKeyEvent::receiver();
-    loop {
-        // Pump the main run loop so Carbon hotkey events get delivered.
-        macos_run_loop::run_for(Duration::from_millis(250));
-
-        while let Ok(event) = receiver.try_recv() {
-            if event.id == hotkey.id() && event.state == HotKeyState::Pressed {
-                let _ = Command::new("sh").arg(&launch_script).spawn();
-            }
+    let hotkey_id = hotkey.id();
+    GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+        if event.id == hotkey_id && event.state == HotKeyState::Pressed {
+            let _ = Command::new("sh").arg(&launch_script).spawn();
         }
-    }
+    }));
+
+    crate::logging::info("macOS Cmd+; hotkey listener started");
+    // Hand the main thread to the run loop so Carbon hotkey events are delivered.
+    macos_run_loop::run_forever();
+    // CFRunLoopRun only returns if all sources are removed; treat that as exit.
+    Ok(())
 }
 
 /// Decide what macOS hotkey listener action a launch should take, given the
