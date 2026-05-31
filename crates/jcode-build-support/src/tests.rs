@@ -354,3 +354,41 @@ fn shared_server_candidate_prefers_approved_channel_over_current() {
         assert_eq!(selected, approved);
     });
 }
+
+#[test]
+fn normal_shared_server_candidate_repairs_stale_shared_channel_to_stable() {
+    with_temp_jcode_home(|| {
+        let stale_version = "0.14.2";
+        let installed_version = "0.17.0";
+        install_binary_at_version(std::env::current_exe().as_ref().unwrap(), stale_version)
+            .expect("install stale shared version");
+        install_binary_at_version(std::env::current_exe().as_ref().unwrap(), installed_version)
+            .expect("install installed version");
+        update_shared_server_symlink(stale_version).expect("update shared server");
+        update_stable_symlink(installed_version).expect("update stable");
+        update_current_symlink(installed_version).expect("update current");
+
+        let candidate =
+            shared_server_update_candidate(false).expect("expected stable shared-server candidate");
+        assert_eq!(candidate.1, "stable");
+        let selected = std::fs::canonicalize(candidate.0).expect("canonical selected");
+        let installed = std::fs::canonicalize(version_binary_path(installed_version).unwrap())
+            .expect("canonical installed");
+        assert_eq!(selected, installed);
+    });
+}
+
+#[test]
+fn normal_shared_server_candidate_allows_shared_channel_matching_stable() {
+    with_temp_jcode_home(|| {
+        let installed_version = "0.17.0";
+        install_binary_at_version(std::env::current_exe().as_ref().unwrap(), installed_version)
+            .expect("install installed version");
+        update_shared_server_symlink(installed_version).expect("update shared server");
+        update_stable_symlink(installed_version).expect("update stable");
+
+        let candidate = shared_server_update_candidate(false)
+            .expect("expected matching shared-server candidate");
+        assert_eq!(candidate.1, "shared-server");
+    });
+}
