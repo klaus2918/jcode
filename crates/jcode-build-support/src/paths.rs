@@ -11,6 +11,13 @@ use std::time::SystemTime;
 
 /// Get the jcode repository directory
 pub fn get_repo_dir() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("JCODE_REPO_DIR") {
+        let path = PathBuf::from(path);
+        if is_jcode_repo(&path) {
+            return Some(path);
+        }
+    }
+
     // First try: compile-time directory
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let path = PathBuf::from(manifest_dir);
