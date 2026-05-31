@@ -31,9 +31,11 @@ const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// a slow-but-progressing download completes across several attempts while a
 /// genuinely hung connection still gets bounded.
 const DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(120);
-/// How many times to (re)connect and resume a stalled/failed download before
-/// giving up. Combined with HTTP Range resume this lets flaky or slow
-/// connections recover instead of restarting the whole asset.
+/// How many *consecutive* stalled attempts (attempts that made no forward
+/// progress) to tolerate before giving up. Any attempt that downloads new
+/// bytes resets this counter, so a slow-but-progressing download keeps
+/// resuming via HTTP Range for as long as it needs; only a genuinely stuck
+/// connection eventually fails.
 const DOWNLOAD_MAX_ATTEMPTS: usize = 10;
 const DOWNLOAD_PROGRESS_UPDATE_STEP: u64 = 1_048_576;
 
@@ -777,13 +779,19 @@ fn download_asset_with_resume(
     let mut total = total_hint;
     let mut next_progress_at = 0_u64;
     let mut last_error: Option<anyhow::Error> = None;
+    // Count only *consecutive stalls* (attempts that made no forward progress).
+    // A slow-but-advancing download resets this and keeps resuming, so it can
+    // take as long as it needs; only a genuinely stuck connection gives up.
+    let mut stalls = 0_usize;
+    let mut attempt = 0_usize;
 
     on_progress(DownloadProgress {
         downloaded: 0,
         total,
     });
 
-    for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
+    while stalls < DOWNLOAD_MAX_ATTEMPTS {
+        attempt += 1;
         let resume_from = bytes.len() as u64;
         let mut request = client.get(download_url);
         if resume_from > 0 {
@@ -796,6 +804,7 @@ fn download_asset_with_resume(
             Err(err) => {
                 last_error = Some(anyhow::anyhow!("Failed to download update: {}", err));
                 log_download_retry(attempt, resume_from, &err);
+                stalls += 1;
                 continue;
             }
         };
@@ -812,10 +821,12 @@ fn download_asset_with_resume(
                 status
             ));
             log_download_retry_status(attempt, resume_from, status);
+            stalls += 1;
             continue;
         } else if !status.is_success() {
             last_error = Some(anyhow::anyhow!("Download failed: {}", status));
             log_download_retry_status(attempt, resume_from, status);
+            stalls += 1;
             continue;
         }
 
@@ -833,7 +844,12 @@ fn download_asset_with_resume(
             });
         }
 
-        match read_response_into(response, &mut bytes, &mut next_progress_at, total, on_progress) {
+        let before = bytes.len() as u64;
+        let read_result =
+            read_response_into(response, &mut bytes, &mut next_progress_at, total, on_progress);
+        let made_progress = bytes.len() as u64 > before;
+
+        match read_result {
             Ok(()) => {
                 let downloaded = bytes.len() as u64;
                 // If we know the total and fell short, treat as a stall and retry.
@@ -846,6 +862,7 @@ fn download_asset_with_resume(
                         total
                     ));
                     log_download_retry_short(attempt, downloaded, total);
+                    stalls = if made_progress { 0 } else { stalls + 1 };
                     continue;
                 }
                 on_progress(DownloadProgress { downloaded, total });
@@ -854,17 +871,22 @@ fn download_asset_with_resume(
             Err(err) => {
                 let downloaded = bytes.len() as u64;
                 crate::logging::warn(&format!(
-                    "Update download attempt {}/{} stream error at {} bytes: {}; retrying with resume",
-                    attempt, DOWNLOAD_MAX_ATTEMPTS, downloaded, err
+                    "Update download attempt {} stream error at {} bytes: {}; retrying with resume",
+                    attempt, downloaded, err
                 ));
                 last_error = Some(err);
+                stalls = if made_progress { 0 } else { stalls + 1 };
                 continue;
             }
         }
     }
 
-    Err(last_error
-        .unwrap_or_else(|| anyhow::anyhow!("Download failed after {} attempts", DOWNLOAD_MAX_ATTEMPTS)))
+    Err(last_error.unwrap_or_else(|| {
+        anyhow::anyhow!(
+            "Download stalled with no progress after {} attempts",
+            DOWNLOAD_MAX_ATTEMPTS
+        )
+    }))
 }
 
 fn read_response_into(
@@ -1415,6 +1437,99 @@ mod tests {
             request_count.load(Ordering::SeqCst),
             2,
             "should have made an initial + one resume request"
+        );
+    }
+
+    /// A connection that keeps dropping but always advances a little must still
+    /// complete: forward progress resets the consecutive-stall budget, so the
+    /// number of resumes can exceed DOWNLOAD_MAX_ATTEMPTS as long as each one
+    /// delivers new bytes.
+    #[test]
+    fn test_download_asset_with_resume_tolerates_many_progressing_drops() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let payload: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+        let total = payload.len();
+        // Each attempt delivers only this many bytes, then drops, so it takes
+        // many more than DOWNLOAD_MAX_ATTEMPTS attempts to finish.
+        let chunk = 100usize;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let payload_for_server = payload.clone();
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let request_count_server = Arc::clone(&request_count);
+
+        let handle = std::thread::spawn(move || {
+            loop {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let n = request_count_server.fetch_add(1, Ordering::SeqCst);
+
+                let mut range_start = 0usize;
+                {
+                    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        let trimmed = line.trim_end();
+                        if let Some(rest) =
+                            trimmed.to_ascii_lowercase().strip_prefix("range: bytes=")
+                            && let Some(start) = rest.split('-').next()
+                        {
+                            range_start = start.trim().parse().unwrap_or(0);
+                        }
+                        if trimmed.is_empty() {
+                            break;
+                        }
+                    }
+                }
+
+                let end = (range_start + chunk).min(total);
+                let body = &payload_for_server[range_start..end];
+                let header = if n == 0 {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n\r\n",
+                        total
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\n\r\n",
+                        total - range_start,
+                        range_start,
+                        total - 1,
+                        total
+                    )
+                };
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body);
+                let _ = stream.flush();
+                // Drop after a partial chunk unless we've reached the end.
+                if end >= total {
+                    break;
+                }
+            }
+        });
+
+        let client = reqwest::blocking::Client::builder().build().expect("client");
+        let url = format!("http://{}/asset", addr);
+        let (bytes, _total) =
+            download_asset_with_resume(&client, &url, Some(total as u64), &mut |_| {})
+                .expect("progressing download should complete");
+
+        handle.join().ok();
+
+        assert_eq!(bytes, payload);
+        assert!(
+            request_count.load(Ordering::SeqCst) > DOWNLOAD_MAX_ATTEMPTS,
+            "test should require more than the stall budget of resumes"
         );
     }
 }
