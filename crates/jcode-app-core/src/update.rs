@@ -1532,4 +1532,125 @@ mod tests {
             "test should require more than the stall budget of resumes"
         );
     }
+
+    /// Mirrors the real #293 shape closely: the caller has *no* size hint
+    /// (None), a slow connection drops repeatedly, and the size is learned from
+    /// the server (Content-Length on the initial 200, Content-Range on the 206
+    /// resumes, exactly like a GitHub release asset). The download must still
+    /// complete, learn the correct total, and report progress that never moves
+    /// backwards across reconnects (so the UI bar can't appear to regress).
+    #[test]
+    fn test_download_asset_with_resume_unknown_total_and_monotonic_progress() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let payload: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        let total = payload.len();
+        let chunk = 400usize;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let payload_for_server = payload.clone();
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let request_count_server = Arc::clone(&request_count);
+
+        let handle = std::thread::spawn(move || {
+            loop {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let n = request_count_server.fetch_add(1, Ordering::SeqCst);
+
+                let mut range_start = 0usize;
+                {
+                    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        let trimmed = line.trim_end();
+                        if let Some(rest) =
+                            trimmed.to_ascii_lowercase().strip_prefix("range: bytes=")
+                            && let Some(start) = rest.split('-').next()
+                        {
+                            range_start = start.trim().parse().unwrap_or(0);
+                        }
+                        if trimmed.is_empty() {
+                            break;
+                        }
+                    }
+                }
+
+                let end = (range_start + chunk).min(total);
+                let body = &payload_for_server[range_start..end];
+                // Like a real GitHub asset: the initial 200 carries the full
+                // Content-Length (so a mid-stream drop is detectable), and the
+                // 206 resumes carry Content-Range. The *caller* still gets no
+                // size hint, so the total must be learned from these headers.
+                let header = if n == 0 {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n\r\n",
+                        total
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\n\r\n",
+                        total - range_start,
+                        range_start,
+                        total - 1,
+                        total
+                    )
+                };
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body);
+                let _ = stream.flush();
+                // Drop after a partial chunk unless we've reached the end.
+                if end >= total {
+                    break;
+                }
+            }
+        });
+
+        let client = reqwest::blocking::Client::builder().build().expect("client");
+        let url = format!("http://{}/asset", addr);
+
+        let mut progress_points: Vec<u64> = Vec::new();
+        let mut seen_total: Option<u64> = None;
+        let (bytes, parsed_total) = download_asset_with_resume(
+            &client,
+            &url,
+            None, // no size hint, like a fresh download with no metadata
+            &mut |p| {
+                progress_points.push(p.downloaded);
+                if p.total.is_some() {
+                    seen_total = p.total;
+                }
+            },
+        )
+        .expect("download with unknown caller hint should complete");
+
+        handle.join().ok();
+
+        assert_eq!(bytes, payload, "payload must be fully reconstructed");
+        assert_eq!(
+            parsed_total,
+            Some(total as u64),
+            "total must be learned from the server headers"
+        );
+        assert_eq!(seen_total, Some(total as u64));
+        assert!(
+            progress_points.windows(2).all(|w| w[1] >= w[0]),
+            "progress must never go backwards across reconnects: {:?}",
+            progress_points
+        );
+        assert_eq!(
+            *progress_points.last().expect("at least one progress point"),
+            total as u64,
+            "final progress must reach the full size"
+        );
+    }
 }
