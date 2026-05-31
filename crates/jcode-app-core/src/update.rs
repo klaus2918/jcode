@@ -19,7 +19,22 @@ use std::time::{Duration, Instant, SystemTime};
 const GITHUB_REPO: &str = "1jehuang/jcode";
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(60); // minimum gap between checks
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// Time allowed for the initial TCP/TLS connect to the download host.
+const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Total wall-clock budget for a single download *attempt*.
+///
+/// This is intentionally a per-attempt budget, not a budget for the whole
+/// asset. The old code used a single 120s total timeout for the entire
+/// transfer, so on a slow link a multi-megabyte asset could never finish: it
+/// was killed mid-stream, the partial bytes were discarded, and every relaunch
+/// restarted from zero. We now cap each attempt and resume via HTTP Range, so
+/// a slow-but-progressing download completes across several attempts while a
+/// genuinely hung connection still gets bounded.
+const DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(120);
+/// How many times to (re)connect and resume a stalled/failed download before
+/// giving up. Combined with HTTP Range resume this lets flaky or slow
+/// connections recover instead of restarting the whole asset.
+const DOWNLOAD_MAX_ATTEMPTS: usize = 10;
 const DOWNLOAD_PROGRESS_UPDATE_STEP: u64 = 1_048_576;
 
 pub fn print_centered(msg: &str) {
@@ -744,6 +759,170 @@ pub fn download_and_install_blocking(release: &GitHubRelease) -> Result<PathBuf>
     download_and_install_blocking_with_progress(release, |_| {})
 }
 
+/// Download an asset into memory, retrying with HTTP Range resume so a slow or
+/// flaky connection recovers instead of restarting from zero.
+///
+/// Returns the full asset bytes plus the best-known total size (for callers
+/// that want a final size). Progress callbacks are invoked across retries using
+/// the cumulative bytes already on disk, so the UI never appears to go
+/// backwards when a stalled connection reconnects.
+fn download_asset_with_resume(
+    client: &reqwest::blocking::Client,
+    download_url: &str,
+    total_hint: Option<u64>,
+    on_progress: &mut impl FnMut(DownloadProgress),
+) -> Result<(Vec<u8>, Option<u64>)> {
+    let mut bytes: Vec<u8> =
+        Vec::with_capacity(total_hint.unwrap_or_default().min(usize::MAX as u64) as usize);
+    let mut total = total_hint;
+    let mut next_progress_at = 0_u64;
+    let mut last_error: Option<anyhow::Error> = None;
+
+    on_progress(DownloadProgress {
+        downloaded: 0,
+        total,
+    });
+
+    for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
+        let resume_from = bytes.len() as u64;
+        let mut request = client.get(download_url);
+        if resume_from > 0 {
+            // Ask the server to continue where we left off.
+            request = request.header(reqwest::header::RANGE, format!("bytes={}-", resume_from));
+        }
+
+        let response = match request.send() {
+            Ok(response) => response,
+            Err(err) => {
+                last_error = Some(anyhow::anyhow!("Failed to download update: {}", err));
+                log_download_retry(attempt, resume_from, &err);
+                continue;
+            }
+        };
+
+        let status = response.status();
+        if resume_from > 0 && status == reqwest::StatusCode::OK {
+            // Server ignored the Range header and is resending from the start;
+            // discard the partial buffer so we don't corrupt the result.
+            bytes.clear();
+            next_progress_at = 0;
+        } else if resume_from > 0 && status != reqwest::StatusCode::PARTIAL_CONTENT {
+            last_error = Some(anyhow::anyhow!(
+                "Resume request returned unexpected status {}",
+                status
+            ));
+            log_download_retry_status(attempt, resume_from, status);
+            continue;
+        } else if !status.is_success() {
+            last_error = Some(anyhow::anyhow!("Download failed: {}", status));
+            log_download_retry_status(attempt, resume_from, status);
+            continue;
+        }
+
+        // Establish the total size. For a 206 response, content-length is the
+        // remaining bytes, so prefer the original hint / Content-Range total.
+        if total.is_none() {
+            total = content_range_total(&response).or_else(|| {
+                if status == reqwest::StatusCode::PARTIAL_CONTENT {
+                    response
+                        .content_length()
+                        .map(|len| len.saturating_add(bytes.len() as u64))
+                } else {
+                    response.content_length()
+                }
+            });
+        }
+
+        match read_response_into(response, &mut bytes, &mut next_progress_at, total, on_progress) {
+            Ok(()) => {
+                let downloaded = bytes.len() as u64;
+                // If we know the total and fell short, treat as a stall and retry.
+                if let Some(total) = total
+                    && downloaded < total
+                {
+                    last_error = Some(anyhow::anyhow!(
+                        "Download ended early ({} of {} bytes)",
+                        downloaded,
+                        total
+                    ));
+                    log_download_retry_short(attempt, downloaded, total);
+                    continue;
+                }
+                on_progress(DownloadProgress { downloaded, total });
+                return Ok((bytes, total));
+            }
+            Err(err) => {
+                let downloaded = bytes.len() as u64;
+                crate::logging::warn(&format!(
+                    "Update download attempt {}/{} stream error at {} bytes: {}; retrying with resume",
+                    attempt, DOWNLOAD_MAX_ATTEMPTS, downloaded, err
+                ));
+                last_error = Some(err);
+                continue;
+            }
+        }
+    }
+
+    Err(last_error
+        .unwrap_or_else(|| anyhow::anyhow!("Download failed after {} attempts", DOWNLOAD_MAX_ATTEMPTS)))
+}
+
+fn read_response_into(
+    mut response: reqwest::blocking::Response,
+    bytes: &mut Vec<u8>,
+    next_progress_at: &mut u64,
+    total: Option<u64>,
+    on_progress: &mut impl FnMut(DownloadProgress),
+) -> Result<()> {
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .context("Failed to read download")?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        let downloaded = bytes.len() as u64;
+        if downloaded >= *next_progress_at || total.is_some_and(|total| downloaded >= total) {
+            on_progress(DownloadProgress { downloaded, total });
+            *next_progress_at = downloaded.saturating_add(DOWNLOAD_PROGRESS_UPDATE_STEP);
+        }
+    }
+    Ok(())
+}
+
+fn content_range_total(response: &reqwest::blocking::Response) -> Option<u64> {
+    // Content-Range: bytes 200-1023/1024
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.rsplit('/').next())
+        .and_then(|total| total.trim().parse::<u64>().ok())
+}
+
+fn log_download_retry(attempt: usize, resume_from: u64, err: &impl std::fmt::Display) {
+    crate::logging::warn(&format!(
+        "Update download attempt {}/{} failed at {} bytes: {}; retrying with resume",
+        attempt, DOWNLOAD_MAX_ATTEMPTS, resume_from, err
+    ));
+}
+
+fn log_download_retry_status(attempt: usize, resume_from: u64, status: reqwest::StatusCode) {
+    crate::logging::warn(&format!(
+        "Update download attempt {}/{} got status {} at {} bytes; retrying with resume",
+        attempt, DOWNLOAD_MAX_ATTEMPTS, status, resume_from
+    ));
+}
+
+fn log_download_retry_short(attempt: usize, downloaded: u64, total: u64) {
+    crate::logging::warn(&format!(
+        "Update download attempt {}/{} ended early ({} of {} bytes); retrying with resume",
+        attempt, DOWNLOAD_MAX_ATTEMPTS, downloaded, total
+    ));
+}
+
 pub fn download_and_install_blocking_with_progress(
     release: &GitHubRelease,
     mut on_progress: impl FnMut(DownloadProgress),
@@ -761,45 +940,25 @@ pub fn download_and_install_blocking_with_progress(
     let temp_dir = std::env::temp_dir();
     let temp_path = temp_dir.join(format!("jcode-update-{}", std::process::id()));
 
+    // The `timeout` here applies per request. Since each retry below is a
+    // separate request, this acts as a *per-attempt* budget rather than a cap
+    // on the whole asset: a slow-but-progressing download resumes via HTTP
+    // Range across attempts (up to DOWNLOAD_MAX_ATTEMPTS), so it can complete
+    // even when a single attempt would not finish in time. A genuinely hung
+    // connection is still bounded by the per-attempt timeout.
     let client = reqwest::blocking::Client::builder()
-        .timeout(DOWNLOAD_TIMEOUT)
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+        .timeout(DOWNLOAD_ATTEMPT_TIMEOUT)
         .user_agent("jcode-updater")
         .build()?;
 
-    let mut response = client
-        .get(&download_url)
-        .send()
-        .context("Failed to download update")?;
-
-    if !response.status().is_success() {
-        anyhow::bail!("Download failed: {}", response.status());
-    }
-
-    let total = response.content_length().or(if asset._size > 0 {
+    let total_hint = if asset._size > 0 {
         Some(asset._size)
     } else {
         None
-    });
-    let mut bytes = Vec::with_capacity(total.unwrap_or_default().min(usize::MAX as u64) as usize);
-    let mut buffer = [0_u8; 64 * 1024];
-    let mut downloaded = 0_u64;
-    let mut next_progress_at = 0_u64;
-    on_progress(DownloadProgress { downloaded, total });
-    loop {
-        let read = response
-            .read(&mut buffer)
-            .context("Failed to read download")?;
-        if read == 0 {
-            break;
-        }
-        bytes.extend_from_slice(&buffer[..read]);
-        downloaded = downloaded.saturating_add(read as u64);
-        if downloaded >= next_progress_at || total.is_some_and(|total| downloaded >= total) {
-            on_progress(DownloadProgress { downloaded, total });
-            next_progress_at = downloaded.saturating_add(DOWNLOAD_PROGRESS_UPDATE_STEP);
-        }
-    }
-    on_progress(DownloadProgress { downloaded, total });
+    };
+    let (bytes, _total) =
+        download_asset_with_resume(&client, &download_url, total_hint, &mut on_progress)?;
 
     verify_asset_checksum_if_available(&client, release, asset, &bytes)?;
 
@@ -1123,6 +1282,139 @@ mod tests {
         assert_eq!(
             estimate_source_update_duration(true, true, Some(123.4)),
             Duration::from_secs(123)
+        );
+    }
+
+    #[test]
+    fn test_content_range_total_parses_total() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        // Build a Response is awkward; test the parser via a header map directly.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_RANGE,
+            HeaderValue::from_static("bytes 200-1023/1024"),
+        );
+        let parsed = headers
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.rsplit('/').next())
+            .and_then(|total| total.trim().parse::<u64>().ok());
+        assert_eq!(parsed, Some(1024));
+    }
+
+    #[test]
+    fn test_content_range_total_unknown_size_is_none() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_RANGE,
+            HeaderValue::from_static("bytes 200-1023/*"),
+        );
+        let parsed = headers
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.rsplit('/').next())
+            .and_then(|total| total.trim().parse::<u64>().ok());
+        assert_eq!(parsed, None);
+    }
+
+    /// End-to-end resume test: a tiny HTTP server serves the first half of the
+    /// body then drops the connection, and on the resumed Range request serves
+    /// the rest. The download must recover and return the full payload.
+    #[test]
+    fn test_download_asset_with_resume_recovers_from_dropped_connection() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let payload: Vec<u8> = (0..2000u32).map(|i| (i % 251) as u8).collect();
+        let total = payload.len();
+        let split = total / 2;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let payload_for_server = payload.clone();
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let request_count_server = Arc::clone(&request_count);
+
+        let handle = std::thread::spawn(move || {
+            // Serve exactly two connections: first truncated, second resumed.
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let n = request_count_server.fetch_add(1, Ordering::SeqCst);
+
+                // Parse request headers; look for a Range header.
+                let mut range_start = 0usize;
+                {
+                    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        let trimmed = line.trim_end();
+                        if let Some(rest) = trimmed
+                            .to_ascii_lowercase()
+                            .strip_prefix("range: bytes=")
+                        {
+                            if let Some(start) = rest.split('-').next() {
+                                range_start = start.trim().parse().unwrap_or(0);
+                            }
+                        }
+                        if trimmed.is_empty() {
+                            break;
+                        }
+                    }
+                }
+
+                if n == 0 {
+                    // First attempt: 200 OK, but only send the first half, then
+                    // close mid-stream to simulate a stalled/dropped connection.
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n\r\n",
+                        total
+                    );
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(&payload_for_server[..split]);
+                    let _ = stream.flush();
+                    // Drop connection without finishing the body.
+                } else {
+                    // Resumed attempt: serve 206 with the remaining bytes.
+                    let remaining = &payload_for_server[range_start..];
+                    let header = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\n\r\n",
+                        remaining.len(),
+                        range_start,
+                        total - 1,
+                        total
+                    );
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(remaining);
+                    let _ = stream.flush();
+                }
+            }
+        });
+
+        let client = reqwest::blocking::Client::builder()
+            .build()
+            .expect("client");
+        let url = format!("http://{}/asset", addr);
+        let (bytes, parsed_total) =
+            download_asset_with_resume(&client, &url, Some(total as u64), &mut |_| {})
+                .expect("download should recover");
+
+        handle.join().ok();
+
+        assert_eq!(bytes, payload, "resumed download must reconstruct payload");
+        assert_eq!(parsed_total, Some(total as u64));
+        assert_eq!(
+            request_count.load(Ordering::SeqCst),
+            2,
+            "should have made an initial + one resume request"
         );
     }
 }
