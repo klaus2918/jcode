@@ -11667,9 +11667,7 @@ fn workspace_primitive_vertices_cache_key(
         .to_bits()
         .hash(&mut hasher);
     focus_pulse.to_bits().hash(&mut hasher);
-    space_hold_progress
-        .map(f32::to_bits)
-        .hash(&mut hasher);
+    space_hold_progress.map(f32::to_bits).hash(&mut hasher);
     for channel in status_color {
         channel.to_bits().hash(&mut hasher);
     }

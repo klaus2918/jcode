@@ -529,7 +529,6 @@ pub(crate) use crate::auth::live_provider_probes::{
     run_live_openai_compatible_stream_smoke, run_live_openai_compatible_tool_smoke,
 };
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
