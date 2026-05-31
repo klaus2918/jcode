@@ -650,7 +650,12 @@ impl MessageChannel for JadeRelayChannel {
     }
 
     fn is_reply_enabled(&self) -> bool {
-        self.reply_enabled
+        // Inbound Jade relay prompts are delivered by server::jade_relay so they
+        // work even when ambient mode is disabled and target the configured live
+        // Jcode session directly. Keep this channel for outbound notifications
+        // only; otherwise ambient mode would start a second poller.
+        let _configured_for_server_listener = self.reply_enabled;
+        false
     }
 
     async fn send(&self, text: &str) -> anyhow::Result<()> {
