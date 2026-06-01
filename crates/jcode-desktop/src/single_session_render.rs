@@ -1602,6 +1602,7 @@ fn push_single_session_inline_widget_card(
         inline_widget_bottom_limit_for_layout(app, session_layout, welcome_chrome_visible);
     let target_top = inline_widget_target_top(
         size,
+        app.render_inline_widget_kind(),
         app.text_scale(),
         body_bottom,
         welcome_chrome_visible,
@@ -9208,6 +9209,7 @@ fn inline_widget_reserved_height(app: &SingleSessionApp) -> f32 {
 
 fn inline_widget_target_top(
     size: PhysicalSize<u32>,
+    kind: Option<InlineWidgetKind>,
     ui_scale: f32,
     body_bottom: f32,
     welcome_chrome_visible: bool,
@@ -9218,8 +9220,42 @@ fn inline_widget_target_top(
             + welcome_chrome_offset_pixels
             + fresh_welcome_inline_widget_gap_for_scale(ui_scale)
     } else {
-        body_bottom + INLINE_WIDGET_BODY_GAP
+        body_bottom + INLINE_WIDGET_BODY_GAP + inline_widget_card_padding_y(kind)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn inline_widget_body_and_card_vertical_geometry_for_test(
+    size: PhysicalSize<u32>,
+    kind: Option<InlineWidgetKind>,
+    ui_scale: f32,
+    body_base_bottom: f32,
+    line_count: usize,
+    text_width: f32,
+    reveal_progress: f32,
+    activity_reserved_height: f32,
+) -> Option<(f32, f32)> {
+    let typography = single_session_typography_for_scale(ui_scale);
+    let padding_y = inline_widget_card_padding_y(kind);
+    let visible_text_height = line_count as f32 * inline_widget_line_height(kind, &typography);
+    let reserved_height =
+        (visible_text_height + padding_y * 2.0 + INLINE_WIDGET_BODY_GAP) * reveal_progress;
+    let body_bottom =
+        (body_base_bottom - reserved_height - activity_reserved_height).max(PANEL_BODY_TOP_PADDING);
+    let target_top = inline_widget_target_top(size, kind, ui_scale, body_bottom, false, 0.0);
+    let bottom_limit =
+        (body_base_bottom - activity_reserved_height).min(single_session_draft_top(size));
+    inline_widget_card_layout_with_bottom_limit(
+        size,
+        kind,
+        &typography,
+        line_count,
+        text_width,
+        target_top,
+        reveal_progress,
+        bottom_limit,
+    )
+    .map(|layout| (body_bottom, layout.card.y))
 }
 
 pub(crate) fn single_session_body_bottom(size: PhysicalSize<u32>) -> f32 {
@@ -9532,6 +9568,7 @@ pub(crate) fn single_session_text_areas_for_state(
     let inline_widget_layout = if inline_widget_line_count > 0 {
         let target_top = inline_widget_target_top(
             size,
+            inline_widget_kind,
             ui_scale,
             body_bottom as f32,
             welcome_chrome_visible,

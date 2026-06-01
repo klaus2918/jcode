@@ -9273,6 +9273,54 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
 }
 
 #[test]
+fn inline_widget_card_never_overlaps_body_clip_during_reveal() {
+    let kinds = [
+        InlineWidgetKind::HotkeyHelp,
+        InlineWidgetKind::ModelPicker,
+        InlineWidgetKind::SessionSwitcher,
+        InlineWidgetKind::SessionInfo,
+        InlineWidgetKind::SlashSuggestions,
+    ];
+    let sizes = [
+        PhysicalSize::new(1000, 720),
+        PhysicalSize::new(760, 520),
+        PhysicalSize::new(640, 420),
+    ];
+    let reveal_steps = [0.0_f32, 0.25, 0.5, 0.75, 1.0];
+
+    for size in sizes {
+        let body_base_bottom = single_session_body_bottom(size);
+        for kind in kinds {
+            let visible_lines = kind.visible_line_limit().min(8).max(1);
+            for activity_reserved_height in [0.0, 22.0] {
+                for reveal_progress in reveal_steps {
+                    let Some((body_bottom, card_top)) =
+                        inline_widget_body_and_card_vertical_geometry_for_test(
+                            size,
+                            Some(kind),
+                            1.0,
+                            body_base_bottom,
+                            visible_lines,
+                            420.0,
+                            reveal_progress,
+                            activity_reserved_height,
+                        )
+                    else {
+                        assert!(reveal_progress <= 0.001);
+                        continue;
+                    };
+
+                    assert!(
+                        body_bottom.ceil() <= card_top + 0.001,
+                        "{kind:?} overlaps body during reveal: size={size:?} progress={reveal_progress} activity={activity_reserved_height} body_bottom={body_bottom} card_top={card_top}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn fresh_submit_keeps_single_visual_timeline_without_transcript_greeting() {
     let size = PhysicalSize::new(1000, 720);
     let mut app = SingleSessionApp::new(None);
