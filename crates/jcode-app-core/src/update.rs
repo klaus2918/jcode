@@ -327,6 +327,15 @@ fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
     let channel_version = format!("main-{}", latest_sha);
     build::install_binary_at_version(&path, &channel_version)
         .context("Failed to install built binary")?;
+    // Carry the long-lived daemon's reload target forward too, but only when it
+    // was tracking stable. A deliberately-promoted self-dev shared-server build
+    // is left untouched so the update never silently wipes it out.
+    if let Err(error) = build::advance_shared_server_if_tracking_stable(&channel_version) {
+        crate::logging::warn(&format!(
+            "update: failed to advance shared-server channel to {}: {}",
+            channel_version, error
+        ));
+    }
     build::update_stable_symlink(&channel_version)?;
     build::update_current_symlink(&channel_version)?;
     build::update_launcher_symlink_to_current()?;
@@ -1072,6 +1081,12 @@ pub fn download_and_install_blocking_with_progress(
         let _ = fs::remove_file(&temp_path);
         versioned_path
     };
+    if let Err(error) = build::advance_shared_server_if_tracking_stable(version) {
+        crate::logging::warn(&format!(
+            "update: failed to advance shared-server channel to {}: {}",
+            version, error
+        ));
+    }
     build::update_stable_symlink(version)?;
     build::update_current_symlink(version)?;
     build::update_launcher_symlink_to_current()?;

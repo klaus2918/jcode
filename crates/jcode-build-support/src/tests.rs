@@ -454,3 +454,83 @@ fn version_match_detects_installed_channel_by_semver_or_git_hash() {
         ));
     });
 }
+
+#[test]
+fn shared_server_tracks_stable_when_marker_missing() {
+    with_temp_jcode_home(|| {
+        std::fs::create_dir_all(builds_dir().unwrap()).expect("create builds dir");
+        // No shared-server marker at all: nothing deliberate to protect.
+        assert!(shared_server_tracks_stable().expect("tracks stable"));
+    });
+}
+
+#[test]
+fn shared_server_tracks_stable_when_equal_to_stable() {
+    with_temp_jcode_home(|| {
+        std::fs::create_dir_all(builds_dir().unwrap()).expect("create builds dir");
+        std::fs::write(stable_version_file().unwrap(), "0.17.0").expect("write stable");
+        std::fs::write(shared_server_version_file().unwrap(), "0.17.0").expect("write shared");
+        assert!(shared_server_tracks_stable().expect("tracks stable"));
+    });
+}
+
+#[test]
+fn shared_server_does_not_track_stable_when_pinned_to_selfdev() {
+    with_temp_jcode_home(|| {
+        std::fs::create_dir_all(builds_dir().unwrap()).expect("create builds dir");
+        std::fs::write(stable_version_file().unwrap(), "0.17.0").expect("write stable");
+        std::fs::write(
+            shared_server_version_file().unwrap(),
+            "56f43c3d-dirty-deadbeef",
+        )
+        .expect("write shared");
+        assert!(!shared_server_tracks_stable().expect("does not track stable"));
+    });
+}
+
+#[test]
+fn advance_shared_server_carries_forward_when_tracking_stable() {
+    with_temp_jcode_home(|| {
+        let old = "0.17.0";
+        let new = "0.18.0";
+        install_binary_at_version(std::env::current_exe().as_ref().unwrap(), old)
+            .expect("install old");
+        install_binary_at_version(std::env::current_exe().as_ref().unwrap(), new)
+            .expect("install new");
+        update_stable_symlink(old).expect("stable old");
+        update_shared_server_symlink(old).expect("shared old");
+
+        let advanced = advance_shared_server_if_tracking_stable(new).expect("advance");
+        assert!(advanced);
+        assert_eq!(
+            read_shared_server_version().unwrap().as_deref(),
+            Some(new),
+            "shared-server should follow the update"
+        );
+    });
+}
+
+#[test]
+fn advance_shared_server_preserves_pinned_selfdev_build() {
+    with_temp_jcode_home(|| {
+        let stable_old = "0.17.0";
+        let selfdev = "56f43c3d-dirty-deadbeef";
+        let update = "0.18.0";
+        install_binary_at_version(std::env::current_exe().as_ref().unwrap(), stable_old)
+            .expect("install stable");
+        install_binary_at_version(std::env::current_exe().as_ref().unwrap(), selfdev)
+            .expect("install selfdev");
+        install_binary_at_version(std::env::current_exe().as_ref().unwrap(), update)
+            .expect("install update");
+        update_stable_symlink(stable_old).expect("stable");
+        update_shared_server_symlink(selfdev).expect("shared selfdev");
+
+        let advanced = advance_shared_server_if_tracking_stable(update).expect("advance");
+        assert!(!advanced, "must not advance a deliberately-promoted build");
+        assert_eq!(
+            read_shared_server_version().unwrap().as_deref(),
+            Some(selfdev),
+            "self-dev shared-server build must be preserved across update"
+        );
+    });
+}
