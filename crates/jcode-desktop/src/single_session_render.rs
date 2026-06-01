@@ -8513,6 +8513,11 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
             && previous.text_scale_bits == key.text_scale_bits
             && user_font_compatible
     });
+    let width_layout_compatible = previous_key.is_some_and(|previous| {
+        previous.size.0 == key.size.0
+            && previous.text_scale_bits == key.text_scale_bits
+            && user_font_compatible
+    });
     let body_layout_compatible = previous_key.is_some_and(|previous| {
         previous.text_scale_bits == key.text_scale_bits
             && single_session_body_text_buffer_layout_bucket(previous.size, text_scale)
@@ -8527,12 +8532,13 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
             old_buffers.get_mut(index).and_then(Option::take)
         };
     let exact_previous = previous_key.filter(|_| exact_layout_compatible);
+    let width_previous = previous_key.filter(|_| width_layout_compatible);
     let body_previous = previous_key.filter(|_| body_layout_compatible);
 
     let title_buffer = take_reusable(
         &mut old_buffers,
         0,
-        exact_previous.is_some_and(|previous| previous.title == key.title),
+        width_previous.is_some_and(|previous| previous.title == key.title),
     )
     .unwrap_or_else(|| {
         single_session_text_buffer(
@@ -8670,7 +8676,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let version_buffer = take_reusable(
         &mut old_buffers,
         3,
-        exact_previous.is_some_and(|previous| previous.version == key.version),
+        width_previous.is_some_and(|previous| previous.version == key.version),
     )
     .unwrap_or_else(|| {
         single_session_text_buffer(
@@ -8707,7 +8713,7 @@ fn single_session_text_buffers_from_key_reusing_unchanged_from_options(
     let welcome_hint_buffer = take_reusable(
         &mut old_buffers,
         6,
-        exact_previous.is_some_and(|previous| previous.welcome_hint == key.welcome_hint),
+        width_previous.is_some_and(|previous| previous.welcome_hint == key.welcome_hint),
     )
     .unwrap_or_else(|| {
         single_session_styled_text_buffer(
