@@ -6036,6 +6036,12 @@ struct ExternalCliSessionCandidate {
 }
 
 fn latest_external_cli_continuation_suggestion() -> Option<String> {
+    // Tests must stay hermetic: scanning the real ~/.codex/~/.claude history makes
+    // the welcome-hint layout depend on the developer's machine state and breaks
+    // deterministic rendering assertions. Skip the scan under test.
+    if cfg!(test) {
+        return None;
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     std::panic::catch_unwind(AssertUnwindSafe(|| {
         latest_external_cli_continuation_suggestion_from_home(&home)

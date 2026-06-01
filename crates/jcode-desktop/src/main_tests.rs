@@ -2562,7 +2562,7 @@ fn single_session_slash_suggestions_filter_select_and_submit() {
     }));
 
     assert_eq!(
-        app.handle_key(KeyInput::ModelPickerMove(3)),
+        app.handle_key(KeyInput::ModelPickerMove(4)),
         KeyOutcome::Redraw
     );
     let suggestions = app.inline_widget_styled_lines();
@@ -3410,7 +3410,7 @@ fn single_session_typing_model_slash_opens_preview_picker_without_submitting() {
         .map(|line| line.text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(picker.contains("Model picker"));
+    assert!(picker.contains("Choose model"));
     assert!(picker.contains("filter \"opus\""));
     assert!(picker.contains("claude-opus-4-5"));
     assert!(picker.contains("Anthropic · claude-oauth · premium"));
@@ -4196,7 +4196,7 @@ fn desktop_maps_terminal_editing_shortcuts_from_tui() {
     );
     assert_eq!(
         to_key_input(&Key::Character("v".into()), ModifiersState::ALT),
-        KeyInput::AttachClipboardImage
+        KeyInput::PasteText
     );
     assert_eq!(
         to_key_input(&Key::Character("d".into()), ModifiersState::CONTROL),
@@ -6722,7 +6722,7 @@ fn single_session_model_picker_loads_filters_and_selects_model() {
         .map(|line| line.text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(picker.contains("Model picker    current Claude · claude-sonnet-4-5"));
+    assert!(picker.contains("Choose model  ·  current Claude · claude-sonnet-4-5"));
     assert!(picker.contains("type to filter"));
     assert!(picker.contains("2 models"));
     assert!(picker.contains("claude-sonnet-4-5"));
@@ -7606,7 +7606,7 @@ fn single_session_model_picker_updates_current_model_after_switch() {
             .map(|line| line.text)
             .collect::<Vec<_>>()
             .join("\n")
-            .contains("Model picker    current OpenAI · gpt-5.4")
+            .contains("Choose model  ·  current OpenAI · gpt-5.4")
     );
 }
 
@@ -8179,7 +8179,11 @@ fn single_session_reload_queue_state_space_matches_reference_model() {
     }
 
     let mut trace = Vec::new();
-    visit(&mut trace, 5);
+    // Exhaustive DFS over action sequences. Depth 4 (~11k traces) covers every
+    // length-<=4 action ordering and stays tractable under the default debug
+    // test profile; depth 5 is ~111k traces and made `cargo test -p jcode-desktop`
+    // appear to hang for over a minute in debug builds.
+    visit(&mut trace, 4);
 }
 
 #[test]
@@ -9194,7 +9198,7 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     assert!(
         key.inline_widget
             .iter()
-            .any(|line| line.text.contains("Model picker"))
+            .any(|line| line.text.contains("Choose model"))
     );
     assert_eq!(
         single_session_draft_top_for_app(&app, size),
@@ -9245,7 +9249,7 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     );
 
     let vertices = build_single_session_vertices(&app, size, 0.0, 0);
-    let inline_card_vertices = positions_for_color(&vertices, [0.992, 0.996, 1.000, 0.72]);
+    let inline_card_vertices = positions_for_color(&vertices, [0.982, 0.990, 1.000, 0.82]);
     assert!(
         !inline_card_vertices.is_empty(),
         "inline picker should draw a rounded card background"
