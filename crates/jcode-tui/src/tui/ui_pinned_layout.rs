@@ -82,17 +82,10 @@ pub(super) fn estimate_side_panel_image_layout_with_font(
     );
     let width_fill_zoom = axis_fill_zoom_percent(available_width, width, cell_w);
     let height_fill_zoom = axis_fill_zoom_percent(inner_height as u32, height, cell_h);
-    let preferred_viewport_zoom = width_fill_zoom
-        .max(height_fill_zoom)
-        .clamp(
-            SIDE_PANEL_INLINE_IMAGE_MIN_ZOOM_PERCENT,
-            SIDE_PANEL_INLINE_IMAGE_MAX_AUTO_FILL_ZOOM_PERCENT,
-        )
-        // Never zoom past the point where the full image width fits the pane,
-        // otherwise wide images (e.g. 5:1 screenshots) overflow horizontally and
-        // only their left edge is visible. This also overrides the min-zoom floor
-        // for very wide images, letting them fall back to a fully visible Fit.
-        .min(width_fill_zoom.max(1));
+    let preferred_viewport_zoom = width_fill_zoom.max(height_fill_zoom).clamp(
+        SIDE_PANEL_INLINE_IMAGE_MIN_ZOOM_PERCENT,
+        SIDE_PANEL_INLINE_IMAGE_MAX_AUTO_FILL_ZOOM_PERCENT,
+    );
     let fit_underutilized = rect_utilization_percent(fit_rect.width, fit_area.width)
         < SIDE_PANEL_INLINE_IMAGE_TARGET_UTILIZATION_PERCENT
         || rect_utilization_percent(fit_rect.height, fit_area.height)
