@@ -92,7 +92,6 @@ const INLINE_WIDGET_LIST_REFLOW_SHIFT_DURATION: Duration = Duration::from_millis
 const INLINE_WIDGET_LIST_REFLOW_EXIT_DURATION: Duration = Duration::from_millis(135);
 const INLINE_WIDGET_LIST_REFLOW_COLOR: [f32; 4] = [0.105, 0.355, 0.950, 0.090];
 const COMPOSER_MOTION_DURATION: Duration = Duration::from_millis(165);
-pub(crate) const COMPOSER_CARD_BACKGROUND_COLOR: [f32; 4] = [0.990, 0.994, 1.000, 0.420];
 pub(crate) const COMPOSER_FOCUS_RING_COLOR: [f32; 4] = [0.090, 0.250, 0.680, 0.185];
 pub(crate) const COMPOSER_PLACEHOLDER_RAIL_COLOR: [f32; 4] = [0.105, 0.185, 0.360, 0.185];
 pub(crate) const COMPOSER_SUBMIT_READY_COLOR: [f32; 4] = [0.105, 0.355, 0.950, 0.700];
@@ -984,26 +983,6 @@ fn push_single_session_composer_chrome(
     if rect.width <= 12.0 || rect.height <= 10.0 {
         return;
     }
-
-    let radius = 13.0;
-    let focus_alpha = COMPOSER_FOCUS_RING_COLOR[3]
-        * (0.38 + 0.62 * visual.focus_opacity)
-        * (1.0 - visual.blocked_progress * 0.42);
-    let halo_inset = -2.0 - 2.0 * visual.focus_opacity;
-    push_rounded_rect(
-        vertices,
-        inset_rect(rect, halo_inset),
-        radius + 3.0,
-        with_alpha(COMPOSER_FOCUS_RING_COLOR, focus_alpha),
-        size,
-    );
-
-    let card_color = mix_color(
-        COMPOSER_CARD_BACKGROUND_COLOR,
-        [0.970, 0.984, 1.000, COMPOSER_CARD_BACKGROUND_COLOR[3]],
-        visual.blocked_progress * 0.35,
-    );
-    push_rounded_rect(vertices, rect, radius, card_color, size);
 
     push_single_session_attachment_chips(vertices, app, size, rect, attachment_chip_motion);
 
