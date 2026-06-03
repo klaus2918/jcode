@@ -292,28 +292,23 @@ fn read_choice() -> String {
     input.trim().to_lowercase()
 }
 
-/// Show a one-time, non-interactive notice when the user is on the default
-/// built-in macOS Terminal.app, which renders jcode poorly.
+/// Pure decision for the macOS terminal notice, given the detected terminal.
 ///
-/// We deliberately only nudge for Terminal.app: other terminals (iTerm2,
-/// WezTerm, Alacritty, Ghostty, etc.) are fine, so we leave them alone. The
-/// notice is informational (no prompt, no AI handoff) and is shown at most once.
-#[cfg(target_os = "macos")]
-fn nudge_macos_ghostty(state: &mut SetupHintsState) -> Option<StartupHints> {
-    let terminal = effective_macos_terminal();
-
-    // Only the default built-in Terminal.app is worth nudging about. Mark every
-    // other terminal as handled so we never bother the user again.
-    if terminal != MacTerminalKind::AppleTerminal {
-        state.mac_ghostty_guided = true;
-        state.mac_ghostty_dismissed = true;
-        let _ = state.save();
-        return None;
-    }
-
+/// We deliberately only nudge for the default built-in Terminal.app: other
+/// terminals (iTerm2, WezTerm, Alacritty, Ghostty, etc.) are fine, so we leave
+/// them alone. Regardless of the result the nudge is marked handled so it is
+/// only ever shown once. The notice is informational (no prompt, no AI handoff).
+///
+/// This mutates `state`'s nudge flags but does not persist; the caller is
+/// responsible for saving.
+#[cfg(any(test, target_os = "macos"))]
+fn macos_terminal_notice(state: &mut SetupHintsState, terminal: MacTerminalKind) -> Option<StartupHints> {
     state.mac_ghostty_guided = true;
     state.mac_ghostty_dismissed = true;
-    let _ = state.save();
+
+    if terminal != MacTerminalKind::AppleTerminal {
+        return None;
+    }
 
     let message = "The built-in macOS Terminal.app renders jcode poorly (slow, limited colors, no inline images). Consider a modern terminal such as Ghostty, iTerm2, or Alacritty for a much better experience.".to_string();
 
@@ -322,6 +317,15 @@ fn nudge_macos_ghostty(state: &mut SetupHintsState) -> Option<StartupHints> {
         "Terminal",
         message,
     ))
+}
+
+/// macOS entry point: show the one-time Terminal.app notice for the effective
+/// terminal.
+#[cfg(target_os = "macos")]
+fn nudge_macos_ghostty(state: &mut SetupHintsState) -> Option<StartupHints> {
+    let hints = macos_terminal_notice(state, effective_macos_terminal());
+    let _ = state.save();
+    hints
 }
 
 /// Manual `jcode setup-hotkey` command.
