@@ -1648,18 +1648,20 @@ fn push_single_session_inline_widget_card(
             with_alpha(card_style.background, card_style.background[3] * progress),
             size,
         );
-        push_rounded_rect(
-            vertices,
-            Rect {
-                x: card_rect.x + 1.5,
-                y: card_rect.y + 1.5,
-                width: 3.0,
-                height: (card_rect.height - 3.0).max(0.0),
-            },
-            2.0,
-            with_alpha(card_style.accent, card_style.accent[3] * progress),
-            size,
-        );
+        if kind != Some(InlineWidgetKind::ModelPicker) {
+            push_rounded_rect(
+                vertices,
+                Rect {
+                    x: card_rect.x + 1.5,
+                    y: card_rect.y + 1.5,
+                    width: 3.0,
+                    height: (card_rect.height - 3.0).max(0.0),
+                },
+                2.0,
+                with_alpha(card_style.accent, card_style.accent[3] * progress),
+                size,
+            );
+        }
         push_rounded_rect(
             vertices,
             Rect {
@@ -2200,7 +2202,7 @@ fn push_inline_command_row_card(
         with_alpha(palette.border, palette.border[3] * reveal_progress),
         size,
     );
-    if palette.selected {
+    if palette.selected && !is_model {
         push_rounded_rect(
             vertices,
             Rect {
