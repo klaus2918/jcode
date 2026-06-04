@@ -390,3 +390,129 @@ fn flatten_schema_combiners_leaves_combiner_free_schema_unchanged() {
 
     assert_eq!(flatten_schema_combiners(&schema), schema);
 }
+
+#[test]
+fn model_is_gemini_detects_gemini_models_only() {
+    assert!(model_is_gemini("gemini-3-flash"));
+    assert!(model_is_gemini("gemini-2.5-pro"));
+    assert!(model_is_gemini("GEMINI-3-FLASH"));
+    assert!(!model_is_gemini("claude-sonnet-4-6"));
+    assert!(!model_is_gemini("gpt-oss-120b-medium"));
+    assert!(!model_is_gemini("default"));
+}
+
+#[test]
+fn strip_numeric_schema_bounds_drops_array_and_string_and_object_bounds() {
+    // Mirrors the real `batch` tool schema that the gpt-oss backend rejects
+    // because it re-encodes the integer bound as the string "10".
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "tool_calls": {
+                "type": "array",
+                "items": { "type": "object" },
+                "minItems": 1,
+                "maxItems": 10
+            },
+            "name": { "type": "string", "minLength": 1, "maxLength": 64 }
+        },
+        "minProperties": 1,
+        "maxProperties": 5
+    });
+
+    let stripped = strip_numeric_schema_bounds(&schema);
+
+    let tool_calls = &stripped["properties"]["tool_calls"];
+    assert!(tool_calls.get("minItems").is_none());
+    assert!(tool_calls.get("maxItems").is_none());
+    // Structural keys are preserved.
+    assert_eq!(tool_calls["type"], serde_json::json!("array"));
+    assert_eq!(tool_calls["items"]["type"], serde_json::json!("object"));
+
+    let name = &stripped["properties"]["name"];
+    assert!(name.get("minLength").is_none());
+    assert!(name.get("maxLength").is_none());
+    assert_eq!(name["type"], serde_json::json!("string"));
+
+    assert!(stripped.get("minProperties").is_none());
+    assert!(stripped.get("maxProperties").is_none());
+}
+
+#[test]
+fn antigravity_compatible_schema_passes_gemini_through_unchanged() {
+    // Gemini is the native backend path; it accepts everything jcode emits, so
+    // the schema must be byte-identical (combiners and numeric bounds intact).
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "status_filter": {
+                "anyOf": [
+                    { "type": "string" },
+                    { "items": { "type": "string" }, "type": "array" }
+                ]
+            },
+            "tool_calls": { "type": "array", "minItems": 1, "maxItems": 10 }
+        }
+    });
+
+    assert_eq!(
+        antigravity_compatible_schema(&schema, "gemini-3-flash"),
+        schema,
+        "Gemini path must not rewrite the schema"
+    );
+}
+
+#[test]
+fn antigravity_compatible_schema_flattens_combiners_for_claude_but_keeps_bounds() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "status_filter": {
+                "anyOf": [
+                    { "type": "string" },
+                    { "items": { "type": "string" }, "type": "array" }
+                ]
+            },
+            "tool_calls": { "type": "array", "minItems": 1, "maxItems": 10 }
+        }
+    });
+
+    let out = antigravity_compatible_schema(&schema, "claude-sonnet-4-6");
+
+    // Combiner collapsed (Anthropic strictness)...
+    assert!(out["properties"]["status_filter"].get("anyOf").is_none());
+    assert_eq!(
+        out["properties"]["status_filter"]["type"],
+        serde_json::json!("string")
+    );
+    // ...but numeric bounds are retained for Claude (it accepts them).
+    assert_eq!(out["properties"]["tool_calls"]["maxItems"], serde_json::json!(10));
+}
+
+#[test]
+fn antigravity_compatible_schema_strips_bounds_and_combiners_for_gpt_oss() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "status_filter": {
+                "anyOf": [
+                    { "type": "string" },
+                    { "items": { "type": "string" }, "type": "array" }
+                ]
+            },
+            "tool_calls": { "type": "array", "minItems": 1, "maxItems": 10 }
+        }
+    });
+
+    let out = antigravity_compatible_schema(&schema, "gpt-oss-120b-medium");
+
+    // Combiner collapsed AND numeric bounds dropped (OpenAI-compatible bridge).
+    assert!(out["properties"]["status_filter"].get("anyOf").is_none());
+    assert_eq!(
+        out["properties"]["status_filter"]["type"],
+        serde_json::json!("string")
+    );
+    assert!(out["properties"]["tool_calls"].get("minItems").is_none());
+    assert!(out["properties"]["tool_calls"].get("maxItems").is_none());
+    assert_eq!(out["properties"]["tool_calls"]["type"], serde_json::json!("array"));
+}
