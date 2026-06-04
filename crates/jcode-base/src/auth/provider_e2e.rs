@@ -1190,6 +1190,7 @@ pub enum NativeProviderKind {
     Cursor,
     Copilot,
     Bedrock,
+    Jcode,
 }
 
 impl NativeProviderKind {
@@ -1201,6 +1202,7 @@ impl NativeProviderKind {
             "cursor" => Some(Self::Cursor),
             "copilot" => Some(Self::Copilot),
             "bedrock" => Some(Self::Bedrock),
+            "jcode" => Some(Self::Jcode),
             _ => None,
         }
     }
@@ -1277,6 +1279,24 @@ impl NativeProviderKind {
                 auth_env_key: Some("AWS_BEARER_TOKEN_BEDROCK"),
                 login_hint: "jcode login --provider bedrock",
             },
+            Self::Jcode => NativeProviderSpec {
+                provider_id: "jcode",
+                label: "Jcode Subscription",
+                // The Jcode subscription runtime routes through the OpenRouter
+                // transport, so its catalog routes carry the `openrouter`
+                // api_method/label and switch with the `openrouter:` prefix even
+                // though its runtime identity is `jcode`.
+                contract: WiringContract {
+                    api_method: "openrouter".to_string(),
+                    route_provider: "auto".to_string(),
+                    expected_runtime: "jcode",
+                    expected_namespace: None,
+                    switch_prefix: "openrouter:".to_string(),
+                },
+                auth_source: "Jcode subscription API key (JCODE_API_KEY)",
+                auth_env_key: Some("JCODE_API_KEY"),
+                login_hint: "jcode login --provider jcode",
+            },
         }
     }
 
@@ -1317,6 +1337,9 @@ impl NativeProviderKind {
             }
             Self::Bedrock => {
                 std::sync::Arc::new(crate::provider::bedrock::BedrockProvider::new())
+            }
+            Self::Jcode => {
+                std::sync::Arc::new(crate::provider::jcode::JcodeProvider::new())
             }
         };
         Ok(runtime)
@@ -1370,6 +1393,15 @@ impl NativeProviderKind {
                 }
                 Ok("AWS Bedrock credential resolved".to_string())
             }
+            Self::Jcode => {
+                if !crate::subscription_catalog::has_credentials() {
+                    anyhow::bail!(
+                        "no Jcode subscription credential found (set JCODE_API_KEY or run \
+                         `jcode login --provider jcode`)"
+                    );
+                }
+                Ok("Jcode subscription credential resolved".to_string())
+            }
         }
     }
 
@@ -1388,6 +1420,7 @@ impl NativeProviderKind {
             Self::Cursor => &["composer", "fast", "mini"],
             Self::Copilot => &["mini", "haiku", "flash", "fast"],
             Self::Bedrock => &["haiku", "micro", "lite", "mini", "flash"],
+            Self::Jcode => &["mini", "flash", "haiku", "lite", "nano"],
         };
         for marker in cheap_markers {
             if let Some(model) = catalog
