@@ -1191,6 +1191,7 @@ pub enum NativeProviderKind {
     Copilot,
     Bedrock,
     Jcode,
+    Azure,
 }
 
 impl NativeProviderKind {
@@ -1203,6 +1204,7 @@ impl NativeProviderKind {
             "copilot" => Some(Self::Copilot),
             "bedrock" => Some(Self::Bedrock),
             "jcode" => Some(Self::Jcode),
+            "azure-openai" => Some(Self::Azure),
             _ => None,
         }
     }
@@ -1297,6 +1299,24 @@ impl NativeProviderKind {
                 auth_env_key: Some("JCODE_API_KEY"),
                 login_hint: "jcode login --provider jcode",
             },
+            Self::Azure => NativeProviderSpec {
+                provider_id: "azure-openai",
+                label: "Azure OpenAI",
+                // Azure OpenAI reuses the OpenRouter transport (configured via
+                // Azure env), so its routes carry the generic `openrouter`
+                // api_method/label and switch with the `openrouter:` prefix while
+                // keeping the `azure-openai` runtime identity.
+                contract: WiringContract {
+                    api_method: "openrouter".to_string(),
+                    route_provider: "auto".to_string(),
+                    expected_runtime: "azure-openai",
+                    expected_namespace: None,
+                    switch_prefix: "openrouter:".to_string(),
+                },
+                auth_source: "Azure OpenAI API key / Entra ID (AZURE_OPENAI_*)",
+                auth_env_key: Some("AZURE_OPENAI_API_KEY"),
+                login_hint: "jcode login --provider azure",
+            },
         }
     }
 
@@ -1304,6 +1324,7 @@ impl NativeProviderKind {
     /// Returns an error only when the runtime cannot be constructed at all (e.g.
     /// Copilot with no credential file); model selection happens later.
     fn build_runtime(self) -> anyhow::Result<std::sync::Arc<dyn crate::provider::Provider>> {
+        use anyhow::Context as _;
         use crate::provider::Provider;
         let runtime: std::sync::Arc<dyn Provider> = match self {
             Self::OpenAi => {
@@ -1340,6 +1361,22 @@ impl NativeProviderKind {
             }
             Self::Jcode => {
                 std::sync::Arc::new(crate::provider::jcode::JcodeProvider::new())
+            }
+            Self::Azure => {
+                // Azure OpenAI is the OpenRouter transport configured via Azure
+                // env; apply that env (endpoint/key/header wiring) before building
+                // so the runtime points at the user's Azure deployment.
+                crate::auth::azure::apply_runtime_env()
+                    .context("apply Azure OpenAI runtime env")?;
+                let runtime = crate::provider::openrouter::OpenRouterProvider::new()
+                    .context("construct Azure OpenAI (OpenRouter transport) runtime")?;
+                // Azure exposes a single user-configured deployment rather than a
+                // live catalog; pin the runtime to it so the catalog/picker
+                // checks have a model to assert.
+                if let Some(model) = crate::auth::azure::load_model() {
+                    let _ = runtime.set_model(&model);
+                }
+                std::sync::Arc::new(runtime)
             }
         };
         Ok(runtime)
@@ -1402,6 +1439,18 @@ impl NativeProviderKind {
                 }
                 Ok("Jcode subscription credential resolved".to_string())
             }
+            Self::Azure => {
+                if !crate::auth::azure::has_configuration() {
+                    anyhow::bail!(
+                        "Azure OpenAI is not fully configured (need AZURE_OPENAI_ENDPOINT plus an \
+                         API key or Entra ID); run `jcode login --provider azure`"
+                    );
+                }
+                Ok(format!(
+                    "Azure OpenAI configured ({})",
+                    crate::auth::azure::method_detail()
+                ))
+            }
         }
     }
 
@@ -1421,6 +1470,7 @@ impl NativeProviderKind {
             Self::Copilot => &["mini", "haiku", "flash", "fast"],
             Self::Bedrock => &["haiku", "micro", "lite", "mini", "flash"],
             Self::Jcode => &["mini", "flash", "haiku", "lite", "nano"],
+            Self::Azure => &["mini", "nano", "flash", "haiku"],
         };
         for marker in cheap_markers {
             if let Some(model) = catalog
