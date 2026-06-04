@@ -589,7 +589,7 @@ async fn consume_native_stream(
         let mut pending_tool: Option<NativeClaudeToolCall> = None;
         while let Some(event) = stream.next().await {
             outcome.total_events += 1;
-            match event.context("native Claude stream event error")? {
+            match event.context("native provider stream event error")? {
                 StreamEvent::TextDelta(text) => {
                     outcome.chunk_count += 1;
                     outcome.text.push_str(&text);
@@ -659,7 +659,7 @@ async fn consume_native_stream(
         Ok(outcome)
     })
     .await
-    .context("native Claude stream timed out")?
+    .context("native provider stream timed out")?
 }
 
 /// Stage: non-streaming chat completion.
