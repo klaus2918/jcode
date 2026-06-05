@@ -5815,10 +5815,21 @@ fn benchmark_real_transcript_actions(
 
     // 8. Streaming response growth while scrolled near the bottom: a synthetic
     //    assistant reply grows by a chunk each frame, the live-streaming case.
+    //
+    //    This mirrors the production renderer's incremental path
+    //    (`cached_single_session_body_lines` for the streaming branch): the
+    //    static transcript body is wrapped ONCE, then each frame only truncates
+    //    back to the static base and appends the wrapped streaming tail, rather
+    //    than re-wrapping the whole transcript every frame.
     {
         let mut app = base_app.clone();
         app.scroll_body_to_bottom();
+        app.streaming_response.push_str("Streaming response starting. ");
         let mut font_system = benchmark_font_system();
+        let static_base = single_session_rendered_static_body_lines_for_streaming(&app, size, 0)
+            .unwrap_or_else(|| single_session_rendered_body_lines_for_tick(&app, size, 0));
+        let static_len = static_base.len();
+        let mut stream_lines = static_base.clone();
         let (samples, _) = benchmark_frame_samples(frames, |frame| {
             app.streaming_response.push_str(
                 "Streaming update chunk with `inline code` and prose that wraps across lines. ",
@@ -5826,16 +5837,27 @@ fn benchmark_real_transcript_actions(
             if frame % 9 == 0 {
                 app.streaming_response.push('\n');
             }
-            let lines = single_session_rendered_body_lines_for_tick(&app, size, frame as u64);
-            let viewport = single_session_body_viewport_from_lines(&app, size, 0.0, &lines);
-            let key =
-                single_session_text_key_for_tick_with_rendered_body(&app, size, 0, 0.0, &lines);
+            // Incremental: reuse the wrapped static base, only re-wrap the tail.
+            stream_lines.truncate(static_len);
+            append_single_session_streaming_response_rendered_body_lines(
+                &app,
+                size,
+                &mut stream_lines,
+            );
+            let viewport = single_session_body_viewport_from_lines(&app, size, 0.0, &stream_lines);
+            let key = single_session_text_key_for_tick_with_rendered_body(
+                &app,
+                size,
+                0,
+                0.0,
+                &stream_lines,
+            );
             let mut buffers = single_session_text_buffers_from_key(&key, size, &mut font_system);
             let (window_start, window_end) = single_session_body_text_window_bounds(&viewport);
             if let Some(body_buffer) = buffers.get_mut(1) {
                 *body_buffer = single_session_body_text_buffer_from_lines(
                     &mut font_system,
-                    &lines[window_start..window_end],
+                    &stream_lines[window_start..window_end],
                     size,
                     app.text_scale(),
                 );
@@ -5844,7 +5866,13 @@ fn benchmark_real_transcript_actions(
                 &app, &buffers, size, 0.0, viewport,
             );
             let vertices = build_single_session_vertices_with_cached_body(
-                &app, size, 0.0, frame as u64, 0.0, 1.0, &lines,
+                &app,
+                size,
+                0.0,
+                frame as u64,
+                0.0,
+                1.0,
+                &stream_lines,
             );
             buffers.len() ^ areas.len() ^ vertices.len()
         });
