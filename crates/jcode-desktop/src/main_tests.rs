@@ -702,6 +702,24 @@ fn desktop_background_wake_only_tracks_active_frame_animation() {
 }
 
 #[test]
+fn next_animation_redraw_paces_active_animations_and_settles_when_idle() {
+    let now = Instant::now();
+
+    // While an animation is active, the next redraw is scheduled one frame
+    // interval out rather than immediately, so the loop does not busy-spin.
+    assert_eq!(
+        next_animation_redraw_at(now, true),
+        Some(now + DESKTOP_ANIMATION_FRAME_INTERVAL)
+    );
+    // Once the animation settles, no further redraw is scheduled and the loop
+    // can park on ControlFlow::Wait.
+    assert_eq!(next_animation_redraw_at(now, false), None);
+    // The pacing interval must be positive; a zero interval would reintroduce
+    // the busy-spin it exists to prevent.
+    assert!(DESKTOP_ANIMATION_FRAME_INTERVAL > Duration::ZERO);
+}
+
+#[test]
 fn desktop_async_job_slots_are_bounded_and_released() -> Result<()> {
     let counter = std::sync::atomic::AtomicUsize::new(0);
     let first = try_acquire_desktop_async_job_slot(&counter, 2)?;

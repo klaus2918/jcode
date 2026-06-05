@@ -145,6 +145,16 @@ const SINGLE_SESSION_CARET_COLOR: [f32; 4] = [0.130, 0.150, 0.190, 0.92];
 const SESSION_SPAWN_REFRESH_DELAY: Duration = Duration::from_millis(350);
 const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(33);
 const BACKEND_REDRAW_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// Minimum spacing between animation-driven redraws.
+///
+/// Without this, the desktop render loop re-requests a redraw immediately after
+/// every animated frame (welcome-hero reveal, focus pulse, spinners, smooth
+/// scroll, etc.). Because the surface uses non-blocking `Mailbox` presentation,
+/// `present()` returns instantly, so the unthrottled loop renders at hundreds of
+/// fps and pins the main thread near 100% CPU, starving input handling and the
+/// compositor (the root cause of desktop lag/jank). ~16ms paces continuous
+/// animations to about 60fps, matching typical display refresh.
+const DESKTOP_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const SURFACE_TIMEOUT_BACKOFF_MIN: Duration = Duration::from_millis(16);
 const SURFACE_TIMEOUT_BACKOFF_MAX: Duration = Duration::from_millis(250);
 const HEADLESS_CHAT_SMOKE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -381,6 +391,17 @@ fn desktop_background_wake(
     } else {
         None
     }
+}
+
+/// Compute the next paced animation redraw time.
+///
+/// Returns `Some(now + DESKTOP_ANIMATION_FRAME_INTERVAL)` while an animation is
+/// active and `None` once it settles. Callers schedule this instead of calling
+/// `request_redraw()` immediately, which would render as fast as the CPU allows
+/// (the surface presents without blocking) and pin the main thread near 100%
+/// CPU, starving input handling and the compositor.
+fn next_animation_redraw_at(now: Instant, animation_active: bool) -> Option<Instant> {
+    animation_active.then(|| now + DESKTOP_ANIMATION_FRAME_INTERVAL)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -799,6 +820,10 @@ async fn run() -> Result<()> {
     let mut pending_backend_redraw_since: Option<Instant> = None;
     let mut surface_timeout_backoff = SurfaceTimeoutBackoff::default();
     let mut surface_timeout_redraw_at: Option<Instant> = None;
+    // Scheduled time for the next animation-driven redraw. Continuous animations
+    // re-arm this each presented frame so the loop paces itself to roughly the
+    // display refresh rate instead of busy-spinning the main thread.
+    let mut animation_redraw_at: Option<Instant> = None;
     let mut pending_resize: Option<PhysicalSize<u32>> = None;
     let mut space_hold_started_at: Option<Instant> = None;
     let mut space_hold_consumed = false;
@@ -845,6 +870,7 @@ async fn run() -> Result<()> {
             hot_reload_wake,
             space_hold_wake,
             surface_timeout_redraw_at,
+            animation_redraw_at,
         ]
             .into_iter()
             .flatten()
@@ -1608,9 +1634,14 @@ async fn run() -> Result<()> {
                             target.exit();
                             return;
                         }
-                        if frame.animation_active {
-                            window.request_redraw();
-                        }
+                        // Pace continuous animations instead of immediately
+                        // re-requesting a redraw. An immediate request makes the
+                        // event loop render as fast as the CPU allows (the surface
+                        // presents without blocking), pinning the main thread near
+                        // 100% CPU and starving input/compositor scheduling. The
+                        // scheduled wake is serviced in AboutToWait.
+                        animation_redraw_at =
+                            next_animation_redraw_at(Instant::now(), frame.animation_active);
                     }
                     Err(SurfaceError::Lost | SurfaceError::Outdated) => {
                         surface_timeout_backoff.reset();
@@ -1841,6 +1872,18 @@ async fn run() -> Result<()> {
                         }
                     }
                 }
+                // Service the paced animation redraw scheduled by RedrawRequested.
+                // This keeps continuous animations advancing at ~display refresh
+                // without busy-spinning the loop between frames.
+                if let Some(redraw_at) = animation_redraw_at {
+                    let now = Instant::now();
+                    if now >= redraw_at {
+                        animation_redraw_at = None;
+                        if surface_renderable {
+                            window.request_redraw();
+                        }
+                    }
+                }
                 if surface_renderable && app.is_single_session() {
                     let about_to_wait_started = Instant::now();
                     let size = window.inner_size();
@@ -1909,8 +1952,15 @@ async fn run() -> Result<()> {
                 {
                     canvas.needs_initial_frame = false;
                     window.request_redraw();
-                } else if surface_renderable && app.has_frame_animation() {
-                    window.request_redraw();
+                } else if surface_renderable
+                    && app.has_frame_animation()
+                    && animation_redraw_at.is_none()
+                {
+                    // An animation is active but no paced redraw is scheduled yet
+                    // (e.g. it just became active). Schedule one instead of
+                    // requesting a redraw on every loop iteration, which would
+                    // busy-spin the main thread at 100% CPU.
+                    animation_redraw_at = next_animation_redraw_at(Instant::now(), true);
                 }
             }
             _ => {}
