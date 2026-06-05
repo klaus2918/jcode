@@ -195,6 +195,11 @@ export async function getStats(env) {
     FROM events WHERE is_ci = 0 AND os IS NOT NULL
     GROUP BY os ORDER BY users DESC
   `);
+  const arch = await many(env, `
+    SELECT (COALESCE(os,'?') || ' / ' || COALESCE(arch,'?')) AS platform, COUNT(DISTINCT telemetry_id) AS users
+    FROM events WHERE is_ci = 0 AND os IS NOT NULL
+    GROUP BY os, arch ORDER BY users DESC LIMIT 12
+  `);
   const channels = await many(env, `
     SELECT COALESCE(build_channel,'unknown') AS build_channel, COUNT(DISTINCT telemetry_id) AS users
     FROM events WHERE event IN ('session_end','session_crash')
@@ -214,6 +219,48 @@ export async function getStats(env) {
     SELECT step, COUNT(DISTINCT telemetry_id) AS users
     FROM events WHERE event = 'onboarding_step' AND is_ci = 0 AND step IS NOT NULL
     GROUP BY step ORDER BY users DESC
+  `);
+
+  // --- Usage timing: session starts by UTC hour ---------------------------
+  const hours = await many(env, `
+    SELECT session_start_hour_utc AS hour, COUNT(*) AS sessions
+    FROM events
+    WHERE event = 'session_start' AND is_ci = 0 AND session_start_hour_utc IS NOT NULL
+    GROUP BY session_start_hour_utc ORDER BY session_start_hour_utc
+  `);
+
+  // --- Data health: identity reconciliation + duplicate/skew signals ------
+  // These are *not* product metrics; they tell you whether the pipeline is
+  // healthy (events arriving, ids matching installs, no single id dominating).
+  const health = await one(env, `
+    WITH lifecycle AS (
+      SELECT telemetry_id FROM events WHERE event IN ('session_end','session_crash')
+    ), install_ids AS (
+      SELECT DISTINCT telemetry_id FROM events WHERE event = 'install'
+    )
+    SELECT
+      (SELECT COUNT(DISTINCT telemetry_id) FROM lifecycle) AS lifecycle_ids,
+      (SELECT COUNT(DISTINCT telemetry_id) FROM events WHERE event = 'session_start') AS session_start_ids,
+      (SELECT COUNT(DISTINCT l.telemetry_id) FROM lifecycle l
+         LEFT JOIN install_ids i ON i.telemetry_id = l.telemetry_id
+         WHERE i.telemetry_id IS NULL) AS lifecycle_ids_without_install
+  `);
+  const skew = await one(env, `
+    SELECT
+      MAX(c) AS max_session_events_one_id,
+      SUM(c) AS total_session_events,
+      (SELECT SUM(c2) FROM (SELECT c AS c2 FROM (
+         SELECT telemetry_id, COUNT(*) AS c FROM events
+         WHERE event IN ('session_end','session_crash')
+         GROUP BY telemetry_id ORDER BY c DESC LIMIT 5))) AS top5_session_events
+    FROM (SELECT telemetry_id, COUNT(*) AS c FROM events
+          WHERE event IN ('session_end','session_crash') GROUP BY telemetry_id)
+  `);
+  const meaningfulSessions = await one(env, `
+    SELECT COUNT(*) AS meaningful_sessions
+    FROM events
+    WHERE event IN ('session_end','session_crash') AND is_ci = 0
+      AND created_at > datetime('now','-30 days') AND ${MEANINGFUL_SQL}
   `);
 
   // --- Daily timeseries (last 60 days) for charts -------------------------
@@ -262,12 +309,13 @@ export async function getStats(env) {
     active,
     lifecycle: { ...lifecycle, lifecycle_completion_ratio: lifecycleCompletion, crash_rate: crashRate },
     retention: { ...retention, d7_retention: d7Retention },
-    quality,
+    quality: { ...quality, meaningful_sessions_30d: meaningfulSessions.meaningful_sessions || 0 },
     turns,
     errors,
     features,
     transport,
-    breakdowns: { versions, os, channels, providers, auth, onboarding },
+    breakdowns: { versions, os, arch, channels, providers, auth, onboarding, hours },
+    health: { ...health, ...skew },
     timeseries: { daily, installs: dailyInstalls },
     feedback,
   };
