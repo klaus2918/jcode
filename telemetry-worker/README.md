@@ -67,11 +67,17 @@ npm run health
 # Total installs
 wrangler d1 execute jcode-telemetry --command "SELECT COUNT(DISTINCT telemetry_id) FROM events WHERE event = 'install'"
 
-# Raw active users this week
-wrangler d1 execute jcode-telemetry --command "SELECT COUNT(DISTINCT telemetry_id) FROM events WHERE event = 'session_end' AND created_at > datetime('now', '-7 days')"
+# Weekly / monthly active users (canonical: use the rollup so every window
+# shares one "meaningful" definition and includes session_crash + turn_end days).
+# WAU (last 7 UTC days):
+wrangler d1 execute jcode-telemetry --command "SELECT COUNT(DISTINCT telemetry_id) AS raw_wau, COUNT(DISTINCT CASE WHEN meaningful_active > 0 THEN telemetry_id END) AS meaningful_wau, COUNT(DISTINCT CASE WHEN meaningful_release_active > 0 THEN telemetry_id END) AS meaningful_release_wau FROM daily_active_users WHERE activity_date > date('now', '-7 days')"
 
-# Meaningful active users this week (filters out empty open/close sessions)
-wrangler d1 execute jcode-telemetry --command "SELECT COUNT(DISTINCT telemetry_id) FROM events WHERE event = 'session_end' AND created_at > datetime('now', '-7 days') AND (turns > 0 OR duration_mins > 0 OR error_provider_timeout > 0 OR error_auth_failed > 0 OR error_tool_error > 0 OR error_mcp_error > 0 OR error_rate_limited > 0 OR provider_switches > 0 OR model_switches > 0)"
+# MAU (last 30 UTC days):
+wrangler d1 execute jcode-telemetry --command "SELECT COUNT(DISTINCT telemetry_id) AS raw_mau, COUNT(DISTINCT CASE WHEN meaningful_active > 0 THEN telemetry_id END) AS meaningful_mau, COUNT(DISTINCT CASE WHEN meaningful_release_active > 0 THEN telemetry_id END) AS meaningful_release_mau FROM daily_active_users WHERE activity_date > date('now', '-30 days')"
+
+# Raw vs meaningful active users this week, directly from raw events (matches the
+# rollup definition: counts session_end/session_crash AND turn_end activity).
+wrangler d1 execute jcode-telemetry --command "SELECT COUNT(DISTINCT telemetry_id) AS raw_wau, COUNT(DISTINCT CASE WHEN (event IN ('session_end','session_crash') AND (turns > 0 OR had_user_prompt > 0 OR had_assistant_response > 0 OR assistant_responses > 0 OR tool_calls > 0 OR executed_tool_calls > 0 OR duration_secs > 0 OR error_provider_timeout > 0 OR error_auth_failed > 0 OR error_tool_error > 0 OR error_mcp_error > 0 OR error_rate_limited > 0 OR provider_switches > 0 OR model_switches > 0)) OR (event = 'turn_end' AND (assistant_responses > 0 OR tool_calls > 0 OR executed_tool_calls > 0 OR file_write_calls > 0 OR tests_run > 0 OR turn_success > 0)) THEN telemetry_id END) AS meaningful_wau FROM events WHERE event IN ('session_end','session_crash','turn_end') AND created_at > datetime('now', '-7 days')"
 
 # Provider distribution for meaningful sessions
 wrangler d1 execute jcode-telemetry --command "SELECT provider_end, COUNT(*) as sessions FROM events WHERE event = 'session_end' AND (turns > 0 OR duration_mins > 0 OR error_provider_timeout > 0 OR error_auth_failed > 0 OR error_tool_error > 0 OR error_mcp_error > 0 OR error_rate_limited > 0 OR provider_switches > 0 OR model_switches > 0) GROUP BY provider_end ORDER BY sessions DESC"
