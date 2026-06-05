@@ -36,8 +36,31 @@ falls back to `direct`.
 |---|---|---|
 | `COMPOSIO_API_KEY` | Yes | Project API key from <https://platform.composio.dev> |
 | `COMPOSIO_BASE_URL` | No | Override API base (default `https://backend.composio.dev/api/v3.1`) |
-| `COMPOSIO_GMAIL_CONNECTED_ACCOUNT_ID` | No | Pin a specific connected account (`ca_...`) |
-| `COMPOSIO_GMAIL_USER_ID` / `COMPOSIO_USER_ID` | No | End-user id for multi-user connected accounts |
+| `COMPOSIO_GMAIL_AUTH_CONFIG_ID` | For `connect` | Gmail auth config id (`ac_...`) from the Composio dashboard. Defines the OAuth blueprint/scopes used by the connect flow. |
+| `COMPOSIO_GMAIL_CONNECTED_ACCOUNT_ID` | No | Pin a specific connected account (`ca_...`). Normally set automatically after `connect`. |
+| `COMPOSIO_GMAIL_USER_ID` / `COMPOSIO_USER_ID` | No | End-user id for multi-user connected accounts (defaults to `default`) |
+
+## Connecting a Gmail account (in-agent OAuth)
+
+Once `COMPOSIO_API_KEY` and `COMPOSIO_GMAIL_AUTH_CONFIG_ID` are set, the user
+(or the agent) runs the gmail tool with `action: "connect"`:
+
+1. jcode calls Composio's `POST /connected_accounts/link` (hosted "Connect
+   Link" flow) to start an OAuth session.
+2. The returned `redirect_url` is opened in the system browser (printed to
+   stderr as a fallback, e.g. over SSH).
+3. The user approves Gmail access on Google's consent screen. Because Composio
+   owns a Google-verified app, there is no "unverified app" warning.
+4. jcode polls `GET /connected_accounts/{id}` until the connection is `ACTIVE`,
+   then persists it to `~/.jcode/composio_gmail.json`.
+
+Future sessions load the persisted `connected_account_id`, so the connect step
+is a one-time action per account. Tool calls before a connection exists return
+a hint telling the agent to run `action: "connect"` first.
+
+> Note: Composio is retiring `initiate()` for managed OAuth in favor of the
+> Connect Link `link()` flow used here, so this path is the supported one going
+> forward.
 
 ## One-time Composio setup
 

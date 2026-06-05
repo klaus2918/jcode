@@ -26,6 +26,10 @@ pub struct ComposioConfig {
     pub base_url: String,
     pub connected_account_id: Option<String>,
     pub user_id: Option<String>,
+    /// Auth config that defines the Gmail OAuth blueprint (scopes + managed
+    /// Composio app). Required to initiate a Connect Link flow. Falls back to
+    /// a persisted value or `COMPOSIO_GMAIL_AUTH_CONFIG_ID`.
+    pub auth_config_id: Option<String>,
 }
 
 impl GmailBackend {
@@ -64,20 +68,73 @@ impl ComposioConfig {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| COMPOSIO_DEFAULT_BASE.to_string());
+        // A previously completed Connect Link flow persists the connection so
+        // the user does not have to re-run setup each session.
+        let persisted = ComposioConnection::load().ok().flatten();
         let connected_account_id = std::env::var("COMPOSIO_GMAIL_CONNECTED_ACCOUNT_ID")
             .ok()
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .or_else(|| persisted.as_ref().map(|p| p.connected_account_id.clone()));
         let user_id = std::env::var("COMPOSIO_GMAIL_USER_ID")
             .or_else(|_| std::env::var("COMPOSIO_USER_ID"))
             .ok()
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .or_else(|| persisted.as_ref().map(|p| p.user_id.clone()));
+        let auth_config_id = std::env::var("COMPOSIO_GMAIL_AUTH_CONFIG_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| persisted.as_ref().and_then(|p| p.auth_config_id.clone()));
         Some(Self {
             api_key,
             base_url,
             connected_account_id,
             user_id,
+            auth_config_id,
         })
     }
+
+    /// Effective user id, defaulting to "default" so a single-user CLI works
+    /// without any extra configuration.
+    pub fn effective_user_id(&self) -> String {
+        self.user_id.clone().unwrap_or_else(|| "default".to_string())
+    }
+}
+
+/// Persisted record of a completed Composio Gmail connection, stored at
+/// `~/.jcode/composio_gmail.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComposioConnection {
+    pub connected_account_id: String,
+    pub user_id: String,
+    pub auth_config_id: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+}
+
+impl ComposioConnection {
+    pub fn path() -> Result<std::path::PathBuf> {
+        Ok(crate::storage::jcode_dir()?.join("composio_gmail.json"))
+    }
+
+    pub fn load() -> Result<Option<Self>> {
+        let path = Self::path()?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        crate::storage::harden_secret_file_permissions(&path);
+        Ok(crate::storage::read_json(&path).ok())
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = Self::path()?;
+        crate::storage::write_json_secret(&path, self)
+    }
+}
+
+/// Result of initiating a Connect Link OAuth flow.
+pub struct ComposioLink {
+    pub connected_account_id: String,
+    pub redirect_url: String,
 }
 
 pub struct GmailClient {
@@ -149,6 +206,164 @@ impl GmailClient {
                  Gmail account in Composio, then retry."
             }
         }
+    }
+
+    /// True only for the Composio backend when no connected account exists yet.
+    /// In that state, Gmail calls will fail until the user completes the
+    /// Connect Link OAuth flow via [`GmailClient::connect`].
+    pub fn needs_connection(&self) -> bool {
+        matches!(&self.backend, GmailBackend::Composio(cfg) if cfg.connected_account_id.is_none())
+    }
+
+    /// Whether the active backend supports an interactive `connect` action.
+    pub fn supports_connect(&self) -> bool {
+        matches!(&self.backend, GmailBackend::Composio(_))
+    }
+
+    /// Initiate a Composio Connect Link OAuth flow, open the consent screen in
+    /// the user's browser, wait for them to approve, then persist the resulting
+    /// connected account so future sessions are already authenticated.
+    ///
+    /// `open_browser` controls whether we try to launch the system browser
+    /// (set false over SSH/headless; the URL is always returned).
+    pub async fn connect(&self, open_browser: bool) -> Result<ComposioConnection> {
+        let cfg = match &self.backend {
+            GmailBackend::Composio(cfg) => cfg,
+            GmailBackend::Direct => {
+                anyhow::bail!(
+                    "The Composio connect flow is only available when JCODE_GMAIL_BACKEND=composio."
+                )
+            }
+        };
+        let auth_config_id = cfg.auth_config_id.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "No Composio Gmail auth config configured. Create a Gmail auth config in the \
+                 Composio dashboard and set COMPOSIO_GMAIL_AUTH_CONFIG_ID."
+            )
+        })?;
+        let user_id = cfg.effective_user_id();
+
+        let link = self.create_link(cfg, &auth_config_id, &user_id).await?;
+        if open_browser {
+            let _ = open::that(&link.redirect_url);
+        }
+        eprintln!(
+            "\nOpening Gmail authorization in your browser. If it did not open, visit:\n{}\n",
+            link.redirect_url
+        );
+
+        let account = self
+            .wait_for_connection(cfg, &link.connected_account_id)
+            .await?;
+
+        let email = account
+            .get("data")
+            .and_then(|d| d.get("email"))
+            .or_else(|| account.get("email"))
+            .and_then(|e| e.as_str())
+            .map(|s| s.to_string());
+
+        let connection = ComposioConnection {
+            connected_account_id: link.connected_account_id,
+            user_id,
+            auth_config_id: Some(auth_config_id),
+            email,
+        };
+        connection.save()?;
+        Ok(connection)
+    }
+
+    /// Create a hosted Connect Link auth session.
+    async fn create_link(
+        &self,
+        cfg: &ComposioConfig,
+        auth_config_id: &str,
+        user_id: &str,
+    ) -> Result<ComposioLink> {
+        let endpoint = format!("{}/connected_accounts/link", cfg.base_url.trim_end_matches('/'));
+        let payload = json!({
+            "auth_config_id": auth_config_id,
+            "user_id": user_id,
+        });
+        let resp = self
+            .http
+            .post(&endpoint)
+            .header("x-api-key", &cfg.api_key)
+            .json(&payload)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(anyhow::anyhow!(
+                "Composio connect-link error {}: {}",
+                status,
+                truncate_error(&text)
+            ));
+        }
+        let body: Value = serde_json::from_str(&text)?;
+        let redirect_url = body
+            .get("redirect_url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Composio did not return a redirect_url"))?
+            .to_string();
+        let connected_account_id = body
+            .get("connected_account_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Composio did not return a connected_account_id"))?
+            .to_string();
+        Ok(ComposioLink {
+            connected_account_id,
+            redirect_url,
+        })
+    }
+
+    /// Poll a connected account until it becomes ACTIVE (or a terminal error).
+    async fn wait_for_connection(
+        &self,
+        cfg: &ComposioConfig,
+        connected_account_id: &str,
+    ) -> Result<Value> {
+        // INITIATED links auto-expire after ~10 minutes; poll up to ~5 minutes.
+        const MAX_ATTEMPTS: u32 = 150;
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+        let endpoint = format!(
+            "{}/connected_accounts/{}",
+            cfg.base_url.trim_end_matches('/'),
+            connected_account_id
+        );
+        for _ in 0..MAX_ATTEMPTS {
+            let resp = self
+                .http
+                .get(&endpoint)
+                .header("x-api-key", &cfg.api_key)
+                .send()
+                .await?;
+            if resp.status().is_success() {
+                let body: Value = resp.json().await?;
+                let status = body
+                    .get("status")
+                    .or_else(|| body.get("data").and_then(|d| d.get("status")))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("");
+                match status {
+                    "ACTIVE" => return Ok(body),
+                    "FAILED" | "EXPIRED" => {
+                        let reason = body
+                            .get("status_reason")
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("no reason provided");
+                        anyhow::bail!("Gmail connection {}: {}", status, reason);
+                    }
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+        anyhow::bail!(
+            "Timed out waiting for Gmail authorization. Re-run the connect action and finish the \
+             browser consent within a few minutes."
+        )
     }
 
     /// Send an authenticated Gmail REST request and return the parsed JSON
@@ -645,6 +860,7 @@ mod tests {
             base_url: COMPOSIO_DEFAULT_BASE.to_string(),
             connected_account_id: Some("ca_123".to_string()),
             user_id: Some("me".to_string()),
+            auth_config_id: Some("ac_123".to_string()),
         }
     }
 
@@ -675,6 +891,7 @@ mod tests {
             base_url: COMPOSIO_DEFAULT_BASE.to_string(),
             connected_account_id: None,
             user_id: None,
+            auth_config_id: None,
         };
         let payload = build_composio_proxy_payload(&bare, "GET", "http://x/y", None);
         assert!(payload.get("connected_account_id").is_none());
@@ -707,5 +924,33 @@ mod tests {
         let capped = truncate_error(&long);
         assert!(capped.len() <= 401 + 3); // 400 chars + ellipsis byte
         assert!(capped.ends_with('…'));
+    }
+
+    #[test]
+    fn needs_connection_reflects_connected_account_presence() {
+        // Composio without a connected account needs an interactive connect.
+        let mut without = cfg();
+        without.connected_account_id = None;
+        let client = GmailClient::with_backend(GmailBackend::Composio(without));
+        assert!(client.supports_connect());
+        assert!(client.needs_connection());
+
+        // With a connected account it is ready to make calls.
+        let client = GmailClient::with_backend(GmailBackend::Composio(cfg()));
+        assert!(!client.needs_connection());
+
+        // Direct backend never needs a Composio connection and cannot connect.
+        let direct = GmailClient::with_backend(GmailBackend::Direct);
+        assert!(!direct.supports_connect());
+        assert!(!direct.needs_connection());
+    }
+
+    #[test]
+    fn effective_user_id_defaults_to_default() {
+        let mut c = cfg();
+        c.user_id = None;
+        assert_eq!(c.effective_user_id(), "default");
+        c.user_id = Some("alice".to_string());
+        assert_eq!(c.effective_user_id(), "alice");
     }
 }
