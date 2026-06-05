@@ -1348,6 +1348,13 @@ impl NativeProviderKind {
                 // token so the offline tier can still construct the runtime for
                 // its static catalog. Live tiers resolve the real credential
                 // separately and fail with a clear message if it is missing.
+                //
+                // Disable the startup prefetch grace window: the runtime's
+                // `complete` blocks on `wait_for_init`, which is only released by
+                // `detect_tier_and_set_default` (run from `prefetch_models`). With
+                // the default grace window the doctor's immediate prefetch returns
+                // early without marking init done, so the live probes would hang.
+                crate::env::set_var("JCODE_COPILOT_PREFETCH_STARTUP_GRACE_MS", "0");
                 let runtime = match crate::provider::copilot::CopilotApiProvider::new() {
                     Ok(runtime) => runtime,
                     Err(_) => crate::provider::copilot::CopilotApiProvider::new_with_token(
