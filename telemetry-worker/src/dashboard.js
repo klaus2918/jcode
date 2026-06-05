@@ -143,6 +143,9 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   .track { height: 6px; background: var(--panel-2); border-radius: 2px; overflow:hidden; }
   .fill { height: 100%; background: linear-gradient(90deg, var(--amber-dim), var(--amber)); border-radius: 2px; }
   tr:last-child td { border-bottom: none; }
+  .lb-ci { font-family: var(--mono); font-size: 9px; letter-spacing: 1px; color: var(--bg); background: var(--ink-faint); padding: 1px 5px; border-radius: 3px; margin-left: 6px; }
+  .lb-dev { font-family: var(--mono); font-size: 9px; letter-spacing: .5px; color: var(--amber); border: 1px solid rgba(255,180,84,.35); padding: 0 5px; border-radius: 3px; margin-left: 6px; }
+  tr.lb-dim td { opacity: .5; }
 
   .legend { display:flex; gap: 16px; align-items:center; font-family: var(--mono); font-size: 11px; color: var(--ink-dim); margin-bottom: 10px; flex-wrap: wrap; }
   .legend i { width: 14px; height: 3px; display:inline-block; margin-right: 6px; vertical-align: 3px; border-radius: 2px; }
@@ -270,6 +273,28 @@ function barsChart(title,desc,data,labelFn,color){
   return '<div class="panel reveal"><h3>'+esc(title)+'</h3><p class="pd">'+esc(desc)+'</p><svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet">'+bars+labels+'</svg></div>';
 }
 
+function leaderboardPanel(rows){
+  if(!rows.length) return '<div class="panel reveal"><p class="pd">no data</p></div>';
+  const body = rows.map((r,i)=>{
+    const ci = Number(r.is_ci)===1;
+    const chan = esc(r.build_channel||"?");
+    const last = r.last_seen ? new Date((r.last_seen||"").replace(" ","T")+"Z").toLocaleDateString() : "—";
+    const tag = ci ? '<span class="lb-ci">CI</span>' : (chan==="release" ? '' : '<span class="lb-dev">'+chan+'</span>');
+    return '<tr'+(ci?' class="lb-dim"':'')+'>'
+      + '<td class="v" style="color:var(--ink-faint)">'+(i+1)+'</td>'
+      + '<td class="k">'+esc(r.id_prefix)+'… '+tag+'</td>'
+      + '<td class="v">'+fmt(r.sessions)+'</td>'
+      + '<td class="v">'+fmt(r.turns)+'</td>'
+      + '<td class="v">'+fmt(r.tokens)+'</td>'
+      + '<td class="v">'+fmt(r.tool_calls)+'</td>'
+      + '<td class="k" style="color:var(--ink-faint)">v'+esc(r.version||"?")+'</td>'
+      + '<td class="k" style="color:var(--ink-faint)">'+esc(last)+'</td>'
+      + '</tr>';
+  }).join('');
+  return '<div class="panel reveal"><h3>Top anonymous ids</h3><p class="pd">ranked by lifecycle sessions · CI / non-release tagged · ids are hashed prefixes only</p>'
+    + '<table><thead><tr><th class="v">#</th><th>id</th><th class="v">sessions</th><th class="v">turns</th><th class="v">tokens</th><th class="v">tools</th><th>ver</th><th>last seen</th></tr></thead><tbody>'+body+'</tbody></table></div>';
+}
+
 function render(d){
   const dt = new Date(d.generated_at);
   document.getElementById("generated").textContent = dt.toISOString().slice(0,10)+" · "+dt.toLocaleTimeString()+" · UTC rollup";
@@ -299,9 +324,9 @@ function render(d){
     + '<div class="hero-side">'
       + '<h3>active users · distinct, headline definition</h3>'
       + '<div class="triple">'
-        + '<div class="t"><div class="tn">'+fmt(a.dau)+'</div><div class="tl">DAU</div><div class="tsub">today</div></div>'
-        + '<div class="t"><div class="tn">'+fmt(a.wau)+'</div><div class="tl">WAU</div><div class="tsub">7 days</div></div>'
-        + '<div class="t"><div class="tn">'+fmt(a.mau)+'</div><div class="tl">MAU</div><div class="tsub">30 days</div></div>'
+        + '<div class="t"><div class="tn">'+fmt(a.dau)+'</div><div class="tl">DAU</div><div class="tsub">'+fmt(a.dau_meaningful)+' mean · '+fmt(a.dau_raw)+' raw</div></div>'
+        + '<div class="t"><div class="tn">'+fmt(a.wau)+'</div><div class="tl">WAU</div><div class="tsub">'+fmt(a.wau_meaningful)+' mean · '+fmt(a.wau_raw)+' raw</div></div>'
+        + '<div class="t"><div class="tn">'+fmt(a.mau)+'</div><div class="tl">MAU</div><div class="tsub">'+fmt(a.mau_meaningful)+' mean · '+fmt(a.mau_raw)+' raw</div></div>'
       + '</div>'
       + '<div style="margin-top:16px;flex:1">'+lineChart(series)+'</div>'
     + '</div>'
@@ -346,16 +371,55 @@ function render(d){
     + stat("Turn success", pct(d.turns.turn_success_rate), "per-turn, 30d")
     + stat("Avg turn time", ms(d.turns.avg_turn_ms), "active duration / turn")
     + stat("Time to first response", ms(q.avg_first_response_ms), "agent responsiveness")
-    + stat("Avg tool latency", ms(q.avg_tool_latency_ms), "per executed tool call")
+    + stat("Time to first tool success", ms(q.avg_first_tool_success_ms), "first useful tool result")
   + '</div>';
   H+='<div class="grid g2" style="margin-top:14px">'
-    + stat("Tokens · 30d", fmt(q.tokens_30d), "input + output across sessions")
+    + stat("Avg tool latency", ms(q.avg_tool_latency_ms), "per executed tool call")
     + stat("Crash rate", pct(lc.crash_rate)+" · completion "+(lc.lifecycle_completion_ratio==null?"—":lc.lifecycle_completion_ratio), "crash share · (ends+crashes)/starts", {key:true})
   + '</div>';
 
-  // 04 RELIABILITY
-  const anyErr = (e.provider_timeout||0)+(e.auth_failed||0)+(e.rate_limited||0) > 0;
-  H+=sec("04","reliability","error counts · 30d non-CI · watch for spikes");
+  // 04 TOKEN USAGE
+  const tk = d.tokens||{};
+  H+=sec("04","token usage","model token volume · non-CI · cache-aware");
+  H+='<div class="grid g4">'
+    + stat("Total tokens · 30d", fmt(tk.total_30d), "all token types, last 30d", {key:true})
+    + stat("Input · 30d", fmt(tk.input_30d), "prompt tokens sent")
+    + stat("Output · 30d", fmt(tk.output_30d), "completion tokens")
+    + stat("Cache read · 30d", fmt(tk.cache_read_30d), "served from prompt cache")
+  + '</div>';
+  H+='<div class="grid g4" style="margin-top:14px">'
+    + stat("Cache creation · 30d", fmt(tk.cache_creation_30d), "tokens written to cache")
+    + stat("Total tokens · all-time", fmt(tk.total_all), "since telemetry began")
+    + stat("Input · all-time", fmt(tk.input_all), "")
+    + stat("Output · all-time", fmt(tk.output_all), "")
+  + '</div>';
+
+  // 05 AGENT AUTONOMY
+  const ag = d.agent||{};
+  const activeMs = ag.agent_active_ms||0, modelMs = ag.agent_model_ms||0, toolMs = ag.agent_tool_ms||0, idleMs = ag.session_idle_ms||0, blockedMs = ag.agent_blocked_ms||0;
+  const hrs = (x)=> x==null?"—":(x/3600000>=1?(x/3600000).toFixed(1)+"h":(x/60000).toFixed(0)+"m");
+  H+=sec("05","agent autonomy","30-day · spawning, delegation & where agent time goes");
+  H+='<div class="grid g4">'
+    + stat("Spawned agents", fmt(ag.spawned_agents), "sub-agents launched", {key:true})
+    + stat("Subagent tasks", fmt(ag.subagent_tasks), fmt(ag.subagent_success)+" succeeded")
+    + stat("Swarm tasks", fmt(ag.swarm_tasks), fmt(ag.swarm_success)+" succeeded")
+    + stat("Background tasks", fmt(ag.background_tasks), fmt(ag.background_completed)+" completed")
+  + '</div>';
+  H+='<div class="grid g4" style="margin-top:14px">'
+    + stat("User cancellations", fmt(ag.user_cancelled), "user interrupted the agent")
+    + stat("Agent active time", hrs(activeMs), "total working time, 30d")
+    + stat("Time in model", hrs(modelMs), "thinking / generating")
+    + stat("Time in tools", hrs(toolMs), "executing tool calls")
+  + '</div>';
+  H+='<div class="grid g4" style="margin-top:14px">'
+    + stat("Agent blocked time", hrs(blockedMs), "waiting on user / approvals")
+    + stat("Session idle time", hrs(idleMs), "no activity")
+    + stat("Time to first action", ms(ag.avg_time_to_first_action_ms), "agent's first move")
+    + stat("Avg max concurrency", dec(ag.avg_max_concurrent,1), "peak parallel sessions")
+  + '</div>';
+
+  // 06 RELIABILITY
+  H+=sec("06","reliability","error counts · 30d non-CI · watch for spikes");
   H+='<div class="grid g4">'
     + stat("Provider timeouts", fmt(e.provider_timeout), "", {alert:(e.provider_timeout||0)>0})
     + stat("Rate limited", fmt(e.rate_limited), "")
@@ -363,8 +427,8 @@ function render(d){
     + stat("Tool / MCP errors", fmt((e.tool_error||0)+(e.mcp_error||0)), fmt(e.tool_error)+" tool · "+fmt(e.mcp_error)+" mcp")
   + '</div>';
 
-  // 05 WHO & WHAT
-  H+=sec("05","who & what","distinct users per bucket");
+  // 07 WHO & WHAT
+  H+=sec("07","who & what","distinct users per bucket");
   H+='<div class="grid g2">'
     + tablePanel("Versions","adoption by release (non-CI)", rows(b.versions,"version"), "version","users")
     + tablePanel("Platform","os / arch split", rows(b.arch,"platform"), "platform","users")
@@ -384,17 +448,21 @@ function render(d){
     + tablePanel("Operating system","os split (non-CI)", rows(b.os,"os"), "os","users")
   + '</div>';
 
-  // 06 FEATURE ADOPTION
+  // 08 FEATURE ADOPTION
   const fr = Object.entries(d.features||{}).map(([k,v])=>({label:k.replace(/_/g," "),value:v})).sort((a,b)=>b.value-a.value);
   const tr = [["https",d.transport.https],["ws reuse",d.transport.ws_reuse],["ws fresh",d.transport.ws_fresh],["native http2",d.transport.native_http2],["cli subprocess",d.transport.cli],["other",d.transport.other]].map(([label,value])=>({label,value:value||0})).sort((a,b)=>b.value-a.value);
-  H+=sec("06","feature adoption","distinct users per capability · 30d");
+  H+=sec("08","feature adoption","distinct users per capability · 30d");
   H+='<div class="grid g2">'
     + tablePanel("Features","users who touched each capability", fr, "feature","users")
     + tablePanel("Transport mix","request transport counts (30d non-CI)", tr, "transport","count")
   + '</div>';
 
-  // 07 DATA HEALTH (diagnostic)
-  H+=sec("07","pipeline health","diagnostic · not product metrics · watch for drift");
+  // 09 USER LEADERBOARD
+  H+=sec("09","user leaderboard","most active anonymous ids · by lifecycle volume");
+  H+=leaderboardPanel(d.leaderboard||[]);
+
+  // 10 PIPELINE HEALTH (diagnostic)
+  H+=sec("10","pipeline health","diagnostic · not product metrics · watch for drift");
   H+='<div class="grid g4">'
     + stat("Lifecycle ids", fmt(h.lifecycle_ids), "distinct ids w/ end/crash")
     + stat("Session-start ids", fmt(h.session_start_ids), "distinct ids that launched")
@@ -407,9 +475,9 @@ function render(d){
     + stat("CI ids (30d window)", fmt(a.ci_mau), "filtered from headline")
   + '</div>';
 
-  // 08 FEEDBACK
+  // 11 FEEDBACK
   if((d.feedback||[]).length){
-    H+=sec("08","recent feedback","explicit user submissions");
+    H+=sec("11","recent feedback","explicit user submissions");
     H+='<div class="panel reveal">'+d.feedback.map(fb=>'<div class="fb"><div class="q">'+esc(fb.feedback_text)+'</div><div class="m">'+esc(new Date((fb.created_at||"").replace(" ","T")+"Z").toLocaleString())+' · v'+esc(fb.version||"?")+(fb.feedback_rating?' · <span class="badge">'+esc(fb.feedback_rating)+'</span>':'')+(fb.feedback_reason?' · '+esc(fb.feedback_reason):'')+'</div></div>').join('')+'</div>';
   }
 

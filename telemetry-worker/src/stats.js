@@ -122,12 +122,54 @@ export async function getStats(env) {
       AVG(CASE WHEN session_success > 0 THEN 1.0 ELSE 0.0 END) AS success_rate,
       AVG(CASE WHEN abandoned_before_response > 0 THEN 1.0 ELSE 0.0 END) AS abandon_rate,
       AVG(first_assistant_response_ms) AS avg_first_response_ms,
+      AVG(first_tool_success_ms) AS avg_first_tool_success_ms,
       AVG(CASE WHEN executed_tool_calls > 0 THEN CAST(tool_latency_total_ms AS REAL)/executed_tool_calls END) AS avg_tool_latency_ms,
       SUM(input_tokens + output_tokens) AS tokens_30d,
       AVG(CASE WHEN multi_sessioned > 0 THEN 1.0 ELSE 0.0 END) AS multi_session_rate
     FROM events
     WHERE event IN ('session_end','session_crash')
       AND is_ci = 0 AND created_at > datetime('now','-30 days')
+  `);
+
+  // --- Token usage (all-time + 30d, full breakdown incl. cache) -----------
+  const tokens = await one(env, `
+    SELECT
+      SUM(input_tokens) AS input_all,
+      SUM(output_tokens) AS output_all,
+      SUM(cache_read_input_tokens) AS cache_read_all,
+      SUM(cache_creation_input_tokens) AS cache_creation_all,
+      SUM(total_tokens) AS total_all,
+      SUM(CASE WHEN created_at > datetime('now','-30 days') THEN input_tokens ELSE 0 END) AS input_30d,
+      SUM(CASE WHEN created_at > datetime('now','-30 days') THEN output_tokens ELSE 0 END) AS output_30d,
+      SUM(CASE WHEN created_at > datetime('now','-30 days') THEN cache_read_input_tokens ELSE 0 END) AS cache_read_30d,
+      SUM(CASE WHEN created_at > datetime('now','-30 days') THEN cache_creation_input_tokens ELSE 0 END) AS cache_creation_30d,
+      SUM(CASE WHEN created_at > datetime('now','-30 days') THEN total_tokens ELSE 0 END) AS total_30d
+    FROM events
+    WHERE event IN ('session_end','session_crash') AND is_ci = 0
+  `);
+
+  // --- Agent autonomy (30d): spawning, background/subagent/swarm, time split
+  const agent = await one(env, `
+    SELECT
+      SUM(spawned_agent_count) AS spawned_agents,
+      SUM(background_task_count) AS background_tasks,
+      SUM(background_task_completed_count) AS background_completed,
+      SUM(subagent_task_count) AS subagent_tasks,
+      SUM(subagent_success_count) AS subagent_success,
+      SUM(swarm_task_count) AS swarm_tasks,
+      SUM(swarm_success_count) AS swarm_success,
+      SUM(user_cancelled_count) AS user_cancelled,
+      SUM(agent_active_ms_total) AS agent_active_ms,
+      SUM(agent_model_ms_total) AS agent_model_ms,
+      SUM(agent_tool_ms_total) AS agent_tool_ms,
+      SUM(agent_blocked_ms_total) AS agent_blocked_ms,
+      SUM(session_idle_ms_total) AS session_idle_ms,
+      AVG(time_to_first_agent_action_ms) AS avg_time_to_first_action_ms,
+      AVG(time_to_first_useful_action_ms) AS avg_time_to_first_useful_ms,
+      AVG(CASE WHEN max_concurrent_sessions > 0 THEN max_concurrent_sessions END) AS avg_max_concurrent
+    FROM events
+    WHERE event IN ('session_end','session_crash') AND is_ci = 0
+      AND created_at > datetime('now','-30 days')
   `);
 
   // --- Per-turn metrics (30d) ---------------------------------------------
@@ -263,6 +305,28 @@ export async function getStats(env) {
       AND created_at > datetime('now','-30 days') AND ${MEANINGFUL_SQL}
   `);
 
+  // --- User leaderboard: most active anonymous ids ------------------------
+  // Ranks by lifecycle (session_end + session_crash) volume. telemetry_id is
+  // anonymous, so we surface a short prefix only. Useful for spotting power
+  // users and dev/test skew. Includes whether the id is CI and its channel.
+  const leaderboard = await many(env, `
+    SELECT
+      substr(telemetry_id, 1, 8) AS id_prefix,
+      COUNT(*) AS sessions,
+      SUM(turns) AS turns,
+      SUM(input_tokens + output_tokens) AS tokens,
+      SUM(tool_calls) AS tool_calls,
+      MAX(is_ci) AS is_ci,
+      MAX(build_channel) AS build_channel,
+      MAX(version) AS version,
+      MAX(created_at) AS last_seen
+    FROM events
+    WHERE event IN ('session_end','session_crash')
+    GROUP BY telemetry_id
+    ORDER BY sessions DESC
+    LIMIT 20
+  `);
+
   // --- Daily timeseries (last 60 days) for charts -------------------------
   const daily = await many(env, `
     SELECT
@@ -310,11 +374,14 @@ export async function getStats(env) {
     lifecycle: { ...lifecycle, lifecycle_completion_ratio: lifecycleCompletion, crash_rate: crashRate },
     retention: { ...retention, d7_retention: d7Retention },
     quality: { ...quality, meaningful_sessions_30d: meaningfulSessions.meaningful_sessions || 0 },
+    tokens,
+    agent,
     turns,
     errors,
     features,
     transport,
     breakdowns: { versions, os, arch, channels, providers, auth, onboarding, hours },
+    leaderboard,
     health: { ...health, ...skew },
     timeseries: { daily, installs: dailyInstalls },
     feedback,
