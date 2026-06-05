@@ -7209,6 +7209,24 @@ fn push_single_session_inline_code_cards(
     );
 }
 
+/// A thread-local, lazily-initialized `FontSystem` used purely for measuring
+/// glyph layout (inline-code/math pill bounds) during geometry building.
+///
+/// Building a `FontSystem` rescans every system font from disk, costing several
+/// milliseconds per call. The inline-code/math card builder runs on every frame
+/// whose visible window contains inline code or math, so constructing a fresh
+/// `FontSystem` there made scrolling over code blocks janky (multi-ms spikes per
+/// frame). Caching one per render thread keeps repeated measurement cheap. The
+/// system is only used for transient measurement buffers, never for the glyphs
+/// actually uploaded to the GPU, so reuse is safe.
+fn with_measurement_font_system<R>(f: impl FnOnce(&mut FontSystem) -> R) -> R {
+    thread_local! {
+        static MEASUREMENT_FONT_SYSTEM: std::cell::RefCell<FontSystem> =
+            std::cell::RefCell::new(FontSystem::new());
+    }
+    MEASUREMENT_FONT_SYSTEM.with(|cell| f(&mut cell.borrow_mut()))
+}
+
 fn push_single_session_inline_code_cards_from_viewport(
     vertices: &mut Vec<Vertex>,
     app: &SingleSessionApp,
@@ -7245,13 +7263,9 @@ fn push_single_session_inline_code_cards_from_viewport(
         horizontal_pad,
         top_offset_pixels: viewport.top_offset_pixels,
     };
-    let mut font_system = FontSystem::new();
-    let body_buffer = single_session_body_text_buffer_from_lines(
-        &mut font_system,
-        &viewport.lines,
-        size,
-        text_scale,
-    );
+    let body_buffer = with_measurement_font_system(|font_system| {
+        single_session_body_text_buffer_from_lines(font_system, &viewport.lines, size, text_scale)
+    });
     let layout_runs = body_buffer.layout_runs().collect::<Vec<_>>();
 
     let mut occurrences = HashMap::new();

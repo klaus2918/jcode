@@ -5253,6 +5253,11 @@ struct RealTranscriptScrollReport {
     setup_full_relayout_ms: f64,
     worst_stage_name: String,
     worst_stage_us: f64,
+    worst_rebuild_us: f64,
+    worst_rebuild_window_lines: usize,
+    worst_rebuild_max_line_chars: usize,
+    worst_rebuild_advanced_lines: usize,
+    worst_rebuild_segments: usize,
 }
 
 impl RealTranscriptScrollReport {
@@ -5279,6 +5284,13 @@ impl RealTranscriptScrollReport {
             "max_scroll_lines": self.max_scroll_lines,
             "body_buffer_rebuilds": self.body_buffer_rebuilds,
             "setup_full_body_relayout_ms": self.setup_full_relayout_ms,
+            "worst_window_rebuild": {
+                "us": self.worst_rebuild_us,
+                "window_lines": self.worst_rebuild_window_lines,
+                "max_line_chars": self.worst_rebuild_max_line_chars,
+                "advanced_shaping_lines": self.worst_rebuild_advanced_lines,
+                "segments": self.worst_rebuild_segments,
+            },
             "full_scroll_frame": {
                 "frames": self.frame_samples.len(),
                 "mean_ms_per_frame": total_ms / frames as f64,
@@ -5361,6 +5373,16 @@ fn benchmark_real_transcript_scroll(
     let mut vertices_us = 0.0;
     let mut body_buffer_rebuilds = 0usize;
 
+    // Optional diagnostic: capture the single slowest window rebuild and describe
+    // the window content so we can attribute the cost (line count, advanced
+    // shaping triggers, longest line) rather than guessing.
+    let diagnose = std::env::var_os("JCODE_DESKTOP_SCROLL_DIAG").is_some();
+    let mut worst_rebuild_us = 0.0_f64;
+    let mut worst_rebuild_window_lines = 0usize;
+    let mut worst_rebuild_max_line_chars = 0usize;
+    let mut worst_rebuild_advanced_lines = 0usize;
+    let mut worst_rebuild_segments = 0usize;
+
     let (frame_samples, _checksum) = benchmark_frame_samples(frames, |frame| {
         // Triangle-wave scroll position covering the full transcript height.
         let phase = frame % (span * 2);
@@ -5375,6 +5397,7 @@ fn benchmark_real_transcript_scroll(
         let phase_started = Instant::now();
         if !single_session_body_text_window_contains(window_start, window_end, &viewport) {
             (window_start, window_end) = single_session_body_text_window_bounds(&viewport);
+            let rebuild_started = Instant::now();
             if let Some(body_buffer) = buffers.get_mut(1) {
                 *body_buffer = single_session_body_text_buffer_from_lines(
                     &mut font_system,
@@ -5382,6 +5405,33 @@ fn benchmark_real_transcript_scroll(
                     size,
                     app.text_scale(),
                 );
+            }
+            if diagnose {
+                let rebuild_us = rebuild_started.elapsed().as_secs_f64() * 1_000_000.0;
+                if rebuild_us > worst_rebuild_us {
+                    worst_rebuild_us = rebuild_us;
+                    let window = &body_lines[window_start..window_end];
+                    worst_rebuild_window_lines = window.len();
+                    worst_rebuild_max_line_chars =
+                        window.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
+                    worst_rebuild_advanced_lines = window
+                        .iter()
+                        .filter(|l| !l.text.is_ascii())
+                        .count();
+                    worst_rebuild_segments =
+                        window.iter().map(|l| l.inline_spans.len() + 1).sum();
+                    if let Ok(path) = std::env::var("JCODE_DESKTOP_SCROLL_DIAG_DUMP") {
+                        let text = window
+                            .iter()
+                            .map(|l| l.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let _ = std::fs::write(
+                            format!("{path}.{}", transcript.session_id),
+                            text,
+                        );
+                    }
+                }
             }
             body_buffer_rebuilds += 1;
             last_scroll_start = usize::MAX;
@@ -5458,6 +5508,11 @@ fn benchmark_real_transcript_scroll(
         setup_full_relayout_ms,
         worst_stage_name,
         worst_stage_us,
+        worst_rebuild_us,
+        worst_rebuild_window_lines,
+        worst_rebuild_max_line_chars,
+        worst_rebuild_advanced_lines,
+        worst_rebuild_segments,
     }
 }
 
